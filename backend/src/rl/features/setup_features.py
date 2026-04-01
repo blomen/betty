@@ -24,9 +24,10 @@ SETUP_TYPES = [
     "vwap_sd2_reversal",
     "gap_logic",
     "pbd",
+    "squeeze",
 ]
 
-_N_FEATURES = len(SETUP_TYPES)  # 9
+_N_FEATURES = len(SETUP_TYPES)  # 14
 
 
 def extract_setup_features(

@@ -81,8 +81,10 @@ class DQNLiveInference:
         if not self._loaded or self._network is None:
             return None
 
-        lt = state.get("level_type", "vwap")
-        if isinstance(lt, str):
+        # Zone mode: no level_type conversion needed (zone object already present)
+        # Legacy mode: convert string level_type to LevelType enum
+        lt = state.get("level_type")
+        if lt is not None and isinstance(lt, str):
             try:
                 state["level_type"] = LevelType(lt)
             except ValueError:
@@ -107,6 +109,7 @@ class DQNLiveInference:
                 "layer1": activations["layer1"][0].tolist(),
                 "layer2": activations["layer2"][0].tolist(),
                 "layer3": activations["layer3"][0].tolist(),
+                "layer4": activations["features"][0].tolist(),
             },
             "q_values": q_vals,
             "action": action_name,

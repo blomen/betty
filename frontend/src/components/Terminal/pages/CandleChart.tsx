@@ -14,11 +14,12 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/services/api';
-import type { CandleData, ExpandedSession, TPOLiveProfile } from '@/types/market';
+import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } from '@/types/market';
 
 const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
+const CANDLE_CACHE_KEY = 'firev_candles_1m';
 
 // VP overlay config: which timeframes to show, with colors
 const VP_OVERLAYS = [
@@ -28,12 +29,12 @@ const VP_OVERLAYS = [
 ] as const;
 
 // Session box definitions (CET/CEST times as hour*60+minute)
-// Tokyo: 00:00 → 09:00 CET  (Globex open → London open)
-// London: 09:00 → 15:30 CET  (London open → NY open)
-// New York: 15:30 → 22:00 CET  (NY open → close)
+// Tokyo: 00:00 → 09:00 CET  (Asian session, overlaps London 08:00-09:00)
+// London: 08:00 → 16:30 CET  (LSE hours, overlaps Tokyo & NY)
+// New York: 15:30 → 22:00 CET  (NY open → close, overlaps London 15:30-16:30)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
-  { name: 'London',   startMin: 9 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
+  { name: 'Tokyo',    startMin: 0,             endMin: 9 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
+  { name: 'London',   startMin: 8 * 60,        endMin: 16 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
   { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },
 ];
 
@@ -84,7 +85,6 @@ interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
-  tpo?: TPOLiveProfile | null;
 }
 
 function toCandle(c: CandleData): CandlestickData<Time> {
@@ -168,7 +168,7 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -191,13 +191,17 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   const hiddenRef = useRef(hiddenLevels);
   hiddenRef.current = hiddenLevels;
 
-  // Session levels overlay data (per-day PDH/PDL, IB, Tokyo, London)
+  // Session levels overlay data (per-day IB, Tokyo, London, swing levels)
   const sessionLevelsRef = useRef<import('@/types/market').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
 
-  // TPO overlay data
-  const tpoRef = useRef<TPOLiveProfile | null>(null);
-  tpoRef.current = tpo ?? null;
+  // Per-session TPO letter grid data
+  const sessionTPORef = useRef<SessionTPOResponse | null>(null);
+  const [sessionTPOLoaded, setSessionTPOLoaded] = useState(false);
+
+  // Macro data ref (COT, etc.) — updated from session prop
+  const macroRef = useRef<Record<string, any> | null>(null);
+  macroRef.current = (session as any)?.macro ?? null;
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -306,8 +310,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       .find(d => d.ny_high != null || d.tokyo_high != null);
     // Session H/L extension lines — use box H/L (from chart candles) for consistency
     const sessionLineMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
-      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4' },
-      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981' },
+      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#22D3EE' },
+      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#34D399' },
     };
 
     // Draw session H/L dashed lines from box end to day end (22:00 CET)
@@ -358,19 +362,25 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         }
       }
 
-      // PDH/PDL from backend session levels — latest day only (reference for current session)
-      if (latestSL && latestSL.pdh != null && latestSL.pdl != null) {
-        for (const { key, price, label } of [
-          { key: 'pdh', price: latestSL.pdh, label: 'PDH' },
-          { key: 'pdl', price: latestSL.pdl, label: 'PDL' },
-        ]) {
+      // --- Swing levels from session-levels API ---
+      if (latestSL) {
+        const swingLevels: { key: string; price: number | null; label: string; color: string }[] = [
+          { key: 'daily_swing_high', price: latestSL.daily_swing_high, label: 'D-SH', color: '#e2e8f0' },
+          { key: 'daily_swing_low', price: latestSL.daily_swing_low, label: 'D-SL', color: '#e2e8f0' },
+          { key: 'weekly_swing_high', price: latestSL.weekly_swing_high, label: 'W-SH', color: '#3b82f6' },
+          { key: 'weekly_swing_low', price: latestSL.weekly_swing_low, label: 'W-SL', color: '#3b82f6' },
+          { key: 'monthly_swing_high', price: latestSL.monthly_swing_high, label: 'M-SH', color: '#a855f7' },
+          { key: 'monthly_swing_low', price: latestSL.monthly_swing_low, label: 'M-SL', color: '#a855f7' },
+        ];
+
+        for (const { key, price, label, color } of swingLevels) {
+          if (price == null) continue;
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);
           if (y === null) continue;
 
-          // Extend PDH/PDL across entire visible chart (they're reference levels)
           ctx.save();
-          ctx.strokeStyle = '#FB923C';
+          ctx.strokeStyle = color;
           ctx.lineWidth = 1;
           ctx.setLineDash([6, 3]);
           ctx.beginPath();
@@ -379,11 +389,38 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
-          ctx.fillStyle = '#FB923C';
+          ctx.fillStyle = color;
           ctx.textAlign = 'left';
           ctx.fillText(label, 3, y - 3);
           ctx.restore();
         }
+      }
+    }
+
+    // --- PDH/PDL levels — latest day only, full chart width ---
+    if (latestSL) {
+      const pdhpdlLevels: Array<{ price: number; label: string; key: string }> = [];
+      if (latestSL.pdh != null && !slHidden?.has('pdh')) pdhpdlLevels.push({ price: latestSL.pdh, label: 'PDH', key: 'pdh' });
+      if (latestSL.pdl != null && !slHidden?.has('pdl')) pdhpdlLevels.push({ price: latestSL.pdl, label: 'PDL', key: 'pdl' });
+
+      for (const lvl of pdhpdlLevels) {
+        const y = pSeries.priceToCoordinate(lvl.price);
+        if (y === null) continue;
+
+        ctx.save();
+        ctx.strokeStyle = '#FB923C'; // orange-400
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(rect.width, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '9px monospace';
+        ctx.fillStyle = '#FB923C';
+        ctx.textAlign = 'left';
+        ctx.fillText(lvl.label, 3, y - 3);
+        ctx.restore();
       }
     }
 
@@ -425,33 +462,201 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       }
     }
 
-    // --- TPO histogram on right edge (orange, next to VP histograms) ---
-    const tpoData = tpoRef.current;
-    if (tpoData && !hidden?.has('vp_tpo')) {
-      const counts = tpoData.tpo_counts;
-      const prices = Object.keys(counts).map(Number);
-      if (prices.length > 0) {
-        const maxCount = Math.max(...prices.map(p => counts[String(p)]));
-        if (maxCount > 0) {
-          const tpoBarMaxWidth = 60;
-          // Offset TPO bars slightly left of VP bars to avoid overlap
-          const tpoXRight = xRight - maxBarWidth - 4;
+    // --- Per-session TPO letter grids (inside session boxes) ---
+    const sessionTPO = sessionTPORef.current;
+    if (sessionTPO && boxes.length > 0) {
+      const SESSION_TPO_MAP: Record<string, { data: SessionTPOData | null; hiddenKey: string; profileColor: string; levelColor: string }> = {
+        'Tokyo':    { data: sessionTPO.sessions.tokyo,  hiddenKey: 'tpo_tky_letters', profileColor: '#0891B2', levelColor: '#06B6D4' },
+        'London':   { data: sessionTPO.sessions.london, hiddenKey: 'tpo_ldn_letters', profileColor: '#059669', levelColor: '#10B981' },
+        'New York': { data: sessionTPO.sessions.ny,     hiddenKey: 'tpo_ny_letters',  profileColor: '#DC2626', levelColor: '#EF4444' },
+      };
 
-          for (const price of prices) {
-            const y = pSeries.priceToCoordinate(price);
-            if (y === null || y < 0 || y > rect.height) continue;
+      for (const box of boxes) {
+        const tpoMeta = SESSION_TPO_MAP[box.name];
+        if (!tpoMeta || !tpoMeta.data || hidden?.has(tpoMeta.hiddenKey)) continue;
+        const tpoSession = tpoMeta.data;
+        const profileColor = tpoMeta.profileColor;
+        const levelColor = tpoMeta.levelColor;
 
-            const count = counts[String(price)];
-            const barW = (count / maxCount) * tpoBarMaxWidth;
-            const isPOC = price === tpoData.poc;
-            const inVA = price >= tpoData.val && price <= tpoData.vah;
+        // Box edges
+        const boxLeftX = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
+        const boxRightX = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+        if (boxLeftX === null && boxRightX === null) continue;
+        const startX = (boxLeftX ?? 0) + 2; // left edge + padding
+        const endX = boxRightX ?? rect.width;
+        const boxWidth = Math.abs(endX - startX);
 
-            const alpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
-            ctx.fillStyle = `rgba(255, 107, 53, ${alpha})`;
-            ctx.fillRect(tpoXRight - barW, y - 1, barW, 2);
+        // TPO letter grid — classic market profile style
+        const letterKeys = Object.keys(tpoSession.letters);
+        if (letterKeys.length === 0) continue;
+
+        // Compute cell height from price spacing on chart
+        const sortedNums = letterKeys.map(Number).sort((a, b) => a - b);
+        let cellH = 1;
+        if (sortedNums.length >= 2) {
+          const y0 = pSeries.priceToCoordinate(sortedNums[0]);
+          const y1 = pSeries.priceToCoordinate(sortedNums[1]);
+          if (y0 !== null && y1 !== null) {
+            cellH = Math.max(2, Math.abs(y0 - y1) - 0.5);
           }
         }
+
+        // Cell width: proportional to height, capped to fit
+        const maxLetters = Math.max(...letterKeys.map(k => tpoSession.letters[k].length));
+        const cellW = Math.min(Math.max(cellH * 0.8, 6), Math.floor(boxWidth * 0.4 / Math.max(maxLetters, 1)));
+        const showText = cellH >= 7 && cellW >= 6;
+        if (showText) {
+          ctx.font = `${Math.min(cellH - 1, cellW - 1, 9)}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+        }
+
+        // IB letters (first two 30-min periods)
+        const ibLetters = new Set(['A', 'B']);
+
+        for (const pk of letterKeys) {
+          const priceNum = Number(pk);
+          const y = pSeries.priceToCoordinate(priceNum);
+          if (y === null || y < 0 || y > rect.height) continue;
+
+          const letters = tpoSession.letters[pk];
+          const isPOC = priceNum === tpoSession.poc;
+          const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
+
+          for (let i = 0; i < letters.length; i++) {
+            const letter = letters[i];
+            const x = startX + i * cellW;
+            if (x + cellW > endX) break;
+
+            const isIB = ibLetters.has(letter);
+
+            // Color: IB = brighter, VA = medium, outside VA = dimmer
+            if (isPOC) {
+              ctx.fillStyle = profileColor;
+              ctx.globalAlpha = 0.85;
+            } else if (isIB) {
+              ctx.fillStyle = '#C084FC'; // purple for IB letters
+              ctx.globalAlpha = inVA ? 0.7 : 0.5;
+            } else {
+              ctx.fillStyle = profileColor;
+              ctx.globalAlpha = inVA ? 0.55 : 0.3;
+            }
+
+            // Draw cell block
+            ctx.fillRect(x, y - cellH / 2, cellW - 0.5, cellH - 0.5);
+
+            // Draw letter text inside cell
+            if (showText) {
+              ctx.fillStyle = isPOC ? '#fff' : isIB ? '#E9D5FF' : '#D1D5DB';
+              ctx.globalAlpha = isPOC ? 1.0 : 0.9;
+              ctx.fillText(letter, x + cellW / 2, y);
+            }
+          }
+
+          // POC: bright left border accent
+          if (isPOC) {
+            ctx.fillStyle = '#fff';
+            ctx.globalAlpha = 0.9;
+            ctx.fillRect(startX - 1, y - cellH / 2, 1.5, cellH);
+          }
+        }
+        ctx.globalAlpha = 1.0;
+
+        // --- Session metadata footer at bottom of box ---
+        const boxBottomY = pSeries.priceToCoordinate(box.low);
+        if (boxBottomY !== null) {
+          const ibRange = tpoSession.ib_valid
+            ? ((tpoSession.ib_high - tpoSession.ib_low) / 0.25).toFixed(0)
+            : '—';
+          const arrow = tpoSession.opening_direction === 'up' ? '↑'
+            : tpoSession.opening_direction === 'down' ? '↓' : '↔';
+          const rf = tpoSession.rotation_factor ?? 0;
+          const rfStr = `RF:${rf > 0 ? '+' : ''}${rf}`;
+          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}  ${rfStr}`;
+          ctx.font = '8px monospace';
+          ctx.fillStyle = profileColor;
+          ctx.globalAlpha = 0.5;
+          ctx.textAlign = 'left';
+          ctx.fillText(footerText, startX, boxBottomY + 12);
+          ctx.globalAlpha = 1.0;
+        }
+
+        // --- POC/VAH/VAL dashed extension lines (anchored to TPO profile) ---
+        const dayEndEpoch = box.endEpoch + (22 * 60 - epochToCETMinute(box.endEpoch)) * 60;
+        const lineEndX = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
+
+        const prefixMap: Record<string, string> = { 'Tokyo': 'tky', 'London': 'ldn', 'New York': 'ny' };
+        const prefix = prefixMap[box.name] || '';
+
+        const levels: Array<{ price: number; label: string; alpha: number; dash: number[]; key: string; color?: string }> = [
+          { price: tpoSession.poc, label: `${prefix} tPOC`, alpha: 0.6, dash: [4, 3], key: `tpo_${prefix}_poc` },
+          { price: tpoSession.vah, label: `${prefix} tVAH`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_vah` },
+          { price: tpoSession.val, label: `${prefix} tVAL`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_val` },
+        ];
+        if (tpoSession.ib_valid) {
+          levels.push(
+            { price: tpoSession.ib_high, label: `${prefix} IBH`, alpha: 0.5, dash: [3, 3], key: `tpo_${prefix}_ibh`, color: '#F59E0B' },
+            { price: tpoSession.ib_low, label: `${prefix} IBL`, alpha: 0.5, dash: [3, 3], key: `tpo_${prefix}_ibl`, color: '#F59E0B' },
+          );
+        }
+
+        for (const lv of levels) {
+          if (hidden?.has(lv.key)) continue;
+          const y = pSeries.priceToCoordinate(lv.price);
+          if (y === null) continue;
+
+          // Anchor from TPO profile (left edge of session box)
+          const lx = startX;
+          const rx = lineEndX ?? rect.width;
+          if (rx < 0 || lx > rect.width) continue;
+          const drawX1 = Math.max(0, lx);
+          const drawX2 = Math.min(rect.width, rx);
+
+          const lvColor = lv.color ?? levelColor;
+          ctx.save();
+          ctx.strokeStyle = lvColor;
+          ctx.globalAlpha = lv.alpha;
+          ctx.lineWidth = 1;
+          ctx.setLineDash(lv.dash);
+          ctx.beginPath();
+          ctx.moveTo(drawX1, y);
+          ctx.lineTo(drawX2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = lvColor;
+          ctx.textAlign = 'left';
+          ctx.fillText(lv.label, drawX1 + 3, y - 3);
+          ctx.globalAlpha = 1.0;
+          ctx.restore();
+        }
       }
+    }
+
+    // --- COT annotation (top-left corner, below session labels) ---
+    const macro = macroRef.current;
+    if (macro && (macro.cot_net_position != null || macro.cot_change_1w != null) && !hidden?.has('macro_cot')) {
+      ctx.save();
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      const cotY = 14;
+
+      if (macro.cot_net_position != null) {
+        const net = macro.cot_net_position;
+        ctx.fillStyle = net > 0 ? '#34D399' : net < 0 ? '#EF4444' : '#9AA0A6';
+        ctx.globalAlpha = 0.7;
+        const netStr = `COT: ${net > 0 ? '+' : ''}${(net / 1000).toFixed(1)}k`;
+        ctx.fillText(netStr, 4, cotY);
+
+        if (macro.cot_change_1w != null) {
+          const chg = macro.cot_change_1w;
+          ctx.fillStyle = chg > 0 ? '#34D399' : chg < 0 ? '#EF4444' : '#9AA0A6';
+          const chgStr = `(${chg > 0 ? '+' : ''}${(chg / 1000).toFixed(1)}k)`;
+          ctx.fillText(chgStr, ctx.measureText(netStr).width + 8, cotY);
+        }
+      }
+      ctx.globalAlpha = 1.0;
+      ctx.restore();
     }
   }, []);
 
@@ -522,32 +727,52 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     volumeSeriesRef.current = volumeSeries;
     anchorSeriesRef.current = anchorSeries;
 
-    // Load candles immediately after chart is created
+    // Load candles: render from sessionStorage cache instantly, then refresh from API
+    const applyCandles = (sorted: CandleData[]) => {
+      candlesRef.current = sorted;
+      try {
+        priceSeries.setData(sorted.map(toCandle));
+        volumeSeries.setData(sorted.map(toVolume));
+      } catch (err) {
+        console.error('Chart setData failed:', err, 'candles:', sorted.length);
+        setNoData(true);
+        return false;
+      }
+      chart.timeScale().scrollToRealTime();
+      setNoData(false);
+      return true;
+    };
+
+    // Phase 1: Instant render from cache (if available)
+    let hadCache = false;
+    try {
+      const cached = sessionStorage.getItem(CANDLE_CACHE_KEY);
+      if (cached) {
+        const parsed: CandleData[] = JSON.parse(cached);
+        if (parsed.length > 0) {
+          hadCache = applyCandles(parsed);
+          if (hadCache) setLoading(false);
+        }
+      }
+    } catch { /* corrupt cache, ignore */ }
+
+    // Phase 2: Fetch fresh data from API (background if cache hit)
     (async () => {
       try {
-        setLoading(true);
+        if (!hadCache) setLoading(true);
         const res = await api.getCandles('NQ', INTERVAL, undefined, INITIAL_DAYS);
         if (res.candles?.length) {
-          // Ensure all timestamps are numbers (API might return strings)
           const cleaned = res.candles.map(c => ({ ...c, t: Number(c.t) })).filter(c => !isNaN(c.t) && c.t > 0);
           const sorted = dedupeAndSort(cleaned);
-          candlesRef.current = sorted;
-          try {
-            priceSeries.setData(sorted.map(toCandle));
-            volumeSeries.setData(sorted.map(toVolume));
-          } catch (err) {
-            console.error('Chart setData failed:', err, 'candles:', sorted.length);
-            setNoData(true);
-            return;
-          }
-          chart.timeScale().scrollToRealTime();
-          setNoData(false);
-        } else {
+          applyCandles(sorted);
+          // Persist to cache for next page load
+          try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(sorted)); } catch { /* quota */ }
+        } else if (!hadCache) {
           setNoData(true);
         }
       } catch (err) {
         console.warn('Failed to load candles:', err);
-        setNoData(true);
+        if (!hadCache) setNoData(true);
       } finally {
         setLoading(false);
       }
@@ -571,18 +796,26 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     };
   }, []);
 
-  // Subscribe VP overlay redraws to chart events (separate from init)
+  // Subscribe VP overlay redraws to chart events (throttled to ~60fps)
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
 
-    const redraw = () => drawOverlays();
+    let rafId = 0;
+    const redraw = () => {
+      if (rafId) return; // already scheduled
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        drawOverlays();
+      });
+    };
     chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
 
-    const observer = new ResizeObserver(() => requestAnimationFrame(redraw));
+    const observer = new ResizeObserver(redraw);
     if (containerRef.current) observer.observe(containerRef.current);
 
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
       observer.disconnect();
     };
@@ -618,8 +851,22 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redraw when VP data loads, TPO changes, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, tpo, drawOverlays]);
+  // Fetch per-session TPO letter grid data — once on mount
+  useEffect(() => {
+    let cancelled = false;
+    api.getSessionTPO('NQ').then(res => {
+      if (!cancelled && res.sessions) {
+        sessionTPORef.current = res;
+        setSessionTPOLoaded(true);
+        drawOverlays();
+      }
+    }).catch(err => { console.warn('[SessionTPO] fetch failed:', err); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Redraw when VP data loads, TPO changes, session/macro changes, or visibility changes
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, session, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
@@ -687,6 +934,11 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     }
     // Redraw overlays so active session box follows price in real-time
     drawOverlays();
+
+    // Periodically persist candles to cache so next page load is instant
+    if (existing.length > 0 && existing.length % 10 === 0) {
+      try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(existing)); } catch { /* quota */ }
+    }
   }, [lastCandle, loading, drawOverlays]);
 
   // Anchor series for no-data state
@@ -766,7 +1018,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     return () => { cancelled = true; };
   }, [session, hiddenLevels]);
 
-  // Static reference lines: IB, PDH/PDL, dPOC (these are flat — correct for structural levels)
+  // Static reference lines: IB, dPOC (these are flat — correct for structural levels)
   useEffect(() => {
     const series = priceSeriesRef.current;
     if (!series) return;
@@ -800,11 +1052,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     add('m_vah', p?.monthly?.vah, '#F59E0B', 'mVAH', LineStyle.Dashed, 1);
     add('m_val', p?.monthly?.val, '#F59E0B', 'mVAL', LineStyle.Dashed, 1);
 
-    // TPO Profile levels (orange #ff6b35)
-    add('t_poc', tpo?.poc, '#ff6b35', 'tPOC', LineStyle.Solid, 2);
-    add('t_vah', tpo?.vah, '#ff6b35', 'tVAH', LineStyle.Dashed, 1);
-    add('t_val', tpo?.val, '#ff6b35', 'tVAL', LineStyle.Dashed, 1);
-  }, [session, hiddenLevels, tpo]);
+    // TPO POC/VAH/VAL are now drawn per-session on the canvas overlay (see drawOverlays)
+  }, [session, hiddenLevels]);
 
   return (
     <div className="relative w-full h-full">

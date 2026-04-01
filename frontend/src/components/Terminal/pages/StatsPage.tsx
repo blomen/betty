@@ -5,6 +5,7 @@ import { CLVChart } from './BetsPage';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollStats, Bet, BonusProgressEntry, Provider, ProviderLimit } from '@/types';
 import { ProviderName } from '../ProviderName';
+import { usePersistedState } from '@/hooks/usePersistedState';
 
 export function StatsPage() {
   const queryClient = useQueryClient();
@@ -17,6 +18,7 @@ export function StatsPage() {
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [mlTraining, setMlTraining] = useState(false);
+  const [wageringCollapsed, setWageringCollapsed] = usePersistedState('bbq_stats_wageringCollapsed', false);
 
   const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ['bankroll', 'stats'],
@@ -49,7 +51,8 @@ export function StatsPage() {
   });
   const activeBonuses: [string, BonusProgressEntry][] = bonusStatus
     ? Object.entries(bonusStatus.bonus_progress).filter(
-        ([, b]) => ['trigger_needed', 'freebet_available', 'in_progress'].includes(b.status)
+        ([, b]) => b.status !== 'available' && b.status !== 'completed'
+          && b.wagering_requirement > 0
       )
     : [];
 
@@ -160,7 +163,7 @@ export function StatsPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4 overflow-y-auto">
+      <div className="flex-1 min-h-0 space-y-4 overflow-y-auto">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
           Statistics
@@ -171,7 +174,7 @@ export function StatsPage() {
   }
 
   return (
-    <div className="space-y-4 overflow-y-auto">
+    <div className="flex-1 min-h-0 space-y-4 overflow-y-auto">
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
         <span className="w-2 h-2 bg-tabStats" />
         Statistics
@@ -218,21 +221,6 @@ export function StatsPage() {
                 </div>
               </td>
             </tr>
-            {(stats.freebet_profit > 0 || stats.bonus_profit > 0) && (
-              <tr>
-                <td colSpan={3}>
-                  <div className="flex items-center gap-3 text-xs">
-                    <span className="text-muted">Bonus P&L:</span>
-                    {stats.freebet_profit > 0 && (
-                      <span className="text-accent">+{stats.freebet_profit.toFixed(0)} kr freebets</span>
-                    )}
-                    {stats.bonus_profit > 0 && (
-                      <span className="text-tabBonus">+{stats.bonus_profit.toFixed(0)} kr bonuses</span>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
         </div>
@@ -269,13 +257,23 @@ export function StatsPage() {
       {/* CLV Trend Chart */}
       <CLVChart bets={bets.filter(b => !b.is_bonus)} />
 
-      {/* Active Wagering Window */}
-      {activeBonuses.length > 0 && (
+      {/* Wagering Progress */}
+      {activeBonuses.length > 0 && (<>
+        <button
+          className="flex items-center gap-2 w-full text-left cursor-pointer group"
+          onClick={() => setWageringCollapsed(c => !c)}
+        >
+          <span className={`text-[10px] text-muted2 transition-transform ${wageringCollapsed ? '' : 'rotate-90'}`}>▶</span>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
+            Wagering Progress <span className="text-muted2">{activeBonuses.length}</span>
+          </h3>
+        </button>
+        {!wageringCollapsed && (
         <div className="border-l-2 border-tabBonus">
           <table className="sq">
             <thead>
               <tr>
-                <th>Wagering</th>
+                <th>Provider</th>
                 <th>Type</th>
                 <th className="text-right">Progress</th>
                 <th className="text-right">Remaining</th>
@@ -285,25 +283,34 @@ export function StatsPage() {
               </tr>
             </thead>
             <tbody>
-              {activeBonuses.map(([providerId, bonus]) => {
+              {activeBonuses
+                .sort((a, b) => {
+                  // Active wagering first, then claimed/needed
+                  const order = { in_progress: 0, trigger_needed: 1, freebet_available: 2, claimed: 3 };
+                  return (order[a[1].status as keyof typeof order] ?? 9) - (order[b[1].status as keyof typeof order] ?? 9);
+                })
+                .map(([providerId, bonus]) => {
                 const pct = Math.min(100, bonus.progress_pct);
                 const days = bonus.days_remaining;
                 const urgent = days !== null && days <= 10;
                 const warning = days !== null && days > 10 && days <= 30;
                 const remaining = bonus.wagering_requirement - bonus.wagered_amount;
-                const hasProgress = (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
+                const isClaimed = bonus.status === 'claimed';
+                const hasProgress = !isClaimed && (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
                 const estDays = bonus.prognosis?.est_weeks != null ? Math.round(bonus.prognosis.est_weeks * 7) : null;
                 const requiredPerWk = bonus.prognosis?.required_weekly_wagering ?? null;
 
                 return (
-                  <tr key={providerId}>
+                  <tr key={providerId} className={isClaimed ? 'opacity-60' : ''}>
                     <td className="text-text text-sm font-medium"><ProviderName name={providerId} /></td>
                     <td>
                       <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                        isClaimed ? 'bg-muted/15 text-muted' :
                         bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
                         'bg-tabBonus/15 text-tabBonus'
                       }`}>
-                        {bonus.bonus_type === 'freebet' ? 'FREEBET'
+                        {isClaimed ? 'NEEDED'
+                          : bonus.bonus_type === 'freebet' ? 'FREEBET'
                           : bonus.status === 'trigger_needed' ? 'TRIGGER'
                           : 'WAGER'}
                       </span>
@@ -322,7 +329,8 @@ export function StatsPage() {
                       ) : <span className="text-muted text-sm">-</span>}
                     </td>
                     <td className="text-right text-sm text-text">
-                      {hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
+                      {isClaimed ? `${bonus.wagering_requirement.toFixed(0)} kr`
+                        : hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
                     </td>
                     <td className="text-right">
                       {requiredPerWk != null && requiredPerWk > 0 ? (
@@ -349,7 +357,8 @@ export function StatsPage() {
             </tbody>
           </table>
         </div>
-      )}
+        )}
+      </>)}
 
       {/* Provider Stats */}
       {providerStats.length > 0 && (

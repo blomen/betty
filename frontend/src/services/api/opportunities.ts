@@ -1,4 +1,4 @@
-import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession } from '@/types';
+import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult, ClusterBatchResult, ClusterBet, AllocationResult, PendingBetsResponse, SettleBetResult } from '@/types';
 import { fetchJson } from './client';
 
 export const opportunitiesApi = {
@@ -71,5 +71,66 @@ export const opportunitiesApi = {
 
   async getPlaySession(): Promise<PlaySession> {
     return fetchJson('/opportunities/play/session');
+  },
+
+  async getPlayBatch(exclude?: string[], skipSiblings?: string[]): Promise<ClusterBatchResult> {
+    const payload: Record<string, string[]> = {};
+    if (exclude?.length) payload.exclude = exclude;
+    if (skipSiblings?.length) payload.skip_siblings = skipSiblings;
+    return fetchJson('/opportunities/play/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined,
+    });
+  },
+
+  async lockBatch(batch: ClusterBet[]): Promise<{ locked: boolean; count: number; locked_at: string; ttl_seconds: number }> {
+    return fetchJson('/opportunities/play/lock-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch }),
+    });
+  },
+
+  async unlockBatch(): Promise<{ unlocked: boolean }> {
+    return fetchJson('/opportunities/play/unlock-batch', { method: 'POST' });
+  },
+
+  async allocateCapital(skipSiblings?: string[], budgetSek?: number, budgetUsdc?: number): Promise<AllocationResult> {
+    const payload: Record<string, unknown> = {};
+    if (skipSiblings?.length) payload.skip_siblings = skipSiblings;
+    if (budgetSek !== undefined) payload.budget_sek = budgetSek;
+    if (budgetUsdc !== undefined) payload.budget_usdc = budgetUsdc;
+    return fetchJson('/opportunities/play/allocate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined,
+    });
+  },
+
+  async confirmCapital(): Promise<BatchResult> {
+    return fetchJson('/opportunities/play/confirm-capital', {
+      method: 'POST',
+    });
+  },
+
+  async getPendingBets(): Promise<PendingBetsResponse> {
+    return fetchJson('/opportunities/play/pending-bets');
+  },
+
+  async settleBet(betId: number, result: 'won' | 'lost' | 'void'): Promise<SettleBetResult> {
+    return fetchJson('/opportunities/play/settle-bet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bet_id: betId, result }),
+    });
+  },
+
+  async ensureMirrorStarted(): Promise<{ running: boolean; status: string }> {
+    return fetchJson('/mirror/ensure-started', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
   },
 };

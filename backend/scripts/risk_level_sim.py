@@ -1,5 +1,5 @@
 """
-BankrollBBQ — Risk Level Simulation
+Firev — Risk Level Simulation
 ====================================
 What happens if we increase Kelly fraction and single bet cap
 to play more bets with a smaller bankroll?
@@ -505,7 +505,7 @@ def main():
     random.seed(42)
 
     print("=" * 120)
-    print("  BANKROLLBBQ — RISK LEVEL SIMULATION")
+    print("  FIREV — RISK LEVEL SIMULATION")
     print("  Can we just increase risk to play more bets with lower bankroll?")
     print("=" * 120)
 

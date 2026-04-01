@@ -1,15 +1,18 @@
 """
-BankrollBBQ Database Models
+Firev Database Models
 
-SQLite schema for:
+Database schema for:
 - Canonical events (provider-agnostic)
 - Odds per provider
 - Provider balances
 - Manual bet tracking
 - User profile settings
 - Risk management profiles
+
+Supports PostgreSQL (via DATABASE_URL env var) and SQLite fallback.
 """
 
+import os
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -19,10 +22,12 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 from sqlalchemy import (
-    create_engine, event, Column, Integer, String, Float,
+    create_engine, event, text, Column, Integer, String, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.pool import NullPool
 
 
 class RiskLevel(str, Enum):
@@ -48,9 +53,12 @@ class LimitType(str, Enum):
     ODDS_RESTRICTED = "odds_restricted"
     FULLY_BANNED = "fully_banned"
 
-# Database file location
+# Database file location (SQLite only — not used in Postgres mode)
 from ..paths import get_db_path
-DB_PATH = get_db_path()
+try:
+    DB_PATH = get_db_path()
+except Exception:
+    DB_PATH = None
 
 Base = declarative_base()
 
@@ -60,15 +68,15 @@ Base = declarative_base()
 class Event(Base):
     """
     A canonical sporting event.
-    
+
     Events are provider-agnostic - the same match has ONE event row,
     with odds from multiple providers stored in the Odds table.
     """
     __tablename__ = "events"
-    
+
     # Canonical ID: "{sport}:{home_normalized}:{away_normalized}:{date}"
     id = Column(String, primary_key=True)
-    
+
     sport = Column(String, nullable=False)
     league = Column(String)
     home_team = Column(String, nullable=False)  # Normalized name
@@ -87,6 +95,15 @@ class Event(Base):
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        # Pipeline cache warming: filter by sport + upcoming start_time
+        Index('ix_events_sport_start_time', 'sport', 'start_time'),
+        # Finished event detection: filter by match_status
+        Index('ix_events_match_status', 'match_status'),
+        # League-based queries (soft provider filtering, sports.yaml lookups)
+        Index('ix_events_league', 'league'),
+    )
 
     # Relationships
     odds = relationship("Odds", back_populates="event", cascade="all, delete-orphan")
@@ -138,6 +155,9 @@ class Odds(Base):
     point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
     provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    bid = Column(Float, nullable=True)        # Best bid price (probability 0-1, CLOB only)
+    ask = Column(Float, nullable=True)        # Best ask price (probability 0-1, CLOB only)
+    depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
 
     updated_at = Column(DateTime, default=_utcnow)
     
@@ -154,6 +174,8 @@ class Odds(Base):
         # Index for event-level market grouping (scanner.group_odds)
         Index('ix_odds_event_market_outcome', 'event_id', 'market', 'outcome'),
         Index('ix_odds_event_market_point', 'event_id', 'market', 'point'),
+        # Composite key for OddsBatchProcessor flush lookups
+        Index('ix_odds_composite_key', 'event_id', 'provider_id', 'market', 'outcome', 'point'),
     )
     
     # Relationships
@@ -497,6 +519,7 @@ class Opportunity(Base):
         Index("ix_opp_active_edge", "is_active", "edge_pct"),
         Index("ix_opp_type_active", "type", "is_active"),
         Index("ix_opp_provider1_type", "provider1_id", "type"),
+        Index("ix_opp_active_type_edge_provider", "is_active", "type", "edge_pct", "provider1_id"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -1390,48 +1413,81 @@ class ProviderExtractionSetting(Base):
 
 # ============ Database Functions ============
 
-# Singleton engine with connection pooling
+# Singleton engines with connection pooling
 _engine = None
+_async_engine = None
+_AsyncSessionFactory = None
+
+
+def _is_postgres() -> bool:
+    """Check if we're configured for PostgreSQL."""
+    return bool(os.environ.get("DATABASE_URL", "").startswith("postgresql"))
 
 
 def get_engine():
-    """
-    Get or create the singleton database engine.
-
-    Uses connection pooling with:
-    - pool_size=5: Keep 5 connections ready
-    - pool_recycle=3600: Recycle connections after 1 hour
-    - pool_pre_ping=True: Verify connections before use
-    """
+    """Get or create the sync database engine (for Alembic and legacy code)."""
     global _engine
     if _engine is None:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(
-            f"sqlite:///{DB_PATH}",
-            pool_size=10,
-            pool_recycle=3600,
-            pool_pre_ping=True,
-            # SQLite-specific: allow multi-thread access + 30s busy timeout
-            connect_args={
-                "check_same_thread": False,
-                "timeout": 30,  # Wait up to 30s for locks instead of default 5s
-            },
-        )
+        db_url = os.environ.get("DATABASE_URL")
+        if db_url:
+            # PostgreSQL — convert async URL to sync for Alembic
+            sync_url = db_url.replace("+asyncpg", "+psycopg2")
+            _engine = create_engine(sync_url)
+        else:
+            # SQLite fallback (local dev without Docker)
+            from ..paths import get_db_path
+            db_path = get_db_path()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _engine = create_engine(
+                f"sqlite:///{db_path}",
+                poolclass=NullPool,
+                connect_args={"check_same_thread": False, "timeout": 30},
+            )
+            with _engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.commit()
 
-        # Enable WAL mode + busy timeout on every new connection
-        @event.listens_for(_engine, "connect")
-        def _set_sqlite_pragmas(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
+            @event.listens_for(_engine, "connect")
+            def _set_sqlite_pragmas(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
 
-        # Create tables on first engine creation
         Base.metadata.create_all(_engine)
-        # Migrate existing tables (add new columns)
-        _run_migrations(_engine)
+        if not _is_postgres():
+            _run_migrations(_engine)
     return _engine
+
+
+def get_async_engine():
+    """Get or create the async database engine (for FastAPI routes)."""
+    global _async_engine
+    if _async_engine is None:
+        db_url = os.environ.get("DATABASE_URL")
+        if db_url:
+            _async_engine = create_async_engine(db_url, pool_size=20, max_overflow=10)
+        else:
+            # SQLite async fallback
+            from ..paths import get_db_path
+            db_path = get_db_path()
+            _async_engine = create_async_engine(
+                f"sqlite+aiosqlite:///{db_path}",
+                connect_args={"check_same_thread": False},
+            )
+    return _async_engine
+
+
+def get_async_session_factory():
+    """Get or create the async session factory."""
+    global _AsyncSessionFactory
+    if _AsyncSessionFactory is None:
+        _AsyncSessionFactory = async_sessionmaker(
+            bind=get_async_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+    return _AsyncSessionFactory
 
 
 def _run_migrations(engine):
@@ -1526,6 +1582,14 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE odds ADD COLUMN provider_meta JSON")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add CLOB microstructure columns to odds (Polymarket bid/ask/depth)
+        for col, col_type in [("bid", "FLOAT"), ("ask", "FLOAT"), ("depth_usd", "FLOAT")]:
+            try:
+                cursor.execute(f"ALTER TABLE odds ADD COLUMN {col} {col_type}")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
@@ -2002,6 +2066,76 @@ def get_session():
     For FastAPI, use the get_db() dependency from api/deps.py instead.
     """
     factory = get_session_factory()
+    return factory()
+
+
+# ── Market DB (separate file for high-frequency tick/candle writes) ────────
+
+_market_engine = None
+_market_async_engine = None
+_MarketSessionFactory = None
+_MarketAsyncSessionFactory = None
+
+# Tables that live in market.db — high-frequency writes that must not
+# contend with extraction/analysis for SQLite's single-writer lock.
+MARKET_DB_TABLES = {MarketTrade.__table__, MarketCandle.__table__}
+
+
+def get_market_engine():
+    """Get or create the market-data database engine.
+
+    Uses MARKET_DATABASE_URL env var for PostgreSQL, or SQLite fallback.
+    Separate from main DB so Databento tick writes (hundreds/sec) never
+    block extraction commits or frontend API queries.
+    """
+    global _market_engine
+    if _market_engine is None:
+        db_url = os.environ.get("MARKET_DATABASE_URL")
+        if db_url:
+            sync_url = db_url.replace("+asyncpg", "+psycopg2")
+            _market_engine = create_engine(sync_url)
+        else:
+            from ..paths import get_market_db_path
+            market_path = get_market_db_path()
+            market_path.parent.mkdir(parents=True, exist_ok=True)
+            _market_engine = create_engine(
+                f"sqlite:///{market_path}",
+                poolclass=NullPool,
+                connect_args={
+                    "check_same_thread": False,
+                    "timeout": 10,
+                },
+            )
+            with _market_engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.commit()
+
+            @event.listens_for(_market_engine, "connect")
+            def _set_market_pragmas(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=10000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+
+        for table in MARKET_DB_TABLES:
+            table.create(_market_engine, checkfirst=True)
+    return _market_engine
+
+
+def get_market_session_factory():
+    """Get or create session factory for market DB."""
+    global _MarketSessionFactory
+    if _MarketSessionFactory is None:
+        _MarketSessionFactory = sessionmaker(bind=get_market_engine())
+    return _MarketSessionFactory
+
+
+def get_market_session():
+    """Get a database session for market DB (ticks + candles).
+
+    Caller is responsible for closing the session.
+    """
+    factory = get_market_session_factory()
     return factory()
 
 

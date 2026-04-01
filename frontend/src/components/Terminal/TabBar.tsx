@@ -7,6 +7,7 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
+  { name: 'play',       label: 'Play',      color: '#22c55e' },
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
   { name: 'reverse',    label: 'Pinnacle',  color: '#EF5350' },
@@ -16,8 +17,8 @@ const SPORTS_TABS: Tab[] = [
 ];
 
 const STOCKS_TABS: Tab[] = [
-  { name: 'tradingL1', label: 'L1', color: '#06B6D4' },
-  { name: 'tradingVectors', label: 'Vectors', color: '#EF4444' },
+  { name: 'tradingChart', label: 'Chart', color: '#F97316' },
+  { name: 'tradingDqn', label: 'DQN', color: '#EF4444' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
@@ -29,11 +30,12 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
   sports: 'value',
-  stocks: 'tradingL1',
+  stocks: 'tradingChart',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
 export const TAB_COLORS: Record<string, string> = {
+  play: '#22c55e',
   value: '#FF9800',
   dutch: '#10b981',
   reverse: '#EF5350',
@@ -45,8 +47,8 @@ export const TAB_COLORS: Record<string, string> = {
   profiles: '#A78BFA',
   settings: '#9AA0A6',
   success: '#10b981',
-  tradingL1: '#06B6D4',
-  tradingVectors: '#EF4444',
+  tradingChart: '#06B6D4',
+  tradingDqn: '#EF4444',
   tradingBankroll: '#EC4899',
   tradingStats: '#1E88E5',
 };

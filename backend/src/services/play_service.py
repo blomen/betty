@@ -75,7 +75,7 @@ class PlaySessionService:
                 group_name, group_info["members"], group_info["canonical"],
                 balances, wagering, limits,
                 cluster_opp_counts.get(group_name, 0),
-                min_stake, profile_id,
+                min_stake, profile_id, total_bankroll,
             )
             if cluster:
                 clusters.append(cluster)
@@ -91,7 +91,7 @@ class PlaySessionService:
                     pid, [pid], pid,
                     balances, wagering, limits,
                     cluster_opp_counts.get(pid, 0),
-                    min_stake, profile_id,
+                    min_stake, profile_id, total_bankroll,
                 )
                 if cluster:
                     clusters.append(cluster)
@@ -109,6 +109,7 @@ class PlaySessionService:
         self, name: str, members: list[str], canonical: str,
         balances: dict, wagering: dict, limits: dict,
         unique_opps: int, min_stake: float, profile_id: int,
+        total_bankroll: float = 0,
     ) -> dict | None:
         """Build cluster dict with active siblings and lifecycle states."""
 
@@ -139,52 +140,67 @@ class PlaySessionService:
                 "days_remaining": bonus_info.get("days_remaining"),
             })
 
-        # Determine max active siblings: 2 if >=30 unique opps, else 1
-        max_siblings = 2 if unique_opps >= 30 else 1
-
-        # Pick active siblings: non-dormant, non-available, sorted by urgency
+        # No sibling cap — fund every sibling you can afford
         active_states = ("deposited", "wagering", "freebet", "playing", "limited")
         active = [s for s in siblings if s["lifecycle"] in active_states]
-        active.sort(key=lambda s: self._sibling_urgency(s), reverse=True)
-        active = active[:max_siblings]
+        active.sort(key=lambda s: self._sibling_urgency(s, total_bankroll), reverse=True)
 
         total_balance = sum(s["balance"] for s in active)
+        available = [s for s in siblings if s["lifecycle"] == "available"]
+        dormant = [s for s in siblings if s["lifecycle"] == "dormant"]
 
-        # Hide cluster if total balance < min stake and no pending bonus phases
-        if total_balance < min_stake and not any(
-            s["lifecycle"] in ("deposited", "freebet") for s in active
-        ):
+        # Hide cluster only if zero opps AND no active/available siblings
+        if unique_opps == 0 and not active and not available:
             return None
 
-        urgency = max((self._sibling_urgency(s) for s in active), default=0)
+        urgency = max((self._sibling_urgency(s, total_bankroll) for s in active), default=0)
+
+        # Recommend ALL available siblings if cluster has opps
+        needs_deposit = unique_opps > 0 and len(available) > 0
+        recommended = available if needs_deposit else []
 
         return {
             "id": name,
             "label": name.replace("_", " ").title(),
             "canonical": canonical,
             "active_siblings": active,
-            "available_siblings": [s for s in siblings if s["lifecycle"] == "available"],
-            "dormant_siblings": [s for s in siblings if s["lifecycle"] == "dormant"],
+            "available_siblings": available,
+            "recommended_siblings": recommended,
+            "dormant_siblings": dormant,
             "total_balance": round(total_balance, 2),
             "playable_count": len(active),
             "unique_opps": unique_opps,
             "urgency": round(urgency, 2),
+            "needs_deposit": needs_deposit,
         }
 
-    @staticmethod
-    def _sibling_urgency(sibling: dict) -> float:
-        """Score sibling by wagering urgency. Higher = more urgent."""
+    def _sibling_urgency(self, sibling: dict, total_bankroll: float = 0) -> float:
+        """Score sibling by wagering urgency. Higher = more urgent.
+
+        MC-optimal: deposited siblings are sorted by bonus_amount ASC (smallest
+        trigger first) and penalized if total bankroll < 2x trigger amount.
+        This prevents all-in trigger bets that cause ruin at low bankrolls.
+        """
         remaining = sibling.get("wagering_remaining", 0)
         days = sibling.get("days_remaining") or 60
+        bonus_amount = sibling.get("bonus_amount", 0)
 
         phase_bonus = {
-            "deposited": 100,
             "freebet": 90,
             "wagering": 50 + (remaining / max(days, 1)),
             "playing": 10,
             "limited": 5,
         }
-        return phase_bonus.get(sibling["lifecycle"], 0)
+
+        lifecycle = sibling["lifecycle"]
+        if lifecycle == "deposited":
+            # Safe-2x: deprioritize triggers that exceed half the bankroll.
+            # Smaller triggers get higher urgency (100 - bonus_amount/100).
+            if total_bankroll > 0 and bonus_amount > 0 and total_bankroll < bonus_amount * 2:
+                return 5  # Defer until bankroll grows
+            return 100 - min(bonus_amount / 100, 50)  # 50-100 range, smaller = higher
+
+        return phase_bonus.get(lifecycle, 0)
 
     def _count_unique_opps_per_cluster(self) -> dict[str, int]:
         """Count unique (event+market+outcome) opportunities per cluster."""

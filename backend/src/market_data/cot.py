@@ -76,13 +76,20 @@ def store_cot_data(
             logger.debug("COT row already exists for %s %s, skipping", symbol, report_date_str)
             continue
 
-        # Compute net_position from non-commercial positioning (large speculators)
-        # and net_change requires two successive reports — store raw net values.
+        # Compute net_change from previous report if available
+        prev = session.query(CotData).filter(
+            CotData.symbol == symbol,
+            CotData.report_date < report_date_str,
+        ).order_by(CotData.report_date.desc()).first()
+        net_change = None
+        if prev and prev.net_position is not None:
+            net_change = report.net_non_commercial - prev.net_position
+
         row = CotData(
             report_date=report_date_str,
             symbol=symbol,
             net_position=report.net_non_commercial,
-            net_change=None,  # requires previous report; caller can back-fill
+            net_change=net_change,
             open_interest=report.open_interest,
         )
         session.add(row)

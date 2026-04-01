@@ -71,11 +71,13 @@ class VbetRetriever(Retriever):
     SPORT_KEY_TO_ALIAS = {v: k for k, v in SPORT_ALIAS_MAP.items()}
 
     # BetConstruct market types we care about
+    # NOTE: "Handicap" (European 3-way) is deliberately excluded — it includes
+    # a draw outcome that inflates home/away odds vs Pinnacle's 2-way Asian handicap.
+    # Only "AsianHandicap" is comparable to Pinnacle's spread lines.
     MARKET_TYPE_MAP = {
         "P1XP2": "1x2",
         "P1P2": "moneyline",
         "OverUnder": "total",
-        "Handicap": "spread",
         "AsianHandicap": "spread",
     }
 
@@ -451,7 +453,7 @@ class VbetRetriever(Retriever):
                         "type": {"@in": [0, 2]},
                     },
                     "market": {
-                        "type": {"@in": ["OverUnder", "Handicap", "AsianHandicap"]},
+                        "type": {"@in": ["OverUnder", "AsianHandicap"]},
                     },
                 },
                 "subscribe": False,
@@ -461,7 +463,7 @@ class VbetRetriever(Retriever):
 
         if spread_total_resp.get("code") == 0:
             st_events = self._parse_games(
-                spread_total_resp, sport, ["OverUnder", "Handicap", "AsianHandicap"]
+                spread_total_resp, sport, ["OverUnder", "AsianHandicap"]
             )
             logger.debug(
                 f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total"

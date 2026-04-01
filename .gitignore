@@ -61,3 +61,6 @@ node_modules/
 /package-lock.json
 /scripts/
 
+# info docs
+/_ALL_RAW.md
+/all_raw.txt

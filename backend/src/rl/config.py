@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class LevelType(str, Enum):
-    """All level types the agent can encounter (27 total)."""
+    """All level types the agent can encounter (31 total)."""
     # Volume profile — daily
     DAILY_POC = "daily_poc"
     DAILY_VAH = "daily_vah"
@@ -37,6 +37,13 @@ class LevelType(str, Enum):
     TIBL = "tibl"
     # Structure
     NAKED_POC = "naked_poc"
+    # Swing levels (daily/weekly/monthly)
+    DAILY_SWING_HIGH = "daily_swing_high"
+    DAILY_SWING_LOW = "daily_swing_low"
+    WEEKLY_SWING_HIGH = "weekly_swing_high"
+    WEEKLY_SWING_LOW = "weekly_swing_low"
+    MONTHLY_SWING_HIGH = "monthly_swing_high"
+    MONTHLY_SWING_LOW = "monthly_swing_low"
 
 
 class Action(int, Enum):
@@ -52,12 +59,17 @@ TICK_SIZE = 0.25
 
 # --- DQN Hyperparameters ---
 BATCH_SIZE = 64
-LEARNING_RATE = 1e-4
-REPLAY_BUFFER_SIZE = 100_000
+LEARNING_RATE = 3e-4
+REPLAY_BUFFER_SIZE = 1_000_000
 EPSILON_START = 1.0
 EPSILON_END = 0.05
-EPSILON_DECAY_STEPS = 5000
+EPSILON_DECAY_STEPS = 50_000
 GAMMA = 0.0
+
+# --- Reward Preprocessing ---
+REWARD_CLIP_MIN = -2.0
+REWARD_CLIP_MAX = 4.0
+REWARD_NORMALIZE = True  # Standardize rewards to mean=0, std=1 before training
 
 # --- Target Network (Polyak soft update) ---
 TAU = 0.005  # Soft update coefficient: θ_target ← τ·θ_online + (1-τ)·θ_target
@@ -70,6 +82,12 @@ OBSERVATION_DIM = None  # Computed dynamically in observation.py
 
 # --- Level Touch Detection ---
 AT_LEVEL_TICKS = 5
+
+# --- Zone Consolidation ---
+ATR_FRACTION = 0.05          # zone radius as fraction of session ATR
+ATR_PERIOD = 14              # ATR lookback (30m candles)
+MIN_ZONE_RADIUS_TICKS = 4    # floor: never merge tighter than 1 point
+MAX_ZONE_RADIUS_TICKS = 20   # cap: never merge wider than 5 points
 
 # --- Reward (velocity-based, computed in episode_builder) ---
 # No fixed target/stop/timeout — rewards are continuous movement quality scores

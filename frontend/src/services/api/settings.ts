@@ -191,4 +191,20 @@ export const settingsApi = {
   async rejectMirrorSettlements(): Promise<any> {
     return fetchJson('/mirror/settlements/reject', { method: 'POST' });
   },
+
+  async getLiveEdge(bets: { event_id: string; market: string; outcome: string; odds: number; stake: number }[]): Promise<any> {
+    return fetchJson('/mirror/live-edge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bets }),
+    }, 120_000); // 2 min — opening tabs + loading pages is slow
+  },
+
+  async fireLive(bets: { event_id: string; market: string; outcome: string; odds: number; stake: number }[]): Promise<any> {
+    return fetchJson('/mirror/fire-live', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bets }),
+    });
+  },
 };

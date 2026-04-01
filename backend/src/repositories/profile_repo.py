@@ -1,5 +1,6 @@
 """Profile repository - balance, bonus, and profile data access."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,10 @@ from ..db.models import (
 )
 
 BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
+
+# TTL cache for total bankroll (avoids re-querying all balances + exchange rates per request)
+_bankroll_cache: dict[int, tuple[float, float]] = {}  # profile_id -> (expires_at, value)
+_BANKROLL_CACHE_TTL = 30.0  # seconds
 
 
 class ProfileRepo:
@@ -81,16 +86,74 @@ class ProfileRepo:
             return amount
 
     def get_total_bankroll(self, profile_id: int) -> float:
-        """Get total bankroll for a profile in SEK (converts non-SEK balances)."""
+        """Get total bankroll for a profile in SEK (converts non-SEK balances).
+
+        Cached for 30s to avoid re-querying all balances + exchange rates on
+        every opportunity listing request.
+        """
+        now = time.time()
+        cached = _bankroll_cache.get(profile_id)
+        if cached and now < cached[0]:
+            return cached[1]
+
         from ..config import get_exchange_rate
         records = self.db.query(ProfileProviderBalance).filter(
             ProfileProviderBalance.profile_id == profile_id
         ).all()
-        return sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        _bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
+        return total
+
+    def get_all_balances(self, profile_id: int) -> dict[str, float]:
+        """Return dict of provider_id -> balance for all providers with balance > 0."""
+        records = self.db.query(ProfileProviderBalance).filter(
+            ProfileProviderBalance.profile_id == profile_id,
+            ProfileProviderBalance.balance > 0,
+        ).all()
+        return {r.provider_id: r.balance for r in records}
+
+    def get_all_registered_providers(self, profile_id: int) -> set[str]:
+        """Return set of all provider_ids registered in the profile (including balance=0)."""
+        records = self.db.query(ProfileProviderBalance.provider_id).filter(
+            ProfileProviderBalance.profile_id == profile_id,
+        ).all()
+        return {r[0] for r in records}
 
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a single provider. Alias for get_balance()."""
         return self.get_balance(profile_id, provider_id)
+
+    def get_avg_daily_wager(self, profile_id: int, lookback_days: int = 14) -> dict:
+        """
+        Average total stake per day over the lookback window.
+        Returns {"avg_daily_wager": float, "has_history": bool, "days_with_bets": int}.
+        """
+        from sqlalchemy import func
+        from ..db.models import Bet
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+        rows = (
+            self.db.query(
+                func.sum(Bet.stake).label("total_stake"),
+                func.count(func.distinct(func.date(Bet.placed_at))).label("days_with_bets"),
+            )
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.placed_at >= cutoff,
+                Bet.stake > 0,
+            )
+            .first()
+        )
+
+        total_stake = rows.total_stake or 0.0
+        days_with_bets = rows.days_with_bets or 0
+
+        return {
+            "avg_daily_wager": round(total_stake / lookback_days, 2) if lookback_days > 0 else 0.0,
+            "has_history": days_with_bets >= 1,
+            "days_with_bets": days_with_bets,
+        }
 
     def copy_balances(self, from_profile_id: int, to_profile_id: int) -> int:
         """Copy all balances from one profile to another. Returns count copied."""
@@ -180,6 +243,66 @@ class ProfileRepo:
             "days_remaining": days_remaining,
         }
 
+    def get_bonus_statuses_batch(self, profile_id: int, provider_ids: list[str]) -> dict[str, dict]:
+        """Batch-fetch bonus statuses for multiple providers in one query."""
+        records = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile_id,
+            ProfileProviderBonus.provider_id.in_(provider_ids),
+        ).all()
+
+        record_map = {r.provider_id: r for r in records}
+        default = {
+            "status": "available", "bonus_type": None, "bonus_amount": 0.0,
+            "wagering_requirement": 0.0, "wagered_amount": 0.0, "min_odds": 0.0,
+            "progress_pct": 100.0, "is_cleared": True, "claimed_at": None,
+            "expires_at": None, "days_remaining": None,
+        }
+        now = datetime.now(timezone.utc)
+        active_statuses = ("in_progress", "trigger_needed")
+        result = {}
+
+        for pid in provider_ids:
+            record = record_map.get(pid)
+            if not record:
+                result[pid] = dict(default)
+                continue
+
+            _expires = record.expires_at
+            if _expires and _expires.tzinfo is None:
+                _expires = _expires.replace(tzinfo=timezone.utc)
+            if record.bonus_status in active_statuses and _expires and now > _expires:
+                record.bonus_status = "completed"
+                record.updated_at = now
+
+            is_cleared = (
+                record.bonus_status in ("completed", "available", "claimed") or
+                (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
+            )
+            progress_pct = 0.0
+            if record.wagering_requirement > 0:
+                progress_pct = min(100.0, (record.wagered_amount or 0.0) / record.wagering_requirement * 100)
+            days_remaining = None
+            if record.expires_at and record.bonus_status in active_statuses:
+                exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
+                days_remaining = max(0, (exp - now).days)
+
+            result[pid] = {
+                "status": record.bonus_status,
+                "bonus_type": record.bonus_type,
+                "bonus_amount": record.bonus_amount,
+                "wagering_requirement": record.wagering_requirement,
+                "wagered_amount": record.wagered_amount,
+                "min_odds": record.min_odds if record.min_odds else BONUS_MIN_ODDS,
+                "progress_pct": progress_pct,
+                "is_cleared": is_cleared,
+                "trigger_mode": record.trigger_mode or "cumulative",
+                "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+                "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+                "days_remaining": days_remaining,
+            }
+
+        return result
+
     def record_wagering(self, profile_id: int, provider_id: str, stake: float, odds: float) -> dict:
         """Record a bet toward wagering requirement."""
         record = self.db.query(ProfileProviderBonus).filter(
@@ -211,9 +334,10 @@ class ProfileRepo:
                 if record.bonus_type == "bonusdeposit":
                     # Two-phase bonusdeposit: trigger met → unlock bonus money
                     # Add bonus to balance and start main wagering phase
-                    deposit = record.deposit_amount or record.wagering_requirement
                     self.adjust_balance(profile_id, provider_id, record.bonus_amount)
-                    wager_req = (deposit + record.bonus_amount) * record.wagering_multiplier
+                    # wagering_multiplier is defined as "× bonus amount"
+                    # e.g. 12 means bonus×12 (equivalent to (dep+bonus)×6 when dep=bonus)
+                    wager_req = record.bonus_amount * record.wagering_multiplier
                     if wager_req <= 0:
                         # Wager-first model: no wager phase, bonus is cash
                         record.bonus_status = "completed"

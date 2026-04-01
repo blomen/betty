@@ -24,7 +24,7 @@ from ..market_data.orderflow import build_candle_flow, compute_signals
 from ..market_data.scanner import MarketScanner
 from ..market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
 from ..market_data.setups.detector import DetectorContext, run_all_detectors
-from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m
+from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m, compute_session_tpos
 from ..repositories.market_repo import MarketRepo
 
 logger = logging.getLogger(__name__)
@@ -45,15 +45,52 @@ def _get_provider() -> MarketDataProvider:
     if provider_type == "databento":
         from ..market_data.databento_provider import DabentoProvider
         from ..market_data.cache import CachedMarketDataProvider
-        from ..paths import get_app_data_dir
+        from ..paths import get_data_dir
 
         inner = DabentoProvider(config)
-        cache_dir = get_app_data_dir() / "data" / config.get("cache_dir", "market_cache")
+        cache_dir = get_data_dir() / config.get("cache_dir", "market_cache")
         _provider = CachedMarketDataProvider(inner, cache_dir)
     else:
         raise ValueError(f"Unknown market data provider: {provider_type}")
 
     return _provider
+
+
+def _serialize_swing_structure(swing) -> dict:
+    """Serialize SwingStructure to JSON-safe dict."""
+    def _ev(ev):
+        if ev is None:
+            return None
+        return {
+            "price": ev.price, "timestamp": ev.timestamp,
+            "event_type": ev.event_type, "swing_type": ev.swing_type,
+            "swing_price": ev.swing_price,
+        }
+    def _tf(tf_swings):
+        return {
+            "timeframe": tf_swings.timeframe,
+            "structure": tf_swings.structure,
+            "swing_highs": [
+                {"price": s.price, "timestamp": s.timestamp,
+                 "type": s.type, "timeframe": s.timeframe}
+                for s in tf_swings.swing_highs
+            ],
+            "swing_lows": [
+                {"price": s.price, "timestamp": s.timestamp,
+                 "type": s.type, "timeframe": s.timeframe}
+                for s in tf_swings.swing_lows
+            ],
+            "last_bos": _ev(tf_swings.last_bos),
+            "last_choch": _ev(tf_swings.last_choch),
+            "bos_active": tf_swings.bos_active,
+            "choch_active": tf_swings.choch_active,
+        }
+    return {
+        "daily": _tf(swing.daily),
+        "weekly": _tf(swing.weekly),
+        "monthly": _tf(swing.monthly),
+        "trend_alignment": swing.trend_alignment,
+    }
 
 
 class MarketService:
@@ -183,6 +220,87 @@ class MarketService:
 
         return db_bars
 
+    def _load_swing_structure(self):
+        """Load swing structure from RL session summaries + live DB candles.
+
+        Session summaries provide historical data (back to 2011).
+        For dates after the last summary, we aggregate 1m candles from market_candles
+        into daily bars so swing detection stays current.
+        """
+        import json
+        from pathlib import Path
+        from collections import defaultdict
+        from ..market_data.levels import compute_multi_tf_swings
+
+        from zoneinfo import ZoneInfo
+        CET = ZoneInfo("Europe/Stockholm")
+
+        synth_bars = []
+
+        # Phase 1: Load session summaries (historical)
+        summaries_path = Path(__file__).resolve().parents[2] / "data" / "rl" / "session_summaries.json"
+        last_summary_date = None
+        if summaries_path.exists():
+            try:
+                with open(summaries_path) as f:
+                    raw = json.load(f)
+                for date_str in sorted(raw.keys()):
+                    s = raw[date_str]
+                    rth_high = s.get("rth_high")
+                    rth_low = s.get("rth_low")
+                    if rth_high is None or rth_low is None:
+                        continue
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+                    synth_bars.append({
+                        "ts": ts, "open": s.get("poc", rth_high),
+                        "high": rth_high, "low": rth_low,
+                        "close": s.get("poc", rth_low),
+                    })
+                    last_summary_date = date_str
+            except Exception as e:
+                logger.warning("Failed to load session summaries: %s", e)
+
+        # Phase 2: Supplement with live DB candles for dates after last summary
+        try:
+            gap_start = datetime.strptime(last_summary_date, "%Y-%m-%d") + timedelta(days=1) if last_summary_date else datetime.now(timezone.utc) - timedelta(days=30)
+            gap_start_utc = gap_start.replace(hour=0, tzinfo=CET).astimezone(timezone.utc)
+            now = datetime.now(timezone.utc)
+
+            rows = self.repo.get_candles("NQ", "1m", gap_start_utc, now)
+            if rows:
+                # Group by CET date and aggregate into daily bars
+                daily: dict[str, list] = defaultdict(list)
+                for r in rows:
+                    ts = r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)
+                    cet_date = ts.astimezone(CET).date().isoformat()
+                    daily[cet_date].append(r)
+
+                for d_str in sorted(daily.keys()):
+                    candles = daily[d_str]
+                    if len(candles) < 60:  # Skip partial days (< 1 hour of data)
+                        continue
+                    d_high = max(c.h for c in candles)
+                    d_low = min(c.l for c in candles)
+                    d_open = candles[0].o
+                    d_close = candles[-1].c
+                    dt = datetime.strptime(d_str, "%Y-%m-%d")
+                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+                    synth_bars.append({
+                        "ts": ts, "open": d_open,
+                        "high": d_high, "low": d_low,
+                        "close": d_close,
+                    })
+                logger.info("Swing structure: supplemented with %d live daily bars after %s",
+                           len(daily), last_summary_date or "N/A")
+        except Exception as e:
+            logger.warning("Failed to supplement swing data from DB: %s", e)
+
+        if len(synth_bars) < 5:
+            return None
+
+        return compute_multi_tf_swings(synth_bars)
+
     async def compute_session(
         self, target_date: str | None = None, symbol: str | None = None
     ) -> dict:
@@ -302,6 +420,28 @@ class MarketService:
 
         # TPO profile from 30-min bars
         tpo = build_full_tpo_profile(bars_30m)
+
+        # Per-session TPO profiles — need timestamped 30m bars
+        # bars (BarData objects) have .timestamp; aggregate them with timestamps
+        bars_30m_ts = []
+        chunk = []
+        for b in bars:
+            chunk.append(b)
+            if len(chunk) == 30:
+                bars_30m_ts.append({
+                    "ts": chunk[0].timestamp,
+                    "high": max(c.high for c in chunk),
+                    "low": min(c.low for c in chunk),
+                    "open": chunk[0].open,
+                    "close": chunk[-1].close,
+                    "volume": sum(c.volume for c in chunk),
+                })
+                chunk = []
+        session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=tick_size)
+
+        from dataclasses import asdict as _asdict
+        session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
+        session_data["session_tpos_obj"] = session_tpo_set  # SessionTPOSet object for RL features
 
         try:
             self.store_tpo_session(tpo, symbol, target_date)
@@ -449,6 +589,26 @@ class MarketService:
             macro["cot_net_position"] = cot_data.get("net_non_commercial")
             macro["cot_change_1w"] = cot_data.get("change_1w")
 
+        # News proximity for RL macro features
+        try:
+            from ..data.economic_calendar import get_upcoming_events
+            upcoming = get_upcoming_events(self.db, minutes_ahead=120)
+            if upcoming:
+                nearest = upcoming[0]
+                evt_dt = nearest.event_datetime
+                if evt_dt.tzinfo is None:
+                    from datetime import timezone as _tz
+                    evt_dt = evt_dt.replace(tzinfo=_tz.utc)
+                minutes_away = max(0, (evt_dt - datetime.now(timezone.utc)).total_seconds() / 60.0)
+                macro["news_proximity"] = max(0.0, 1.0 - minutes_away / 120.0)
+                macro["news_importance"] = nearest.importance or 0
+            else:
+                macro["news_proximity"] = 0.0
+                macro["news_importance"] = 0.0
+        except Exception:
+            macro["news_proximity"] = 0.0
+            macro["news_importance"] = 0.0
+
         vwap_dev_sd = None
         vwap = sj.get("vwap")
         last_price = sj.get("last_price")
@@ -460,18 +620,45 @@ class MarketService:
 
         # Bar-dependent analytics — wrapped in timeout so session always returns
         structure = {}
+        # Only use DB VP values if session_row is from today; stale previous-day values mislead
+        is_today = session_row.date == today
         profiles = {
-            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val},
+            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val} if is_today else {"poc": None, "vah": None, "val": None},
             "developing_poc": None,
             "developing_poc_direction": None,
             "naked_pocs": [],
         }
 
+        swing_structure_data = None
         try:
-            structure, profiles = await asyncio.wait_for(
+            structure, profiles, swing_struct = await asyncio.wait_for(
                 self._enrich_with_bars(symbol, today, session_row, sj),
                 timeout=30.0,
             )
+            if swing_struct is not None:
+                swing_structure_data = _serialize_swing_structure(swing_struct)
+                # Add confirmed swing highs/lows to levels_list for LevelMonitor
+                for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
+                    if tf_swings.swing_highs:
+                        sh_price = tf_swings.swing_highs[0].price
+                        levels_list.append({
+                            "type": f"{tf_swings.timeframe}_swing_high",
+                            "price_low": sh_price,
+                            "price_high": sh_price,
+                            "direction": "resistance",
+                            "session": tf_swings.timeframe,
+                            "is_filled": False,
+                        })
+                    if tf_swings.swing_lows:
+                        sl_price = tf_swings.swing_lows[0].price
+                        levels_list.append({
+                            "type": f"{tf_swings.timeframe}_swing_low",
+                            "price_low": sl_price,
+                            "price_high": sl_price,
+                            "direction": "support",
+                            "session": tf_swings.timeframe,
+                            "is_filled": False,
+                        })
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning("Bar enrichment failed/timed out: %s", e)
 
@@ -511,6 +698,7 @@ class MarketService:
             "structure": structure,
             "profiles": profiles,
             "levels": levels_list,
+            "swing_structure": swing_structure_data,
             "price_position": {
                 "last_price": sj.get("last_price"),
                 "vs_va": sj.get("price_vs_va"),
@@ -522,7 +710,7 @@ class MarketService:
             "ml_day_type_confidence": None,
         }
 
-    async def _enrich_with_bars(self, symbol: str, today: str, session_row, sj: dict) -> tuple[dict, dict]:
+    async def _enrich_with_bars(self, symbol: str, today: str, session_row, sj: dict) -> tuple[dict, dict, object]:
         """Fetch bars and compute analytics. Returns (structure, profiles). May be slow/fail."""
         from ..market_data.levels import detect_swing_points, detect_naked_pocs, compute_developing_poc
 
@@ -531,17 +719,29 @@ class MarketService:
         bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
         structure = detect_swing_points(bar_dicts, lookback=5)
 
-        # Compute VP live from today's bars (not stale DB session values)
+        # Compute VP live — prefer tick data for accuracy, fall back to bars
         bar_dicts_with_vol = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0), "volume": b.get("volume", 1)} for b in bars] if bars else []
-        if bar_dicts_with_vol:
+        tick_vp = await self._compute_tick_vp(symbol)
+        if tick_vp is not None:
+            vp = tick_vp
+        elif bar_dicts_with_vol:
             vp = compute_volume_profile_from_bars(bar_dicts_with_vol)
+        else:
+            vp = None
+
+        if vp is not None:
             profiles = {
                 "session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}
             }
-        else:
-            # Fallback to DB if no bars available
+        elif session_row.date == today:
+            # Only use DB fallback if session_row is from today
             profiles = {
                 "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
+            }
+        else:
+            # Previous-day session_row — VP values are stale, omit them
+            profiles = {
+                "session": {"poc": None, "vah": None, "val": None}
             }
 
         # Weekly and monthly VP
@@ -570,7 +770,14 @@ class MarketService:
         else:
             profiles["naked_pocs"] = []
 
-        return structure, profiles
+        # Multi-timeframe swing detection — use session summaries for full history
+        try:
+            swing_structure = self._load_swing_structure()
+        except Exception as e:
+            logger.warning("Swing detection failed: %s", e)
+            swing_structure = None
+
+        return structure, profiles, swing_structure
 
     async def run_scan(self, threshold: float | None = None) -> list[dict]:
         """Run scanner on current session → persist signals → return."""
@@ -1099,14 +1306,16 @@ class MarketService:
 
     # VP curve cache: {(symbol, timeframe): (result, expiry_time)}
     _vp_cache: dict[tuple, tuple] = {}
+    # Candle cache: {(symbol, interval, date, days): (result, expiry_time)}
+    _candle_cache: dict[tuple, tuple] = {}
+    # Session levels cache: {(symbol, days): (result, expiry_time)}
+    _session_levels_cache: dict[tuple, tuple] = {}
 
     async def get_volume_profile_curve(self, symbol: str = "NQ", timeframe: str = "session") -> dict:
         """Return VP curve (price→volume) for charting. Cached for 60s.
 
-        Timeframes:
-        - session: today from 00:00 CET to now
-        - weekly: current week (Mon 00:00 CET) to now
-        - monthly: current month (1st 00:00 CET) to now
+        Session VP uses tick data from market_trades for accuracy (exact trade prices).
+        Weekly/monthly use 1m bar approximation (good enough at scale).
         """
         import time as _time
 
@@ -1115,15 +1324,23 @@ class MarketService:
         if cached and _time.time() < cached[1]:
             return cached[0]
 
+        vp = None
+
         if timeframe == "session":
-            bars = await self._get_session_bars(symbol)
-        else:
-            bars = await self._get_period_bars(symbol, timeframe)
+            # Try tick-based VP first (accurate — no bar-spread approximation)
+            vp = await self._compute_tick_vp(symbol)
 
-        if not bars:
-            return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
+        if vp is None:
+            # Fall back to bar-based VP
+            if timeframe == "session":
+                bars = await self._get_session_bars(symbol)
+            else:
+                bars = await self._get_period_bars(symbol, timeframe)
 
-        vp = compute_volume_profile_from_bars(bars)
+            if not bars:
+                return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
+
+            vp = compute_volume_profile_from_bars(bars)
 
         result = {
             "timeframe": timeframe,
@@ -1135,8 +1352,57 @@ class MarketService:
         MarketService._vp_cache[cache_key] = (result, _time.time() + 300)
         return result
 
+    async def _compute_tick_vp(self, symbol: str) -> VolumeProfile | None:
+        """Compute VP from actual tick data in market_trades table.
+
+        Returns VolumeProfile if sufficient ticks exist, else None (caller falls back to bars).
+        """
+        from zoneinfo import ZoneInfo
+        _CET = ZoneInfo("Europe/Stockholm")
+
+        now = datetime.now(timezone.utc)
+        today_cet = now.astimezone(_CET).date()
+        d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
+
+        try:
+            trades = self.repo.get_trades(symbol, d_start, now)
+            if len(trades) < 100:
+                logger.info("Tick VP: only %d ticks, falling back to bars", len(trades))
+                return None
+
+            # Check tick time span — if ticks only cover a small fraction of
+            # elapsed session time, the data is too sparse for a meaningful VP.
+            elapsed = (now - d_start).total_seconds()
+            first_ts = trades[0].ts if hasattr(trades[0], 'ts') else None
+            last_ts = trades[-1].ts if hasattr(trades[-1], 'ts') else None
+            if first_ts and last_ts and elapsed > 7200:  # session > 2 hours old
+                if hasattr(first_ts, 'timestamp'):
+                    tick_span = (last_ts.timestamp() - first_ts.timestamp())
+                else:
+                    tick_span = elapsed  # can't check, trust data
+                if tick_span < elapsed * 0.15:
+                    logger.info("Tick VP: ticks span %.0fs of %.0fs session (%.0f%%), falling back to bars",
+                                tick_span, elapsed, tick_span / elapsed * 100)
+                    return None
+
+            # Build trade dicts for compute_volume_profile (exact prices, no spreading)
+            trade_dicts = [{"price": t.price, "size": t.size} for t in trades]
+            vp = compute_volume_profile(trade_dicts)
+            logger.info("Tick VP: computed from %d ticks (POC=%.2f, VAH=%.2f, VAL=%.2f)",
+                        len(trades), vp.poc, vp.vah, vp.val)
+            return vp
+        except Exception as e:
+            logger.warning("Tick VP failed, will fall back to bars: %s", e)
+            return None
+
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
-        """Get 1m bars for weekly or monthly VP from DB."""
+        """Get 1m bars for weekly or monthly VP from DB, volume-normalized per day.
+
+        Composite (multi-day) VPs use TPO-style normalization: each bar contributes
+        1 unit of volume. This prevents days with more captured volume from
+        dominating the profile — the result is a time-at-price profile, which is
+        the correct approach when volume data quality varies across days.
+        """
         from zoneinfo import ZoneInfo
         _CET = ZoneInfo("Europe/Stockholm")
 
@@ -1153,7 +1419,8 @@ class MarketService:
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
         logger.info("VP %s bars: %d from DB (%s to now)", timeframe, len(rows), start_date)
-        return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
+        bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": 1} for r in rows]
+        return bars
 
     async def get_developing_vwap(self, symbol: str = "NQ", interval: str = "1m") -> dict:
         """Return developing VWAP time series from 1m candle data.
@@ -1169,9 +1436,9 @@ class MarketService:
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
-        # Start from 00:00 CET today
+        # Start from 00:00 CET today — convert to UTC for naive-UTC DB comparison
         today_cet = now.astimezone(_CET).date()
-        start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET)
+        start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start, now))
         logger.info("VWAP: got %d 1m candles from DB for %s (from 00:00 CET)", len(rows), symbol)
@@ -1220,10 +1487,16 @@ class MarketService:
 
         Returns per-day levels with CET epoch boundaries so the frontend can draw
         time-scoped horizontal lines. Computes on-the-fly from market_candles —
-        same logic used by RL backtesting.
+        same logic used by RL backtesting. Cached for 60s.
         """
+        import time as _time
         from zoneinfo import ZoneInfo
         from collections import defaultdict
+
+        cache_key = (symbol, days)
+        cached = MarketService._session_levels_cache.get(cache_key)
+        if cached and _time.time() < cached[1]:
+            return cached[0]
 
         _CET = ZoneInfo("Europe/Stockholm")
 
@@ -1231,7 +1504,7 @@ class MarketService:
         today_cet = now.astimezone(_CET).date()
 
         # Fetch enough 1m candles to cover `days` trading days + 1 extra for PDH/PDL
-        pad_days = days + (days // 5) * 2 + 3  # pad for weekends
+        pad_days = days + (days // 5) * 2 + 3
         start_dt = datetime(
             today_cet.year, today_cet.month, today_cet.day,
             tzinfo=_CET,
@@ -1261,6 +1534,16 @@ class MarketService:
             return int(datetime(d.year, d.month, d.day, h, m, tzinfo=_CET).timestamp())
 
         all_dates_sorted = sorted(bars_by_date.keys())  # ascending
+
+        swing = self._load_swing_structure()
+        swing_data = {
+            "daily_swing_high": swing.daily.swing_highs[0].price if swing and swing.daily.swing_highs else None,
+            "daily_swing_low": swing.daily.swing_lows[0].price if swing and swing.daily.swing_lows else None,
+            "weekly_swing_high": swing.weekly.swing_highs[0].price if swing and swing.weekly.swing_highs else None,
+            "weekly_swing_low": swing.weekly.swing_lows[0].price if swing and swing.weekly.swing_lows else None,
+            "monthly_swing_high": swing.monthly.swing_highs[0].price if swing and swing.monthly.swing_highs else None,
+            "monthly_swing_low": swing.monthly.swing_lows[0].price if swing and swing.monthly.swing_lows else None,
+        }
 
         result_days = []
         for date_str in sorted_dates:
@@ -1304,17 +1587,28 @@ class MarketService:
                 "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
                 "day_start": _cet_epoch(d, 0, 0),
                 "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
+                **swing_data,
             })
 
-        return {"days": result_days, "symbol": symbol}
+        result = {"days": result_days, "symbol": symbol}
+        MarketService._session_levels_cache[cache_key] = (result, _time.time() + 60)
+        return result
 
     async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5) -> dict:
         """Return OHLCV candle array for charting from market_candles DB.
 
         Stored intervals: 1m, 5m.  15m is resampled from 1m on the fly.
         Detects gaps and triggers async backfill from Databento historical.
+        Cached for 30s (keyed on symbol/interval/date/days).
         """
+        import time as _time
+
         end_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cache_key = (symbol, interval, end_date, days)
+        cached = MarketService._candle_cache.get(cache_key)
+        if cached and _time.time() < cached[1]:
+            return cached[0]
+
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
         start_dt = end_dt - timedelta(days=days + (days // 5) * 2 + 2)  # pad for weekends
 
@@ -1334,50 +1628,81 @@ class MarketService:
         # Filter to Globex hours (skip daily 17:00-18:00 ET halt + weekends)
         candles = [c for c in candles if self._in_globex(c["t"])]
 
-        # Filter outlier highs/lows — Databento bars include extreme ticks
+        # Clamp outlier wicks from settlement auctions / erroneous ticks
         candles = self._filter_outlier_candles(candles)
 
-        # Detect gaps and trigger async backfill (non-blocking, improves next request)
+        # Detect gaps and trigger async backfill in a background thread
+        # (avoids event loop starvation from Databento API calls blocking HTTP handlers)
         base_interval = "1m" if interval == "15m" else interval
         gaps = self._detect_gaps(candles, base_interval)
         if gaps:
-            asyncio.create_task(self._backfill_gaps(symbol, base_interval, gaps))
+            import threading
+            def _run_backfill(sym, iv, gap_list, ck):
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(self._backfill_gaps(sym, iv, gap_list))
+                    # Invalidate cache so next request picks up filled data
+                    MarketService._candle_cache.pop(ck, None)
+                except Exception as e:
+                    logger.warning("Background gap backfill failed: %s", e)
+                finally:
+                    loop.close()
+            threading.Thread(
+                target=_run_backfill, args=(symbol, base_interval, gaps, cache_key),
+                daemon=True, name="candle-backfill",
+            ).start()
 
-        return {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
+        result = {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
+        # If gaps detected, use short cache (3s) so backfill results appear quickly
+        ttl = 3 if gaps else 30
+        MarketService._candle_cache[cache_key] = (result, _time.time() + ttl)
+        return result
 
     @staticmethod
-    def _filter_outlier_candles(candles: list[dict], radius: int = 4, max_dev: float = 12.0) -> list[dict]:
-        """Clamp OHLC to neighbor median range ± max_dev.
+    def _filter_outlier_candles(candles: list[dict], radius: int = 20, max_wick: float = 25.0) -> list[dict]:
+        """Clamp wicks using a close-price corridor as truth anchor.
 
-        Databento OHLCV includes every tick, including outlier trades at extreme
-        prices (settlement auctions, erroneous ticks, wide-spread fleeting fills).
-        This clamps each bar's OHLC so no value can deviate more than max_dev
-        points from the Q1-Q3 range of neighboring bars' close prices.
+        During NQ contract rolls, the continuous symbol (NQ.v.0) includes trades
+        from both the expiring and new front-month contracts, creating systematic
+        ~75-80pt wicks on virtually every candle.  Median-wick-based filters fail
+        because the majority of candles are corrupted.
+
+        Instead, build a local price corridor from neighboring *close* prices
+        (which always come from the actively-traded contract) and clamp H/L so
+        wicks cannot extend beyond close_range + max_wick.
+
+        max_wick=25 allows normal volatile wicks (NQ 1m can easily have 15-20pt
+        wicks during CPI/FOMC) while removing the 75-80pt roll artifacts.
         """
         if len(candles) < 3:
             return candles
         n = len(candles)
+        closes = [c["c"] for c in candles]
+
         result = []
         for i, c in enumerate(candles):
-            closes = sorted(
-                candles[j]["c"]
-                for j in range(max(0, i - radius), min(n, i + radius + 1))
-                if j != i
-            )
-            if len(closes) < 2:
+            # Build close-price corridor from neighbors
+            lo = max(0, i - radius)
+            hi = min(n, i + radius + 1)
+            neighbor_closes = closes[lo:hi]
+
+            corridor_high = max(neighbor_closes)
+            corridor_low = min(neighbor_closes)
+
+            # Ceiling / floor: corridor extremes + max_wick buffer
+            ceiling = corridor_high + max_wick
+            floor = corridor_low - max_wick
+
+            clamped_h = min(c["h"], ceiling)
+            clamped_l = max(c["l"], floor)
+            # Ensure h >= body high, l <= body low (never invert the candle)
+            clamped_h = max(clamped_h, max(c["o"], c["c"]))
+            clamped_l = min(clamped_l, min(c["o"], c["c"]))
+
+            if clamped_h != c["h"] or clamped_l != c["l"]:
+                result.append({**c, "h": clamped_h, "l": clamped_l})
+            else:
                 result.append(c)
-                continue
-            q1 = closes[len(closes) // 4]
-            q3 = closes[(len(closes) * 3) // 4]
-            floor = q1 - max_dev
-            ceiling = q3 + max_dev
-            result.append({
-                **c,
-                "o": max(floor, min(ceiling, c["o"])),
-                "h": max(floor, min(ceiling, c["h"])),
-                "l": max(floor, min(ceiling, c["l"])),
-                "c": max(floor, min(ceiling, c["c"])),
-            })
         return result
 
     @staticmethod
@@ -1403,33 +1728,47 @@ class MarketService:
         return gaps
 
     async def _backfill_gaps(self, symbol: str, interval: str, gaps: list[tuple[int, int]]):
-        """Async backfill detected gaps from Databento historical."""
+        """Async backfill detected gaps from Databento historical.
+
+        Always backfills both 1m and 5m to keep them in sync.
+        """
         try:
             from ..market_data.databento_provider import DabentoProvider
             config = get_market_data_config()
             inner = DabentoProvider(config)
             db_symbol = config.get("symbol", "NQ.v.0")
 
+            # Backfill both 1m and 5m for each gap to keep intervals in sync
+            intervals = {"1m", "5m"}
+            intervals.add(interval)
+
             from ..db.models import get_session as _get_db_session
             for gap_start, gap_end in gaps:
                 start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
                 end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
-                logger.info("Candle gap backfill %s: %s → %s", interval, start_dt, end_dt)
 
-                bars = await asyncio.wait_for(
-                    inner.get_bars(db_symbol, interval, start_dt, end_dt),
-                    timeout=60.0,
-                )
-                if bars:
-                    db = _get_db_session()
+                for iv in intervals:
+                    logger.info("Candle gap backfill %s: %s → %s", iv, start_dt, end_dt)
                     try:
-                        repo = MarketRepo(db)
-                        count = repo.bulk_insert_candles(symbol, interval, bars)
-                        logger.info("Candle gap backfill %s: inserted %d bars", interval, count)
-                    finally:
-                        db.close()
+                        bars = await asyncio.wait_for(
+                            inner.get_bars(db_symbol, iv, start_dt, end_dt),
+                            timeout=60.0,
+                        )
+                        if bars:
+                            db = _get_db_session()
+                            try:
+                                repo = MarketRepo(db)
+                                count = repo.bulk_insert_candles(symbol, iv, bars)
+                                logger.info("Candle gap backfill %s: inserted %d bars", iv, count)
+                            finally:
+                                db.close()
+                    except Exception as e:
+                        logger.warning("Candle gap backfill %s failed: %s", iv, e)
         except Exception as e:
             logger.warning("Candle gap backfill failed (non-fatal): %s", e)
+
+    # Pre-create timezone for Globex filter (avoid per-call import + construction)
+    _ET = None
 
     @staticmethod
     def _in_globex(epoch: int) -> bool:
@@ -1437,8 +1776,10 @@ class MarketService:
 
         Globex: Sun 18:00 ET → Fri 17:00 ET, with daily 17:00-18:00 ET halt.
         """
-        from zoneinfo import ZoneInfo
-        dt = datetime.fromtimestamp(epoch, tz=ZoneInfo("US/Eastern"))
+        if MarketService._ET is None:
+            from zoneinfo import ZoneInfo
+            MarketService._ET = ZoneInfo("US/Eastern")
+        dt = datetime.fromtimestamp(epoch, tz=MarketService._ET)
         wd = dt.weekday()  # Mon=0 … Sun=6
         hour = dt.hour
         # Saturday: always closed
@@ -1607,8 +1948,55 @@ class MarketService:
                 except Exception:
                     logger.warning("Failed to persist TPO session", exc_info=True)
 
+        # Build timestamped 30m bars for per-session split
+        chunk = []
+        bars_30m_ts = []
+        for r in rows:
+            chunk.append(r)
+            if len(chunk) == 30:
+                bars_30m_ts.append({
+                    "ts": chunk[0].ts,
+                    "high": max(c.h for c in chunk),
+                    "low": min(c.l for c in chunk),
+                    "open": chunk[0].o,
+                    "close": chunk[-1].c,
+                    "volume": sum(c.v for c in chunk),
+                })
+                chunk = []
+        session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
+        from dataclasses import asdict as _asdict
+        result["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
+
         MarketService._tpo_cache[cache_key] = (now, result)
         return result
+
+    def get_session_tpos(self, symbol: str = "NQ") -> dict:
+        """Per-session TPO profiles — piggybacks on get_tpo_live() cache to avoid duplicate DB queries."""
+        live = self.get_tpo_live(symbol=symbol)
+        session_tpos = live.get("session_tpos")
+        if not session_tpos:
+            return {"date": live.get("date", ""), "sessions": {"tokyo": None, "london": None, "ny": None}, "poc_migration_tokyo_london": 0, "poc_migration_london_ny": 0}
+
+        def _fix_keys(d):
+            """Ensure float dict keys are strings for JSON serialization."""
+            if d is None:
+                return None
+            if "letters" in d:
+                d["letters"] = {str(k): v for k, v in d["letters"].items()}
+            if "tpo_counts" in d:
+                d["tpo_counts"] = {str(k): v for k, v in d["tpo_counts"].items()}
+            return d
+
+        return {
+            "date": live.get("date", ""),
+            "sessions": {
+                "tokyo": _fix_keys(session_tpos.get("tokyo")),
+                "london": _fix_keys(session_tpos.get("london")),
+                "ny": _fix_keys(session_tpos.get("ny")),
+            },
+            "poc_migration_tokyo_london": session_tpos.get("poc_migration_tokyo_london", 0),
+            "poc_migration_london_ny": session_tpos.get("poc_migration_london_ny", 0),
+        }
 
     def backfill_tpo_sessions(self, symbol: str = "NQ", days: int = 30) -> int:
         """Backfill historical TPO sessions from existing 1m bar data."""
@@ -1654,11 +2042,41 @@ class MarketService:
             if len(bars_30m) < 10:
                 continue
 
+            # Timestamped 30m bars for per-session split
+            chunk = []
+            bars_30m_ts = []
+            for r in rows:
+                chunk.append(r)
+                if len(chunk) == 30:
+                    bars_30m_ts.append({
+                        "ts": chunk[0].ts,
+                        "high": max(c.h for c in chunk),
+                        "low": min(c.l for c in chunk),
+                        "open": chunk[0].o,
+                        "close": chunk[-1].c,
+                        "volume": sum(c.v for c in chunk),
+                    })
+                    chunk = []
+            session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
+
             profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
             try:
                 self.store_tpo_session(profile, symbol, date_str)
                 stored += 1
                 logger.info("TPO backfill: %s %s (%d bars)", symbol, date_str, len(bars_30m))
+
+                # Append per-session TPO to stored session_json
+                from ..db.models import MarketTPOSession
+                row = self.db.query(MarketTPOSession).filter_by(
+                    symbol=symbol, date=date_str
+                ).first()
+                if row and session_tpo_set:
+                    import json as _json
+                    from dataclasses import asdict as _asdict
+                    sj = _json.loads(row.session_json) if isinstance(row.session_json, str) else row.session_json
+                    sj["session_tpos"] = _asdict(session_tpo_set)
+                    row.session_json = _json.dumps(sj, default=str)
+                    self.db.commit()
             except Exception:
                 logger.warning("TPO backfill failed for %s", date_str, exc_info=True)
 
@@ -1757,20 +2175,24 @@ class MarketService:
         try:
             from sqlalchemy import text
             rows = self.db.execute(
-                text("SELECT * FROM cot_reports ORDER BY report_date DESC LIMIT 2")
+                text("SELECT * FROM cot_data ORDER BY report_date DESC LIMIT 2")
             ).fetchall()
             if not rows:
+                logger.debug("COT: no data in cot_data table")
                 return None
             latest = dict(rows[0]._mapping)
             change_1w = None
             if len(rows) > 1:
                 prev = dict(rows[1]._mapping)
-                change_1w = (latest.get("net_non_commercial", 0) or 0) - (prev.get("net_non_commercial", 0) or 0)
-            return {
-                "net_non_commercial": latest.get("net_non_commercial"),
+                change_1w = (latest.get("net_position", 0) or 0) - (prev.get("net_position", 0) or 0)
+            result = {
+                "net_non_commercial": latest.get("net_position"),
                 "change_1w": change_1w,
             }
-        except Exception:
+            logger.debug("COT summary: %s", result)
+            return result
+        except Exception as e:
+            logger.warning("COT fetch failed: %s", e)
             return None
 
     def _compute_live_orderflow(self, symbol: str, session_data: dict, direction: str | None = None):

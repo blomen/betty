@@ -12,6 +12,7 @@ MATCHING PHILOSOPHY:
 
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Optional, List
 import logging
 
@@ -38,34 +39,27 @@ def get_team_match_score(team1: str, team2: str) -> float:
     """
     Get the matching score between two team names.
 
-    Optimized: Uses token_set_ratio as the primary algorithm since it handles
-    word reordering and subset matching (e.g., "Brighton" vs "Brighton Hove Albion").
-    This single algorithm covers most cases that previously required 4 algorithms.
-
-    For very different length names, falls back to partial_ratio for better accuracy.
+    Delegates to a cached inner function keyed on normalized names so that
+    repeated comparisons (common during multi-provider extraction) are free.
     """
     norm1 = normalize_team_name(team1)
     norm2 = normalize_team_name(team2)
+    return _match_score_cached(norm1, norm2)
 
-    # Exact match after normalization - fast path
+
+@lru_cache(maxsize=16384)
+def _match_score_cached(norm1: str, norm2: str) -> float:
+    """LRU-cached fuzzy score on already-normalized names."""
     if norm1 == norm2:
         return 100.0
-
-    # Empty strings shouldn't match
     if not norm1 or not norm2:
         return 0.0
 
-    # Primary algorithm: token_set_ratio handles most cases well
-    # - Word reordering: "FC Barcelona" vs "Barcelona FC" = 100
-    # - Subsets: "Real Madrid" vs "Real Madrid CF" = 100
-    # - Partial matches: "Brighton" vs "Brighton Albion" = high score
     score = fuzz.token_set_ratio(norm1, norm2)
 
-    # For very different length names, partial_ratio may give better results
-    # Only compute if token_set_ratio didn't give a great match
     if score < 85 and len(norm1) > 3 and len(norm2) > 3:
         len_ratio = min(len(norm1), len(norm2)) / max(len(norm1), len(norm2))
-        if len_ratio < 0.6:  # One name is much shorter
+        if len_ratio < 0.6:
             partial = fuzz.partial_ratio(norm1, norm2)
             if partial > score:
                 score = partial

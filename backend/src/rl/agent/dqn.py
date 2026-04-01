@@ -1,5 +1,4 @@
-"""DQN training agent with epsilon-greedy exploration, Polyak target updates,
-and prioritized experience replay."""
+"""Double Dueling DQN agent with prioritized replay, Polyak updates, gradient clipping."""
 from __future__ import annotations
 
 import copy
@@ -26,16 +25,18 @@ from src.rl.config import (
     TARGET_NET_UPDATE_FREQ,
 )
 
+GRAD_CLIP_NORM = 1.0
+
 
 class DQNAgent:
-    """Deep Q-Network agent with prioritized replay and Polyak soft target updates.
+    """Double Dueling DQN with prioritized replay and Polyak soft target updates.
 
     Key design choices:
-    - Huber loss (smooth_l1_loss) weighted by importance-sampling corrections.
-    - GAMMA=0.0: single-step episodes — target Q equals reward directly.
-    - Linear epsilon decay from EPSILON_START to EPSILON_END over EPSILON_DECAY_STEPS.
+    - Double DQN: online net selects action, target net evaluates — fixes overestimation.
+    - Dueling architecture: value + advantage streams (in DQNetwork).
+    - Huber loss weighted by importance-sampling corrections from PER.
+    - Gradient clipping (max_norm=1.0) for training stability.
     - Polyak soft update: θ_target ← τ·θ_online + (1-τ)·θ_target every step.
-    - Prioritized replay: transitions with higher TD error are sampled more often.
     """
 
     def __init__(
@@ -43,6 +44,7 @@ class DQNAgent:
         observation_dim: int,
         epsilon: float = EPSILON_START,
         buffer_capacity: int = REPLAY_BUFFER_SIZE,
+        **_kwargs,
     ) -> None:
         self.observation_dim = observation_dim
         self.epsilon = epsilon
@@ -69,62 +71,55 @@ class DQNAgent:
     # ------------------------------------------------------------------
 
     def select_action(self, observation: np.ndarray) -> int:
-        """Epsilon-greedy action selection.
-
-        With probability *epsilon* a uniformly random action is chosen;
-        otherwise the action with the highest Q-value is taken.
-
-        Args:
-            observation: 1-D float array of shape (observation_dim,).
-
-        Returns:
-            Integer action index in [0, NUM_ACTIONS).
-        """
+        """Epsilon-greedy action selection."""
         if random.random() < self.epsilon:
             return random.randrange(NUM_ACTIONS)
         q_values = self.q_network.predict(observation)  # (1, NUM_ACTIONS)
         return int(np.argmax(q_values[0]))
 
-    def store(self, observation: np.ndarray, action: int, reward: float) -> None:
-        """Convenience wrapper — add a transition to the replay buffer."""
-        self.buffer.add(observation, action, reward)
+    def store(self, observation: np.ndarray, action: int, reward: float, stop_target: float = 10.0) -> None:
+        """Add a transition to the replay buffer."""
+        self.buffer.add(observation, action, reward, stop_target)
 
     def train_step(self) -> float:
         """Sample a prioritized mini-batch and perform one gradient update.
 
-        Uses importance-sampling weights to correct for non-uniform sampling,
-        then updates priorities based on new TD errors.
-
-        Returns:
-            Scalar loss value (float).
-
-        Raises:
-            ValueError: propagated from ReplayBuffer.sample() if the buffer
-                        contains fewer than BATCH_SIZE transitions.
+        Uses Double DQN: online network selects the best action, target network
+        evaluates its Q-value. This reduces overestimation bias.
         """
         batch = self.buffer.sample(BATCH_SIZE)
 
         obs_t = torch.from_numpy(batch["observations"])          # (B, obs_dim)
         act_t = torch.from_numpy(batch["actions"]).unsqueeze(1)  # (B, 1)
         rew_t = torch.from_numpy(batch["rewards"])               # (B,)
+        stop_t = torch.from_numpy(batch["stop_targets"])         # (B,)
         weights_t = torch.from_numpy(batch["weights"])           # (B,)
         indices = batch["indices"]                                # (B,)
 
-        # Predicted Q-values for taken actions
+        # Predicted Q-values and stop distance
         self.q_network.train()
-        q_pred = self.q_network(obs_t).gather(1, act_t).squeeze(1)  # (B,)
+        q_all, stop_pred = self.q_network.forward_full(obs_t)
+        q_pred = q_all.gather(1, act_t).squeeze(1)  # (B,)
 
-        # Target Q-values: GAMMA=0.0 → target = reward directly
+        # Double DQN target
         with torch.no_grad():
-            target_q = rew_t + GAMMA * self.target_network(obs_t).max(dim=1).values
+            online_q_next = self.q_network(obs_t)
+            best_actions = online_q_next.argmax(dim=1, keepdim=True)
+            target_q_next = self.target_network(obs_t).gather(1, best_actions).squeeze(1)
+            target_q = rew_t + GAMMA * target_q_next
 
-        # Element-wise Huber loss weighted by IS weights
+        # Q-value loss (Huber, weighted by IS)
         td_errors = q_pred - target_q
-        elementwise_loss = F.smooth_l1_loss(q_pred, target_q, reduction="none")
-        loss = (weights_t * elementwise_loss).mean()
+        q_loss = (weights_t * F.smooth_l1_loss(q_pred, target_q, reduction="none")).mean()
+
+        # Stop distance loss (MSE, weighted 0.1x so it doesn't dominate)
+        stop_loss = 0.1 * F.mse_loss(stop_pred.squeeze(1), stop_t)
+
+        loss = q_loss + stop_loss
 
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), GRAD_CLIP_NORM)
         self.optimizer.step()
 
         # Update priorities with new TD errors
@@ -138,7 +133,7 @@ class DQNAgent:
             self.epsilon - self._epsilon_decay_rate,
         )
 
-        # Polyak soft target update: θ_target ← τ·θ_online + (1-τ)·θ_target
+        # Polyak soft target update
         if self.train_steps % TARGET_NET_UPDATE_FREQ == 0:
             with torch.no_grad():
                 for p_online, p_target in zip(
@@ -149,11 +144,7 @@ class DQNAgent:
         return loss.item()
 
     def save(self, path: Path) -> None:
-        """Persist agent state to *path*.
-
-        Saves q_network weights, target_network weights, optimizer state,
-        current epsilon and train_steps count.
-        """
+        """Persist agent state."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -168,11 +159,7 @@ class DQNAgent:
         )
 
     def load(self, path: Path) -> None:
-        """Restore agent state from *path*.
-
-        Uses weights_only=False so that the optimizer state (which contains
-        Python objects) is deserialised correctly.
-        """
+        """Restore agent state."""
         checkpoint = torch.load(Path(path), weights_only=False)
         self.q_network.load_state_dict(checkpoint["q_network"])
         self.target_network.load_state_dict(checkpoint["target_network"])

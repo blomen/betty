@@ -107,10 +107,10 @@ const ReverseRow = memo(function ReverseRow({
             {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
           </div>
           <div className="text-muted2 text-[11px]">
-            {opp.sport}{opp.league ? ` · ${opp.league}` : ''}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatDateTime(opp.starts_at)}
+            {opp.sport} · {formatDateTime(opp.starts_at)}
           </div>
         </td>
-        <td className="text-right text-text text-sm">{resolveOppOutcome(opp)}</td>
+        <td className="text-right text-text text-xs">{resolveOppOutcome(opp)}</td>
         <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -159,7 +159,7 @@ const ReverseRow = memo(function ReverseRow({
           {isStakeOver && <button onClick={() => { setLocalStakeOverride(null); setEditingStake(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynEdge > 0 ? 'text-success' : 'text-error'}`}>{dynEdge > 0 ? '+' : ''}{dynEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(opp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (
@@ -211,7 +211,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
 
   const { data: reverseData, isLoading } = useQuery({
     queryKey: ['opportunities', 'reverse'],
-    queryFn: () => api.getOpportunities('reverse_value', true, undefined, undefined, undefined, undefined, undefined, 3),
+    queryFn: () => api.getOpportunities('reverse_value', true),
     placeholderData: keepPreviousData,
   });
   const opportunities = reverseData?.opportunities ?? [];

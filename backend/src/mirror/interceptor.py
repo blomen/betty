@@ -39,10 +39,29 @@ class BetInterceptor:
     # WebSocket URLs to monitor for bet placement frames (Kambi etc.)
     _WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
 
-    # Bet history / settlement patterns
-    _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets", "widgetBetHistory")
+    # Bet history / settlement patterns (Altenar + Gecko + generic)
+    _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets",
+                             "widgetBetHistory", "coupon-history")
+    # Gecko V2 bet history — same URL as placement but GET method (exclude /count)
+    _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns
-    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
+    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance", "wallet/balance")
+    # GraphQL relay endpoints that may contain balance data (e.g. LeoVegas /api?relay)
+    _GRAPHQL_RELAY_PATTERNS = ("/api?relay",)
+
+    # Polymarket-specific URL patterns
+    _POLYMARKET_FINANCIAL_PATTERNS = (
+        "data-api.polymarket.com/value",    # Portfolio value (USDC)
+        "clob.polymarket.com/data/orders",  # Open orders
+        "widget.swapped.com/api/v1/order",  # Deposit via Swapped
+    )
+
+    # Notification / preference settings patterns
+    _NOTIFICATION_KEYWORDS = (
+        "preferences", "notifications", "communication", "consent",
+        "marketing", "subscriptions", "gdpr", "contact-settings",
+    )
+    _NOTIFICATION_METHODS = {"PUT", "POST", "PATCH"}
 
     # Known provider domains → provider ID
     _PROVIDER_DOMAINS = {
@@ -61,6 +80,7 @@ class BetInterceptor:
         "betmgm.se": "betmgm", "vbet.se": "vbet",
         "interwetten.se": "interwetten", "coolbet.com": "coolbet",
         "tipwin.se": "tipwin", "pinnacle.com": "pinnacle",
+        "polymarket.com": "polymarket",
     }
 
     def __init__(
@@ -70,12 +90,14 @@ class BetInterceptor:
         on_bet_history: Callable[[str, str], Awaitable[None]] | None = None,
         on_financial_data: Callable[[str, str], Awaitable[None]] | None = None,
         on_provider_detected: Callable[[str], Awaitable[None]] | None = None,
+        on_notification_settings: Callable[..., Awaitable[None]] | None = None,
     ):
         self.on_bet_response = on_bet_response
         self.on_event_data = on_event_data
         self.on_bet_history = on_bet_history
         self.on_financial_data = on_financial_data
         self.on_provider_detected = on_provider_detected
+        self.on_notification_settings = on_notification_settings
         self._detected_providers: set[str] = set()  # Track already-detected to avoid spam
         self.status = "stopped"
         self.context = None
@@ -83,8 +105,8 @@ class BetInterceptor:
         self._started_at = None
         self.recorder = NetworkRecorder("mirror")
 
-        from ..paths import get_app_data_dir
-        self.user_data_dir = get_app_data_dir() / "data" / "mirror_profiles" / "default"
+        from ..paths import get_data_dir
+        self.user_data_dir = get_data_dir() / "mirror_profiles" / "default"
 
     async def start(self):
         """Launch headed browser — opens to a blank page, user navigates freely."""
@@ -141,6 +163,13 @@ class BetInterceptor:
                     return True
         return False
 
+    def _is_notification_settings(self, url: str, method: str) -> bool:
+        """Check if this request is a notification/preference settings update."""
+        if method not in self._NOTIFICATION_METHODS:
+            return False
+        url_lower = url.lower()
+        return any(kw in url_lower for kw in self._NOTIFICATION_KEYWORDS)
+
     async def _on_response(self, response):
         """Response listener — records everything + filters for bet placements and event data."""
         try:
@@ -149,6 +178,8 @@ class BetInterceptor:
 
             url = response.url
             method = response.request.method
+
+
 
             # Cache event data from events-table API responses (Gecko V2)
             if self.on_event_data and "events-table" in url and method == "GET":
@@ -159,9 +190,18 @@ class BetInterceptor:
                     logger.debug(f"[mirror] Could not read events-table response: {e}")
 
             # Intercept bet history / settlement responses
-            if self.on_bet_history and any(kw in url for kw in self._BET_HISTORY_KEYWORDS):
+            _is_bet_history = any(kw in url for kw in self._BET_HISTORY_KEYWORDS)
+            # Gecko V2: GET to coupons endpoint = bet history (POST = placement)
+            if not _is_bet_history and method == "GET" and "/count" not in url and any(kw in url for kw in self._GECKO_COUPON_HISTORY_PATTERNS):
+                _is_bet_history = True
+            if self.on_bet_history and _is_bet_history:
                 try:
-                    body_text = await response.text()
+                    # Try text() first, fall back to body() + decode for compressed responses
+                    try:
+                        body_text = await response.text()
+                    except Exception:
+                        raw = await response.body()
+                        body_text = raw.decode("utf-8", errors="replace")
                     req_body = None
                     try:
                         req_body = response.request.post_data
@@ -172,12 +212,37 @@ class BetInterceptor:
                     logger.debug(f"[mirror] Could not read bet history response: {e}")
 
             # Intercept balance / deposit / withdraw data
-            if self.on_financial_data and any(kw in url for kw in self._FINANCIAL_KEYWORDS):
-                try:
-                    body_text = await response.text()
-                    await self.on_financial_data(url, body_text)
-                except Exception as e:
-                    logger.debug(f"[mirror] Could not read financial data response: {e}")
+            if self.on_financial_data:
+                _is_financial = any(kw in url for kw in self._FINANCIAL_KEYWORDS)
+                # Polymarket-specific financial patterns
+                if not _is_financial and any(p in url for p in self._POLYMARKET_FINANCIAL_PATTERNS):
+                    _is_financial = True
+                _relay_body = None
+                # GraphQL relay: peek at body for balance data (e.g. LeoVegas)
+                if not _is_financial and any(kw in url for kw in self._GRAPHQL_RELAY_PATTERNS):
+                    try:
+                        _relay_body = await response.text()
+                        if '"balance"' in _relay_body and '"totalAmount"' in _relay_body:
+                            _is_financial = True
+                    except Exception:
+                        pass
+                if _is_financial:
+                    try:
+                        body_text = _relay_body or await response.text()
+                        await self.on_financial_data(url, body_text)
+                    except Exception as e:
+                        logger.debug(f"[mirror] Could not read financial data response: {e}")
+
+            # Intercept notification settings updates
+            if self.on_notification_settings and self._is_notification_settings(url, method):
+                if response.status < 400:
+                    try:
+                        body_text = await response.text()
+                        request_body = response.request.post_data
+                        content_type = response.request.headers.get("content-type", "")
+                        await self.on_notification_settings(url, method, request_body, body_text, content_type)
+                    except Exception as e:
+                        logger.debug(f"[mirror] Could not read notification settings response: {e}")
 
             # Intercept bet placements across all platforms
             if not self._is_bet_placement(url, method):
@@ -321,9 +386,19 @@ class BetInterceptor:
         logger.info("[mirror] Stopped")
 
     def get_status(self) -> dict:
-        """Return current status info."""
+        """Return current status info including all detected providers."""
+        detected_providers: list[str] = []
+        if self.context and self.context.pages:
+            seen = set()
+            for page in self.context.pages:
+                url = page.url or ""
+                for domain, pid in self.PROVIDER_MAP.items():
+                    if domain in url and pid not in seen:
+                        detected_providers.append(pid)
+                        seen.add(pid)
         return {
             "running": self.status == "listening",
             "status": self.status,
             "since": self._started_at.isoformat() if self._started_at else None,
+            "detected_providers": detected_providers,
         }

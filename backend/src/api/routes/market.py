@@ -1,11 +1,34 @@
 """Market data API routes — AMT session analysis and scanner signals."""
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
-import asyncio, json
+import asyncio, json, time, threading
+from typing import Callable, TypeVar
 
 from ..deps import get_db
 from ...services.market_service import MarketService
+
+T = TypeVar("T")
+
+# In-memory cache for expensive computations
+_session_levels_cache: dict[str, tuple[float, dict]] = {}  # key -> (expires_at, data)
+_session_levels_lock = threading.Lock()
+
+
+async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
+    """Run a 'fake async' service method in a thread to avoid blocking the event loop.
+
+    Many MarketService methods are async def but only do synchronous DB work.
+    Running them on the event loop starves SSE streams and health checks.
+    This helper creates a throwaway event loop in a thread pool worker.
+    """
+    def _run():
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro_fn(*args, **kwargs))
+        finally:
+            loop.close()
+    return await asyncio.to_thread(_run)
 
 
 def _get_live_stream(request: Request):
@@ -22,7 +45,7 @@ def _svc(db=Depends(get_db)) -> MarketService:
 @router.get("/session")
 async def get_current_session(svc: MarketService = Depends(_svc)):
     """Expanded session data with all analytical layers."""
-    result = await svc.build_expanded_session()
+    result = await _offload(svc.build_expanded_session)
     if not result:
         return {"status": "no_data", "message": "No session computed yet. POST /compute first."}
     return result
@@ -41,8 +64,12 @@ async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
     return {"status": "no_data", "date": date}
 
 
+# Pre-serialized candle cache: {cache_key: (json_bytes, expiry)}
+_candle_json_cache: dict[tuple, tuple] = {}
+
 @router.get("/candles")
 async def get_candles(
+    response: Response,
     symbol: str = Query(default="NQ"),
     interval: str = Query(default="5m", pattern="^(1m|5m|15m)$"),
     date: str = Query(default=None),
@@ -50,7 +77,19 @@ async def get_candles(
     svc: MarketService = Depends(_svc),
 ):
     """Return OHLCV candles for charting from market_candles DB."""
-    return await svc.get_candles(symbol, interval, date, days)
+    import time as _time
+    cache_key = (symbol, interval, date, days)
+    cached = _candle_json_cache.get(cache_key)
+    now = _time.time()
+    if cached and now < cached[1]:
+        return Response(content=cached[0], media_type="application/json",
+                        headers={"Cache-Control": "max-age=15"})
+
+    data = await _offload(svc.get_candles, symbol, interval, date, days)
+    serialized = json.dumps(data, separators=(",", ":"))
+    _candle_json_cache[cache_key] = (serialized, now + 15)
+    response.headers["Cache-Control"] = "max-age=15"
+    return data
 
 
 @router.get("/vwap")
@@ -60,7 +99,7 @@ async def get_developing_vwap(
     svc: MarketService = Depends(_svc),
 ):
     """Return developing VWAP time series from tick data (RTH only)."""
-    return await svc.get_developing_vwap(symbol, interval)
+    return await _offload(svc.get_developing_vwap, symbol, interval)
 
 
 @router.get("/signals")
@@ -75,7 +114,7 @@ async def trigger_scan(
     svc: MarketService = Depends(_svc),
 ):
     """Run scanner on current session → generate signals."""
-    signals = await svc.run_scan(threshold)
+    signals = await _offload(svc.run_scan, threshold)
     return {"signals": signals, "count": len(signals)}
 
 
@@ -86,14 +125,55 @@ async def trigger_compute(
     svc: MarketService = Depends(_svc),
 ):
     """Fetch market data and compute AMT analysis for a date."""
-    data = await svc.compute_session(date)
+    data = await _offload(svc.compute_session, date)
 
     # Refresh level monitor with new session data
     level_monitor = getattr(request.app.state, "level_monitor", None)
     if level_monitor:
-        expanded = await svc.build_expanded_session()
+        expanded = await _offload(svc.build_expanded_session)
         if expanded:
             level_monitor.load_levels(expanded)
+
+        # Pass session context for DQN live inference
+        # The compute_session return dict contains the VWAP, VP, TPO, and level data
+        session = data.get("session", {})
+        rl_context = {
+            "vwap_bands": {
+                "vwap": session.get("vwap"),
+                "upper_1": session.get("vwap_1sd_upper"),
+                "lower_1": session.get("vwap_1sd_lower"),
+                "upper_2": session.get("vwap_2sd_upper"),
+                "lower_2": session.get("vwap_2sd_lower"),
+                "upper_3": session.get("vwap_3sd_upper"),
+                "lower_3": session.get("vwap_3sd_lower"),
+            } if session.get("vwap") else None,
+            "volume_profile": session.get("volume_profile"),
+            "session_levels": session.get("session_levels"),
+            "session_tpos": session.get("session_tpos_obj"),
+            "tpo_profile": session.get("tpo"),
+            "session_context": session.get("session_context"),
+            "macro": session.get("macro"),
+            "day_type": session.get("day_type"),
+            "fvgs": [],
+            "single_print_zones": [],
+            "swing_structure": expanded.get("swing_structure"),
+        }
+        # Enrich macro with live exchange stats from Databento stream
+        stream = _get_live_stream(request)
+        if stream:
+            ds = stream.daily_stats
+            if ds:
+                macro_dict = rl_context.get("macro") or {}
+                macro_dict.update({
+                    "oi": ds.get("open_interest", {}).get("value", 0),
+                    "oi_change": 0,  # No prior-day ref in live — zeroed
+                    "settlement_price": ds.get("settlement_price", {}).get("value", 0),
+                    "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
+                    "block_volume": ds.get("block_volume", {}).get("value", 0),
+                })
+                rl_context["macro"] = macro_dict
+
+        level_monitor.set_session_context(rl_context)
 
     return data
 
@@ -110,7 +190,7 @@ async def get_session_history(
 @router.get("/indicators")
 async def get_indicators(svc: MarketService = Depends(_svc)):
     """Live orderflow indicators + ML predictions."""
-    return await svc.get_indicators()
+    return await _offload(svc.get_indicators)
 
 
 @router.get("/confirmations")
@@ -139,28 +219,71 @@ async def get_macro_snapshot():
     }
 
 
+@router.get("/status")
+async def market_status(request: Request):
+    """Check if Globex is open and trading features are active.
+
+    Frontend can use this to skip SSE/data calls when market is closed.
+    """
+    from ...services.market_service import MarketService
+    from ...market_data.stream import DatabentoLiveStream
+
+    closed = MarketService._is_globex_closed()
+    stream = _get_live_stream(request)
+    stream_running = stream._running if stream else False
+
+    result = {
+        "globex_open": not closed,
+        "stream_active": stream_running,
+    }
+    if closed:
+        secs = DatabentoLiveStream._seconds_until_globex_open()
+        result["opens_in_seconds"] = int(secs)
+        result["opens_in_hours"] = round(secs / 3600, 1)
+    return result
+
+
 @router.get("/stream")
 async def market_stream(request: Request, symbol: str = "NQ"):
-    """SSE stream of real-time tick data, candles, and level touches."""
-    stream = _get_live_stream(request)
-    if not stream:
-        return {"error": "Live stream not available"}
+    """SSE stream of real-time tick data, candles, and level touches.
 
-    queue = stream.subscribe()
+    Uses a polling model: the stream thread writes to shared state,
+    and this generator polls it every 500ms. This avoids call_soon_threadsafe
+    which was overwhelming the Windows ProactorEventLoop.
+    """
+    stream = _get_live_stream(request)
 
     async def event_generator():
+        nonlocal stream
+        last_heartbeat = time.monotonic()
+
+        # Wait for stream — keep SSE alive with heartbeats (never close)
+        while not stream:
+            if time.monotonic() - last_heartbeat >= 5:
+                yield {"event": "heartbeat", "data": json.dumps({"status": "connecting"})}
+                last_heartbeat = time.monotonic()
+            await asyncio.sleep(0.5)
+            stream = _get_live_stream(request)
+
+        state = stream.get_shared_state()
+        versions: dict[str, int] = {}
+        event_seq = 0
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                events, versions, event_seq = state.poll(versions, event_seq)
+                for event in events:
                     event_type = event.get("type", "tick")
                     yield {"event": event_type, "data": json.dumps(event)}
-                except asyncio.TimeoutError:
-                    yield {"event": "heartbeat", "data": "{}"}
+                    last_heartbeat = time.monotonic()
+                # Unconditional heartbeat every 10s to keep connection alive
+                if time.monotonic() - last_heartbeat >= 10:
+                    yield {"event": "heartbeat", "data": json.dumps({"status": "live", "seq": event_seq})}
+                    last_heartbeat = time.monotonic()
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
-            stream.unsubscribe(queue)
+            pass
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_generator(), ping=15)
 
 
 @router.get("/levels")
@@ -301,22 +424,49 @@ async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = De
 
 @router.get("/volume-profile")
 async def get_volume_profile(
+    response: Response,
     symbol: str = Query(default="NQ"),
     timeframe: str = Query(default="session", pattern="^(session|weekly|monthly)$"),
     svc: MarketService = Depends(_svc),
 ):
     """Return VP curve (price→volume pairs) for session/weekly/monthly."""
-    return await svc.get_volume_profile_curve(symbol, timeframe=timeframe)
+    response.headers["Cache-Control"] = f"max-age={30 if timeframe == 'session' else 120}"
+    return await _offload(svc.get_volume_profile_curve, symbol, timeframe)
 
 
 @router.get("/session-levels")
 async def get_session_levels(
+    response: Response,
     symbol: str = Query(default="NQ"),
     days: int = Query(default=5, ge=1, le=30),
     svc: MarketService = Depends(_svc),
 ):
     """Return per-day session levels (PDH/PDL, IB, Tokyo, London) with time boundaries."""
-    return await svc.get_session_levels(symbol, days)
+    cache_key = f"{symbol}:{days}"
+    now = time.time()
+    with _session_levels_lock:
+        if cache_key in _session_levels_cache:
+            expires, data = _session_levels_cache[cache_key]
+            if now < expires:
+                response.headers["Cache-Control"] = "max-age=30"
+                return data
+
+    try:
+        result = await asyncio.wait_for(
+            _offload(svc.get_session_levels, symbol, days),
+            timeout=30.0,
+        )
+        with _session_levels_lock:
+            _session_levels_cache[cache_key] = (now + 60, result)  # cache 60s
+        response.headers["Cache-Control"] = "max-age=30"
+        return result
+    except asyncio.TimeoutError:
+        # Return stale cache if available
+        with _session_levels_lock:
+            if cache_key in _session_levels_cache:
+                _, data = _session_levels_cache[cache_key]
+                return data
+        return {"sessions": [], "error": "session_levels_timeout"}
 
 
 @router.get("/footprint")
@@ -422,19 +572,113 @@ async def backfill_trades(
         return {"error": "DATABENTO_API_KEY not set"}
 
     from ...market_data.history import backfill_trades_to_db
-    from ...db.models import get_session as get_db_session
+    from ...db.models import get_market_session
 
     start_date = dt_date.fromisoformat(start)
     end_date = dt_date.fromisoformat(end) if end else None
 
     count = await backfill_trades_to_db(
         api_key=api_key,
-        db_session_factory=get_db_session,
+        db_session_factory=get_market_session,
         symbol=symbol,
         start=start_date,
         end=end_date,
     )
     return {"status": "ok", "ticks_inserted": count, "symbol": symbol}
+
+
+@router.post("/backfill-candles")
+async def backfill_candles(
+    symbol: str = Query(default="NQ"),
+    days: int = Query(default=1, ge=1, le=30, description="Days to scan for gaps"),
+    db=Depends(get_db),
+):
+    """Detect and backfill candle gaps from Databento historical.
+
+    Scans the last N days of 1m and 5m candles for gaps and fills them.
+    Returns synchronously (not fire-and-forget) so you can see results/errors.
+    """
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    api_key = os.environ.get("DATABENTO_API_KEY")
+    if not api_key:
+        return {"error": "DATABENTO_API_KEY not set"}
+
+    from ...market_data.databento_provider import DabentoProvider
+    from ...config.trading_loader import get_market_data_config
+    from ...repositories.market_repo import MarketRepo
+    from ...db.models import get_session as get_db_session
+
+    config = get_market_data_config()
+    db_symbol = config.get("symbol", "NQ.v.0")
+    provider = DabentoProvider(config)
+
+    now = datetime.now(timezone.utc)
+    lookback_start = now - timedelta(days=days)
+    # Databento historical has ~15 min delay
+    fetch_end = now - timedelta(minutes=15)
+
+    repo = MarketRepo(db)
+    results = {}
+
+    for interval in ("1m", "5m"):
+        bucket_s = 60 if interval == "1m" else 300
+        max_gap = bucket_s * 3
+
+        rows = repo.get_candles(symbol, interval, lookback_start, now)
+        if len(rows) < 2:
+            results[interval] = {"status": "insufficient_data", "rows": len(rows)}
+            continue
+
+        # Find gaps
+        gaps = []
+        for i in range(1, len(rows)):
+            ts_prev = rows[i - 1].ts if rows[i - 1].ts.tzinfo else rows[i - 1].ts.replace(tzinfo=timezone.utc)
+            ts_curr = rows[i].ts if rows[i].ts.tzinfo else rows[i].ts.replace(tzinfo=timezone.utc)
+            diff = (ts_curr - ts_prev).total_seconds()
+            if diff > max_gap and ts_curr < fetch_end:
+                gaps.append({"start": ts_prev.isoformat(), "end": ts_curr.isoformat(), "minutes": round(diff / 60)})
+
+        if not gaps:
+            results[interval] = {"status": "no_gaps", "candles_scanned": len(rows)}
+            continue
+
+        # Backfill each gap
+        total_inserted = 0
+        gap_details = []
+        for gap in gaps:
+            start_dt = datetime.fromisoformat(gap["start"])
+            end_dt = datetime.fromisoformat(gap["end"])
+            try:
+                bars = await asyncio.wait_for(
+                    provider.get_bars(db_symbol, interval, start_dt, end_dt),
+                    timeout=120.0,
+                )
+                if bars:
+                    write_db = get_db_session()
+                    try:
+                        count = MarketRepo(write_db).bulk_insert_candles(symbol, interval, bars)
+                        total_inserted += count
+                        gap_details.append({**gap, "fetched": len(bars), "inserted": count})
+                    finally:
+                        write_db.close()
+                else:
+                    gap_details.append({**gap, "fetched": 0, "inserted": 0, "note": "no data from Databento"})
+            except Exception as e:
+                gap_details.append({**gap, "error": str(e)})
+
+        results[interval] = {
+            "status": "backfilled",
+            "gaps_found": len(gaps),
+            "total_inserted": total_inserted,
+            "gaps": gap_details,
+        }
+
+    # Clear candle cache so next request serves fresh data
+    MarketService._candle_cache.clear()
+
+    return {"symbol": symbol, "days_scanned": days, "results": results}
 
 
 @router.get("/ml/prediction")
@@ -495,21 +739,19 @@ async def get_ml_health():
                 for n, v in pairs[:10]
             ]
 
-    # Class distribution + recent accuracy from DB
-    try:
+    # Class distribution + recent accuracy from DB (offloaded to thread to avoid blocking event loop)
+    def _query_ml_stats():
         db = get_session()
         try:
-            # Class distribution
             dist = (
                 db.query(LevelTouchOutcome.outcome, func.count())
                 .filter(LevelTouchOutcome.outcome.isnot(None))
                 .group_by(LevelTouchOutcome.outcome)
                 .all()
             )
-            result["class_distribution"] = {cls: cnt for cls, cnt in dist}
-            result["training_data_count"] = sum(cnt for _, cnt in dist)
+            class_dist = {cls: cnt for cls, cnt in dist}
+            training_count = sum(cnt for _, cnt in dist)
 
-            # Recent accuracy (prediction vs actual on last 50)
             recent = (
                 db.query(LevelTouchOutcome.prediction, LevelTouchOutcome.outcome)
                 .filter(
@@ -520,14 +762,22 @@ async def get_ml_health():
                 .limit(50)
                 .all()
             )
+            recent_acc = {}
             if recent:
                 correct = sum(1 for pred, actual in recent if pred == actual)
-                result["recent_accuracy"] = {
+                recent_acc = {
                     "last_50": round(correct / len(recent), 3),
                     "sample_count": len(recent),
                 }
+            return class_dist, training_count, recent_acc
         finally:
             db.close()
+
+    try:
+        class_dist, training_count, recent_acc = await asyncio.to_thread(_query_ml_stats)
+        result["class_distribution"] = class_dist
+        result["training_data_count"] = training_count
+        result["recent_accuracy"] = recent_acc
     except Exception:
         pass
 
@@ -551,7 +801,28 @@ async def get_tpo_live(
     svc: MarketService = Depends(_svc),
 ):
     """Today's developing TPO profile."""
-    return svc.get_tpo_live(symbol=symbol)
+    import asyncio
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        return {"error": "tpo_timeout", "cached": True}
+
+
+@router.get("/tpo/sessions")
+async def get_tpo_sessions(
+    symbol: str = Query("NQ"),
+    svc: MarketService = Depends(_svc),
+):
+    """Per-session TPO profiles (Tokyo/London/NY) with letter grids for chart visualization."""
+    import asyncio
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        return {"error": "tpo_timeout"}
 
 
 @router.post("/tpo/backfill")
@@ -580,3 +851,15 @@ async def get_cot_data(limit: int = Query(default=4, le=52)):
         }
         for r in reports
     ]
+
+
+@router.get("/cot/summary")
+async def get_cot_summary(svc: MarketService = Depends(_svc)):
+    """Lightweight COT summary from DB — no external API call."""
+    summary = svc._get_cot_summary()
+    if not summary:
+        return {"cot_net_position": None, "cot_change_1w": None}
+    return {
+        "cot_net_position": summary.get("net_non_commercial"),
+        "cot_change_1w": summary.get("change_1w"),
+    }

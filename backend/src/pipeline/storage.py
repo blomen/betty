@@ -4,6 +4,7 @@ Pipeline Storage
 Functions for storing events and odds in the database.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,9 @@ from ..matching.normalizer import generate_canonical_id
 from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EXTENDED_MARKET_PROVIDERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache of known event IDs to avoid redundant DB lookups during Polymarket matching
+_known_event_ids: set[str] = set()
 
 # Youth/reserve league indicators — used to prevent cross-tier matching
 _YOUTH_INDICATORS = re.compile(
@@ -262,19 +266,30 @@ def store_polymarket_event(
     matched_id = None
     teams_swapped = False
 
-    # 1. Check if default ID exists (exact match) — memory cache first, DB fallback
+    # 1. Check if default ID exists (exact match) — memory cache first, module cache, then DB fallback
     sport_events_poly = event_cache.get(kambi_sport, {})
-    if default_id in sport_events_poly or session.query(Event.id).filter(Event.id == default_id).first():
+    if default_id in sport_events_poly or default_id in _known_event_ids:
+        matched_id = default_id
+    elif session.query(Event.id).filter(Event.id == default_id).first():
+        _known_event_ids.add(default_id)
         matched_id = default_id
     else:
         # 2. Check swapped team order
         swapped_id = generate_canonical_id(kambi_sport, away_team, home_team, event.start_time)
-        if swapped_id in sport_events_poly or session.query(Event.id).filter(Event.id == swapped_id).first():
+        if swapped_id in sport_events_poly or swapped_id in _known_event_ids:
             matched_id = swapped_id
             teams_swapped = True
             logger.debug(
                 f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
                 f"canonical event with swapped teams"
+            )
+        elif session.query(Event.id).filter(Event.id == swapped_id).first():
+            _known_event_ids.add(swapped_id)
+            matched_id = swapped_id
+            teams_swapped = True
+            logger.debug(
+                f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
+                f"canonical event with swapped teams (DB)"
             )
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
@@ -444,7 +459,7 @@ def store_polymarket_event(
         market_type = normalize_market(market.get("question", "") or market.get("type", ""))
 
         # Only store allowed markets. Pinnacle gets enrichment markets too
-        # (team_total, 1h lines) for boost EV enrichment — scanner ignores them.
+        # Pinnacle/Polymarket get esports map markets for map-level scanning.
         allowed = ENRICHMENT_MARKETS if event.provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
@@ -494,10 +509,17 @@ def store_polymarket_event(
             # Swap poly_home/poly_away in metadata to match canonical home/away
             if teams_swapped and provider_meta and 'poly_home' in provider_meta and 'poly_away' in provider_meta:
                 provider_meta['poly_home'], provider_meta['poly_away'] = provider_meta['poly_away'], provider_meta['poly_home']
+            # CLOB microstructure (bid/ask/depth from order book)
+            bid_value = outcome.get('bid')
+            ask_value = outcome.get('ask')
+            depth_value = outcome.get('depth_usd')
+
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
+                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
+                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
 
     # Safety net: compare stored Polymarket ML odds against Pinnacle.
     # If favorites disagree with high confidence, odds are likely inverted.
@@ -574,17 +596,17 @@ def _resolve_event_id(
                     pass
 
     # Pre-filter by team name prefix for better performance
+    # Uses word-level prefixes to handle reversed name order (e.g. "Cina Federico" vs "Federico Cina")
     if prefix_filter_length > 0 and len(candidates) > 10:
-        home_prefix = event.home_team[:prefix_filter_length].lower() if event.home_team else ""
-        away_prefix = event.away_team[:prefix_filter_length].lower() if event.away_team else ""
+        def _word_prefixes(name: str) -> set:
+            return {w[:prefix_filter_length].lower() for w in name.split() if len(w) >= prefix_filter_length}
+
+        event_prefixes = _word_prefixes(event.home_team) | _word_prefixes(event.away_team)
 
         prefix_filtered = [
             (pid, home, away, date, league)
             for pid, home, away, date, league in candidates
-            if (home[:prefix_filter_length].lower() == home_prefix or
-                away[:prefix_filter_length].lower() == home_prefix or
-                home[:prefix_filter_length].lower() == away_prefix or
-                away[:prefix_filter_length].lower() == away_prefix)
+            if (_word_prefixes(home) | _word_prefixes(away)) & event_prefixes
         ]
         if prefix_filtered:
             candidates = prefix_filtered
@@ -817,6 +839,7 @@ def store_provider_event(
             start_time=start_dt,
         )
         session.add(db_event)
+        session.flush()  # Flush event before odds insert (Postgres enforces FKs)
         is_new_event = True
 
         # Add to cache for subsequent providers to match against
@@ -987,11 +1010,18 @@ def store_provider_event(
             outcome_meta = outcome.get('provider_meta', {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
 
+            # CLOB microstructure (Polymarket only, None for others)
+            bid_value = outcome.get('bid')
+            ask_value = outcome.get('ask')
+            depth_value = outcome.get('depth_usd')
+
             # Use batch processor if available, otherwise individual upsert
             if odds_batch:
-                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
+                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
+                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
             else:
-                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
+                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
+                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
 
     # When using batch processor, we don't know the new count until flush
     # Return 0 for now - caller should get stats from batch processor
@@ -1007,6 +1037,9 @@ def upsert_odds(
     odds: float,
     point: float = None,
     provider_meta: dict = None,
+    bid: float = None,
+    ask: float = None,
+    depth_usd: float = None,
 ) -> int:
     """
     Insert or update odds record.
@@ -1044,6 +1077,9 @@ def upsert_odds(
         existing.updated_at = datetime.now(timezone.utc)
         if provider_meta:
             existing.provider_meta = provider_meta
+        existing.bid = bid
+        existing.ask = ask
+        existing.depth_usd = depth_usd
         return 0
     else:
         session.add(Odds(
@@ -1054,6 +1090,9 @@ def upsert_odds(
             odds=odds,
             point=point,
             provider_meta=provider_meta,
+            bid=bid,
+            ask=ask,
+            depth_usd=depth_usd,
         ))
         return 1
 
@@ -1086,6 +1125,9 @@ class OddsBatchProcessor:
         odds: float,
         point: float = None,
         provider_meta: dict = None,
+        bid: float = None,
+        ask: float = None,
+        depth_usd: float = None,
     ):
         """Add odds record to batch (will be processed on flush)."""
         # Use tuple key to deduplicate (point included for schema compatibility)
@@ -1098,6 +1140,9 @@ class OddsBatchProcessor:
             "odds": odds,
             "point": point,
             "provider_meta": provider_meta,
+            "bid": bid,
+            "ask": ask,
+            "depth_usd": depth_usd,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
@@ -1110,9 +1155,9 @@ class OddsBatchProcessor:
         Includes retry logic for SQLite "database is locked" errors that occur
         during concurrent extraction (multiple providers flushing simultaneously).
 
-        Note: Uses synchronous time.sleep() for retry backoff because this method
-        is called from synchronous contexts (__exit__, add()). Max total backoff
-        ~12s across 8 retries, which aligns with the 30s SQLite busy_timeout.
+        Note: Uses time.sleep() because flush is called from synchronous contexts
+        (__exit__, add()). Reduced to 3 retries / ~140ms max to minimize event
+        loop blocking when callers haven't offloaded to a thread.
         """
         if not self._pending:
             return
@@ -1120,17 +1165,17 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 8
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.1 * (2 ** attempt)  # 100ms, 200ms, 400ms, 800ms, 1.6s, 3.2s, 6.4s
+                    wait = 0.02 * (2 ** attempt)  # 20ms, 40ms = 60ms max total block
                     logger.warning(
-                        f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {wait * 1000:.0f}ms..."
+                        "OddsBatchProcessor: DB locked on flush (attempt %d/%d), "
+                        "retrying in %.0fms...", attempt + 1, max_retries, wait * 1000
                     )
                     self.session.rollback()
                     time.sleep(wait)
@@ -1190,6 +1235,9 @@ class OddsBatchProcessor:
                 existing.updated_at = now
                 if record.get("provider_meta"):
                     existing.provider_meta = record["provider_meta"]
+                existing.bid = record.get("bid")
+                existing.ask = record.get("ask")
+                existing.depth_usd = record.get("depth_usd")
                 self._update_count += 1
             else:
                 # New record

@@ -3,8 +3,8 @@ import { api } from '@/services/api';
 import { useMarketStream } from '@/hooks/useMarketStream';
 import { useLevelMonitor } from '@/hooks/useLevelMonitor';
 import { useSound } from '@/hooks/useSound';
-import { L1Page } from './L1Page';
-import { VectorsPage } from './VectorsPage';
+import { ChartPage } from './ChartPage';
+import { DqnPage } from './DqnPage';
 import type { ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData, OrderflowSnapshot } from '@/types/market';
 
 // ---- Demo data for testing when backend is offline ----
@@ -104,7 +104,7 @@ const DEMO_BATTLE: BattleScreenData = {
 // ---------------------------------------------------
 
 interface Props {
-  activeSubTab: 'tradingL1' | 'tradingVectors';
+  activeSubTab: 'tradingChart' | 'tradingDqn';
 }
 
 export function TradingContainer({ activeSubTab }: Props) {
@@ -112,8 +112,8 @@ export function TradingContainer({ activeSubTab }: Props) {
   const [positions] = useState<PositionRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const { lastTick, book, lastCandle, connected, esRef } = useMarketStream();
-  const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dqnInference, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
+  const { lastTick, book, lastCandle, statistics, connected, esRef, connectionId } = useMarketStream();
+  const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dqnInference, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session, connectionId);
   const { unlock, play } = useSound();
   const prevBattle = useRef(false);
   const lastBattleRef = useRef<BattleScreenData | null>(null);
@@ -142,7 +142,17 @@ export function TradingContainer({ activeSubTab }: Props) {
       if (sessionRes && (sessionRes as any).status !== 'no_data' && sessionRes.session) {
         setSession(sessionRes);
       } else {
-        setSession(DEMO_SESSION);
+        // Fetch real VP data so sidebar doesn't show stale demo values
+        const [dVP, wVP, mVP] = await Promise.all([
+          api.getVolumeProfile('NQ', 'session').catch(() => null),
+          api.getVolumeProfile('NQ', 'weekly').catch(() => null),
+          api.getVolumeProfile('NQ', 'monthly').catch(() => null),
+        ]);
+        const realProfiles: any = { ...DEMO_SESSION.profiles };
+        if (dVP && dVP.poc) realProfiles.session = { poc: dVP.poc, vah: dVP.vah, val: dVP.val };
+        if (wVP && wVP.poc) realProfiles.weekly = { poc: wVP.poc, vah: wVP.vah, val: wVP.val };
+        if (mVP && mVP.poc) realProfiles.monthly = { poc: mVP.poc, vah: mVP.vah, val: mVP.val };
+        setSession({ ...DEMO_SESSION, profiles: realProfiles });
         seedLevels(DEMO_LEVELS);
         lastBattleRef.current = DEMO_BATTLE;
         return;
@@ -186,13 +196,13 @@ export function TradingContainer({ activeSubTab }: Props) {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Auto-refresh session every 30s
+  // Auto-refresh session every 60s
   useEffect(() => {
     const refresh = async () => {
       const sessionRes = await api.getExpandedSession().catch(() => null);
       if (sessionRes) setSession(sessionRes);
     };
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 60_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -236,16 +246,18 @@ export function TradingContainer({ activeSubTab }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0" onClick={unlock}>
-      {activeSubTab === 'tradingL1' ? (
-        <L1Page
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingChart' ? '' : 'hidden'}`}>
+        <ChartPage
           lastTick={lastTick}
           book={book}
           lastCandle={lastCandle}
           connected={connected}
           session={session}
+          statistics={statistics}
         />
-      ) : (
-        <VectorsPage
+      </div>
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingDqn' ? '' : 'hidden'}`}>
+        <DqnPage
           session={session}
           levels={levels}
           currentPrice={currentPrice}
@@ -266,7 +278,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           latestFeatures={latestFeatures}
           dqnInference={dqnInference}
         />
-      )}
+      </div>
     </div>
   );
 }

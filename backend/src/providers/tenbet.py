@@ -129,6 +129,12 @@ class TenBetRetriever(BrowserRetriever):
         "curling": "curling",
     }
 
+    # Sports that benefit from detail-page enrichment for spread/total.
+    # Basketball/ice_hockey/baseball already get spread/total from the DOM list
+    # (HCOT/TPOT/OUTG codes). Football only gets 1x2 (MRES) on the list page.
+    # Handball/tennis/volleyball may also miss spread/total on list pages.
+    DETAIL_SPORTS = {"football", "handball", "tennis", "volleyball", "mma"}
+
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
     MAX_COMPETITIONS_PER_SPORT = 60
 
@@ -214,7 +220,7 @@ class TenBetRetriever(BrowserRetriever):
 
             batch = competitions[batch_start:batch_start + batch_size]
             tasks = [process_competition(c) for c in batch]
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for res in results:
                 for ev in res:
@@ -226,15 +232,15 @@ class TenBetRetriever(BrowserRetriever):
 
         logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s")
 
-        # Pass 2: Enrich football events with detail page spread/total
+        # Pass 2: Enrich events with detail page spread/total
         # Skip if competition scraping already consumed most of the timeout
         elapsed = _time.time() - extract_start
-        if all_events and sport == "football" and elapsed < sport_timeout * 0.80:
+        if all_events and sport in self.DETAIL_SPORTS and elapsed < sport_timeout * 0.80:
             detail_count = await self._enrich_events_with_details(all_events, sport)
             logger.info(
                 f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} with spread/total"
             )
-        elif all_events and sport == "football":
+        elif all_events and sport in self.DETAIL_SPORTS:
             logger.warning(
                 f"[{self.provider_id}] {sport}: skipping detail enrichment — "
                 f"{elapsed:.0f}s already elapsed (budget: {sport_timeout}s)"
@@ -964,7 +970,7 @@ class TenBetRetriever(BrowserRetriever):
             finally:
                 await page_pool.put(worker_page)
 
-        await asyncio.gather(*(enrich_one(ev, eid) for ev, eid in todo))
+        await asyncio.gather(*(enrich_one(ev, eid) for ev, eid in todo), return_exceptions=True)
 
         # Close extra pages
         for p in extra_pages:

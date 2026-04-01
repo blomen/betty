@@ -59,7 +59,6 @@ function ToastItem({ toast, onDismiss }: { toast: MirroredBet; onDismiss: () => 
       className={`
         border ${s.border} bg-gradient-to-br ${s.bg}
         text-xs font-mono px-3 py-2.5 flex items-center gap-2
-        shadow-[0_0_20px_rgba(0,0,0,0.08),0_4px_12px_rgba(0,0,0,0.3)]
         relative overflow-hidden cursor-pointer
         ${fadingOut ? 'toast-fade-out' : 'toast-slide-in'}
       `}
@@ -182,6 +181,12 @@ function SyncBanner({ syncAvailable, onDismiss }: {
   syncAvailable: any;
   onDismiss: () => void;
 }) {
+  useEffect(() => {
+    if (!syncAvailable) return;
+    const timer = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(timer);
+  }, [syncAvailable, onDismiss]);
+
   if (!syncAvailable) return null;
 
   const { provider, balance, pending_bets, pending_stake } = syncAvailable;

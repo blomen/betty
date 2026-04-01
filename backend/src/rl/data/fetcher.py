@@ -103,34 +103,44 @@ def fetch_ticks(
             continue
 
         rows: list[dict] = []
-        skipped = 0
+        tick_rule_count = 0
+        prev_price: float = 0.0
         for rec in data:
             side_raw = getattr(rec, "side", "")
-            # Databento SDK returns Side enum (Side.ASK, Side.BID, Side.NONE)
             side_char = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
-            if side_char not in ("A", "B"):
-                if side_char != "":
-                    logger.warning(
-                        "Unknown side value %r on tick — skipping", side_char
-                    )
-                skipped += 1
-                continue
 
             ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
             ts = datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc)
+            price = rec.price / 1e9
+
+            if side_char not in ("A", "B"):
+                # Tick rule: infer side from price change
+                # Uptick → buy aggressor (A), downtick → sell aggressor (B)
+                # Same price → inherit from previous tick
+                if price > prev_price:
+                    side_char = "A"
+                elif price < prev_price:
+                    side_char = "B"
+                else:
+                    side_char = rows[-1]["side"] if rows else "A"
+                tick_rule_count += 1
+
+            prev_price = price
 
             rows.append(
                 {
                     "timestamp": ts,
-                    "price": rec.price / 1e9,
+                    "price": price,
                     "size": int(rec.size),
-                    "side": side_char,  # "A" = ask/buy aggressor, "B" = bid/sell aggressor
+                    "side": side_char,
                 }
             )
 
-        if skipped:
-            logger.warning(
-                "%s: skipped %d tick(s) with unknown/missing side", month_label, skipped
+        if tick_rule_count:
+            logger.info(
+                "%s: inferred side via tick rule for %d/%d ticks (%.0f%%)",
+                month_label, tick_rule_count, len(rows),
+                tick_rule_count / max(len(rows), 1) * 100,
             )
 
         if not rows:
@@ -217,6 +227,176 @@ def fetch_macro_history(
     df.to_parquet(out_path)
 
     logger.info("Wrote macro data (%d rows, %d columns) to %s", len(df), len(df.columns), out_path.name)
+    return out_path
+
+
+def fetch_cot_history(
+    start: datetime,
+    end: datetime,
+    output_dir: Path | None = None,
+    cftc_code: str = "209742",
+) -> "Path | None":
+    """Fetch weekly CFTC COT data for NQ futures.
+
+    Saves ``cot_weekly.parquet`` with net_position and open_interest columns.
+    Returns the path on success, None on failure.
+    """
+    import httpx
+
+    out_dir = output_dir or MACRO_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "cot_weekly.parquet"
+
+    start_str = _to_utc(start).strftime("%Y-%m-%dT00:00:00")
+    end_str = _to_utc(end).strftime("%Y-%m-%dT23:59:59")
+
+    url = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+    params = {
+        "$where": (
+            f"cftc_contract_market_code='{cftc_code}' "
+            f"AND report_date_as_yyyy_mm_dd >= '{start_str}' "
+            f"AND report_date_as_yyyy_mm_dd <= '{end_str}'"
+        ),
+        "$order": "report_date_as_yyyy_mm_dd ASC",
+        "$limit": "5000",
+    }
+
+    try:
+        resp = httpx.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:
+        logger.error("COT history fetch failed: %s", exc)
+        return None
+
+    if not rows:
+        logger.warning("No COT data returned for %s – %s", start_str[:10], end_str[:10])
+        return None
+
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.warning("pandas not installed — cannot save COT data")
+        return None
+
+    records = []
+    for row in rows:
+        date_str = row.get("report_date_as_yyyy_mm_dd", "")[:10]
+        net_nc = (
+            int(row.get("noncomm_positions_long_all", 0))
+            - int(row.get("noncomm_positions_short_all", 0))
+        )
+        oi = int(row.get("open_interest_all", 0))
+        records.append({"date": date_str, "cot_net_position": net_nc, "cot_open_interest": oi})
+
+    df = pd.DataFrame(records)
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    df.sort_index(inplace=True)
+
+    # Compute week-over-week change
+    df["cot_net_change"] = df["cot_net_position"].diff()
+
+    df.to_parquet(out_path)
+    logger.info("Wrote COT history (%d weeks) to %s", len(df), out_path.name)
+    return out_path
+
+
+def fetch_statistics_history(
+    start: datetime,
+    end: datetime,
+    output_dir: Path | None = None,
+    api_key: str | None = None,
+) -> "Path | None":
+    """Fetch daily CME statistics (OI, settlement, cleared/block volume) from Databento.
+
+    Saves ``statistics_daily.parquet`` with columns:
+        date, open_interest, cleared_volume, block_volume, settlement_price, oi_change
+
+    Uses the ``statistics`` schema on GLBX.MDP3, filtering for relevant StatTypes.
+    Groups by trading date (from ts_ref).
+    """
+    try:
+        import databento as db
+    except ImportError:
+        logger.error("databento package not installed — pip install databento")
+        return None
+
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.error("pandas package not installed — pip install pandas pyarrow")
+        return None
+
+    key = api_key or os.environ.get("DATABENTO_API_KEY", "")
+    if not key:
+        raise ValueError("Databento API key not provided and DATABENTO_API_KEY env var not set")
+
+    out_dir = output_dir or MACRO_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "statistics_daily.parquet"
+
+    client = db.Historical(key=key)
+
+    try:
+        data = client.timeseries.get_range(
+            dataset=_DATASET,
+            symbols=[_SYMBOL],
+            stype_in="continuous",
+            schema="statistics",
+            start=start.isoformat(),
+            end=end.isoformat(),
+        )
+    except Exception as exc:
+        logger.error("Databento statistics fetch failed: %s", exc)
+        return None
+
+    from databento_dbn import StatType
+
+    _QUANTITY_TYPES = {
+        StatType.OPEN_INTEREST: "open_interest",
+        StatType.CLEARED_VOLUME: "cleared_volume",
+        StatType.BLOCK_VOLUME: "block_volume",
+    }
+    _PRICE_TYPES = {
+        StatType.SETTLEMENT_PRICE: "settlement_price",
+    }
+
+    # Collect per-date stats
+    daily: dict[str, dict] = {}  # date_str -> {col: value}
+    for rec in data:
+        st = rec.stat_type
+        # Use ts_ref for the trading date this stat applies to
+        ts_ref = rec.ts_ref if hasattr(rec, "ts_ref") else rec.hd.ts_event
+        date_str = datetime.fromtimestamp(int(ts_ref) / 1e9, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        if date_str not in daily:
+            daily[date_str] = {}
+
+        if st in _QUANTITY_TYPES:
+            daily[date_str][_QUANTITY_TYPES[st]] = rec.quantity
+        elif st in _PRICE_TYPES:
+            daily[date_str][_PRICE_TYPES[st]] = rec.price / 1e9
+
+    if not daily:
+        logger.warning("No statistics data returned for %s – %s", start.date(), end.date())
+        return None
+
+    df = pd.DataFrame.from_dict(daily, orient="index")
+    df.index = pd.to_datetime(df.index)
+    df.index.name = "date"
+    df.sort_index(inplace=True)
+
+    # Fill missing columns with 0
+    for col in ("open_interest", "cleared_volume", "block_volume", "settlement_price"):
+        if col not in df.columns:
+            df[col] = 0
+
+    # Compute day-over-day OI change
+    df["oi_change"] = df["open_interest"].diff()
+
+    df.to_parquet(out_path)
+    logger.info("Wrote statistics history (%d days) to %s", len(df), out_path.name)
     return out_path
 
 

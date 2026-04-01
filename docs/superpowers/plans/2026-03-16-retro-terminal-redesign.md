@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reskin the BankrollBBQ frontend shell with a Gameboy/retro terminal aesthetic — green-tinted palette, square corners, thick borders, inverted active states.
+**Goal:** Reskin the Firev frontend shell with a Gameboy/retro terminal aesthetic — green-tinted palette, square corners, thick borders, inverted active states.
 
 **Architecture:** Pure visual reskin of 6 files. No new files, no structural changes, no behavior changes. Color tokens in Tailwind + CSS variables form the foundation; component files (Sidebar, TabBar, FilterBar, TerminalWindow) consume them.
 

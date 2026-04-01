@@ -46,13 +46,14 @@ class HttpTransport(Transport):
         async with HttpTransport() as transport:
             data = await transport.get(url)
     """
-    def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None):
+    def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None, proxy: Optional[str] = None):
         self.session = None
         self._session_lock = asyncio.Lock()
         self._owns_session = True  # Track if we created the session
         self.headers = headers or {"User-Agent": _CHROME_UA}
         self.circuit_breaker = circuit_breaker
         self.rate_limit_config = rate_limit_config
+        self.proxy = proxy  # e.g. "http://user:pass@host:port"
         # Track consecutive 429s per provider for circuit breaker notification
         self._consecutive_429s: Dict[str, int] = {}
 
@@ -121,7 +122,7 @@ class HttpTransport(Transport):
 
         # Retry loop for 429 handling
         for attempt in range(max_retries + 1):
-            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout) as response:
+            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout, proxy=self.proxy) as response:
                 # Handle 429 rate limit with exponential backoff
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
@@ -203,7 +204,7 @@ class HttpTransport(Transport):
         req_timeout = aiohttp.ClientTimeout(total=90)
 
         for attempt in range(max_retries + 1):
-            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout) as response:
+            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout, proxy=self.proxy) as response:
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
                     try:
@@ -308,18 +309,6 @@ class BrowserTransport(Transport):
     async def _ensure_browser(self):
         if self.page: return
 
-        # Safety check: Windows requires ProactorEventLoop for subprocess support.
-        # If running on SelectorEventLoop, patchright's create_subprocess_exec raises
-        # a bare NotImplementedError (empty message) that gets silently swallowed.
-        import sys
-        if sys.platform == "win32":
-            loop = asyncio.get_running_loop()
-            loop_type = type(loop).__name__
-            if "Proactor" not in loop_type:
-                raise RuntimeError(
-                    f"BrowserTransport requires ProactorEventLoop on Windows, "
-                    f"got {loop_type}. Subprocess creation will fail."
-                )
 
         try:
             self.playwright = await async_playwright().start()

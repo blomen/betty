@@ -20,14 +20,15 @@ from .candle_aggregator import CandleAggregator
 from .accumulators import IncrementalVWAP, IncrementalVolumeProfile
 from .episode_builder import Episode, label_outcome, label_outcome_from_array
 from ..features.observation import build_observation
-from ..config import LevelType, AT_LEVEL_TICKS, TICK_SIZE
+from ..config import LevelType, AT_LEVEL_TICKS, ATR_PERIOD, TICK_SIZE
+from ..zone_builder import Zone, build_zones
 from ...market_data.levels import (
     compute_session_levels,
     detect_fvgs,
     detect_order_blocks,
     SessionLevels,
 )
-from ...market_data.tpo import build_full_tpo_profile
+from ...market_data.tpo import build_full_tpo_profile, compute_session_tpos
 from ...market_data.orderflow import (
     build_candle_flow,
     compute_signals,
@@ -93,6 +94,10 @@ class ReplayEngine:
         # Cooldown: minimum 30 seconds between episodes to avoid noise
         self._last_episode_ts: datetime | None = None
         self._episode_cooldown = timedelta(seconds=30)
+
+        # Zone state (clustered levels)
+        self._active_zones: list[Zone] = []
+        self._zone_keys: set[str] = set()
 
         # Orderflow: per-candle tick buffer and completed CandleFlow list
         self._candle_ticks: list[dict] = []
@@ -275,13 +280,13 @@ class ReplayEngine:
             # 4. Buffer tick for NEXT candle's orderflow CandleFlow construction
             self._candle_ticks.append(tick)
 
-            # 5. Check which active levels are touched
-            newly_touched = self._check_level_touch(price)
+            # 5. Check which zones price has entered
+            newly_entered = self._check_zone_entry(price)
 
             # 6. Emit ONE episode per tick with 30s cooldown between episodes.
-            # Multiple simultaneous touches show up as confluence in the
+            # Multiple simultaneous zone entries show up as confluence in the
             # observation vector; we only need one training sample per moment.
-            if not newly_touched:
+            if not newly_entered:
                 continue
             # Cooldown: skip if too soon after last episode
             if self._last_episode_ts is not None:
@@ -289,7 +294,7 @@ class ReplayEngine:
                 if elapsed < self._episode_cooldown.total_seconds():
                     continue
 
-            level_name, level_type, level_price = newly_touched[0]
+            zone = newly_entered[0]
             if True:  # single-episode block
                 # Determine approach direction: compare to price 200 ticks ago
                 # (~2 seconds of NQ data — captures the micro move into the level)
@@ -302,31 +307,39 @@ class ReplayEngine:
                 fwd_start = i + 1
                 fwd_end = min(len(norm_ticks), fwd_start + 180_000)
 
-                # Last 20 ticks for micro features
-                micro_start = max(0, i - 20)
+                # Last 50 ticks for raw tick sequence (temporal stream)
+                micro_start = max(0, i - 50)
                 recent_ticks = norm_ticks[micro_start:i + 1]
 
-                state = self._build_state(tick, level_type, session_date, date_str)
+                state = self._build_state(tick, zone, session_date, date_str)
                 state["recent_ticks"] = recent_ticks
+                state["approach_direction"] = approach_direction
                 observation = build_observation(state)
 
+                # Gather zone centers above and below for multi-level trailing reward
+                zone_centers_above = sorted([z.center_price for z in self._active_zones if z.center_price > price + TICK_SIZE])
+                zone_centers_below = sorted([z.center_price for z in self._active_zones if z.center_price < price - TICK_SIZE], reverse=True)
+
                 episode = label_outcome_from_array(
-                    touch_price=price,
+                    touch_price=zone.center_price,
                     ticks=norm_ticks,
                     start=fwd_start,
                     end=fwd_end,
                     observation=observation,
-                    level_type=level_type.value,
+                    level_type=f"zone_{zone.member_count}m",
                     touch_ts=tick["ts"],
                     approach_direction=approach_direction,
+                    levels_above=zone_centers_above,
+                    levels_below=zone_centers_below,
                 )
+                episode.state = state
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]
                 log.debug(
-                    "Episode at %s: %s @ %.2f → best=%s",
+                    "Episode at %s: zone(%d members) @ %.2f → best=%s",
                     tick["ts"],
-                    level_name,
-                    price,
+                    zone.member_count,
+                    zone.center_price,
                     episode.best_action,
                 )
 
@@ -454,7 +467,45 @@ class ReplayEngine:
             _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
             _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
 
+            # Swing levels (most recent pivot per timeframe)
+            swing = self._precomputed.get("swing_structure")
+            if swing is not None:
+                for tf_swings in [swing.daily, swing.weekly, swing.monthly]:
+                    if tf_swings.swing_highs:
+                        sh = tf_swings.swing_highs[0]
+                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_HIGH", None)
+                        if lt:
+                            levels.append((f"{tf_swings.timeframe}_swing_high", lt, sh.price))
+                    if tf_swings.swing_lows:
+                        sl = tf_swings.swing_lows[0]
+                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_LOW", None)
+                        if lt:
+                            levels.append((f"{tf_swings.timeframe}_swing_low", lt, sl.price))
+
         self._active_levels = levels
+
+        # Build zones from active levels
+        session_atr = self._compute_session_atr()
+        self._active_zones = build_zones(self._active_levels, session_atr)
+
+    def _compute_session_atr(self) -> float:
+        """Compute ATR from 30m bars for zone radius. Fallback to session range."""
+        bars_30m = self._candle_agg.get_completed_30m()
+        if len(bars_30m) < 2:
+            if self._session_high is not None and self._session_low is not None:
+                return max(1.0, self._session_high - self._session_low)
+            return 40.0  # reasonable NQ default
+        trs = []
+        for i in range(1, min(len(bars_30m), ATR_PERIOD + 1)):
+            bar = bars_30m[-i]
+            prev = bars_30m[-i - 1] if i < len(bars_30m) else bar
+            tr = max(
+                bar["high"] - bar["low"],
+                abs(bar["high"] - prev["close"]),
+                abs(bar["low"] - prev["close"]),
+            )
+            trs.append(tr)
+        return sum(trs) / len(trs) if trs else 40.0
 
     # ------------------------------------------------------------------
     # Level touch detection with debouncing
@@ -498,13 +549,37 @@ class ReplayEngine:
         return newly_touched
 
     # ------------------------------------------------------------------
+    # Zone entry detection with debouncing
+    # ------------------------------------------------------------------
+
+    def _check_zone_entry(self, price: float) -> list[Zone]:
+        """Detect newly-entered zones with debouncing."""
+        newly_entered: list[Zone] = []
+        still_inside: set[str] = set()
+
+        for zone in self._active_zones:
+            inside = zone.lower_bound <= price <= zone.upper_bound
+            snapped = round(zone.center_price / TICK_SIZE) * TICK_SIZE
+            key = f"zone_{snapped}"
+
+            if inside:
+                still_inside.add(key)
+                if key not in self._zone_keys:
+                    self._zone_keys.add(key)
+                    newly_entered.append(zone)
+
+        # Remove keys for zones price has exited
+        self._zone_keys -= (self._zone_keys - still_inside)
+        return newly_entered
+
+    # ------------------------------------------------------------------
     # State dict construction
     # ------------------------------------------------------------------
 
     def _build_state(
         self,
         tick: dict,
-        level_type: LevelType,
+        zone: Zone,
         session_date: datetime,
         date_str: str,
     ) -> dict:
@@ -525,6 +600,7 @@ class ReplayEngine:
         # TPO profile from 30m bars
         tpo_profile_dict: dict | None = None
         tpo_profile_obj = None  # TPOProfile object for setup detection
+        session_tpos = None     # Per-session TPO for RL features
         if bars_30m:
             profile = build_full_tpo_profile(bars_30m, tick_size=TICK_SIZE)
             tpo_profile_obj = profile  # Keep object for setup detection
@@ -559,6 +635,10 @@ class ReplayEngine:
                 "ib_low": profile.ib_low,
             }
 
+            # --- Per-session TPO (for RL observation) ---
+            # bars_30m from CandleAggregator have "ts" field (datetime)
+            session_tpos = compute_session_tpos(bars_30m, tick_size=TICK_SIZE)
+
         # Session context
         session_context = self._build_session_context(ts, bars_1m, session_date)
 
@@ -581,14 +661,40 @@ class ReplayEngine:
         else:
             day_type = "normal"
 
+        # Build 5m candle flows by grouping 1m flows in chunks of 5
+        candle_flows_5m: list = []
+        if len(self._candle_flows) >= 5:
+            for chunk_start in range(0, len(self._candle_flows) - 4, 5):
+                chunk = self._candle_flows[chunk_start:chunk_start + 5]
+                agg_high = max(c.high for c in chunk)
+                agg_low = min(c.low for c in chunk)
+                agg = CandleFlow(
+                    ts=chunk[-1].ts,
+                    open=chunk[0].open,
+                    high=agg_high,
+                    low=agg_low,
+                    close=chunk[-1].close,
+                    volume=sum(c.volume for c in chunk),
+                    buy_volume=sum(c.buy_volume for c in chunk),
+                    sell_volume=sum(c.sell_volume for c in chunk),
+                    delta=sum(c.delta for c in chunk),
+                    tick_count=sum(c.tick_count for c in chunk),
+                    spread=agg_high - agg_low,
+                )
+                candle_flows_5m.append(agg)
+
         return {
-            "level_type": level_type,
+            "zone": zone,
+            "all_zones": self._active_zones,
             "price": price,
+            "touch_epoch": ts.timestamp(),
             "candles": recent_flows,
+            "candles_5m": candle_flows_5m[-10:] if candle_flows_5m else [],
             "vwap_bands": vwap_bands,
             "volume_profile": vp,
             "tpo_profile": tpo_profile_dict,
             "tpo_profile_obj": tpo_profile_obj,
+            "session_tpos": session_tpos,
             "session_levels": self._session_levels,
             "all_levels": all_level_prices,
             "orderflow_signals": of_signals,
@@ -599,6 +705,10 @@ class ReplayEngine:
             "single_print_zones": (
                 self._precomputed.get("single_print_zones", [])
                 if self._precomputed else []
+            ),
+            "swing_structure": (
+                self._precomputed.get("swing_structure")
+                if self._precomputed else None
             ),
         }
 

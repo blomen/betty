@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 # Database path
-DB_PATH = Path(__file__).parent.parent / "data" / "bankrollbbq.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "firev.db"
 
 
 def get_connection():

@@ -8,10 +8,14 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, unquote
 
+from pathlib import Path
+
 from ..db.models import get_session, BetTrace, Bet
 from ..services.bet_service import BetService
 from .interceptor import BetInterceptor
 from .parsers.gecko import GeckoBetParser
+from .parsers.polymarket import PolymarketParser
+from .recipes import NotificationRecipe, load_recipes, save_recipes
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +28,25 @@ class MirrorService:
         self.provider_id = provider_id
         self.discovery = discovery
         self.parser = GeckoBetParser()
+        self.polymarket_parser = PolymarketParser()
         # Cache: gecko_event_id → {home_team, away_team, event_name}
         self._event_cache: dict[str, dict[str, str]] = {}
         # Pending settlements awaiting confirmation
         self._pending_settlements: list[dict] = []
+        # Notification mute recipes
+        self._recipes_dir: Path | None = None  # Set in tests; defaults to data dir
+        self._recipes: list[NotificationRecipe] = []
+        self._muted_providers: set[str] = set()
+        self._load_notification_recipes()
+        # Persistent tabs for Polymarket live edge: {slug: page}
+        self._poly_tabs: dict[str, any] = {}
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
             on_bet_history=self._handle_bet_history,
             on_financial_data=self._handle_financial_data,
             on_provider_detected=self._handle_provider_detected,
+            on_notification_settings=self._handle_notification_settings,
         )
 
     async def start(self, site_url: str | None = None):
@@ -43,6 +56,10 @@ class MirrorService:
     async def stop(self):
         """Stop the mirror browser."""
         await self.interceptor.stop()
+
+    # Verified SSR bet history — need DOM scraping, not API interception
+    # Only unibet confirmed; other Kambi operators may have XHR — verify before adding
+    _SSR_PROVIDERS = frozenset({"unibet"})
 
     async def _handle_provider_detected(self, provider_id: str):
         """Fires when user navigates to a known provider site."""
@@ -57,6 +74,194 @@ class MirrorService:
             "pending_bets": info["pending_bets"],
             "pending_stake": info["pending_stake"],
         })
+        # Auto-mute notifications if we have a recipe
+        await self._replay_notification_mute(provider_id)
+        # Polymarket: scrape cash balance from DOM (not available via API)
+        if provider_id == "polymarket":
+            asyncio.ensure_future(self._scrape_polymarket_balance())
+        # Auto-scrape bet history for SSR providers when pending bets exist
+        if provider_id in self._SSR_PROVIDERS and info["pending_bets"] > 0:
+            asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+
+    async def _scrape_polymarket_balance(self):
+        """Scrape USDC cash balance from Polymarket DOM.
+
+        The cash balance is rendered client-side (not from a single API endpoint).
+        The nav shows "Cash$101.51" — we extract the dollar amount from that text.
+        """
+        await asyncio.sleep(3)  # Wait for page to render
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        page = context.pages[0]
+        try:
+            balance_text = await page.evaluate(
+                "() => {"
+                "  const els = document.querySelectorAll('button, a, span, div');"
+                "  for (const el of els) {"
+                "    const text = el.textContent || '';"
+                "    const match = text.match(/Cash\\s*\\$([\\d,.]+)/);"
+                "    if (match) return match[1];"
+                "  }"
+                "  return null;"
+                "}"
+            )
+            if balance_text:
+                balance = float(balance_text.replace(",", ""))
+                logger.info(f"[mirror] Polymarket cash balance from DOM: ${balance}")
+                await asyncio.to_thread(self._sync_balance, "polymarket", balance)
+            else:
+                logger.debug("[mirror] Could not find Polymarket cash balance in DOM")
+        except Exception as e:
+            logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
+
+    async def _auto_scrape_bet_history(self, provider_id: str):
+        """Wait for page to load, then navigate to bet history and scrape."""
+        # Wait for page to fully load
+        await asyncio.sleep(5)
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        page = context.pages[0]
+        current_url = page.url
+
+        # Navigate to bet history if not already there
+        bet_history_paths = {
+            "unibet": "/betting/sports/bethistory",
+            "leovegas": "/betting/sports/bethistory",
+            "expekt": "/betting/sports/bethistory",
+            "888sport": "/betting/sports/bethistory",
+            "speedybet": "/betting/sports/bethistory",
+            "x3000": "/betting/sports/bethistory",
+            "goldenbull": "/betting/sports/bethistory",
+            "betmgm": "/betting/sports/bethistory",
+        }
+        hist_path = bet_history_paths.get(provider_id)
+        if not hist_path:
+            return
+
+        if hist_path not in current_url:
+            # Navigate to bet history
+            try:
+                from urllib.parse import urlparse
+                origin = urlparse(current_url)
+                hist_url = f"{origin.scheme}://{origin.netloc}{hist_path}"
+                logger.info(f"[mirror] Auto-navigating to bet history: {hist_url}")
+                await page.goto(hist_url, wait_until="networkidle", timeout=15000)
+                await asyncio.sleep(3)  # Let JS render
+            except Exception as e:
+                logger.warning(f"[mirror] Could not navigate to bet history: {e}")
+                return
+
+        # Scrape the page
+        await self._scrape_ssr_bet_history(provider_id, page)
+
+    async def _scrape_ssr_bet_history(self, provider_id: str, page):
+        """Scrape SSR bet history from current page and stage settlements."""
+        import re
+
+        try:
+            raw_text = await page.evaluate("() => document.body.innerText")
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read page text: {e}")
+            return
+
+        # Parse Kambi bet history format (Swedish)
+        bet_pattern = re.compile(
+            r'Singel\s*@\s*([\d.]+)\s+'
+            r'(Vinst|F.rlust|Oavgjord|Cashout)\s+'
+            r'(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+'
+            r'Kupong-Id:\s*(\d+)\s+'
+            r'(.*?)'
+            r'Insats:\s*([\d.,]+)\s*kr'
+            r'(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?',
+            re.DOTALL
+        )
+
+        scraped = []
+        seen = set()
+        for m in bet_pattern.finditer(raw_text):
+            cid = m.group(5)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            result_raw = m.group(2)
+            if "rlust" in result_raw:
+                result = "lost"
+            elif result_raw == "Vinst":
+                result = "won"
+            elif result_raw == "Oavgjord":
+                result = "void"
+            else:
+                result = "cashout"
+            scraped.append({
+                "odds": float(m.group(1)),
+                "result": result,
+                "stake": float(m.group(7).replace(",", ".")),
+                "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
+                "event": m.group(6).strip().replace("\n", " ")[:80],
+            })
+
+        if not scraped:
+            logger.info(f"[mirror] SSR scrape found 0 bets for {provider_id}")
+            return
+
+        logger.info(f"[mirror] SSR scrape found {len(scraped)} bets for {provider_id}")
+
+        # Match against pending bets
+        pending = await asyncio.to_thread(self._get_pending_bets_sync, provider_id)
+        staged = []
+        for pb in pending:
+            for sb in scraped:
+                if abs(sb["odds"] - pb["odds"]) < 0.02 and abs(sb["stake"] - pb["stake"]) < 0.02:
+                    staged.append({
+                        "bet_id": pb["id"],
+                        "provider": provider_id,
+                        "event": sb["event"],
+                        "odds": sb["odds"],
+                        "stake": sb["stake"],
+                        "result": sb["result"],
+                        "payout": sb["payout"],
+                    })
+                    break
+
+        if staged:
+            self._pending_settlements = staged
+            wins = [s for s in staged if s["result"] == "won"]
+            losses = [s for s in staged if s["result"] == "lost"]
+            logger.info(
+                f"[mirror] Staged {len(staged)} SSR settlement(s) from {provider_id}: "
+                f"{len(wins)}W {len(losses)}L"
+            )
+            self._notify("settlements_pending", {
+                "provider": provider_id,
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": sum(s["stake"] for s in staged),
+                "total_payout": sum(s["payout"] for s in staged),
+                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                "settlements": staged,
+            })
+
+    def _get_pending_bets_sync(self, provider_id: str) -> list[dict]:
+        """Get pending bets for a provider."""
+        from ..repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            profile = ProfileRepo(db).get_active()
+            pending = db.query(Bet).filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == provider_id,
+                Bet.result == "pending",
+            ).all()
+            return [{"id": b.id, "odds": b.odds, "stake": b.stake} for b in pending]
+        finally:
+            db.close()
 
     def _get_provider_sync_info(self, provider_id: str) -> dict:
         """Get current balance + pending bet count for a provider."""
@@ -111,14 +316,53 @@ class MirrorService:
     async def _handle_bet_history(self, url: str, response_body: str, request_body: str | None = None):
         """Auto-settle pending bets from bet history responses.
 
-        Altenar status codes: 1=won, 2=lost, 3=void/cancelled, 4=cashout.
+        Supports:
+        - Altenar: {"bets": [...]} with status codes 1=won, 2=lost, 3=void, 4=cashout
+        - Gecko V2 coupon-history: {"data": {"coupons": [...]}} with couponStatus "Won"/"Lost"/"Void"
         """
         try:
             data = json.loads(response_body)
         except json.JSONDecodeError:
             return
 
-        bets = data.get("bets", [])
+        # Gecko V2 coupon-history format: normalize to Altenar-compatible format
+        if "coupon-history" in url:
+            coupons = data.get("data", {}).get("coupons", [])
+            # Always store trace for debugging
+            provider_id = self._detect_provider(url)
+            await asyncio.to_thread(
+                self._store_trace_sync, provider_id, url, request_body, response_body, "history"
+            )
+            if not coupons:
+                return
+            # Gecko V2 coupon-history: betsStatus dict has {"won": N} or {"lost": N} etc.
+            bets = []
+            for c in coupons:
+                bs = c.get("betsStatus", {})
+                if "won" in bs:
+                    status_code = 1
+                elif "lost" in bs:
+                    status_code = 2
+                elif "void" in bs or "cancelled" in bs:
+                    status_code = 3
+                elif "cashedOut" in bs:
+                    status_code = 4
+                else:
+                    continue
+                event_names = c.get("eventNames", [])
+                event_name = event_names[0] if event_names else ""
+                # Normalize "Home - Away" to "Home vs Away"
+                event_name = event_name.replace(" - ", " vs ")
+                bets.append({
+                    "status": status_code,
+                    "totalStake": c.get("stake", 0),
+                    "totalOdds": c.get("totalOdds", 0),
+                    "totalWin": c.get("totalPayout", 0),
+                    "eventName": event_name,
+                })
+        else:
+            bets = data.get("bets", [])
+
         if not bets:
             return
 
@@ -252,6 +496,94 @@ class MirrorService:
         self._pending_settlements.clear()
         return {"rejected": count}
 
+    def settle_polymarket_bets(self) -> list[dict]:
+        """Check for resolved Polymarket markets and stage settlements for pending bets.
+
+        Uses the Gamma API (via PolymarketRetriever.fetch_resolved) to find finished events,
+        then matches against pending Polymarket bets.
+        """
+        from ..db.models import get_session, Bet, Odds, Event
+        from ..repositories.profile_repo import ProfileRepo
+
+        db = get_session()
+        staged = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            pending = db.query(Bet).filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == "polymarket",
+                Bet.result == "pending",
+            ).all()
+
+            if not pending:
+                return []
+
+            # For each pending bet, check if its event has resolved
+            for bet in pending:
+                if not bet.event_id:
+                    continue
+
+                # Check if the event is finished
+                event = db.get(Event, bet.event_id)
+                if not event or event.status != "finished":
+                    continue
+
+                # Look at resolved odds for this bet's market/outcome
+                odds = db.query(Odds).filter(
+                    Odds.event_id == bet.event_id,
+                    Odds.provider == "polymarket",
+                    Odds.market == bet.market,
+                    Odds.outcome == bet.outcome,
+                ).first()
+
+                if not odds or not odds.provider_meta:
+                    continue
+
+                # Determine result from the event resolution
+                # Binary market: resolved price of ~1.0 means won, ~0.0 means lost
+                result = "pending"
+                payout = 0.0
+
+                if odds.odds and odds.odds <= 1.01:
+                    # This outcome resolved to $1 — won
+                    result = "won"
+                    payout = bet.stake / (1 / odds.odds) if odds.odds > 0 else 0
+                elif odds.odds and odds.odds >= 50.0:
+                    # Extreme odds = resolved to $0 — lost
+                    result = "lost"
+                    payout = 0
+
+                if result != "pending":
+                    staged.append({
+                        "bet_id": bet.id,
+                        "provider": "polymarket",
+                        "event": (event.home_team or "") + " vs " + (event.away_team or "") if event.home_team else "Unknown",
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": result,
+                        "payout": payout,
+                    })
+
+        except Exception as e:
+            logger.error(f"[mirror] Polymarket settlement check failed: {e}", exc_info=True)
+        finally:
+            db.close()
+
+        if staged:
+            self._pending_settlements.extend(staged)
+            self._notify("settlements_pending", {
+                "provider": "polymarket",
+                "count": len(staged),
+                "wins": len([s for s in staged if s["result"] == "won"]),
+                "losses": len([s for s in staged if s["result"] == "lost"]),
+                "total_staked": sum(s["stake"] for s in staged),
+                "total_payout": sum(s["payout"] for s in staged),
+                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                "settlements": staged,
+            })
+
+        return staged
+
     def get_pending_settlements(self) -> list[dict]:
         """Return current pending settlements for review."""
         return self._pending_settlements
@@ -269,7 +601,34 @@ class MirrorService:
 
         balance = self._extract_balance(provider_id, data)
         if balance is not None:
-            await asyncio.to_thread(self._sync_balance, provider_id, balance)
+            # Polymarket: /value returns portfolio value (positions), not cash.
+            # Cash balance has no API — scrape from DOM every time we see /value traffic.
+            if provider_id == "polymarket":
+                await self._scrape_polymarket_balance()
+            else:
+                await asyncio.to_thread(self._sync_balance, provider_id, balance)
+
+        # Polymarket: store deposit trace from Swapped widget
+        if "swapped.com" in url and "create_order" in url:
+            deposit = self.polymarket_parser.parse_deposit(url, response_body)
+            if deposit:
+                logger.info(f"[mirror] Polymarket deposit initiated: ${deposit['amount']} {deposit['currency']}")
+                self._notify("deposit_initiated", {
+                    "provider": "polymarket",
+                    "amount": deposit["amount"],
+                    "currency": deposit["currency"],
+                    "order_id": deposit["order_id"],
+                })
+
+        # Polymarket: parse and broadcast open orders
+        if "clob.polymarket.com/data/orders" in url:
+            orders = self.polymarket_parser.parse_orders(response_body)
+            if orders:
+                self._notify("polymarket_orders", {
+                    "orders": orders,
+                    "count": len(orders),
+                    "open": len([o for o in orders if o["status"] == "live"]),
+                })
 
         # Store trace for audit
         await asyncio.to_thread(
@@ -277,33 +636,64 @@ class MirrorService:
         )
 
     def _extract_balance(self, provider_id: str, data: dict) -> float | None:
-        """Extract cash balance from provider-specific response format."""
+        """Extract total balance (cash + bonus) from provider-specific response format."""
         try:
-            # Kambi / Unibet: {"balance": {"cash": 384.10, ...}}
+            # Polymarket: [{"user": "0x...", "value": 123.45}]
+            if isinstance(data, list):
+                if data and "user" in data[0] and "value" in data[0]:
+                    return float(data[0]["value"])
+                # No other balance format uses a bare list — fall through to GraphQL relay below
+                if not data:
+                    return None
+
+            # Kambi / Unibet: {"balance": {"cash": 384.10, "bonus": 0, ...}}
             if "balance" in data and isinstance(data["balance"], dict):
                 bal = data["balance"]
-                if "cash" in bal:
-                    return float(bal["cash"])
+                total = float(bal.get("cash", 0)) + float(bal.get("bonus", 0))
+                if total > 0:
+                    return total
                 if "total" in bal:
                     return float(bal["total"])
 
             # Altenar (quickcasino, betinia, etc.):
-            # {"result": {"cash": {"total": 243.5, ...}}}
+            # {"result": {"cash": {"total": 243.5}, "bonus": {"total": 500}}}
             result = data.get("result", {})
             if isinstance(result, dict) and "cash" in result:
                 cash = result["cash"]
-                if isinstance(cash, dict):
-                    return float(cash.get("total", cash.get("available", 0)))
-                return float(cash)
+                cash_val = float(cash.get("total", cash.get("available", 0))) if isinstance(cash, dict) else float(cash)
+                bonus = result.get("bonus", {})
+                bonus_val = float(bonus.get("total", 0)) if isinstance(bonus, dict) else 0
+                return cash_val + bonus_val
+
+            # Pinnacle: {"amount": 535.0, "currency": "SEK"}
+            if "amount" in data and "currency" in data:
+                amt = float(data["amount"])
+                if amt >= 0:
+                    return amt
 
             # Gecko V2 / Spelklubben:
-            # {"Balances": {"SEK": {"Real": {"Balance": 1087.14}}}}
+            # {"Balances": {"SEK": {"Real": {"Balance": 907}, "Bonus": {"Balance": 500}}}}
             balances = data.get("Balances", {})
             for currency, parts in balances.items():
                 if isinstance(parts, dict):
                     real = parts.get("Real", parts.get("Total", {}))
                     if isinstance(real, dict) and "Balance" in real:
-                        return float(real["Balance"])
+                        real_bal = float(real["Balance"])
+                        bonus_part = parts.get("Bonus", {})
+                        bonus_bal = float(bonus_part.get("Balance", 0)) if isinstance(bonus_part, dict) else 0
+                        return real_bal + bonus_bal
+
+            # GraphQL relay (LeoVegas):
+            # {"data":{"viewer":{"user":{"balance":{"amount":1076,"totalAmount":1076,"currency":"SEK"}}}}}
+            # Also handles array response: [{"data":{"viewer":{"user":{"balance":...}}}}]
+            relay = data
+            if isinstance(data, list) and data:
+                relay = data[0]
+            viewer = relay.get("data", {}).get("viewer", {})
+            user = viewer.get("user", {})
+            bal = user.get("balance", {}) if isinstance(user, dict) else {}
+            if isinstance(bal, dict) and "totalAmount" in bal:
+                return float(bal["totalAmount"])
 
         except (TypeError, ValueError, KeyError) as e:
             logger.debug(f"[mirror] Could not extract balance for {provider_id}: {e}")
@@ -325,11 +715,17 @@ class MirrorService:
                     f"[mirror] Balance synced: {provider_id} "
                     f"{old_balance:.2f} → {balance:.2f} SEK"
                 )
-                self._notify("balance_synced", {
+                delta = balance - (old_balance or 0)
+                event_data = {
                     "provider": provider_id,
                     "balance": balance,
                     "previous": old_balance,
-                })
+                    "delta": round(delta, 2),
+                }
+                self._notify("balance_synced", event_data)
+                # Positive delta = deposit detected
+                if delta > 0.01:
+                    self._notify("deposit_detected", event_data)
         except Exception as e:
             db.rollback()
             logger.error(f"[mirror] Balance sync failed for {provider_id}: {e}")
@@ -635,34 +1031,60 @@ class MirrorService:
         "x3000se": "x3000",
         "gbse": "goldenbull",
         "1x2se": "1x2",
+        "betmgmse": "betmgm",
     }
 
     def _detect_provider(self, url: str) -> str:
         """Best-effort provider detection from URL domain or path."""
         url_lower = url.lower()
-        # Direct domain matches
+        # Direct domain matches — keyword in URL → provider_id
         domain_map = {
+            # Altenar
+            "campobet": "campobet",
+            "quickcasino": "quickcasino",
+            "betinia": "betinia",
+            "swiper": "swiper",
+            "lodur": "lodur",
+            "dbet": "dbet",
+            # Gecko V2
             "spelklubben": "spelklubben",
             "betsson": "betsson",
             "betsafe": "betsafe",
             "nordicbet": "nordicbet",
+            "bethard": "bethard",
             "hajper": "hajper",
-            "quickcasino": "quickcasino",
-            "comeon": "comeon",
-            "pinnacle": "pinnacle",
+            # Kambi
             "unibet": "unibet",
-            "888sport": "888sport",
             "leovegas": "leovegas",
             "expekt": "expekt",
-            "campobet": "campobet",
-            "betinia": "betinia",
-            "lodur": "lodur",
-            "swiper": "swiper",
-            "dbet": "dbet",
+            "888sport": "888sport",
+            "speedybet": "speedybet",
+            "x3000": "x3000",
+            "goldenbull": "goldenbull",
+            "1x2": "1x2",
+            "betmgm": "betmgm",
+            # Custom / other
+            "comeon": "comeon",
+            "lyllocasino": "lyllo",
+            "snabbare": "snabbare",
+            "10bet": "10bet",
+            "mrgreen": "mrgreen",
+            "vbet": "vbet",
+            "interwetten": "interwetten",
+            "coolbet": "coolbet",
+            "tipwin": "tipwin",
+            # Sharp
+            "pinnacle": "pinnacle",
+            # Polymarket
+            "polymarket": "polymarket",
         }
         for keyword, provider_id in domain_map.items():
             if keyword in url_lower:
                 return provider_id
+
+        # Polymarket data API
+        if "polymarket" in url_lower or "swapped.com" in url_lower:
+            return "polymarket"
 
         # Kambi operator code in URL path (e.g. /ubse/coupon.json)
         if "kambi" in url_lower:
@@ -816,6 +1238,646 @@ class MirrorService:
 
         logger.warning(f"[mirror] No match for {home} vs {away} (best={best_score:.0f})")
         return None
+
+    def _load_notification_recipes(self):
+        """Load recipes from disk on init."""
+        self._recipes = load_recipes(self._recipes_dir)
+        if self._recipes:
+            active = [r for r in self._recipes if r.status == "active"]
+            logger.info(f"[mirror] Loaded {len(active)} active notification recipes")
+
+    def _save_notification_recipes(self):
+        """Persist recipes to disk."""
+        save_recipes(self._recipes, self._recipes_dir)
+
+    async def _handle_notification_settings(
+        self, url: str, method: str, request_body: str | None,
+        response_body: str, content_type: str,
+    ):
+        """Capture a notification settings API call as a recipe."""
+        provider_id = self._detect_provider(url)
+        if provider_id == "unknown":
+            logger.debug(f"[mirror] Notification settings call from unknown provider: {url}")
+            return
+
+        recipe = NotificationRecipe(
+            provider_id=provider_id,
+            captured_at=datetime.now(timezone.utc).isoformat(),
+            method=method,
+            url=url,
+            content_type=content_type or "application/json",
+            body=request_body or "",
+            status="active",
+        )
+
+        # Replace existing recipe for this provider
+        self._recipes = [r for r in self._recipes if r.provider_id != provider_id]
+        self._recipes.append(recipe)
+        self._save_notification_recipes()
+
+        logger.info(f"[mirror] Captured notification mute recipe for {provider_id}: {method} {url}")
+        self._notify("notification_recipe_captured", {
+            "provider": provider_id,
+            "method": method,
+            "url": url,
+        })
+
+    async def _replay_notification_mute(self, provider_id: str):
+        """Replay a stored notification mute recipe for a provider."""
+        if provider_id in self._muted_providers:
+            return
+
+        recipe = next((r for r in self._recipes if r.provider_id == provider_id and r.status == "active"), None)
+        if not recipe:
+            return
+
+        context = self.interceptor.context
+        if not context:
+            return
+
+        try:
+            # Small delay for auth cookies to settle after navigation
+            await asyncio.sleep(2)
+
+            resp = await context.request.fetch(
+                recipe.url,
+                method=recipe.method,
+                headers={"content-type": recipe.content_type},
+                data=recipe.body if recipe.body else None,
+                timeout=10000,
+            )
+
+            if resp.status < 400:
+                self._muted_providers.add(provider_id)
+                logger.info(f"[mirror] Notifications muted for {provider_id} (HTTP {resp.status})")
+                self._notify("notifications_muted", {"provider": provider_id})
+            else:
+                recipe.status = "stale"
+                self._save_notification_recipes()
+                logger.warning(f"[mirror] Mute replay failed for {provider_id} (HTTP {resp.status}) — recipe marked stale")
+                self._notify("notifications_mute_failed", {"provider": provider_id, "status": resp.status})
+
+        except Exception as e:
+            logger.error(f"[mirror] Mute replay error for {provider_id}: {e}")
+
+    def get_notification_recipes(self) -> list[dict]:
+        """Return all recipes as dicts for API response."""
+        return [r.to_dict() for r in self._recipes]
+
+    def delete_notification_recipe(self, provider_id: str) -> bool:
+        """Delete a recipe by provider ID. Returns True if found and deleted."""
+        before = len(self._recipes)
+        self._recipes = [r for r in self._recipes if r.provider_id != provider_id]
+        if len(self._recipes) < before:
+            self._save_notification_recipes()
+            self._muted_providers.discard(provider_id)
+            return True
+        return False
+
+    def _fetch_fair_odds(self, event_ids: list[str]) -> dict[str, dict[str, float]]:
+        """Fetch Pinnacle devigged fair odds for events from DB.
+
+        Returns: {event_id: {outcome: fair_odds}} where fair_odds are devigged.
+        """
+        from ..db.models import get_session, Odds
+        from ..analysis.devig import get_fair_odds_for_outcome
+        from collections import defaultdict
+
+        db = get_session()
+        try:
+            pinnacle_rows = (
+                db.query(Odds)
+                .filter(
+                    Odds.event_id.in_(event_ids),
+                    Odds.provider_id == "pinnacle",
+                )
+                .all()
+            )
+
+            # Group by (event_id, market, point) to build full markets for devigging
+            markets: dict[tuple, dict[str, float]] = defaultdict(dict)
+            for row in pinnacle_rows:
+                key = (row.event_id, row.market, row.point)
+                markets[key][row.outcome] = row.odds
+
+            # Devig each market, build result
+            result: dict[str, dict[str, float]] = defaultdict(dict)
+            for (event_id, market, point), market_odds in markets.items():
+                if len(market_odds) >= 2:
+                    for outcome in market_odds:
+                        fair = get_fair_odds_for_outcome(outcome, market_odds, method="multiplicative")
+                        if fair is not None:
+                            result[event_id][outcome] = fair
+                else:
+                    # Single outcome (e.g. spread) — use raw as conservative estimate
+                    for outcome, odds_val in market_odds.items():
+                        result[event_id][outcome] = odds_val
+            return dict(result)
+        finally:
+            db.close()
+
+    def _btn_index_for_outcome(self, original_outcome: str, market_type: str) -> int:
+        """Map outcome to Polymarket trading button index."""
+        if original_outcome in ("home", "over"):
+            return 0
+        elif original_outcome == "draw":
+            return 1
+        elif original_outcome in ("away", "under"):
+            return 2 if market_type == "1x2" else 1
+        return 0
+
+    @staticmethod
+    def _market_url(slug: str) -> str:
+        """Build Polymarket sports market URL from slug."""
+        league = slug.split("-")[0] if slug else ""
+        return f"https://polymarket.com/sports/{league}/{slug}"
+
+    @staticmethod
+    async def _read_btn_prices(page) -> list[dict]:
+        """Read all trading button prices from a Polymarket page."""
+        return await page.evaluate(
+            "() => {"
+            "  const btns = [...document.querySelectorAll('button.trading-button')];"
+            "  return btns.map(b => {"
+            "    const text = b.textContent || '';"
+            "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+            "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
+            "    return {text: text.trim().slice(0, 40), price};"
+            "  });"
+            "}"
+        )
+
+    async def _ensure_poly_tabs(self, bets: list[dict]) -> None:
+        """Ensure exactly one tab per unique market slug in the current batch.
+
+        - Closes tabs for slugs no longer needed
+        - Cleans up stale/closed tabs
+        - Opens new tabs for unseen slugs
+        """
+        import asyncio
+
+        context = self.interceptor.context
+        if not context:
+            return
+
+        wanted_slugs = {b["market_slug"] for b in bets}
+
+        # Close tabs for slugs not in current batch + clean stale
+        for slug in list(self._poly_tabs):
+            try:
+                page = self._poly_tabs[slug]
+                if page.is_closed() or slug not in wanted_slugs:
+                    if not page.is_closed():
+                        await page.close()
+                    del self._poly_tabs[slug]
+            except Exception:
+                self._poly_tabs.pop(slug, None)
+
+        # Find slugs that need new tabs
+        needed_slugs = wanted_slugs - set(self._poly_tabs)
+        if not needed_slugs:
+            return
+
+        # Open new tabs for missing slugs
+        async def open_tab(slug):
+            url = self._market_url(slug)
+            try:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+                self._poly_tabs[slug] = page
+            except Exception as e:
+                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
+
+        await asyncio.gather(*[open_tab(slug) for slug in needed_slugs])
+
+    async def close_poly_tabs(self) -> None:
+        """Close all persistent Polymarket tabs."""
+        for slug in list(self._poly_tabs):
+            try:
+                await self._poly_tabs.pop(slug).close()
+            except Exception:
+                self._poly_tabs.pop(slug, None)
+
+    async def get_live_edge(self, bets: list[dict]) -> dict:
+        """Read live Polymarket prices from persistent tabs, compare against Pinnacle fair odds.
+
+        Reuses tabs across poll cycles — only opens new tabs for unseen markets.
+
+        Each bet dict: {bet_id, market_slug, outcome, expected_price, amount_usdc,
+                        event_id, original_odds, _original_outcome, _market_type}
+        Returns: {bets: [{bet_id, outcome, event_id, live_odds, fair_odds, edge_pct, stake, status}]}
+        """
+        import asyncio
+        from ..analysis.value import compute_edge
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "bets": []}
+
+        # Fetch Pinnacle fair odds for all events in batch
+        event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
+        fair_odds_map = await asyncio.to_thread(self._fetch_fair_odds, event_ids)
+
+        # Ensure tabs are open (reuses existing ones)
+        await self._ensure_poly_tabs(bets)
+
+        # Read prices from persistent tabs
+        results = []
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            slug = bet["market_slug"]
+            outcome = bet["outcome"]
+            amount = bet["amount_usdc"]
+            original_outcome = bet.get("_original_outcome", outcome).lower()
+            market_type = bet.get("_market_type", "")
+            event_id = bet.get("event_id", "")
+
+            event_fair = fair_odds_map.get(event_id, {})
+            fair = event_fair.get(original_outcome)
+            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
+
+            page = self._poly_tabs.get(slug)
+            if page is None:
+                results.append({
+                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                    "edge_pct": None, "stake": amount,
+                    "status": "error", "reason": "Page load failed",
+                })
+                continue
+
+            try:
+                btn_data = await self._read_btn_prices(page)
+
+                if btn_index < len(btn_data) and btn_data[btn_index]["price"] is not None:
+                    live_price = btn_data[btn_index]["price"]
+                    live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+                    edge_pct = compute_edge("polymarket", live_odds, fair) if fair else None
+
+                    status = "value" if edge_pct is not None and edge_pct > 0 else (
+                        "negative" if edge_pct is not None else "no-sharp"
+                    )
+                    results.append({
+                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                        "live_odds": live_odds, "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                        "stake": amount, "status": status,
+                    })
+                else:
+                    results.append({
+                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                        "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": None, "stake": amount,
+                        "status": "error", "reason": f"No price at button index {btn_index}",
+                    })
+            except Exception as e:
+                results.append({
+                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                    "edge_pct": None, "stake": amount,
+                    "status": "error", "reason": str(e),
+                })
+
+        self._notify("live_edge_complete", {"bets": results})
+        return {"bets": results}
+
+    async def fire_with_live_edge(self, bets: list[dict]) -> dict:
+        """Use persistent tabs to read live prices, auto-fire bets with positive edge.
+
+        Reuses tabs from _poly_tabs. Places bets on their respective tabs.
+        Closes all tabs after firing is complete.
+
+        Returns: {placed: [...], skipped: [...], negative: [...], errors: [], total: N}
+        """
+        import asyncio
+        from ..analysis.value import compute_edge
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "placed": [], "skipped": [], "negative": [], "errors": []}
+
+        # Fetch Pinnacle fair odds for all events
+        event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
+        fair_odds_map = await asyncio.to_thread(self._fetch_fair_odds, event_ids)
+
+        # Ensure tabs are open (reuses existing ones)
+        await self._ensure_poly_tabs(bets)
+
+        placed = []
+        skipped = []
+        negative = []
+        errors = []
+
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            event_id = bet.get("event_id", "")
+            outcome = bet["outcome"]
+            original_outcome = bet.get("_original_outcome", outcome).lower()
+            market_type = bet.get("_market_type", "")
+            slug = bet["market_slug"]
+            amount = bet["amount_usdc"]
+            expected_price = bet["expected_price"]
+            max_slippage = bet.get("max_slippage_pct", 2.0)
+
+            event_fair = fair_odds_map.get(event_id, {})
+            fair = event_fair.get(original_outcome)
+
+            if fair is None:
+                errors.append({"bet_id": bet_id, "reason": "No Pinnacle fair odds", "status": "no-sharp"})
+                continue
+
+            page = self._poly_tabs.get(slug)
+            if page is None:
+                errors.append({"bet_id": bet_id, "reason": "Page load failed", "status": "error"})
+                continue
+
+            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
+
+            try:
+                btn_data = await self._read_btn_prices(page)
+            except Exception as e:
+                errors.append({"bet_id": bet_id, "reason": f"Could not read prices: {e}", "status": "error"})
+                continue
+
+            if btn_index >= len(btn_data) or btn_data[btn_index]["price"] is None:
+                errors.append({"bet_id": bet_id, "reason": f"No price at button index {btn_index}", "status": "error"})
+                continue
+
+            live_price = btn_data[btn_index]["price"]
+            live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+            edge_pct = compute_edge("polymarket", live_odds, fair)
+
+            if edge_pct is None or edge_pct <= 0:
+                negative.append({
+                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                    "status": "negative",
+                })
+                self._notify("live_edge_skip", {
+                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                })
+                continue
+
+            # Edge is positive — place the bet on its tab
+            logger.info(
+                f"[mirror] Firing bet {bet_id}: live_odds={live_odds}, "
+                f"fair_odds={fair:.2f}, edge={edge_pct:.1f}%"
+            )
+            self._notify("live_edge_firing", {
+                "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                "edge_pct": round(edge_pct, 1),
+            })
+
+            result = await self._place_single_polymarket_bet(
+                page, bet_id, slug, outcome, amount, expected_price, max_slippage,
+                original_outcome=bet.get("_original_outcome", outcome),
+                market_type=market_type,
+            )
+
+            if result.get("status") == "placed":
+                result["live_odds"] = live_odds
+                result["fair_odds"] = round(fair, 2)
+                result["edge_pct"] = round(edge_pct, 1)
+                placed.append(result)
+            elif result.get("status") == "skipped":
+                result["live_odds"] = live_odds
+                result["fair_odds"] = round(fair, 2)
+                result["edge_pct"] = round(edge_pct, 1)
+                skipped.append(result)
+            else:
+                errors.append(result)
+
+        # Close all tabs after firing
+        await self.close_poly_tabs()
+
+        summary = {
+            "placed": placed, "skipped": skipped, "negative": negative, "errors": errors,
+            "total": len(bets),
+        }
+        self._notify("fire_live_complete", summary)
+        return summary
+
+    async def place_polymarket_bets(self, bets: list[dict]) -> dict:
+        """Place bets on Polymarket via Playwright UI automation.
+
+        Each bet dict: {bet_id, market_slug, token_id, outcome, amount_usdc, expected_price, max_slippage_pct}
+        Returns: {placed: [...], skipped: [...], failed: [...], total: N}
+        """
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "placed": [], "skipped": [], "failed": [], "total": 0}
+
+        page = context.pages[0]
+        placed = []
+        skipped = []
+        failed = []
+
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            slug = bet["market_slug"]
+            outcome = bet["outcome"]
+            amount = bet["amount_usdc"]
+            expected_price = bet["expected_price"]
+            max_slippage = bet.get("max_slippage_pct", 2.0)
+
+            self._notify("polymarket_bet_placing", {
+                "bet_id": bet_id, "market_slug": slug,
+                "outcome": outcome, "amount": amount,
+            })
+
+            try:
+                original_outcome = bet.get("_original_outcome", outcome)
+                market_type = bet.get("_market_type", "")
+                result = await self._place_single_polymarket_bet(
+                    page, bet_id, slug, outcome, amount, expected_price, max_slippage,
+                    original_outcome=original_outcome, market_type=market_type,
+                )
+                if result["status"] == "placed":
+                    placed.append(result)
+                elif result["status"] == "skipped":
+                    skipped.append(result)
+                else:
+                    failed.append(result)
+            except Exception as e:
+                logger.error(f"[mirror] Polymarket bet {bet_id} failed: {e}", exc_info=True)
+                result = {"bet_id": bet_id, "status": "failed", "reason": str(e)}
+                failed.append(result)
+                self._notify("polymarket_bet_failed", result)
+
+        summary = {"placed": placed, "skipped": skipped, "failed": failed, "total": len(bets)}
+        self._notify("polymarket_batch_complete", {
+            "placed": len(placed), "skipped": len(skipped),
+            "failed": len(failed), "total": len(bets),
+        })
+        return summary
+
+    async def _place_single_polymarket_bet(
+        self, page, bet_id: int, slug: str, outcome: str,
+        amount: float, expected_price: float, max_slippage: float,
+        original_outcome: str = "", market_type: str = "",
+    ) -> dict:
+        """Place a single bet on Polymarket via browser automation.
+
+        Discovered DOM structure (2026-04-01):
+        - Order panel: div with class containing 'shadow-md' and 'bg-surface-1'
+        - Buy/Sell toggle: button[role="radio"] with text "Buy" / "Sell"
+        - Outcome buttons: button.trading-button[role="radio"] containing "Yes"/"No" + price
+        - Amount input: input[placeholder="$0"]
+        - Quick amounts: buttons with text "+$1", "+$5", "+$10", "+$100", "Max"
+        - Submit: button.trading-button with text "Buy Yes" / "Buy No" etc.
+        """
+        import asyncio
+
+        # 1. Navigate to market page
+        # Polymarket sports URLs: /sports/{league}/{slug} or just /{slug}
+        # Extract league prefix from slug (e.g. "bra2" from "bra2-juv-nov-2026-03-31")
+        slug_parts = slug.split("-")
+        league = slug_parts[0] if slug_parts else ""
+        market_url = f"https://polymarket.com/sports/{league}/{slug}"
+        logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
+        await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Wait for trading buttons to appear (React hydration)
+        try:
+            await page.wait_for_selector('button.trading-button', timeout=15000)
+        except Exception:
+            await asyncio.sleep(5)  # Fallback wait
+
+        # 2. Click the outcome's trading-button on the market card
+        # Buttons use abbreviations (e.g. "juv27¢") not full team names.
+        # Strategy: use positional index based on outcome type:
+        #   1x2:        home=0, draw=1, away=2
+        #   moneyline:  home=0, away=1
+        #   spread/total: home=0, away=1 (or over=0, under=1)
+        outcome_lower = (original_outcome or outcome).lower()
+        try:
+            if outcome_lower in ("home", "over"):
+                btn_index = 0
+            elif outcome_lower == "draw":
+                btn_index = 1
+            elif outcome_lower in ("away", "under"):
+                # For 1x2 away is index 2, for moneyline it's index 1
+                btn_index = 2 if market_type == "1x2" else 1
+            else:
+                btn_index = 0  # fallback
+
+            clicked = await page.evaluate(
+                "(idx) => {"
+                "  const btns = document.querySelectorAll('button.trading-button');"
+                "  if (idx < btns.length) {"
+                "    btns[idx].click();"
+                "    return btns[idx].textContent.trim().slice(0, 40);"
+                "  }"
+                "  return null;"
+                "}",
+                btn_index,
+            )
+            if not clicked:
+                return {"bet_id": bet_id, "status": "failed", "reason": f"No trading button at index {btn_index} for '{outcome}'"}
+            logger.info(f"[mirror] Clicked outcome button #{btn_index}: '{clicked}' for bet {bet_id}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click outcome: {e}"}
+
+        # 3. Read current price from the selected outcome button and check slippage
+        try:
+            # The trading-button text format is "Yes0.1¢" or "No52¢" — extract the price
+            price_text = await page.evaluate(
+                "(outcome) => {"
+                "  const btns = document.querySelectorAll('button.trading-button[role=\"radio\"]');"
+                "  for (const btn of btns) {"
+                "    const text = btn.textContent || '';"
+                "    if (text.startsWith(outcome)) {"
+                "      const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+                "      if (priceMatch) return parseFloat(priceMatch[1]) / 100;"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                outcome,
+            )
+
+            if price_text is not None:
+                current_price = float(price_text)
+                slippage_ok = self.polymarket_parser.check_slippage(expected_price, current_price, max_slippage)
+                slippage_pct = abs(current_price - expected_price) / expected_price * 100
+
+                self._notify("polymarket_bet_price_check", {
+                    "bet_id": bet_id, "expected": expected_price,
+                    "actual": current_price, "slippage_pct": round(slippage_pct, 2),
+                })
+
+                if not slippage_ok:
+                    logger.warning(
+                        f"[mirror] Polymarket bet {bet_id}: slippage {slippage_pct:.1f}% "
+                        f"exceeds {max_slippage}% (expected={expected_price}, actual={current_price})"
+                    )
+                    return {
+                        "bet_id": bet_id, "status": "skipped", "reason": "slippage",
+                        "expected_price": expected_price, "actual_price": current_price,
+                        "slippage_pct": round(slippage_pct, 2),
+                    }
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
+
+        # 4. Enter amount in the $0 input
+        try:
+            amount_input = page.locator('input[placeholder="$0"]').first
+            await amount_input.click()
+            await amount_input.fill("")
+            await amount_input.type(str(amount), delay=50)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
+
+        # 5. Click the submit button ("Buy [TeamName]")
+        # The submit button is a trading-button whose text starts with "Buy"
+        # and is NOT a role="radio" button (those are the outcome selectors)
+        try:
+            submit_btn = page.locator('button.trading-button:not([role="radio"])').filter(has_text="Buy").first
+            await submit_btn.click(timeout=5000)
+            logger.info(f"[mirror] Clicked Buy button for bet {bet_id}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click Buy: {e}"}
+
+        # 6. Wait for order to process (Magic wallet signing + CLOB submission)
+        # The signing happens automatically for Magic wallets — no popup needed.
+        # We wait and then check for the order confirmation via intercepted CLOB traffic.
+        await asyncio.sleep(5)
+
+        # 7. Check for success — look for order confirmation or position update
+        try:
+            success = await page.evaluate(
+                "() => {"
+                "  const text = document.body.innerText;"
+                "  return text.includes('Order placed') || text.includes('Success') ||"
+                "         text.includes('Confirmed') || text.includes('Position') ||"
+                "         text.includes('Open order');"
+                "}"
+            )
+            if success:
+                logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
+                result = {
+                    "bet_id": bet_id, "status": "placed",
+                    "amount_usdc": amount, "outcome": outcome,
+                }
+                self._notify("polymarket_bet_placed", result)
+                return result
+        except Exception:
+            pass
+
+        # Uncertain — report as placed but flag for manual verification
+        logger.warning(f"[mirror] Polymarket bet {bet_id}: placement uncertain")
+        result = {
+            "bet_id": bet_id, "status": "placed",
+            "amount_usdc": amount, "outcome": outcome,
+            "note": "confirmation_uncertain",
+        }
+        self._notify("polymarket_bet_placed", result)
+        return result
 
     def _notify(self, event_type: str, data: dict):
         """Publish SSE event if broadcaster is available."""

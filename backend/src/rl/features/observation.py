@@ -1,46 +1,79 @@
-"""Observation vector assembler.
+"""Observation vector assembler — flat static features.
 
-Builds the full ~107-dim float32 feature vector from a market state dict.
+All features are hand-crafted from domain knowledge (AMT, orderflow, Fabio's
+patterns). No raw tick sequences — the orderflow and micro features already
+encode the temporal dynamics.
 
-State dict keys:
-    level_type      LevelType enum — the level being touched
-    price           float — current price
-    candles         list[CandleFlow] — recent 1-minute candle flows
-    vwap_bands      VWAPBands | None
-    volume_profile  VolumeProfile | None
-    tpo_profile     dict | None — TPO profile (see tpo_features.py for schema)
-    session_levels  SessionLevels | None
-    all_levels      list[float] — all active level prices
-    orderflow_signals  OrderflowSignals | None
-    macro           dict | None — macro context (see macro_features.py)
-    session_context dict | None — session context (see structure_features.py)
+Zone mode (state["zone"] present):
+    zone composition multi-hot  len(LevelType)  (25 currently)
+    orderflow                   21
+    structure + session + PDH    39
+    tpo (per-session)            38
+    candle window                15
+    zone features                 4
+    zone confluence               5
+    macro                        11
+    exchange stats                5
+    setup                        14
+    AMT features                 13
+    micro (hand-crafted)         20
+    approach direction            1
+    execution context             7
+    ---
+    total                       218
+
+Legacy mode (state["level_type"] present, no zone):
+    level_type one-hot   25
+    orderflow            21
+    structure + session + PDH  39
+    tpo (per-session)    38
+    candle window        15
+    confluence            8
+    macro                11
+    exchange stats        5
+    setup                14
+    AMT features         13
+    micro (hand-crafted) 20
+    approach direction    1
+    execution context     7
+    ---
+    total               217
 """
 from __future__ import annotations
 
 import numpy as np
 
 from ..config import LevelType, TICK_SIZE
-from .level_features import encode_level_type, encode_confluence
+from .level_features import (
+    encode_level_type,
+    encode_confluence,
+    encode_zone_composition,
+    encode_zone_features,
+    encode_zone_confluence,
+)
 from .orderflow_features import extract_orderflow_features
-from .tpo_features import extract_tpo_features
+from .tpo_features import extract_session_tpo_features
 from .structure_features import extract_structure_features
 from .macro_features import extract_macro_features
 from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
+from .execution_features import extract_execution_features
+from .amt_features import extract_amt_features
+from .exchange_stats_features import extract_exchange_stats_features
+from ..zone_builder import Zone, ZoneMember
 
-# Candle window: last 5 candles × 3 features each
+# Candle window: last 5 candles x 3 features each
 _CANDLE_WINDOW = 5
 _CANDLE_FEATS_PER = 3  # delta_norm, volume_norm, body_ratio
 _CANDLE_DIM = _CANDLE_WINDOW * _CANDLE_FEATS_PER  # 15
 
 
 def _build_candle_window(candles: list, avg_vol: float) -> np.ndarray:
-    """Last 5 candles → 15 features (delta_norm, volume_norm, body_ratio)."""
+    """Last 5 candles -> 15 features (delta_norm, volume_norm, body_ratio)."""
     out = np.zeros(_CANDLE_DIM, dtype=np.float32)
     if not candles:
         return out
     window = candles[-_CANDLE_WINDOW:] if len(candles) >= _CANDLE_WINDOW else candles
-    # Pad on the left if fewer than 5 candles
     for i, c in enumerate(window):
         offset = i * _CANDLE_FEATS_PER
         out[offset + 0] = float(np.clip(c.delta / max(avg_vol, 1.0), -1.0, 1.0))
@@ -52,108 +85,158 @@ def _build_candle_window(candles: list, avg_vol: float) -> np.ndarray:
 def build_observation(state: dict) -> np.ndarray:
     """Assemble the full observation vector from a state dict.
 
-    Segment sizes:
-        level_type one-hot   25
-        orderflow            15
-        structure + session  23
-        tpo                  13
-        candle window        15
-        confluence            8
-        macro                 7
-        setup                13
-        micro (tick-level)   20
-        ---
-        total               139
+    Supports two modes:
+    - **Zone mode** (``state["zone"]`` present): multi-hot composition,
+      zone features after candle window, 5-dim zone confluence.
+    - **Legacy mode** (``state["level_type"]`` present, no zone): one-hot
+      level type, 8-dim old-style confluence.
     """
-    level_type: LevelType = state.get("level_type", LevelType.VWAP)
+    zone: Zone | None = state.get("zone")
     price: float = float(state.get("price", 0.0))
     candles: list = state.get("candles", [])
     vwap_bands = state.get("vwap_bands")
     volume_profile = state.get("volume_profile")
-    tpo_profile = state.get("tpo_profile")
     session_levels = state.get("session_levels")
     all_levels: list[float] = state.get("all_levels", [])
     orderflow_signals = state.get("orderflow_signals")
     macro = state.get("macro")
     session_context = state.get("session_context")
+    recent_ticks: list[dict] = state.get("recent_ticks", [])
 
-    # Compute avg vol for normalisation (used by candle window and orderflow)
+    # Avg vol for normalisation
     if candles:
         avg_vol = sum(c.volume for c in candles[-20:]) / max(len(candles[-20:]), 1)
         avg_vol = max(avg_vol, 1.0)
     else:
         avg_vol = 1.0
 
-    # 1. Level type one-hot (25 — FVG/SINGLE_PRINT removed, now confluence signals)
-    seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
+    # --- Zone mode vs Legacy mode ---
+    if zone is not None:
+        # 1. Zone composition multi-hot (len(LevelType))
+        seg_level = np.array(encode_zone_composition(zone), dtype=np.float32)
+    else:
+        # 1. Level type one-hot (len(LevelType))
+        level_type: LevelType = state.get("level_type", LevelType.VWAP)
+        seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
 
-    # 2. Orderflow (15)
+    # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
 
-    # 3. Structure + session (23)
+    # 3. Structure + session + PDH/PDL (39)
+    swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
-        price, vwap_bands, volume_profile, session_levels, session_context
+        price, vwap_bands, volume_profile, session_levels, session_context,
+        swing_structure=swing_structure,
     )
 
-    # 4. TPO (13)
-    seg_tpo = extract_tpo_features(tpo_profile, price)
+    # 4. TPO per-session (38)
+    session_tpos = state.get("session_tpos")
+    seg_tpo = extract_session_tpo_features(session_tpos, price)
 
     # 5. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)
 
-    # 6. Confluence (8) — includes FVG/single_print overlap signals
+    # 6. Zone features (4) — only in zone mode
+    if zone is not None:
+        seg_zone_feats = np.array(
+            encode_zone_features(zone, session_context=state.get("session_context")),
+            dtype=np.float32,
+        )
+    else:
+        seg_zone_feats = np.array([], dtype=np.float32)
+
+    # 7. Confluence — zone mode (5) vs legacy mode (8)
     fvgs = state.get("fvgs", [])
     single_print_zones = state.get("single_print_zones", [])
-    conf = encode_confluence(
-        price, all_levels, tick_size=TICK_SIZE,
-        fvgs=fvgs, single_print_zones=single_print_zones,
-    )
-    seg_confluence = np.array([
-        conf["levels_within_5_ticks"] / 10.0,      # normalise: cap at 10
-        conf["strongest_cluster_score"],
-        conf["nearest_higher_level_dist"] / 50.0,  # already capped at 50
-        conf["nearest_lower_level_dist"] / 50.0,
-        conf["touched_level_hierarchy_rank"],
-        conf["fvg_overlap"],                        # 1.0 if FVG overlaps level
-        conf["fvg_width_ticks"],                    # width of overlapping FVG (0-1)
-        conf["single_print_overlap"],               # 1.0 if single print overlaps
-    ], dtype=np.float32)
+    if zone is not None:
+        all_zones: list[Zone] = state.get("all_zones", [])
+        seg_confluence = np.array(
+            encode_zone_confluence(zone, all_zones, fvgs, single_print_zones),
+            dtype=np.float32,
+        )
+    else:
+        conf = encode_confluence(
+            price, all_levels, tick_size=TICK_SIZE,
+            fvgs=fvgs, single_print_zones=single_print_zones,
+        )
+        seg_confluence = np.array([
+            conf["levels_within_5_ticks"] / 10.0,
+            conf["strongest_cluster_score"],
+            conf["nearest_higher_level_dist"] / 50.0,
+            conf["nearest_lower_level_dist"] / 50.0,
+            conf["touched_level_hierarchy_rank"],
+            conf["fvg_overlap"],
+            conf["fvg_width_ticks"],
+            conf["single_print_overlap"],
+        ], dtype=np.float32)
 
-    # 7. Macro (7)
+    # 8. Macro (11) — VIX, DXY, yields, COT, news proximity
     seg_macro = extract_macro_features(macro)
 
-    # 8. Setup detection (9)
+    # 8.5. Exchange stats (5) — OI, settlement, cleared/block volume
+    seg_exchange = extract_exchange_stats_features(macro, price=price)
+
+    # 9. Setup detection (14)
     seg_setup = extract_setup_features(state)
 
-    # 9. Micro features — tick-level context at the touch point (20)
-    recent_ticks = state.get("recent_ticks", [])
+    # 10. AMT features (13) — Dalton day type, opening type, VA migration
+    seg_amt = extract_amt_features(session_levels, volume_profile, session_context, price)
+
+    # 11. Micro features (20) — tick-level hand-crafted context
     seg_micro = extract_micro_features(recent_ticks, price)
 
+    # 12. Approach direction (1)
+    approach = state.get("approach_direction", "up")
+    seg_approach = np.array([
+        1.0 if approach == "up" else -1.0,
+    ], dtype=np.float32)
+
+    # 13. Execution context (7) — Fabio's timing/auction rules
+    seg_execution = extract_execution_features(state, recent_ticks, candles, price)
+
     obs = np.concatenate([
-        seg_level,        # 25
-        seg_orderflow,    # 15
-        seg_structure,    # 23
-        seg_tpo,          # 13
+        seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
+        seg_orderflow,    # 21
+        seg_structure,    # 39
+        seg_tpo,          # 38
         seg_candles,      # 15
-        seg_confluence,   # 8
-        seg_macro,        # 7
-        seg_setup,        # 9
+        seg_zone_feats,   # 4 (zone) or 0 (legacy)
+        seg_confluence,   # 5 (zone) or 8 (legacy)
+        seg_macro,        # 11
+        seg_exchange,     # 5
+        seg_setup,        # 14
+        seg_amt,          # 13
         seg_micro,        # 20
+        seg_approach,     # 1
+        seg_execution,    # 7
     ])
 
-    # Sanitise: replace NaN / Inf with 0
+    # Sanitise
     obs = np.where(np.isfinite(obs), obs, 0.0)
-
     return obs.astype(np.float32)
 
 
-# Compute at import time by building a dummy observation
+# Compute dimension at import time using zone mode
+_dummy_member = ZoneMember(name="vwap", level_type=LevelType.VWAP, price=19000.0)
+_dummy_zone = Zone(
+    center_price=19000.0,
+    upper_bound=19001.0,
+    lower_bound=18999.0,
+    members=[_dummy_member],
+    composition=[1.0 if lt == LevelType.VWAP else 0.0 for lt in LevelType],
+    width_ticks=8.0,
+    member_count=1,
+    hierarchy_score=0.5,
+)
 _dummy_state: dict = {
-    "level_type": LevelType.VWAP,
+    "zone": _dummy_zone,
+    "all_zones": [_dummy_zone],
     "price": 19000.0,
     "candles": [],
+    "candles_5m": [],
     "vwap_bands": None,
     "volume_profile": None,
+    "session_tpos": None,
     "tpo_profile": None,
     "tpo_profile_obj": None,
     "session_levels": None,
@@ -162,6 +245,9 @@ _dummy_state: dict = {
     "macro": None,
     "session_context": None,
     "day_type": None,
+    "recent_ticks": [],
 }
 
 OBSERVATION_DIM: int = int(build_observation(_dummy_state).shape[0])
+# No temporal/context split needed — everything is static context
+CONTEXT_DIM: int | None = None

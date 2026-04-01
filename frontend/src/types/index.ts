@@ -46,6 +46,7 @@ export interface Opportunity {
   final_stake?: number | null;
   kelly_fraction?: number | null;
   skip_reason?: string | null;
+  counts_toward_wagering?: boolean;
   bankroll_needed?: number | null;
   bonus_cleared?: boolean | null;
   // Freebet phase info
@@ -56,6 +57,7 @@ export interface Opportunity {
   provider_meta?: Record<string, string | number> | null;
   // Freshness tracking
   odds_updated_at?: string | null;
+  provider_last_checked?: string | null;
   // Allocation / cluster play mode
   allocation_score?: number | null;
   allocation_reason?: string | null;
@@ -336,6 +338,7 @@ export interface PolymarketValueBet {
   event_slug?: string | null;
   provider_meta?: Record<string, string | number> | null;
   updated_at?: string | null;
+  provider_last_checked?: string | null;
 }
 
 export interface PolymarketValueResponse {
@@ -727,15 +730,174 @@ export interface PlayCluster {
   canonical: string;
   active_siblings: PlaySibling[];
   available_siblings: PlaySibling[];
+  recommended_siblings: PlaySibling[];
   dormant_siblings: PlaySibling[];
   total_balance: number;
   playable_count: number;
   unique_opps: number;
   urgency: number;
+  needs_deposit: boolean;
 }
 
 export interface PlaySession {
   clusters: PlayCluster[];
   total_bankroll: number;
   min_stake: number;
+}
+
+export interface BatchBet {
+  rank: number;
+  tier: 'polymarket' | 'pinnacle' | 'soft';
+  provider_id: string;
+  event_id: string;
+  market: string;
+  outcome: string;
+  point: number | null;
+  odds: number;
+  fair_odds: number;
+  edge_pct: number;
+  stake: number;
+  expected_profit: number;
+  is_bonus: boolean;
+  bonus_type: string | null;
+  display_home: string;
+  display_away: string;
+  sport: string;
+  league: string;
+  start_time: string | null;
+  detected_at: string | null;
+  odds_age_minutes: number | null;
+  lifecycle: string | null;
+  cluster: string | null;
+  funded: boolean;
+  skip_reason: string | null;
+  wagering_pct?: number | null;
+}
+
+export interface BatchSummary {
+  total_bets: number;
+  total_stake: number;
+  total_expected_profit: number;
+  polymarket_bets: number;
+  polymarket_ev: number;
+  pinnacle_bets: number;
+  pinnacle_ev: number;
+  soft_bets: number;
+  soft_ev: number;
+  usdc_rate?: number;
+  tier_breakdown?: Record<string, { count: number; stake: number; ev: number }>;
+}
+
+export interface ProviderBalanceStatus {
+  provider_id: string;
+  cluster: string | null;
+  balance: number;
+  allocated: number;
+  remaining: number;
+  lifecycle: string;
+  excess?: number;
+  shortfall?: number;
+  missed_bets: number;
+  missed_ev: number;
+  wagering_total: number;
+  wagering_remaining: number;
+  days_remaining: number | null;
+  trigger_mode: string;
+  bonus_amount: number;
+}
+
+export interface CapitalAction {
+  type: 'deposit' | 'withdraw';
+  provider_id: string;
+  cluster: string;
+  amount: number;
+  target_balance: number;
+  unlocks: number;
+  avg_edge: number;
+  expected_ev: number;
+  currency: 'SEK' | 'USDC';
+  priority: number;
+  priority_label: string;
+}
+
+export interface CapitalPlan {
+  total_deployed: number;
+  withdrawable: number;
+  actions: CapitalAction[];
+}
+
+export interface WageringProjection {
+  provider_id: string;
+  cluster: string;
+  wagering_total: number;
+  wagering_remaining: number;
+  batch_stake: number;
+  projected_remaining: number;
+  days_remaining: number | null;
+}
+
+export interface BatchResult {
+  batch: BatchBet[];
+  summary: BatchSummary;
+  balance_status: ProviderBalanceStatus[];
+  missed_opportunities: {
+    total_bets: number;
+    total_ev: number;
+    reason: string;
+  };
+  capital_plan: CapitalPlan;
+  wagering_projections: WageringProjection[];
+}
+
+export interface PendingBet {
+  id: number;
+  event_name: string;
+  market: string;
+  outcome: string;
+  odds: number;
+  stake: number;
+  currency: string;
+  placed_at: string | null;
+}
+
+export interface PendingProvider {
+  provider_id: string;
+  pending_count: number;
+  total_stake: number;
+  bets: PendingBet[];
+}
+
+export interface PendingBetsResponse {
+  providers: PendingProvider[];
+  total_pending: number;
+  total_stake: number;
+}
+
+export interface SettleBetResult {
+  bet_id: number;
+  result: string;
+  payout: number;
+  settled_at: string;
+}
+
+// Play page: cluster batch (same shape as BatchResult)
+export type ClusterBatchResult = BatchResult;
+export type ClusterBet = BatchBet;
+
+// Capital allocation step
+export interface SiblingAssignment {
+  provider_id: string;
+  cluster: string;
+  bets_assigned: number;
+  capital_needed: number;
+  current_balance: number;
+  currency: 'SEK' | 'USDC';
+  lifecycle: string;
+  bonus_badge: string | null;
+}
+
+export interface AllocationResult {
+  sibling_plan: SiblingAssignment[];
+  allocated_batch: BatchBet[];
+  wagering_projections: WageringProjection[];
 }

@@ -70,7 +70,7 @@ class BrowserRetriever(Retriever):
             if isinstance(self.transport, BrowserTransport):
                 await self.transport._ensure_browser()
                 # Use 'load' instead of 'networkidle' to avoid timeouts on pages with continuous activity
-                await self.transport.page.goto(url, wait_until="load", timeout=15000)
+                await self.transport.page.goto(url, wait_until="load", timeout=30000)
 
                 # Wait for cookies/session to settle and JS to execute
                 await self.transport.page.wait_for_timeout(2000)

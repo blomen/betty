@@ -7,7 +7,7 @@ orchestrator:
   # Concurrency limits
   # Type-aware scheduling allows higher total concurrent providers by mixing types
   max_concurrent_providers: 10         # Increased - mixing allows higher total
-  max_concurrent_sports_per_provider: 4 # Max sports per provider
+  max_concurrent_sports_per_provider: 2 # Reduced for proxy — parallel sports × leagues overwhelms single ISP proxy
   max_browser_instances: 3             # Global browser limit (reduced from 6 — slow PC can't handle 7 concurrent browsers)
 
   # Provider groups for type-aware scheduling
@@ -213,6 +213,7 @@ providers:
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
+    concurrent_leagues: 10               # Throttled for ISP proxy — too many parallel requests get 403
     sport_timeout: 240                   # Football has ~200 leagues × 2 API calls each; needs headroom under load
 
   # --------------------------------------------------------------------------
@@ -349,7 +350,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12
+      wagering_multiplier: 12      # 12× bonus only, instant credit on deposit
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -363,8 +364,9 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12
+      wagering_multiplier: 12      # 12× bonus only, instant credit on deposit
       min_odds: 1.80
+      deadline_days: 90            # 90 days (not default 60)
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -380,9 +382,10 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
+      trigger_multiplier: 1        # 1× deposit at odds 1.50 to unlock
+      trigger_odds: 1.50
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
       min_odds: 1.80
-      trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
       trigger_mode: cumulative
 
   campobet:
@@ -394,9 +397,10 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
+      trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
+      trigger_odds: 1.50
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
       min_odds: 1.80
-      trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
       trigger_mode: cumulative
 
   swiper:
@@ -410,7 +414,7 @@ providers:
       amount: 1000
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
-      wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -422,11 +426,8 @@ providers:
     integration: lodurse
     bonus:
       type: bonusdeposit
-      amount: 1000
-      trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
-      trigger_odds: 1.50
-      wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
-      min_odds: 1.80
+      amount: 500
+      wagering_multiplier: 6       # 6× bonus only, no min odds specified
       trigger_mode: cumulative
 
   dbet:
@@ -453,7 +454,7 @@ providers:
       amount: 500
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
-      wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -494,9 +495,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      trigger_multiplier: 2        # Trigger: wager deposit×2 at any odds to unlock bonus
-      trigger_odds: 1.01
-      wagering_multiplier: 14      # Wager: bonus×14 at 1.80+ to withdraw
+      wagering_multiplier: 14      # 14× bonus only (non-sticky). Code SPORTBONUS required.
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -556,7 +555,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 15
+      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus. First bet per match only.
       min_odds: 1.90
       trigger_mode: cumulative
 
@@ -570,7 +569,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 15
+      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus
       min_odds: 1.90
       trigger_mode: cumulative
 
@@ -599,7 +598,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 15      # 15×(dep+bonus) at 1.80+
+      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus. Max win 10000kr.
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -629,7 +628,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 600
-      wagering_multiplier: 8       # 8×(dep+bonus) at 1.80+
+      wagering_multiplier: 16      # (dep+bonus)×8 = bonus×16 when dep=bonus
       min_odds: 1.80
       deadline_days: 90
       trigger_mode: cumulative
@@ -649,7 +648,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 6
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus. Max 250kr/bet.
       min_odds: 1.80
       trigger_mode: cumulative
     max_leagues: 100
@@ -673,12 +672,11 @@ providers:
     provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
     sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
-      type: bonusdeposit
-      amount: 500
-      wagering_multiplier: 6          # 6×(dep+bonus) at 1.80+
+      type: freebet                    # 100% matched FREE BET, not deposit match
+      amount: 500                      # Winnings from freebet are wagering-free
+      wagering_multiplier: 1
       min_odds: 1.80
-      deadline_days: 90
-      trigger_mode: cumulative
+      trigger_mode: single
     max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
@@ -740,7 +738,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 800
-      wagering_multiplier: 10
+      wagering_multiplier: 20      # (dep+bonus)×10 = bonus×20 when dep=bonus. Max withdrawal 10×deposit.
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -755,7 +753,7 @@ providers:
     retriever_type: interwetten
     site_url: https://www.interwetten.se
     provider_timeout: 700              # DOM scraping with concurrent league+detail tabs
-    sport_timeout: 300                 # Many leagues per sport, sequential navigation
+    sport_timeout: 400                 # Raised from 300 — football needs ~200s for leagues + ~150s for detail enrichment
     supported_sports:
       - football
       - ice_hockey
@@ -799,8 +797,8 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 6       # 6×bonus only (deposit has no wagering) at 1.80+
-      min_odds: 1.80
+      wagering_multiplier: 6       # 6× bonus only (deposit locked but no wagering). Code: ODDS
+      min_odds: 1.50               # 1.50 NOT 1.80 — verified from coolbet.com/sv/valkomstbonus
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -831,7 +829,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 7
+      wagering_multiplier: 14      # (dep+bonus)×7 = bonus×14 when dep=bonus. Max 1000kr/slip.
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -981,7 +979,8 @@ boosts:
     url: "https://eu1.offering-api.kambicdn.com/offering/v2018/expektse/listView/expekt_specials.json?lang=sv_SE&market=SE&channel_id=1"
     primary_provider: expekt
     shared_with: []
-    enabled: true
+    enabled: false
+    note: "expekt_specials group consistently returns 0 events — expekt.se does not offer odds boosts"
 
   betmgm:
     type: null
@@ -1080,8 +1079,8 @@ boosts:
     type: betconstruct
     primary_provider: vbet
     shared_with: []
-    enabled: true
-    note: "Homepage 'Topphändelser' — boosted 1x2 on promoted games. Requires language=swe session. No original_odds (API only returns boosted price)."
+    enabled: false
+    note: "get_boosted_selections consistently returns 0 — vbet.se does not currently offer odds boosts. Re-enable if they add boost features."
 
   # ═══════════════════════════════════════════════════════
   # INTERWETTEN — DISABLED: no boosts on site (2026-03-06 audit)

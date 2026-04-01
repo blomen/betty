@@ -11,6 +11,7 @@ Each soft provider gets its own async loop with independent cooldown after compl
 
 import asyncio
 import logging
+from pathlib import Path
 import yaml
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -82,10 +83,11 @@ class ExtractionScheduler:
         self._provider_locks: dict[str, asyncio.Lock] = {}
         # Browser lock: only 1 browser extraction at a time (FIFO guaranteed)
         self._browser_lock = asyncio.Lock()
-        # DB write lock: SQLite supports only one writer at a time (even with WAL).
-        # Serialize all soft extractions so concurrent commits don't block each other
-        # and freeze the event loop. Sharp bypasses this lock for priority scheduling.
-        self._db_write_lock = asyncio.Lock()
+        # NOTE: _db_write_lock removed. SQLite WAL mode + busy_timeout=30s handles
+        # write serialization natively. The old app-level lock wrapped the ENTIRE
+        # extraction (network I/O + processing + DB writes), blocking frontend reads
+        # for minutes at a time. Now each provider runs independently — SQLite serializes
+        # only the brief actual write operations, while reads proceed unblocked.
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
         # Sharp-ready gate: soft providers wait for sharp's first run before starting.
@@ -295,16 +297,11 @@ class ExtractionScheduler:
             start = datetime.now(timezone.utc)
             try:
                 async with self._provider_locks[schedule.provider_id]:
-                    if schedule.category == "sharp":
-                        # Sharp bypasses _db_write_lock for priority scheduling
-                        results = await self._run_provider_extraction(schedule)
-                    elif schedule.category == "browser_soft":
-                        async with self._db_write_lock:
-                            async with self._browser_lock:
-                                results = await self._run_provider_extraction(schedule)
-                    else:
-                        async with self._db_write_lock:
+                    if schedule.category == "browser_soft":
+                        async with self._browser_lock:
                             results = await self._run_provider_extraction(schedule)
+                    else:
+                        results = await self._run_provider_extraction(schedule)
 
                 schedule.last_completed = datetime.now(timezone.utc)
                 schedule.last_duration = (schedule.last_completed - start).total_seconds()
@@ -355,47 +352,33 @@ class ExtractionScheduler:
         logger.info(f"[Scheduler:{schedule.provider_id}] Loop stopped (running={schedule.running})")
 
     async def _run_provider_extraction(self, schedule: ProviderSchedule) -> dict:
-        """Run extraction for a single provider schedule.
+        """Run extraction for a provider schedule.
 
-        Sharp runs on the main event loop for lowest latency.
-        Soft providers run in a separate thread so their synchronous
-        session.commit() calls don't block the main event loop (which
-        would freeze the API and prevent sharp from cycling on time).
+        ALL extractions run in a dedicated thread with their own event loop
+        so synchronous SQLite commits don't freeze the main event loop
+        (which would make /health and all API handlers hang).
         """
         from src.pipeline.orchestrator import ExtractionPipeline
 
         providers = schedule.providers or [schedule.provider_id]
         update_provider_state(schedule.provider_id, {"running": True, "category": schedule.category})
 
-        if schedule.category == "sharp":
-            # Sharp runs on main loop — fast, no long DB transactions
+        def _run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             pipeline = ExtractionPipeline()
             try:
-                return await pipeline.run(providers=providers, tier_name=schedule.category)
+                return loop.run_until_complete(
+                    pipeline.run(providers=providers, tier_name=schedule.category)
+                )
             finally:
                 try:
                     pipeline.session.close()
                 except Exception:
                     pass
-        else:
-            # Soft providers run in a dedicated thread with their own event loop
-            # so synchronous SQLite commits don't freeze the main event loop.
-            def _run_in_thread():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                pipeline = ExtractionPipeline()
-                try:
-                    return loop.run_until_complete(
-                        pipeline.run(providers=providers, tier_name=schedule.category)
-                    )
-                finally:
-                    try:
-                        pipeline.session.close()
-                    except Exception:
-                        pass
-                    loop.close()
+                loop.close()
 
-            return await asyncio.to_thread(_run_in_thread)
+        return await asyncio.to_thread(_run_in_thread)
 
     def stop_provider(self, provider_id: str):
         """Stop a specific provider schedule."""
@@ -499,8 +482,8 @@ class ExtractionScheduler:
                     )
                     await self._start_schedule(schedule)
 
-        # Boosts — standalone 60-minute interval (no trigger, just timer)
-        await self.start_boosts_tier(interval_seconds=3600)
+        # Boosts — DISABLED (noisy browser output, not needed right now)
+        # await self.start_boosts_tier(interval_seconds=3600)
 
         # Cleanup tier — purge stale events/odds every 6 hours
         await self.start_cleanup_tier()
@@ -582,11 +565,24 @@ class ExtractionScheduler:
                 stale_threshold = schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
                 elapsed = (now - schedule.last_completed).total_seconds()
                 if elapsed > stale_threshold:
-                    logger.critical(
-                        f"[Watchdog] Provider '{provider_id}' is STALE — "
-                        f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
-                        f"run_count={schedule.run_count}"
-                    )
+                    # Use a higher threshold before force-restarting (5x interval)
+                    # to avoid killing long-but-progressing extractions
+                    force_restart_threshold = schedule.interval_seconds * 5
+                    if elapsed > force_restart_threshold:
+                        logger.critical(
+                            f"[Watchdog] Provider '{provider_id}' is STUCK — "
+                            f"last completed {elapsed:.0f}s ago (threshold: {force_restart_threshold:.0f}s). "
+                            f"Force-cancelling and restarting..."
+                        )
+                        if schedule.task and not schedule.task.done():
+                            schedule.task.cancel()
+                        await self._restart_schedule(schedule)
+                    else:
+                        logger.warning(
+                            f"[Watchdog] Provider '{provider_id}' is STALE — "
+                            f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
+                            f"run_count={schedule.run_count}"
+                        )
 
             # Starvation detection for browser providers
             if (schedule.category == "browser_soft" and schedule.running
@@ -702,9 +698,8 @@ class ExtractionScheduler:
         """Execute the boost scraper in a thread executor."""
         import sys
         from dataclasses import asdict
-        from src.paths import get_bundle_dir
-        # Ensure scripts/ package is importable (lives in bundle root / backend/)
-        _root = str(get_bundle_dir())
+        # Ensure scripts/ package is importable (lives in backend/)
+        _root = str(Path(__file__).resolve().parent.parent.parent)
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import scrape_all, save_specials

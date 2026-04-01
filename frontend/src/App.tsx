@@ -6,9 +6,10 @@ import { useOddsStream } from '@/hooks/useOddsStream';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
       retry: 1,
       staleTime: 30_000,
+      gcTime: 5 * 60_000, // 5 min — keep cached data across tab switches
     },
   },
 });

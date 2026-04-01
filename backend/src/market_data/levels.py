@@ -1,8 +1,13 @@
 """Level engine: computes all structural levels from bar/tick data."""
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
+
+from .structure import StructureEvent, SwingLevel, MarketStructureEngine  # noqa: F401 — re-exported
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("US/Eastern")
 
@@ -51,6 +56,180 @@ class SessionLevels:
     weekly_low: float | None = None
     monthly_high: float | None = None
     monthly_low: float | None = None
+
+
+@dataclass
+class TimeframeSwings:
+    """Swing detection result for a single timeframe."""
+    timeframe: str       # "daily", "weekly", "monthly"
+    structure: str       # "uptrend", "downtrend", "reversing_up", "reversing_down", "ranging"
+    swing_highs: list[SwingLevel] = field(default_factory=list)  # newest first
+    swing_lows: list[SwingLevel] = field(default_factory=list)   # newest first
+    prior_high: float | None = None  # previous period high (PDH / prior week H / prior month H)
+    prior_low: float | None = None   # previous period low  (PDL / prior week L / prior month L)
+    last_bos: StructureEvent | None = None
+    last_choch: StructureEvent | None = None
+    bos_active: bool = False
+    choch_active: bool = False
+
+
+@dataclass
+class SwingStructure:
+    """Multi-timeframe swing analysis result."""
+    daily: TimeframeSwings
+    weekly: TimeframeSwings
+    monthly: TimeframeSwings
+    trend_alignment: float  # -1.0 (all down) to +1.0 (all up)
+
+
+def aggregate_to_timeframe(
+    bars_1m: list[dict],
+    timeframe: str,
+) -> list[dict]:
+    """Aggregate 1m bars into daily/weekly/monthly OHLC candles.
+
+    Uses CET session boundaries:
+    - Daily: 00:00-22:00 CET
+    - Weekly: Monday 00:00 to Friday 22:00 CET
+    - Monthly: 1st 00:00 to last trading day 22:00 CET
+
+    Returns list of {"date": str, "open": float, "high": float, "low": float,
+    "close": float, "ts": int} sorted chronologically.
+    """
+    if not bars_1m:
+        return []
+
+    from collections import OrderedDict
+
+    _CET = ZoneInfo("Europe/Stockholm")
+    buckets: OrderedDict[str, list[dict]] = OrderedDict()
+
+    for bar in bars_1m:
+        bar_ts = bar["ts"]
+        if isinstance(bar_ts, str):
+            bar_ts = datetime.fromisoformat(bar_ts)
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+        bar_cet = bar_ts.astimezone(_CET)
+
+        if bar_cet.hour >= 22:
+            continue
+
+        if timeframe == "daily":
+            key = bar_cet.date().isoformat()
+        elif timeframe == "weekly":
+            week_start = bar_cet.date() - timedelta(days=bar_cet.weekday())
+            key = week_start.isoformat()
+        elif timeframe == "monthly":
+            key = f"{bar_cet.year}-{bar_cet.month:02d}"
+        else:
+            raise ValueError(f"Unknown timeframe: {timeframe}")
+
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append(bar)
+
+    result = []
+    for key, group in buckets.items():
+        highs = [b["high"] for b in group]
+        lows = [b["low"] for b in group]
+        first_ts = group[0]["ts"]
+        if isinstance(first_ts, str):
+            first_ts = datetime.fromisoformat(first_ts)
+        if first_ts.tzinfo is None:
+            first_ts = first_ts.replace(tzinfo=timezone.utc)
+
+        result.append({
+            "date": key,
+            "open": group[0].get("open", group[0].get("close", highs[0])),
+            "high": max(highs),
+            "low": min(lows),
+            "close": group[-1].get("close", group[-1].get("open", lows[-1])),
+            "ts": int(first_ts.timestamp()),
+        })
+
+    return result
+
+
+_TF_RECENCY = {"daily": 5, "weekly": 3, "monthly": 2}
+# Max input bars per timeframe — limits how far back we look for structure.
+# Prevents the engine from getting stuck on decade-old swings.
+_TF_MAX_BARS = {"daily": 120, "weekly": 200, "monthly": 400}
+
+
+def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
+    """Compute swing structure across daily, weekly, and monthly timeframes.
+
+    Aggregates 1m bars into higher-timeframe candles and runs MarketStructureEngine
+    (Dow Theory BOS/CHoCH state machine) on each timeframe.
+    """
+    def empty_tf(tf: str) -> TimeframeSwings:
+        return TimeframeSwings(timeframe=tf, structure="ranging")
+
+    if not bars_1m:
+        return SwingStructure(
+            daily=empty_tf("daily"),
+            weekly=empty_tf("weekly"),
+            monthly=empty_tf("monthly"),
+            trend_alignment=0.0,
+        )
+
+    trend_scores = {
+        "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
+        "reversing_down": -0.5, "downtrend": -1.0,
+    }
+
+    results: dict[str, TimeframeSwings] = {}
+    for tf in ("daily", "weekly", "monthly"):
+        # Limit input bars to avoid processing decade-old data
+        max_bars = _TF_MAX_BARS[tf]
+        tf_bars = bars_1m[-max_bars:] if len(bars_1m) > max_bars else bars_1m
+        candles = aggregate_to_timeframe(tf_bars, tf)
+        logger.info("Swing %s: %d candles (from %d bars)", tf, len(candles), len(tf_bars))
+
+        if len(candles) < 5:
+            results[tf] = empty_tf(tf)
+            continue
+
+        engine = MarketStructureEngine(recency_bars=_TF_RECENCY[tf])
+        sr = engine.process(candles)
+
+        for s in sr.swing_highs:
+            s.timeframe = tf
+        for s in sr.swing_lows:
+            s.timeframe = tf
+
+        # Prior period H/L: second-to-last completed candle
+        prior_high = None
+        prior_low = None
+        if len(candles) >= 2:
+            prior = candles[-2]
+            prior_high = prior["high"]
+            prior_low = prior["low"]
+
+        results[tf] = TimeframeSwings(
+            timeframe=tf,
+            structure=sr.structure,
+            swing_highs=sr.swing_highs,
+            swing_lows=sr.swing_lows,
+            prior_high=prior_high,
+            prior_low=prior_low,
+            last_bos=sr.last_bos,
+            last_choch=sr.last_choch,
+            bos_active=sr.bos_active,
+            choch_active=sr.choch_active,
+        )
+
+    alignment = sum(
+        trend_scores.get(results[tf].structure, 0.0) for tf in ("daily", "weekly", "monthly")
+    ) / 3.0
+
+    return SwingStructure(
+        daily=results["daily"],
+        weekly=results["weekly"],
+        monthly=results["monthly"],
+        trend_alignment=round(alignment, 2),
+    )
 
 
 def compute_volume_profile(
@@ -409,10 +588,11 @@ def compute_developing_vwap(
 CET = ZoneInfo("Europe/Stockholm")
 
 # Fixed CET session boundaries (match frontend SESSION_DEFS)
+# True market hours — Tokyo/London overlap 08:00-09:00, London/NY overlap 15:30-16:30
 _TOKYO_START = time(0, 0)
-_TOKYO_END = time(8, 0)
-_LONDON_START = time(9, 0)
-_LONDON_END = time(15, 30)   # = NY open
+_TOKYO_END = time(9, 0)
+_LONDON_START = time(8, 0)
+_LONDON_END = time(16, 30)
 _NY_START = time(15, 30)
 _NY_END = time(22, 0)
 _IB_END = time(16, 30)       # NY open + 60 min
@@ -425,8 +605,8 @@ def compute_session_levels(
     """Compute PDH/PDL, Tokyo/London H/L, IB from 1-minute bars.
 
     All session boundaries use fixed CET times (matching chart display):
-    - Tokyo: 00:00 - 08:00 CET
-    - London: 09:00 - 15:30 CET
+    - Tokyo: 00:00 - 09:00 CET  (overlaps London 08:00-09:00)
+    - London: 08:00 - 16:30 CET (overlaps Tokyo & NY)
     - NY / IB: 15:30 - 22:00 CET  (IB = first 60 min: 15:30-16:30)
     - PDH/PDL: prior trading day's full session (00:00-22:00 CET)
     """
@@ -474,12 +654,12 @@ def compute_session_levels(
         if bar_date != today_cet:
             continue
 
-        # Tokyo: 00:00-08:00 CET
+        # Tokyo: 00:00-09:00 CET
         if _TOKYO_START <= bar_time < _TOKYO_END:
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
 
-        # London: 09:00-15:30 CET
+        # London: 08:00-16:30 CET
         if _LONDON_START <= bar_time < _LONDON_END:
             levels.london_high = max(levels.london_high or h, h)
             levels.london_low = min(levels.london_low or l, l)
@@ -494,14 +674,14 @@ def compute_session_levels(
             levels.ny_high = max(levels.ny_high or h, h)
             levels.ny_low = min(levels.ny_low or l, l)
 
-        # Weekly H/L (current week, NY session CET)
+        # Weekly H/L (current week, all sessions 00:00-22:00 CET)
         week_start = today_cet - timedelta(days=today_cet.weekday())
-        if week_start <= bar_date <= today_cet and _NY_START <= bar_time < _NY_END:
+        if week_start <= bar_date <= today_cet and bar_time < _NY_END:
             levels.weekly_high = max(levels.weekly_high or h, h)
             levels.weekly_low = min(levels.weekly_low or l, l)
 
-        # Monthly H/L (current month, NY session CET)
-        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and _NY_START <= bar_time < _NY_END:
+        # Monthly H/L (current month, all sessions 00:00-22:00 CET)
+        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and bar_time < _NY_END:
             levels.monthly_high = max(levels.monthly_high or h, h)
             levels.monthly_low = min(levels.monthly_low or l, l)
 

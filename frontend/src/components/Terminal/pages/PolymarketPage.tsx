@@ -97,7 +97,11 @@ const PolyRow = memo(function PolyRow({
   const effectiveOdds = oddsOverride[oddsKey] ?? vb.polymarket_odds;
   const priceCents = oddsToCents(effectiveOdds);
   const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
-  const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
+  // Use backend pre-computed edge (includes 2% fee adjustment) unless user overrode odds
+  const isOddsOverridden = oddsKey in oddsOverride;
+  const edgePct = isOddsOverridden && vb.fair_odds > 1
+    ? ((0.98 * effectiveOdds + 0.02) / vb.fair_odds - 1) * 100
+    : vb.edge_pct;
   const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc ?? 0;
   const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
   const payoutUsdc = shares * 1.0;
@@ -148,10 +152,10 @@ const PolyRow = memo(function PolyRow({
             {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
           </div>
           <div className="text-muted2 text-[11px]">
-            {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' && !vb.market.startsWith('moneyline_m') ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
+            {vb.sport} · {formatDateTime(vb.start_time)}
           </div>
         </td>
-        <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
+        <td className="text-right text-text text-xs">{resolveOutcome(vb)}</td>
         <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -202,7 +206,7 @@ const PolyRow = memo(function PolyRow({
           {oddsKey in stakeOverride && <button onClick={() => onStakeClear(oddsKey)} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${edgePct > 0 ? 'text-success' : 'text-error'}`}>{edgePct > 0 ? '+' : ''}{edgePct.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(vb.updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(vb.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (
@@ -261,8 +265,9 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
   const { data: polyData, isLoading } = useQuery({
     queryKey: ['opportunities', 'polymarket'],
-    queryFn: () => api.getPolymarketValue(3, undefined, 50),
+    queryFn: () => api.getPolymarketValue(undefined, undefined, 200),
     placeholderData: keepPreviousData,
+    refetchInterval: 30_000,
   });
   const valueBets = polyData?.value_bets ?? [];
 
@@ -585,7 +590,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {r.sport}{r.league ? ` · ${r.league}` : ''}{' · '}{formatDateTime(r.start_time)}
+                        {r.sport} · {formatDateTime(r.start_time)}
                       </div>
                     </td>
                     <td className="text-right">{compBadge(r.competitive)}</td>

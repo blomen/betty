@@ -6,6 +6,9 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.rl.zone_builder import Zone, ZoneMember, build_zones
+from src.rl.config import LevelType as RLLevelType
+
 logger = logging.getLogger(__name__)
 
 TICK_SIZE = 0.25  # NQ tick size
@@ -29,6 +32,9 @@ class MonitoredLevel:
     touched_at: float = 0.0
     cluster: list[str] = field(default_factory=list)
     approach_price: float | None = None  # price when WATCHING → APPROACHING
+    approach_ticks: int = 15   # default, overridden for swing levels
+    at_level_ticks: int = 5    # default
+    reject_ticks: int = 20     # default
 
     def distance_ticks(self, price: float) -> float:
         return (price - self.price) / TICK_SIZE
@@ -52,12 +58,20 @@ class LevelMonitor:
         self._any_at_level: bool = False
         self._tick_buffer = None
         self._candle_flow_fn = None
-        self._open_positions: list[dict] = []  # [{trade_id, direction, entry, stop, targets: [{name, price, hit}]}]
+        self._open_positions: list[dict] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._db_session_factory = None
         self._level_context_lock: asyncio.Lock | None = None
         self._last_ml_features: dict | None = None
         self._active_level_name: str | None = None
+        # Live session context for DQN inference (populated by set_session_context)
+        self._session_context: dict | None = None
+        # Zone-aware DQN inference state
+        self._zones: list[Zone] = []
+        self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
+        self._session_atr: float = 40.0
+        # Throttle: skip level checks when price hasn't moved
+        self._last_price: float = 0.0
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
             self._outcome_tracker = OutcomeTracker()
@@ -97,6 +111,53 @@ class LevelMonitor:
 
         logger.info("LevelMonitor loaded %d levels", len(self._levels))
 
+        # Set wider approach zones for swing levels
+        _SWING_ZONES = {
+            "daily_swing_high": (15, 5, 20),
+            "daily_swing_low": (15, 5, 20),
+            "weekly_swing_high": (25, 10, 35),
+            "weekly_swing_low": (25, 10, 35),
+            "monthly_swing_high": (40, 15, 50),
+            "monthly_swing_low": (40, 15, 50),
+        }
+        for level in self._levels:
+            zones = _SWING_ZONES.get(level.name)
+            if zones:
+                level.approach_ticks, level.at_level_ticks, level.reject_ticks = zones
+
+        self._rebuild_zones()
+
+    def _rebuild_zones(self) -> None:
+        level_type_map = {
+            "poc": RLLevelType.DAILY_POC, "daily_poc": RLLevelType.DAILY_POC,
+            "vah": RLLevelType.DAILY_VAH, "daily_vah": RLLevelType.DAILY_VAH,
+            "val": RLLevelType.DAILY_VAL, "daily_val": RLLevelType.DAILY_VAL,
+            "vwap": RLLevelType.VWAP,
+            "vwap +1sd": RLLevelType.VWAP_SD1, "vwap -1sd": RLLevelType.VWAP_SD1,
+            "vwap +2sd": RLLevelType.VWAP_SD2, "vwap -2sd": RLLevelType.VWAP_SD2,
+            "vwap +3sd": RLLevelType.VWAP_SD3, "vwap -3sd": RLLevelType.VWAP_SD3,
+            "pdh": RLLevelType.PDH, "pdl": RLLevelType.PDL,
+            "tokyo_high": RLLevelType.TOKYO_HIGH, "tokyo_low": RLLevelType.TOKYO_LOW,
+            "nyib_high": RLLevelType.NYIB_HIGH, "nyib_low": RLLevelType.NYIB_LOW,
+            "tpoc": RLLevelType.TPOC, "tvah": RLLevelType.TVAH, "tval": RLLevelType.TVAL,
+            "tibh": RLLevelType.TIBH, "tibl": RLLevelType.TIBL,
+            "naked_poc": RLLevelType.NAKED_POC,
+            "daily_swing_high": RLLevelType.DAILY_SWING_HIGH,
+            "daily_swing_low": RLLevelType.DAILY_SWING_LOW,
+            "weekly_swing_high": RLLevelType.WEEKLY_SWING_HIGH,
+            "weekly_swing_low": RLLevelType.WEEKLY_SWING_LOW,
+            "monthly_swing_high": RLLevelType.MONTHLY_SWING_HIGH,
+            "monthly_swing_low": RLLevelType.MONTHLY_SWING_LOW,
+        }
+        level_tuples = []
+        for lv in self._levels:
+            name_key = lv.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
+            lt = level_type_map.get(name_key, RLLevelType.VWAP)
+            level_tuples.append((lv.name, lt, lv.price))
+        self._zones = build_zones(level_tuples, self._session_atr)
+        self._zone_debounce.clear()
+        logger.info("LevelMonitor rebuilt %d zones from %d levels", len(self._zones), len(self._levels))
+
     def set_async_context(self, loop, db_session_factory) -> None:
         self._level_context_lock = asyncio.Lock()
         self._loop = loop
@@ -124,6 +185,20 @@ class LevelMonitor:
             ts: Exchange timestamp as epoch seconds (from Databento ts_event / 1e9).
         """
         now = ts  # Use exchange timestamp for consistency and replay-ability
+
+        # Skip level/zone checks when price hasn't changed — many ticks hit the
+        # same price and repeating O(n) level scans is pure waste.
+        price_changed = price != self._last_price
+        if price_changed:
+            self._last_price = price
+        else:
+            # Still check orderflow timer even without price change
+            if self._any_at_level and (now - self._last_orderflow_emit) >= self._orderflow_interval:
+                self._emit_orderflow_update(price)
+                self._last_orderflow_emit = now
+            self._check_positions(price)
+            return
+
         at_level_levels = []
         newly_touched = []
 
@@ -138,28 +213,28 @@ class LevelMonitor:
             dist = level.abs_distance_ticks(price)
             old_status = level.status
 
-            if dist <= self.AT_LEVEL_TICKS:
+            if dist <= level.at_level_ticks:
                 if old_status != LevelStatus.AT_LEVEL:
                     level.status = LevelStatus.AT_LEVEL
                     level.touched_at = now
                     newly_touched.append(level)
                 at_level_levels.append(level)
 
-            elif dist <= self.APPROACHING_TICKS:
+            elif dist <= level.approach_ticks:
                 if old_status == LevelStatus.WATCHING:
                     level.status = LevelStatus.APPROACHING
                     level.approach_price = price
                     self._on_level_approaching(level, price, dist)
 
             elif old_status in (LevelStatus.AT_LEVEL, LevelStatus.APPROACHING):
-                if dist > self.REJECT_TICKS:
+                if dist > level.reject_ticks:
                     level.status = LevelStatus.REJECTED
                     self._on_level_rejected(level, price)
                     level.status = LevelStatus.WATCHING
 
         # Mark confluence clusters before emitting touch events
         if len(at_level_levels) > 1:
-            cluster_names = [l.name for l in at_level_levels]
+            cluster_names = tuple(l.name for l in at_level_levels)
             for l in at_level_levels:
                 l.cluster = [n for n in cluster_names if n != l.name]
 
@@ -171,6 +246,21 @@ class LevelMonitor:
         if self._any_at_level and (now - self._last_orderflow_emit) >= self._orderflow_interval:
             self._emit_orderflow_update(price)
             self._last_orderflow_emit = now
+
+        # Zone entry detection for DQN inference
+        newly_entered_zones = []
+        still_in_zones: set[int] = set()
+        for zone in self._zones:
+            if zone.lower_bound <= price <= zone.upper_bound:
+                zid = id(zone)
+                still_in_zones.add(zid)
+                if zid not in self._zone_debounce:
+                    self._zone_debounce.add(zid)
+                    newly_entered_zones.append(zone)
+        self._zone_debounce &= still_in_zones
+
+        for zone in newly_entered_zones:
+            self._emit_zone_dqn_inference(zone, price)
 
         self._check_positions(price)
 
@@ -195,6 +285,17 @@ class LevelMonitor:
             })
         result.sort(key=lambda x: abs(x["distance_ticks"]))
         return result
+
+    def set_session_context(self, ctx: dict) -> None:
+        """Store live session context for DQN inference.
+
+        Called by compute_session route with VWAP bands, VP, TPO, session levels, macro.
+        This allows _build_rl_state to pass complete context to the model.
+        """
+        self._session_context = ctx
+        if "atr" in ctx:
+            self._session_atr = ctx["atr"]
+        logger.info("LevelMonitor session context updated (%d keys)", len(ctx))
 
     def set_tick_buffer(self, tick_buffer) -> None:
         """Provide access to the stream's TickBuffer for orderflow computation."""
@@ -285,8 +386,9 @@ class LevelMonitor:
         })
         # Schedule async ML/macro fetch
         if self._loop and self._db_session_factory:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self._emit_level_context(level.name, level.price))
+            asyncio.run_coroutine_threadsafe(
+                self._emit_level_context(level.name, level.price),
+                self._loop,
             )
 
         # ML feature extraction + outcome tracking
@@ -616,33 +718,95 @@ class LevelMonitor:
         except Exception:
             logger.debug("DQN inference failed for %s", level.name, exc_info=True)
 
+    def _emit_zone_dqn_inference(self, zone: Zone, price: float) -> None:
+        try:
+            from src.rl.live_inference import get_dqn_inference
+            dqn = get_dqn_inference()
+            if not dqn.is_loaded:
+                return
+            rl_state = self._build_rl_state_zone(zone, price)
+            result = dqn.infer(rl_state)
+            if result is not None:
+                self._publish({
+                    "type": "dqn_inference",
+                    "trigger": "zone_entry",
+                    "zone_members": zone.member_count,
+                    "zone_center": zone.center_price,
+                    "zone_hierarchy": round(zone.hierarchy_score, 3),
+                    **result,
+                    "timestamp": time.time(),
+                })
+        except Exception:
+            logger.debug("DQN zone inference failed", exc_info=True)
+
+    def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
+        import time as _time
+        candles = self._candle_flow_fn() if self._candle_flow_fn else []
+        ctx = self._session_context or {}
+        approach = "up" if price < zone.center_price else "down"
+        recent_ticks = []
+        if self._tick_buffer:
+            try:
+                recent_ticks = self._tick_buffer.get_recent(50)
+            except Exception:
+                pass
+        return {
+            "zone": zone,
+            "all_zones": self._zones,
+            "price": price,
+            "touch_epoch": _time.time(),
+            "approach_direction": approach,
+            "candles": candles or [],
+            "candles_5m": ctx.get("candles_5m", []),
+            "vwap_bands": ctx.get("vwap_bands"),
+            "volume_profile": ctx.get("volume_profile"),
+            "tpo_profile": ctx.get("tpo_profile"),
+            "tpo_profile_obj": ctx.get("tpo_profile_obj"),
+            "session_tpos": ctx.get("session_tpos"),
+            "session_levels": ctx.get("session_levels"),
+            "all_levels": [l.price for l in self._levels],
+            "orderflow_signals": ctx.get("orderflow_signals"),
+            "macro": ctx.get("macro"),
+            "session_context": ctx.get("session_context"),
+            "day_type": ctx.get("day_type"),
+            "fvgs": ctx.get("fvgs", []),
+            "single_print_zones": ctx.get("single_print_zones", []),
+            "recent_ticks": recent_ticks,
+            "swing_structure": ctx.get("swing_structure"),
+        }
+
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
-        """Assemble a state dict compatible with RL build_observation()."""
+        """Assemble a state dict compatible with RL build_observation().
+
+        Uses _session_context (populated by compute_session) for complete
+        VWAP, VP, TPO, session level, and macro context. Without it, the
+        model gets ~60% zeros and can't make meaningful predictions.
+        """
         from src.rl.config import LevelType
+        import time as _time
 
         # Map level name to LevelType enum
         name_lower = level.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
         level_type_map = {
-            # Volume profile
             "poc": LevelType.DAILY_POC, "daily_poc": LevelType.DAILY_POC,
             "vah": LevelType.DAILY_VAH, "daily_vah": LevelType.DAILY_VAH,
             "val": LevelType.DAILY_VAL, "daily_val": LevelType.DAILY_VAL,
-            "weekly_poc": LevelType.WEEKLY_POC, "weekly_vah": LevelType.WEEKLY_VAH, "weekly_val": LevelType.WEEKLY_VAL,
-            "monthly_poc": LevelType.MONTHLY_POC, "monthly_vah": LevelType.MONTHLY_VAH, "monthly_val": LevelType.MONTHLY_VAL,
-            # VWAP
             "vwap": LevelType.VWAP,
             "vwap_1sd_upper": LevelType.VWAP_SD1, "vwap_1sd_lower": LevelType.VWAP_SD1,
             "vwap_2sd_upper": LevelType.VWAP_SD2, "vwap_2sd_lower": LevelType.VWAP_SD2,
             "vwap_3sd_upper": LevelType.VWAP_SD3, "vwap_3sd_lower": LevelType.VWAP_SD3,
-            # Session
             "pdh": LevelType.PDH, "pdl": LevelType.PDL,
             "tokyo_high": LevelType.TOKYO_HIGH, "tokyo_low": LevelType.TOKYO_LOW,
             "nyib_high": LevelType.NYIB_HIGH, "nyib_low": LevelType.NYIB_LOW,
-            # TPO
             "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
             "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
-            # Structure
             "naked_poc": LevelType.NAKED_POC,
+            "daily_swing_high": LevelType.DAILY_SWING_HIGH,
+            "daily_swing_low": LevelType.DAILY_SWING_LOW,
+            "weekly_swing_high": LevelType.WEEKLY_SWING_HIGH,
+            "weekly_swing_low": LevelType.WEEKLY_SWING_LOW,
+            "monthly_swing_high": LevelType.MONTHLY_SWING_HIGH,
+            "monthly_swing_low": LevelType.MONTHLY_SWING_LOW,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
 
@@ -651,19 +815,40 @@ class LevelMonitor:
         if self._candle_flow_fn:
             candles = self._candle_flow_fn() or []
 
+        # Pull context from session data (set by compute_session)
+        ctx = self._session_context or {}
+
+        # Approach direction from level tracking
+        approach = "up" if level.approach_price is not None and level.approach_price < level.price else "down"
+
+        # Recent ticks from tick buffer (for micro features)
+        recent_ticks = []
+        if self._tick_buffer:
+            try:
+                recent_ticks = self._tick_buffer.get_recent(50)
+            except Exception:
+                pass
+
         return {
             "level_type": lt,
             "price": price,
+            "touch_epoch": _time.time(),
+            "approach_direction": approach,
             "candles": candles,
-            "vwap_bands": None,       # Not stored on LevelMonitor
-            "volume_profile": None,   # Not stored on LevelMonitor
-            "tpo_profile": None,      # Not stored on LevelMonitor
-            "session_levels": None,   # Not stored on LevelMonitor
+            "candles_5m": ctx.get("candles_5m", []),
+            "vwap_bands": ctx.get("vwap_bands"),
+            "volume_profile": ctx.get("volume_profile"),
+            "tpo_profile": ctx.get("tpo_profile"),
+            "tpo_profile_obj": ctx.get("tpo_profile_obj"),
+            "session_tpos": ctx.get("session_tpos"),
+            "session_levels": ctx.get("session_levels"),
             "all_levels": [l.price for l in self._levels],
-            "orderflow_signals": None,  # Will be extracted from candles by build_observation
-            "macro": None,            # Not stored on LevelMonitor
-            "session_context": None,  # Not stored on LevelMonitor
-            "day_type": None,
-            "fvgs": [],               # FVGs passed as confluence signals
-            "single_print_zones": [],
+            "orderflow_signals": ctx.get("orderflow_signals"),
+            "macro": ctx.get("macro"),
+            "session_context": ctx.get("session_context"),
+            "day_type": ctx.get("day_type"),
+            "fvgs": ctx.get("fvgs", []),
+            "single_print_zones": ctx.get("single_print_zones", []),
+            "recent_ticks": recent_ticks,
+            "swing_structure": ctx.get("swing_structure"),
         }

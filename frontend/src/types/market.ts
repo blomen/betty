@@ -121,6 +121,8 @@ export interface MacroSnapshot {
   regime: string;
   regime_score: number;
   fetched_at?: string;
+  news_proximity?: number;
+  news_importance?: number;
 }
 
 export interface MarketSessionSummary {
@@ -196,6 +198,20 @@ export interface StreamBookEvent {
   spread: number;
 }
 
+export interface StatisticsEvent {
+  type: 'statistics';
+  ts: string;
+  stat: string;
+  open_interest?: number;
+  cleared_volume?: number;
+  block_volume?: number;
+  settlement_price?: number;
+  vwap?: number;
+  session_high?: number;
+  session_low?: number;
+  net_change?: number;
+}
+
 export interface MarketContext {
   symbol: string;
   gates_set: boolean;
@@ -222,6 +238,43 @@ export interface PriceStructure {
   last_ll: number | null;
   swing_high: number | null;
   swing_low: number | null;
+}
+
+/** Individual swing point from fractal pivot detection */
+export interface SwingLevel {
+  price: number;
+  timestamp: number;
+  type: 'swing_high' | 'swing_low';
+  timeframe: 'daily' | 'weekly' | 'monthly';
+}
+
+/** Structural event: BOS or CHoCH */
+export interface StructureEvent {
+  price: number;
+  timestamp: number;
+  event_type: 'bos_bullish' | 'bos_bearish' | 'choch_bullish' | 'choch_bearish';
+  swing_type: 'swing_high' | 'swing_low';
+  swing_price: number;
+}
+
+/** Per-timeframe swing analysis */
+export interface TimeframeSwings {
+  timeframe: string;
+  structure: 'uptrend' | 'downtrend' | 'reversing_up' | 'reversing_down' | 'ranging';
+  swing_highs: SwingLevel[];
+  swing_lows: SwingLevel[];
+  last_bos: StructureEvent | null;
+  last_choch: StructureEvent | null;
+  bos_active: boolean;
+  choch_active: boolean;
+}
+
+/** Multi-timeframe swing structure from compute_multi_tf_swings() */
+export interface SwingStructure {
+  daily: TimeframeSwings;
+  weekly: TimeframeSwings;
+  monthly: TimeframeSwings;
+  trend_alignment: number;
 }
 
 /** Multi-timeframe volume profile data */
@@ -276,6 +329,7 @@ export interface ExpandedSession {
     es_nq_ratio_change?: number | null;
   };
   structure: PriceStructure;
+  swing_structure?: SwingStructure;
   profiles: ProfilesData;
   levels: StructuralLevel[];
   price_position: PricePosition;
@@ -353,6 +407,13 @@ export interface SessionLevelDay {
   ny_end: number;
   day_start: number;
   day_end: number;
+  // Swing levels (most recent confirmed pivot per timeframe)
+  daily_swing_high: number | null;
+  daily_swing_low: number | null;
+  weekly_swing_high: number | null;
+  weekly_swing_low: number | null;
+  monthly_swing_high: number | null;
+  monthly_swing_low: number | null;
 }
 
 export interface SessionLevelsResponse {
@@ -480,6 +541,38 @@ export interface TPOLiveProfile {
   letters: Record<string, string[]>;
 }
 
+export interface SessionTPOData {
+  letters: Record<string, string[]>;  // price → [A, B, C, ...]
+  tpo_counts: Record<string, number>; // price → count
+  poc: number;
+  vah: number;
+  val: number;
+  ib_high: number;
+  ib_low: number;
+  ib_valid: boolean;
+  shape: string;
+  opening_type: string;
+  opening_direction: string;
+  poor_high: boolean;
+  poor_low: boolean;
+  upper_excess: number;
+  lower_excess: number;
+  session_high: number;
+  session_low: number;
+  rotation_factor: number;
+}
+
+export interface SessionTPOResponse {
+  date: string;
+  sessions: {
+    tokyo: SessionTPOData | null;
+    london: SessionTPOData | null;
+    ny: SessionTPOData | null;
+  };
+  poc_migration_tokyo_london: number;
+  poc_migration_london_ny: number;
+}
+
 export interface MlHealth {
   model_loaded: boolean;
   version: number | null;
@@ -507,11 +600,12 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 115
+  inputs: number[];           // 160
   activations: {
-    layer1: number[];         // 128
-    layer2: number[];         // 128
-    layer3: number[];         // 64
+    layer1: number[];         // 256
+    layer2: number[];         // 256
+    layer3: number[];         // 128
+    layer4: number[];         // 64
   };
   q_values: number[];         // 3: [CONTINUATION, REVERSAL, SKIP]
   action: 'CONTINUATION' | 'REVERSAL' | 'SKIP';
@@ -519,7 +613,9 @@ export interface DQNInferenceEvent {
     input_l1: DQNConnection[];
     l1_l2: DQNConnection[];
     l2_l3: DQNConnection[];
-    l3_output: DQNConnection[];
+    l3_l4: DQNConnection[];
+    l4_output: DQNConnection[];
+    l3_output?: DQNConnection[];  // legacy compat
   };
   timestamp: number;
 }

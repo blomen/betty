@@ -161,6 +161,20 @@ class ProviderAllocator:
         cap = self._daily_cap
         is_capped = cap > 0 and group_bets >= cap
 
+        # --- Banned check (level 5 = account closed) ---
+        limit_level = self._limits.get(provider_id, 0)
+        if limit_level >= 5:
+            return AllocationResult(
+                provider_id=provider_id,
+                score=-1,
+                reason="Banned — account closed",
+                daily_bets_group=group_bets,
+                daily_cap=cap,
+                is_capped=True,
+                wagering_remaining=0,
+                edge_routing=None,
+            )
+
         # --- Wagering score (0-40) ---
         wager_info = self._wagering.get(provider_id, {})
         remaining = wager_info.get("remaining", 0)
@@ -190,7 +204,6 @@ class ProviderAllocator:
 
         # --- Edge-based routing (limited provider handling) ---
         edge_routing = None
-        limit_level = self._limits.get(provider_id, 0)
         if edge_pct is not None and limit_level >= 1:
             if edge_pct >= 5.0 and limit_level >= 2:
                 # Don't waste high-edge bets on limited providers

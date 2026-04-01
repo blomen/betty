@@ -5,7 +5,7 @@
 
 ## Context
 
-BankrollBBQ compares odds across 40+ sportsbooks to find value bets. Each provider offers deposit bonuses (matched deposits, freebets) with wagering requirements. The current system tracks bonus progress but doesn't optimize the strategic layer: which providers to deposit at first, how to sequence bonus clearing, where to route bets, and when to redeploy capital.
+Firev compares odds across 40+ sportsbooks to find value bets. Each provider offers deposit bonuses (matched deposits, freebets) with wagering requirements. The current system tracks bonus progress but doesn't optimize the strategic layer: which providers to deposit at first, how to sequence bonus clearing, where to route bets, and when to redeploy capital.
 
 The user's strategy is pure +EV — never sacrifice edge for wagering progress. But when multiple providers offer similar edges, the system should intelligently route to the provider that benefits most from the turnover. Beyond tiebreaking, the system should plan the entire bonus lifecycle: initial capital allocation, bonus sequencing, fund redeployment, and continuous re-optimization as the situation evolves.
 

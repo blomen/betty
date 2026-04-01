@@ -92,12 +92,6 @@ except Exception as e:
     report("kelly_features", False, str(e))
 
 try:
-    from src.ml.features.devig_features import extract_devig_features
-    report("devig_features", True, "module imports OK")
-except Exception as e:
-    report("devig_features", False, str(e))
-
-try:
     from src.ml.features.limit_features import extract_limit_features
     report("limit_features", True, "module imports OK")
 except Exception as e:
@@ -141,7 +135,6 @@ print("\n=== 2. MODEL INSTANTIATION ===")
 model_classes = {
     "M1 EdgeQuality": ("src.ml.models.edge_quality", "EdgeQualityModel"),
     "M2 LimitPredictor": ("src.ml.models.limit_predictor", "LimitPredictorModel"),
-    "M3 DevigSelector": ("src.ml.models.devig_selector", "DevigSelectorModel"),
     "M4 BoostCalibrator": ("src.ml.models.boost_calibrator", "BoostCalibratorModel"),
     "M5 SetupScorer": ("src.ml.models.setup_scorer", "SetupScorerModel"),
     "M6 TemporalPattern": ("src.ml.models.temporal_pattern", "TemporalPatternModel"),

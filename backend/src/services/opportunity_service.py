@@ -4,14 +4,38 @@ import logging
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
+from ..repositories.limit_repo import LimitRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
-from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
+from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP
-from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit
+from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit, ProviderRunMetrics
 from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
+
+
+def get_provider_last_checked(db: Session, provider_ids: list[str] | None = None) -> dict[str, str]:
+    """Get last successful extraction time per provider from provider_run_metrics.
+
+    Returns {provider_id: iso_timestamp} for the most recent successful run.
+    """
+    from sqlalchemy import func
+    q = (
+        db.query(
+            ProviderRunMetrics.provider_id,
+            func.max(ProviderRunMetrics.end_time).label("last_checked"),
+        )
+        .filter(ProviderRunMetrics.status == "success")
+    )
+    if provider_ids:
+        q = q.filter(ProviderRunMetrics.provider_id.in_(provider_ids))
+    q = q.group_by(ProviderRunMetrics.provider_id)
+
+    return {
+        pid: ts.isoformat() + "Z" if ts else None
+        for pid, ts in q.all()
+    }
 
 
 def _get_dutch_legs(outcomes) -> list:
@@ -54,14 +78,20 @@ class OpportunityService:
         provider_ids = None
         if providers:
             raw_ids = [p.strip() for p in providers.split(',')]
-            # Expand to include canonical providers so dutch/reverse stored
-            # under canonical names are matched when filtering by member alias
             expanded = set(raw_ids)
             for pid in raw_ids:
                 canon = PROVIDER_CANONICAL.get(pid)
                 if canon:
                     expanded.add(canon)
             provider_ids = list(expanded)
+
+        # Use profile min_edge if not specified
+        profile = None
+        try:
+            profile = self.profile_repo.get_active()
+        except Exception:
+            pass
+        effective_min_edge = min_value if min_value is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
 
         rows = self.opp_repo.find_active(
             type=type,
@@ -70,16 +100,26 @@ class OpportunityService:
             provider_ids=provider_ids,
             market=market,
             sport=sport,
-            min_edge=min_value,
+            min_edge=effective_min_edge,
             exclude_provider1=None if provider1 else "polymarket",
             limit=limit,
         )
 
+        # Exclude banned providers
+        try:
+            if not profile:
+                profile = self.profile_repo.get_active()
+            banned = LimitRepo(self.db).get_banned_providers(profile.id)
+            if banned:
+                rows = [(opp, evt) for opp, evt in rows if opp.provider1_id not in banned]
+        except Exception:
+            banned = set()
+
         # Fetch active profile once (used for pending-bet filter + stake calculator)
         stake_calculator = None
-        profile = None
         try:
-            profile = self.profile_repo.get_active()
+            if not profile:
+                profile = self.profile_repo.get_active()
         except Exception:
             pass
 
@@ -103,8 +143,8 @@ class OpportunityService:
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
                     bankroll=bankroll,
-                    max_kelly=profile.kelly_fraction,
-                    single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                    max_kelly=OPTIMAL_MAX_KELLY,
+                    single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_edge=profile.min_edge_pct / 100.0,
                 )
             except Exception as e:
@@ -114,15 +154,24 @@ class OpportunityService:
         meta_cache = self._batch_lookup_provider_meta(rows)
         updated_at_cache = self._batch_lookup_odds_updated_at(rows)
 
-        # Batch pre-fetch bonus statuses for all providers (avoid N+1)
+        # Provider-level last-checked timestamps (extraction recency, not data change)
+        provider_ids_in_rows = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
+        last_checked_cache = get_provider_last_checked(self.db, provider_ids_in_rows) if provider_ids_in_rows else {}
+
+        # Batch pre-fetch bonus statuses for all providers (single query instead of N)
         bonus_cache = {}
         if profile and type == 'value':
             provider_ids = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
-            for pid in provider_ids:
+            if provider_ids:
                 try:
-                    bonus_cache[pid] = self.profile_repo.get_bonus_status(profile.id, pid)
+                    bonus_cache = self.profile_repo.get_bonus_statuses_batch(profile.id, provider_ids)
                 except Exception:
-                    bonus_cache[pid] = {"is_cleared": True}
+                    # Fall back to per-provider if batch not available
+                    for pid in provider_ids:
+                        try:
+                            bonus_cache[pid] = self.profile_repo.get_bonus_status(profile.id, pid)
+                        except Exception:
+                            bonus_cache[pid] = {"is_cleared": True}
 
         # Build response
         results = []
@@ -159,6 +208,10 @@ class OpportunityService:
 
             # Attach odds freshness timestamp
             result["odds_updated_at"] = updated_at_cache.get(meta_key)
+
+            # Attach provider extraction recency (when we last checked, even if odds unchanged)
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            result["provider_last_checked"] = last_checked_cache.get(canonical)
 
             # Expose provider's own team names (for copy-paste between app and sportsbook)
             if isinstance(meta, dict):
@@ -281,10 +334,6 @@ class OpportunityService:
             (self.profile_repo.get_balance(profile.id, p.id) for p in providers if p.id == anchor_provider), 0
         )
 
-        # Profile risk settings
-        max_kelly = profile.kelly_fraction if profile else 0.25
-        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
-
         results = []
         for o in opportunities[:limit]:
             edge_raw = o.anchor_odds / o.fair_odds - 1 if o.fair_odds > 1 else 0
@@ -295,9 +344,10 @@ class OpportunityService:
                     edge_raw=edge_raw,
                     odds=o.anchor_odds,
                     min_odds=0.0,
-                    max_kelly=max_kelly,
-                    single_bet_cap_pct=single_bet_cap_pct,
+                    max_kelly=OPTIMAL_MAX_KELLY,
+                    single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_stake=dynamic_min_stake(total_bankroll),
+                    min_expected_profit=dynamic_min_expected_profit(total_bankroll),
                 )
                 suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
                 kelly_amount = rec.raw_kelly_stake
@@ -528,6 +578,7 @@ class OpportunityService:
             result["final_stake"] = round(stake_rec.stake, 2)
             result["kelly_fraction"] = stake_rec.kelly_fraction
             result["skip_reason"] = stake_rec.skip_reason
+            result["counts_toward_wagering"] = stake_rec.counts_toward_wagering
             result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
             result["bonus_cleared"] = bonus_status.get("is_cleared", True)
 
@@ -568,13 +619,12 @@ class OpportunityService:
                 is_freebet = bs == "freebet_available"
                 has_balance = is_freebet or balance >= bonus_amount  # freebets don't need balance
 
-                if opp.odds1 >= min_odds and has_balance:
+                if has_balance:
                     result["final_stake"] = bonus_amount
                     result["skip_reason"] = None
-                elif opp.odds1 >= min_odds and not has_balance:
+                else:
                     result["final_stake"] = 0
                     result["skip_reason"] = "no_balance"
-                # If odds < min_odds, keep skip_reason and final_stake=0
 
         except Exception as e:
             logger.debug(f"Stake calculation failed for opp {opp.id}: {e}")
@@ -582,6 +632,7 @@ class OpportunityService:
             result["final_stake"] = None
             result["kelly_fraction"] = None
             result["skip_reason"] = None
+            result["counts_toward_wagering"] = True
             result["bankroll_needed"] = None
             result["bonus_cleared"] = None
             result["bonus_status"] = None
@@ -670,7 +721,11 @@ class OpportunityService:
             result["arb_legs"] = None
 
     def _add_reverse_value_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
-        """Add stake recommendation for reverse value bets (Pinnacle vs consensus)."""
+        """Add stake recommendation for reverse value bets (Pinnacle vs consensus).
+
+        Reverse bets are placed manually on Pinnacle — never skip due to bankroll.
+        If Kelly stake is below min_stake, show min_stake as suggestion instead of skipping.
+        """
         try:
             edge_raw = (opp.odds1 / opp.odds2 - 1) if opp.odds2 > 1 else 0
 
@@ -680,11 +735,20 @@ class OpportunityService:
                 event_id=opp.event_id,
                 provider_id="pinnacle",
             )
-            result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
-            result["final_stake"] = round(stake_rec.stake, 2)
-            result["kelly_fraction"] = stake_rec.kelly_fraction
-            result["skip_reason"] = stake_rec.skip_reason
-            result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
+
+            # Never skip reverse bets for bankroll/EV reasons — user places these manually
+            if stake_rec.skip_reason and stake_rec.skip_reason in ("low EV",) or "add" in (stake_rec.skip_reason or ""):
+                result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+                result["final_stake"] = round(stake_calculator.min_stake, 2)
+                result["kelly_fraction"] = stake_rec.kelly_fraction
+                result["skip_reason"] = None
+                result["bankroll_needed"] = None
+            else:
+                result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+                result["final_stake"] = round(stake_rec.stake, 2)
+                result["kelly_fraction"] = stake_rec.kelly_fraction
+                result["skip_reason"] = stake_rec.skip_reason
+                result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
 
         except Exception as e:
             logger.debug(f"Reverse value stake calculation failed for opp {opp.id}: {e}")
@@ -733,7 +797,11 @@ class OpportunityService:
             canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
             key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
             orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
-            result[orig_key] = meta_index.get(key)
+            value = meta_index.get(key)
+            if value is None and opp.market == "spread" and opp.point:
+                alt_key = (opp.event_id, canonical, opp.market, opp.outcome1, -opp.point)
+                value = meta_index.get(alt_key)
+            result[orig_key] = value
 
         return result
 
@@ -773,7 +841,13 @@ class OpportunityService:
             canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
             key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
             orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
-            result[orig_key] = updated_index.get(key)
+            value = updated_index.get(key)
+            # Spread scanner normalizes point signs (Asian handicap convention),
+            # but odds table stores original provider points — try negated point
+            if value is None and opp.market == "spread" and opp.point:
+                alt_key = (opp.event_id, canonical, opp.market, opp.outcome1, -opp.point)
+                value = updated_index.get(alt_key)
+            result[orig_key] = value
 
         return result
 

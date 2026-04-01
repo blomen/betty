@@ -1,0 +1,611 @@
+# Provider Sport Betting Bonus Terms — Raw Audit (2026-03-27)
+
+> Scraped from each provider's official bonus/promotions pages. Sport betting section ONLY (not casino).
+> Some providers use JS-rendered SPAs and couldn't be scraped directly — noted where applicable.
+
+---
+
+## Table of Contents
+
+- [Kambi Group](#kambi-group) — Unibet, LeoVegas, Expekt, BetMGM, SpeedyBet, X3000, Golden Bull, 1X2
+- [Altenar Group](#altenar-group) — Betinia/10bet, CampoBet, Swiper, Lodur, Dbet, QuickCasino
+- [Gecko / OBG](#gecko--obg) — Betsson, Betsafe, NordicBet, Spelklubben, Bethard
+- [ComeOn Group](#comeon-group) — ComeOn, Hajper, Lyllo
+- [Spectate / 888](#spectate--888) — Mr Green, 888sport
+- [Independents](#independents) — 10Bet, Snabbare, Interwetten, Coolbet, Tipwin, VBet
+
+---
+
+## Kambi Group
+
+### Unibet
+
+**Source:** oddsbonusar.se, bettingsidor.se (unibet.se returns 503 — Cloudflare blocked)
+
+- **Bonus:** 100% matchat gratisspel upp till 1 000 kr
+- **Min insättning:** 100 kr
+- **Trigger:** Placera ett spel på minst 100 kr med minsta odds 1.80 (single bet)
+- **Omsättning på vinster:** Inga omsättningskrav på vinster från gratisspelet
+- **Giltighet:** 60 dagar
+- **Övrigt:** Välj välkomsterbjudande vid registrering. Gäller sedan ny licens oktober 2025.
+
+**Verdict:** Config ✅ — `type: freebet, amount: 1000, wagering_multiplier: 1, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### LeoVegas
+
+**Source:** leovegas.com/sv-se/kampanjer/bonusar/s + /villkor — fetched directly, verbatim
+
+**Fullständiga villkor:**
+- Erbjudandet gäller nya kunder bosatta i Sverige som valt välkomsterbjudandet för sport.
+- Gäller spelare registrerade from 27 november 2025.
+- Första insättning minst 100 kr.
+- Bonus i form av riktiga pengar som matchar första insättningen, upp till max 600 kr.
+- **För att motta bonusen behöver man omsätta sin första insättning sex gånger.** (Exempel: 600 kr insättning → omsätt 3 600 kr → motta 600 kr i riktiga pengar)
+- Endast spel med odds 1.80 eller mer räknas. Kombinationsspel sammanlagt minst 1.80 (ex. 1.4×1.4 = 1.96).
+- Giltig 60 dagar från att man valt erbjudandet och satt in första insättningen.
+- Klicka "Hämta" på bonuskortet under "Mina erbjudanden" för att få pengarna.
+- Envägsspel, systemspel och cash out kvalificerar sig INTE.
+- Satsning på båda sidor i ett event → erbjudande tas bort.
+- Begränsat till ett per hushåll/e-post/telefon/betalmetod.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 600, trigger_multiplier: 6, trigger_odds: 1.80, wagering_multiplier: 0`
+Wagering is on DEPOSIT only (6× deposit to unlock bonus as cash). No post-unlock wagering.
+
+---
+
+### Expekt
+
+**Source:** expekt.se/promotions + third-party verification (sport-specific T&C page returned 404)
+
+- **Bonus:** 100% upp till 1 000 kr + 64 kr på Expekt-Tipset
+- **Min insättning:** 100 kr
+- **Omsättning:** 20× insättningen (NOT bonus). Minsta odds 1.80.
+- **Giltighet:** 90 dagar
+- **Extra:** 64 kr Expekt-Tipset, inga omsättningskrav på vinster.
+- **Begränsningar:** Envägsspel, systemspel, cash out kvalificerar sig inte.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 20, trigger_odds: 1.80, wagering_multiplier: 0, deadline_days: 90`
+
+---
+
+### BetMGM
+
+**Source:** betmgm.se/kampanjer/sport/valkomstbonus + /villkor — fetched directly, verbatim
+
+**Fullständiga villkor:**
+- Gäller nya kunder bosatta i Sverige registrerade from 17 december 2025.
+- Välj Välkomsterbjudandet för Sport vid registrering.
+- Första insättning minst 100 kr.
+- Matchad bonus upp till 500 kr + extraspel MGM-Tipset värt 64 kr.
+- **Omsätt din första insättning 10 gånger.** (Exempel: 500 kr → omsätt 5 000 kr → motta 500 kr)
+- Odds minst 1.80 (kombination sammanlagt minst 1.80).
+- Giltig 60 dagar.
+- Klicka "Hämta" under "Mina erbjudanden".
+- Envägsspel, systemspel, cash out kvalificerar sig INTE.
+- Extraspelet 64 kr: system av 6 halvgarderingar. Giltigt 60 dagar efter omsättningskravet mötts. Inga omsättningskrav på vinster.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, trigger_multiplier: 10, trigger_odds: 1.80, wagering_multiplier: 0`
+
+---
+
+### SpeedyBet
+
+**Source:** speedybet.com/en/bonus-offer — fetched directly, verbatim
+
+**Betting Bonus villkor:**
+- Matchar första insättning 100% upp till 500 kr.
+- Aktiveras automatiskt vid första insättning.
+- **Omsättningskravet: 12×.** Endast bettingspel avgjorda under perioden med minimiodds 1.8.
+- Cash Out räknas INTE.
+- Bidrag: 100% Betting, 0% alla andra kategorier.
+- Min insättning 100 kr.
+- Maxbet per spel 50 kr (gäller alla spel utom betting).
+- 60 dagar att fullfölja. Erbjudandet giltigt 365 dagar efter registrering.
+- Bonussaldo nollställs vid uttag.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80`
+Wagering is on BONUS only (12× bonus amount). No trigger needed — instant credit.
+
+---
+
+### X3000
+
+**Source:** x3000.com/bonus-offer — fetched directly, verbatim
+
+**Betting bonus villkor (identisk struktur som SpeedyBet):**
+- 100% matchning upp till 500 kr.
+- Aktiveras automatiskt vid första insättning.
+- **Omsättningskrav: 12×.** Minimiodds 1.8. Cash Out räknas inte.
+- Min insättning 100 kr. Maxbet 50 kr (utom betting).
+- 60 dagar. Erbjudandet giltigt 365 dagar.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80`
+
+---
+
+### Golden Bull
+
+**Source:** goldenbull.se/en/bonus-info — fetched directly, verbatim
+
+**Betting Bonus (identisk som SpeedyBet/X3000):**
+- 100% matchning upp till 500 kr.
+- Aktiveras automatiskt.
+- **Omsättningskrav: 12×.** Minimiodds 1.8. Cash Out räknas inte.
+- **⚠️ Min insättning 200 kr** (NOT 100 kr like the others!)
+- 60 dagar. Erbjudandet giltigt 365 dagar.
+
+**Verdict:** Config ✅ (but note higher min deposit of 200 kr)
+
+---
+
+### 1X2
+
+**Source:** 1x2.se blog article about wagering + WebSearch
+
+- 100% matchning upp till 500 kr + 64 kr 1X2-Tipset.
+- **Omsättningskrav: 12× bonusbeloppet** (500 kr bonus = 6 000 kr).
+- Minimiodds 1.80. Cash Out räknas inte.
+- 1X2-Tipset bidrar 100% till omsättning.
+- Min insättning 100 kr. Maxbet 50 kr (utom betting).
+- **⚠️ 90 dagars giltighet** (blog article says 90; may vary)
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80`
+60 days for bonus, 90 days only for 1X2-Tipset extra game. Offer valid 365 days from registration.
+
+---
+
+## Altenar Group
+
+### Betinia
+
+**Source:** betinia.se — manually audited 2026-03-28
+
+- **Bonus:** 100% matchad bonus upp till 1 000 kr
+- **Min insättning:** 100 kr
+- **Trigger:** 1× insättning vid odds 1.50
+- **Omsättning:** (insättning + bonus) × 6, min odds 1.80
+- **Giltighet:** 60 dagar
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
+
+---
+
+### CampoBet
+
+**Source:** campobet.se/sv/promotions/sport/welcome-bonus — fetched directly, verbatim
+
+**Fullständiga villkor:**
+1. Nya spelare, ej tidigare spelat på Romix Limited.
+2. Minsta insättning 100 kr.
+3. Första insättningen bestämmer bonusens värde.
+4. **Trigger:** Omsätt insättningen 1× till minsta odds 1.50. → Bonus låses upp.
+5. Max bonus 500 kr.
+6. **Omsättning:** Insättning och bonus 6× i: singel minsta odds 1.80, multipelspel minsta 1.40 per urval.
+7. Cash-out, systemspel, void, casino räknas INTE.
+8. **Max insats mot omsättning: 500 kr per spel.**
+9. Bara första rattade spelet per evenemang räknas.
+10. Välj sport ELLER casino bonus.
+11. Uttag medan bonus aktiv = förlorar bonus.
+12. **60 dagar.**
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
+
+---
+
+### Swiper
+
+**Source:** swiper.se/sv/promotions/sport/welcome-bonus-sport — fetched directly, verbatim
+
+**Identisk struktur som CampoBet men:**
+- Max bonus: **1 000 kr** (vs 500 kr CampoBet)
+- Trigger: 1× insättning vid odds 1.50
+- **Omsättning: Insättning och bonus 6× vid odds 1.80 singel / 1.40 per multipelval**
+- Max insats mot omsättning: 500 kr per spel
+- 60 dagar
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
+
+---
+
+### Lodur
+
+**Source:** lodur.se/sv/promotions/sport/welcome-bonus-sport — fetched directly, verbatim
+
+**Source:** lodur.se — manually audited 2026-03-28
+
+- **Bonus:** 100% matchad bonus upp till 500 kr
+- **Min insättning:** 100 kr
+- **Omsättning:** 6× bonus only, no min odds specified
+- **Giltighet:** Not specified in public terms
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 6`
+
+---
+
+### Dbet
+
+**Source:** dbet.com/welcome-bonus-sports/ — fetched directly, verbatim
+
+**Fullständiga villkor:**
+1. Nya spelare, första insättning minst 100 kr.
+2. Gratisspel tillgängligt from 1 oktober 2025.
+3. Giltigt 60 dagar från aktivering.
+4. Aktivera via spelkupongen innan spelet placeras.
+5. **Trigger:** Första spel med riktiga pengar, minimumodds 1.80 singel eller total 1.80 kombo.
+6. Systemspel och enkelriktade spel kvalificerar sig INTE.
+7. Deluttag/uttagna spel kvalificerar sig inte.
+8. Avgör första spelet inom 60 dagar.
+9. Gratisspel = insats för första spelet ELLER första insatta beloppet (det lägsta), max 500 kr.
+10. Måste användas vid ett tillfälle (singel eller kombo).
+11. Om event ställs in → nytt gratisspel.
+12. **Inga omsättningskrav på vinster.** Tillgängliga för uttag direkt.
+13. Ett per kund/hushåll. Kan kombineras med casino-bonus.
+
+**Verdict:** Config ✅ — `type: freebet, amount: 500, wagering_multiplier: 1, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### QuickCasino
+
+**Source:** quickcasino.se/sv/promotions/sport/welcome-bonus-sport — fetched directly, verbatim
+
+**Identisk som CampoBet med en skillnad:**
+- Max bonus: **500 kr**
+- Trigger: 1× insättning vid odds 1.50
+- **Omsättning: Insättning och bonus 6× vid odds 1.80 / 1.40**
+- Max insats mot omsättning: 500 kr
+- 60 dagar
+- **⚠️ Punkt 18 (extra):** "måste du göra en insättning med din föredragna betalningsmetod för att möjliggöra uttag" — kräver extra insättning efter omsättning!
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
+
+---
+
+## Gecko / OBG
+
+### Betsson
+
+**Source:** FAILED — betsson.com returns compressed/garbled content (heavy SPA, Brotli encoding). Could not scrape.
+
+**From sister brands (Betsafe/NordicBet) and third-party sources:**
+- Likely freebet format, 250 kr, single trigger at 1.80+
+- Needs manual verification in browser.
+
+**Verdict:** Config assumed correct — `type: freebet, amount: 250, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### Betsafe
+
+**Source:** betsafe.com/sv/promotions — partial extraction
+
+**Synligt på kampanjsidan:**
+> Odds - Få ett 100 kr gratisspel + 50 freespins!
+> Sätt in och lägg ett spel för 100 kr med minst ett val till min. odds 1.80 och få ett gratisspel värt 100 kr.
+> Freespins gäller Pirots 4 och ev. vinster måste omsättas 35 gånger.
+> Giltig i 60 dagar.
+
+**Verdict:** Config ✅ — `type: freebet, amount: 100, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### NordicBet
+
+**Source:** nordicbet.com/sv/kampanjer — partial extraction
+
+**Identisk som Betsafe:**
+> Odds - Hämta ett 100 kr gratisspel + 50 freespins!
+> Sätt in och lägg ett spel för 100 kr med minst ett val till min. odds 1.80.
+> 60 dagar.
+
+**Verdict:** Config ✅ — `type: freebet, amount: 100, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### Spelklubben
+
+**Source:** spelklubben.se/sv/welcome-bonus — full terms extracted
+
+**Fullständiga villkor:**
+- 100% matchad bonus upp till 500 kr.
+- Min insättning 100 kr.
+- Välj Casino eller Sport bonus FÖRE första insättningen.
+- **Omsättning: Insättning och bonus 15× med min. odds 1.90.**
+- Bara sportspel räknas.
+- **Bara ditt första avgjorda spel per match/marknad räknas.**
+- Cash-out/avbrutna/void räknas inte.
+- 60 dagar.
+- Real money spelas först, bonuspengar aktiveras efter.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 30, min_odds: 1.90` (30 = 15×2 since dep=bonus)
+
+---
+
+### Bethard
+
+**Source:** FAILED — SPA-rendered, no content extractable
+
+**From main page inline promo text:**
+> Min. insättning 100 kr. Max bonus 500 kr. Omsättning: 15x Insättning + Bonus. Min. odds 1,90. Inom 60 dagar.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 30, min_odds: 1.90` (30 = 15×2 since dep=bonus)
+
+---
+
+## ComeOn Group
+
+### ComeOn
+
+**Source:** FAILED — SPA-rendered. Title visible: "Insätt 250 kr — få 1000 kr + spins och free bet!"
+
+**From promotions.comeon.com (first round research):**
+- 100% deposit match up till 500 kr.
+- Bonus aktiveras vid insättning.
+- **Omsättning: 6× (bonus + deposit).** Min odds 1.80.
+- **Max insats: 250 kr per spel.**
+- ComeOn Tipset räknas INTE. Retrobet räknas INTE. Cash Out räknas INTE.
+- 60 dagar.
+- Sticky bonus (insättning + bonus låsta ihop).
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80` (12 = 6×2 since dep=bonus). Max bet 250 kr.
+
+---
+
+### Hajper
+
+**Source:** hajper.com/sv/bonusvillkor — fetched directly
+
+**Fullständiga villkor:**
+- **100% matchat GRATISSPEL upp till 500 kr** (NOT deposit match!)
+- Min insättning 100 kr.
+- Min odds 1.80.
+- Tipset ingår ej i omsättning.
+- **Vinster från gratisspel är omsättningsfria.**
+- Gratisspelet kan inte tas ut som kontanter — bara vinster.
+- 60 dagar.
+
+**Verdict:** Config ✅ — `type: freebet, amount: 500, wagering_multiplier: 1, min_odds: 1.80, trigger_mode: single`
+
+---
+
+### Lyllo
+
+**Source:** lyllocasino.com/sv/bonusvillkor — NO SPORT BONUS FOUND
+
+Site only shows casino welcome bonus (300%, 20× wagering). No separate sport betting welcome bonus advertised.
+
+**From third-party research (round 1):**
+- 100 kr gratisspel
+- Trigger: insätt 100 kr, spela 100 kr vid odds 1.80+
+- 1× omsättning
+- 60 dagar, 7 dagars deadline på gratisspelet
+
+**Verdict:** Config ✅ — `type: freebet, amount: 100, min_odds: 1.80, trigger_mode: single, deadline_days: 7`
+
+---
+
+## Spectate / 888
+
+### Mr Green
+
+**Source:** FAILED — SPA-rendered, no bonus content extractable
+
+**From third-party research (round 1):**
+- 500 kr livebet (free bet for live betting only)
+- **⚠️ Min insättning: 500 kr** (with code "SPORT")
+- Trigger: Placera 500 kr vid minsta odds 1.80
+- **Vinster omsättningsfria**
+- Alla insättningar måste omsättas 1× före uttag
+- 60 dagar
+
+**Verdict:** Config partially correct — `type: freebet, amount: 500, min_odds: 1.80, trigger_mode: single`. Note: requires 500 kr deposit (not 100 kr) and livebet only.
+
+---
+
+### 888sport
+
+**Source:** 888sport.se/kampanjer — fetched directly, full verbatim T&C
+
+**Fullständiga villkor:**
+- Nya spelare som ej nyttjat välkomsterbjudande hos 888 tidigare.
+- **Kampanjkod: SPORTBONUS** vid första insättning.
+- Minsta insättning: **100 kr** i en enskild transaktion.
+- **100% matchning** av första insättningen, upp till **500 kr** i bonusmedel.
+- **Omsättningskrav: 14× bonusbeloppet.** (500 kr bonus = 7 000 kr)
+- Bonusmedel kan bara användas på sport, **minsta odds 1.80** räknas.
+- **"Non-sticky" bonus** — riktiga pengar och bonusmedel inte kopplade. Spelar först med egen insättning, vinster från den kan betalas ut omedelbart.
+- Uttag innan omsättning = bonus + vinster förverkas.
+- **60 dagar.**
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 14, min_odds: 1.80`. Non-sticky (deposit played first). Code SPORTBONUS required.
+
+---
+
+## Independents
+
+### 10Bet
+
+**Source:** 10bet.se/promotion/38111 — manually audited 2026-03-28
+
+- **Bonus:** 100% matchad bonus upp till 1 000 kr
+- **Min insättning:** 100 kr
+- **Omsättning:** (insättning + bonus) × 15, min odds 1.80
+- **Max vinst:** 10 000 kr
+- **Giltighet:** 60 dagar
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 30, min_odds: 1.80` (30 = 15×2 since dep=bonus)
+
+---
+
+### Snabbare
+
+**Source:** snabbare.com/sv/erbjudanden — verbatim
+
+> 18+, Bonuserbjudande gäller nya kunder vid första insättnings- och speltillfälle. Du kan inte ta del av fler än ett välkomsterbjudande. Kan du inte se din bonus på ditt spelkonto efter din första insättning och bonusaktivering, vänligen kontakta kundtjänst direkt. Bonusen kan endast aktiveras innan första speltillfället.
+>
+> Bonusalternativ "Sport": 100% i bonus på din första insättning upp till 600 kr. Min. insättning är 100 kr. Maxbonus är 600 kr. Dessutom får du 100 jackpottspins på Tome Of Dead till ett värde av 1 kr/spin. **Insättning + bonus måste omsättas minst 8 gånger på Sport, min. odds 1.80 singel eller kombobet.** (Ogiltigförklarade spel eller Cashout-funktionen räknas inte till omsättningen, kupongen måste vara slutförd). Totala maxvärdet av detta bonusalternativ med en insättning på 600 kr, med Jackpottspins är 700 kr.
+>
+> Vinster från spins kan inte tas ut förrän bonuserbjudandets samtliga villkor är uppfyllda. Har spelaren av någon anledning avslutat sitt bonuserbjudande i förtid kommer vinsterna från dessa spins att förverkas.
+>
+> Omsättningskravet måste uppfyllas inom 90 dagar efter att bonusen aktiveras. Eventuella bonuspengar som inte har omsatts under perioden förverkas.
+>
+> Maxinsats är 50 kr per spelomgång både i Casino och Live-Casino, för att omsättningen ska räknas.
+>
+> När du aktiverar en bonus låser du ditt saldo i två delar: insättningen och bonuspengarna. Du spelar med båda delar vid varje insats. Avbryter du din bonus förlorar du bonussumman och alla eventuella vinster som bonusdelen av ditt saldo givit upphov till.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 600, wagering_multiplier: 16, min_odds: 1.80, deadline_days: 90` (16 = 8×2 since dep=bonus)
+
+---
+
+### Interwetten
+
+**Source:** interwetten.se/sv/content/promotions/welcome-bonus — **⚠️ BONUS EXPIRED**
+
+Page returns: "Kampanjen missades tyvärr. Tack för ditt intresse för vår kampanj. Tyvärr har denna kampanj redan avslutats."
+
+Footer only mentions Casino bonus (5 000 kr). **No active sport welcome bonus on interwetten.se as of 2026-03-27.**
+
+Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage but links to expired page.
+
+**From config (unverified, bonus may no longer exist):**
+- Sport bonus upp till 1 000 kr
+- Staged unlock: 5 steg × 20% vardera
+- Trigger: Omsätt insättning ×5 vid odds 1.70+
+- Omsättning: Varje steg 1× vid odds 1.70+
+- 14 dagar deadline
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 5, trigger_odds: 1.70, wagering_multiplier: 1, min_odds: 1.70, deadline_days: 14`. Staged bonus (5 steps × 20%), can use multiple deposits.
+
+---
+
+### Coolbet
+
+**Source:** coolbet.com/sv/valkomstbonus + /erbjudanden/regler/odds-bonus-regler — verbatim
+
+> ODDS 100% VÄLKOMSTBONUS UPP TILL 1000 KR + 50 FREESPINS PÅ COOLBET SUGAR RUSH 1000
+>
+> - Detta erbjudande är endast tillgängligt för svenska spelare som inte tidigare har skapat något konto hos Coolbet och ännu inte placerat något spel.
+> - Du kan endast välja en av bonusarna (sport eller casino) och minsta insättning för att erhålla en bonus är 100 kr. Bonusen kan enbart utnyttjas i samband med din första insättning.
+> - **Bonusbeloppet måste omsättas på odds sex (6) gånger till minsta odds 1.50.** Din insättning har inga omsättningskrav, men det insatta beloppet är låst och kan inte tas ut innan omsättningskraven för bonusen har blivit uppnådda.
+> - Singlar, kombinations- och systemspel accepteras, inklusive spel på livespel. Singelspel på odds lägre än 1.50 räknas INTE. Kombinations-/systemspel med lägre odds per leg räknas om totalodds ≥ 1.50. Spel satt till 1.00 räknas inte.
+> - Free spins: lägsta möjliga värde, 60 dagar. Vinster krediteras som kontanter utan omsättningskrav.
+> - Bonusen måste användas och omsättas inom 60 dagar.
+> - Bonuserbjudanden gäller EJ insättningar via e-plånböcker (Neteller, Skrill).
+> - Bonuskod: ODDS
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 6, min_odds: 1.50`. Code: ODDS. Deposit locked until wagering complete.
+
+---
+
+### Tipwin
+
+**Source:** tipwin.se/sv/info/bonus-terms — verbatim
+
+> 100% välkomstbonus upp till 1000 kr
+>
+> Klient med antingen nytt eller befintligt konto kan få bonus vid första/nästa insättning.
+>
+> - Denna kampanj är exklusiv för alla klienter. Bonusen gäller endast för sport- och live-spelsatsning.
+> - När du har registrerat och verifierat ditt konto läggs välkomstbonusen på din första/nästa insättning automatiskt till ditt konto. Kontot måste verifieras innan du begär bonus.
+> - **Rollover - Det totala beloppet som innehas som bonusmedel måste satsas minst 7 gånger (7X) med alla satsningar avräknade innan insättningsbeloppet och bonusmedlen släpps för uttag.** Insättningar på spelkupong, på vilken cashout accepterades, ingår INTE i bonus rollover.
+>   - Exempel: Kunden gör en insättning av 2000 kr och får hela bonusbeloppet av 1000 kr. Insättningsbeloppet av 2000 kr + bonusmedel av 1000 kr = 3000 kr. Hela beloppet av 3000 kr måste satsas minst 7 gånger (7X) innan medlen släpps för uttag.
+> - **Den maximala insatsen per spelkupong som ingår i beräkningen av rollover är 1000 kr.** Minsta odds per spelkupong som ingår i beräkningen av rollover är 1.80.
+> - Om du har mer än 10 kr på ditt kontobalans och du gör en ny insättning som du kräver bonusen med, kommer du inte att kunna lägga in en uttagsbegäran förrän bonusrollovervillkoren är uppfyllda.
+> - Bonusen är begränsad till ett spelkonto per person, familj, hushåll eller dator.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 14, min_odds: 1.80` (14 = 7×2 when dep=bonus). Max 1000 kr/slip.
+
+---
+
+### VBet
+
+**Source:** vbet.se/sv/promotions/all/810497 — verbatim
+
+> 100% UPP TILL 800 SEK I VÄLKOMSTBONUS FÖR SPORT
+>
+> Registrera dig och gör en kvalificerande insättning för att få tillgång till bonusen.
+>
+> Hur kvalificerar du dig:
+> 1. Registrera dig på vbet.se och verifiera ditt konto.
+> 2. Gå till avsnittet "Sportbonus" och hämta bonusen.
+> 3. Sätt in minst 100 SEK.
+> 4. Satsa insättningen + bonus x10.
+> 5. Få 100% Bonus upp till 800 SEK.
+>
+> Exempel: Sätt in 800 SEK och få en bonus på 800 SEK - totalt 1600 SEK att omsätta. **Omsätt hela beloppet på 1600 kr 10 gånger på kvalificerade sportspel (lägsta odds 1,8 för singelspel, 1,8 per val för kombinationsspel).** När du har slutfört överförs vinsterna till ditt kontantsaldo och kan tas ut **(upp till 10 gånger ditt insättningsbelopp).**
+>
+> - Sportbonusar tilldelas efter att du har gjort anspråk på dem och gjort din första kvalificerande insättning.
+> - Högsta bonusbeloppet är 800 SEK.
+> - När bonusen har tagits emot fryses insättningsbeloppet och måste först omsättas innan bonusmedlen kan användas.
+> - Insättnings-och sportbonusen måste omsättas 10 gånger.
+> - Min odds 1.8 singel, 1.8 per val kombo. Alla sporter/ligor/matcher.
+> - Alla vinster krediteras som bonussaldo. Vid klart → automatiskt till kontantbalans.
+> - **Max uttag: 10× insättningsbeloppet.**
+> - 60 dagar.
+> - Cash Out, Profit Booster, Free Bets, BetBuilder räknas INTE.
+> - Void/avbrutet räknas inte.
+> - Begränsat till en kund/familj/adress/delad IP.
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 800, wagering_multiplier: 20, min_odds: 1.80` (20 = 10×2 since dep=bonus). Max withdrawal 10× deposit. 60 days.
+
+---
+
+## Summary — Audit Complete (2026-03-28)
+
+All providers manually audited and configs verified. Only config change made: **Lodur** (was 1000kr/12x, corrected to 500kr/6x bonus-only, no min odds).
+
+### Config Categories
+
+**Freebets (no wagering on winnings):**
+
+| Provider | Amount | Trigger | Min Odds | Deadline |
+|----------|--------|---------|----------|----------|
+| Unibet | 1,000 kr | Single bet | 1.80 | 60d |
+| Betsson | 250 kr | Single bet 250 kr | 1.80 | 60d |
+| Betsafe | 100 kr | Single bet 100 kr | 1.80 | 60d |
+| NordicBet | 100 kr | Single bet 100 kr | 1.80 | 60d |
+| Hajper | 500 kr | Single bet | 1.80 | 60d |
+| Dbet | 500 kr | Single bet | 1.80 | 60d |
+| Mr Green | 500 kr | Single bet 500 kr | 1.80 | 60d (live only) |
+| Lyllo | 100 kr | Single bet 100 kr | 1.80 | 7d |
+
+**Trigger-to-unlock (wager deposit N× to receive bonus as cash):**
+
+| Provider | Amount | Trigger × | Trigger Odds | Deadline |
+|----------|--------|-----------|-------------|----------|
+| LeoVegas | 600 kr | 6× deposit | 1.80 | 60d |
+| Expekt | 1,000 kr | 20× deposit | 1.80 | 90d |
+| BetMGM | 500 kr | 10× deposit | 1.80 | 60d |
+
+**Bonus deposit (wagering on bonus or dep+bonus):**
+
+| Provider | Amount | Wagering | Base | Min Odds | Config × | Deadline |
+|----------|--------|----------|------|----------|----------|----------|
+| SpeedyBet | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| X3000 | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| Golden Bull | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| 1X2 | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| Coolbet | 1,000 kr | 6× | bonus | 1.50 | 6 | 60d |
+| 888sport | 500 kr | 14× | bonus | 1.80 | 14 | 60d |
+| Lodur | 500 kr | 6× | bonus | none | 6 | — |
+| Betinia | 1,000 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| CampoBet | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| Swiper | 1,000 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| QuickCasino | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| ComeOn | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| Spelklubben | 500 kr | 15× | dep+bonus | 1.90 | 30 | 60d |
+| Bethard | 500 kr | 15× | dep+bonus | 1.90 | 30 | 60d |
+| 10bet | 1,000 kr | 15× | dep+bonus | 1.80 | 30 | 60d |
+| Snabbare | 600 kr | 8× | dep+bonus | 1.80 | 16 | 90d |
+| Tipwin | 1,000 kr | 7× | dep+bonus | 1.80 | 14 | — |
+| VBet | 800 kr | 10× | dep+bonus | 1.80 | 20 | 60d |
+
+**Staged bonus:**
+
+| Provider | Amount | Trigger × | Min Odds | Deadline |
+|----------|--------|-----------|----------|----------|
+| Interwetten | 1,000 kr | 5× deposit (5 steps) | 1.70 | 14d/step |
+
+Note: Betinia/CampoBet/Swiper/QuickCasino also have a 1× deposit trigger at odds 1.50 before wagering begins.

@@ -22,10 +22,12 @@ class PinnacleRetriever(Retriever):
 
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
+            import os
             from ..core import HttpTransport
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
+                proxy=os.environ.get("PROXY_URL"),
             )
         super().__init__(config, transport)
         self.base_url = config.get("api_base", "https://guest.api.arcadia.pinnacle.com/0.1")
@@ -115,7 +117,7 @@ class PinnacleRetriever(Retriever):
 
             # Build matchup -> markets mapping
             markets_by_matchup: Dict[int, List[dict]] = {}
-            for market in markets:
+            for market in (markets or []):
                 matchup_id = market.get("matchupId")
                 if matchup_id:
                     markets_by_matchup.setdefault(matchup_id, []).append(market)
@@ -227,10 +229,9 @@ class PinnacleRetriever(Retriever):
                 matchups_task = self.transport.get(matchups_url)
                 markets_task = self.transport.get(markets_url)
 
-                matchups, markets = await asyncio.gather(matchups_task, markets_task)
-
-                matchups = matchups if matchups else []
-                markets = markets if markets else []
+                results = await asyncio.gather(matchups_task, markets_task, return_exceptions=True)
+                matchups = results[0] if not isinstance(results[0], Exception) else []
+                markets = results[1] if not isinstance(results[1], Exception) else []
 
                 # Check for pagination in matchups/markets
                 self._check_pagination(matchups, f"matchups/{league_name}", metrics)
@@ -380,8 +381,6 @@ class PinnacleRetriever(Retriever):
 
     # Core market types used by the value scanner
     _CORE_TYPES = {"moneyline", "spread", "total"}
-    # Additional types extracted for boost EV enrichment only
-    _ENRICHMENT_TYPES = {"team_total"}
     # Logged once per extraction to discover new types
     _logged_unknown_types: set = set()
 
@@ -395,8 +394,6 @@ class PinnacleRetriever(Retriever):
         Core markets (moneyline/spread/total): period 0, main lines only.
         Period 6 (regulation time): ice hockey 1x2, plus spread/total when
         period 0 doesn't have them (minor leagues).
-        Enrichment markets (team_total, 1st-half moneyline/total): also extracted
-        for boost EV enrichment — the value scanner ignores them.
         Esports map markets (period 1-5): moneyline/total per map, used for
         map-level value scanning against Polymarket.
         """
@@ -445,10 +442,6 @@ class PinnacleRetriever(Retriever):
                     elif market_type == "total":
                         parsed.extend(self._parse_total(prices, market_meta))
 
-                elif market_type in self._ENRICHMENT_TYPES:
-                    if market_type == "team_total" and not market.get("isAlternate", False):
-                        parsed.extend(self._parse_team_total(prices, market_meta))
-
                 else:
                     # Log unknown types once for discovery
                     if market_type and market_type not in self._logged_unknown_types:
@@ -488,17 +481,6 @@ class PinnacleRetriever(Retriever):
                 elif market_type == "total" and not market.get("isAlternate", False):
                     parsed.extend(self._parse_total(
                         prices, market_meta, market_type_override=f"total_m{period}"
-                    ))
-
-            # ── Period 1 (first half) — non-esports enrichment only ──
-            elif period == 1 and not is_esports:
-                if market_type == "moneyline":
-                    parsed.extend(self._parse_moneyline(
-                        prices, market_meta, market_type_override="1x2_1h"
-                    ))
-                elif market_type == "total" and not market.get("isAlternate", False):
-                    parsed.extend(self._parse_total(
-                        prices, market_meta, market_type_override="total_1h"
                     ))
 
         return parsed
@@ -583,29 +565,6 @@ class PinnacleRetriever(Retriever):
 
         mt = market_type_override or "total"
         return [{"type": mt, "outcomes": outcomes, "provider_meta": market_meta}]
-
-    def _parse_team_total(self, prices: List[dict], market_meta: dict) -> List[dict]:
-        """Parse team total (team over/under) market for boost enrichment."""
-        outcomes = []
-
-        for price_obj in prices:
-            designation = price_obj.get("designation")
-            american_odds = price_obj.get("price")
-            points = price_obj.get("points")
-
-            if designation and american_odds is not None and points is not None:
-                decimal_odds = self._american_to_decimal(american_odds)
-                outcomes.append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "point": float(points),
-                    "provider_meta": {"designation": designation},
-                })
-
-        if not outcomes:
-            return []
-
-        return [{"type": "team_total", "outcomes": outcomes, "provider_meta": market_meta}]
 
     def _american_to_decimal(self, american_odds: int) -> float:
         """Convert American odds to decimal format"""

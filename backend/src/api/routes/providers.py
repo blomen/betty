@@ -70,7 +70,7 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 
 @router.get("")
-async def list_providers(db: Session = Depends(get_db)):
+def list_providers(db: Session = Depends(get_db)):
     """Get all providers with status, balance, and bonus info for active profile."""
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
@@ -105,7 +105,7 @@ async def list_providers(db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_provider(provider: ProviderCreate, db: Session = Depends(get_db)):
+def create_provider(provider: ProviderCreate, db: Session = Depends(get_db)):
     """Create a new provider."""
     existing = db.query(Provider).filter(Provider.id == provider.id).first()
     if existing:
@@ -123,7 +123,7 @@ async def create_provider(provider: ProviderCreate, db: Session = Depends(get_db
 
 
 @router.put("/{provider_id}")
-async def update_provider(
+def update_provider(
     provider_id: str,
     data: ProviderUpdate,
     db: Session = Depends(get_db)
@@ -156,7 +156,7 @@ async def update_provider(
 
 
 @router.patch("/{provider_id}/bonus-status")
-async def update_bonus_status(
+def update_bonus_status(
     provider_id: str,
     status: str,
     db: Session = Depends(get_db)
@@ -213,7 +213,7 @@ async def update_bonus_status(
 
 
 @router.patch("/{provider_id}/limit-risk")
-async def update_limit_risk(
+def update_limit_risk(
     provider_id: str,
     data: LimitRiskUpdate,
     db: Session = Depends(get_db),

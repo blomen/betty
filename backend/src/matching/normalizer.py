@@ -290,9 +290,8 @@ def normalize_market(market: str) -> str:
     """
     market = market.lower().strip()
 
-    # Pass through if already normalized (including enrichment-only and map types)
-    if market in ('1x2', 'moneyline', 'spread', 'total',
-                  'team_total', '1x2_1h', 'moneyline_1h', 'total_1h'):
+    # Pass through if already normalized
+    if market in ('1x2', 'moneyline', 'spread', 'total'):
         return market
     # Esports map markets: moneyline_m1..m5, total_m1..m5
     if market.startswith(('moneyline_m', 'total_m')) and market[-1].isdigit():

@@ -209,7 +209,7 @@ class InterwettenRetriever(BrowserRetriever):
 
             batch = leagues[batch_start:batch_start + batch_size]
             tasks = [extract_league_concurrent(lg) for lg in batch]
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for league_events, league_hrefs in results:
                 if league_events:
@@ -282,7 +282,7 @@ class InterwettenRetriever(BrowserRetriever):
         sport_id, slug = sport_info
         url = f"{self.base_url}/en/sportsbook/o/{sport_id}/{slug}"
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             # Use state='attached' to bypass cookie banner overlay
             try:
                 await page.wait_for_selector('a[href*="/l/"]', timeout=5000, state="attached")
@@ -332,7 +332,7 @@ class InterwettenRetriever(BrowserRetriever):
         """Extract events from a single league page."""
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
         try:
-            resp = await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             if not resp or resp.status != 200:
                 status = resp.status if resp else '?'
                 if status != 404:
@@ -486,7 +486,7 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await page_pool.put(worker_page)
 
-        await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo))
+        await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo), return_exceptions=True)
 
         for p in extra_pages:
             try:
@@ -498,6 +498,7 @@ class InterwettenRetriever(BrowserRetriever):
 
     def _parse_datetime_str(self, dt_str: str) -> Optional[datetime]:
         """Parse interwetten datetime string like '15.03. - 15:00' into UTC datetime."""
+        from zoneinfo import ZoneInfo
         m = re.search(r'(\d{1,2})\.(\d{1,2})\.\s*-\s*(\d{1,2}):(\d{2})', dt_str)
         if not m:
             return None
@@ -510,7 +511,7 @@ class InterwettenRetriever(BrowserRetriever):
                 year += 1
             return datetime(
                 year, month, day, hour, minute, 0,
-                tzinfo=timezone(timedelta(hours=1)),  # CET
+                tzinfo=ZoneInfo("Europe/Vienna"),  # CET/CEST — DST-aware
             ).astimezone(timezone.utc)
         except (ValueError, TypeError):
             return None

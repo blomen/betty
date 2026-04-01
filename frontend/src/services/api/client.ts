@@ -1,4 +1,5 @@
 import type { MlHealth } from '@/types/market';
+import { connectionManager } from '@/services/connectionManager';
 
 // ============ Oddsboost Types ============
 
@@ -75,6 +76,7 @@ export interface StakePreviewResult {
   single_bet_cap: number;
   was_capped_single: boolean;
   skip_reason: string | null;
+  counts_toward_wagering: boolean;
   bonus_cleared: boolean;
   min_odds_applied: number;
 }
@@ -107,7 +109,7 @@ export async function getMlHealth(): Promise<MlHealth> {
 }
 
 // Configuration for fetch with retry
-const DEFAULT_TIMEOUT_MS = 45000; // 45 seconds — generous for slow PCs under extraction load
+const DEFAULT_TIMEOUT_MS = 15000; // 15 seconds — fail fast, retry once
 const DEFAULT_RETRIES = 1;        // 1 retry only — avoid retry storms when backend is busy
 const INITIAL_BACKOFF_MS = 2000;  // 2 seconds — give backend breathing room
 
@@ -164,6 +166,12 @@ export async function fetchWithRetry<T>(
   retries: number = DEFAULT_RETRIES,
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<T> {
+  // Fast-fail if backend is known to be down (avoids 45s+ hangs per request)
+  // But expire after MAX_FAST_FAIL_MS so we re-probe and recover
+  if (!connectionManager.isUp()) {
+    throw new NetworkError('Backend is not reachable', endpoint);
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {

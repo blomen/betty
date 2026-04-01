@@ -1,5 +1,5 @@
 """
-BankrollBBQ FastAPI Backend
+Firev FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -52,107 +52,16 @@ logger = logging.getLogger(__name__)
 _startup_time: float = 0.0
 
 
-def _startup_purge():
-    """Clear all extracted data on startup. Preserves user data (bets, profiles, balances).
-
-    Events linked to bets are kept (needed for history). All other events, odds,
-    opportunities, specials, and live status flags are wiped so re-extraction
-    starts fresh.
-
-    Uses a dedicated sqlite3 connection with a short busy_timeout. Each DELETE
-    runs as its own transaction so it grabs and releases the write lock quickly.
-    If any step hits a lock (e.g. from MCP sqlite tool), it skips gracefully —
-    stale data gets overwritten on next extraction anyway.
-    """
-    import sqlite3
-    from ..db.models import DB_PATH
-    from ..constants import SHARP_PROVIDERS
-
-    sharp_list = ",".join(f"'{p}'" for p in SHARP_PROVIDERS)
-
-    conn = sqlite3.connect(str(DB_PATH), timeout=5)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")  # 5s — enough for engine pool to settle
-
-        steps = [
-            ("opportunities", "DELETE FROM opportunities"),
-            # NOTE: specials are NOT purged — LLM research results are expensive
-            # and must persist across restarts. The scraper fully replaces them on each run.
-            ("odds (no bets)", """
-                DELETE FROM odds WHERE event_id IN (
-                    SELECT e.id FROM events e
-                    WHERE e.id NOT IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
-                )
-            """),
-            ("events (no bets)", """
-                DELETE FROM events WHERE id NOT IN (
-                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
-                )
-            """),
-            ("live tracking reset", """
-                UPDATE events SET match_minute = NULL, match_period = NULL
-                WHERE id IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
-            """),
-            ("non-sharp odds", f"""
-                DELETE FROM odds WHERE event_id IN (
-                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
-                ) AND provider_id NOT IN ({sharp_list})
-            """),
-        ]
-
-        completed = 0
-        for label, sql in steps:
-            try:
-                conn.execute(sql)
-                conn.commit()
-                completed += 1
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    logger.warning(f"[Startup] Purge skipped '{label}' (DB locked)")
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                else:
-                    raise
-
-        logger.info(f"[Startup] Purge completed ({completed}/{len(steps)} steps)")
-    except Exception as e:
-        logger.error(f"[Startup] Purge failed: {e}")
-    finally:
-        conn.close()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
     global _startup_time
     _startup_time = time.time()
-    init_db()
+    await asyncio.to_thread(init_db)
 
-    # Guard: if another backend is already serving, skip the purge.
-    # A duplicate lifespan would wipe all extracted data via _startup_purge().
-    import socket as _sock
-    _dup = False
-    _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-    try:
-        _s.connect(("127.0.0.1", 8000))
-        _dup = True
-        logger.warning(
-            "Port 8000 already serving — skipping startup purge to protect existing data. "
-            "This instance will likely fail to bind."
-        )
-    except (ConnectionRefusedError, OSError):
-        pass  # Port not in use — safe to purge
-    finally:
-        _s.close()
-
-    # No startup purge — data persists across restarts.
-    # Stale data is visible via per-row "Upd" timestamps in the frontend.
-    # Cleanup happens on re-extraction and via the 6-hour cleanup tier.
-
-    # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
+    # Add extraction-specific log file (INFO level) alongside root handlers
+    # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
+    # which blocks the event loop with synchronous disk I/O.
     import logging.handlers
     from ..paths import get_logs_dir
     extraction_handler = logging.handlers.RotatingFileHandler(
@@ -161,56 +70,94 @@ async def lifespan(app: FastAPI):
         backupCount=5,
         encoding="utf-8",
     )
-    extraction_handler.setLevel(logging.DEBUG)
+    extraction_handler.setLevel(logging.INFO)
     extraction_handler.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     ))
     root_logger = logging.getLogger()
     root_logger.addHandler(extraction_handler)
-    # Ensure root logger passes DEBUG+ to handlers (uvicorn sets it to WARNING)
-    if root_logger.level > logging.DEBUG:
-        root_logger.setLevel(logging.DEBUG)
+    # Set root to INFO — DEBUG causes Databento SDK to flood event loop with
+    # sync disk writes (dispatching MBP1Msg, read N bytes) at tick rate
+    if root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+    # Silence noisy third-party loggers
+    logging.getLogger("databento").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    # Eagerly warm up singletons / heavy imports so the first API request is fast
-    from ..config.loader import load_config
-    load_config()
-    try:
-        import numpy  # noqa: F401 — imported by ml.serving.predictor on first use
-    except ImportError:
-        pass
+    # Warm up singletons / heavy imports in background — don't block API startup
+    import threading
+
+    def _warmup_imports():
+        from ..config.loader import load_config
+        load_config()
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            pass
+    threading.Thread(target=_warmup_imports, daemon=True, name="startup-imports").start()
+
+    # Warm up opportunity cache in background thread so first page load is fast
+    # Must not block the event loop — otherwise /api/version etc. hang during startup
+    def _warmup_opportunities():
+        try:
+            from ..db.models import get_session as _warmup_session
+            from ..services import OpportunityService
+            from .routes.opportunities import _opp_cache, _OPP_CACHE_TTL
+            _wdb = _warmup_session()
+            try:
+                _wsvc = OpportunityService(_wdb)
+                result = _wsvc.list_opportunities(type='value', limit=500)
+                # Also prime the route-level response cache
+                import json
+                from fastapi.encoders import jsonable_encoder
+                cache_key = ('value', None, None, None, None, None, None, 500)
+                serialized = json.dumps(jsonable_encoder(result), ensure_ascii=False, separators=(",", ":"))
+                _opp_cache[cache_key] = (serialized, time.time() + _OPP_CACHE_TTL)
+                logger.info("[Startup] Opportunity cache warmed (%d opps)", result.get("count", 0))
+            finally:
+                _wdb.close()
+        except Exception as e:
+            logger.warning("[Startup] Opportunity warmup failed: %s", e)
+    threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
-    await scheduler.start_continuous(interval_seconds=300)
+    asyncio.create_task(scheduler.start_continuous(interval_seconds=300))
 
-    # Auto-start Databento live stream + prune old ticks
-    # All network I/O is deferred to a background task so the server starts
-    # accepting connections immediately (prevents "Backend unreachable" on restart).
+    # ── Trading features (Databento stream, level monitor, candle backfill) ──
+    # Everything is gated on market hours: when Globex is closed (weekend),
+    # nothing starts — zero threads, zero network, zero CPU.
+    # A lightweight watcher sleeps until market opens, then boots everything.
     import os
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
     if databento_key:
-        from ..db.models import get_session as _get_db_session
+        from ..db.models import get_session as _get_db_session, get_market_session as _get_market_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
+        from ..services.market_service import MarketService as _MS
 
         _databento_stream = DatabentoLiveStream(
             api_key=databento_key,
-            db_session_factory=_get_db_session,
+            db_session_factory=_get_market_session,
         )
         app.state.databento_stream = _databento_stream
 
         async def _start_trading_features():
-            """Background task: all trading feature startup (network I/O heavy)."""
+            """Boot all trading features (network I/O heavy).
+
+            Called once market is confirmed open — never during weekend close.
+            """
             try:
-                # Prune ticks from prior sessions
-                await TickWriter.prune_old_trades(_get_db_session, symbol="NQ")
+                # Prune ticks from prior sessions (market.db)
+                await TickWriter.prune_old_trades(_get_market_session, symbol="NQ")
 
                 # Seed CandleFlow from last DB candle so live updates continue
                 # rather than starting fresh (which causes fake wicks on chart).
                 from ..repositories.market_repo import MarketRepo as _MR
-                _seed_db = _get_db_session()
+                _seed_db = _get_market_session()
                 try:
                     for _flow, _interval in [
                         (_databento_stream._candle_flow, "5m"),
@@ -233,44 +180,77 @@ async def lifespan(app: FastAPI):
                 level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
                 _databento_stream.set_level_monitor(level_monitor)
                 app.state.level_monitor = level_monitor
-                level_monitor.set_async_context(asyncio.get_event_loop(), _get_db_session)
+                # Use the stream thread's event loop for level context fetching —
+                # keeps ML/macro async work off the main event loop entirely.
+                level_monitor.set_async_context(_databento_stream._stream_thread_loop, _get_db_session)
 
-                # Load initial levels if session exists
-                try:
-                    svc = MarketService(_get_db_session())
-                    try:
-                        expanded = await svc.build_expanded_session()
-                        if expanded:
-                            level_monitor.load_levels(expanded)
-                    finally:
-                        svc.db.close()
-                except Exception as e:
-                    logger.warning("Failed to load initial levels for monitor: %s", e)
+                logger.info("Trading features started: Databento stream + level monitor")
 
-                # Refresh COT data on startup
-                try:
-                    from ..market_data.cot import fetch_cot, store_cot_data
-                    reports = await fetch_cot()
-                    if reports:
-                        db = _get_db_session()
+                # Load initial levels + COT in background thread (DB-heavy, would stall event loop)
+                import threading
+                def _load_initial_data():
+                    loop = asyncio.new_event_loop()
+                    async def _run():
                         try:
-                            store_cot_data(db, reports)
-                            db.commit()
-                        finally:
-                            db.close()
-                        logger.info("COT data refreshed: %d reports", len(reports))
-                except Exception as e:
-                    logger.warning("COT refresh failed: %s", e)
+                            svc = MarketService(_get_db_session())
+                            try:
+                                expanded = await svc.build_expanded_session()
+                                if expanded:
+                                    level_monitor.load_levels(expanded)
+                                    logger.info("Initial levels loaded")
+                            finally:
+                                svc.db.close()
+                        except Exception as e:
+                            logger.warning("Failed to load initial levels: %s", e)
 
-                logger.info("Trading features started: Databento stream + level monitor + COT")
+                        try:
+                            from ..market_data.cot import fetch_cot, store_cot_data
+                            reports = await fetch_cot()
+                            if reports:
+                                db = _get_db_session()
+                                try:
+                                    store_cot_data(db, reports)
+                                    db.commit()
+                                finally:
+                                    db.close()
+                                logger.info("COT data refreshed: %d reports", len(reports))
+                        except Exception as e:
+                            logger.warning("COT refresh failed: %s", e)
+
+                        # Refresh economic calendar from ForexFactory
+                        try:
+                            from ..data.economic_calendar import fetch_and_store_calendar
+                            db = _get_db_session()
+                            try:
+                                count = await fetch_and_store_calendar(db)
+                                db.commit()
+                                logger.info("Economic calendar refreshed: %d events", count)
+                            finally:
+                                db.close()
+                        except Exception as e:
+                            logger.warning("Economic calendar refresh failed: %s", e)
+                    loop.run_until_complete(_run())
+                    loop.close()
+                threading.Thread(target=_load_initial_data, daemon=True, name="startup-levels").start()
+
+                # Start news impact recorder (measures NQ price after economic events)
+                from ..ml.macro.news_impact_recorder import news_impact_loop
+                asyncio.create_task(news_impact_loop(_get_db_session, _databento_stream))
+
             except Exception as e:
                 logger.error("Trading features startup failed: %s", e, exc_info=True)
 
-            # Backfill market_candles (lowest priority, runs after stream is live)
-            try:
-                await _backfill_candles()
-            except Exception as e:
-                logger.warning("Candle backfill failed: %s", e)
+            # Backfill market_candles in a background thread (lowest priority).
+            import threading
+            def _run_backfill():
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_backfill_candles())
+                except Exception as e:
+                    logger.warning("Candle backfill failed: %s", e)
+                finally:
+                    loop.close()
+            threading.Thread(target=_run_backfill, daemon=True, name="startup-backfill").start()
 
         async def _backfill_candles():
             from ..market_data.databento_provider import DabentoProvider
@@ -285,7 +265,7 @@ async def lifespan(app: FastAPI):
             fetch_end = now - timedelta(minutes=15)  # Databento ~15 min delay
 
             interval_targets = {
-                "5m": datetime(2010, 6, 6, tzinfo=timezone.utc),
+                "5m": now - timedelta(days=30),   # 1 month of 5m bars (monthly VP)
                 "1m": now - timedelta(days=36),
             }
 
@@ -308,32 +288,96 @@ async def lifespan(app: FastAPI):
 
                 if fetch_start >= fetch_end - timedelta(minutes=2):
                     logger.info("Candle backfill %s: already up to date (latest %s)", interval, fetch_start)
-                    continue
+                else:
+                    logger.info("Candle backfill %s: %s → %s", interval, fetch_start, fetch_end)
+                    try:
+                        bars = await asyncio.wait_for(
+                            inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
+                            timeout=300.0,
+                        )
+                        if bars:
+                            db = _get_db_session()
+                            try:
+                                repo = MarketRepo(db)
+                                for b in bars:
+                                    repo.upsert_candle(
+                                        symbol, interval, b.timestamp,
+                                        b.open, b.high, b.low, b.close, b.volume,
+                                    )
+                                logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
+                            finally:
+                                db.close()
+                        else:
+                            logger.info("Candle backfill %s: no bars in range (market closed?)", interval)
+                    except Exception as e:
+                        logger.warning("Candle backfill %s failed: %s", interval, e)
 
-                logger.info("Candle backfill %s: %s → %s", interval, fetch_start, fetch_end)
+                # Detect and fill mid-series gaps for today (e.g. stream was down for hours)
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+                db = _get_db_session()
                 try:
-                    bars = await asyncio.wait_for(
-                        inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
-                        timeout=300.0,
-                    )
-                    if bars:
-                        db = _get_db_session()
-                        try:
-                            repo = MarketRepo(db)
-                            for b in bars:
-                                repo.upsert_candle(
-                                    symbol, interval, b.timestamp,
-                                    b.open, b.high, b.low, b.close, b.volume,
-                                )
-                            logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
-                        finally:
-                            db.close()
-                    else:
-                        logger.info("Candle backfill %s: no bars in range (market closed?)", interval)
-                except Exception as e:
-                    logger.warning("Candle backfill %s failed: %s", interval, e)
+                    repo = MarketRepo(db)
+                    rows = repo.get_candles(symbol, interval, today_start, now)
+                finally:
+                    db.close()
 
-        asyncio.create_task(_start_trading_features())
+                bucket_s = 60 if interval == "1m" else 300
+                max_gap = bucket_s * 3
+                min_age = 15 * 60
+                now_epoch = int(now.timestamp())
+                candle_times = sorted(
+                    int(r.ts.replace(tzinfo=timezone.utc).timestamp() if not r.ts.tzinfo else r.ts.timestamp())
+                    for r in rows
+                )
+                gaps = []
+                for i in range(1, len(candle_times)):
+                    diff = candle_times[i] - candle_times[i - 1]
+                    if diff > max_gap and (now_epoch - candle_times[i]) > min_age:
+                        gaps.append((candle_times[i - 1], candle_times[i]))
+
+                if gaps:
+                    logger.info("Candle gap backfill %s: found %d mid-series gaps", interval, len(gaps))
+                    for gap_start, gap_end in gaps:
+                        start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
+                        end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
+                        try:
+                            bars = await asyncio.wait_for(
+                                inner.get_bars(db_symbol, interval, start_dt, end_dt),
+                                timeout=60.0,
+                            )
+                            if bars:
+                                db = _get_db_session()
+                                try:
+                                    repo = MarketRepo(db)
+                                    count = repo.bulk_insert_candles(symbol, interval, bars)
+                                    logger.info("Candle gap backfill %s: filled %s → %s (%d bars)", interval, start_dt, end_dt, count)
+                                finally:
+                                    db.close()
+                        except Exception as e:
+                            logger.warning("Candle gap backfill %s: %s → %s failed: %s", interval, start_dt, end_dt, e)
+
+        async def _trading_gate():
+            """Gate: if market is open, start immediately. If closed, sleep until open."""
+            if not _MS._is_globex_closed():
+                await _start_trading_features()
+                return
+
+            # Market is closed — sleep until Globex opens, then boot everything
+            sleep_s = DatabentoLiveStream._seconds_until_globex_open()
+            logger.info(
+                "Trading features halted — Globex closed. "
+                "Sleeping %.1f hours until market opens (zero resources used)",
+                sleep_s / 3600,
+            )
+            # Sleep in 60s chunks so we can be cancelled cleanly on shutdown
+            slept = 0.0
+            while slept < sleep_s:
+                await asyncio.sleep(min(60, sleep_s - slept))
+                slept += 60
+            logger.info("Globex open — starting trading features now")
+            await _start_trading_features()
+
+        _trading_gate_task = asyncio.create_task(_trading_gate())
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
@@ -348,10 +392,14 @@ async def lifespan(app: FastAPI):
         Only opens browsers for sites you've previously logged into —
         determined by the existence of a mirror_profiles/{provider} directory.
         First-time providers must be started manually via the sidebar menu.
+
+        Delays start by 30s and staggers launches by 3s each to keep the
+        event loop responsive for API requests during startup.
         """
+        await asyncio.sleep(30)  # Let API stabilize before launching browsers
         try:
-            from ..paths import get_app_data_dir
-            profiles_dir = get_app_data_dir() / "data" / "mirror_profiles"
+            from ..paths import get_data_dir
+            profiles_dir = get_data_dir() / "mirror_profiles"
             if not profiles_dir.exists():
                 logger.info("No mirror profiles found — skipping auto-start")
                 return
@@ -373,18 +421,29 @@ async def lifespan(app: FastAPI):
                     _mirrors[pid] = mirror
                     started += 1
                     logger.info(f"Mirror auto-started: {pid}")
+                    await asyncio.sleep(3)  # Stagger: let event loop breathe between launches
                 except Exception as e:
                     logger.warning(f"Mirror auto-start failed for {pid}: {e}")
             logger.info(f"Mirror auto-start complete: {started} browsers")
         except Exception as e:
             logger.warning(f"Mirror auto-start failed: {e}")
 
-    asyncio.create_task(_start_all_mirrors())
+    # Mirror auto-start disabled — launching 20 Playwright browsers on the main
+    # event loop freezes it permanently. Mirrors should be started on-demand via UI.
+    # asyncio.create_task(_start_all_mirrors())
 
     yield  # App is running
 
     # Graceful shutdown
     logger.info("Shutting down...")
+
+    # Cancel the trading gate sleep loop (can block for hours when market closed)
+    if '_trading_gate_task' in dir() and not _trading_gate_task.done():
+        _trading_gate_task.cancel()
+        try:
+            await _trading_gate_task
+        except asyncio.CancelledError:
+            pass
 
     # Stop all mirrors
     for pid in list(_mirrors.keys()):
@@ -401,14 +460,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BankrollBBQ API",
-    description="Polymarket arbitrage & value betting backend",
+    title="Firev API",
+    description="Betting analytics & value betting backend",
     version="0.1.0",
     lifespan=lifespan,
 )
 
 # GZip compression for responses > 1KB
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# Cache-Control for GET API responses — lets the browser skip redundant fetches
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if request.method == "GET" and path.startswith("/api/") and "/stream" not in path:
+        # Short private cache — browser can reuse within window, must revalidate after
+        response.headers.setdefault("Cache-Control", "private, max-age=5")
+    return response
 
 # Allow CORS for frontend
 app.add_middleware(
@@ -468,25 +538,30 @@ async def health_ready():
     providers_available = 0
     providers_total = 0
 
-    # Check database connectivity
-    db = None
+    # Check database connectivity (run in thread to avoid blocking event loop)
+    def _check_db():
+        db = None
+        try:
+            db = next(get_db())
+            providers = db.query(Provider).all()
+            total = len(providers)
+            available = sum(1 for p in providers if p.is_enabled)
+            return True, total, available
+        except Exception:
+            return False, 0, 0
+        finally:
+            if db:
+                db.close()
+
     try:
         db_start = time.time()
-        db = next(get_db())
-        # Simple query to verify DB is working
-        providers = db.query(Provider).all()
+        database_ok, providers_total, providers_available = await asyncio.wait_for(
+            asyncio.to_thread(_check_db), timeout=5.0
+        )
         db_latency_ms = (time.time() - db_start) * 1000
-        database_ok = True
-
-        # Count enabled providers
-        providers_total = len(providers)
-        providers_available = sum(1 for p in providers if p.is_enabled)
-    except Exception as e:
+    except (asyncio.TimeoutError, Exception):
         status = "not_ready"
         database_ok = False
-    finally:
-        if db:
-            db.close()
 
     # Determine overall status
     if not database_ok:
@@ -516,7 +591,7 @@ app.include_router(monitoring_router)
 app.include_router(chat_router)
 app.include_router(polymarket_router)
 app.include_router(risk_router)
-app.include_router(specials_router)
+# app.include_router(specials_router)  # DISABLED — boosts/specials turned off
 app.include_router(trading_router)
 app.include_router(market_router)
 app.include_router(settings_router)
@@ -529,11 +604,10 @@ app.include_router(mirror_router)
 @app.get("/api/version")
 async def get_version():
     """Return app version and runtime info."""
-    from ..paths import get_app_data_dir, is_bundled
+    from ..paths import get_data_dir
     return {
         "version": app.version,
-        "data_dir": str(get_app_data_dir()),
-        "is_bundled": is_bundled(),
+        "data_dir": str(get_data_dir()),
     }
 
 

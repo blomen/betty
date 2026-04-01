@@ -78,6 +78,18 @@ def polymarket_effective_odds(odds: float) -> float:
     return (1 - POLYMARKET_FEE_RATE) * odds + POLYMARKET_FEE_RATE
 
 
+def compute_edge(provider: str, provider_odds: float, fair_odds: float) -> float | None:
+    """Compute edge percentage of provider odds vs fair odds.
+
+    For Polymarket, applies 2% fee on net profit before comparison.
+    Returns edge as percentage (e.g. 5.0 for 5% edge), or None if inputs invalid.
+    """
+    if fair_odds <= 1 or provider_odds <= 1:
+        return None
+    effective_odds = polymarket_effective_odds(provider_odds) if provider == "polymarket" else provider_odds
+    return (effective_odds / fair_odds - 1) * 100
+
+
 def find_value(
     event_id: str,
     market: str,
@@ -85,11 +97,12 @@ def find_value(
     provider: str,
     provider_odds: float,
     fair_odds: float,
-    min_edge_pct: float = 2.0
+    min_edge_pct: float = 2.0,
+    **kwargs,
 ) -> Optional[ValueBet]:
     """
     Check if a bet has positive expected value.
-    
+
     Args:
         event_id: Canonical event ID
         market: Market type
@@ -98,19 +111,20 @@ def find_value(
         provider_odds: Decimal odds from provider
         fair_odds: Fair decimal odds (from Pinnacle de-vigged)
         min_edge_pct: Minimum edge to consider (default 2%)
-    
+
     Returns:
         ValueBet if edge >= min_edge_pct, None otherwise
     """
     if fair_odds <= 1 or provider_odds <= 1:
         return None
 
-    # For Polymarket, use effective odds after 2% fee on profit
-    effective_odds = polymarket_effective_odds(provider_odds) if provider == "polymarket" else provider_odds
+    # NOTE: Spread cost subtraction removed — Polymarket odds are already based
+    # on ask-side VWAP (from _calc_vwap_from_asks), so the taker cost is already
+    # reflected in provider_odds. Subtracting spread cost again was double-counting.
 
-    # Calculate edge using effective (post-fee) odds
-    edge = (effective_odds / fair_odds) - 1
-    edge_pct = edge * 100
+    edge_pct = compute_edge(provider, provider_odds, fair_odds)
+    if edge_pct is None:
+        return None
     
     if edge_pct < min_edge_pct:
         return None

@@ -11,7 +11,7 @@ from typing import Callable
 
 from ..factory import ExtractorFactory
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..db.models import get_session, Event, Odds, Provider, DeferredEvent
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
@@ -75,7 +75,7 @@ class ExtractionPipeline:
         Called after Pinnacle extraction + cache warm-up. Attempts to match
         buffered soft provider events that previously had no Pinnacle match.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC to match SQLite stored datetimes
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
@@ -143,16 +143,26 @@ class ExtractionPipeline:
         async with self._cache_lock:
             self.event_cache.clear()
 
+    # Maximum age of events to load into cache — older events are irrelevant for matching
+    _CACHE_MAX_AGE_DAYS = 14
+
     def _populate_cache_from_db(self):
         """Pre-populate event_cache + date index from existing DB events for fuzzy matching.
 
         This is critical when extracting a subset of providers (e.g., just '10bet')
         against an existing DB with Pinnacle events. Without this, the fuzzy matching
         has no candidates and events with slight name/date differences won't match.
+
+        Only loads events from the last 14 days to cap memory usage.
         """
         from ..db.models import Event
         from .storage import _update_event_cache
-        events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league).all()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._CACHE_MAX_AGE_DAYS)
+        events = (
+            self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league)
+            .filter(Event.start_time >= cutoff)
+            .all()
+        )
         for eid, sport, home, away, start_time, league in events:
             if hasattr(start_time, 'strftime'):
                 date_str = start_time.strftime('%Y%m%d')
@@ -184,7 +194,7 @@ class ExtractionPipeline:
     def _detect_finished_events(self) -> int:
         """Mark events as 'finished' when they are no longer active.
 
-        Three detection strategies:
+        Three detection strategies (1 & 2 use bulk UPDATE, 3 needs per-sport filter):
         1. Staleness: match_status='live' and updated_at > 3 min ago = Pinnacle dropped them
         2. Time-based (live): match_status='live' and start_time + 6 hours ago = over
         3. Time-based (never-live): pending bets, match_status NULL/prematch,
@@ -193,40 +203,37 @@ class ExtractionPipeline:
         Returns number of events marked as finished.
         """
         from datetime import datetime, timedelta, timezone
-        from sqlalchemy import or_
+        from sqlalchemy import or_, update
 
         now = datetime.now(timezone.utc)
+        count = 0
 
-        # Strategy 1: stale updated_at (not seen in last 3 min = Pinnacle dropped it)
+        # Strategy 1 + 2: bulk UPDATE — no need to load ORM objects
         stale_threshold = now - timedelta(minutes=3)
-        stale_events = (
-            self.session.query(Event)
-            .filter(
-                Event.match_status == "live",
-                Event.updated_at < stale_threshold,
-            )
-            .all()
-        )
-
-        # Strategy 2: time-based — start_time + 6 hours = definitely over
         time_cutoff = now - timedelta(hours=6)
-        overtime_events = (
-            self.session.query(Event)
-            .filter(
-                Event.match_status == "live",
-                Event.start_time.isnot(None),
-                Event.start_time < time_cutoff,
+        bulk_count = (
+            self.session.execute(
+                update(Event)
+                .where(
+                    Event.match_status == "live",
+                    or_(
+                        Event.updated_at < stale_threshold,
+                        Event.start_time < time_cutoff,
+                    ),
+                )
+                .values(match_status="finished")
             )
-            .all()
-        )
+        ).rowcount
+        count += bulk_count
+        if bulk_count:
+            logger.info(f"[FT] Bulk-marked {bulk_count} stale/overtime live events as finished")
 
         # Strategy 3: never-live events with pending bets, past sport duration
         from ..db.models import Bet
-        # Use the shortest sport duration as the DB filter, then refine per-sport in Python
         min_hours = min(self.SPORT_DURATION_HOURS.values())
         broad_cutoff = now - timedelta(hours=min_hours)
         never_live_candidates = (
-            self.session.query(Event)
+            self.session.query(Event.id, Event.sport, Event.start_time, Event.home_team, Event.away_team)
             .join(Bet, Bet.event_id == Event.id)
             .filter(
                 Bet.result == "pending",
@@ -237,30 +244,22 @@ class ExtractionPipeline:
             .distinct()
             .all()
         )
-        # Refine: only mark finished if past sport-specific duration
-        never_live_events = []
-        for ev in never_live_candidates:
-            hours = self.SPORT_DURATION_HOURS.get(ev.sport, self.DEFAULT_DURATION_HOURS)
-            st = ev.start_time if ev.start_time.tzinfo else ev.start_time.replace(tzinfo=timezone.utc)
+        # Refine per-sport, collect IDs for batch update
+        finish_ids = []
+        for eid, sport, start_time, home, away in never_live_candidates:
+            hours = self.SPORT_DURATION_HOURS.get(sport, self.DEFAULT_DURATION_HOURS)
+            st = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
             if st < now - timedelta(hours=hours):
-                never_live_events.append(ev)
+                finish_ids.append(eid)
+                logger.info(f"[FT] {home} vs {away} -> finished (never-live, past {hours}h)")
 
-        # Merge (deduplicate by id)
-        seen = set()
-        all_finished = []
-        for ev in stale_events + overtime_events + never_live_events:
-            if ev.id not in seen:
-                seen.add(ev.id)
-                all_finished.append(ev)
-
-        count = 0
-        for ev in all_finished:
-            ev.match_status = "finished"
-            count += 1
-            logger.info(
-                f"[FT] {ev.home_team} vs {ev.away_team} -> finished "
-                f"({ev.home_score}-{ev.away_score})"
+        if finish_ids:
+            self.session.execute(
+                update(Event)
+                .where(Event.id.in_(finish_ids))
+                .values(match_status="finished")
             )
+            count += len(finish_ids)
 
         return count
 
@@ -579,10 +578,10 @@ class ExtractionPipeline:
 
         log_progress("Pipeline started")
 
-        # Expire all cached ORM objects so this run sees fresh DB state.
-        # The pipeline singleton keeps self.session across runs; without
-        # expire_all(), queries return stale identity-map objects.
-        self.session.expire_all()
+        # Fresh session per run: avoids stale identity map from previous runs
+        # and prevents unbounded ORM object accumulation across extractions.
+        self.session.close()
+        self.session = get_session()
 
         # Clear stale extractors from previous runs (browser handles, connections)
         self.engine.clear_extractor_cache()
@@ -987,11 +986,13 @@ class ExtractionPipeline:
                             return await extract_with_error_handling(pid)
 
                     provider_tasks = [extract_with_limited_concurrency(pid) for pid in available_providers]
-                    provider_results_list = await asyncio.gather(*provider_tasks)
+                    provider_results_list = await asyncio.gather(*provider_tasks, return_exceptions=True)
                 else:
                     # Full parallel mode: run all providers concurrently with pool limits
                     provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
-                    provider_results_list = await asyncio.gather(*provider_tasks)
+                    provider_results_list = await asyncio.gather(*provider_tasks, return_exceptions=True)
+
+                provider_results_list = [r for r in provider_results_list if not isinstance(r, Exception)]
 
                 # Collect results and log each provider
                 for provider_id, provider_result in provider_results_list:
@@ -1094,6 +1095,9 @@ class ExtractionPipeline:
                 odds_broadcaster.publish("tier_complete", {
                     "changed_events": len(self._changed_event_ids),
                 })
+                # Invalidate opportunity response cache so next request gets fresh data
+                from ..api.routes.opportunities import _opp_cache
+                _opp_cache.clear()
 
             # Count totals
             results["total_events"] = self.session.query(Event).count()
@@ -1377,41 +1381,79 @@ class ExtractionPipeline:
                 logger.info(f"[polymarket] Fetched {len(events)} events (API: {api_elapsed:.1f}s)")
 
                 db_start = time.time()
-                with OddsBatchProcessor(self.session, batch_size=500) as odds_batch:
-                    for event in events:
-                        # Skip sports not in ALLOWED_SPORTS
-                        if event.sport not in ALLOWED_SPORTS:
-                            continue
 
-                        sport = event.sport
-                        if sport not in sport_counts:
-                            sport_counts[sport] = {"events": 0, "odds": 0}
-                            if self.metrics:
-                                self.metrics.start_sport("polymarket", sport)
+                # Offload all DB work to thread pool to keep event loop responsive
+                def _store_polymarket_events():
+                    _sport_counts = {}
+                    _events_processed = 0
+                    _events_new = 0
+                    _odds_processed = 0
 
-                        ev_new, ev_processed_odds, _ = store_polymarket_event(
-                            self.session,
-                            event,
-                            event.sport,
-                            self.event_cache,
-                            odds_batch=odds_batch,
-                            sharp_odds_cache=sharp_odds_cache,
-                            date_index=self.event_cache_by_date,
-                        )
+                    poly_session = get_session()
+                    poly_session.autoflush = False
+                    try:
+                        with OddsBatchProcessor(poly_session, batch_size=500) as odds_batch:
+                            for event in events:
+                                if event.sport not in ALLOWED_SPORTS:
+                                    continue
 
-                        sport_counts[sport]["events"] += 1
-                        sport_counts[sport]["odds"] += ev_processed_odds
-                        events_processed += 1
-                        if ev_new:
-                            events_new += 1
-                        odds_processed += ev_processed_odds
+                                s = event.sport
+                                if s not in _sport_counts:
+                                    _sport_counts[s] = {"events": 0, "odds": 0}
 
-                    # Get actual insert/update counts from batch processor
-                    odds_new, odds_updated = odds_batch.get_stats()
+                                ev_new, ev_processed_odds, _ = store_polymarket_event(
+                                    poly_session,
+                                    event,
+                                    event.sport,
+                                    self.event_cache,
+                                    odds_batch=odds_batch,
+                                    sharp_odds_cache=sharp_odds_cache,
+                                    date_index=self.event_cache_by_date,
+                                )
 
-                self._changed_event_ids |= odds_batch.changed_event_ids
+                                _sport_counts[s]["events"] += 1
+                                _sport_counts[s]["odds"] += ev_processed_odds
+                                _events_processed += 1
+                                if ev_new:
+                                    _events_new += 1
+                                _odds_processed += ev_processed_odds
+
+                            _odds_new, _odds_updated = odds_batch.get_stats()
+
+                        poly_session.commit()
+                    except Exception:
+                        poly_session.rollback()
+                        raise
+                    finally:
+                        poly_session.close()
+
+                    return {
+                        "sport_counts": _sport_counts,
+                        "events_processed": _events_processed,
+                        "events_new": _events_new,
+                        "odds_processed": _odds_processed,
+                        "odds_new": _odds_new,
+                        "odds_updated": _odds_updated,
+                        "changed_event_ids": odds_batch.changed_event_ids,
+                        "changed_records": odds_batch.get_changed_records(),
+                    }
+
+                poly_result = await asyncio.to_thread(_store_polymarket_events)
+                sport_counts = poly_result["sport_counts"]
+                events_processed = poly_result["events_processed"]
+                events_new = poly_result["events_new"]
+                odds_processed = poly_result["odds_processed"]
+                odds_new = poly_result["odds_new"]
+                odds_updated = poly_result["odds_updated"]
+
+                # Start metrics for discovered sports (must be on main thread)
+                if self.metrics:
+                    for s in sport_counts:
+                        self.metrics.start_sport("polymarket", s)
+
+                self._changed_event_ids |= poly_result["changed_event_ids"]
                 if odds_broadcaster.client_count > 0:
-                    for record in odds_batch.get_changed_records():
+                    for record in poly_result["changed_records"]:
                         odds_broadcaster.publish("odds_update", {
                             "event_id": record["event_id"],
                             "provider": record.get("provider_id", record.get("provider", "")),
@@ -1557,74 +1599,101 @@ class ExtractionPipeline:
                         timeout=sport_timeout,
                     )
 
-                    # Store events with batch processor for better performance
-                    events_processed = 0
-                    events_new = 0
-                    odds_processed = 0
+                    # Store events with batch processor for better performance.
+                    # Offloaded to a thread to keep the event loop responsive —
+                    # all DB work (flush retries, fuzzy matching, commits) runs
+                    # off the event loop so SSE streams and health checks stay alive.
+                    is_soft = provider_id not in SHARP_PROVIDERS
+                    sport_has_sharp = sharp_sports and sport in sharp_sports
 
-                    # Use a per-sport session to isolate DB errors between
-                    # concurrent providers. A "database is locked" error on one
-                    # provider's session won't poison other providers' sessions.
-                    sport_session = get_session()
-                    try:
-                        with OddsBatchProcessor(
-                            sport_session,
-                            batch_size=batch_size,
-                        ) as odds_batch:
-                            is_soft = provider_id not in SHARP_PROVIDERS
-                            sport_has_sharp = sharp_sports and sport in sharp_sports
-                            events_matched = 0
-                            events_unmatched = 0
-                            for event in events:
-                                is_new, odds_proc, _ = store_provider_event(
-                                    session=sport_session,
-                                    provider=provider_id,
-                                    event=event,
-                                    event_cache=self.event_cache,
-                                    fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
-                                    min_individual_score=self.orchestrator_config.fuzzy_match.min_individual_score,
-                                    prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
-                                    odds_batch=odds_batch,
-                                    require_match=is_soft and sport_has_sharp,
-                                    sharp_odds_cache=sharp_odds_cache,
-                                    max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
-                                    min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
-                                    date_index=self.event_cache_by_date,
-                                )
-                                events_processed += 1
-                                if is_new:
-                                    events_new += 1
-                                    if is_soft and sport_has_sharp:
-                                        events_unmatched += 1
-                                elif is_soft and sport_has_sharp:
-                                    events_matched += 1
-                                odds_processed += odds_proc
+                    def _store_sport_events():
+                        """Synchronous DB storage — runs in thread pool."""
+                        _events_processed = 0
+                        _events_new = 0
+                        _odds_processed = 0
+                        _events_matched = 0
+                        _events_unmatched = 0
 
-                        # Get actual insert/update counts from batch processor
-                        # Must be AFTER `with` block so __exit__ flushes the final batch
-                        odds_new, odds_updated = odds_batch.get_stats()
-                        market_counts = odds_batch.get_market_counts()
-                        self._changed_event_ids |= odds_batch.changed_event_ids
-                        if odds_broadcaster.client_count > 0:
-                            for record in odds_batch.get_changed_records():
-                                odds_broadcaster.publish("odds_update", {
-                                    "event_id": record["event_id"],
-                                    "provider": record.get("provider_id", record.get("provider", "")),
-                                    "market": record.get("market", ""),
-                                    "outcome": record.get("outcome", ""),
-                                    "point": record.get("point"),
-                                    "odds": record["odds"],
-                                    "prev_odds": record.get("prev_odds"),
-                                })
-
-                        # Commit to release SQLite locks
+                        sport_session = get_session()
+                        sport_session.autoflush = False
                         try:
-                            sport_session.commit()
-                        except Exception as e:
-                            logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
-                            sport_session.rollback()
-                    finally:
-                        sport_session.close()
+                            with OddsBatchProcessor(
+                                sport_session,
+                                batch_size=batch_size,
+                            ) as odds_batch:
+                                for event in events:
+                                    is_new, odds_proc, _ = store_provider_event(
+                                        session=sport_session,
+                                        provider=provider_id,
+                                        event=event,
+                                        event_cache=self.event_cache,
+                                        fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
+                                        min_individual_score=self.orchestrator_config.fuzzy_match.min_individual_score,
+                                        prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
+                                        odds_batch=odds_batch,
+                                        require_match=is_soft and sport_has_sharp,
+                                        sharp_odds_cache=sharp_odds_cache,
+                                        max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
+                                        min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
+                                        date_index=self.event_cache_by_date,
+                                    )
+                                    _events_processed += 1
+                                    if is_new:
+                                        _events_new += 1
+                                        if is_soft and sport_has_sharp:
+                                            _events_unmatched += 1
+                                    elif is_soft and sport_has_sharp:
+                                        _events_matched += 1
+                                    _odds_processed += odds_proc
+
+                            # After `with` block so __exit__ flushes the final batch
+                            _odds_new, _odds_updated = odds_batch.get_stats()
+                            _market_counts = odds_batch.get_market_counts()
+                            _changed_eids = odds_batch.changed_event_ids
+                            _changed_recs = odds_batch.get_changed_records()
+
+                            try:
+                                sport_session.commit()
+                            except Exception as e:
+                                logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
+                                sport_session.rollback()
+                        finally:
+                            sport_session.close()
+
+                        return {
+                            "events_processed": _events_processed,
+                            "events_new": _events_new,
+                            "odds_processed": _odds_processed,
+                            "events_matched": _events_matched,
+                            "events_unmatched": _events_unmatched,
+                            "odds_new": _odds_new,
+                            "odds_updated": _odds_updated,
+                            "market_counts": _market_counts,
+                            "changed_event_ids": _changed_eids,
+                            "changed_records": _changed_recs,
+                        }
+
+                    result = await asyncio.to_thread(_store_sport_events)
+                    events_processed = result["events_processed"]
+                    events_new = result["events_new"]
+                    odds_processed = result["odds_processed"]
+                    events_matched = result["events_matched"]
+                    events_unmatched = result["events_unmatched"]
+                    odds_new = result["odds_new"]
+                    odds_updated = result["odds_updated"]
+                    market_counts = result["market_counts"]
+                    self._changed_event_ids |= result["changed_event_ids"]
+                    if odds_broadcaster.client_count > 0:
+                        for record in result["changed_records"]:
+                            odds_broadcaster.publish("odds_update", {
+                                "event_id": record["event_id"],
+                                "provider": record.get("provider_id", record.get("provider", "")),
+                                "market": record.get("market", ""),
+                                "outcome": record.get("outcome", ""),
+                                "point": record.get("point"),
+                                "odds": record["odds"],
+                                "prev_odds": record.get("prev_odds"),
+                            })
 
                     sport_elapsed = time.time() - sport_start_time
                     # Build detailed per-sport log line
@@ -1709,7 +1778,7 @@ class ExtractionPipeline:
         try:
             # Sport extraction (sequential for Kambi, parallel for others)
             sport_tasks = [extract_sport(sport, i) for i, sport in enumerate(sports)]
-            sport_results = await asyncio.gather(*sport_tasks)
+            sport_results = await asyncio.gather(*sport_tasks, return_exceptions=True)
 
             # Aggregate results
             total_events_processed = 0

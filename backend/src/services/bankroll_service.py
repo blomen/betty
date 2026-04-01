@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Profile, Provider, ProfileProviderBonus
-from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ..config import get_exchange_rate, get_provider_currency
 from ..constants import PLATFORM_MAP
 
@@ -70,29 +70,17 @@ class BankrollService:
         total_deposited = profile.total_deposited or 0.0
         total_withdrawn = profile.total_withdrawn or 0.0
         net_deposited = total_deposited - total_withdrawn
-        bet_profit = sum(to_sek(b.profit, b) for b in bets if not b.is_bonus)
-        freebet_profit = sum(to_sek(b.profit, b) for b in bets if b.is_bonus)
-        total_staked = sum(to_sek(b.stake, b) for b in bets)
-        win_count = len([b for b in bets if b.result == "won"])
-        loss_count = len([b for b in bets if b.result == "lost"])
-        void_count = len([b for b in bets if b.result == "void"])
+        # Only count real-money bets for profit/ROI — bonus capital is already
+        # reflected in the bankroll total, so we don't double-count it as profit.
+        regular_bets = [b for b in bets if not b.is_bonus]
+        bet_profit = sum(to_sek(b.profit, b) for b in regular_bets)
+        total_staked = sum(to_sek(b.stake, b) for b in regular_bets)
+        win_count = len([b for b in regular_bets if b.result == "won"])
+        loss_count = len([b for b in regular_bets if b.result == "lost"])
+        void_count = len([b for b in regular_bets if b.result == "void"])
 
-        # Bonus deposits = pure profit, but only after wagering is completed.
-        # Exclude freebets — their profit is already tracked via the settled
-        # bet's b.profit (is_bonus=True), counted in freebet_profit above.
-        bonus_records = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile.id,
-            ProfileProviderBonus.bonus_amount > 0,
-            ProfileProviderBonus.bonus_status.in_(["completed", "claimed"]),
-            ProfileProviderBonus.bonus_type != "freebet",
-        ).all()
-        bonus_profit = sum(b.bonus_amount for b in bonus_records)
-
-        # Betting profit only (freebets included, deposit bonuses excluded)
-        combined_profit = bet_profit + freebet_profit
-
-        # CLV metrics
-        clv_values = [b.clv_pct for b in bets if b.clv_pct is not None]
+        # CLV metrics (regular bets only)
+        clv_values = [b.clv_pct for b in regular_bets if b.clv_pct is not None]
         clv_count = len(clv_values)
         avg_clv = round(sum(clv_values) / clv_count, 2) if clv_count > 0 else 0
         clv_positive_pct = round(len([v for v in clv_values if v > 0]) / clv_count * 100, 1) if clv_count > 0 else 0
@@ -100,7 +88,7 @@ class BankrollService:
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
-            "total_bets": len(bets),
+            "total_bets": len(regular_bets),
             "wins": win_count,
             "losses": loss_count,
             "voids": void_count,
@@ -108,12 +96,12 @@ class BankrollService:
             "total_withdrawn": round(total_withdrawn, 2),
             "net_deposited": round(net_deposited, 2),
             "total_staked": round(total_staked, 2),
-            "total_profit": round(combined_profit, 2),
+            "total_profit": round(bet_profit, 2),
             "bet_profit": round(bet_profit, 2),
-            "freebet_profit": round(freebet_profit, 2),
-            "bonus_profit": round(bonus_profit, 2),
-            "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
-            "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
+            "freebet_profit": 0,
+            "bonus_profit": 0,
+            "roi_pct": round(bet_profit / total_staked * 100, 2) if total_staked > 0 else 0,
+            "win_rate": round(win_count / len(regular_bets) * 100, 2) if len(regular_bets) > 0 else 0,
             "avg_clv": avg_clv,
             "clv_positive_pct": clv_positive_pct,
             "clv_count": clv_count,
@@ -211,33 +199,27 @@ class BankrollService:
         }
 
     def get_stake_calculator(self, profile_id: int) -> StakeCalculator:
-        """Get or create a StakeCalculator for a profile, using profile risk settings."""
-        # Load profile settings
+        """Get or create a StakeCalculator for a profile, using MC-optimal constants."""
         profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
         bankroll = self.profile_repo.get_total_bankroll(profile_id)
 
-        # Profile settings -> calculator params
-        # kelly_fraction (0.25 = Quarter Kelly) caps the dynamic Kelly scaling
-        # max_stake_pct (5.0 = 5%) -> single_bet_cap_pct (0.05)
-        # min_edge_pct (2.0 = 2%) -> min_edge (0.02)
-        max_kelly = profile.kelly_fraction if profile else 0.25
-        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
+        # Kelly + cap from MC sim-optimal constants; only min_edge from profile
         min_edge = (profile.min_edge_pct / 100.0) if profile else 0.01
 
         if profile_id not in _stake_calculators:
             _stake_calculators[profile_id] = StakeCalculator(
                 bankroll=bankroll,
-                max_kelly=max_kelly,
-                single_bet_cap_pct=single_bet_cap_pct,
+                max_kelly=OPTIMAL_MAX_KELLY,
+                single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=min_edge,
             )
 
         calc = _stake_calculators[profile_id]
 
-        # Always update to current values (profile settings may have changed)
+        # Always update to current values
         calc.update_bankroll(bankroll)
-        calc.max_kelly = max_kelly
-        calc.single_bet_cap_pct = single_bet_cap_pct
+        calc.max_kelly = OPTIMAL_MAX_KELLY
+        calc.single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         calc.min_edge = min_edge
 
         # Always reload bonus statuses from DB
@@ -293,16 +275,29 @@ class BankrollService:
                 delta = expires_at - now
                 days_remaining = max(0, delta.days)
 
-            # Resolve bonus_type from DB or fallback to config
+            # Resolve bonus_type and wagering from DB or fallback to config
+            cfg = all_bonus_configs.get(bonus.provider_id, {})
             bonus_type = bonus.bonus_type
             if not bonus_type:
-                cfg = all_bonus_configs.get(bonus.provider_id, {})
                 bonus_type = cfg.get("type")
+
+            # For "claimed" providers, enrich with config wagering requirements
+            bonus_amount = bonus.bonus_amount or 0.0
+            wagering_req = bonus.wagering_requirement or 0.0
+            wagered = bonus.wagered_amount or 0.0
+            if bonus.bonus_status == "claimed" and cfg and wagering_req == 0:
+                bonus_amount = cfg.get("amount", 0.0)
+                bonus_type = cfg.get("type", bonus_type)
+                provider_min_odds = cfg.get("min_odds", provider_min_odds)
+                wm = cfg.get("wagering_multiplier", 0)
+                tm = cfg.get("trigger_multiplier", 0)
+                # Total wagering = trigger phase + main phase
+                wagering_req = bonus_amount * (tm + wm)
 
             # Compute action_needed
             action_needed = self._compute_action_needed(
                 bonus.bonus_status, bonus_type,
-                bonus.bonus_amount or 0.0, provider_min_odds,
+                bonus_amount, provider_min_odds,
             )
 
             # Compute prognosis for active wagering
@@ -313,18 +308,18 @@ class BankrollService:
             bonus_progress[bonus.provider_id] = {
                 "status": bonus.bonus_status,
                 "bonus_type": bonus_type,
-                "bonus_amount": bonus.bonus_amount or 0.0,
-                "wagering_requirement": bonus.wagering_requirement or 0.0,
-                "wagered_amount": bonus.wagered_amount or 0.0,
+                "bonus_amount": bonus_amount,
+                "wagering_requirement": wagering_req,
+                "wagered_amount": wagered,
                 "min_odds": provider_min_odds,
                 "progress_pct": (
-                    min(100.0, (bonus.wagered_amount or 0.0) / bonus.wagering_requirement * 100)
-                    if bonus.wagering_requirement and bonus.wagering_requirement > 0
+                    min(100.0, wagered / wagering_req * 100)
+                    if wagering_req > 0
                     else 100.0
                 ),
                 "is_cleared": (
-                    bonus.bonus_status in ("completed", "available", "claimed") or
-                    (bonus.wagering_requirement and (bonus.wagered_amount or 0.0) >= bonus.wagering_requirement)
+                    bonus.bonus_status in ("completed", "available") or
+                    (wagering_req > 0 and wagered >= wagering_req)
                 ),
                 "claimed_at": bonus.claimed_at.isoformat() if bonus.claimed_at else None,
                 "expires_at": bonus.expires_at.isoformat() if bonus.expires_at else None,

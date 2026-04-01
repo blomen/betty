@@ -7,6 +7,7 @@ from .stake_calculator import (
     calculate_stake,
     get_kelly_fraction,
     quick_stake,
+    dynamic_min_expected_profit,
     BONUS_MIN_ODDS,
     DEFAULT_MIN_STAKE,
     DEFAULT_MIN_EXPECTED_PROFIT,

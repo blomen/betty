@@ -6,7 +6,7 @@ import numpy as np
 from ...market_data.orderflow import CandleFlow, OrderflowSignals
 from ..config import TICK_SIZE
 
-_N_FEATURES = 15
+_N_FEATURES = 21
 
 
 def extract_orderflow_features(
@@ -14,9 +14,9 @@ def extract_orderflow_features(
     signals: OrderflowSignals | None = None,
     lookback: int = 20,
 ) -> np.ndarray:
-    """Extract 15 orderflow features from recent 1-minute candles.
+    """Extract 21 orderflow features from recent 1-minute candles.
 
-    Feature layout (indices 0-14):
+    Feature layout (indices 0-20):
       0  delta_pct          — delta / volume of most recent candle (%)
       1  delta              — raw delta of last candle, normalised by avg volume
       2  cvd                — cumulative delta over lookback, normalised by avg volume
@@ -32,8 +32,15 @@ def extract_orderflow_features(
      12  big_trades_net_delta — net delta of big trades, normalised by avg volume
      13  vsa_absorption      — 0/1 bool from signals
      14  stop_run_detected   — 0/1 bool from signals
+     -- NEW: temporal dynamics (what the GRU was supposed to learn) --
+     15  delta_acceleration  — delta change rate (last 3 vs prev 3 candles)
+     16  absorption_strength — high volume + narrow body over last 3 candles (0-1)
+     17  initiative_momentum — delta * body_ratio of last candle (strong = high both)
+     18  volume_climax       — last candle vol / max vol in lookback (0-1)
+     19  delta_divergence    — price making new extreme but delta weakening (0/1)
+     20  flow_shift          — sign change in 3-candle delta vs prior 3 (0/1)
 
-    Returns zeros(15) if candles is empty.
+    Returns zeros(21) if candles is empty.
     """
     if not candles:
         return np.zeros(_N_FEATURES, dtype=np.float32)
@@ -129,6 +136,54 @@ def extract_orderflow_features(
         vsa_abs = 1.0 if (last.volume > avg_vol * 1.5 and last.body_ratio < 0.3) else 0.0
         stop_run = 0.0  # Cannot reliably detect without signals
 
+    # --- NEW: temporal dynamics features ---
+
+    # 15: delta_acceleration — is selling/buying getting stronger or weaker?
+    if len(recent) >= 6:
+        prev3_delta = sum(c.delta for c in recent[-6:-3])
+        last3_delta = sum(c.delta for c in recent[-3:])
+        delta_accel = np.clip((last3_delta - prev3_delta) / max(avg_vol, 1.0), -1.0, 1.0)
+    else:
+        delta_accel = 0.0
+
+    # 16: absorption_strength — high volume + narrow body = passive orders absorbing
+    if len(recent) >= 3:
+        last3 = recent[-3:]
+        avg_vol_3 = sum(c.volume for c in last3) / 3
+        avg_body_3 = sum(c.body_ratio for c in last3) / 3
+        # High volume relative to lookback + low body ratio = absorption
+        vol_factor = min(avg_vol_3 / max(avg_vol, 1.0), 3.0) / 3.0
+        body_factor = 1.0 - avg_body_3  # low body = high absorption
+        absorption_str = vol_factor * body_factor  # 0 to 1
+    else:
+        absorption_str = 0.0
+
+    # 17: initiative_momentum — strong directional candle (high delta % + high body ratio)
+    init_momentum = np.clip(abs(delta_pct) * last.body_ratio, 0.0, 1.0)
+
+    # 18: volume_climax — is this the highest volume bar in the lookback?
+    max_vol = max(c.volume for c in recent) if recent else 1
+    vol_climax = last.volume / max(max_vol, 1)
+
+    # 19: delta_divergence — price making new high/low but delta weakening
+    if len(recent) >= 5:
+        prices_recent = [c.close for c in recent[-5:]]
+        deltas_recent = [c.delta for c in recent[-5:]]
+        price_new_high = prices_recent[-1] >= max(prices_recent[:-1])
+        price_new_low = prices_recent[-1] <= min(prices_recent[:-1])
+        delta_weakening = abs(deltas_recent[-1]) < abs(sum(deltas_recent[:-1]) / 4)
+        delta_div = 1.0 if (price_new_high or price_new_low) and delta_weakening else 0.0
+    else:
+        delta_div = 0.0
+
+    # 20: flow_shift — did the dominant flow direction change? (absorption → initiative)
+    if len(recent) >= 6:
+        prev3_net = sum(c.delta for c in recent[-6:-3])
+        last3_net = sum(c.delta for c in recent[-3:])
+        flow_shift = 1.0 if (prev3_net > 0 and last3_net < 0) or (prev3_net < 0 and last3_net > 0) else 0.0
+    else:
+        flow_shift = 0.0
+
     feats = np.array([
         delta_pct,
         delta_norm,
@@ -145,6 +200,12 @@ def extract_orderflow_features(
         big_net,
         vsa_abs,
         stop_run,
+        float(delta_accel),
+        float(absorption_str),
+        float(init_momentum),
+        float(vol_climax),
+        float(delta_div),
+        float(flow_shift),
     ], dtype=np.float32)
 
     # Clip to avoid extreme outliers

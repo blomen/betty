@@ -13,40 +13,40 @@ Which data we can capture per provider when the mirror browser is active.
 
 ## Capabilities
 
-| # | Provider | Platform | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout |
-|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | campobet | Altenar | ~ | Y | Y | - | - | - |
-| 2 | quickcasino | Altenar | ~ | Y | Y | - | - | - |
-| 3 | betinia | Altenar | ~ | Y | Y | - | - | - |
-| 4 | swiper | Altenar | ~ | ~ | Y | - | - | - |
-| 5 | lodur | Altenar | ~ | ~ | Y | - | - | - |
-| 6 | dbet | Altenar | ~ | ~ | Y | - | - | - |
-| 7 | spelklubben | Gecko V2 | Y | - | ~ | - | - | - |
-| 8 | betsson | Gecko V2 | Y | - | ~ | - | - | - |
-| 9 | betsafe | Gecko V2 | Y | - | ~ | - | - | - |
-| 10 | nordicbet | Gecko V2 | Y | - | ~ | - | - | - |
-| 11 | bethard | Gecko V2 | Y | - | ~ | - | - | - |
-| 12 | unibet | Kambi | ~ | - | Y | - | - | - |
-| 13 | leovegas | Kambi | ~ | - | - | - | - | - |
-| 14 | expekt | Kambi | ~ | - | - | - | - | - |
-| 15 | 888sport | Kambi | ~ | - | - | - | - | - |
-| 16 | speedybet | Kambi | ~ | - | - | - | - | - |
-| 17 | x3000 | Kambi | ~ | - | - | - | - | - |
-| 18 | goldenbull | Kambi | ~ | - | - | - | - | - |
-| 19 | 1x2 | Kambi | ~ | - | - | - | - | - |
-| 20 | comeon | Custom | - | - | - | - | - | - |
-| 21 | hajper | Custom | - | - | - | - | - | - |
-| 22 | lyllo | Custom | - | - | - | - | - | - |
-| 23 | snabbare | Snabbare | - | - | - | - | - | - |
-| 24 | 10bet | TenBet | - | - | - | - | - | - |
-| 25 | mrgreen | Spectate | - | - | - | - | - | - |
-| 26 | betmgm | Kambi | ~ | - | - | - | - | - |
-| 27 | vbet | BetConstruct | - | - | - | - | - | - |
-| 28 | interwetten | Interwetten | - | - | - | - | - | - |
-| 29 | coolbet | Coolbet | - | - | - | - | - | - |
-| 30 | tipwin | Tipwin | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | - | N/A | - | - | - | - |
-| 32 | polymarket | Polymarket | - | N/A | - | - | - | N/A |
+| # | Provider | Platform | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout | Mute Notifs |
+|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | campobet | Altenar | ~ | Y | Y | - | - | - | - |
+| 2 | quickcasino | Altenar | ~ | Y | Y | - | - | - | - |
+| 3 | betinia | Altenar | ~ | Y | Y | - | - | - | - |
+| 4 | swiper | Altenar | ~ | ~ | Y | - | - | - | - |
+| 5 | lodur | Altenar | ~ | ~ | Y | - | - | - | - |
+| 6 | dbet | Altenar | ~ | ~ | Y | - | - | - | - |
+| 7 | spelklubben | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 8 | betsson | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 9 | betsafe | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 10 | nordicbet | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 11 | bethard | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 12 | unibet | Kambi | ~ | - | Y | - | - | - | Y |
+| 13 | leovegas | Kambi | ~ | - | - | - | - | - | - |
+| 14 | expekt | Kambi | ~ | - | - | - | - | - | - |
+| 15 | 888sport | Kambi | ~ | - | - | - | - | - | - |
+| 16 | speedybet | Kambi | ~ | - | - | - | - | - | - |
+| 17 | x3000 | Kambi | ~ | - | - | - | - | - | - |
+| 18 | goldenbull | Kambi | ~ | - | - | - | - | - | - |
+| 19 | 1x2 | Kambi | ~ | - | - | - | - | - | - |
+| 20 | comeon | Custom | - | - | - | - | - | - | - |
+| 21 | hajper | Custom | - | - | - | - | - | - | - |
+| 22 | lyllo | Custom | - | - | - | - | - | - | - |
+| 23 | snabbare | Snabbare | - | - | - | - | - | - | - |
+| 24 | 10bet | TenBet | - | - | - | - | - | - | - |
+| 25 | mrgreen | Spectate | - | - | - | - | - | - | - |
+| 26 | betmgm | Kambi | ~ | - | - | - | - | - | - |
+| 27 | vbet | BetConstruct | - | - | - | - | - | - | - |
+| 28 | interwetten | Interwetten | - | - | - | - | - | - | - |
+| 29 | coolbet | Coolbet | - | - | - | - | - | - | - |
+| 30 | tipwin | Tipwin | - | - | - | - | - | - | - |
+| 31 | pinnacle | Pinnacle | - | N/A | Y | - | - | - | - |
+| 32 | polymarket | Polymarket | ~ | N/A | Y | ~ | - | N/A | N/A |
 
 ## Platform Notes
 
@@ -83,8 +83,19 @@ Which data we can capture per provider when the mirror browser is active.
 - **vbet**: BetConstruct — needs investigation
 - **interwetten**: Custom — needs investigation
 - **coolbet, tipwin**: Unknown — needs investigation
-- **pinnacle**: REST API with auth — bet placement via `/v1/bets/straight`
+- **pinnacle**: REST API with auth — bet placement via `/v1/bets/straight`, balance via `api.arcadia.pinnacle.se/0.1/wallet/balance` → `{"amount": 535.0, "currency": "SEK"}`, deposit visible via cashier URL `depamount` param
 - **polymarket**: Blockchain-based — different paradigm
+
+### Polymarket (polymarket)
+- **Wallet type**: Magic (email login), signature type 1
+- **Balance**: `GET data-api.polymarket.com/value?user={proxy_wallet}` → `[{"value": 123.45}]` (USDC)
+- **Deposit**: Via Swapped widget (`POST widget.swapped.com/api/v1/order/create_order`) → Stripe → USDC on Polygon
+- **Open orders**: `GET clob.polymarket.com/data/orders` — intercepted from browser traffic
+- **Bet placement**: Playwright UI automation — navigate to market → select outcome → verify price → enter amount → confirm via Fun.xyz
+- **Price verification**: `GET clob.polymarket.com/book?token_id={id}` — check best ask vs expected price, abort if slippage > 2%
+- **Settlement**: Via Gamma API `fetch_resolved()` — binary outcome markets resolve to $1 (won) or $0 (lost)
+- **Proxy wallet**: `0x71fca29E6B31a93d262D2972C9b361Af371D426d`
+- **Signing address**: `0x19a769e2F52baa34D16258F9cd5Fd6D572522974`
 
 ## API Endpoint Patterns Discovered
 
@@ -106,4 +117,21 @@ WS    push.aws.kambicdn.com                                             # all WS
 GET   eu1.offering-api.kambicdn.com/offering/v2018/{op}/...             # odds
 GET   cf-mt-auth-api.kambicdn.com/player/api/v2019/{op}/reward/...     # bonuses
 GET   {domain}/wallitt/mainbalance                                      # balance (Unibet)
+
+# Pinnacle
+POST  api.arcadia.pinnacle.se/v1/bets/straight                         # bet placement
+GET   api.arcadia.pinnacle.se/0.1/wallet/balance                       # balance
+GET   cashier.pinnacle.se/GenericPaymentTrustly.asp?depamount={amt}    # deposit (Trustly)
+GET   pinnacle.se/en/account/.../first-deposit/processed/              # deposit confirmed
+
+# Polymarket
+GET   data-api.polymarket.com/value?user={proxy_wallet}              # portfolio value (USDC)
+GET   data-api.polymarket.com/v1/leaderboard?user={proxy_wallet}     # leaderboard
+GET   gamma-api.polymarket.com/is-logged-in                          # auth check (type: magic)
+GET   gamma-api.polymarket.com/users                                 # user profile + proxy wallet
+GET   clob.polymarket.com/data/orders                                # open orders
+GET   clob.polymarket.com/book?token_id={id}                         # order book
+POST  api.fun.xyz/v1/fops                                            # tx execution (Fun.xyz)
+POST  widget.swapped.com/api/v1/order/create_order                   # fiat deposit
+GET   polymarket.com/api/account/has-deposited?address={wallet}      # deposit status
 ```

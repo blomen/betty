@@ -347,7 +347,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
   };
 
   return (
-    <div className="space-y-2 overflow-y-auto">
+    <div className="flex-1 min-h-0 space-y-2 overflow-y-auto">
       {/* Feedback toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
@@ -501,10 +501,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
                           </button>
                         </div>
                         <div className="text-muted2 text-[11px]">
-                          {opp.sport}
-                          {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
-                          {opp.point != null ? ` · ${opp.point}` : ''}
-                          {' · '}{formatDateTime(opp.starts_at)}
+                          {opp.sport} · {formatDateTime(opp.starts_at)}
                         </div>
                       </td>
                       <td className="text-right text-muted text-sm">

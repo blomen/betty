@@ -71,7 +71,7 @@ class RecommendationManager:
         """Update recommendation status."""
         from src.db.models import ProviderRecommendation
 
-        rec = self.session.query(ProviderRecommendation).get(rec_id)
+        rec = self.session.get(ProviderRecommendation, rec_id)
         if not rec:
             return None
 

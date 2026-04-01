@@ -248,6 +248,10 @@ export const tradingApi = {
     return fetchJson(`/trading/market/cot?limit=${limit}`);
   },
 
+  async getCotSummary(): Promise<{ cot_net_position: number | null; cot_change_1w: number | null }> {
+    return fetchJson('/trading/market/cot/summary');
+  },
+
   async getFootprint(period = 300, limit = 20): Promise<any> {
     return fetchJson(`/trading/market/footprint?period=${period}&limit=${limit}`);
   },
@@ -258,6 +262,10 @@ export const tradingApi = {
 
   async getTpoLive(symbol = 'NQ'): Promise<import('@/types/market').TPOLiveProfile> {
     return fetchJson(`/trading/market/tpo/live?symbol=${symbol}`);
+  },
+
+  async getSessionTPO(symbol = 'NQ'): Promise<import('@/types/market').SessionTPOResponse> {
+    return fetchJson(`/trading/market/tpo/sessions?symbol=${symbol}`);
   },
 
   async getTpoHistory(symbol = 'NQ', days = 30): Promise<{

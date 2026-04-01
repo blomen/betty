@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
 
 @router.get("/history")
-async def get_metrics_history(limit: int = 10):
+def get_metrics_history(limit: int = 10):
     """Get historical metrics from pipeline runs."""
     pipeline = get_pipeline()
 
@@ -25,7 +25,7 @@ async def get_metrics_history(limit: int = 10):
 
 
 @router.get("/provider/{provider_id}")
-async def get_provider_metrics(provider_id: str, limit: int = 10):
+def get_provider_metrics(provider_id: str, limit: int = 10):
     """Get aggregate metrics for a specific provider."""
     pipeline = get_pipeline()
 
@@ -38,7 +38,7 @@ async def get_provider_metrics(provider_id: str, limit: int = 10):
 
 
 @router.get("/current")
-async def get_current_metrics():
+def get_current_metrics():
     """Get metrics for current/latest run."""
     pipeline = get_pipeline()
 
@@ -58,7 +58,7 @@ async def get_current_metrics():
 
 
 @router.get("/reports")
-async def get_extraction_reports(limit: int = 20):
+def get_extraction_reports(limit: int = 20):
     """Get recent extraction reports from DB."""
     db = get_session()
     try:

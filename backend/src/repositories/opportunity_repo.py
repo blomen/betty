@@ -44,6 +44,10 @@ class OpportunityRepo:
         query = query.filter(
             (Event.start_time.is_(None)) | (Event.start_time > now)
         )
+        # Exclude live/finished events even if start_time check is borderline
+        query = query.filter(
+            (Event.match_status.is_(None)) | (Event.match_status == "prematch")
+        )
 
         # Optional filters
         if type:
@@ -387,6 +391,13 @@ class OpportunityRepo:
             if deletable_ids:
                 for i in range(0, len(deletable_ids), 500):
                     batch = deletable_ids[i:i + 500]
+                    # Delete odds first (Postgres enforces FK constraints)
+                    self.db.query(Odds).filter(
+                        Odds.event_id.in_(batch)
+                    ).delete(synchronize_session='fetch')
+                    self.db.query(Opportunity).filter(
+                        Opportunity.event_id.in_(batch)
+                    ).delete(synchronize_session='fetch')
                     stats["past_events_deleted"] += self.db.query(Event).filter(
                         Event.id.in_(batch)
                     ).delete(synchronize_session='fetch')

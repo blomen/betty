@@ -387,7 +387,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 finally:
                     # Navigate back to sport page so SPA state is clean for next sport
                     try:
-                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                     except Exception:
                         pass
 
@@ -489,7 +489,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 if not clicked:
                     full_url = f"{self.site_url}{href}" if href.startswith("/") else href
                     try:
-                        await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                        await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
                         self._setup_snabbare_ws(page, ws_messages)
                     except Exception:
                         errors += 1
@@ -508,7 +508,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
                 # Navigate back to sport page for next league
                 if not clicked:
-                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                     self._setup_snabbare_ws(page, ws_messages)
                     await asyncio.sleep(0.05)
                 else:
@@ -521,7 +521,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 if "Connection closed" in err_str or "closed" in err_str.lower() or "Target crashed" in err_str:
                     break  # Page is dead, stop this group
                 try:
-                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                     self._setup_snabbare_ws(page, ws_messages)
                     await asyncio.sleep(0.5)
                 except Exception:
@@ -1073,7 +1073,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
                 url = f"{self.site_url}{href}" if href.startswith('/') else href
                 try:
-                    await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                    await page.goto(url, wait_until='domcontentloaded', timeout=20000)
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Detail {event.id}: navigation failed: {e}")
                     page.remove_listener("websocket", on_ws)

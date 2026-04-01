@@ -34,13 +34,6 @@ def setup_logging(name: str = None, level: str = "INFO"):
     root.handlers = []
 
     # Console handler (INFO+)
-    # Reconfigure stdout to UTF-8 on Windows to avoid UnicodeEncodeError
-    # when log messages contain non-ASCII characters (e.g. team names)
-    if sys.platform == "win32":
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level.upper(), logging.INFO))
     console_fmt = logging.Formatter(

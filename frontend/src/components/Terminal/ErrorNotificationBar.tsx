@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
 /**
  * Shows extraction errors as a dismissible banner above page content.
  * Currently a no-op since the tiers progress endpoint was removed.
- * Will be re-wired to a new error source in a future iteration.
  */
 export function ErrorNotificationBar() {
   return null;
@@ -11,46 +10,37 @@ export function ErrorNotificationBar() {
 
 /**
  * Shows a connection error banner when the backend API is unreachable.
- * Polls /api/extraction/freshness — if it fails, shows the banner.
+ * Reads from the unified ConnectionManager — no independent polling.
  */
 export function ConnectionErrorBar() {
-  const [offline, setOffline] = useState(false);
-  const [lastError, setLastError] = useState<string | null>(null);
+  const { status, message } = useConnectionStatus();
 
-  useEffect(() => {
-    let mounted = true;
+  if (status === 'checking') return null;
 
-    async function check() {
-      try {
-        const res = await fetch('/api/extraction/freshness');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        if (mounted) {
-          setOffline(false);
-          setLastError(null);
-        }
-      } catch (err) {
-        if (mounted) {
-          setOffline(true);
-          setLastError(err instanceof Error ? err.message : 'Connection failed');
-        }
-      }
-    }
+  if (status === 'connecting') {
+    return (
+      <div
+        className="mx-3 mt-2 border border-orange-500/30 bg-gradient-to-br from-orange-500/12 to-orange-500/4 text-xs font-mono px-3 py-2 flex items-center gap-2"
+        style={{ borderLeftWidth: 3, borderLeftColor: '#F97316' }}
+      >
+        <span className="text-orange-400 animate-pulse">●</span>
+        <span className="text-orange-400">Connecting to backend...</span>
+      </div>
+    );
+  }
 
-    check();
-    const id = setInterval(check, 30_000);
-    return () => { mounted = false; clearInterval(id); };
-  }, []);
+  if (status === 'down') {
+    return (
+      <div
+        className="mx-3 mt-2 border border-error/30 bg-gradient-to-br from-error/12 to-error/4 text-xs font-mono px-3 py-2 flex items-center gap-2"
+        style={{ borderLeftWidth: 3, borderLeftColor: '#EF5350' }}
+      >
+        <span className="text-error font-bold text-sm">!</span>
+        <span className="text-error">Backend unreachable</span>
+        <span className="text-muted">{message}</span>
+      </div>
+    );
+  }
 
-  if (!offline) return null;
-
-  return (
-    <div
-      className="mx-3 mt-2 border border-error/30 bg-gradient-to-br from-error/12 to-error/4 text-xs font-mono px-3 py-2 flex items-center gap-2 shadow-[0_0_20px_rgba(239,83,80,0.08),0_4px_12px_rgba(0,0,0,0.3)]"
-      style={{ borderLeftWidth: 3, borderLeftColor: '#EF5350' }}
-    >
-      <span className="text-error font-bold text-sm">!</span>
-      <span className="text-error">Backend unreachable</span>
-      <span className="text-muted">{lastError}</span>
-    </div>
-  );
+  return null;
 }

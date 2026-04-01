@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import random
 
-DB_PATH = "data/bankrollbbq.db"
+DB_PATH = "data/firev.db"
 PROFILE_ID = 6  # test profile
 
 

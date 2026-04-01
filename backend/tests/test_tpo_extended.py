@@ -1,9 +1,12 @@
 """Tests for extended TPO engine functions."""
 import pytest
+from datetime import datetime, timezone
+
 from src.market_data.tpo import (
     _period_letter, TPOProfile, compute_tpo_profile,
     classify_tpo_shape, detect_excess, classify_opening_type,
     build_full_tpo_profile, aggregate_bars_30m,
+    SessionTPO, compute_session_tpos,
 )
 
 
@@ -285,3 +288,55 @@ class TestAggregateBars30m:
         bars = [FakeBar() for _ in range(45)]
         result = aggregate_bars_30m(bars)
         assert len(result) == 1
+
+
+def _make_bar_ts(o, h, l, c, ts_str, v=100):
+    """Create a 30m bar dict with timestamp for session splitting."""
+    ts = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+    return {"open": o, "high": h, "low": l, "close": c, "volume": v, "ts": ts}
+
+
+class TestSessionTPOLetters:
+    def test_session_tpo_has_letters(self):
+        """SessionTPO should include letters dict after enrichment."""
+        # Tokyo session: 2 bars at 01:00 and 01:30 UTC (= 02:00/02:30 CET → Tokyo)
+        bars = [
+            _make_bar_ts(100, 102, 99, 101, "2026-03-27T01:00:00"),
+            _make_bar_ts(101, 103, 100, 102, "2026-03-27T01:30:00"),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        tky = result.tokyo
+        assert tky is not None
+        assert isinstance(tky.letters, dict)
+        assert len(tky.letters) > 0
+        # POC price should have the most letters
+        poc_letters = tky.letters[tky.poc]
+        assert len(poc_letters) >= 1
+
+    def test_session_tpo_has_opening_type(self):
+        """SessionTPO should include opening_type and opening_direction."""
+        bars = [
+            _make_bar_ts(100, 102, 99, 101, "2026-03-27T01:00:00"),
+            _make_bar_ts(101, 103, 100, 102, "2026-03-27T01:30:00"),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        tky = result.tokyo
+        assert tky is not None
+        assert hasattr(tky, "opening_type")
+        assert hasattr(tky, "opening_direction")
+        assert tky.opening_type in ("OD", "OTD", "ORR", "OA")
+
+    def test_session_tpo_has_excess_and_session_range(self):
+        """SessionTPO should include excess counts and session high/low."""
+        bars = [
+            _make_bar_ts(100, 102, 99, 101, "2026-03-27T01:00:00"),
+            _make_bar_ts(101, 103, 100, 102, "2026-03-27T01:30:00"),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        tky = result.tokyo
+        assert tky is not None
+        assert isinstance(tky.upper_excess, int)
+        assert isinstance(tky.lower_excess, int)
+        assert tky.session_high == 103
+        assert tky.session_low == 99
+        assert isinstance(tky.tpo_counts, dict)

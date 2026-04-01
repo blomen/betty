@@ -13,7 +13,7 @@ from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
 from ...analysis.devig import devig_multiplicative
 from ...analysis.value import polymarket_effective_odds
-from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ...matching.normalizer import normalize_team_name, generate_canonical_id
 from ...matching.matcher import get_team_match_score
 from ...constants import SHARP_PROVIDERS
@@ -26,40 +26,47 @@ router = APIRouter(prefix="/api/polymarket", tags=["polymarket"])
 
 
 @router.get("/value")
-async def get_polymarket_value(
-    min_edge: float = Query(3.0, description="Minimum edge percentage"),
+def get_polymarket_value(
+    min_edge: Optional[float] = Query(None, description="Minimum edge percentage (defaults to profile min_edge_pct)"),
     sport: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """Get Polymarket value bets from pre-computed opportunities table."""
     from ...repositories import OpportunityRepo
     opp_repo = OpportunityRepo(db)
 
+    # Use profile min_edge if not specified
+    profile_repo = ProfileRepo(db)
+    profile = None
+    try:
+        profile = profile_repo.get_active()
+    except Exception:
+        pass
+    effective_min_edge = min_edge if min_edge is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
+
     # Read pre-computed opportunities (fast indexed query, no scanning)
     rows = opp_repo.find_active(
         type="value",
         provider_ids=["polymarket"],
         sport=sport,
-        min_edge=min_edge,
+        min_edge=effective_min_edge,
         limit=limit,
     )
 
     # Use total bankroll (same as Value page) — Polymarket is just another provider
     stake_calculator = None
-    profile = None
-    profile_repo = None
     total_bankroll = 0.0
     bonus_status = None
     if rows:
         try:
-            profile_repo = ProfileRepo(db)
-            profile = profile_repo.get_active()
+            if not profile:
+                profile = profile_repo.get_active()
             total_bankroll = profile_repo.get_total_bankroll(profile.id)
             stake_calculator = StakeCalculator(
                 bankroll=total_bankroll,
-                max_kelly=profile.kelly_fraction,
-                single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                max_kelly=OPTIMAL_MAX_KELLY,
+                single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=profile.min_edge_pct / 100.0,
             )
             bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
@@ -83,11 +90,16 @@ async def get_polymarket_value(
             if meta.get("event_slug"):
                 odds_meta_map[key] = o.provider_meta
             if o.updated_at:
-                odds_updated_map[key] = o.updated_at.isoformat()
+                odds_updated_map[key] = o.updated_at.isoformat() + "Z"
             if o.event_id not in poly_names_map and (meta.get("poly_home") or meta.get("poly_away")):
                 poly_names_map[o.event_id] = (meta.get("poly_home"), meta.get("poly_away"))
 
     usdc_rate = get_exchange_rate("polymarket")
+
+    # Provider-level extraction recency
+    from ...services.opportunity_service import get_provider_last_checked
+    last_checked_map = get_provider_last_checked(db, ["polymarket"])
+    poly_last_checked = last_checked_map.get("polymarket")
 
     # Build response from pre-computed opportunities
     results = []
@@ -127,6 +139,7 @@ async def get_polymarket_value(
             "event_slug": event_slug,
             "provider_meta": {"event_slug": event_slug} if event_slug else None,
             "updated_at": odds_updated_map.get((opp.event_id, opp.market, opp.outcome1)),
+            "provider_last_checked": poly_last_checked,
         }
 
         # Add stake recommendation
@@ -180,7 +193,7 @@ async def get_polymarket_value(
 
 
 @router.get("/stats")
-async def get_polymarket_stats(
+def get_polymarket_stats(
     db: Session = Depends(get_db),
 ):
     """Get Polymarket extraction statistics and data quality metrics."""
@@ -252,7 +265,7 @@ async def get_polymarket_stats(
 
 
 @router.get("/matched")
-async def get_polymarket_matched(
+def get_polymarket_matched(
     sport: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db),
@@ -543,39 +556,46 @@ async def get_polymarket_rewards(
     db: Session = Depends(get_db),
 ):
     """Get Polymarket sport events with liquidity rewards, matched to Pinnacle."""
-    # Run all DB queries FIRST (before any async await) to avoid session staleness
-    db_events = db.query(Event).all()
-    events_by_id: dict[str, Event] = {e.id: e for e in db_events}
+    import asyncio
 
-    pinnacle_event_ids = set(
-        row[0] for row in
-        db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
-    )
+    # Run all DB queries in a thread to avoid blocking the event loop
+    def _db_queries():
+        db_events = db.query(Event).all()
+        events_by_id = {e.id: e for e in db_events}
 
-    pinnacle_odds_rows = (
-        db.query(Odds)
-        .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
-        .all()
-    ) if pinnacle_event_ids else []
-    pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
-    for o in pinnacle_odds_rows:
-        pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
-
-    excluded = SHARP_PROVIDERS | {"polymarket"}
-    soft_odds_rows = (
-        db.query(Odds)
-        .filter(
-            Odds.event_id.in_(pinnacle_event_ids),
-            ~Odds.provider_id.in_(excluded),
+        pinnacle_event_ids = set(
+            row[0] for row in
+            db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
         )
-        .all()
-    ) if pinnacle_event_ids else []
-    best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
-    for o in soft_odds_rows:
-        by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
-        current = by_market.get(o.outcome)
-        if current is None or o.odds > current[0]:
-            by_market[o.outcome] = (o.odds, o.provider_id)
+
+        pinnacle_odds_rows = (
+            db.query(Odds)
+            .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
+            .all()
+        ) if pinnacle_event_ids else []
+        pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
+        for o in pinnacle_odds_rows:
+            pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
+
+        excluded = SHARP_PROVIDERS | {"polymarket"}
+        soft_odds_rows = (
+            db.query(Odds)
+            .filter(
+                Odds.event_id.in_(pinnacle_event_ids),
+                ~Odds.provider_id.in_(excluded),
+            )
+            .all()
+        ) if pinnacle_event_ids else []
+        best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
+        for o in soft_odds_rows:
+            by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
+            current = by_market.get(o.outcome)
+            if current is None or o.odds > current[0]:
+                by_market[o.outcome] = (o.odds, o.provider_id)
+
+        return events_by_id, pinnacle_event_ids, pinnacle_odds_map, best_soft_map
+
+    events_by_id, pinnacle_event_ids, pinnacle_odds_map, best_soft_map = await asyncio.to_thread(_db_queries)
 
     # Now fetch Gamma API (async, may take 10-30s on cold cache)
     gamma_events = await _fetch_gamma_reward_events()
@@ -758,7 +778,7 @@ async def get_polymarket_rewards(
 
 
 @router.get("/mybets")
-async def get_mybets(
+def get_mybets(
     status: Optional[str] = None,
     exclude_bonus: bool = False,
     limit: int = Query(100, ge=1, le=500),

@@ -60,24 +60,59 @@ def _fetch_and_store_sync(session: Session, days_ahead: int) -> int:
 
 
 def _fetch_events(days_ahead: int) -> list[dict]:
-    """Fetch economic events from free sources.
+    """Fetch economic events from ForexFactory JSON feed.
 
-    Tries yfinance economic calendar first, falls back to empty list.
-    Events are enriched incrementally as actuals are released.
+    Filters to USD-only high-importance events within the requested window.
     """
-    events = []
+    import asyncio
+    from src.ml.macro.economic_calendar import fetch_events as ff_fetch
+
     try:
-        import yfinance as yf
-        from datetime import timedelta
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-        # yfinance doesn't have a direct calendar API, so we use
-        # a simple approach: check for known high-importance events
-        # This is a placeholder -- in production, wire to a real calendar API
-        logger.info("Economic calendar: using static schedule (wire real API for production)")
-    except ImportError:
-        logger.debug("yfinance not available for calendar")
+        if loop and loop.is_running():
+            # Already in an async context — run in a new thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                raw_events = pool.submit(lambda: asyncio.run(ff_fetch())).result(timeout=20)
+        else:
+            raw_events = asyncio.run(ff_fetch())
+    except Exception as e:
+        logger.error("ForexFactory calendar fetch failed: %s", e)
+        return []
 
-    return events
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=days_ahead)
+
+    results = []
+    for evt in raw_events:
+        # Only USD events
+        if evt.get("currency", "").upper() != "USD":
+            continue
+        dt = evt.get("event_date")
+        if dt is None:
+            continue
+        # Filter to window
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt > cutoff:
+            continue
+        results.append({
+            "event_name": evt["event_name"],
+            "event_datetime": dt,
+            "importance": evt.get("importance", 1),
+            "forecast": evt.get("forecast"),
+            "actual": evt.get("actual"),
+            "previous": evt.get("previous"),
+            "surprise": evt.get("surprise"),
+        })
+
+    logger.info("Economic calendar: fetched %d USD events from ForexFactory", len(results))
+    return results
 
 
 def get_upcoming_events(session: Session, minutes_ahead: int = 120) -> list:

@@ -1,12 +1,12 @@
 """
-BankrollBBQ Exception Hierarchy
+Firev Exception Hierarchy
 
 Structured exceptions for distinguishing retryable vs fatal errors.
 """
 
 
-class BankrollBBQError(Exception):
-    """Base exception for all BankrollBBQ errors."""
+class FirevError(Exception):
+    """Base exception for all Firev errors."""
 
     def __init__(self, message: str, provider_id: str | None = None):
         super().__init__(message)
@@ -14,7 +14,7 @@ class BankrollBBQError(Exception):
         self.message = message
 
 
-class RetryableError(BankrollBBQError):
+class RetryableError(FirevError):
     """
     Errors that can be retried (timeouts, rate limits, transient failures).
 
@@ -58,7 +58,7 @@ class TimeoutError(RetryableError):
         super().__init__(message, provider_id)
 
 
-class FatalError(BankrollBBQError):
+class FatalError(FirevError):
     """
     Errors that should not be retried (bad config, auth failed).
 

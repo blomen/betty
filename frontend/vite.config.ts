@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react from '@vitejs/plugin-react-swc'
 import path from 'path'
 
 export default defineConfig({
@@ -10,14 +10,39 @@ export default defineConfig({
     },
   },
   server: {
+    host: '127.0.0.1',
     port: 5173,
+    warmup: {
+      clientFiles: ['./src/main.tsx', './src/App.tsx', './src/components/Terminal/TerminalWindow.tsx'],
+    },
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        configure: (proxy) => {
+          // Retry on connection errors (backend restart) instead of hanging forever
+          proxy.on('error', (_err, _req, res) => {
+            if (res && 'writeHead' in res) {
+              (res as any).writeHead(502, { 'Content-Type': 'application/json' });
+              (res as any).end(JSON.stringify({ detail: 'Backend unavailable' }));
+            }
+          });
+        },
+      },
+      '/health': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (_err, _req, res) => {
+            if (res && 'writeHead' in res) {
+              (res as any).writeHead(502, { 'Content-Type': 'application/json' });
+              (res as any).end(JSON.stringify({ status: 'error' }));
+            }
+          });
+        },
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://127.0.0.1:8000',
         ws: true,
         changeOrigin: true,
       },

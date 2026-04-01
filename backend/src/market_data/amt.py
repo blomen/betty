@@ -226,9 +226,13 @@ def compute_volume_profile(bars: list[BarData], tick_size: float = 0.25) -> Volu
         else:
             vol_per_level = bar.volume // len(price_levels)
             remainder = bar.volume % len(price_levels)
+            # Distribute remainder near close (matches levels.py behavior)
+            close_snap = round(bar.close / tick_size) * tick_size
+            sorted_by_close = sorted(range(len(price_levels)), key=lambda i: abs(round(price_levels[i], 2) - close_snap))
+            extras = set(sorted_by_close[:remainder])
             for i, price in enumerate(price_levels):
                 p = round(price, 2)
-                profile[p] = profile.get(p, 0) + vol_per_level + (1 if i < remainder else 0)
+                profile[p] = profile.get(p, 0) + vol_per_level + (1 if i in extras else 0)
 
     if not profile:
         return VolumeProfile(poc=0, vah=0, val=0)
@@ -249,15 +253,16 @@ def compute_volume_profile(bars: list[BarData], tick_size: float = 0.25) -> Volu
         lo_vol = profile.get(sorted_prices[lo_idx - 1], 0) if lo_idx > 0 else 0
         hi_vol = profile.get(sorted_prices[hi_idx + 1], 0) if hi_idx < len(sorted_prices) - 1 else 0
 
-        if lo_vol >= hi_vol and lo_idx > 0:
-            lo_idx -= 1
-            included_vol += lo_vol
-        elif hi_idx < len(sorted_prices) - 1:
+        # Expand toward higher volume; on tie, expand UP first (industry standard)
+        if hi_vol >= lo_vol and hi_idx < len(sorted_prices) - 1:
             hi_idx += 1
             included_vol += hi_vol
-        else:
+        elif lo_idx > 0:
             lo_idx -= 1
             included_vol += lo_vol
+        else:
+            hi_idx += 1
+            included_vol += hi_vol
 
     val = sorted_prices[lo_idx]
     vah = sorted_prices[hi_idx]
@@ -781,7 +786,8 @@ def build_session_analysis(
     if not bars:
         return analysis
 
-    # Volume profile (RTH bars only — filter using ET time, not UTC)
+    # Volume profile — use ALL bars (Globex+RTH) so historical VP matches live VP
+    # (live VP anchors from 00:00 CET and includes all sessions)
     h, m = map(int, rth_open.split(":"))
     open_time = time(h, m)
     close_time = time(16, 0)
@@ -791,8 +797,8 @@ def build_session_analysis(
         if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time
     ]
 
-    if rth_bars:
-        analysis.volume_profile = compute_volume_profile(rth_bars, tick_size)
+    if bars:
+        analysis.volume_profile = compute_volume_profile(bars, tick_size)
         analysis.tpo_profile = compute_tpo_profile(bars, tick_size, rth_open)
         analysis.initial_balance = compute_initial_balance(bars, rth_open)
 

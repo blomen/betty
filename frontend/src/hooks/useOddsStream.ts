@@ -1,5 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { connectionManager } from '@/services/connectionManager';
 
 interface OpportunitiesResponse {
   opportunities: any[];
@@ -8,11 +9,19 @@ interface OpportunitiesResponse {
 
 export function useOddsStream() {
   const queryClient = useQueryClient();
+  const esRef = useRef<EventSource | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const delayRef = useRef(1000);
 
-  useEffect(() => {
+  const connect = useCallback(() => {
+    esRef.current?.close();
     const es = new EventSource('/api/extraction/stream');
+    esRef.current = es;
+
+    const resetDelay = () => { delayRef.current = 1000; };
 
     es.addEventListener('opportunity_update', (e) => {
+      resetDelay();
       const update = JSON.parse(e.data);
       const queryKey = ['opportunities', update.type];
       queryClient.setQueryData<OpportunitiesResponse>(queryKey, (old) => {
@@ -27,6 +36,7 @@ export function useOddsStream() {
     });
 
     es.addEventListener('opportunity_added', (e) => {
+      resetDelay();
       const opp = JSON.parse(e.data);
       const queryKey = ['opportunities', opp.type];
       queryClient.setQueryData<OpportunitiesResponse>(queryKey, (old) => {
@@ -39,6 +49,7 @@ export function useOddsStream() {
     });
 
     es.addEventListener('opportunity_removed', (e) => {
+      resetDelay();
       const { id, type } = JSON.parse(e.data);
       const queryKey = ['opportunities', type];
       queryClient.setQueryData<OpportunitiesResponse>(queryKey, (old) => {
@@ -51,19 +62,32 @@ export function useOddsStream() {
     });
 
     es.addEventListener('tier_complete', () => {
-      // Full refetch on tier completion to catch anything missed
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      resetDelay();
+      queryClient.invalidateQueries({ queryKey: ['opportunities'], refetchType: 'active' });
+      queryClient.invalidateQueries({ queryKey: ['providers'], refetchType: 'active' });
+      queryClient.invalidateQueries({ queryKey: ['specials'], refetchType: 'active' });
     });
 
     es.onerror = () => {
-      // SSE disconnected — invalidate to trigger refetch
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-    };
+      es.close();
+      queryClient.invalidateQueries({ queryKey: ['opportunities'], refetchType: 'active' });
+      queryClient.invalidateQueries({ queryKey: ['providers'], refetchType: 'active' });
 
-    return () => es.close();
+      // Wait for backend health confirmation before reconnecting
+      connectionManager.waitForUp().then(() => {
+        retryRef.current = setTimeout(() => {
+          delayRef.current = Math.min(delayRef.current * 2, 30000);
+          connect();
+        }, delayRef.current);
+      });
+    };
   }, [queryClient]);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      if (retryRef.current) clearTimeout(retryRef.current);
+      esRef.current?.close();
+    };
+  }, [connect]);
 }

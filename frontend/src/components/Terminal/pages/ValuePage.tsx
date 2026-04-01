@@ -17,10 +17,9 @@ import { SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
-import { ClusterPanel } from './ClusterPanel';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useToast, ToastContainer } from '../Toast';
-import type { Opportunity, Provider, Bet, ClusterInfo } from '@/types';
+import type { Opportunity, Provider, Bet } from '@/types';
 
 const softProviderFilter = (p: Provider) => p.id !== 'polymarket' && p.id !== 'pinnacle';
 
@@ -69,7 +68,7 @@ const OpportunityRow = memo(function OpportunityRow({
   idx,
   isExpanded,
   onToggle,
-  balanceMap,
+  balanceMap: _balanceMap,
   selectedBetProvider: selIdx,
   providerDropdownOpen,
   providerDropdownRef,
@@ -127,16 +126,8 @@ const OpportunityRow = memo(function OpportunityRow({
     ? (effectiveOdds / rep.fair_odds - 1) * 100
     : rep.edge_pct ?? 0;
 
-  const hasBalance = (ids: string[]) => ids.some(id => (balanceMap.get(id) ?? 0) > 0);
-
   const selOpp = opps[selIdx] || opps[0];
   const isPending = pendingBet?.groupKey === group.key;
-
-  const getDotClass = (opp: any) => {
-    if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
-    if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
-    return 'bg-muted/40';
-  };
 
   const effStake = localStakeOverride ?? selOpp.final_stake;
   const oppHasStake = effStake != null && effStake > 0;
@@ -168,17 +159,19 @@ const OpportunityRow = memo(function OpportunityRow({
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
             </button>
-            {isSkipped && (
+            {isSkipped && rep.skip_reason && (
               <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
+            )}
+            {!isSkipped && rep.counts_toward_wagering === false && (
+              <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-yellow-500/70">no wager</span>
             )}
           </div>
           <div className="text-muted2 text-[11px]">
-            {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
+            {rep.sport} · {formatDateTime(rep.starts_at)}
           </div>
         </td>
         <td className="text-right text-sm min-w-0">
           <span className="inline-flex items-center gap-1.5 justify-end">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-muted/40'}`} />
             {providerCount <= 3 ? (
               <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
             ) : (
@@ -189,7 +182,7 @@ const OpportunityRow = memo(function OpportunityRow({
             )}
           </span>
         </td>
-        <td className="text-right text-text text-sm truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
+        <td className="text-right text-text text-xs truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
         <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -238,7 +231,7 @@ const OpportunityRow = memo(function OpportunityRow({
           {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(selOpp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(selOpp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && !isSkipped && (
@@ -272,11 +265,10 @@ const OpportunityRow = memo(function OpportunityRow({
                       onClick={() => onProviderDropdownToggle(group.key)}
                       className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                     >
-                      <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
                       <span className="truncate">
                         <ProviderName name={selOpp.provider1} />
                         {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : selOpp.counts_toward_wagering === false ? ' (no wager)' : ''}
                       </span>
                       <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
@@ -291,6 +283,7 @@ const OpportunityRow = memo(function OpportunityRow({
                           const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                             : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                             : opp.skip_reason ? ` (${opp.skip_reason})`
+                            : opp.counts_toward_wagering === false ? ' (no wager)'
                             : '';
                           return (
                             <button
@@ -301,7 +294,6 @@ const OpportunityRow = memo(function OpportunityRow({
                               }}
                               className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                             >
-                              <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
                               <span className="truncate">
                                 <ProviderName name={opp.provider1} />{s}{tag}
                               </span>
@@ -350,7 +342,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   const [searchInput, setSearchInput] = usePersistedState('bbq_value_search', '');
   const search = useDeferredValue(searchInput);
-  const [boostSearchInput, setBoostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
+  const [boostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
   const boostSearch = useDeferredValue(boostSearchInput);
   const { toasts, addToast, dismissToast } = useToast();
   const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_selectedProvider', {});
@@ -413,58 +405,23 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
-  // --- Cluster play mode ---
-  const [activeCluster, setActiveCluster] = usePersistedState<string | null>('bbq_cluster_mode', null);
-  const [activeClusterProvider, setActiveClusterProvider] = useState<string | null>(null);
-  const { data: clustersData } = useQuery({
-    queryKey: ['clusters'],
-    queryFn: () => api.getClusters(),
-    staleTime: 300_000,
-  });
-  const clusters: ClusterInfo[] = clustersData?.clusters ?? [];
-
-  // Auto-select first provider when cluster changes
-  const { data: clusterSummaryData } = useQuery({
-    queryKey: ['cluster-summary', activeCluster],
-    queryFn: () => api.getClusterSummary(activeCluster!),
-    enabled: !!activeCluster,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-  // Auto-select provider by day rotation — alternate between playable providers daily
-  useEffect(() => {
-    if (!clusterSummaryData?.providers?.length) return;
-    const playable = clusterSummaryData.providers.filter(p => p.balance >= 5);
-    if (!playable.length) return;
-
-    // Day-of-year determines which provider gets today's action
-    const now = new Date();
-    const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
-    const todaysProvider = playable[dayOfYear % playable.length];
-
-    if (!activeClusterProvider || activeClusterProvider !== todaysProvider.provider_id) {
-      setActiveClusterProvider(todaysProvider.provider_id);
-    }
-  }, [clusterSummaryData, activeClusterProvider]);
-
-  const handleClusterSelect = useCallback((clusterId: string | null) => {
-    setActiveCluster(clusterId);
-    setActiveClusterProvider(null);
-  }, [setActiveCluster]);
-
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
-    queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+    queryFn: () => api.getOpportunities('value', true),
     placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
+    refetchInterval: 30_000,
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
-  const { data: specialsData } = useQuery({
-    queryKey: ['specials'],
-    queryFn: () => api.getSpecials({}),
-    staleTime: 60_000,
-  });
-  const specials = specialsData?.specials ?? [];
+  // DISABLED — boosts/specials turned off
+  // const { data: specialsData } = useQuery({
+  //   queryKey: ['specials'],
+  //   queryFn: () => api.getSpecials({}),
+  //   staleTime: 60_000,
+  //   refetchInterval: 30_000,
+  // });
+  const specials: any[] = [];
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
@@ -503,16 +460,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     return m;
   }, [providers]);
 
-  const hasBalance = (providerIds: string[]) =>
-    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
-
-  // Resolve active cluster member list for filtering
-  const clusterMembers = useMemo(() => {
-    if (!activeCluster || !clusters.length) return null;
-    const c = clusters.find(c => c.id === activeCluster);
-    return c ? new Set(c.members) : null;
-  }, [activeCluster, clusters]);
-
   const grouped = useMemo(() => {
     let result = opportunities;
     // Remove started/imminent events and events > 7 days out
@@ -523,18 +470,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
       result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
-    }
-    // Cluster mode: filter to active provider
-    if (activeClusterProvider) {
-      result = result.filter(o => o.provider1 === activeClusterProvider);
-      // Edge routing: if provider is limited, only show grind-ok bets
-      const provStatus = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
-      if (provStatus?.is_limited) {
-        result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
-      }
-    } else if (clusterMembers) {
-      // Cluster selected but no specific provider — show all cluster members
-      result = result.filter(o => clusterMembers.has(o.provider1));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -565,7 +500,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     return groups;
-  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, clusterSummaryData]);
+  }, [opportunities, placedKeys, search]);
 
   // Compute dynamic edge for a group, accounting for user odds overrides
   const getDynamicEdge = useCallback((g: GroupedOpp) => {
@@ -593,9 +528,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
     useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
 
-  const filteredCount = useMemo(() =>
-    sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
-  [sortedGroups]);
+  const filteredCount = sortedGroups.length;
 
   const valueScrollRef = useRef<HTMLDivElement>(null);
 
@@ -608,6 +541,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
+    // Only show boosts matched to a specific Pinnacle outcome with real edge
+    if (!s.fair_odds || s.fair_odds <= 1) return false;
+    if (!s.boosted_odds) return false;
+    // Real edge = boosted_odds / fair_odds - 1 (not boost% from original_odds)
+    const realEdge = (s.boosted_odds / s.fair_odds - 1) * 100;
+    if (realEdge < 2) return false;  // Skip if not actually +EV vs Pinnacle
     if (s.event_time) {
       try {
         const diff = new Date(s.event_time).getTime() - Date.now();
@@ -724,10 +663,10 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
     if (opp.bonus_status === 'freebet_available') {
       // Show popup to choose freebet vs balance
-      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake });
+      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake: stake });
     } else {
       // Trigger or normal bet — start two-step flow
-      startPlaceBet(opp, false, effectiveOdds, effectiveStake);
+      startPlaceBet(opp, false, effectiveOdds, stake);
     }
   };
 
@@ -782,7 +721,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-y-auto">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -792,16 +731,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         {activeTab === 'value' && (
           <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
         )}
-        {activeTab === 'boosts' && (
-          <SearchInput value={boostSearchInput} onChange={setBoostSearchInput} placeholder="Search boost, provider..." accentColor="tabValue" />
-        )}
+        {/* DISABLED — boosts tab turned off */}
       </div>
 
       {/* Sub-tab selector */}
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabValue text-tabValue' },
           { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
           { id: 'manual' as ValueTab, label: 'Manual', count: null, activeClass: 'border-tabValue text-tabValue' },
         ]).map(tab => (
@@ -820,29 +756,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         ))}
       </div>
 
-      {/* Cluster play mode panel */}
-      {activeTab === 'value' && clusters.length > 0 && (
-        <ClusterPanel
-          clusters={clusters}
-          activeCluster={activeCluster}
-          activeProvider={activeClusterProvider}
-          onClusterSelect={handleClusterSelect}
-          onProviderSelect={setActiveClusterProvider}
-        />
-      )}
-
-      {/* Limited provider grind banner */}
-      {activeTab === 'value' && activeClusterProvider && (() => {
-        const prov = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
-        if (!prov?.is_limited) return null;
-        return (
-          <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
-            <span className="font-bold">!</span>
-            <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{prov.limit_level})</span>
-          </div>
-        );
-      })()}
-
       {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
       {activeTab === 'mybets' && (
         <MyBetsSection filter={softBetFilter} colorKey="value" persistKey="value" />
@@ -860,7 +773,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
       {/* LLM enrichment health warning */}
       {(() => {
-        const h = specialsData?.llm_health;
+        const h = (specials as any)?.llm_health;
         if (!h || h.status === 'ok') return null;
         const isError = h.status === 'error';
         const msgs: string[] = [];
@@ -890,7 +803,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div className="overflow-y-auto absolute inset-0">
+        <div className="absolute inset-0 overflow-y-auto">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '34%' }} />
@@ -952,7 +865,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                     </td>
                     <td className="text-right text-sm min-w-0">
                       <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount === 1 ? (
                           <span className="text-text truncate"><ProviderName name={group.providers[0]} /></span>
                         ) : (
@@ -1097,7 +1009,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Value bets table */}
-      {isLoading && opportunities.length === 0 ? (
+      {isLoading ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
@@ -1109,12 +1021,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div ref={valueScrollRef} className="overflow-y-auto absolute inset-0">
+        <div ref={valueScrollRef} className="absolute inset-0 overflow-y-auto">
         <table className="sq w-full table-fixed">
           <colgroup>
-            <col style={{ width: '28%' }} />
+            <col style={{ width: '22%' }} />
             <col style={{ width: '13%' }} />
-            <col style={{ width: '11%' }} />
+            <col style={{ width: '17%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />
@@ -1137,10 +1049,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
               <th className="text-right">Upd</th>
             </tr>
           </thead>
-          <tbody style={{
-            paddingTop: valueVirtualizer.getVirtualItems()[0]?.start ?? 0,
-            paddingBottom: (() => { const items = valueVirtualizer.getVirtualItems(); return valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); })(),
-          }}>
+          <tbody>
+            {(() => { const top = valueVirtualizer.getVirtualItems()[0]?.start ?? 0; return top > 0 ? <tr><td colSpan={10} style={{ height: top, padding: 0 }} /></tr> : null; })()}
             {valueVirtualizer.getVirtualItems().map((virtualRow) => {
               const group = sortedGroups[virtualRow.index];
               const idx = virtualRow.index;
@@ -1167,6 +1077,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                 />
               );
             })}
+            {(() => { const items = valueVirtualizer.getVirtualItems(); const bottom = valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); return bottom > 0 ? <tr><td colSpan={10} style={{ height: bottom, padding: 0 }} /></tr> : null; })()}
           </tbody>
         </table>
         </div>

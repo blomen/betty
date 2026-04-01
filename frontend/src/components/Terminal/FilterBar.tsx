@@ -382,7 +382,7 @@ export function SingleSelectPills({
 
 export function relativeTime(isoTimestamp: string | null | undefined): { text: string; className: string } {
   if (!isoTimestamp) return { text: "\u2014", className: "text-zinc-600" };
-  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
+  const diffMs = Math.max(0, Date.now() - new Date(isoTimestamp).getTime());
   const mins = Math.floor(diffMs / 60000);
   if (mins < 1) return { text: "<1m", className: "text-green-400" };
   if (mins < 15) return { text: `${mins}m`, className: "text-green-400" };

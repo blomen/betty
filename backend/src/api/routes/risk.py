@@ -200,7 +200,7 @@ class StakeNoiseResponse(BaseModel):
 
 
 @router.get("/provider/{provider_id}", response_model=ProviderRiskResponse)
-async def get_provider_risk(
+def get_provider_risk(
     provider_id: str,
     db: Session = Depends(get_db),
 ):
@@ -230,7 +230,7 @@ async def get_provider_risk(
 
 
 @router.get("/all", response_model=AllRiskResponse)
-async def get_all_risk(db: Session = Depends(get_db)):
+def get_all_risk(db: Session = Depends(get_db)):
     """Get risk assessments for all providers with bet history."""
     calculator = RiskCalculator(db)
     assessments = calculator.get_all_assessments()
@@ -274,7 +274,7 @@ async def get_all_risk(db: Session = Depends(get_db)):
 
 
 @router.get("/config", response_model=RiskConfigResponse)
-async def get_risk_config(db: Session = Depends(get_db)):
+def get_risk_config(db: Session = Depends(get_db)):
     """Get current risk configuration."""
     # Get active profile
     profile = db.query(Profile).filter(Profile.is_active == True).first()
@@ -313,7 +313,7 @@ async def get_risk_config(db: Session = Depends(get_db)):
 
 
 @router.put("/config", response_model=RiskConfigResponse)
-async def update_risk_config(
+def update_risk_config(
     update: RiskConfigUpdate,
     db: Session = Depends(get_db),
 ):
@@ -357,7 +357,7 @@ async def update_risk_config(
 
 
 @router.post("/select", response_model=SelectResponse)
-async def select_opportunity(
+def select_opportunity(
     request: SelectRequest,
     db: Session = Depends(get_db),
 ):
@@ -449,7 +449,7 @@ async def select_opportunity(
 
 
 @router.post("/cooldown/{provider_id}")
-async def set_provider_cooldown(
+def set_provider_cooldown(
     provider_id: str,
     request: CooldownRequest,
     db: Session = Depends(get_db),
@@ -485,7 +485,7 @@ async def set_provider_cooldown(
 
 
 @router.delete("/cooldown/{provider_id}")
-async def clear_provider_cooldown(
+def clear_provider_cooldown(
     provider_id: str,
     db: Session = Depends(get_db),
 ):
@@ -511,7 +511,7 @@ async def clear_provider_cooldown(
 
 
 @router.post("/stake-noise", response_model=StakeNoiseResponse)
-async def calculate_stake_noise(
+def calculate_stake_noise(
     request: StakeNoiseRequest,
     db: Session = Depends(get_db),
 ):
