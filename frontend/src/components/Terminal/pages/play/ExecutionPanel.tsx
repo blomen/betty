@@ -156,7 +156,7 @@ interface ProviderSectionProps {
   onToggle: () => void;
   placedSet: Set<string>;
   onMarkAllDone: (keys: string[]) => void;
-  mirrorProvider: string | null; // Currently detected provider in mirror
+  mirrorProviders: string[]; // Providers detected in mirror tabs
 }
 
 function ProviderSection({
@@ -165,7 +165,7 @@ function ProviderSection({
   onToggle,
   placedSet,
   onMarkAllDone,
-  mirrorProvider,
+  mirrorProviders,
 }: ProviderSectionProps) {
   // Polymarket: live edge from mirror tabs. Soft: null (use batch data).
   const [liveEdge, setLiveEdge] = useState<Record<string, any> | null>(null);
@@ -187,7 +187,7 @@ function ProviderSection({
   const isPoly = group.providerId === 'polymarket';
 
   // Is the mirror currently connected to this provider?
-  const isConnected = mirrorProvider === group.providerId;
+  const isConnected = mirrorProviders.includes(group.providerId);
 
   const batchPayload = useMemo(() => group.bets.map((b) => ({
     event_id: b.event_id,
@@ -453,15 +453,15 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
   const [elapsed, setElapsed] = useState(0);
 
   // Poll mirror status every 3s to detect connected provider
-  const [mirrorProvider, setMirrorProvider] = useState<string | null>(null);
+  const [mirrorProviders, setMirrorProviders] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
       try {
-        const status = await fetchJson<{ detected_provider?: string }>('/mirror/status');
-        if (!cancelled) setMirrorProvider(status.detected_provider ?? null);
+        const status = await fetchJson<{ detected_providers?: string[] }>('/mirror/status');
+        if (!cancelled) setMirrorProviders(status.detected_providers ?? []);
       } catch {
-        if (!cancelled) setMirrorProvider(null);
+        if (!cancelled) setMirrorProviders([]);
       }
     };
     poll();
@@ -586,7 +586,7 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
             onToggle={() => handleToggleProvider(group.providerId)}
             placedSet={placedBets}
             onMarkAllDone={handleMarkAllDone}
-            mirrorProvider={mirrorProvider}
+            mirrorProviders={mirrorProviders}
           />
         ))}
       </div>
