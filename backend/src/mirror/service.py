@@ -1400,7 +1400,11 @@ class MirrorService:
         import asyncio
 
         # 1. Navigate to market page
-        market_url = f"https://polymarket.com/{slug}"
+        # Polymarket sports URLs: /sports/{league}/{slug} or just /{slug}
+        # Extract league prefix from slug (e.g. "bra2" from "bra2-juv-nov-2026-03-31")
+        slug_parts = slug.split("-")
+        league = slug_parts[0] if slug_parts else ""
+        market_url = f"https://polymarket.com/sports/{league}/{slug}"
         logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
         await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
 
@@ -1411,31 +1415,42 @@ class MirrorService:
             await asyncio.sleep(5)  # Fallback wait
 
         # 2. Click the outcome's trading-button on the market card
-        # Buttons use abbreviations (e.g. "hle191¢", "bro210¢") not full team names.
-        # Strategy: find all trading-buttons, match by checking if any word from the
-        # outcome name appears in the button text (case-insensitive).
+        # Buttons use abbreviations (e.g. "juv27¢") not full team names.
+        # Strategy: use positional index based on outcome type:
+        #   1x2:        home=0, draw=1, away=2
+        #   moneyline:  home=0, away=1
+        #   spread/total: home=0, away=1 (or over=0, under=1)
+        outcome_lower = bet.get("_original_outcome", outcome).lower() if isinstance(bet, dict) else outcome.lower()
         try:
+            # Get the market type from the bet metadata
+            market_type = bet.get("_market_type", "") if isinstance(bet, dict) else ""
+            if outcome_lower in ("home", "over"):
+                btn_index = 0
+            elif outcome_lower == "draw":
+                btn_index = 1
+            elif outcome_lower in ("away", "under"):
+                # For 1x2 away is index 2, for moneyline it's index 1
+                btn_index = 2 if market_type == "1x2" else 1
+            else:
+                btn_index = 0  # fallback
+
             clicked = await page.evaluate(
-                "(outcome) => {"
+                "(idx) => {"
                 "  const btns = document.querySelectorAll('button.trading-button');"
-                "  const words = outcome.toLowerCase().split(/\\s+/).filter(w => w.length > 2);"
-                "  for (const btn of btns) {"
-                "    const text = btn.textContent.toLowerCase();"
-                "    if (words.some(w => text.includes(w))) {"
-                "      btn.click();"
-                "      return btn.textContent.trim().slice(0, 40);"
-                "    }"
+                "  if (idx < btns.length) {"
+                "    btns[idx].click();"
+                "    return btns[idx].textContent.trim().slice(0, 40);"
                 "  }"
                 "  return null;"
                 "}",
-                outcome,
+                btn_index,
             )
             if not clicked:
-                return {"bet_id": bet_id, "status": "failed", "reason": f"No trading button found for '{outcome}'"}
-            logger.info(f"[mirror] Clicked outcome button: '{clicked}' for bet {bet_id}")
+                return {"bet_id": bet_id, "status": "failed", "reason": f"No trading button at index {btn_index} for '{outcome}'"}
+            logger.info(f"[mirror] Clicked outcome button #{btn_index}: '{clicked}' for bet {bet_id}")
             await asyncio.sleep(1)
         except Exception as e:
-            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {outcome}: {e}"}
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click outcome: {e}"}
 
         # 3. Read current price from the selected outcome button and check slippage
         try:

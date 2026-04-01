@@ -357,10 +357,12 @@ async def fire_polymarket_batch(request: FireBatchRequest):
                 "amount_usdc": amount_usdc,
                 "expected_price": expected_price,
                 "max_slippage_pct": request.max_slippage_pct,
-                # Pass through for tracking
+                # Pass through for tracking and positional button matching
                 "event_id": bet.event_id,
                 "original_stake_sek": bet.stake,
                 "original_odds": bet.odds,
+                "_original_outcome": bet.outcome,  # home/away/draw/over/under
+                "_market_type": bet.market,         # 1x2/moneyline/spread/total
             })
     finally:
         db.close()
