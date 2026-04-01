@@ -13,13 +13,14 @@ Zone mode (state["zone"] present):
     zone features                 4
     zone confluence               5
     macro                        11
+    exchange stats                5
     setup                        14
     AMT features                 13
     micro (hand-crafted)         20
     approach direction            1
     execution context             7
     ---
-    total                       213
+    total                       218
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
@@ -29,13 +30,14 @@ Legacy mode (state["level_type"] present, no zone):
     candle window        15
     confluence            8
     macro                11
+    exchange stats        5
     setup                14
     AMT features         13
     micro (hand-crafted) 20
     approach direction    1
     execution context     7
     ---
-    total               212
+    total               217
 """
 from __future__ import annotations
 
@@ -57,6 +59,7 @@ from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
 from .execution_features import extract_execution_features
 from .amt_features import extract_amt_features
+from .exchange_stats_features import extract_exchange_stats_features
 from ..zone_builder import Zone, ZoneMember
 
 # Candle window: last 5 candles x 3 features each
@@ -170,6 +173,9 @@ def build_observation(state: dict) -> np.ndarray:
     # 8. Macro (11) — VIX, DXY, yields, COT, news proximity
     seg_macro = extract_macro_features(macro)
 
+    # 8.5. Exchange stats (5) — OI, settlement, cleared/block volume
+    seg_exchange = extract_exchange_stats_features(macro, price=price)
+
     # 9. Setup detection (14)
     seg_setup = extract_setup_features(state)
 
@@ -197,6 +203,7 @@ def build_observation(state: dict) -> np.ndarray:
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
         seg_confluence,   # 5 (zone) or 8 (legacy)
         seg_macro,        # 11
+        seg_exchange,     # 5
         seg_setup,        # 14
         seg_amt,          # 13
         seg_micro,        # 20
