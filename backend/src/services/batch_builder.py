@@ -951,12 +951,9 @@ class BatchBuilder:
                     target_pid = candidate
                     break
             if target_pid is None:
-                # All siblings at cap — this bet can't be placed without
-                # registering more siblings. Still track it as missed on the
-                # cluster level but don't assign to a specific provider.
-                template.funded = False
-                template.skip_reason = f"all siblings at {cap}-bet cap in {cluster}"
-                missed.append(template)
+                # All siblings at cap — drop this bet entirely.
+                # Don't append to missed — it inflates provider bet counts
+                # beyond the cap and creates misleading capital plan entries.
                 return
 
             placed = self._clone_bet_to_provider(
