@@ -220,11 +220,13 @@ function ProviderSection({
     stake: b.stake,
   }));
 
-  // Poll live edge every 10s when expanded and Polymarket
+  // Poll live edge when expanded and Polymarket — wait for each fetch to finish
   useEffect(() => {
     if (!isExpanded || !isPoly || allDone) return;
 
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const fetchEdge = async () => {
       setEdgeLoading(true);
       try {
@@ -239,13 +241,16 @@ function ProviderSection({
       } catch (err: any) {
         if (!cancelled) setEdgeError(err.message || 'Failed to fetch live edge');
       } finally {
-        if (!cancelled) setEdgeLoading(false);
+        if (!cancelled) {
+          setEdgeLoading(false);
+          // Schedule next poll AFTER this one completes
+          timeoutId = setTimeout(fetchEdge, 10_000);
+        }
       }
     };
 
     fetchEdge();
-    const interval = setInterval(fetchEdge, 10_000);
-    return () => { cancelled = true; clearInterval(interval); };
+    return () => { cancelled = true; if (timeoutId) clearTimeout(timeoutId); };
   }, [isExpanded, isPoly, allDone]);
 
   const handleFireLive = async () => {
