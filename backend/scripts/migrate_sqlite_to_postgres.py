@@ -21,8 +21,7 @@ from psycopg2.extras import execute_values
 SQLITE_PATH = os.environ.get("SQLITE_PATH", "data/firev.db")
 PG_URL = os.environ["DATABASE_URL"].replace("+asyncpg", "").replace("+psycopg2", "")
 
-# SQLite table → Postgres table mapping (in FK dependency order)
-# Format: (sqlite_name, postgres_name) or just name if same
+# Tables to migrate (in FK dependency order)
 TABLES = [
     "providers",
     "profiles",
@@ -44,14 +43,28 @@ TABLES = [
 ]
 
 
-def get_pg_columns(pg_cur, table):
-    """Get column names for a Postgres table."""
+def get_pg_column_types(pg_cur, table):
+    """Get column names and types for a Postgres table."""
     pg_cur.execute(
-        "SELECT column_name FROM information_schema.columns "
+        "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_name = %s ORDER BY ordinal_position",
         (table,)
     )
-    return {row[0] for row in pg_cur.fetchall()}
+    return {row[0]: row[1] for row in pg_cur.fetchall()}
+
+
+def coerce_value(val, pg_type):
+    """Coerce SQLite value to Postgres type."""
+    if val is None:
+        return None
+    if pg_type == "boolean":
+        return bool(val)
+    if pg_type == "integer" and isinstance(val, str):
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None  # Skip invalid values like "NS" in integer columns
+    return val
 
 
 def migrate():
@@ -74,15 +87,14 @@ def migrate():
             print(f"  SKIP {table} (0 rows)")
             continue
 
-        # Get Postgres columns to filter out SQLite-only columns
-        pg_cols = get_pg_columns(pg_cur, table)
-        if not pg_cols:
+        # Get Postgres column types
+        pg_col_types = get_pg_column_types(pg_cur, table)
+        if not pg_col_types:
             print(f"  SKIP {table} (not in Postgres)")
             continue
 
         sqlite_cols = rows[0].keys()
-        # Only use columns that exist in both
-        common_cols = [c for c in sqlite_cols if c in pg_cols]
+        common_cols = [c for c in sqlite_cols if c in pg_col_types]
         if not common_cols:
             print(f"  SKIP {table} (no common columns)")
             continue
@@ -93,8 +105,17 @@ def migrate():
         # Truncate target first
         pg_cur.execute(f"TRUNCATE {table} CASCADE")
 
-        # Extract only common columns, batch insert
-        values = [tuple(row[c] for c in common_cols) for row in rows]
+        # Coerce values to match Postgres types
+        values = []
+        skipped = 0
+        for row in rows:
+            coerced = []
+            skip = False
+            for c in common_cols:
+                v = coerce_value(row[c], pg_col_types[c])
+                coerced.append(v)
+            values.append(tuple(coerced))
+
         try:
             execute_values(
                 pg_cur,
@@ -104,10 +125,11 @@ def migrate():
                 page_size=1000,
             )
             pg_conn.commit()
-            print(f"  OK {table}: {len(rows)} rows")
+            print(f"  OK {table}: {len(values)} rows")
         except Exception as e:
             pg_conn.rollback()
-            print(f"  FAIL {table}: {e}")
+            err = str(e).split("\n")[0]
+            print(f"  FAIL {table}: {err}")
 
     # Re-enable FK checks
     pg_cur.execute("SET session_replication_role = 'origin'")
