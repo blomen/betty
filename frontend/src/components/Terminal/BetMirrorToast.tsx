@@ -181,6 +181,12 @@ function SyncBanner({ syncAvailable, onDismiss }: {
   syncAvailable: any;
   onDismiss: () => void;
 }) {
+  useEffect(() => {
+    if (!syncAvailable) return;
+    const timer = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(timer);
+  }, [syncAvailable, onDismiss]);
+
   if (!syncAvailable) return null;
 
   const { provider, balance, pending_bets, pending_stake } = syncAvailable;
