@@ -210,6 +210,15 @@ def fetch(
     else:
         typer.echo("  COT fetch failed.")
 
+    # Fetch exchange statistics
+    from src.rl.data.fetcher import fetch_statistics_history
+    typer.echo("Fetching exchange statistics from Databento...")
+    stats_path = fetch_statistics_history(start, end)
+    if stats_path:
+        typer.echo(f"Wrote statistics to {stats_path}")
+    else:
+        typer.echo("Warning: statistics fetch returned no data")
+
 
 # ---------------------------------------------------------------------------
 # verify-levels
