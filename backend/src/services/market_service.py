@@ -349,11 +349,21 @@ class MarketService:
             ticks = []
 
         if not bars:
-            logger.info("No bars available for %s on %s — returning cached/empty session", symbol, target_date)
-            cached = self.repo.get_previous_session(symbol)
-            if cached:
-                return cached
-            return {}
+            # Databento failed — try DB candles as fallback
+            from zoneinfo import ZoneInfo
+            _ET = ZoneInfo("America/New_York")
+            gs_utc = globex_start.replace(tzinfo=_ET).astimezone(timezone.utc)
+            rc_utc = rth_close.replace(tzinfo=_ET).astimezone(timezone.utc)
+            db_rows = self.repo.get_candles(symbol, "1m", gs_utc, rc_utc)
+            if db_rows:
+                logger.info("Databento returned no bars — using %d DB candles for %s on %s", len(db_rows), symbol, target_date)
+                bars = [{"open": r.o, "high": r.h, "low": r.l, "close": r.c, "volume": r.v, "ts": r.ts} for r in db_rows]
+            else:
+                logger.info("No bars available for %s on %s — returning cached/empty session", symbol, target_date)
+                cached = self.repo.get_previous_session(symbol)
+                if cached:
+                    return cached
+                return {}
 
         # Fetch previous day for prev VA
         prev_dt = dt - timedelta(days=1)
