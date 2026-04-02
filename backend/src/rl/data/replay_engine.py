@@ -34,6 +34,7 @@ from ...market_data.orderflow import (
     compute_signals,
     CandleFlow,
 )
+from ...market_data.amt_dynamics import AMTDynamicsTracker
 
 ET = ZoneInfo("US/Eastern")
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class ReplayEngine:
 
     def __init__(self, macro_data: dict | None = None) -> None:
         self._macro_data: dict = macro_data or {}
+        self._amt_tracker = AMTDynamicsTracker()
         self._reset()
 
     # ------------------------------------------------------------------
@@ -251,6 +253,7 @@ class ReplayEngine:
         norm_ticks: list[dict] = [_normalise_tick(t) for t in ticks]
 
         episodes: list[Episode] = []
+        self._amt_tracker = AMTDynamicsTracker()
         date_str = _date_key(session_date)
 
         for i, tick in enumerate(norm_ticks):
@@ -275,6 +278,10 @@ class ReplayEngine:
 
             # VP uses all ticks (full session profile)
             self._vp.update(price, tick["size"])
+
+            # Update AMT dynamics tracker
+            _tick_side = tick.get("side", "buy")
+            self._amt_tracker.update(price, tick["size"], _tick_side)
 
             # 3. On bar close: build CandleFlow from buffered ticks, then recompute
             for _bar in completed_bars:
@@ -380,6 +387,32 @@ class ReplayEngine:
                 computed.monthly_low = self._prior_monthly_low
 
             self._session_levels = computed
+
+            # Initialize AMT tracker once IB is established (60 bars = first hour)
+            if bar_count == 60 and computed.ib_high and computed.ib_low:
+                vp = self._vp.get()
+                tpo_data = self._tpo_profile or {}
+                self._amt_tracker.initialize({
+                    "ib_high": computed.ib_high,
+                    "ib_low": computed.ib_low,
+                    "vah": vp.vah if vp else 0,
+                    "val": vp.val if vp else 0,
+                    "poc": vp.poc if vp else 0,
+                    "single_prints": tpo_data.get("single_prints", []),
+                })
+
+            # Update AMT tracker on 30-min period close
+            if bar_count >= 60 and bar_count % 30 == 0:
+                vp = self._vp.get()
+                if vp and len(bars_1m) >= 30:
+                    last_30 = bars_1m[-30:]
+                    self._amt_tracker.on_period_close(
+                        period_high=max(b["high"] for b in last_30),
+                        period_low=min(b["low"] for b in last_30),
+                        developing_poc=vp.poc,
+                        developing_vah=vp.vah,
+                        developing_val=vp.val,
+                    )
 
         # Detect SMC structures every 15 bars (last 50 bars lookback)
         if bar_count % 15 == 0:
@@ -716,6 +749,7 @@ class ReplayEngine:
                 self._precomputed.get("swing_structure")
                 if self._precomputed else None
             ),
+            "amt_dynamics": self._amt_tracker.snapshot(),
         }
 
     def _build_session_context(
