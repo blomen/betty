@@ -130,18 +130,30 @@ class BetInterceptor:
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
         self._playwright = await async_playwright().start()
-        self.context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.user_data_dir),
-            channel="chrome",
-            headless=False,
-            no_viewport=True,
-            locale="sv-SE",
-            timezone_id="Europe/Stockholm",
-            args=[
+
+        # Use Google Chrome when available (local dev), fall back to bundled
+        # Chromium in headless mode (Docker / server).
+        import shutil
+        has_chrome = shutil.which("google-chrome") or Path("/opt/google/chrome/chrome").exists()
+
+        launch_kwargs: dict = {
+            "user_data_dir": str(self.user_data_dir),
+            "locale": "sv-SE",
+            "timezone_id": "Europe/Stockholm",
+            "args": [
                 "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
             ],
-        )
+        }
+        if has_chrome:
+            launch_kwargs["channel"] = "chrome"
+            launch_kwargs["headless"] = False
+            launch_kwargs["no_viewport"] = True
+            launch_kwargs["args"].append("--start-maximized")
+        else:
+            launch_kwargs["headless"] = True
+            logger.info("[interceptor] Chrome not found, using bundled Chromium headless")
+
+        self.context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
 
         # Start recording
         self.recorder.start()
