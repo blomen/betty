@@ -26,16 +26,26 @@ def get_proxy_url() -> str | None:
     return os.environ.get("PROXY_URL")
 
 
-def get_proxy_dict() -> dict | None:
-    """Parse PROXY_URL into Playwright/Camoufox proxy dict format.
+def get_proxy_dict(socks: bool = False) -> dict | None:
+    """Parse proxy URL into Playwright/Camoufox proxy dict format.
+
+    Args:
+        socks: If True, use SOCKS_PROXY_URL (Swedish residential SSH tunnel).
+               If False, use PROXY_URL (ISP proxy for API calls).
 
     Handles format: http://user:pass@host:port → {server, username, password}
+    Also handles: socks5://host:port → {server}
     """
     import os
     from urllib.parse import urlparse
-    proxy_url = os.environ.get("PROXY_URL")
+    env_var = "SOCKS_PROXY_URL" if socks else "PROXY_URL"
+    proxy_url = os.environ.get(env_var)
     if not proxy_url:
-        return None
+        # Fall back to PROXY_URL if SOCKS requested but not set
+        if socks:
+            proxy_url = os.environ.get("PROXY_URL")
+        if not proxy_url:
+            return None
     parsed = urlparse(proxy_url)
     proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
     if parsed.username:
@@ -280,13 +290,19 @@ class BrowserTransport(Transport):
     """
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
                  channel: Optional[str] = None, cdp_url: Optional[str] = None,
-                 circuit_breaker: Any = None, use_proxy: bool = False):
+                 circuit_breaker: Any = None, use_proxy: bool = False,
+                 use_socks: bool = False):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
         self.cdp_url = cdp_url
         self.circuit_breaker = circuit_breaker
-        self._proxy_dict = get_proxy_dict() if use_proxy else None
+        if use_socks:
+            self._proxy_dict = get_proxy_dict(socks=True)
+        elif use_proxy:
+            self._proxy_dict = get_proxy_dict()
+        else:
+            self._proxy_dict = None
         self.playwright = None
         self.browser = None
         self.context = None

@@ -58,7 +58,10 @@ frontend/src/
 ### Security
 - **Nginx basic auth** protects all routes (credentials in `nginx/.htpasswd` on server, gitignored)
 - **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
+- **Non-root container** — backend runs as `firev` user (uid 1000), not root
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
+- **Security headers**: CSP, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, `server_tokens off`
+- **CORS lockdown** — origins from `CORS_ORIGINS` env var (not hardcoded), explicit methods/headers only
 - `/health` endpoint is exempted from auth (needed for Docker healthcheck)
 - To update the password: `ssh root@148.251.40.251 "htpasswd -cb /opt/firev/nginx/.htpasswd rasmus NEW_PASSWORD && cd /opt/firev && docker compose restart nginx"`
 
@@ -68,9 +71,10 @@ frontend/src/
 - **No more SQLite** — fully migrated to PostgreSQL. SQLite fallback exists in code for local dev without Docker.
 
 ### Environment
-- `.env.docker` — API keys and DB config (loaded via `env_file` in docker-compose)
+- `.env.docker` — API keys, DB config, and `CORS_ORIGINS` (loaded via `env_file` in docker-compose)
 - `.env` — just `DB_PASSWORD=${DB_PASSWORD}` (for docker-compose `${DB_PASSWORD}` substitution)
 - `PROXY_URL` — ISP residential proxy for Pinnacle (datacenter IPs blocked)
+- `CORS_ORIGINS` — comma-separated allowed origins (e.g. `https://148.251.40.251`)
 
 ### How to Deploy Changes
 ```bash

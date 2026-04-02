@@ -24,10 +24,14 @@ Event outcome types:
 from typing import Dict, Any, List, Optional
 import json
 import logging
+import os
 from datetime import datetime, timezone
 import asyncio
 
 import websockets
+import socks
+import socket
+from urllib.parse import urlparse
 
 from ..core import Retriever, StandardEvent
 from ..core.exceptions import RetryableError
@@ -99,6 +103,7 @@ class VbetRetriever(Retriever):
         self.ws_url = config.get("ws_url", "wss://eu-swarm-newm.vbet.se/")
         self.site_id = config.get("site_id", 1088)
         self._rid_counter = 1000
+        self._socks_proxy = os.environ.get("SOCKS_PROXY_URL")
 
     def _next_rid(self) -> int:
         """Generate unique request ID."""
@@ -330,8 +335,7 @@ class VbetRetriever(Retriever):
 
         for attempt in range(self.WS_MAX_RETRIES):
             try:
-                async with websockets.connect(
-                    self.ws_url,
+                ws_kwargs = dict(
                     additional_headers={
                         "Origin": "https://www.vbet.se",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -339,6 +343,25 @@ class VbetRetriever(Retriever):
                     max_size=10 * 1024 * 1024,
                     close_timeout=10,
                     open_timeout=15,
+                )
+                # Route through SOCKS proxy if available (Swedish residential IP)
+                if self._socks_proxy:
+                    parsed_proxy = urlparse(self._socks_proxy)
+                    parsed_ws = urlparse(self.ws_url)
+                    ws_host = parsed_ws.hostname
+                    ws_port = parsed_ws.port or 443
+                    sock = socks.socksocket()
+                    sock.set_proxy(
+                        socks.SOCKS5,
+                        parsed_proxy.hostname,
+                        parsed_proxy.port or 1080,
+                    )
+                    sock.settimeout(15)
+                    sock.connect((ws_host, ws_port))
+                    ws_kwargs["sock"] = sock
+                async with websockets.connect(
+                    self.ws_url,
+                    **ws_kwargs,
                 ) as ws:
                     if attempt > 0:
                         logger.info(f"[{self.provider_id}] WebSocket connected on attempt {attempt + 1}")

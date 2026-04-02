@@ -55,12 +55,15 @@ services:
       - chrome_profile:/app/chrome-profile
     env_file:
       - .env.docker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - FIREV_DATA_DIR=/app/data
       - FIREV_LOGS_DIR=/app/logs
       - FIREV_FRONTEND_DIR=/app/frontend/dist
       - DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/firev
       - MARKET_DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/market
+      - SOCKS_PROXY_URL=socks5://host.docker.internal:1080
     depends_on:
       postgres:
         condition: service_healthy
