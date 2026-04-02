@@ -293,8 +293,9 @@ class ReplayEngine:
             # VP uses all ticks (full session profile)
             self._vp.update(price, tick["size"])
 
-            # Update AMT dynamics tracker
-            _tick_side = tick.get("side", "buy")
+            # Update AMT dynamics tracker (map A/B → sell/buy)
+            _raw_side = tick.get("side", "B")
+            _tick_side = "buy" if _raw_side == "B" else "sell"
             self._amt_tracker.update(price, tick["size"], _tick_side)
 
             # 3. On bar close: build CandleFlow from buffered ticks, then recompute
