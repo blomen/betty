@@ -25,3 +25,5 @@ export const api = {
   ...tradingApi,
   ...settingsApi,
 };
+
+export { fireWindowApi } from './fireWindow';
