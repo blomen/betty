@@ -336,51 +336,54 @@ class MarketService:
             datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
         )
 
-        # Fetch current day data (may fail on weekends / no data available)
-        sym = config.get("symbol", "NQ.FUT")
-        try:
-            bars = await provider.get_bars(sym, "1m", globex_start, rth_close)
-        except Exception as e:
-            logger.debug("get_bars failed (likely weekend/no data): %s", e)
-            bars = []
-        try:
-            ticks = await provider.get_ticks(sym, globex_start, rth_close)
-        except Exception as e:
-            logger.debug("get_ticks failed (likely weekend/no data): %s", e)
-            ticks = []
+        # --- Fetch bars: DB-first, Databento only for backfill ---
+        from zoneinfo import ZoneInfo
+        from ..market_data.base import BarData
+        _ET = ZoneInfo("America/New_York")
+        gs_utc = globex_start.replace(tzinfo=_ET).astimezone(timezone.utc)
+        rc_utc = min(
+            rth_close.replace(tzinfo=_ET).astimezone(timezone.utc),
+            datetime.now(timezone.utc),
+        )
+
+        db_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", gs_utc, rc_utc))
+        if db_rows:
+            logger.info("compute_session: %d bars from DB for %s on %s", len(db_rows), symbol, target_date)
+            bars = [BarData(timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
+                            open=r.o, high=r.h, low=r.l, close=r.c, volume=r.v or 0)
+                    for r in db_rows]
+        else:
+            # No DB bars — try Databento as last resort (with timeout)
+            sym = config.get("symbol", "NQ.FUT")
+            try:
+                bars = await asyncio.wait_for(
+                    provider.get_bars(sym, "1m", globex_start, rth_close),
+                    timeout=30.0,
+                )
+            except Exception as e:
+                logger.warning("Databento get_bars failed: %s", e)
+                bars = []
 
         if not bars:
-            # Databento failed — try DB candles as fallback
-            from zoneinfo import ZoneInfo
-            from ..market_data.base import BarData
-            _ET = ZoneInfo("America/New_York")
-            gs_utc = globex_start.replace(tzinfo=_ET).astimezone(timezone.utc)
-            rc_utc = rth_close.replace(tzinfo=_ET).astimezone(timezone.utc)
-            db_rows = self.repo.get_candles(symbol, "1m", gs_utc, rc_utc)
-            if db_rows:
-                logger.info("Databento returned no bars — using %d DB candles for %s on %s", len(db_rows), symbol, target_date)
-                bars = [BarData(timestamp=r.ts, open=r.o, high=r.h, low=r.l, close=r.c, volume=r.v or 0) for r in db_rows]
-            else:
-                logger.info("No bars available for %s on %s — returning cached/empty session", symbol, target_date)
-                cached = self.repo.get_previous_session(symbol)
-                if cached:
-                    return cached
-                return {}
+            logger.info("No bars for %s on %s — returning cached/empty", symbol, target_date)
+            cached = self.repo.get_previous_session(symbol)
+            if cached and cached.session_json:
+                sj = cached.session_json
+                return sj if isinstance(sj, dict) else json.loads(sj) if isinstance(sj, str) else {}
+            return {}
 
-        # Fetch previous day for prev VA
-        prev_dt = dt - timedelta(days=1)
-        prev_globex = datetime.combine(
-            prev_dt - timedelta(days=1),
-            datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
-        )
-        prev_close = datetime.combine(
-            prev_dt,
-            datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
-        )
-        try:
-            prev_bars = await provider.get_bars(sym, "1m", prev_globex, prev_close)
-        except Exception as e:
-            logger.debug("get_bars (prev day) failed: %s", e)
+        # Ticks — skip, we don't use them for analysis (delta is 0 without side data)
+        ticks = []
+
+        # Previous day bars from DB
+        prev_gs_utc = (gs_utc - timedelta(days=1))
+        prev_rc_utc = (rc_utc - timedelta(days=1))
+        prev_db_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", prev_gs_utc, prev_rc_utc))
+        if prev_db_rows:
+            prev_bars = [BarData(timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
+                                 open=r.o, high=r.h, low=r.l, close=r.c, volume=r.v or 0)
+                         for r in prev_db_rows]
+        else:
             prev_bars = []
 
         # Fetch macro data (VIX, DXY, yields)
