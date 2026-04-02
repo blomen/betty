@@ -1,9 +1,11 @@
-"""Tests for AMTDynamicsTracker."""
+"""Tests for AMTDynamicsTracker and AMT dynamics feature extractor."""
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from src.market_data.amt_dynamics import AMTDynamicsTracker
+from src.rl.features.amt_dynamics_features import extract_amt_dynamics_features, _N_FEATURES
 
 SNAPSHOT_KEYS = {
     "ib_ext_up_count",
@@ -301,3 +303,49 @@ class TestEdgeCases:
         import math
         for k, v in snap.items():
             assert math.isfinite(v), f"{k} is not finite"
+
+
+class TestExtractAMTDynamicsFeatures:
+    def test_extract_amt_dynamics_features_zeros_when_none(self):
+        """None input returns zeros(20)."""
+        result = extract_amt_dynamics_features(None)
+        assert result.shape == (_N_FEATURES,)
+        assert result.dtype == np.float32
+        np.testing.assert_array_equal(result, np.zeros(_N_FEATURES, dtype=np.float32))
+
+    def test_extract_amt_dynamics_features_shape_and_dtype(self):
+        """Correct shape and dtype from a real snapshot."""
+        t = _make_tracker()
+        t.update(19990.0, 10, "buy")
+        snap = t.snapshot()
+        result = extract_amt_dynamics_features(snap)
+        assert result.shape == (_N_FEATURES,)
+        assert result.dtype == np.float32
+        assert np.all(np.isfinite(result))
+
+    def test_extract_amt_dynamics_features_from_tracker(self):
+        """Build tracker, update with ticks, extract features, verify IB extension features are non-zero."""
+        t = _make_tracker()
+        # Start inside IB
+        t.update(19990.0, 10, "buy")
+        # Cross above IB high (20000) — triggers IB extension up
+        t.update(20005.0, 20, "buy")
+        # Come back inside
+        t.update(19995.0, 10, "sell")
+        # Cross below IB low (19980) — triggers IB extension down
+        t.update(19970.0, 15, "sell")
+
+        snap = t.snapshot()
+        result = extract_amt_dynamics_features(snap)
+
+        # Index 0: ib_ext_up_count should be 1/5 = 0.2
+        assert result[0] == pytest.approx(0.2, abs=1e-6)
+        # Index 1: ib_ext_down_count should be 1/5 = 0.2
+        assert result[1] == pytest.approx(0.2, abs=1e-6)
+        # Index 2: ib_max_extension should be > 0 (max ext = 10 ticks / 20 IB range = 0.5, / 300 norm)
+        assert result[2] > 0.0
+        # Index 3: ib_ext_net_direction = (1-1)/2 = 0 (equal extensions)
+        assert result[3] == pytest.approx(0.0, abs=1e-6)
+        # All values should be within [-1, 1]
+        assert np.all(result >= -1.0)
+        assert np.all(result <= 1.0)
