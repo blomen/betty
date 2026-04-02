@@ -45,8 +45,9 @@ services:
 
   backend:
     build: .
-    ports:
-      - "8000:8000"
+    # No public port — only reachable by nginx via Docker network
+    expose:
+      - "8000"
     volumes:
       - firev_data:/app/data
       - firev_logs:/app/logs

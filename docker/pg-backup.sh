@@ -1,16 +1,20 @@
 #!/bin/bash
+set -euo pipefail
+
 # Daily PostgreSQL backup
 BACKUP_DIR=/opt/firev/backups
-mkdir -p $BACKUP_DIR
+mkdir -p "$BACKUP_DIR"
 DATE=$(date +%Y%m%d_%H%M%S)
 
-docker compose -f /opt/firev/docker-compose.yml exec -T postgres \
-    pg_dump -U firev firev | gzip > $BACKUP_DIR/firev_$DATE.sql.gz
+echo "Starting backup: $DATE"
 
 docker compose -f /opt/firev/docker-compose.yml exec -T postgres \
-    pg_dump -U firev market | gzip > $BACKUP_DIR/market_$DATE.sql.gz
+    pg_dump -U firev firev | gzip > "$BACKUP_DIR/firev_$DATE.sql.gz"
+
+docker compose -f /opt/firev/docker-compose.yml exec -T postgres \
+    pg_dump -U firev market | gzip > "$BACKUP_DIR/market_$DATE.sql.gz"
 
 # Keep last 7 days
-find $BACKUP_DIR -name "*.sql.gz" -mtime +7 -delete
+find "$BACKUP_DIR" -name "*.sql.gz" -mtime +7 -delete
 
-echo "Backup complete: $DATE"
+echo "Backup complete: $DATE (firev: $(du -h "$BACKUP_DIR/firev_$DATE.sql.gz" | cut -f1), market: $(du -h "$BACKUP_DIR/market_$DATE.sql.gz" | cut -f1))"

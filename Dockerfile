@@ -37,10 +37,14 @@ RUN cd frontend && npm run build
 # Backend source (refresh — earlier COPY was just for dep install caching)
 COPY backend/ backend/
 
+# Non-root user for runtime security
+RUN useradd -m -u 1000 -s /bin/bash firev
+
 # Data directories + symlink for RL (CLI resolves from backend/data/rl/)
 RUN mkdir -p /app/data /app/logs /app/models /app/data/rl && \
     mkdir -p /app/backend/data && \
-    ln -s /app/data/rl /app/backend/data/rl
+    ln -s /app/data/rl /app/backend/data/rl && \
+    chown -R firev:firev /app/data /app/logs /app/models /app/backend/data
 
 ENV FIREV_DATA_DIR=/app/data
 ENV FIREV_LOGS_DIR=/app/logs
@@ -48,5 +52,6 @@ ENV FIREV_FRONTEND_DIR=/app/frontend/dist
 
 EXPOSE 8000
 
+USER firev
 WORKDIR /app/backend
 CMD ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--loop", "uvloop"]

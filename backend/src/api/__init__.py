@@ -544,12 +544,14 @@ async def cache_control_middleware(request: Request, call_next):
     return response
 
 # Allow CORS for frontend
+_default_origins = "http://localhost:5173,http://localhost:5174,http://localhost:3000,tauri://localhost"
+_cors_origins = os.environ.get("CORS_ORIGINS", _default_origins).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "tauri://localhost", "https://204.168.218.18"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
