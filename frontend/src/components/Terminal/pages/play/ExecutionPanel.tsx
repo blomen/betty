@@ -10,13 +10,14 @@ interface Props {
   batch: BatchBet[];
   wageringProjections: WageringProjection[];
   onBack: () => void;
+  onNewBatch: () => void;
 }
 
 // ---------------------------------------------------------------------------
 // ExecutionPanel
 // ---------------------------------------------------------------------------
 
-export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
+export function ExecutionPanel({ batch, wageringProjections, onBack, onNewBatch }: Props) {
   const [completed, setCompleted] = useState(false);
 
   if (completed) {
@@ -25,12 +26,20 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
         <div className="text-sm text-foreground font-medium">
           All providers processed. Session complete.
         </div>
-        <button
-          onClick={onBack}
-          className="px-3 py-1 text-xs bg-border text-foreground hover:opacity-90 transition-opacity w-fit"
-        >
-          Back
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onNewBatch}
+            className="px-3 py-1 text-xs bg-success text-bg font-medium hover:opacity-90 transition-opacity"
+          >
+            New Batch
+          </button>
+          <button
+            onClick={onBack}
+            className="px-3 py-1 text-xs bg-border text-foreground hover:opacity-90 transition-opacity"
+          >
+            Back
+          </button>
+        </div>
       </div>
     );
   }
@@ -41,6 +50,7 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
       wageringProjections={wageringProjections}
       onComplete={() => setCompleted(true)}
       onBack={onBack}
+      onNewBatch={onNewBatch}
     />
   );
 }

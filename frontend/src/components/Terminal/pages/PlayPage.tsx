@@ -301,6 +301,7 @@ export function PlayPage() {
           batch={allocationData.allocated_batch}
           wageringProjections={allocationData.wagering_projections || []}
           onBack={() => setStep('capital')}
+          onNewBatch={handleBackToBatch}
         />
       )}
     </div>

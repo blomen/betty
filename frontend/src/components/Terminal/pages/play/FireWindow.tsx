@@ -20,6 +20,7 @@ interface Props {
   wageringProjections: WageringProjection[];
   onComplete: () => void;
   onBack: () => void;
+  onNewBatch: () => void;
 }
 
 interface BatchStats {
@@ -69,7 +70,7 @@ const CATEGORY_CLASSES: Record<string, string> = {
 // FireWindow Component
 // ---------------------------------------------------------------------------
 
-export function FireWindow({ batch, wageringProjections, onComplete, onBack }: Props) {
+export function FireWindow({ batch, wageringProjections, onComplete, onBack, onNewBatch }: Props) {
   const [phase, setPhase] = useState<Phase>('queue');
   const [queue, setQueue] = useState<ProviderQueueItem[]>([]);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
@@ -358,13 +359,19 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
           </div>
         )}
 
-        {/* Back button */}
+        {/* Actions */}
         <div className="flex items-center gap-2 px-1">
           <button
             onClick={onBack}
             className="px-3 py-1 text-xs bg-border text-foreground hover:opacity-90 transition-opacity"
           >
             Back
+          </button>
+          <button
+            onClick={() => { fireWindowApi.close().catch(() => {}); onNewBatch(); }}
+            className="px-3 py-1 text-xs text-muted hover:text-foreground transition-colors"
+          >
+            New Batch
           </button>
         </div>
       </div>
@@ -505,6 +512,12 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => { fireWindowApi.close().catch(() => {}); onNewBatch(); }}
+              className="px-3 py-1 text-xs text-muted hover:text-foreground transition-colors"
+            >
+              New Batch
+            </button>
             <button
               onClick={handleSkip}
               className="px-3 py-1 text-xs bg-border text-foreground hover:opacity-90 transition-opacity"
