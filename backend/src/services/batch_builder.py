@@ -702,7 +702,15 @@ class BatchBuilder:
             key = (c.cluster, c.event_id, c.market, c.outcome, c.point)
             if key not in best or c.edge_pct > best[key].edge_pct:
                 best[key] = c
-        return list(best.values())
+
+        # One bet per event per cluster — betting multiple outcomes on the same
+        # event is correlated risk. Keep the outcome with the highest edge.
+        best_per_event: dict[tuple, BatchBet] = {}
+        for c in best.values():
+            ekey = (c.cluster, c.event_id)
+            if ekey not in best_per_event or c.edge_pct > best_per_event[ekey].edge_pct:
+                best_per_event[ekey] = c
+        return list(best_per_event.values())
 
     def _make_candidate(
         self,
