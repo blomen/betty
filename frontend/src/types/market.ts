@@ -318,6 +318,20 @@ export interface PricePosition {
   vwap_deviation_sd?: number;
 }
 
+export interface AMTDynamics {
+  developing_day_type: number;
+  day_type_confidence: number;
+  ib_ext_up_count: number;
+  ib_ext_down_count: number;
+  responsive_ratio: number;
+  initiative_ratio: number;
+  va_acceptance_high: number;
+  va_rejection_high: boolean;
+  va_acceptance_low: number;
+  va_rejection_low: boolean;
+  balance_duration: number;
+}
+
 /** Expanded session response (replaces old MarketSession for dashboard) */
 export interface ExpandedSession {
   session: MarketSession;
@@ -335,6 +349,7 @@ export interface ExpandedSession {
   price_position: PricePosition;
   ml_day_type: string | null;
   ml_day_type_confidence: number | null;
+  amt_dynamics?: AMTDynamics | null;
 }
 
 /** Orderflow indicator data (replaces ConfirmationCard for orderflow) */

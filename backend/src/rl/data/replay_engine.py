@@ -124,6 +124,12 @@ class ReplayEngine:
         self._session_high: float | None = None
         self._session_low: float | None = None
 
+        # Prior session state for AMT static features (indices 13-19)
+        self._prior_poor_high: bool = False
+        self._prior_poor_low: bool = False
+        self._prior_excess_quality: int = 0
+        self._prior_poc: float | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -154,6 +160,14 @@ class ReplayEngine:
                 h, l = bar["high"], bar["low"]
                 rth_high = max(rth_high or h, h)
                 rth_low = min(rth_low or l, l)
+
+        # Save prior session state for next session's AMT features
+        tpo = self._tpo_profile or {}
+        self._prior_poor_high = bool(tpo.get("poor_high", False))
+        self._prior_poor_low = bool(tpo.get("poor_low", False))
+        self._prior_excess_quality = (tpo.get("upper_excess_ticks", 0) or 0) - (tpo.get("lower_excess_ticks", 0) or 0)
+        vp = self._vp.get()
+        self._prior_poc = vp.poc if vp else None
 
         return {
             "pdh": rth_high,
@@ -830,7 +844,43 @@ class ReplayEngine:
             "daily_low": session_low if bars_1m else None,
             "ib_high": ib_high,
             "ib_low": ib_low,
+            # AMT static enrichment (for amt_features indices 13-19)
+            "ib_range_percentile": 0.5,  # No historical DB in replay — default to median
+            "overnight_gap": self._compute_overnight_gap(bars_1m),
+            "open_vs_prior_poc": self._compute_open_vs_prior_poc(open_price),
+            "composite_va_overlap": 0.5,  # No multi-day history in single-session replay
+            "prior_poor_high": self._prior_poor_high,
+            "prior_poor_low": self._prior_poor_low,
+            "prior_excess_quality": self._prior_excess_quality,
         }
+
+    # ------------------------------------------------------------------
+    # AMT helpers
+    # ------------------------------------------------------------------
+
+    def _compute_overnight_gap(self, bars_1m: list[dict]) -> float:
+        """Overnight gap = (RTH open - prior close) / IB range."""
+        sl = self._session_levels
+        if not sl or not sl.ib_high or not sl.ib_low:
+            return 0.0
+        ib_range = sl.ib_high - sl.ib_low
+        if ib_range <= 0:
+            return 0.0
+        open_price = None
+        for b in bars_1m:
+            if _is_rth_bar(b):
+                open_price = b["open"]
+                break
+        if open_price is None:
+            return 0.0
+        prior_close = bars_1m[0]["close"] if bars_1m else open_price
+        return max(-1.0, min(1.0, (open_price - prior_close) / ib_range))
+
+    def _compute_open_vs_prior_poc(self, open_price: float | None) -> float:
+        """Open price distance from prior session POC, normalized."""
+        if open_price is None or self._prior_poc is None:
+            return 0.0
+        return max(-1.0, min(1.0, (open_price - self._prior_poc) / 0.25 / 200.0))
 
     # ------------------------------------------------------------------
     # Prior session data

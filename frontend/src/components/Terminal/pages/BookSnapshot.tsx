@@ -40,8 +40,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo
   const swingStructure = session?.swing_structure;
   const structure = session?.structure;
   const macro = session?.macro;
-  const mlDayType = session?.ml_day_type;
-  const mlDayTypeConf = session?.ml_day_type_confidence;
+
 
   const toggleGroup = useCallback((group: string) => {
     const keys = LEVEL_GROUPS[group];
@@ -355,16 +354,11 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo
           <div className="px-2 py-1 border-b border-border last:border-b-0">
             <button onClick={() => toggleGroup('amt')} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">AMT</button>
 
-            {/* Day type (ML or session) */}
-            {(mlDayType || s?.market_type) && (
+            {/* Day type */}
+            {s?.market_type && (
               <div className="flex items-center justify-between text-[10px]">
                 <span className="text-muted2">Day Type</span>
-                <span className="flex items-center gap-1">
-                  <span className="text-amber-300 font-bold">{mlDayType ?? s?.market_type}</span>
-                  {mlDayTypeConf != null && (
-                    <span className="text-muted2">({mlDayTypeConf.toFixed(0)}%)</span>
-                  )}
-                </span>
+                <span className="text-amber-300 font-bold">{s.market_type.replace(/_/g, ' ')}</span>
               </div>
             )}
 
