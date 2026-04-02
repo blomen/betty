@@ -133,8 +133,9 @@ class ExtractorFactory:
             )
         elif retriever_type == "spectate":
             # Spectate providers (888sport, MrGreen) - headless mode works
+            # Residential proxy reduces 403 rate-limit blocks
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = SpectateRetriever(config, transport=transport)
         elif retriever_type == "gecko_v2":
             # Gecko V2 - API interception approach (faster than DOM parsing)
@@ -174,8 +175,9 @@ class ExtractorFactory:
             retriever = VbetRetriever(config)
         elif retriever_type == "interwetten":
             # Interwetten SSR - browser-based DOM parsing (headless works fine)
+            # Residential proxy helps bypass Cloudflare IP reputation checks
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected

@@ -27,7 +27,7 @@ from datetime import datetime
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
 from ..core.exceptions import RetryableError
-from ..core.transport import BrowserTransport
+from ..core.transport import BrowserTransport, get_proxy_dict
 from ..matching.normalizer import normalize_team_name, normalize_outcome
 
 logger = logging.getLogger(__name__)
@@ -169,12 +169,16 @@ class CoolbetRetriever(BrowserRetriever):
         logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
         t0 = time.time()
         try:
+            proxy = get_proxy_dict()
             self._camoufox_browser = await AsyncCamoufox(
                 headless=True,
                 geoip=True,
                 humanize=0.2,
                 os="windows",
+                proxy=proxy,
             ).__aenter__()
+            if proxy:
+                logger.info(f"[{self.provider_id}] Camoufox launched with residential proxy")
 
             self._camoufox_page = await self._camoufox_browser.new_page()
             logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")

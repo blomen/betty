@@ -19,6 +19,32 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def get_proxy_url() -> str | None:
+    """Get PROXY_URL from environment. Returns plain URL string for aiohttp."""
+    import os
+    return os.environ.get("PROXY_URL")
+
+
+def get_proxy_dict() -> dict | None:
+    """Parse PROXY_URL into Playwright/Camoufox proxy dict format.
+
+    Handles format: http://user:pass@host:port → {server, username, password}
+    """
+    import os
+    from urllib.parse import urlparse
+    proxy_url = os.environ.get("PROXY_URL")
+    if not proxy_url:
+        return None
+    parsed = urlparse(proxy_url)
+    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+    if parsed.username:
+        proxy["username"] = parsed.username
+    if parsed.password:
+        proxy["password"] = parsed.password
+    return proxy
+
+
 # Modern Chrome UA — updated periodically
 _CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -254,12 +280,13 @@ class BrowserTransport(Transport):
     """
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
                  channel: Optional[str] = None, cdp_url: Optional[str] = None,
-                 circuit_breaker: Any = None):
+                 circuit_breaker: Any = None, use_proxy: bool = False):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
         self.cdp_url = cdp_url
         self.circuit_breaker = circuit_breaker
+        self._proxy_dict = get_proxy_dict() if use_proxy else None
         self.playwright = None
         self.browser = None
         self.context = None
@@ -346,6 +373,8 @@ class BrowserTransport(Transport):
                 'longitude': 18.0686 + (random.random() - 0.5) * 0.01,
             },  # Stockholm ±500m jitter
         )
+        if self._proxy_dict:
+            context_opts['proxy'] = self._proxy_dict
         launch_args = [
             '--disable-blink-features=AutomationControlled',
             '--window-position=-2400,-2400',
@@ -384,7 +413,8 @@ class BrowserTransport(Transport):
         # No add_init_script() needed — it conflicts with patchright's internal patching
         # and causes net::ERR_NAME_NOT_RESOLVED on Windows
 
-        logger.info("Browser initialized with patchright stealth")
+        proxy_msg = " + residential proxy" if self._proxy_dict else ""
+        logger.info(f"Browser initialized with patchright stealth{proxy_msg}")
 
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_browser()

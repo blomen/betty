@@ -16,6 +16,7 @@ import time
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..core.exceptions import RetryableError
+from ..core.transport import get_proxy_dict
 from ..matching.normalizer import normalize_team_name
 from . import comeon_dom_js as JS
 from .comeon_dom_parser import scrape_league_page
@@ -114,15 +115,18 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
         t0 = time.time()
         try:
+            proxy = get_proxy_dict()
             self._camoufox_browser = await AsyncCamoufox(
                 headless=True,
                 geoip=True,
                 humanize=0.2,
                 os="windows",
+                proxy=proxy,
             ).__aenter__()
 
             self._camoufox_page = await self._camoufox_browser.new_page()
-            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")
+            proxy_msg = " with residential proxy" if proxy else ""
+            logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time()-t0:.1f}s")
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
