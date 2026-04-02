@@ -49,19 +49,36 @@ class MarketRepo:
         )
 
     @staticmethod
-    def _sanitize_numpy(val):
-        """Convert numpy scalars to native Python types for PostgreSQL."""
-        if hasattr(val, 'item'):  # np.float64, np.int64, etc.
+    def _sanitize_for_json(val):
+        """Recursively convert non-JSON-safe types to native Python for PostgreSQL.
+
+        Handles: numpy scalars, numpy bools, dataclasses, datetimes, sets.
+        Applied at the repo boundary so callers never need to worry about it.
+        """
+        # numpy scalar (float64, int64, bool_)
+        if hasattr(val, 'item'):
             return val.item()
+        # dataclass → dict
+        if hasattr(val, '__dataclass_fields__'):
+            from dataclasses import asdict
+            return MarketRepo._sanitize_for_json(asdict(val))
+        # dict — recurse
         if isinstance(val, dict):
-            return {k: MarketRepo._sanitize_numpy(v) for k, v in val.items()}
-        if isinstance(val, list):
-            return [MarketRepo._sanitize_numpy(v) for v in val]
+            return {k: MarketRepo._sanitize_for_json(v) for k, v in val.items()}
+        # list/tuple — recurse
+        if isinstance(val, (list, tuple)):
+            return [MarketRepo._sanitize_for_json(v) for v in val]
+        # set → list
+        if isinstance(val, (set, frozenset)):
+            return [MarketRepo._sanitize_for_json(v) for v in val]
+        # datetime → ISO string (for JSON columns)
+        if isinstance(val, datetime):
+            return val.isoformat()
         return val
 
     def upsert_session(self, date: str, symbol: str, **kwargs) -> MarketSession:
         """Insert or update a market session."""
-        kwargs = {k: self._sanitize_numpy(v) for k, v in kwargs.items()}
+        kwargs = {k: self._sanitize_for_json(v) for k, v in kwargs.items()}
         existing = self.get_session(date, symbol)
         if existing:
             for k, v in kwargs.items():
@@ -231,7 +248,7 @@ class MarketRepo:
             lv["symbol"] = symbol
             lv["date"] = date
             for k, v in lv.items():
-                lv[k] = self._sanitize_numpy(v)
+                lv[k] = self._sanitize_for_json(v)
         self.db.bulk_insert_mappings(MarketLevel, levels)
         self.db.commit()
 
@@ -265,8 +282,8 @@ class MarketRepo:
 
     def upsert_session_metric(self, symbol: str, date: str, rf: int, aspr: float):
         """Insert or update session metric for ASPR/RF baselines."""
-        rf = self._sanitize_numpy(rf)
-        aspr = self._sanitize_numpy(aspr)
+        rf = self._sanitize_for_json(rf)
+        aspr = self._sanitize_for_json(aspr)
         existing = self.db.query(SessionMetric).filter(
             SessionMetric.symbol == symbol,
             SessionMetric.date == date,
