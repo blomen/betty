@@ -850,9 +850,10 @@ extraction_scheduling:
 
   sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
-    # Grouped: run together as one unit every 1 minute
+    # Grouped: run together as one unit every 5 minutes
+    # Pinnacle takes 170-270s — 1min causes overlapping runs + StaleDataError
     providers: [pinnacle, polymarket]
-    interval_minutes: 1
+    interval_minutes: 5
     grouped: true
 
   api_soft:
