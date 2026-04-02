@@ -157,7 +157,7 @@ async def trigger_compute(
             "amt_context": session.get("amt_context", {}),
             "fvgs": [],
             "single_print_zones": [],
-            "swing_structure": expanded.get("swing_structure"),
+            "swing_structure": expanded.get("swing_structure") if expanded else None,
         }
         # Enrich macro with live exchange stats from Databento stream
         stream = _get_live_stream(request)
