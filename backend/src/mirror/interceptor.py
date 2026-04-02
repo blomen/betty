@@ -12,6 +12,7 @@ Listeners run simultaneously:
 
 import asyncio
 import logging
+import os
 import sys
 from typing import Callable, Awaitable
 
@@ -134,7 +135,17 @@ class BetInterceptor:
         # Use Google Chrome when available (local dev), fall back to bundled
         # Chromium in headless mode (Docker / server).
         import shutil
-        has_chrome = shutil.which("google-chrome") or Path("/opt/google/chrome/chrome").exists()
+        from pathlib import Path
+        has_chrome = (
+            shutil.which("google-chrome")
+            or Path("/opt/google/chrome/chrome").exists()
+            or (sys.platform == "win32" and any(
+                Path(p).exists() for p in [
+                    Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
+                    Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+                ]
+            ))
+        )
 
         launch_kwargs: dict = {
             "user_data_dir": str(self.user_data_dir),
