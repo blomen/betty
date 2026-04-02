@@ -8,6 +8,7 @@ from enum import Enum
 
 from src.rl.zone_builder import Zone, ZoneMember, build_zones
 from src.rl.config import LevelType as RLLevelType
+from .amt_dynamics import AMTDynamicsTracker
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class LevelMonitor:
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
         self._session_atr: float = 40.0
+        self._amt_tracker = AMTDynamicsTracker()
         # Throttle: skip level checks when price hasn't moved
         self._last_price: float = 0.0
         try:
@@ -189,6 +191,9 @@ class LevelMonitor:
         # Skip level/zone checks when price hasn't changed — many ticks hit the
         # same price and repeating O(n) level scans is pure waste.
         price_changed = price != self._last_price
+        # Update AMT dynamics tracker (infer side from price movement)
+        _side = "buy" if price >= self._last_price else "sell"
+        self._amt_tracker.update(price, size, _side)
         if price_changed:
             self._last_price = price
         else:
@@ -293,6 +298,21 @@ class LevelMonitor:
         This allows _build_rl_state to pass complete context to the model.
         """
         self._session_context = ctx
+        # Initialize AMT dynamics tracker with session IB/VA/POC
+        amt_init = {}
+        vp = ctx.get("volume_profile")
+        sl = ctx.get("session_levels")
+        if vp:
+            amt_init["vah"] = vp.vah if hasattr(vp, "vah") else 0
+            amt_init["val"] = vp.val if hasattr(vp, "val") else 0
+            amt_init["poc"] = vp.poc if hasattr(vp, "poc") else 0
+        if sl:
+            amt_init["ib_high"] = sl.ib_high if hasattr(sl, "ib_high") else 0
+            amt_init["ib_low"] = sl.ib_low if hasattr(sl, "ib_low") else 0
+        tpo = ctx.get("tpo_profile")
+        if tpo and isinstance(tpo, dict):
+            amt_init["single_prints"] = tpo.get("single_prints", [])
+        self._amt_tracker.initialize(amt_init)
         if "atr" in ctx:
             self._session_atr = ctx["atr"]
         logger.info("LevelMonitor session context updated (%d keys)", len(ctx))
@@ -767,12 +787,13 @@ class LevelMonitor:
             "all_levels": [l.price for l in self._levels],
             "orderflow_signals": ctx.get("orderflow_signals"),
             "macro": ctx.get("macro"),
-            "session_context": ctx.get("session_context"),
+            "session_context": {**(ctx.get("session_context") or {}), **(ctx.get("amt_context") or {})},
             "day_type": ctx.get("day_type"),
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
+            "amt_dynamics": self._amt_tracker.snapshot(),
         }
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
@@ -845,10 +866,11 @@ class LevelMonitor:
             "all_levels": [l.price for l in self._levels],
             "orderflow_signals": ctx.get("orderflow_signals"),
             "macro": ctx.get("macro"),
-            "session_context": ctx.get("session_context"),
+            "session_context": {**(ctx.get("session_context") or {}), **(ctx.get("amt_context") or {})},
             "day_type": ctx.get("day_type"),
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
+            "amt_dynamics": self._amt_tracker.snapshot(),
         }
