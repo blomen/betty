@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..config.trading_loader import get_market_data_config, get_scanner_config, get_setups
-from ..db.models import TradingSignal, MarketTrade
+from ..db.models import TradingSignal
 from ..market_data.amt import build_session_analysis, SessionAnalysis
 from ..market_data.base import MarketDataProvider
 from ..market_data.levels import (
@@ -146,79 +146,32 @@ class MarketService:
         return filtered
 
     async def _get_session_bars(self, symbol: str) -> list[dict]:
-        """Get today's complete 1m bars for VP. DB first, backfill from Databento if gaps.
+        """Get today's 1m bars from DB for VP computation.
 
-        Anchored from 00:00 CET (midnight Stockholm time). A full session
-        (Tokyo + London + NY ≈ 22h) should have ~1300 1m bars. If DB has < 70%
-        coverage, fetches from Databento and persists to DB so it only happens once.
+        DB-only — the live stream populates candles in real-time.
+        Falls back to previous day if today has no data yet.
         """
         from zoneinfo import ZoneInfo
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
-        # Start from 00:00 CET today
         today_cet = now.astimezone(_CET).date()
         d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
-        d_end = now
 
-        # Expected bars: minutes from session start to now minus ~60 min halt
-        elapsed_minutes = max(1, int((d_end - d_start).total_seconds() / 60))
-        expected_bars = max(1, elapsed_minutes - 60)
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
+        if rows:
+            logger.info("VP bars: %d from DB", len(rows))
+            return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
 
-        # Try DB first (filter out 17:00-18:00 ET halt)
-        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, d_end))
-        db_bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
-        coverage = len(db_bars) / expected_bars if expected_bars > 0 else 0
-
-        if coverage >= 0.70:
-            logger.info("VP bars: %d from DB (%.0f%% coverage)", len(db_bars), coverage * 100)
-            return db_bars
-
-        # DB has gaps — try Databento backfill with its own timeout
-        logger.info("VP bars: DB has %d/~%d (%.0f%%) — backfilling from Databento",
-                     len(db_bars), expected_bars, coverage * 100)
-        try:
-            provider = _get_provider()
-            # Use inner (uncached) provider to avoid parquet cache date mismatch
-            raw_provider = getattr(provider, "inner", provider)
-            config = get_market_data_config()
-            full_symbol = config.get("symbol", "NQ.FUT")
-            # Databento historical has ~15 min delay; clamp end to avoid 422
-            fetch_end = min(d_end, datetime.now(timezone.utc) - timedelta(minutes=15))
-            if fetch_end <= d_start:
-                logger.info("VP bars: too early for Databento backfill, using DB bars")
-            else:
-                fetched = await asyncio.wait_for(
-                    raw_provider.get_bars(full_symbol, "1m", d_start, fetch_end),
-                    timeout=25.0,
-                )
-                if fetched:
-                    try:
-                        inserted = self.repo.bulk_insert_candles(symbol, "1m", fetched)
-                        logger.info("VP bars: got %d from Databento, inserted %d new into DB", len(fetched), inserted)
-                    except Exception as e:
-                        self.db.rollback()
-                        logger.warning("VP bars: DB insert failed (OK, using fetched data): %s", e)
-                    return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
-                            for b in fetched]
-        except asyncio.TimeoutError:
-            logger.warning("Databento backfill timed out (25s)")
-        except Exception as e:
-            logger.warning("Databento backfill failed: %s", e)
-
-        if db_bars:
-            return db_bars
-
-        # No bars for today — fall back to previous CET day so VP shows
-        # recent data rather than stale DB session values.
+        # No bars today — try previous day
         prev_cet = today_cet - timedelta(days=1)
         p_start = datetime(prev_cet.year, prev_cet.month, prev_cet.day, tzinfo=_CET).astimezone(timezone.utc)
         prev_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", p_start, d_start))
         if prev_rows:
-            logger.info("VP bars: using previous day's %d bars as fallback", len(prev_rows))
+            logger.info("VP bars: using previous day's %d bars", len(prev_rows))
             return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in prev_rows]
 
-        return db_bars
+        return []
 
     def _load_swing_structure(self):
         """Load swing structure from RL session summaries + live DB candles.
@@ -1450,56 +1403,52 @@ class MarketService:
         return result
 
     async def _compute_tick_vp(self, symbol: str) -> VolumeProfile | None:
-        """Compute VP from actual tick data in market_trades table.
-
-        Returns VolumeProfile if sufficient ticks exist, else None (caller falls back to bars).
-        """
+        """Compute VP from tick data using SQL aggregation (no ORM object loading)."""
         from zoneinfo import ZoneInfo
-        _CET = ZoneInfo("Europe/Stockholm")
+        from sqlalchemy import text
 
+        _CET = ZoneInfo("Europe/Stockholm")
         now = datetime.now(timezone.utc)
         today_cet = now.astimezone(_CET).date()
         d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
 
         try:
-            # Check count first — loading millions of ORM objects blocks the process
-            from sqlalchemy import func
-            count = self.repo.market_db.query(func.count(MarketTrade.id)).filter(
-                MarketTrade.symbol == symbol,
-                MarketTrade.ts >= d_start,
-                MarketTrade.ts <= now,
+            # Count first
+            count_result = self.repo.market_db.execute(
+                text("SELECT COUNT(*) FROM market_trades WHERE symbol = :sym AND ts >= :start AND ts <= :end"),
+                {"sym": symbol, "start": d_start, "end": now},
             ).scalar() or 0
-            if count > 500_000:
-                logger.info("Tick VP: %d ticks too large, falling back to bars", count)
-                return None
-            if count < 100:
-                logger.info("Tick VP: only %d ticks, falling back to bars", count)
-                return None
-            trades = self.repo.get_trades(symbol, d_start, now)
 
-            # Check tick time span — if ticks only cover a small fraction of
-            # elapsed session time, the data is too sparse for a meaningful VP.
-            elapsed = (now - d_start).total_seconds()
-            first_ts = trades[0].ts if hasattr(trades[0], 'ts') else None
-            last_ts = trades[-1].ts if hasattr(trades[-1], 'ts') else None
-            if first_ts and last_ts and elapsed > 7200:  # session > 2 hours old
-                if hasattr(first_ts, 'timestamp'):
-                    tick_span = (last_ts.timestamp() - first_ts.timestamp())
-                else:
-                    tick_span = elapsed  # can't check, trust data
-                if tick_span < elapsed * 0.15:
-                    logger.info("Tick VP: ticks span %.0fs of %.0fs session (%.0f%%), falling back to bars",
-                                tick_span, elapsed, tick_span / elapsed * 100)
-                    return None
+            if count_result < 100:
+                logger.info("Tick VP: only %d ticks, falling back to bars", count_result)
+                return None
+            if count_result > 2_000_000:
+                logger.info("Tick VP: %d ticks too large, falling back to bars", count_result)
+                return None
 
-            # Build trade dicts for compute_volume_profile (exact prices, no spreading)
-            trade_dicts = [{"price": t.price, "size": t.size} for t in trades]
+            # Aggregate price/size in SQL — returns ~4000 rows for tick-size buckets
+            rows = self.repo.market_db.execute(
+                text("""
+                    SELECT ROUND(price / 0.25) * 0.25 AS tick_price,
+                           SUM(size) AS total_size
+                    FROM market_trades
+                    WHERE symbol = :sym AND ts >= :start AND ts <= :end
+                    GROUP BY tick_price
+                    ORDER BY tick_price
+                """),
+                {"sym": symbol, "start": d_start, "end": now},
+            ).fetchall()
+
+            if not rows:
+                return None
+
+            trade_dicts = [{"price": float(r[0]), "size": int(r[1])} for r in rows]
             vp = compute_volume_profile(trade_dicts)
-            logger.info("Tick VP: computed from %d ticks (POC=%.2f, VAH=%.2f, VAL=%.2f)",
-                        len(trades), vp.poc, vp.vah, vp.val)
+            logger.info("Tick VP: SQL aggregation from %d ticks → %d price levels (POC=%.2f)",
+                        count_result, len(trade_dicts), vp.poc)
             return vp
         except Exception as e:
-            logger.warning("Tick VP failed, will fall back to bars: %s", e)
+            logger.warning("Tick VP SQL failed: %s", e)
             return None
 
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
