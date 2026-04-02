@@ -147,12 +147,12 @@ def main():
         input("Press Enter to exit...")
         return
 
-    # Check production backend is healthy
+    # Check production backend is healthy (via docker exec — port not exposed on host)
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
-             "curl -sf http://localhost:8000/health"],
-            capture_output=True, text=True, timeout=15,
+             "cd /opt/firev && docker compose exec -T backend curl -sf http://localhost:8000/health"],
+            capture_output=True, text=True, timeout=20,
         )
         if result.returncode != 0:
             print("[mirror] FAILED: Production backend not responding")
