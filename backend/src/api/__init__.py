@@ -44,6 +44,7 @@ from .routes import (
     limits_router,
     postmortem_router,
     mirror_router,
+    fire_window_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -483,7 +484,7 @@ async def cache_control_middleware(request: Request, call_next):
 # Allow CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "tauri://localhost"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "tauri://localhost", "https://204.168.218.18"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -598,6 +599,7 @@ app.include_router(settings_router)
 app.include_router(limits_router)
 app.include_router(postmortem_router)
 app.include_router(mirror_router)
+app.include_router(fire_window_router)
 
 
 # Version endpoint

@@ -482,7 +482,7 @@ async def fire_provider(mirror_service) -> dict:
                     outcome=bet.poly_outcome or bet.outcome,
                     amount=bet.stake,
                     expected_price=expected_price,
-                    max_slippage=0.03,
+                    max_slippage=3.0,
                     original_outcome=bet.original_outcome,
                     market_type=bet.market,
                 )
