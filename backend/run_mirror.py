@@ -125,9 +125,66 @@ def main():
     # Kill any previous mirror instance
     _cleanup_old_instance()
 
+    # Check production server is reachable
+    print(f"[mirror] Checking server {SERVER}...")
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}", "echo ok"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            print(f"[mirror] FAILED: Cannot SSH to {SERVER}")
+            print(f"[mirror] stderr: {result.stderr.strip()}")
+            input("Press Enter to exit...")
+            return
+        print(f"[mirror] Server reachable")
+    except subprocess.TimeoutExpired:
+        print(f"[mirror] FAILED: SSH to {SERVER} timed out")
+        input("Press Enter to exit...")
+        return
+    except FileNotFoundError:
+        print("[mirror] FAILED: ssh not found. Install OpenSSH.")
+        input("Press Enter to exit...")
+        return
+
+    # Check production backend is healthy
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
+             "curl -sf http://localhost:8000/health"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            print("[mirror] FAILED: Production backend not responding")
+            print("[mirror] Is the Docker container running?")
+            input("Press Enter to exit...")
+            return
+        print("[mirror] Production backend healthy")
+    except Exception as e:
+        print(f"[mirror] WARNING: Could not check backend health: {e}")
+
     # Start SSH tunnel
     if not _start_tunnel():
         print("[mirror] Cannot connect to production DB. Check SSH key and server.")
+        input("Press Enter to exit...")
+        return
+
+    # Verify DB connection through tunnel
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host="127.0.0.1", port=LOCAL_PG_PORT,
+            dbname="firev", user="firev", password=DB_PASSWORD,
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM events")
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        print(f"[mirror] DB connected -- {count} events")
+    except Exception as e:
+        print(f"[mirror] FAILED: DB connection through tunnel: {e}")
         input("Press Enter to exit...")
         return
 
@@ -148,7 +205,7 @@ def main():
     # Open browser once backend is ready
     threading.Thread(target=_open_browser_when_ready, daemon=True).start()
 
-    print("[mirror] Starting backend...")
+    print("[mirror] Starting local API server...")
 
     import uvicorn
     uvicorn.run(
