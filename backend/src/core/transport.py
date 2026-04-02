@@ -7,7 +7,10 @@ import logging
 try:
     from patchright.async_api import async_playwright
 except ImportError:
-    from playwright.async_api import async_playwright
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        async_playwright = None
 
 try:
     from playwright_stealth import stealth_async
@@ -309,6 +312,8 @@ class BrowserTransport(Transport):
     async def _ensure_browser(self):
         if self.page: return
 
+        if async_playwright is None:
+            raise ImportError("Browser transport requires patchright or playwright. Install with: pip install patchright")
 
         try:
             self.playwright = await async_playwright().start()
