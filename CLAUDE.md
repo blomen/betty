@@ -25,7 +25,7 @@ backend/src/
 │   └── routes/       # Thin HTTP handlers — delegate to services/repositories
 ├── core/             # Transport, exceptions (FirevError hierarchy)
 ├── constants.py      # ALLOWED_MARKETS, SHARP_PROVIDERS
-├── paths.py          # Centralized path resolution (dev vs bundled .exe)
+├── paths.py          # Centralized path resolution (env vars for Docker, defaults for dev)
 └── app.py            # Typer CLI
 
 frontend/src/
@@ -37,6 +37,62 @@ frontend/src/
 ├── hooks/            # useBettingContext, useChat, useExtractionStatus, useBankroll, useProfiles, useRisk, useMultiSort, useTableSort
 └── services/         # api.ts
 ```
+
+## Production Deployment (IMPORTANT — READ FIRST)
+
+**Firev runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
+
+### Server Details
+- **Server**: Hetzner CPX32 (4 vCPU, 8 GB RAM), Ubuntu 24.04
+- **IP**: `204.168.218.18`
+- **SSH**: `ssh root@204.168.218.18`
+- **App URL**: `http://204.168.218.18:8000`
+- **Repo on server**: `/opt/firev` (main branch)
+
+### Docker Containers
+3 containers via `docker-compose.yml`:
+- `firev-backend-1` — FastAPI + uvicorn + Playwright (port 8000)
+- `firev-postgres-1` — PostgreSQL 16 (port 5432)
+- `firev-nginx-1` — Nginx reverse proxy (ports 80/443, not yet configured with SSL)
+
+### Database
+- **Main DB**: `postgresql://firev:firev2026secure@postgres:5432/firev` (events, odds, bets, profiles, opportunities)
+- **Market DB**: `postgresql://firev:firev2026secure@postgres:5432/market` (trades, candles — high-frequency tick data)
+- **No more SQLite** — fully migrated to PostgreSQL. SQLite fallback exists in code for local dev without Docker.
+
+### Environment
+- `.env.docker` — API keys and DB config (loaded via `env_file` in docker-compose)
+- `.env` — just `DB_PASSWORD=firev2026secure` (for docker-compose `${DB_PASSWORD}` substitution)
+- `PROXY_URL` — ISP residential proxy for Pinnacle (datacenter IPs blocked)
+
+### How to Deploy Changes
+```bash
+# After pushing to main:
+ssh root@204.168.218.18 "cd /opt/firev && git pull && docker compose up -d --build backend"
+
+# For Python-only changes (no rebuild needed):
+ssh root@204.168.218.18 "cd /opt/firev && git pull && docker compose restart backend"
+
+# Check logs:
+ssh root@204.168.218.18 "cd /opt/firev && docker compose logs backend --tail 30"
+
+# Check extraction:
+ssh root@204.168.218.18 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
+```
+
+### Postgres FK Enforcement
+**PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
+- Always `session.flush()` parent rows before inserting children (e.g., flush Event before inserting Odds)
+- Delete children before parents in cleanup (delete Odds → Opportunities → Events)
+- Boolean columns require actual `True`/`False`, not `0`/`1` integers
+- Integer columns reject strings — cast or filter invalid data
+
+### What Runs Autonomously
+The server runs 24/7 without intervention:
+- Extraction scheduler (sharp every 60s, soft every 15min, browser every 8min)
+- Opportunity scanner (after each extraction)
+- Databento market data stream (NQ futures ticks + candles)
+- Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
 
 ## WHY It's Structured This Way
 
@@ -55,19 +111,17 @@ frontend/src/
 
 ### Commands
 ```bash
-# Extract odds (via CLI)
-cd backend
-python -m src.app extract polymarket pinnacle     # Sharp sources
-python -m src.app extract                         # All enabled providers
+# Production (on server via SSH):
+ssh root@204.168.218.18 "cd /opt/firev && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
 
-# Or via API
-curl -X POST "http://localhost:8000/api/extraction/run?providers=pinnacle"
+# Local dev (only if needed — production runs on server):
+cd backend && python run_dev.py   # Starts uvicorn on localhost:8000
 
-# Tests
-pytest tests/
+# Tests (local):
+cd backend && pytest tests/
 ```
 
-**Dev servers** are configured in `.claude/launch.json` (backend :8000, frontend :5173). Use Claude Preview to start/verify.
+**Production runs on the Hetzner server.** Local dev is optional — only for writing/testing code before pushing.
 
 ### Key Domain Concepts
 - **Fair odds**: True probability from Pinnacle (after devigging)
