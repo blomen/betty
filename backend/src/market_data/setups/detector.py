@@ -56,6 +56,8 @@ class DetectorContext:
     macro_bias: str | None  # "bull", "bear", "neutral"
     structure: str | None   # "uptrend", "downtrend", "ranging"
     day_type: str | None    # "trend", "normal", etc.
+    # Optional: candle data for squeeze/compression detectors
+    candles: list | None = None
 
 
 def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:

@@ -48,7 +48,7 @@ def _extract_single_session(
         # 5: price_vs_ib_mid
         ib_mid = (session.ib_high + session.ib_low) / 2.0
         out[5] = np.clip((current_price - ib_mid) / TICK_SIZE / 200.0, -1.0, 1.0)
-    # 6: poor_signal
+    # 6: poor_extreme signal (+1 poor high, -1 poor low, 0 neither/both)
     out[6] = float(session.poor_high) - float(session.poor_low)
     # 7: price_position_in_va (continuous)
     if va_width > 0:

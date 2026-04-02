@@ -171,6 +171,9 @@ function ProviderSection({
   const [liveEdge, setLiveEdge] = useState<Record<string, any> | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [firing, setFiring] = useState(false);
+  const [fireError, setFireError] = useState<string | null>(null);
+  const [fireResult, setFireResult] = useState<{ placed: number; skipped: number; negative: number; errors: number } | null>(null);
 
   const betKeys = group.bets.map(betKey);
   const placedCount = betKeys.filter((k) => placedSet.has(k)).length;
@@ -245,13 +248,44 @@ function ProviderSection({
   const valueBets = betRows.filter(r => !r.placed && r.betStatus === 'value');
   const skippedBets = betRows.filter(r => !r.placed && r.betStatus !== 'value');
 
-  // Confirm: mark all +EV bets as placed
-  const handleConfirm = () => {
-    const keysToPlace = valueBets.map(r => r.key);
-    if (keysToPlace.length > 0) {
-      onMarkAllDone(keysToPlace);
+  // Fire: for Polymarket, call fire-live API. For soft, just mark done (manual placement).
+  const handleConfirm = useCallback(async () => {
+    if (!isPoly) {
+      // Soft providers: manual placement, just mark as done
+      const keysToPlace = valueBets.map(r => r.key);
+      if (keysToPlace.length > 0) onMarkAllDone(keysToPlace);
+      return;
     }
-  };
+
+    // Polymarket: auto-fire via mirror
+    setFiring(true);
+    setFireError(null);
+    setFireResult(null);
+    try {
+      const result = await api.fireLive(batchPayload);
+      const placedIds = new Set((result.placed ?? []).map((p: any) => p.bet_id));
+      const keysToPlace = group.bets
+        .filter((_, i) => placedIds.has(i))
+        .map(betKey);
+      if (keysToPlace.length > 0) onMarkAllDone(keysToPlace);
+
+      setFireResult({
+        placed: (result.placed ?? []).length,
+        skipped: (result.skipped ?? []).length,
+        negative: (result.negative ?? []).length,
+        errors: (result.errors ?? []).length + (result.resolve_errors ?? []).length,
+      });
+
+      // Refresh live edge after firing to show updated state
+      if ((result.placed ?? []).length > 0) {
+        handleScan();
+      }
+    } catch (err: any) {
+      setFireError(err.message || 'Fire failed');
+    } finally {
+      setFiring(false);
+    }
+  }, [isPoly, valueBets, batchPayload, group.bets, onMarkAllDone, handleScan]);
 
   const stakeDisplay = isPoly
     ? `$${Math.round(group.totalStake)} USDC`
@@ -387,9 +421,19 @@ function ProviderSection({
           {!allDone && (
             <div className="px-3 py-2 border-t border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {scanning && <span className="text-[10px] text-muted animate-pulse">Scanning live prices...</span>}
-                {scanError && <span className="text-[10px] text-error">{scanError}</span>}
-                {scanned && !scanning && (
+                {firing && <span className="text-[10px] text-tabPolymarket animate-pulse">Firing bets...</span>}
+                {!firing && scanning && <span className="text-[10px] text-muted animate-pulse">Scanning live prices...</span>}
+                {fireError && <span className="text-[10px] text-error">{fireError}</span>}
+                {!fireError && scanError && <span className="text-[10px] text-error">{scanError}</span>}
+                {fireResult && !firing && (
+                  <span className="text-[10px]">
+                    {fireResult.placed > 0 && <span className="text-success">{fireResult.placed} placed</span>}
+                    {fireResult.negative > 0 && <span className="text-amber-400 ml-1">{fireResult.negative} neg edge</span>}
+                    {fireResult.skipped > 0 && <span className="text-muted ml-1">{fireResult.skipped} slippage</span>}
+                    {fireResult.errors > 0 && <span className="text-error ml-1">{fireResult.errors} errors</span>}
+                  </span>
+                )}
+                {!fireResult && !firing && scanned && !scanning && (
                   <span className="text-[10px] text-muted">
                     {valueBets.length} to place{skippedBets.length > 0 ? `, ${skippedBets.length} skipped` : ''}
                   </span>
@@ -399,7 +443,7 @@ function ProviderSection({
                 {isPoly && !scanned && (
                   <button
                     onClick={handleScan}
-                    disabled={scanning}
+                    disabled={scanning || firing}
                     className="px-3 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
                   >
                     {scanning ? 'Scanning...' : 'Scan'}
@@ -408,7 +452,7 @@ function ProviderSection({
                 {isPoly && scanned && (
                   <button
                     onClick={handleScan}
-                    disabled={scanning}
+                    disabled={scanning || firing}
                     className="px-2 py-1 bg-border text-text text-xs hover:opacity-90 transition-opacity disabled:opacity-50"
                   >
                     Rescan
@@ -417,9 +461,12 @@ function ProviderSection({
                 {scanned && valueBets.length > 0 && (
                   <button
                     onClick={handleConfirm}
-                    className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity"
+                    disabled={firing}
+                    className={`px-3 py-1 text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 ${
+                      isPoly ? 'bg-tabPolymarket' : 'bg-success'
+                    }`}
                   >
-                    Confirm {valueBets.length} bets
+                    {firing ? 'Firing...' : isPoly ? `Fire ${valueBets.length} bets` : `Confirm ${valueBets.length} bets`}
                   </button>
                 )}
               </div>

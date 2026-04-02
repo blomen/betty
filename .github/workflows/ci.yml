@@ -34,7 +34,6 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        working-directory: backend
         run: |
           pip install -e ".[dev]"
 

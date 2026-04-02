@@ -771,6 +771,163 @@ def train(
 
 
 # ---------------------------------------------------------------------------
+# train-gbt
+# ---------------------------------------------------------------------------
+
+@rl_app.command("train-gbt")
+def train_gbt(
+    checkpoint: str = typer.Option("v1", help="Checkpoint name for saved model"),
+    trees: int = typer.Option(500, help="Number of boosting rounds"),
+    depth: int = typer.Option(5, help="Max tree depth"),
+    lr: float = typer.Option(0.05, help="Learning rate (shrinkage)"),
+) -> None:
+    """Train GBT direction classifier + stop regressor on replayed episodes."""
+    import numpy as np
+
+    from src.rl.agent.gbt_model import GBTModel
+    from src.rl.data.normalization import RunningNormalizer
+    from src.rl.config import REWARD_CLIP_MIN, REWARD_CLIP_MAX
+    from src.rl.features.observation import OBSERVATION_DIM
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy found in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(episodes_dir / "observations.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    stop_path = episodes_dir / "stop_targets.npy"
+    stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
+
+    n = len(observations)
+    typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
+
+    # Clip rewards
+    rewards_cont = np.clip(rewards_cont, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+    rewards_rev = np.clip(rewards_rev, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+
+    # Normalize observations
+    normalizer_path = episodes_dir / "normalizer.json"
+    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    if normalizer_path.exists():
+        normalizer.load(normalizer_path)
+        typer.echo(f"Loaded normalizer (count={normalizer.count})")
+
+    normalized_obs = np.stack([normalizer.normalize(obs) for obs in observations])
+
+    # Chronological split: 67% train, 16% val, 17% test
+    train_end = int(n * 0.67)
+    val_end = int(n * 0.83)
+
+    train_obs = normalized_obs[:train_end]
+    train_rc = rewards_cont[:train_end]
+    train_rr = rewards_rev[:train_end]
+    train_stops = stop_targets[:train_end]
+
+    val_obs = normalized_obs[train_end:val_end]
+    val_rc = rewards_cont[train_end:val_end]
+    val_rr = rewards_rev[train_end:val_end]
+
+    test_obs = normalized_obs[val_end:]
+    test_rc = rewards_cont[val_end:]
+    test_rr = rewards_rev[val_end:]
+
+    typer.echo(f"Split: train={len(train_obs):,}, val={len(val_obs):,}, test={len(test_obs):,}")
+
+    # Labels: 0=CONT better, 1=REV better
+    y_train = np.where(train_rc >= train_rr, 0, 1).astype(np.int32)
+    y_val = np.where(val_rc >= val_rr, 0, 1).astype(np.int32)
+    y_test = np.where(test_rc >= test_rr, 0, 1).astype(np.int32)
+
+    # Reward gap for sample weighting
+    reward_gap = train_rc - train_rr
+
+    typer.echo(f"\nTraining GBT: {trees} trees, depth={depth}, lr={lr} ...")
+    model = GBTModel()
+    metrics = model.train(
+        X_train=train_obs,
+        y_direction=y_train,
+        stop_targets=train_stops,
+        reward_gap=reward_gap,
+        n_estimators=trees,
+        max_depth=depth,
+        learning_rate=lr,
+    )
+
+    typer.echo(f"  Features: {metrics['alive_features']}/{metrics['total_features']} alive")
+    typer.echo(f"  Trees used: {metrics['direction_trees']} (early stopping may reduce)")
+    typer.echo(f"  Train accuracy: {metrics['train_accuracy']}%")
+
+    # Validation
+    typer.echo("\nValidation:")
+    val_actions, val_conf, _ = model.predict_direction_batch(val_obs)
+    val_acc = np.mean(val_actions == y_val) * 100
+    val_reward = np.where(val_actions == 0, val_rc, val_rr)
+    typer.echo(f"  Accuracy: {val_acc:.1f}%  avg_R={val_reward.mean():+.3f}")
+
+    # Test
+    typer.echo("\nTest:")
+    test_actions, test_conf, test_probs = model.predict_direction_batch(test_obs)
+    test_acc = np.mean(test_actions == y_test) * 100
+    test_reward = np.where(test_actions == 0, test_rc, test_rr)
+    typer.echo(f"  Accuracy: {test_acc:.1f}%  avg_R={test_reward.mean():+.3f}")
+
+    # Confidence-filtered results
+    typer.echo(f"\n  {'thresh':>8s}  {'n':>7s}  {'acc':>5s}  {'win%':>5s}  {'avg_R':>7s}  {'PF':>5s}")
+    for thresh in [0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50]:
+        mask = test_conf >= thresh
+        if mask.sum() < 10:
+            continue
+        acc = np.mean(test_actions[mask] == y_test[mask]) * 100
+        chosen = np.where(test_actions[mask] == 0, test_rc[mask], test_rr[mask])
+        wr = np.mean(chosen > 0) * 100
+        wins = chosen[chosen > 0].sum()
+        losses = abs(chosen[chosen < 0].sum())
+        pf = wins / losses if losses > 0 else float("inf")
+        typer.echo(f"  >={thresh:.2f}  {mask.sum():>7,}  {acc:5.1f}  {wr:5.1f}  {chosen.mean():+7.3f}  {pf:5.2f}")
+
+    # Baselines
+    typer.echo(f"\n  Baselines:")
+    typer.echo(f"    always-REV:  avg_R={test_rr.mean():+.3f}")
+    typer.echo(f"    always-CONT: avg_R={test_rc.mean():+.3f}")
+    typer.echo(f"    oracle:      avg_R={np.maximum(test_rc, test_rr).mean():+.3f}")
+
+    # Feature importance
+    typer.echo(f"\n  Top 15 features:")
+    segments = [
+        (0, 31, "Zone composition"), (31, 52, "Orderflow"), (52, 91, "Structure/Session"),
+        (91, 129, "TPO"), (129, 144, "Candle window"), (144, 148, "Zone features"),
+        (148, 153, "Confluence"), (153, 164, "Macro"), (164, 169, "Exchange stats"),
+        (169, 183, "Setup detection"), (183, 196, "AMT"), (196, 216, "Micro"),
+        (216, 217, "Approach dir"), (217, 224, "Execution ctx"),
+    ]
+    for orig_idx, imp in model.feature_importance(top_n=15):
+        seg_name = "unknown"
+        for s, e, name in segments:
+            if s <= orig_idx < e:
+                seg_name = f"{name}[{orig_idx - s}]"
+                break
+        typer.echo(f"    dim {orig_idx:3d} ({seg_name:30s}): {imp:.4f}")
+
+    # Stop prediction quality
+    test_stops = stop_targets[val_end:]
+    pred_stops = model.predict_stop_batch(test_obs)
+    stop_mae = np.mean(np.abs(pred_stops - test_stops))
+    typer.echo(f"\n  Stop prediction MAE: {stop_mae:.1f} ticks")
+
+    # Save
+    model_path = models_dir / f"gbt_{checkpoint}.joblib"
+    model.save(model_path)
+    typer.echo(f"\nModel saved to: {model_path}")
+
+
+# ---------------------------------------------------------------------------
 # eval
 # ---------------------------------------------------------------------------
 
@@ -887,6 +1044,7 @@ def backtest(
     """
     import pandas as pd
 
+    from src.rl.agent.gbt_model import GBTModel
     from src.rl.agent.network import DQNetwork
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.data.replay_engine import ReplayEngine
@@ -897,16 +1055,23 @@ def backtest(
     from src.rl.config import TICK_SIZE
 
     models_dir = _MODELS_DIR
-    model_path = models_dir / f"dqn_{checkpoint}.pt"
-    if not model_path.exists():
-        typer.echo(f"Model not found: {model_path}", err=True)
-        raise typer.Exit(1)
 
-    # Load model
-    network = DQNetwork(input_dim=OBSERVATION_DIM)
-    ckpt = torch.load(model_path, weights_only=False, map_location="cpu")
-    network.load_state_dict(ckpt["q_network"])
-    network.eval()
+    # Try GBT first, fall back to DQN
+    gbt_path = models_dir / f"gbt_{checkpoint}.joblib"
+    dqn_path = models_dir / f"dqn_{checkpoint}.pt"
+
+    if gbt_path.exists():
+        network = GBTModel.load(gbt_path)
+        typer.echo(f"Loaded GBT model: {gbt_path}")
+    elif dqn_path.exists():
+        network = DQNetwork(input_dim=OBSERVATION_DIM)
+        ckpt = torch.load(dqn_path, weights_only=False, map_location="cpu")
+        network.load_state_dict(ckpt["q_network"])
+        network.eval()
+        typer.echo(f"Loaded DQN model: {dqn_path}")
+    else:
+        typer.echo(f"No model found: tried {gbt_path} and {dqn_path}", err=True)
+        raise typer.Exit(1)
 
     # Load normalizer
     normalizer = RunningNormalizer(dim=OBSERVATION_DIM)

@@ -205,6 +205,6 @@ export const settingsApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bets }),
-    });
+    }, 300_000); // 5 min — reads live prices + places each bet sequentially
   },
 };

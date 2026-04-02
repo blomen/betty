@@ -22,9 +22,9 @@ Feature layout (20 features):
   14 size_at_touch_norm    — size of the tick that touched the level / avg
   15 approach_linearity    — R² of price vs time (1.0 = straight line approach)
   16 vol_surge             — volume in last 10 ticks / volume in first 10
-  17 price_from_open_norm  — (touch_price - session_open) / daily_range
-  18 reserved_0            — 0.0
-  19 reserved_1            — 0.0
+  17 price_vs_midrange     — touch_price position within recent tick range
+  18 big_trade_skew        — big trade buy/sell imbalance
+  19 last5_acceleration    — velocity change in final 5 ticks
 """
 from __future__ import annotations
 
@@ -159,6 +159,29 @@ def extract_micro_features(
     v2_vol = max(sum(t["size"] for t in second_half), 1)
     vol_surge = min(v2_vol / v1_vol, 5.0) / 5.0
 
+    # 17: price vs midrange (where touch is relative to recent price range)
+    p_mid = (max(prices) + min(prices)) / 2.0
+    p_range = max(prices) - min(prices)
+    _price_vs_midrange = np.clip((touch_price - p_mid) / max(p_range, 0.25), -1.0, 1.0)
+
+    # 18: big trade skew (are big trades biased buy or sell?)
+    big_buy = sum(s for s, side in zip(sizes, sides) if s >= big_threshold and side == "B")
+    big_sell = sum(s for s, side in zip(sizes, sides) if s >= big_threshold and side == "A")
+    _big_trade_skew = np.clip((big_buy - big_sell) / max(big_buy + big_sell, 1), -1.0, 1.0)
+
+    # 19: acceleration in last 5 ticks (are we speeding up into the touch?)
+    if n >= 5:
+        l5_prices = prices[-5:]
+        l5_ts = timestamps[-5:]
+        l5_mid_idx = len(l5_prices) // 2
+        t_a = max(0.001, (l5_ts[l5_mid_idx] - l5_ts[0]).total_seconds())
+        t_b = max(0.001, (l5_ts[-1] - l5_ts[l5_mid_idx]).total_seconds())
+        va = (l5_prices[l5_mid_idx] - l5_prices[0]) / t_a
+        vb = (l5_prices[-1] - l5_prices[l5_mid_idx]) / t_b
+        _l5_accel = np.clip((vb - va) / 5.0, -1.0, 1.0)
+    else:
+        _l5_accel = 0.0
+
     feats = np.array([
         float(approach_vel),       # 0
         float(accel),              # 1
@@ -177,9 +200,9 @@ def extract_micro_features(
         float(touch_size_norm),    # 14
         float(r_sq),               # 15
         float(vol_surge),          # 16
-        0.0,                       # 17: reserved (price_from_open)
-        0.0,                       # 18: reserved
-        0.0,                       # 19: reserved
+        float(_price_vs_midrange),  # 17: price vs midrange of recent ticks
+        float(_big_trade_skew),    # 18: big trade buy/sell imbalance
+        float(_l5_accel),          # 19: acceleration in last 5 ticks
     ], dtype=np.float32)
 
     feats = np.clip(feats, -5.0, 5.0)

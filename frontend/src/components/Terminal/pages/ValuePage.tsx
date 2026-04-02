@@ -535,9 +535,14 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const valueVirtualizer = useVirtualizer({
     count: sortedGroups.length,
     getScrollElement: () => valueScrollRef.current,
-    estimateSize: (index) => selectedGroup === index ? 100 : 52,
+    estimateSize: (index) => selectedGroup === index ? 96 : 41,
     overscan: 10,
   });
+
+  // Re-measure when a row expands/collapses so the virtualizer adjusts heights
+  useEffect(() => {
+    valueVirtualizer.measure();
+  }, [selectedGroup]);
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {

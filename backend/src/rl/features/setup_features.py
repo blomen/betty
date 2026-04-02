@@ -65,6 +65,7 @@ def extract_setup_features(
             macro_bias=state.get("macro_bias"),
             structure=state.get("structure"),
             day_type=state.get("day_type"),
+            candles=state.get("candles"),
         )
         candidates = run_all_detectors(ctx)
     except Exception:

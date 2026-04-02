@@ -118,6 +118,41 @@ def poc_from_histogram(histogram: dict[float, int]) -> float | None:
     return max(histogram, key=histogram.__getitem__)
 
 
+def vah_val_from_histogram(
+    histogram: dict[float, int],
+    value_area_pct: float = 0.70,
+) -> tuple[float | None, float | None]:
+    """Compute VAH and VAL from a volume histogram (70% value area).
+
+    Returns (vah, val) or (None, None) if histogram is empty.
+    """
+    if not histogram:
+        return None, None
+    sorted_prices = sorted(histogram.keys())
+    total_vol = sum(histogram.values())
+    if total_vol <= 0:
+        return None, None
+
+    target_vol = total_vol * value_area_pct
+    poc = max(histogram, key=histogram.__getitem__)
+    poc_idx = sorted_prices.index(poc)
+
+    cumulative = histogram[poc]
+    lo_idx, hi_idx = poc_idx, poc_idx
+
+    while cumulative < target_vol and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
+        expand_up = histogram[sorted_prices[hi_idx + 1]] if hi_idx < len(sorted_prices) - 1 else -1
+        expand_dn = histogram[sorted_prices[lo_idx - 1]] if lo_idx > 0 else -1
+        if expand_up >= expand_dn:
+            hi_idx += 1
+            cumulative += histogram[sorted_prices[hi_idx]]
+        else:
+            lo_idx -= 1
+            cumulative += histogram[sorted_prices[lo_idx]]
+
+    return sorted_prices[hi_idx], sorted_prices[lo_idx]
+
+
 # ---------------------------------------------------------------------------
 # Task 3: find_naked_pocs
 # ---------------------------------------------------------------------------
@@ -334,6 +369,17 @@ def _composite_poc(summaries: dict[str, SessionSummary], dates: list[str]) -> fl
     return poc_from_histogram(histo)
 
 
+def _composite_vah_val(
+    summaries: dict[str, SessionSummary], dates: list[str]
+) -> tuple[float | None, float | None]:
+    """Return VAH, VAL from composite histogram of the given session dates."""
+    selected = [summaries[d] for d in dates if d in summaries]
+    if not selected:
+        return None, None
+    histo = composite_histogram(selected)
+    return vah_val_from_histogram(histo)
+
+
 def _compute_swing_from_summaries(
     summaries: dict[str, SessionSummary],
     current_date: str,
@@ -399,17 +445,23 @@ def compute_precomputed_levels(
     if prior_dates:
         poc_daily = summaries[prior_dates[-1]].poc
 
-    # --- poc_weekly: composite from last 5 prior sessions (require >= 3) ---
+    # --- poc_weekly + VAH/VAL: composite from last 5 prior sessions (require >= 3) ---
     poc_weekly: float | None = None
+    weekly_vah: float | None = None
+    weekly_val: float | None = None
     weekly_dates = prior_dates[-5:]
     if len(weekly_dates) >= 3:
         poc_weekly = _composite_poc(summaries, weekly_dates)
+        weekly_vah, weekly_val = _composite_vah_val(summaries, weekly_dates)
 
-    # --- poc_monthly: composite from last 20 prior sessions (require >= 10) ---
+    # --- poc_monthly + VAH/VAL: composite from last 20 prior sessions (require >= 10) ---
     poc_monthly: float | None = None
+    monthly_vah: float | None = None
+    monthly_val: float | None = None
     monthly_dates = prior_dates[-20:]
     if len(monthly_dates) >= 10:
         poc_monthly = _composite_poc(summaries, monthly_dates)
+        monthly_vah, monthly_val = _composite_vah_val(summaries, monthly_dates)
 
     # --- poc_macro: composite from all prior (require >= 10) ---
     poc_macro: float | None = None
@@ -438,6 +490,10 @@ def compute_precomputed_levels(
         "poc_weekly": poc_weekly,
         "poc_monthly": poc_monthly,
         "poc_macro": poc_macro,
+        "weekly_vah": weekly_vah,
+        "weekly_val": weekly_val,
+        "monthly_vah": monthly_vah,
+        "monthly_val": monthly_val,
         "globex_high": globex_high,
         "globex_low": globex_low,
         "overnight_high": globex_high,  # alias for NQ

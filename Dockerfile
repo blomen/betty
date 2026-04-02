@@ -19,7 +19,9 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY backend/src/ backend/src/
 RUN pip install --no-cache-dir -e ".[scrape]" && \
-    pip install --no-cache-dir uvloop
+    pip install --no-cache-dir uvloop && \
+    pip install --no-cache-dir scikit-learn joblib && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Playwright browser
 RUN playwright install chromium && playwright install-deps

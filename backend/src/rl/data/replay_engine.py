@@ -112,6 +112,9 @@ class ReplayEngine:
         self._prior_monthly_high: float | None = None
         self._prior_monthly_low: float | None = None
 
+        # TPO profile dict (updated in _build_state, used by _rebuild_active_levels)
+        self._tpo_profile: dict | None = None
+
         # Precomputed cross-session levels (injected before replay)
         self._precomputed: dict | None = None
 
@@ -439,8 +442,9 @@ class ReplayEngine:
         _add_optional(levels, "pdl", LevelType.PDL, sl.pdl)
         _add_optional(levels, "tokyo_high", LevelType.TOKYO_HIGH, sl.tokyo_high)
         _add_optional(levels, "tokyo_low", LevelType.TOKYO_LOW, sl.tokyo_low)
-        _add_optional(levels, "nyib_high", LevelType.NYIB_HIGH, getattr(sl, "nyib_high", None))
-        _add_optional(levels, "nyib_low", LevelType.NYIB_LOW, getattr(sl, "nyib_low", None))
+        # NYIB = NY session IB. Use ib_high/ib_low from SessionLevels (set after IB forms).
+        _add_optional(levels, "nyib_high", LevelType.NYIB_HIGH, sl.ib_high)
+        _add_optional(levels, "nyib_low", LevelType.NYIB_LOW, sl.ib_low)
 
         # --- TPO levels ---
         tpo = self._tpo_profile if hasattr(self, "_tpo_profile") else None
@@ -634,6 +638,8 @@ class ReplayEngine:
                 "ib_high": profile.ib_high,
                 "ib_low": profile.ib_low,
             }
+            # Store on self so _rebuild_active_levels can inject TPOC/TVAH/TVAL
+            self._tpo_profile = tpo_profile_dict
 
             # --- Per-session TPO (for RL observation) ---
             # bars_30m from CandleAggregator have "ts" field (datetime)
@@ -768,6 +774,15 @@ class ReplayEngine:
             elif price_now < ib_low:
                 ib_broken_str = "down"
 
+        # Open price: first RTH bar's open (or first bar if pre-RTH)
+        open_price = None
+        for b in bars_1m:
+            if _is_rth_bar(b):
+                open_price = b["open"]
+                break
+        if open_price is None and bars_1m:
+            open_price = bars_1m[0]["open"]
+
         return {
             "minutes_since_rth": minutes_since_open,
             "minute_of_day": minute_of_day,
@@ -775,6 +790,12 @@ class ReplayEngine:
             "daily_range_pct": daily_range_pct,
             "session_type": session_type,
             "ib_broken": ib_broken_str,
+            # AMT features need these:
+            "open_price": open_price,
+            "daily_high": session_high if bars_1m else None,
+            "daily_low": session_low if bars_1m else None,
+            "ib_high": ib_high,
+            "ib_low": ib_low,
         }
 
     # ------------------------------------------------------------------

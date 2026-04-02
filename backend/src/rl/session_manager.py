@@ -1,10 +1,10 @@
 """Session Manager — position tracking, flipping, trailing stops, sizing.
 
-Sits on top of the frozen DQN model and manages the execution layer:
+Sits on top of a frozen model (DQN or GBT) and manages the execution layer:
 - Tracks open position (long/short/flat)
 - Flips position when model signals opposite direction at a new level
 - Trails stop using the stop head prediction
-- Sizes based on Q-spread confidence + running session P&L (compounding)
+- Sizes based on confidence + running session P&L (compounding)
 
 The model itself never changes — SessionManager is pure execution logic.
 """
@@ -13,10 +13,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Union
 
 import numpy as np
 import torch
 
+from .agent.gbt_model import GBTModel
 from .agent.network import DQNetwork
 from .config import Action, TICK_SIZE, STOP_TICKS
 from .data.normalization import RunningNormalizer
@@ -113,12 +115,14 @@ class SessionManager:
 
     def __init__(
         self,
-        network: DQNetwork,
+        network: Union[DQNetwork, GBTModel],
         normalizer: RunningNormalizer | None = None,
     ) -> None:
         self._network = network
         self._normalizer = normalizer
-        self._network.eval()
+        self._use_gbt = isinstance(network, GBTModel)
+        if not self._use_gbt:
+            self._network.eval()
 
         self.position = Position(side=PositionSide.FLAT, entry_price=0.0, stop_price=0.0)
         self.session = SessionState()
@@ -165,15 +169,20 @@ class SessionManager:
         obs = build_observation(state)
         if self._normalizer is not None:
             obs = self._normalizer.normalize(obs)
-        obs_tensor = torch.from_numpy(obs).unsqueeze(0)
 
-        with torch.no_grad():
-            q_values, stop_pred = self._network.forward_full(obs_tensor)
-
-        q_cont = float(q_values[0, Action.CONTINUATION.value])
-        q_rev = float(q_values[0, Action.REVERSAL.value])
-        q_spread = abs(q_cont - q_rev)
-        stop_ticks = float(stop_pred[0, 0])
+        if self._use_gbt:
+            action_idx, confidence, prob_cont, prob_rev = self._network.predict_direction(obs)
+            stop_ticks = self._network.predict_stop(obs)
+            q_cont, q_rev = prob_cont, prob_rev
+            q_spread = confidence
+        else:
+            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+            with torch.no_grad():
+                q_values, stop_pred = self._network.forward_full(obs_tensor)
+            q_cont = float(q_values[0, Action.CONTINUATION.value])
+            q_rev = float(q_values[0, Action.REVERSAL.value])
+            q_spread = abs(q_cont - q_rev)
+            stop_ticks = float(stop_pred[0, 0])
 
         # Determine model's preferred direction
         approach = state.get("approach_direction", "up")
@@ -352,15 +361,20 @@ class SessionManager:
         obs = build_observation(state)
         if self._normalizer is not None:
             obs = self._normalizer.normalize(obs)
-        obs_tensor = torch.from_numpy(obs).unsqueeze(0)
 
-        with torch.no_grad():
-            q_values, stop_pred = self._network.forward_full(obs_tensor)
-
-        q_cont = float(q_values[0, Action.CONTINUATION.value])
-        q_rev = float(q_values[0, Action.REVERSAL.value])
-        q_spread = abs(q_cont - q_rev)
-        stop_ticks = float(stop_pred[0, 0])
+        if self._use_gbt:
+            action_idx, confidence, prob_cont, prob_rev = self._network.predict_direction(obs)
+            stop_ticks = self._network.predict_stop(obs)
+            q_cont, q_rev = prob_cont, prob_rev
+            q_spread = confidence
+        else:
+            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+            with torch.no_grad():
+                q_values, stop_pred = self._network.forward_full(obs_tensor)
+            q_cont = float(q_values[0, Action.CONTINUATION.value])
+            q_rev = float(q_values[0, Action.REVERSAL.value])
+            q_spread = abs(q_cont - q_rev)
+            stop_ticks = float(stop_pred[0, 0])
 
         # Determine model's preferred direction
         approach = state.get("approach_direction", "up")
@@ -375,7 +389,7 @@ class SessionManager:
         else:
             stop_price = zone.upper_bound + stop_ticks * TICK_SIZE
 
-        confidence = min(q_spread / 0.10, 1.0)
+        confidence = min(q_spread / 0.10, 1.0) if not self._use_gbt else q_spread
         size = self._compute_size(confidence)
 
         # Reversal cushion check
@@ -614,7 +628,7 @@ class SessionManager:
         """Get session summary for reporting."""
         trades = self.session.trades
         if not trades:
-            return {"trades": 0, "total_pnl_r": 0.0, "win_rate": 0.0}
+            return {"trades": 0, "total_pnl_r": 0.0, "win_rate": 0.0, "winners": 0, "losers": 0, "flips": 0}
 
         winners = [t for t in trades if t.pnl_r > 0]
         losers = [t for t in trades if t.pnl_r <= 0]

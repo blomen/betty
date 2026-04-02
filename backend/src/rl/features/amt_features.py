@@ -51,10 +51,10 @@ def _classify_dalton_day(
 
     range_ratio = daily_range / ib_range
 
-    if range_ratio < 0.8:
+    if range_ratio <= 1.15:
         return _IDX_NON_TREND
 
-    if range_ratio <= 1.25:
+    if range_ratio <= 1.5:
         return _IDX_NORMAL
 
     # range_ratio > 1.25 — check balance

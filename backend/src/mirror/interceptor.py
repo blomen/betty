@@ -10,12 +10,19 @@ Listeners run simultaneously:
 5. Financial — intercepts balance/deposit/withdraw data
 """
 
+import asyncio
 import logging
+import sys
 from typing import Callable, Awaitable
 
 from .recorder import NetworkRecorder
 
 logger = logging.getLogger(__name__)
+
+
+
+
+
 
 
 class BetInterceptor:
@@ -392,7 +399,7 @@ class BetInterceptor:
             seen = set()
             for page in self.context.pages:
                 url = page.url or ""
-                for domain, pid in self.PROVIDER_MAP.items():
+                for domain, pid in self._PROVIDER_DOMAINS.items():
                     if domain in url and pid not in seen:
                         detected_providers.append(pid)
                         seen.add(pid)

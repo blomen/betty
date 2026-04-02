@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import time as _time
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
 from .metrics import compute_rotation_factor as _metrics_rf
 
 _CET = ZoneInfo("Europe/Stockholm")
@@ -132,11 +134,17 @@ def compute_tpo_profile(
         if diff >= 6:
             ledges.append(sorted_prices[i])
 
-    # Poor high/low: top/bottom 3 prices have ≤ 2 total letters
-    top_3 = sorted_prices[-3:] if len(sorted_prices) >= 3 else sorted_prices
-    bottom_3 = sorted_prices[:3] if len(sorted_prices) >= 3 else sorted_prices
-    poor_high = sum(len(letters[p]) for p in top_3) <= 2
-    poor_low = sum(len(letters[p]) for p in bottom_3) <= 2
+    # Poor high/low: thin participation at extremes relative to profile body.
+    # Use top/bottom 5% of price levels and compare to median TPO count.
+    n_extreme = max(3, len(sorted_prices) // 20)  # 5% of range, minimum 3
+    top_n = sorted_prices[-n_extreme:]
+    bottom_n = sorted_prices[:n_extreme]
+    all_counts = [len(letters[p]) for p in sorted_prices]
+    median_count = float(np.median(all_counts)) if all_counts else 1.0
+    top_avg = sum(len(letters[p]) for p in top_n) / max(len(top_n), 1)
+    bottom_avg = sum(len(letters[p]) for p in bottom_n) / max(len(bottom_n), 1)
+    poor_high = top_avg < median_count * 0.4  # extreme has < 40% of median TPOs
+    poor_low = bottom_avg < median_count * 0.4
 
     # IB TPO count: letters A and B
     ib_tpo_count = sum(1 for p in sorted_prices for l in letters[p] if l in ("A", "B"))
