@@ -21,7 +21,8 @@ COPY backend/src/ backend/src/
 RUN pip install --no-cache-dir -e ".[scrape]" && \
     pip install --no-cache-dir uvloop && \
     pip install --no-cache-dir scikit-learn joblib lightgbm && \
-    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir "camoufox[geoip]" && python -m camoufox fetch
 
 # Playwright browser
 RUN playwright install chromium && playwright install-deps

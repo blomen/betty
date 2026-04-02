@@ -188,8 +188,9 @@ class ExtractorFactory:
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
             # Headless works fine (tested: 1,221 events vs 1,077 headed)
+            # Residential proxy needed — Cloudflare blocks datacenter IPs
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations
