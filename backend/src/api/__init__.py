@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 # Track startup time for uptime calculation
 _startup_time: float = 0.0
+_background_tasks: set = set()  # prevent GC of fire-and-forget tasks
 
 
 @asynccontextmanager
@@ -126,7 +127,17 @@ async def lifespan(app: FastAPI):
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
-    asyncio.create_task(scheduler.start_continuous(interval_seconds=300))
+
+    async def _start_scheduler():
+        try:
+            await scheduler.start_continuous(interval_seconds=300)
+        except Exception:
+            logger.exception("[Startup] Scheduler start_continuous failed")
+
+    _scheduler_task = asyncio.create_task(_start_scheduler())
+    _scheduler_task.set_name("scheduler-start")
+    _background_tasks.add(_scheduler_task)
+    _scheduler_task.add_done_callback(_background_tasks.discard)
 
     # ── Trading features (Databento stream, level monitor, candle backfill) ──
     # Everything is gated on market hours: when Globex is closed (weekend),
