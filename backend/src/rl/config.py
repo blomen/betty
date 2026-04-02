@@ -58,9 +58,9 @@ STOP_TICKS = 10       # Used for cost normalisation (R-multiple denominator)
 TICK_SIZE = 0.25
 
 # --- DQN Hyperparameters ---
-BATCH_SIZE = 64
+BATCH_SIZE = 256
 LEARNING_RATE = 3e-4
-REPLAY_BUFFER_SIZE = 1_000_000
+REPLAY_BUFFER_SIZE = 2_000_000
 EPSILON_START = 1.0
 EPSILON_END = 0.05
 EPSILON_DECAY_STEPS = 50_000

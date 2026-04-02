@@ -43,10 +43,10 @@ frontend/src/
 **Firev runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
 
 ### Server Details
-- **Server**: Hetzner CPX32 (4 vCPU, 8 GB RAM), Ubuntu 24.04
-- **IP**: `204.168.218.18`
-- **SSH**: `ssh root@204.168.218.18`
-- **App URL**: `https://204.168.218.18` (behind nginx basic auth)
+- **Server**: Hetzner Dedicated i7-7700 (4c/8t, 64 GB RAM, 2x 256 GB SSD RAID 1), Ubuntu 24.04
+- **IP**: `148.251.40.251`
+- **SSH**: `ssh root@148.251.40.251`
+- **App URL**: `https://148.251.40.251` (behind nginx basic auth, self-signed cert)
 - **Repo on server**: `/opt/firev` (main branch)
 
 ### Docker Containers
@@ -60,7 +60,7 @@ frontend/src/
 - **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
 - `/health` endpoint is exempted from auth (needed for Docker healthcheck)
-- To update the password: `ssh root@204.168.218.18 "htpasswd -cb /opt/firev/nginx/.htpasswd rasmus NEW_PASSWORD && cd /opt/firev && docker compose restart nginx"`
+- To update the password: `ssh root@148.251.40.251 "htpasswd -cb /opt/firev/nginx/.htpasswd rasmus NEW_PASSWORD && cd /opt/firev && docker compose restart nginx"`
 
 ### Database
 - **Main DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/firev` (events, odds, bets, profiles, opportunities)
@@ -75,16 +75,16 @@ frontend/src/
 ### How to Deploy Changes
 ```bash
 # After pushing to main:
-ssh root@204.168.218.18 "cd /opt/firev && git pull && docker compose up -d --build backend"
+ssh root@148.251.40.251 "cd /opt/firev && git pull && docker compose up -d --build backend"
 
 # For Python-only changes (no rebuild needed):
-ssh root@204.168.218.18 "cd /opt/firev && git pull && docker compose restart backend"
+ssh root@148.251.40.251 "cd /opt/firev && git pull && docker compose restart backend"
 
 # Check logs:
-ssh root@204.168.218.18 "cd /opt/firev && docker compose logs backend --tail 30"
+ssh root@148.251.40.251 "cd /opt/firev && docker compose logs backend --tail 30"
 
 # Check extraction:
-ssh root@204.168.218.18 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
+ssh root@148.251.40.251 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
 
 ### Postgres FK Enforcement
@@ -119,7 +119,7 @@ The server runs 24/7 without intervention:
 ### Commands
 ```bash
 # Production (on server via SSH):
-ssh root@204.168.218.18 "cd /opt/firev && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
+ssh root@148.251.40.251 "cd /opt/firev && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
 
 # Local dev (only if needed — production runs on server):
 cd backend && python run_dev.py   # Starts uvicorn on localhost:8000

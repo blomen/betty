@@ -19,9 +19,9 @@ import socket
 import threading
 import webbrowser
 
-SERVER = "204.168.218.18"
+SERVER = "148.251.40.251"
 LOCAL_PG_PORT = 15432
-DB_PASSWORD = "firev2026secure"
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "firev2026secure")
 LOCAL_URL = "http://127.0.0.1:8000"
 
 

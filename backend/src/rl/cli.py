@@ -413,30 +413,147 @@ def precompute(
 
 
 # ---------------------------------------------------------------------------
-# replay
+# replay (parallel-capable)
 # ---------------------------------------------------------------------------
+
+def _replay_single_file(
+    pfile_path: str,
+    chunk_dir: str,
+    chunk_idx: int,
+    macro_data: dict,
+    summaries: dict,
+    gbt_path: str | None = None,
+) -> tuple[int, int]:
+    """Replay a single parquet file into episode chunks. Runs in subprocess.
+
+    Returns (n_episodes, n_sessions).
+    """
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
+    from datetime import datetime
+
+    from src.rl.data.replay_engine import ReplayEngine
+    from src.rl.data.session_store import compute_precomputed_levels
+    from src.rl.features.observation import augment_observation, build_position_state
+
+    pfile = Path(pfile_path)
+    out_dir = Path(chunk_dir)
+
+    # Load GBT in this subprocess if needed
+    gbt_model = None
+    if gbt_path:
+        from src.rl.agent.gbt_model import GBTModel
+        gbt_model = GBTModel.load(Path(gbt_path))
+
+    engine = ReplayEngine(macro_data=macro_data)
+
+    df = pd.read_parquet(pfile)
+    if "timestamp" not in df.columns:
+        return 0, 0
+
+    df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+    df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+    df = df.dropna(subset=["_session_date"])
+    df_renamed = df.rename(columns={"timestamp": "ts"})
+    dates = sorted(df_renamed["_session_date"].unique())
+
+    month_obs, month_rc, month_rr = [], [], []
+    month_lt, month_st, month_be, month_lc = [], [], [], []
+
+    session_count = 0
+    prior_levels = None
+
+    for session_date in dates:
+        day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
+            columns=["_session_date", "_ts_et"], errors="ignore"
+        )
+        ticks = day_df.to_dict(orient="records")
+        if not ticks:
+            continue
+
+        session_dt = datetime(
+            session_date.year, session_date.month, session_date.day,
+            12, 0, 0, tzinfo=_ET,
+        )
+
+        precomputed = None
+        if summaries:
+            precomputed = compute_precomputed_levels(summaries, str(session_date))
+
+        try:
+            episodes = engine.replay_session(
+                ticks, session_dt,
+                prior_session_levels=prior_levels,
+                precomputed_levels=precomputed,
+            )
+        except Exception:
+            continue
+
+        prior_levels = engine.get_prior_session_for_chaining()
+
+        # Reset weekly/monthly at boundaries
+        idx = dates.tolist().index(session_date) + 1 if hasattr(dates, "tolist") else None
+        if idx and idx < len(dates):
+            nd = dates[idx]
+            if hasattr(nd, "weekday") and nd.weekday() == 0:
+                prior_levels["weekly_high"] = None
+                prior_levels["weekly_low"] = None
+            if hasattr(nd, "day") and nd.day == 1:
+                prior_levels["monthly_high"] = None
+                prior_levels["monthly_low"] = None
+
+        for ep in episodes:
+            obs = ep.observation
+            if gbt_model is not None:
+                gbt_forecast = gbt_model.predict_full(obs)
+                pos_state = build_position_state()
+                obs = augment_observation(obs, gbt_forecast, pos_state)
+            month_obs.append(obs)
+            month_rc.append(ep.reward_continuation)
+            month_rr.append(ep.reward_reversal)
+            month_lt.append(ep.level_type)
+            month_st.append(ep.optimal_stop_ticks)
+            month_be.append(float(ep.breakeven_reached))
+            month_lc.append(float(ep.levels_captured_best))
+
+        session_count += 1
+
+    n_eps = len(month_obs)
+    if n_eps > 0:
+        np.save(out_dir / f"obs_{chunk_idx:04d}.npy", np.array(month_obs, dtype=np.float32))
+        np.save(out_dir / f"rc_{chunk_idx:04d}.npy", np.array(month_rc, dtype=np.float32))
+        np.save(out_dir / f"rr_{chunk_idx:04d}.npy", np.array(month_rr, dtype=np.float32))
+        np.save(out_dir / f"lt_{chunk_idx:04d}.npy", np.array(month_lt))
+        np.save(out_dir / f"st_{chunk_idx:04d}.npy", np.array(month_st, dtype=np.float32))
+        np.save(out_dir / f"be_{chunk_idx:04d}.npy", np.array(month_be, dtype=np.float32))
+        np.save(out_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
+
+    return n_eps, len(dates)
+
 
 @rl_app.command()
 def replay(
     all_months: bool = typer.Option(False, "--all", help="Replay all Parquet files in TICKS_DIR"),
     month: Optional[str] = typer.Option(None, help="Replay a specific month YYYY-MM"),
     gbt: Optional[str] = typer.Option(None, help="GBT model for augmented observations (hybrid GBT+DQN)"),
+    workers: int = typer.Option(0, help="Parallel workers (0 = auto, 1 = sequential)"),
 ) -> None:
     """Replay tick sessions through ReplayEngine and save episodes as .npy files.
 
     With --gbt: produces augmented episodes (base + 8 GBT forecast + 8 position state).
     Without --gbt: produces base episodes (market features only).
-    Dimension auto-detected from OBSERVATION_DIM / AUGMENTED_OBSERVATION_DIM.
+    Uses parallel workers for multi-core replay (default: auto = CPU count / 2).
     """
     import numpy as np
     import pandas as pd
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import multiprocessing
 
     from src.rl.data.fetcher import TICKS_DIR, MACRO_DIR
-    from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.features.observation import (
         OBSERVATION_DIM, AUGMENTED_OBSERVATION_DIM,
-        augment_observation, build_position_state,
     )
 
     ticks_dir = TICKS_DIR
@@ -459,7 +576,12 @@ def replay(
         typer.echo(f"No Parquet files found in {ticks_dir}", err=True)
         raise typer.Exit(1)
 
-    typer.echo(f"Found {len(parquet_files)} tick file(s) to replay.")
+    # Auto-detect worker count: half of CPUs (leave room for extraction)
+    if workers <= 0:
+        workers = max(1, multiprocessing.cpu_count() // 2)
+    workers = min(workers, len(parquet_files))
+
+    typer.echo(f"Found {len(parquet_files)} tick file(s) to replay with {workers} worker(s).")
 
     # Load macro data
     macro_path = MACRO_DIR / "macro_daily.parquet"
@@ -469,7 +591,6 @@ def replay(
         try:
             macro_df = pd.read_parquet(macro_path)
             cot_df = pd.read_parquet(cot_path) if cot_path.exists() else None
-            # Load exchange statistics
             stats_path = MACRO_DIR / "statistics_daily.parquet"
             stats_df = None
             if stats_path.exists():
@@ -488,8 +609,8 @@ def replay(
     else:
         typer.echo("No macro_daily.parquet found — macro features will be zeroed.")
 
-    # Load session summaries for precomputed levels
-    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
+    # Load session summaries
+    from src.rl.data.session_store import load_summaries
 
     summaries_path = _DATA_DIR / "session_summaries.json"
     summaries = load_summaries(summaries_path)
@@ -497,183 +618,113 @@ def replay(
         typer.echo(f"Loaded session summaries: {len(summaries)} sessions.")
     else:
         typer.echo("No session_summaries.json found — precomputed levels disabled.")
-        typer.echo("Run 'rl precompute' first for full level coverage.")
 
-    # Load GBT model for hybrid augmentation (optional)
-    gbt_model = None
+    # GBT model path for augmentation
+    gbt_path_str = None
     if gbt:
         from src.rl.agent.gbt_model import GBTModel
         gbt_path = Path(gbt) if Path(gbt).exists() else _MODELS_DIR / gbt
         if gbt_path.exists():
-            gbt_model = GBTModel.load(gbt_path)
+            gbt_path_str = str(gbt_path)
             typer.echo(f"Loaded GBT for augmentation: {gbt_path}")
         else:
             typer.echo(f"GBT not found: {gbt}. Replaying without augmentation.", err=True)
 
-    obs_dim = AUGMENTED_OBSERVATION_DIM if gbt_model else OBSERVATION_DIM
-    typer.echo(f"Observation dim: {obs_dim} ({'augmented' if gbt_model else 'base'})")
+    obs_dim = AUGMENTED_OBSERVATION_DIM if gbt_path_str else OBSERVATION_DIM
+    typer.echo(f"Observation dim: {obs_dim} ({'augmented' if gbt_path_str else 'base'})")
 
-    normalizer = RunningNormalizer(dim=obs_dim)
-    engine = ReplayEngine(macro_data=macro_data)
-
-    # Incremental save: write per-month chunks to avoid OOM on large datasets
+    # Chunk dir for results
     chunk_dir = episodes_dir / "_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
-    # Clean old chunks
     for old in chunk_dir.glob("*.npy"):
         old.unlink()
-    chunk_idx = 0
 
-    total_episodes = 0
+    # --- Parallel replay ---
+    if workers > 1:
+        typer.echo(f"\nParallel replay: {workers} workers across {len(parquet_files)} files...")
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for i, pfile in enumerate(parquet_files):
+                future = executor.submit(
+                    _replay_single_file,
+                    pfile_path=str(pfile),
+                    chunk_dir=str(chunk_dir),
+                    chunk_idx=i,
+                    macro_data=macro_data,
+                    summaries=summaries,
+                    gbt_path=gbt_path_str,
+                )
+                futures[future] = pfile.name
 
-    for pfile in parquet_files:
-        month_obs: list[np.ndarray] = []
-        month_rc: list[float] = []
-        month_rr: list[float] = []
-        month_lt: list[str] = []
-        month_st: list[float] = []
-        month_be: list[float] = []
-        month_lc: list[float] = []
-
-        try:
-            df = pd.read_parquet(pfile)
-        except Exception as exc:
-            typer.echo(f"  Skipping {pfile.name}: {exc}")
-            continue
-
-        # Group ticks by futures session date (18:00 ET cutoff)
-        if "timestamp" not in df.columns:
-            typer.echo(f"  Skipping {pfile.name}: no 'timestamp' column")
-            continue
-
-        df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
-        df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
-        df = df.dropna(subset=["_session_date"])
-
-        # Convert to list of dicts with 'ts' key
-        df_renamed = df.rename(columns={"timestamp": "ts"})
-        dates = sorted(df_renamed["_session_date"].unique())
-
-        session_episodes = 0
-        prior_levels: dict | None = None  # Chain session levels across days
-
-        for session_date in dates:
-            day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
-                columns=["_session_date", "_ts_et"], errors="ignore"
-            )
-            ticks = day_df.to_dict(orient="records")
-
-            if not ticks:
-                continue
-
-            session_dt = datetime(session_date.year, session_date.month, session_date.day, 12, 0, 0, tzinfo=_ET)
-
-            precomputed = None
-            if summaries:
-                date_str = str(session_date)
-                precomputed = compute_precomputed_levels(summaries, date_str)
-
+            total_episodes = 0
+            for future in as_completed(futures):
+                fname = futures[future]
+                try:
+                    n_eps, n_sessions = future.result()
+                    total_episodes += n_eps
+                    typer.echo(f"  {fname}: {n_eps} episodes across {n_sessions} session(s)")
+                except Exception as exc:
+                    typer.echo(f"  {fname}: FAILED — {exc}")
+    else:
+        # Sequential fallback (same as before but uses _replay_single_file)
+        typer.echo(f"\nSequential replay: {len(parquet_files)} files...")
+        total_episodes = 0
+        for i, pfile in enumerate(parquet_files):
             try:
-                episodes = engine.replay_session(ticks, session_dt, prior_session_levels=prior_levels, precomputed_levels=precomputed)
+                n_eps, n_sessions = _replay_single_file(
+                    pfile_path=str(pfile),
+                    chunk_dir=str(chunk_dir),
+                    chunk_idx=i,
+                    macro_data=macro_data,
+                    summaries=summaries,
+                    gbt_path=gbt_path_str,
+                )
+                total_episodes += n_eps
+                typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
             except Exception as exc:
-                typer.echo(f"    Warning: replay failed for {session_date}: {exc}")
-                continue
-
-            # Chain: this session's RTH range → next session's PDH/PDL
-            prior_levels = engine.get_prior_session_for_chaining()
-
-            # Reset weekly/monthly at boundaries
-            next_idx = dates.tolist().index(session_date) + 1 if hasattr(dates, 'tolist') else None
-            if next_idx and next_idx < len(dates):
-                next_date = dates[next_idx]
-                if hasattr(next_date, 'weekday') and next_date.weekday() == 0:  # Monday
-                    prior_levels["weekly_high"] = None
-                    prior_levels["weekly_low"] = None
-                if hasattr(next_date, 'day') and next_date.day == 1:  # 1st of month
-                    prior_levels["monthly_high"] = None
-                    prior_levels["monthly_low"] = None
-
-            for ep in episodes:
-                obs = ep.observation
-                # Augment with GBT forecast + position state (hybrid architecture)
-                if gbt_model is not None:
-                    gbt_forecast = gbt_model.predict_full(obs)
-                    pos_state = build_position_state()  # zeros during replay (no live position)
-                    obs = augment_observation(obs, gbt_forecast, pos_state)
-                normalizer.update(obs)
-                month_obs.append(obs)
-                month_rc.append(ep.reward_continuation)
-                month_rr.append(ep.reward_reversal)
-                month_lt.append(ep.level_type)
-                month_st.append(ep.optimal_stop_ticks)
-                month_be.append(float(ep.breakeven_reached))
-                month_lc.append(float(ep.levels_captured_best))
-
-            session_episodes += len(episodes)
-
-        # Flush this month's episodes to disk chunk
-        if session_episodes > 0:
-            np.save(chunk_dir / f"obs_{chunk_idx:04d}.npy", np.array(month_obs, dtype=np.float32))
-            np.save(chunk_dir / f"rc_{chunk_idx:04d}.npy", np.array(month_rc, dtype=np.float32))
-            np.save(chunk_dir / f"rr_{chunk_idx:04d}.npy", np.array(month_rr, dtype=np.float32))
-            np.save(chunk_dir / f"lt_{chunk_idx:04d}.npy", np.array(month_lt))
-            np.save(chunk_dir / f"st_{chunk_idx:04d}.npy", np.array(month_st, dtype=np.float32))
-            np.save(chunk_dir / f"be_{chunk_idx:04d}.npy", np.array(month_be, dtype=np.float32))
-            np.save(chunk_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
-            chunk_idx += 1
-            del month_obs, month_rc, month_rr, month_lt, month_st, month_be, month_lc
-
-        total_episodes += session_episodes
-        typer.echo(f"  {pfile.name}: {session_episodes} episodes across {len(dates)} session(s)")
+                typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
     if total_episodes == 0:
         typer.echo("No episodes generated. Check tick data and replay engine.")
         raise typer.Exit(1)
 
-    # Concatenate chunks from disk (memory-efficient)
-    typer.echo(f"\nConcatenating {chunk_idx} chunks ...")
-    obs_chunks = [np.load(chunk_dir / f"obs_{i:04d}.npy") for i in range(chunk_idx)]
-    obs_array = np.concatenate(obs_chunks, axis=0)
-    del obs_chunks
+    # Concatenate all chunks from disk — discover by glob (parallel produces non-sequential indices)
+    chunk_indices = sorted(
+        int(f.stem.split("_")[1]) for f in chunk_dir.glob("obs_*.npy")
+    )
+    n_chunks = len(chunk_indices)
+    typer.echo(f"\nConcatenating {n_chunks} chunks ({total_episodes} episodes)...")
+
+    obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
     np.save(episodes_dir / "observations.npy", obs_array)
 
-    rc_chunks = [np.load(chunk_dir / f"rc_{i:04d}.npy") for i in range(chunk_idx)]
-    np.save(episodes_dir / "rewards_cont.npy", np.concatenate(rc_chunks))
-    del rc_chunks
-
-    rr_chunks = [np.load(chunk_dir / f"rr_{i:04d}.npy") for i in range(chunk_idx)]
-    np.save(episodes_dir / "rewards_rev.npy", np.concatenate(rr_chunks))
-    del rr_chunks
-
-    lt_chunks = [np.load(chunk_dir / f"lt_{i:04d}.npy", allow_pickle=True) for i in range(chunk_idx)]
-    np.save(episodes_dir / "level_types.npy", np.concatenate(lt_chunks))
-    del lt_chunks
-
-    st_chunks = [np.load(chunk_dir / f"st_{i:04d}.npy") for i in range(chunk_idx)]
-    np.save(episodes_dir / "stop_targets.npy", np.concatenate(st_chunks))
-    del st_chunks
-
-    be_chunks = [np.load(chunk_dir / f"be_{i:04d}.npy") for i in range(chunk_idx)]
-    np.save(episodes_dir / "breakeven_reached.npy", np.concatenate(be_chunks))
-    del be_chunks
-
-    lc_chunks = [np.load(chunk_dir / f"lc_{i:04d}.npy") for i in range(chunk_idx)]
-    np.save(episodes_dir / "levels_captured.npy", np.concatenate(lc_chunks))
-    del lc_chunks
+    np.save(episodes_dir / "rewards_cont.npy",
+            np.concatenate([np.load(chunk_dir / f"rc_{i:04d}.npy") for i in chunk_indices]))
+    np.save(episodes_dir / "rewards_rev.npy",
+            np.concatenate([np.load(chunk_dir / f"rr_{i:04d}.npy") for i in chunk_indices]))
+    np.save(episodes_dir / "level_types.npy",
+            np.concatenate([np.load(chunk_dir / f"lt_{i:04d}.npy", allow_pickle=True) for i in chunk_indices]))
+    np.save(episodes_dir / "stop_targets.npy",
+            np.concatenate([np.load(chunk_dir / f"st_{i:04d}.npy") for i in chunk_indices]))
+    np.save(episodes_dir / "breakeven_reached.npy",
+            np.concatenate([np.load(chunk_dir / f"be_{i:04d}.npy") for i in chunk_indices]))
+    np.save(episodes_dir / "levels_captured.npy",
+            np.concatenate([np.load(chunk_dir / f"lc_{i:04d}.npy") for i in chunk_indices]))
 
     # Clean up chunks
     for old in chunk_dir.glob("*.npy"):
         old.unlink()
     chunk_dir.rmdir()
 
-    # Save normalizer
+    # Build normalizer from all observations
+    normalizer = RunningNormalizer(dim=obs_array.shape[1])
+    for obs in obs_array:
+        normalizer.update(obs)
     normalizer.save(episodes_dir / "normalizer.json")
 
     typer.echo(f"\nTotal episodes: {total_episodes}")
     typer.echo(f"Observation shape: {obs_array.shape}")
     typer.echo(f"Saved to: {episodes_dir}")
-    typer.echo(f"  observations.npy, rewards_cont.npy, rewards_rev.npy, level_types.npy")
-    typer.echo(f"  normalizer.json")
 
 
 # ---------------------------------------------------------------------------
