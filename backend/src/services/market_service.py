@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..config.trading_loader import get_market_data_config, get_scanner_config, get_setups
-from ..db.models import TradingSignal
+from ..db.models import TradingSignal, MarketTrade
 from ..market_data.amt import build_session_analysis, SessionAnalysis
 from ..market_data.base import MarketDataProvider
 from ..market_data.levels import (
@@ -1443,10 +1443,20 @@ class MarketService:
         d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
 
         try:
-            trades = self.repo.get_trades(symbol, d_start, now)
-            if len(trades) < 100:
-                logger.info("Tick VP: only %d ticks, falling back to bars", len(trades))
+            # Check count first — loading millions of ORM objects blocks the process
+            from sqlalchemy import func
+            count = self.repo.market_db.query(func.count(MarketTrade.id)).filter(
+                MarketTrade.symbol == symbol,
+                MarketTrade.ts >= d_start,
+                MarketTrade.ts <= now,
+            ).scalar() or 0
+            if count > 500_000:
+                logger.info("Tick VP: %d ticks too large, falling back to bars", count)
                 return None
+            if count < 100:
+                logger.info("Tick VP: only %d ticks, falling back to bars", count)
+                return None
+            trades = self.repo.get_trades(symbol, d_start, now)
 
             # Check tick time span — if ticks only cover a small fraction of
             # elapsed session time, the data is too sparse for a meaningful VP.
