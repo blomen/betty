@@ -513,7 +513,12 @@ async def lifespan(app: FastAPI):
 
     if _databento_stream:
         await _databento_stream.stop()
-    scheduler.stop_all()
+    if not _mirror_only:
+        try:
+            from ..pipeline.scheduler import get_scheduler
+            get_scheduler().stop_all()
+        except Exception:
+            pass
     logger.info("Shutdown complete.")
 
 
