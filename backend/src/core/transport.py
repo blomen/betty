@@ -35,8 +35,12 @@ def get_proxy_dict(socks: bool = False) -> dict | None:
 
     Handles format: http://user:pass@host:port → {server, username, password}
     Also handles: socks5://host:port → {server}
+
+    For SOCKS, distributes load across ports 1080-1082 (3 SSH tunnels)
+    to avoid saturating a single tunnel with too many browser connections.
     """
     import os
+    import random
     from urllib.parse import urlparse
     env_var = "SOCKS_PROXY_URL" if socks else "PROXY_URL"
     proxy_url = os.environ.get(env_var)
@@ -47,7 +51,11 @@ def get_proxy_dict(socks: bool = False) -> dict | None:
         if not proxy_url:
             return None
     parsed = urlparse(proxy_url)
-    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+    port = parsed.port
+    # Distribute SOCKS connections across multiple tunnels (1080-1082)
+    if socks and port == 1080:
+        port = random.choice([1080, 1081, 1082])
+    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{port}"}
     if parsed.username:
         proxy["username"] = parsed.username
     if parsed.password:
