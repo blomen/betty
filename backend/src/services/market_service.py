@@ -713,13 +713,28 @@ class MarketService:
 
         swing_structure_data = None
         try:
-            structure, profiles, swing_struct = await asyncio.wait_for(
-                self._enrich_with_bars(symbol, today, session_row, sj),
-                timeout=30.0,
-            )
+            # Run bar enrichment in a thread with a HARD timeout.
+            # asyncio.wait_for doesn't cancel synchronous blocking calls.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                inner_loop = asyncio.new_event_loop()
+                def _run_enrich():
+                    try:
+                        return inner_loop.run_until_complete(
+                            self._enrich_with_bars(symbol, today, session_row, sj)
+                        )
+                    finally:
+                        inner_loop.close()
+                future = pool.submit(_run_enrich)
+                try:
+                    structure, profiles, swing_struct = future.result(timeout=30.0)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("Bar enrichment hard-timed out (30s)")
+                    future.cancel()
+                    structure, profiles, swing_struct = {}, profiles, None
+
             if swing_struct is not None:
                 swing_structure_data = _serialize_swing_structure(swing_struct)
-                # Add confirmed swing highs/lows to levels_list for LevelMonitor
                 for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
                     if tf_swings.swing_highs:
                         sh_price = tf_swings.swing_highs[0].price
@@ -741,8 +756,8 @@ class MarketService:
                             "session": tf_swings.timeframe,
                             "is_filled": False,
                         })
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning("Bar enrichment failed/timed out: %s", e)
+        except Exception as e:
+            logger.warning("Bar enrichment failed: %s", e)
 
         # Assemble nested response
         return {
