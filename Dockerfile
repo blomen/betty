@@ -24,7 +24,8 @@ RUN pip install --no-cache-dir -e ".[scrape]" && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir "camoufox[geoip]" && python -m camoufox fetch
 
-# Playwright browser
+# Playwright browser — install to shared path accessible by non-root user
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 RUN playwright install chromium && playwright install-deps
 
 # Frontend build
@@ -44,7 +45,8 @@ RUN useradd -m -u 1000 -s /bin/bash firev
 RUN mkdir -p /app/data /app/logs /app/models /app/data/rl && \
     mkdir -p /app/backend/data && \
     ln -s /app/data/rl /app/backend/data/rl && \
-    chown -R firev:firev /app/data /app/logs /app/models /app/backend/data
+    chown -R firev:firev /app/data /app/logs /app/models /app/backend/data /app/.playwright && \
+    cp -r /root/.cache /home/firev/.cache 2>/dev/null; chown -R firev:firev /home/firev/.cache 2>/dev/null; true
 
 ENV FIREV_DATA_DIR=/app/data
 ENV FIREV_LOGS_DIR=/app/logs
