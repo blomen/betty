@@ -452,7 +452,8 @@ class MarketService:
 
         from dataclasses import asdict as _asdict
         session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
-        session_data["session_tpos_obj"] = session_tpo_set  # SessionTPOSet object for RL features
+        # Keep live object reference for RL context (stripped before DB serialization)
+        _session_tpo_obj = session_tpo_set
 
         try:
             self.store_tpo_session(tpo, symbol, target_date)

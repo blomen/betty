@@ -149,7 +149,7 @@ async def trigger_compute(
             } if session.get("vwap") else None,
             "volume_profile": session.get("volume_profile"),
             "session_levels": session.get("session_levels"),
-            "session_tpos": session.get("session_tpos_obj"),
+            "session_tpos": session.get("session_tpos"),
             "tpo_profile": session.get("tpo"),
             "session_context": session.get("session_context"),
             "macro": session.get("macro"),
