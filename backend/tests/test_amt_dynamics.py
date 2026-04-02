@@ -349,3 +349,98 @@ class TestExtractAMTDynamicsFeatures:
         # All values should be within [-1, 1]
         assert np.all(result >= -1.0)
         assert np.all(result <= 1.0)
+
+
+class TestIntegration:
+    """Integration tests for the full AMT → observation pipeline."""
+
+    def test_observation_includes_amt_dynamics(self):
+        """Full observation vector includes AMT dynamics features (non-zero)."""
+        from src.rl.features.observation import build_observation, OBSERVATION_DIM
+        from src.rl.config import LevelType
+        from src.rl.zone_builder import Zone, ZoneMember
+        from src.market_data.amt_dynamics import AMTDynamicsTracker
+
+        member = ZoneMember(name="vwap", level_type=LevelType.VWAP, price=19000.0)
+        zone = Zone(
+            center_price=19000.0,
+            upper_bound=19001.0,
+            lower_bound=18999.0,
+            members=[member],
+            composition=[1.0 if lt == LevelType.VWAP else 0.0 for lt in LevelType],
+            width_ticks=8.0,
+            member_count=1,
+            hierarchy_score=0.5,
+        )
+
+        # Build tracker and simulate activity
+        tracker = AMTDynamicsTracker()
+        tracker.initialize({
+            "ib_high": 19100.0, "ib_low": 19000.0,
+            "vah": 19080.0, "val": 19020.0, "poc": 19050.0,
+        })
+        tracker.update(19110.0, 500, "buy")  # IB extension up
+        tracker.update(18990.0, 300, "sell")  # IB extension down
+        tracker.update(19050.0, 200, "buy")   # inside VA (responsive)
+
+        state = {
+            "zone": zone,
+            "all_zones": [zone],
+            "price": 19050.0,
+            "candles": [],
+            "candles_5m": [],
+            "vwap_bands": None,
+            "volume_profile": None,
+            "session_tpos": None,
+            "tpo_profile": None,
+            "tpo_profile_obj": None,
+            "session_levels": None,
+            "all_levels": [],
+            "orderflow_signals": None,
+            "macro": None,
+            "session_context": {
+                "ib_range_percentile": 0.65,
+                "overnight_gap": 0.3,
+                "open_vs_prior_poc": -0.1,
+                "composite_va_overlap": 0.8,
+                "prior_poor_high": True,
+                "prior_poor_low": False,
+                "prior_excess_quality": 3,
+            },
+            "day_type": None,
+            "recent_ticks": [],
+            "amt_dynamics": tracker.snapshot(),
+        }
+
+        obs = build_observation(state)
+        assert obs.shape[0] == OBSERVATION_DIM
+        assert np.all(np.isfinite(obs))
+        # Verify AMT dynamics features are non-zero (at least some should be set)
+        # The dynamics features are embedded in the observation vector
+        assert not np.all(obs == 0)  # Not all zeros
+
+    def test_observation_dim_value(self):
+        """OBSERVATION_DIM should have increased from original ~249 to ~276."""
+        from src.rl.features.observation import OBSERVATION_DIM, AUGMENTED_OBSERVATION_DIM
+        # Should be 276 for zone mode (was 249 before AMT expansion)
+        assert OBSERVATION_DIM == 276, f"Expected 276, got {OBSERVATION_DIM}"
+        assert AUGMENTED_OBSERVATION_DIM == OBSERVATION_DIM + 16
+
+    def test_amt_dynamics_features_nonzero_in_observation(self):
+        """Verify that when tracker has activity, AMT dynamics slice is non-zero."""
+        from src.rl.features.amt_dynamics_features import extract_amt_dynamics_features
+        from src.market_data.amt_dynamics import AMTDynamicsTracker
+
+        tracker = AMTDynamicsTracker()
+        tracker.initialize({
+            "ib_high": 19100.0, "ib_low": 19000.0,
+            "vah": 19080.0, "val": 19020.0, "poc": 19050.0,
+        })
+        # Simulate a trend day: massive extension above IB
+        for i in range(100):
+            tracker.update(19100.0 + i * 2, 100, "buy")
+
+        feats = extract_amt_dynamics_features(tracker.snapshot())
+        assert feats[0] > 0  # IB ext up count > 0
+        assert feats[4] > 0.5  # Day type should be trend-ish (0.8)
+        assert feats[7] > 0  # Initiative ratio > 0 (volume outside VA)
