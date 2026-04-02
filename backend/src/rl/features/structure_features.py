@@ -1,4 +1,4 @@
-"""Market structure and session context feature extraction."""
+"""Market structure (Dow Theory) and session context feature extraction."""
 from __future__ import annotations
 
 import math
@@ -7,24 +7,41 @@ import numpy as np
 from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
 from ..config import TICK_SIZE
 
-_N_FEATURES = 39
+# 20 session/VWAP/VP/IB features  +  40 Dow Theory swing features  +  4 PDH/PDL
+_N_FEATURES = 64
+
+# Normalisation constant: distance in ticks clipped to ±1
+_DIST_NORM = 200.0
 
 
 def _extract_swing_features(
     price: float,
     swing: SwingStructure | None,
 ) -> np.ndarray:
-    """Extract 15 swing structure features (indices 23-37).
+    """Extract 41 Dow Theory swing structure features.
 
-    Per timeframe (daily=0, weekly=1, monthly=2):
-      feats[0-2]   trend encoded: uptrend=1.0, reversing_up=0.5, ranging=0.0,
-                                  reversing_down=-0.5, downtrend=-1.0
-      feats[3-5]   distance to nearest swing level (signed, clipped ±1)
-      feats[6-8]   position within swing range (0=at low, 1=at high)
-      feats[9-11]  bos_active flag (1.0 if BOS fired within recency window)
-      feats[12-14] choch_active flag (1.0 if CHoCH fired within recency window)
+    Per timeframe (daily=0, weekly=1, monthly=2) — 13 features each = 39:
+      [0-2]   trend: uptrend=1.0, reversing_up=0.5, ranging=0.0,
+                     reversing_down=-0.5, downtrend=-1.0
+      [3-5]   dist_to_sh: signed distance to last swing high (clipped ±1)
+      [6-8]   dist_to_sl: signed distance to last swing low (clipped ±1)
+      [9-11]  above_sh: 1.0 if price > last SH (breakout territory)
+      [12-14] below_sl: 1.0 if price < last SL (breakdown territory)
+      [15-17] position: price within SH-SL range (0=at SL, 1=at SH)
+      [18-20] hh_lh: 1.0 if last SH > prior SH (HH), -1.0 if LH, 0 if <2 SHs
+      [21-23] hl_ll: 1.0 if last SL > prior SL (HL), -1.0 if LL, 0 if <2 SLs
+      [24-26] swing_range: (SH - SL) normalised, trend amplitude
+      [27-29] bos_active: 1.0 if BOS within recency window
+      [30-32] choch_active: 1.0 if CHoCH within recency window
+      [33-35] last_event_dir: direction of last structural event
+                1.0 bullish (bos/choch_bullish), -1.0 bearish, 0 if none
+      [36-38] swing_momentum: acceleration of swings
+                (SH1-SH0 vs SH2-SH1) or (SL1-SL0 vs SL2-SL1) normalised
+
+    Global (1):
+      [39]    trend_alignment: -1.0 (all down) to +1.0 (all up)
     """
-    feats = np.zeros(15, dtype=np.float32)
+    feats = np.zeros(40, dtype=np.float32)
     if swing is None:
         return feats
 
@@ -33,22 +50,77 @@ def _extract_swing_features(
         "reversing_down": -0.5, "downtrend": -1.0,
     }
 
-    for i, tf_swings in enumerate([swing.daily, swing.weekly, swing.monthly]):
-        feats[i] = trend_map.get(tf_swings.structure, 0.0)           # trend (0-2)
+    for i, tf in enumerate([swing.daily, swing.weekly, swing.monthly]):
+        # --- Trend (0-2) ---
+        feats[i] = trend_map.get(tf.structure, 0.0)
 
-        all_prices = [s.price for s in tf_swings.swing_highs + tf_swings.swing_lows]
-        if all_prices:
-            nearest = min(all_prices, key=lambda p: abs(p - price))
-            dist_ticks = (price - nearest) / TICK_SIZE
-            feats[3 + i] = float(np.clip(dist_ticks / 200.0, -1.0, 1.0))  # dist (3-5)
+        sh_prices = [s.price for s in tf.swing_highs]
+        sl_prices = [s.price for s in tf.swing_lows]
 
-            range_high = max(all_prices)
-            range_low = min(all_prices)
-            span = range_high - range_low
-            feats[6 + i] = float(np.clip((price - range_low) / span, 0.0, 1.0)) if span > 0 else 0.5  # pos (6-8)
+        last_sh = sh_prices[0] if sh_prices else None
+        last_sl = sl_prices[0] if sl_prices else None
 
-        feats[9 + i] = 1.0 if tf_swings.bos_active else 0.0       # bos (9-11)
-        feats[12 + i] = 1.0 if tf_swings.choch_active else 0.0    # choch (12-14)
+        # --- Distance to SH (3-5) ---
+        if last_sh is not None:
+            feats[3 + i] = float(np.clip((price - last_sh) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
+
+        # --- Distance to SL (6-8) ---
+        if last_sl is not None:
+            feats[6 + i] = float(np.clip((price - last_sl) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
+
+        # --- Above SH / Below SL (9-14) ---
+        if last_sh is not None:
+            feats[9 + i] = 1.0 if price > last_sh else 0.0
+        if last_sl is not None:
+            feats[12 + i] = 1.0 if price < last_sl else 0.0
+
+        # --- Position within SH-SL range (15-17) ---
+        if last_sh is not None and last_sl is not None:
+            span = last_sh - last_sl
+            if span > 0:
+                feats[15 + i] = float(np.clip((price - last_sl) / span, 0.0, 1.0))
+            else:
+                feats[15 + i] = 0.5
+
+        # --- HH vs LH (18-20) ---
+        if len(sh_prices) >= 2:
+            feats[18 + i] = 1.0 if sh_prices[0] > sh_prices[1] else -1.0
+
+        # --- HL vs LL (21-23) ---
+        if len(sl_prices) >= 2:
+            feats[21 + i] = 1.0 if sl_prices[0] > sl_prices[1] else -1.0
+
+        # --- Swing range amplitude (24-26) ---
+        if last_sh is not None and last_sl is not None:
+            feats[24 + i] = float(np.clip((last_sh - last_sl) / TICK_SIZE / 400.0, 0.0, 1.0))
+
+        # --- BOS / CHoCH active (27-32) ---
+        feats[27 + i] = 1.0 if tf.bos_active else 0.0
+        feats[30 + i] = 1.0 if tf.choch_active else 0.0
+
+        # --- Last event direction (33-35) ---
+        last_event = tf.last_bos or tf.last_choch
+        if tf.last_bos and tf.last_choch:
+            # Pick the more recent one by timestamp
+            last_event = tf.last_bos if tf.last_bos.timestamp >= tf.last_choch.timestamp else tf.last_choch
+        if last_event is not None:
+            feats[33 + i] = 1.0 if "bullish" in last_event.event_type else -1.0
+
+        # --- Swing momentum (36-38) ---
+        # Compare consecutive swing-to-swing deltas; >0 = accelerating, <0 = decelerating
+        if len(sh_prices) >= 3:
+            d1 = sh_prices[0] - sh_prices[1]  # most recent delta
+            d2 = sh_prices[1] - sh_prices[2]  # prior delta
+            if abs(d2) > 0:
+                feats[36 + i] = float(np.clip(d1 / max(abs(d2), 1.0), -1.0, 1.0))
+        elif len(sl_prices) >= 3:
+            d1 = sl_prices[0] - sl_prices[1]
+            d2 = sl_prices[1] - sl_prices[2]
+            if abs(d2) > 0:
+                feats[36 + i] = float(np.clip(d1 / max(abs(d2), 1.0), -1.0, 1.0))
+
+    # --- Trend alignment (39) ---
+    feats[39] = swing.trend_alignment
 
     return feats
 
@@ -61,9 +133,9 @@ def extract_structure_features(
     session_context: dict | None,
     swing_structure: SwingStructure | None = None,
 ) -> np.ndarray:
-    """Extract 39 market structure and session context features.
+    """Extract 64 market structure and session context features.
 
-    Feature layout (indices 0-38):
+    Feature layout (indices 0-63):
     --- VWAP (0) ---
       0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
@@ -72,17 +144,26 @@ def extract_structure_features(
       6-8  ib_range, poor_high, poor_low
     --- Session Context (9-19) ---
       9-19  timing, session type, IB break
-    --- Swing Structure (20-34) ---
-      20-22  swing_trend_d/w/m
-      23-25  swing_dist_d/w/m
-      26-28  swing_pos_d/w/m
-      29-31  swing_bos_d/w/m
-      32-34  swing_choch_d/w/m
-    --- PDH/PDL (35-38) ---
-      35  dist_to_pdh (signed, clipped ±1)
-      36  dist_to_pdl (signed, clipped ±1)
-      37  position within PDH-PDL range (0=PDL, 1=PDH)
-      38  PDH-PDL range width (normalised)
+    --- Dow Theory Swings (20-59) ---
+      20-22  trend_d/w/m
+      23-25  dist_to_sh_d/w/m
+      26-28  dist_to_sl_d/w/m
+      29-31  above_sh_d/w/m
+      32-34  below_sl_d/w/m
+      35-37  position_d/w/m
+      38-40  hh_lh_d/w/m
+      41-43  hl_ll_d/w/m
+      44-46  swing_range_d/w/m
+      47-49  bos_active_d/w/m
+      50-52  choch_active_d/w/m
+      53-55  last_event_dir_d/w/m
+      56-58  swing_momentum_d/w/m
+      59     trend_alignment
+    --- PDH/PDL (60-63) ---
+      60  dist_to_pdh (signed, clipped +/-1)
+      61  dist_to_pdl (signed, clipped +/-1)
+      62  position within PDH-PDL range (0=PDL, 1=PDH)
+      63  PDH-PDL range width (normalised)
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -98,9 +179,9 @@ def extract_structure_features(
         vah = volume_profile.vah
         val = volume_profile.val
         feats[1] = 1.0 if val <= price <= vah else 0.0
-        feats[2] = float(np.clip(abs(price - poc) / TICK_SIZE / 200.0, 0.0, 1.0))
-        feats[3] = float(np.clip((price - vah) / TICK_SIZE / 200.0, -1.0, 1.0))
-        feats[4] = float(np.clip((price - val) / TICK_SIZE / 200.0, -1.0, 1.0))
+        feats[2] = float(np.clip(abs(price - poc) / TICK_SIZE / _DIST_NORM, 0.0, 1.0))
+        feats[3] = float(np.clip((price - vah) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
+        feats[4] = float(np.clip((price - val) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
         va_width = max(vah - val, 0.0)
         feats[5] = float(np.clip(va_width / TICK_SIZE / 400.0, 0.0, 1.0))
 
@@ -137,22 +218,22 @@ def extract_structure_features(
     feats[18] = 1.0 if ib_broken == "down" else 0.0
     feats[19] = 1.0 if ib_broken == "none" else 0.0
 
-    # --- Swing Structure (feats 20-34) ---
-    feats[20:35] = _extract_swing_features(price, swing_structure)
+    # --- Dow Theory Swing Structure (feats 20-59) ---
+    feats[20:60] = _extract_swing_features(price, swing_structure)
 
-    # --- PDH/PDL (feats 35-38) ---
+    # --- PDH/PDL (feats 60-63) ---
     pdh: float | None = None
     pdl: float | None = None
     if session_levels is not None:
         pdh = session_levels.pdh
         pdl = session_levels.pdl
     if pdh is not None:
-        feats[35] = float(np.clip((price - pdh) / TICK_SIZE / 200.0, -1.0, 1.0))
+        feats[60] = float(np.clip((price - pdh) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
     if pdl is not None:
-        feats[36] = float(np.clip((price - pdl) / TICK_SIZE / 200.0, -1.0, 1.0))
+        feats[61] = float(np.clip((price - pdl) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
     if pdh is not None and pdl is not None:
         span = pdh - pdl
-        feats[37] = float(np.clip((price - pdl) / span, 0.0, 1.0)) if span > 0 else 0.5
-        feats[38] = float(np.clip(span / TICK_SIZE / 400.0, 0.0, 1.0))
+        feats[62] = float(np.clip((price - pdl) / span, 0.0, 1.0)) if span > 0 else 0.5
+        feats[63] = float(np.clip(span / TICK_SIZE / 400.0, 0.0, 1.0))
 
     return feats

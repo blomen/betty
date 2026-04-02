@@ -87,10 +87,10 @@ export function structureToGauges(session: any): GaugeBarProps[] {
       color: (session.poor_high || session.poor_low) ? 'amber' : 'dim',
     },
     {
-      label: 'SWING', fill: 0.5,
-      value: session.swing_structure || '--',
-      assessment: session.swing_structure?.includes('up') ? 'HH/HL' : session.swing_structure?.includes('down') ? 'LH/LL' : 'RANGE',
-      color: session.swing_structure?.includes('up') ? 'green' : session.swing_structure?.includes('down') ? 'red' : 'amber',
+      label: 'PRICE VS VA', fill: session.price_vs_va === 'above' || session.price_vs_va === 'below' ? 0.9 : 0.4,
+      value: session.price_vs_va || '--',
+      assessment: (session.price_vs_va || 'inside').toUpperCase(),
+      color: session.price_vs_va === 'above' ? 'green' : session.price_vs_va === 'below' ? 'red' : 'amber',
     },
     {
       label: 'SINGLES', fill: Math.min(1, (session.single_prints?.length || 0) / 5),

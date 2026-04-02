@@ -1,17 +1,18 @@
 """
-Tests for MarketStructureEngine (backend/src/market_data/structure.py).
+Tests for Dow Theory engine (backend/src/market_data/structure.py).
 
-Key rule: swing confirmation is CLOSE-ONLY.
-  - A swing high is confirmed when price CLOSES below the prior confirmed swing low.
-  - A swing low is confirmed when price CLOSES above the prior confirmed swing high.
-  - Wick-only penetrations do not trigger confirmation.
+Dow Theory state machine: tracks swing highs/lows and classifies structural
+breaks as BOS (continuation) or CHoCH (reversal).
 
-How the bootstrap works:
+Swing confirmation rule (default = high/low break, close-only = close break):
+  - A swing high is confirmed when price breaks below the prior confirmed swing low.
+  - A swing low is confirmed when price breaks above the prior confirmed swing high.
+
+Bootstrap:
   - Engine starts SEEKING_HIGH with no confirmed swings.
-  - It tracks a running potential high and a running potential low simultaneously.
-  - First swing high is confirmed when close < running potential low
-    (i.e. price decisively breaks the early range low).
-  - Then SEEKING_LOW: first swing low is confirmed when close > that confirmed swing high.
+  - It tracks a running potential high and potential low (running minimum).
+  - First swing high is confirmed when break_price < running potential low.
+  - Then SEEKING_LOW: first swing low confirmed when break_price > confirmed swing high.
   - Trend classification begins once both sides have confirmed swings.
 """
 
@@ -269,26 +270,29 @@ def test_engine_close_only():
     """
     Wick pierces swing level but close stays safely inside → no confirmation.
 
-    Setup:
-      - Bootstrap phase: rise to ph=110, potential_low=97.
-      - Then candles where the low dips just below 97 (wick) but close stays above 97.
-      - No confirmation should occur.
+    Setup (close-only mode):
+      - Bootstrap phase: rise to ph=110, potential_low=97 (running minimum).
+      - Then candles where the low dips below 97 (wick) but close stays above 97.
+      - No confirmation should occur because close never breaks potential_low.
+
+    Setup (default mode):
+      - Same candles, but default uses lo as break_price, so lo < 97 → confirms.
     """
     candles = [
         _c(98,  102, 97,  100, 1),   # ph=102, pl=97
-        _c(100, 105, 99,  103, 2),   # ph=105, pl=97
-        _c(103, 110, 102, 108, 3),   # ph=110, pl=97
+        _c(100, 105, 99,  103, 2),   # ph=105, pl=97 (99 > 97, no update)
+        _c(103, 110, 102, 108, 3),   # ph=110, pl=97 (102 > 97, no update)
         # Wick below pl=97 but close above 97 → should NOT confirm SH1
         _c(108, 110, 95,  99,  4),   # low=95 < pl=97, but close=99 > 97 → no confirm
-        _c(99,  110, 93,  98,  5),   # low=93 < 97, close=98 > 97 → no confirm
-        _c(98,  110, 91,  100, 6),   # low=91 < 97, close=100 > 97 → no confirm
+        _c(99,  110, 93,  98,  5),   # low=93 < 97, close=98 > 97 → no confirm; pl=93
+        _c(98,  110, 91,  100, 6),   # low=91 < 93, close=100 > 91 → no confirm; pl=91
     ]
     # Close-only mode: wicks below don't count
     engine = MarketStructureEngine(use_close_only=True)
     result = engine.process(candles)
 
     # No swing high should have been confirmed because no close broke below pl=97
-    # (all closes stayed above 97)
+    # (all closes stayed above 97; potential_low tracks running min: 97→93→91)
     assert result.swing_highs == [], (
         "Swing high must not be confirmed on wick-only breaks (close-only mode)"
     )
@@ -530,18 +534,30 @@ def test_engine_event_fields():
 # test_structure_features_38_with_bos_choch
 # ---------------------------------------------------------------------------
 
-def test_structure_features_38_with_bos_choch():
-    """Structure features should be 38 elements with BOS/CHoCH flags."""
+def test_structure_features_64_with_bos_choch():
+    """Structure features should be 64 elements with full Dow Theory vectors."""
     import numpy as np
     from src.market_data.levels import TimeframeSwings, SwingStructure
+    from src.market_data.structure import StructureEvent
     from src.rl.features.structure_features import extract_structure_features
 
+    bos_event = StructureEvent(
+        price=19400.0, timestamp=950, event_type="bos_bullish",
+        swing_type="swing_low", swing_price=19200.0,
+    )
     daily = TimeframeSwings(
         timeframe="daily", structure="uptrend",
-        swing_highs=[SwingLevel(price=19500, timestamp=1000, type="swing_high", timeframe="daily")],
-        swing_lows=[SwingLevel(price=19200, timestamp=900, type="swing_low", timeframe="daily")],
+        swing_highs=[
+            SwingLevel(price=19500, timestamp=1000, type="swing_high", timeframe="daily"),
+            SwingLevel(price=19300, timestamp=800, type="swing_high", timeframe="daily"),
+        ],
+        swing_lows=[
+            SwingLevel(price=19200, timestamp=900, type="swing_low", timeframe="daily"),
+            SwingLevel(price=19100, timestamp=700, type="swing_low", timeframe="daily"),
+        ],
         bos_active=True,
         choch_active=False,
+        last_bos=bos_event,
     )
     weekly = TimeframeSwings(
         timeframe="weekly", structure="reversing_up",
@@ -560,8 +576,9 @@ def test_structure_features_38_with_bos_choch():
         daily=daily, weekly=weekly, monthly=monthly, trend_alignment=0.5,
     )
 
+    price = 19400.0
     feats = extract_structure_features(
-        price=19400.0,
+        price=price,
         vwap_bands=None,
         volume_profile=None,
         session_levels=None,
@@ -569,28 +586,63 @@ def test_structure_features_38_with_bos_choch():
         swing_structure=swing,
     )
 
-    assert feats.shape == (35,)
+    assert feats.shape == (64,)
     assert all(np.isfinite(feats))
-    # Swing features shifted -3 after market type removal (indices 20-34)
-    assert feats[20] == pytest.approx(1.0)   # daily uptrend
-    assert feats[21] == pytest.approx(0.5)   # weekly reversing_up
-    assert feats[22] == pytest.approx(0.0)   # monthly ranging
-    # BOS flags (indices 29-31)
-    assert feats[29] == pytest.approx(1.0)   # bos_active daily
-    assert feats[30] == pytest.approx(0.0)   # bos_active weekly
-    assert feats[31] == pytest.approx(0.0)   # bos_active monthly
-    # CHoCH flags (indices 32-34)
-    assert feats[32] == pytest.approx(0.0)   # choch_active daily
-    assert feats[33] == pytest.approx(1.0)   # choch_active weekly
-    assert feats[34] == pytest.approx(0.0)   # choch_active monthly
+
+    # --- Dow Theory features (indices 20-59) ---
+    # Trend (20-22)
+    assert feats[20] == pytest.approx(1.0)    # daily uptrend
+    assert feats[21] == pytest.approx(0.5)    # weekly reversing_up
+    assert feats[22] == pytest.approx(0.0)    # monthly ranging
+
+    # Distance to SH (23-25): price=19400, daily SH=19500 → (19400-19500)/0.25/200 = -2.0 clipped to -1
+    assert feats[23] < 0  # below daily SH
+
+    # Distance to SL (26-28): price=19400, daily SL=19200 → (19400-19200)/0.25/200 = 4.0 clipped to 1
+    assert feats[26] > 0  # above daily SL
+
+    # Above SH (29-31): 19400 < 19500 → 0.0
+    assert feats[29] == pytest.approx(0.0)    # not above daily SH
+
+    # Below SL (32-34): 19400 > 19200 → 0.0
+    assert feats[32] == pytest.approx(0.0)    # not below daily SL
+
+    # Position (35-37): (19400-19200)/(19500-19200) = 200/300 = 0.667
+    assert feats[35] == pytest.approx(200.0 / 300.0, abs=0.01)
+
+    # HH/LH (38-40): daily SH 19500 > 19300 → HH → 1.0
+    assert feats[38] == pytest.approx(1.0)    # daily HH
+
+    # HL/LL (41-43): daily SL 19200 > 19100 → HL → 1.0
+    assert feats[41] == pytest.approx(1.0)    # daily HL
+
+    # BOS active (47-49)
+    assert feats[47] == pytest.approx(1.0)    # bos_active daily
+    assert feats[48] == pytest.approx(0.0)    # bos_active weekly
+
+    # CHoCH active (50-52)
+    assert feats[50] == pytest.approx(0.0)    # choch_active daily
+    assert feats[51] == pytest.approx(1.0)    # choch_active weekly
+
+    # Last event dir (53-55): daily last_bos is bos_bullish → 1.0
+    assert feats[53] == pytest.approx(1.0)    # daily last event bullish
+
+    # Trend alignment (59)
+    assert feats[59] == pytest.approx(0.5)
+
+    # PDH/PDL (60-63) — all zero when session_levels is None
+    assert feats[60] == pytest.approx(0.0)
+    assert feats[61] == pytest.approx(0.0)
+    assert feats[62] == pytest.approx(0.0)
+    assert feats[63] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
 # test_structure_features_38_without_swings
 # ---------------------------------------------------------------------------
 
-def test_structure_features_38_without_swings():
-    """Without swing data, features 23-37 should be zeros."""
+def test_structure_features_64_without_swings():
+    """Without swing data, Dow Theory features (20-59) and PDH/PDL (60-63) should be zeros."""
     import numpy as np
     from src.rl.features.structure_features import extract_structure_features
 
@@ -603,5 +655,5 @@ def test_structure_features_38_without_swings():
         swing_structure=None,
     )
 
-    assert feats.shape == (35,)
-    assert all(feats[20:35] == 0.0)
+    assert feats.shape == (64,)
+    assert all(feats[20:64] == 0.0)

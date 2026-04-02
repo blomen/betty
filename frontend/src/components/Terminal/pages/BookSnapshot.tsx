@@ -768,9 +768,13 @@ function SwingTFRow({ label, tf, hidden, onToggle }: {
     </button>
   );
 
-  // Latest swing high/low from the arrays
-  const latestHigh = tf.swing_highs.length > 0 ? tf.swing_highs[tf.swing_highs.length - 1].price : null;
-  const latestLow = tf.swing_lows.length > 0 ? tf.swing_lows[tf.swing_lows.length - 1].price : null;
+  // Latest swing high/low — arrays are newest-first from backend
+  const latestHigh = tf.swing_highs.length > 0 ? tf.swing_highs[0].price : null;
+  const latestLow = tf.swing_lows.length > 0 ? tf.swing_lows[0].price : null;
+
+  // HH/LH and HL/LL classification (compare latest vs prior swing)
+  const isHH = tf.swing_highs.length >= 2 ? tf.swing_highs[0].price > tf.swing_highs[1].price : null;
+  const isHL = tf.swing_lows.length >= 2 ? tf.swing_lows[0].price > tf.swing_lows[1].price : null;
 
   return (
     <div className="mb-1.5">
@@ -778,11 +782,11 @@ function SwingTFRow({ label, tf, hidden, onToggle }: {
         {label} <span className={trendColor(tf.structure)}>{trendIcon(tf.structure)} {tf.structure.replace('_', ' ')}</span>
       </button>
       <div className="flex items-center justify-between text-[10px]">
-        <span className="text-muted2">SH</span>
+        <span className="text-muted2">SH {isHH !== null && <span className={isHH ? 'text-emerald-400' : 'text-red-400'}>{isHH ? 'HH' : 'LH'}</span>}</span>
         <span className="text-text">{latestHigh?.toFixed(2) ?? '—'}</span>
       </div>
       <div className="flex items-center justify-between text-[10px]">
-        <span className="text-muted2">SL</span>
+        <span className="text-muted2">SL {isHL !== null && <span className={isHL ? 'text-emerald-400' : 'text-red-400'}>{isHL ? 'HL' : 'LL'}</span>}</span>
         <span className="text-text">{latestLow?.toFixed(2) ?? '—'}</span>
       </div>
       {/* BOS / CHoCH events */}

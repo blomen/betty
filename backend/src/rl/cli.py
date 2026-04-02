@@ -420,15 +420,24 @@ def precompute(
 def replay(
     all_months: bool = typer.Option(False, "--all", help="Replay all Parquet files in TICKS_DIR"),
     month: Optional[str] = typer.Option(None, help="Replay a specific month YYYY-MM"),
+    gbt: Optional[str] = typer.Option(None, help="GBT model for augmented observations (hybrid GBT+DQN)"),
 ) -> None:
-    """Replay tick sessions through ReplayEngine and save episodes as .npy files."""
+    """Replay tick sessions through ReplayEngine and save episodes as .npy files.
+
+    With --gbt: produces augmented episodes (base + 8 GBT forecast + 8 position state).
+    Without --gbt: produces base episodes (market features only).
+    Dimension auto-detected from OBSERVATION_DIM / AUGMENTED_OBSERVATION_DIM.
+    """
     import numpy as np
     import pandas as pd
 
     from src.rl.data.fetcher import TICKS_DIR, MACRO_DIR
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.normalization import RunningNormalizer
-    from src.rl.features.observation import OBSERVATION_DIM
+    from src.rl.features.observation import (
+        OBSERVATION_DIM, AUGMENTED_OBSERVATION_DIM,
+        augment_observation, build_position_state,
+    )
 
     ticks_dir = TICKS_DIR
     episodes_dir = _EPISODES_DIR
@@ -490,7 +499,21 @@ def replay(
         typer.echo("No session_summaries.json found — precomputed levels disabled.")
         typer.echo("Run 'rl precompute' first for full level coverage.")
 
-    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    # Load GBT model for hybrid augmentation (optional)
+    gbt_model = None
+    if gbt:
+        from src.rl.agent.gbt_model import GBTModel
+        gbt_path = Path(gbt) if Path(gbt).exists() else _MODELS_DIR / gbt
+        if gbt_path.exists():
+            gbt_model = GBTModel.load(gbt_path)
+            typer.echo(f"Loaded GBT for augmentation: {gbt_path}")
+        else:
+            typer.echo(f"GBT not found: {gbt}. Replaying without augmentation.", err=True)
+
+    obs_dim = AUGMENTED_OBSERVATION_DIM if gbt_model else OBSERVATION_DIM
+    typer.echo(f"Observation dim: {obs_dim} ({'augmented' if gbt_model else 'base'})")
+
+    normalizer = RunningNormalizer(dim=obs_dim)
     engine = ReplayEngine(macro_data=macro_data)
 
     # Incremental save: write per-month chunks to avoid OOM on large datasets
@@ -509,6 +532,8 @@ def replay(
         month_rr: list[float] = []
         month_lt: list[str] = []
         month_st: list[float] = []
+        month_be: list[float] = []
+        month_lc: list[float] = []
 
         try:
             df = pd.read_parquet(pfile)
@@ -569,12 +594,20 @@ def replay(
                     prior_levels["monthly_low"] = None
 
             for ep in episodes:
-                normalizer.update(ep.observation)
-                month_obs.append(ep.observation)
+                obs = ep.observation
+                # Augment with GBT forecast + position state (hybrid architecture)
+                if gbt_model is not None:
+                    gbt_forecast = gbt_model.predict_full(obs)
+                    pos_state = build_position_state()  # zeros during replay (no live position)
+                    obs = augment_observation(obs, gbt_forecast, pos_state)
+                normalizer.update(obs)
+                month_obs.append(obs)
                 month_rc.append(ep.reward_continuation)
                 month_rr.append(ep.reward_reversal)
                 month_lt.append(ep.level_type)
                 month_st.append(ep.optimal_stop_ticks)
+                month_be.append(float(ep.breakeven_reached))
+                month_lc.append(float(ep.levels_captured_best))
 
             session_episodes += len(episodes)
 
@@ -585,8 +618,10 @@ def replay(
             np.save(chunk_dir / f"rr_{chunk_idx:04d}.npy", np.array(month_rr, dtype=np.float32))
             np.save(chunk_dir / f"lt_{chunk_idx:04d}.npy", np.array(month_lt))
             np.save(chunk_dir / f"st_{chunk_idx:04d}.npy", np.array(month_st, dtype=np.float32))
+            np.save(chunk_dir / f"be_{chunk_idx:04d}.npy", np.array(month_be, dtype=np.float32))
+            np.save(chunk_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
             chunk_idx += 1
-            del month_obs, month_rc, month_rr, month_lt, month_st  # free RAM
+            del month_obs, month_rc, month_rr, month_lt, month_st, month_be, month_lc
 
         total_episodes += session_episodes
         typer.echo(f"  {pfile.name}: {session_episodes} episodes across {len(dates)} session(s)")
@@ -618,6 +653,14 @@ def replay(
     np.save(episodes_dir / "stop_targets.npy", np.concatenate(st_chunks))
     del st_chunks
 
+    be_chunks = [np.load(chunk_dir / f"be_{i:04d}.npy") for i in range(chunk_idx)]
+    np.save(episodes_dir / "breakeven_reached.npy", np.concatenate(be_chunks))
+    del be_chunks
+
+    lc_chunks = [np.load(chunk_dir / f"lc_{i:04d}.npy") for i in range(chunk_idx)]
+    np.save(episodes_dir / "levels_captured.npy", np.concatenate(lc_chunks))
+    del lc_chunks
+
     # Clean up chunks
     for old in chunk_dir.glob("*.npy"):
         old.unlink()
@@ -648,8 +691,6 @@ def train(
     from src.rl.agent.dqn import DQNAgent
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, BATCH_SIZE, REWARD_CLIP_MIN, REWARD_CLIP_MAX, REWARD_NORMALIZE
-    from src.rl.features.observation import OBSERVATION_DIM
-
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -683,9 +724,10 @@ def train(
         rewards_rev = (rewards_rev - r_mean) / r_std
         typer.echo(f"Rewards normalized: mean={r_mean:.3f}, std={r_std:.3f}")
 
-    # Load and apply normalizer
+    # Load and apply normalizer — use actual obs dim from data
+    obs_dim = observations.shape[1]
     normalizer_path = episodes_dir / "normalizer.json"
-    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    normalizer = RunningNormalizer(dim=obs_dim)
     if normalizer_path.exists():
         normalizer.load(normalizer_path)
         typer.echo(f"Loaded normalizer (count={normalizer.count})")
@@ -708,9 +750,9 @@ def train(
     val_rr = rewards_rev[train_end:val_end]
 
     typer.echo(f"Split: train={len(train_obs)}, val={len(val_obs)}, test={n - val_end}")
-    typer.echo(f"Architecture: Dueling Double DQN ({OBSERVATION_DIM}-dim) + stop head")
+    typer.echo(f"Architecture: Dueling Double DQN ({obs_dim}-dim) + stop head")
 
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM)
+    agent = DQNAgent(observation_dim=obs_dim)
 
     for i in range(len(train_obs)):
         rc = float(train_rc[i])
@@ -781,7 +823,7 @@ def train_gbt(
     depth: int = typer.Option(5, help="Max tree depth"),
     lr: float = typer.Option(0.05, help="Learning rate (shrinkage)"),
 ) -> None:
-    """Train GBT direction classifier + stop regressor on replayed episodes."""
+    """Train multi-target GBT forecaster on replayed episodes."""
     import numpy as np
 
     from src.rl.agent.gbt_model import GBTModel
@@ -804,6 +846,12 @@ def train_gbt(
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
     stop_path = episodes_dir / "stop_targets.npy"
     stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
+
+    # Load additional targets for multi-head GBT (optional — backward compatible)
+    be_path = episodes_dir / "breakeven_reached.npy"
+    breakeven_reached = np.load(be_path) if be_path.exists() else None
+    lc_path = episodes_dir / "levels_captured.npy"
+    levels_captured = np.load(lc_path) if lc_path.exists() else None
 
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
@@ -848,12 +896,20 @@ def train_gbt(
     # Reward gap for sample weighting
     reward_gap = train_rc - train_rr
 
-    typer.echo(f"\nTraining GBT: {trees} trees, depth={depth}, lr={lr} ...")
+    # Split additional targets
+    train_be = breakeven_reached[:train_end] if breakeven_reached is not None else None
+    train_lc = levels_captured[:train_end] if levels_captured is not None else None
+
+    typer.echo(f"\nTraining multi-target GBT: {trees} trees, depth={depth}, lr={lr} ...")
     model = GBTModel()
     metrics = model.train(
         X_train=train_obs,
         y_direction=y_train,
         stop_targets=train_stops,
+        rewards_cont=train_rc,
+        rewards_rev=train_rr,
+        breakeven_reached=train_be,
+        levels_captured=train_lc,
         reward_gap=reward_gap,
         n_estimators=trees,
         max_depth=depth,
@@ -901,11 +957,11 @@ def train_gbt(
     # Feature importance
     typer.echo(f"\n  Top 15 features:")
     segments = [
-        (0, 31, "Zone composition"), (31, 52, "Orderflow"), (52, 91, "Structure/Session"),
-        (91, 129, "TPO"), (129, 144, "Candle window"), (144, 148, "Zone features"),
-        (148, 153, "Confluence"), (153, 164, "Macro"), (164, 169, "Exchange stats"),
-        (169, 183, "Setup detection"), (183, 196, "AMT"), (196, 216, "Micro"),
-        (216, 217, "Approach dir"), (217, 224, "Execution ctx"),
+        (0, 31, "Zone composition"), (31, 52, "Orderflow"), (52, 116, "Dow/Session"),
+        (116, 154, "TPO"), (154, 169, "Candle window"), (169, 173, "Zone features"),
+        (173, 178, "Confluence"), (178, 189, "Macro"), (189, 194, "Exchange stats"),
+        (194, 208, "Setup detection"), (208, 221, "AMT"), (221, 241, "Micro"),
+        (241, 242, "Approach dir"), (242, 249, "Execution ctx"),
     ]
     for orig_idx, imp in model.feature_importance(top_n=15):
         seg_name = "unknown"
@@ -947,8 +1003,6 @@ def eval(
     from src.rl.agent.evaluate import compute_metrics, print_evaluation_report
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, EPSILON_END
-    from src.rl.features.observation import OBSERVATION_DIM
-
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
     model_path = models_dir / f"dqn_{checkpoint}.pt"
@@ -969,10 +1023,11 @@ def eval(
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
     n = len(observations)
+    obs_dim = observations.shape[1]
 
-    # Load normalizer
+    # Load normalizer with actual obs dim
     normalizer_path = episodes_dir / "normalizer.json"
-    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    normalizer = RunningNormalizer(dim=obs_dim)
     if normalizer_path.exists():
         normalizer.load(normalizer_path)
 
@@ -989,7 +1044,7 @@ def eval(
     typer.echo(f"Skip threshold: {skip_threshold}")
 
     # Load agent with greedy policy
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM, epsilon=0.0)
+    agent = DQNAgent(observation_dim=obs_dim, epsilon=0.0)
     agent.load(model_path)
     agent.epsilon = 0.0
     typer.echo(f"Loaded model: {model_path}")

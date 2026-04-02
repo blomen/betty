@@ -5,9 +5,9 @@ patterns). No raw tick sequences — the orderflow and micro features already
 encode the temporal dynamics.
 
 Zone mode (state["zone"] present):
-    zone composition multi-hot  len(LevelType)  (25 currently)
+    zone composition multi-hot  len(LevelType)  (31 currently)
     orderflow                   21
-    structure + session + PDH    39
+    dow + session + PDH          64
     tpo (per-session)            38
     candle window                15
     zone features                 4
@@ -20,12 +20,12 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       218
+    total                       249
 
 Legacy mode (state["level_type"] present, no zone):
-    level_type one-hot   25
+    level_type one-hot   31
     orderflow            21
-    structure + session + PDH  39
+    dow + session + PDH  64
     tpo (per-session)    38
     candle window        15
     confluence            8
@@ -37,7 +37,7 @@ Legacy mode (state["level_type"] present, no zone):
     approach direction    1
     execution context     7
     ---
-    total               217
+    total               248
 """
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def build_observation(state: dict) -> np.ndarray:
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
 
-    # 3. Structure + session + PDH/PDL (39)
+    # 3. Dow Theory + session + PDH/PDL (64)
     swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
         price, vwap_bands, volume_profile, session_levels, session_context,
@@ -197,7 +197,7 @@ def build_observation(state: dict) -> np.ndarray:
     obs = np.concatenate([
         seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
-        seg_structure,    # 39
+        seg_structure,    # 64
         seg_tpo,          # 38
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
@@ -251,3 +251,70 @@ _dummy_state: dict = {
 OBSERVATION_DIM: int = int(build_observation(_dummy_state).shape[0])
 # No temporal/context split needed — everything is static context
 CONTEXT_DIM: int | None = None
+
+# --- Hybrid GBT+DQN augmentation ---
+GBT_FORECAST_DIM: int = 8   # prob_cont, prob_rev, confidence, best_r, worst_r, breakeven, levels, stop
+POSITION_STATE_DIM: int = 8  # pos_flat/long/short, unrealized_pnl, time_in_trade, session_pnl, consec_losses, progress
+AUGMENTED_OBSERVATION_DIM: int = OBSERVATION_DIM + GBT_FORECAST_DIM + POSITION_STATE_DIM
+
+
+def augment_observation(
+    obs: np.ndarray,
+    gbt_forecast: np.ndarray,
+    position_state: np.ndarray,
+) -> np.ndarray:
+    """Augment base observation with GBT forecast (8) + position state (8).
+
+    Args:
+        obs: base observation from build_observation()
+        gbt_forecast: GBT multi-target predictions (8-dim)
+        position_state: position/session state (8-dim)
+
+    Returns:
+        Augmented observation (base + 16)
+    """
+    return np.concatenate([obs, gbt_forecast, position_state]).astype(np.float32)
+
+
+def build_position_state(
+    pos_side: str = "flat",
+    unrealized_pnl_ticks: float = 0.0,
+    entry_timestamp: float = 0.0,
+    current_timestamp: float = 0.0,
+    session_pnl_r: float = 0.0,
+    consecutive_losses: int = 0,
+    trade_count: int = 0,
+    stop_ticks: float = 10.0,
+) -> np.ndarray:
+    """Build 8-dim position/session state vector.
+
+    Returns ndarray of shape (8,) with normalized values.
+    """
+    # Position side one-hot
+    pos_flat = 1.0 if pos_side == "flat" else 0.0
+    pos_long = 1.0 if pos_side == "long" else 0.0
+    pos_short = 1.0 if pos_side == "short" else 0.0
+
+    # Unrealized P&L in R-multiples, clipped
+    unrealized_r = np.clip(unrealized_pnl_ticks / max(stop_ticks, 1.0), -3.0, 3.0)
+
+    # Time in trade (minutes, normalized to [0,1] over 60 min)
+    if entry_timestamp > 0 and current_timestamp > entry_timestamp:
+        time_in_trade = min((current_timestamp - entry_timestamp) / 3600.0, 1.0)
+    else:
+        time_in_trade = 0.0
+
+    # Session P&L normalized
+    session_pnl_norm = np.clip(session_pnl_r / 10.0, -1.0, 1.0)
+
+    # Consecutive losses normalized
+    consec_norm = min(consecutive_losses / 3.0, 1.0)
+
+    # Session progress (trade count / 20)
+    progress = min(trade_count / 20.0, 1.0)
+
+    return np.array([
+        pos_flat, pos_long, pos_short,
+        unrealized_r, time_in_trade,
+        session_pnl_norm, consec_norm, progress,
+    ], dtype=np.float32)

@@ -1,17 +1,26 @@
 """
-MarketStructureEngine — Dow Theory state machine for BOS/CHoCH detection.
+Dow Theory — market structure state machine for BOS/CHoCH detection.
 
-Swing confirmation rule: close-only.
-A swing high is confirmed only when a subsequent candle CLOSES below the prior swing low.
-A swing low is confirmed only when a subsequent candle CLOSES above the prior swing high.
-Wick-only breaks (liquidity sweeps) do not count.
+Implements Dow Theory swing analysis: higher highs / higher lows define
+uptrends, lower highs / lower lows define downtrends.  Structural breaks
+are classified as BOS (Break of Structure — trend continuation) or CHoCH
+(Change of Character — trend reversal).
+
+Swing confirmation rule (configurable via use_close_only):
+  Default: a swing high is confirmed when price breaks below the prior swing low.
+  Close-only: only the candle CLOSE is used for break detection; wick-only
+  breaks (liquidity sweeps) do not count.
 
 States:
   SEEKING_HIGH — tracking a potential swing high since last confirmed low
   SEEKING_LOW  — tracking a potential swing low since last confirmed high
 
-Trend states:
-  ranging, uptrend, downtrend, reversing_up, reversing_down
+Trend states (5-state machine):
+  ranging → uptrend | downtrend
+  uptrend → reversing_down (via CHoCH bearish)
+  downtrend → reversing_up (via CHoCH bullish)
+  reversing_down → downtrend (via BOS bearish) | uptrend (via BOS bullish, failed reversal)
+  reversing_up → uptrend (via BOS bullish) | downtrend (via BOS bearish, failed reversal)
 """
 
 from __future__ import annotations
@@ -113,7 +122,6 @@ class MarketStructureEngine:
     def step(self, candle: dict) -> StructureResult:
         """Process a single new candle incrementally and return updated result."""
         self._step(candle)
-        self._bar_count += 1
         return self._build_result(self._bar_count)
 
     # ------------------------------------------------------------------
@@ -184,11 +192,16 @@ class MarketStructureEngine:
                 return
 
             # Persistent uptrend: price breaks above last confirmed swing high
-            # WITHOUT first dipping below the swing low → force-confirm pair
+            # WITHOUT first dipping below the swing low → force-confirm pair.
+            # Guard: require the potential high and low to be from different bars
+            # (there must have been a real pullback, not just same-bar noise).
             if self._confirmed_highs and self._potential_low_price is not None:
                 last_sh = self._confirmed_highs[0]
                 break_price_up = cl if self._use_close_only else hi
-                if break_price_up > last_sh.price:
+                if (
+                    break_price_up > last_sh.price
+                    and self._potential_high_ts != self._potential_low_ts
+                ):
                     self._force_swing_pair(
                         sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
                         sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
@@ -212,15 +225,10 @@ class MarketStructureEngine:
             ):
                 self._confirm_high(cl, ts)
             else:
-                # When potential_high advances, reset potential_low to this bar's
-                # low so the reference tracks the low near the current high.
-                # Without this, a sustained uptrend from the start leaves
-                # potential_low stuck at the very first bar's low, and the
-                # bootstrap check never fires.
-                if high_advanced:
-                    self._potential_low_price = lo
-                    self._potential_low_ts = ts
-                elif self._potential_low_price is None or lo < self._potential_low_price:
+                # Track running minimum low since the potential high started
+                # forming. This is the pullback reference — when price breaks
+                # below it, the swing high is confirmed.
+                if self._potential_low_price is None or lo < self._potential_low_price:
                     self._potential_low_price = lo
                     self._potential_low_ts = ts
 
@@ -257,10 +265,14 @@ class MarketStructureEngine:
                 return
 
         # Persistent downtrend: price breaks below last confirmed swing low
-        # → force-confirm the bounce high + the current low, continue SEEKING_LOW
+        # → force-confirm the bounce high + the current low, continue SEEKING_LOW.
+        # Guard: require high and low from different bars (real bounce, not same-bar noise).
         if self._confirmed_lows and self._potential_low_price is not None and self._potential_high_price is not None:
             last_sl = self._confirmed_lows[0]
-            if break_price_dn < last_sl.price:
+            if (
+                break_price_dn < last_sl.price
+                and self._potential_high_ts != self._potential_low_ts
+            ):
                 self._force_swing_pair(
                     sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
                     sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
@@ -471,6 +483,8 @@ class MarketStructureEngine:
                 self._trend = _DOWNTREND
             elif event_type == "bos_bullish":
                 self._trend = _UPTREND   # false break / failed reversal
+            elif event_type == "choch_bullish":
+                self._trend = _REVERSING_UP  # reversal failed, swinging back up
 
         elif t == _DOWNTREND:
             if event_type == "choch_bullish":
@@ -482,6 +496,8 @@ class MarketStructureEngine:
                 self._trend = _UPTREND
             elif event_type == "bos_bearish":
                 self._trend = _DOWNTREND  # false break / failed reversal
+            elif event_type == "choch_bearish":
+                self._trend = _REVERSING_DOWN  # reversal failed, swinging back down
 
     # ------------------------------------------------------------------
     # Result builder

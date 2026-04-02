@@ -1,4 +1,4 @@
-// dqnConfig.ts — maps each of the 224 DQN observation indices to display properties
+// dqnConfig.ts — maps DQN observation indices to display properties
 // Synced with backend/src/rl/features/observation.py build_observation() segments
 
 export interface DQNInputDef {
@@ -17,18 +17,18 @@ export interface DQNSegment {
 export const DQN_SEGMENTS: DQNSegment[] = [
   { name: 'LEVEL TYPE',     color: '#06b6d4', start: 0,   end: 31  },
   { name: 'ORDERFLOW',      color: '#10b981', start: 31,  end: 52  },
-  { name: 'STRUCTURE',      color: '#8b5cf6', start: 52,  end: 91  },
-  { name: 'TPO',            color: '#f59e0b', start: 91,  end: 129 },
-  { name: 'CANDLES',        color: '#ec4899', start: 129, end: 144 },
-  { name: 'ZONE',           color: '#a3e635', start: 144, end: 148 },
-  { name: 'CONFLUENCE',     color: '#14b8a6', start: 148, end: 153 },
-  { name: 'MACRO',          color: '#ef4444', start: 153, end: 164 },
-  { name: 'EXCHANGE STATS', color: '#38bdf8', start: 164, end: 169 },
-  { name: 'SETUP',          color: '#f97316', start: 169, end: 183 },
-  { name: 'AMT',            color: '#a78bfa', start: 183, end: 196 },
-  { name: 'MICRO',          color: '#22d3ee', start: 196, end: 216 },
-  { name: 'APPROACH',       color: '#94a3b8', start: 216, end: 217 },
-  { name: 'EXECUTION',      color: '#fb923c', start: 217, end: 224 },
+  { name: 'DOW/SESSION',    color: '#8b5cf6', start: 52,  end: 116 },
+  { name: 'TPO',            color: '#f59e0b', start: 116, end: 154 },
+  { name: 'CANDLES',        color: '#ec4899', start: 154, end: 169 },
+  { name: 'ZONE',           color: '#a3e635', start: 169, end: 173 },
+  { name: 'CONFLUENCE',     color: '#14b8a6', start: 173, end: 178 },
+  { name: 'MACRO',          color: '#ef4444', start: 178, end: 189 },
+  { name: 'EXCHANGE STATS', color: '#38bdf8', start: 189, end: 194 },
+  { name: 'SETUP',          color: '#f97316', start: 194, end: 208 },
+  { name: 'AMT',            color: '#a78bfa', start: 208, end: 221 },
+  { name: 'MICRO',          color: '#22d3ee', start: 221, end: 241 },
+  { name: 'APPROACH',       color: '#94a3b8', start: 241, end: 242 },
+  { name: 'EXECUTION',      color: '#fb923c', start: 242, end: 249 },
 ];
 
 // Level type names (indices 0-30) — matches LevelType enum in rl/config.py
@@ -54,23 +54,34 @@ const ORDERFLOW = [
   'delta_accel', 'cvd_divergence', 'vol_trend', 'pa_trend', 'imbal_trend', 'time_weight',
 ];
 
-// Structure feature names (indices 52-90)
-const STRUCTURE = [
-  'vwap_sd', 'in_va', 'poc_dist', 'vah_dist', 'val_dist', 'single_prints',
+// Dow Theory + session context feature names (indices 52-115, 64 features)
+const DOW_SESSION = [
+  // Session context (0-19)
+  'vwap_sd', 'in_va', 'poc_dist', 'vah_dist', 'val_dist', 'va_width',
   'ib_range', 'poor_high', 'poor_low',
-  'mkt_trend', 'mkt_range', 'mkt_neutral',
   'min_since_rth', 'sess_vol%', 'daily_range%', 'tod_sin', 'tod_cos',
   'sess_rth', 'sess_globex', 'sess_london',
   'ib_break_up', 'ib_break_dn', 'ib_intact',
-  'swing_trend_d', 'swing_trend_w', 'swing_trend_m',
-  'swing_dist_d', 'swing_dist_w', 'swing_dist_m',
-  'swing_pos_d', 'swing_pos_w', 'swing_pos_m',
+  // Dow Theory swings (20-59)
+  'trend_d', 'trend_w', 'trend_m',
+  'dist_sh_d', 'dist_sh_w', 'dist_sh_m',
+  'dist_sl_d', 'dist_sl_w', 'dist_sl_m',
+  'above_sh_d', 'above_sh_w', 'above_sh_m',
+  'below_sl_d', 'below_sl_w', 'below_sl_m',
+  'position_d', 'position_w', 'position_m',
+  'hh_lh_d', 'hh_lh_w', 'hh_lh_m',
+  'hl_ll_d', 'hl_ll_w', 'hl_ll_m',
+  'swing_range_d', 'swing_range_w', 'swing_range_m',
   'bos_d', 'bos_w', 'bos_m',
   'choch_d', 'choch_w', 'choch_m',
-  'pdh_dist', 'pdl_dist', 'pdh_pdl_pos',
+  'event_dir_d', 'event_dir_w', 'event_dir_m',
+  'momentum_d', 'momentum_w', 'momentum_m',
+  'trend_alignment',
+  // PDH/PDL (60-63)
+  'pdh_dist', 'pdl_dist', 'pdh_pdl_pos', 'pdh_pdl_width',
 ];
 
-// TPO per-session features (indices 91-128) — 3 sessions × ~12 features + global
+// TPO per-session features (indices 116-153) — 3 sessions × ~12 features + global
 const TPO = [
   'tky_poc_dist', 'tky_vah_dist', 'tky_val_dist', 'tky_in_va',
   'tky_shape_p', 'tky_shape_b', 'tky_shape_d',
@@ -87,7 +98,7 @@ const TPO = [
   'global_rotation', 'global_poc_migration',
 ];
 
-// Candle window feature names (indices 129-143) — 5 candles × 3 features
+// Candle window feature names (indices 154-168) — 5 candles × 3 features
 const CANDLES = [
   'c1_delta', 'c1_vol', 'c1_body',
   'c2_delta', 'c2_vol', 'c2_body',
@@ -96,36 +107,36 @@ const CANDLES = [
   'c5_delta', 'c5_vol', 'c5_body',
 ];
 
-// Zone features (indices 144-147)
+// Zone features (indices 169-172)
 const ZONE = [
   'zone_width', 'zone_members', 'zone_hierarchy', 'zone_session_age',
 ];
 
-// Confluence feature names (indices 148-152)
+// Confluence feature names (indices 173-177)
 const CONFLUENCE = [
   'levels_near', 'cluster_score', 'dist_higher', 'dist_lower', 'hierarchy',
 ];
 
-// Macro feature names (indices 153-163)
+// Macro feature names (indices 178-188)
 const MACRO = [
   'vix', 'vix_chg', 'regime', 'dxy_chg',
   'us10y_chg', 'us2y_chg', 'yield_curve',
   'cot_net', 'cot_chg', 'news_prox', 'news_imp',
 ];
 
-// Exchange stats feature names (indices 164-168)
+// Exchange stats feature names (indices 189-193)
 const EXCHANGE_STATS = [
   'oi_norm', 'oi_change', 'settlement_dist', 'cleared_vol', 'block_ratio',
 ];
 
-// Setup detection feature names (indices 169-182)
+// Setup detection feature names (indices 194-207)
 const SETUP = [
   'poor_extr', 'ib_break', 'spring', 'sfp',
   'rule80', 'fakeout', 'brk_balance', 'dbl_dist',
   'news_dir', 'absorption', 'vwap_sd2', 'gap_logic', 'pbd', 'rsv_setup',
 ];
 
-// AMT features (indices 183-195)
+// AMT features (indices 208-220)
 const AMT = [
   'day_trend', 'day_normal', 'day_neutral', 'day_range',
   'open_drive', 'open_test', 'open_reject', 'open_auction',
@@ -133,7 +144,7 @@ const AMT = [
   'va_overlap', 'value_migration', 'globex_hl_ratio',
 ];
 
-// Micro feature names (indices 196-215)
+// Micro feature names (indices 221-240)
 const MICRO = [
   'approach_vel', 'approach_accel', 'net_delta', 'delta_trend',
   'max_trade', 'big_trade%', 'buy_vol%', 'tick_spread',
@@ -142,31 +153,31 @@ const MICRO = [
   'vol_surge', 'rsv_0', 'rsv_1', 'rsv_2',
 ];
 
-// Approach direction (index 216)
+// Approach direction (index 241)
 const APPROACH = ['approach_dir'];
 
-// Execution context (indices 217-223)
+// Execution context (indices 242-248)
 const EXECUTION = [
   'auction_quality', 'ib_time_pct', 'time_at_level', 'retest_count',
   'prior_touch_result', 'session_momentum', 'tick_velocity',
 ];
 
-// Build the full 224-element array
+// Build the full observation array
 export const DQN_INPUTS: DQNInputDef[] = [
   ...LEVEL_TYPES.map((label, i) => ({ index: i, label, segment: 'LEVEL TYPE' })),
   ...ORDERFLOW.map((label, i) => ({ index: 31 + i, label, segment: 'ORDERFLOW' })),
-  ...STRUCTURE.map((label, i) => ({ index: 52 + i, label, segment: 'STRUCTURE' })),
-  ...TPO.map((label, i) => ({ index: 91 + i, label, segment: 'TPO' })),
-  ...CANDLES.map((label, i) => ({ index: 129 + i, label, segment: 'CANDLES' })),
-  ...ZONE.map((label, i) => ({ index: 144 + i, label, segment: 'ZONE' })),
-  ...CONFLUENCE.map((label, i) => ({ index: 148 + i, label, segment: 'CONFLUENCE' })),
-  ...MACRO.map((label, i) => ({ index: 153 + i, label, segment: 'MACRO' })),
-  ...EXCHANGE_STATS.map((label, i) => ({ index: 164 + i, label, segment: 'EXCHANGE STATS' })),
-  ...SETUP.map((label, i) => ({ index: 169 + i, label, segment: 'SETUP' })),
-  ...AMT.map((label, i) => ({ index: 183 + i, label, segment: 'AMT' })),
-  ...MICRO.map((label, i) => ({ index: 196 + i, label, segment: 'MICRO' })),
-  ...APPROACH.map((label, i) => ({ index: 216 + i, label, segment: 'APPROACH' })),
-  ...EXECUTION.map((label, i) => ({ index: 217 + i, label, segment: 'EXECUTION' })),
+  ...DOW_SESSION.map((label, i) => ({ index: 52 + i, label, segment: 'DOW/SESSION' })),
+  ...TPO.map((label, i) => ({ index: 116 + i, label, segment: 'TPO' })),
+  ...CANDLES.map((label, i) => ({ index: 154 + i, label, segment: 'CANDLES' })),
+  ...ZONE.map((label, i) => ({ index: 169 + i, label, segment: 'ZONE' })),
+  ...CONFLUENCE.map((label, i) => ({ index: 173 + i, label, segment: 'CONFLUENCE' })),
+  ...MACRO.map((label, i) => ({ index: 178 + i, label, segment: 'MACRO' })),
+  ...EXCHANGE_STATS.map((label, i) => ({ index: 189 + i, label, segment: 'EXCHANGE STATS' })),
+  ...SETUP.map((label, i) => ({ index: 194 + i, label, segment: 'SETUP' })),
+  ...AMT.map((label, i) => ({ index: 208 + i, label, segment: 'AMT' })),
+  ...MICRO.map((label, i) => ({ index: 221 + i, label, segment: 'MICRO' })),
+  ...APPROACH.map((label, i) => ({ index: 241 + i, label, segment: 'APPROACH' })),
+  ...EXECUTION.map((label, i) => ({ index: 242 + i, label, segment: 'EXECUTION' })),
 ];
 
 /** Get segment color for a given segment name */
