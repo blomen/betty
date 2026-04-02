@@ -140,8 +140,9 @@ class ExtractorFactory:
         elif retriever_type == "gecko_v2":
             # Gecko V2 - API interception approach (faster than DOM parsing)
             # Using headless=True for better performance (2-3s faster per sport)
+            # SOCKS proxy needed — Betsson 403s from German datacenter IPs
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_socks=True)
             retriever = GeckoV2Retriever(config, transport=transport)
         elif retriever_type == "snabbare":
             # Snabbare - Sportradar MTS platform, WebSocket interception
@@ -175,9 +176,9 @@ class ExtractorFactory:
             retriever = VbetRetriever(config)
         elif retriever_type == "interwetten":
             # Interwetten SSR - browser-based DOM parsing (headless works fine)
-            # Residential proxy helps bypass Cloudflare IP reputation checks
+            # SOCKS proxy (Swedish residential) needed — Cloudflare blocks datacenter IPs
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_socks=True)
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected

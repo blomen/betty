@@ -649,7 +649,7 @@ providers:
     domain: comeon.com
     retriever_type: custom
     site_url: https://www.comeon.com
-    provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
+    provider_timeout: 1800             # 5 sports × ~200s each through SOCKS proxy (adds latency)
     sport_timeout: 360                 # Football has 60+ leagues × ~5s each; 180s was too tight
     bonus:
       type: bonusdeposit
