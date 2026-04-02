@@ -59,36 +59,29 @@ export function TabIcon({ name, color, size = 16 }: { name: string; color: strin
   const v = '0 0 24 24';
 
   switch (name) {
-    // Sports sidebar — trophy
+    // Sports sidebar — football
     case 'sports':
       return (
         <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M6 3h12v6a6 6 0 01-12 0V3z"/>
-          <path d="M6 5H4a1 1 0 00-1 1v1a3 3 0 003 3"/>
-          <path d="M18 5h2a1 1 0 011 1v1a3 3 0 01-3 3"/>
-          <line x1="12" y1="15" x2="12" y2="18"/>
-          <path d="M8 21h8l-1-3H9z"/>
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          <path d="M2 12h20"/>
         </svg>
       );
-    // Stocks sidebar — candlesticks
+    // Stocks sidebar — trending up arrow
     case 'stocks':
       return (
         <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="7" y1="4" x2="7" y2="20"/>
-          <rect x="5" y="8" width="4" height="7" rx="0.5" fill="currentColor" fillOpacity="0.15"/>
-          <line x1="17" y1="3" x2="17" y2="17"/>
-          <rect x="15" y="6" width="4" height="6" rx="0.5" fill="currentColor" fillOpacity="0.15"/>
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+          <polyline points="17 6 23 6 23 12"/>
         </svg>
       );
-    // App logo — BBQ chicken
+    // App logo — fire
     case 'app':
       return (
-        <svg width={w} height={h} viewBox="0 0 32 32" fill="none">
-          <path d="M30.5,3H29V1.51a1.5,1.5,0,1,0-3,0V3L21,8l3,3,5-5h1.5a1.5,1.5,0,0,0,0-3Z" fill="#ffe6c1"/>
-          <path d="M26,12,20,6,5,14.13A9.5,9.5,0,1,0,17.87,27Z" fill="#dc562c"/>
-          <path d="M14.7,24a1,1,0,0,1-.71-.29L8.29,18a1,1,0,0,1,1.41-1.41l5.7,5.7A1,1,0,0,1,14.7,24Z" fill="#8f2c0e"/>
-          <path d="M19,19.8a1,1,0,0,1-.71-.29l-5.8-5.8a1,1,0,0,1,1.41-1.41l5.8,5.8A1,1,0,0,1,19,19.8Z" fill="#8f2c0e"/>
-          <path d="M10.6,28.2a1,1,0,0,1-.71-.29l-5.8-5.8a1,1,0,0,1,1.41-1.41l5.8,5.8a1,1,0,0,1-.71,1.71Z" fill="#8f2c0e"/>
+        <svg width={w} height={h} viewBox="0 0 24 24" fill="none">
+          <path d="M12 23c-4.97 0-8-3.03-8-7 0-2.5 1.5-5.5 3-7.5.42-.57 1.3-.26 1.26.44-.1 1.76.47 3.56 1.74 4.56 0-3 1.5-6.5 4-8.5.56-.44 1.36.06 1.2.74C14.58 8.5 16.5 5 19 3c.44-.36 1.08.06.96.62C19.2 7.3 20 10 20 13c0 5.5-3.5 10-8 10z" fill="#FF6B35"/>
+          <path d="M12 23c-2.76 0-5-2.24-5-5 0-1.5.89-3.25 2-4.5.34-.38.96-.14.92.32-.08 1.06.33 2.13 1.08 2.68 0-1.8 1-3.9 2.5-5.1.37-.3.9.02.82.46-.2 1.1.46 2.15 1.68 3.14.76.62 1 1.62 1 2.5 0 3-1.76 5.5-5 5.5z" fill="#FFD93D"/>
         </svg>
       );
     // All tab icons — thin colored ring
