@@ -20,8 +20,16 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
+
+# Prefer LightGBM (10-50x faster, multi-threaded) with sklearn fallback
+try:
+    from lightgbm import LGBMClassifier as _Classifier, LGBMRegressor as _Regressor
+    _ENGINE = "lightgbm"
+except ImportError:
+    from sklearn.ensemble import _Classifier as _Classifier
+    from sklearn.ensemble import _Regressor as _Regressor
+    _ENGINE = "sklearn"
 
 log = logging.getLogger(__name__)
 
@@ -34,13 +42,15 @@ class GBTModel:
     Produces 8-dim forecast vector consumed by the DQN decision layer.
     """
 
+    engine: str = _ENGINE
+
     def __init__(self) -> None:
-        self.direction_model: GradientBoostingClassifier | None = None
-        self.expected_best_r_model: GradientBoostingRegressor | None = None
-        self.expected_worst_r_model: GradientBoostingRegressor | None = None
-        self.breakeven_model: GradientBoostingClassifier | None = None
-        self.levels_model: GradientBoostingRegressor | None = None
-        self.stop_model: GradientBoostingRegressor | None = None
+        self.direction_model: _Classifier | None = None
+        self.expected_best_r_model: _Regressor | None = None
+        self.expected_worst_r_model: _Regressor | None = None
+        self.breakeven_model: _Classifier | None = None
+        self.levels_model: _Regressor | None = None
+        self.stop_model: _Regressor | None = None
         self.scaler: StandardScaler | None = None
         self._alive_mask: np.ndarray | None = None
 
@@ -77,25 +87,38 @@ class GBTModel:
         if reward_gap is not None:
             sample_weight = np.clip(np.abs(reward_gap), 0.1, 5.0)
 
-        gbt_params = dict(
-            n_estimators=n_estimators, max_depth=max_depth,
-            learning_rate=learning_rate, subsample=subsample,
-            min_samples_leaf=50, max_features="sqrt",
-            validation_fraction=0.1, n_iter_no_change=20, tol=1e-4,
-        )
-        reg_params = dict(
-            n_estimators=min(300, n_estimators), max_depth=min(4, max_depth),
-            learning_rate=learning_rate, subsample=subsample,
-            min_samples_leaf=50,
-        )
+        if _ENGINE == "lightgbm":
+            gbt_params = dict(
+                n_estimators=n_estimators, max_depth=max_depth,
+                learning_rate=learning_rate, subsample=subsample,
+                min_child_samples=50, colsample_bytree=0.7,
+                n_jobs=-1, verbose=-1,
+            )
+            reg_params = dict(
+                n_estimators=min(300, n_estimators), max_depth=min(4, max_depth),
+                learning_rate=learning_rate, subsample=subsample,
+                min_child_samples=50, n_jobs=-1, verbose=-1,
+            )
+        else:
+            gbt_params = dict(
+                n_estimators=n_estimators, max_depth=max_depth,
+                learning_rate=learning_rate, subsample=subsample,
+                min_samples_leaf=50, max_features="sqrt",
+                validation_fraction=0.1, n_iter_no_change=20, tol=1e-4,
+            )
+            reg_params = dict(
+                n_estimators=min(300, n_estimators), max_depth=min(4, max_depth),
+                learning_rate=learning_rate, subsample=subsample,
+                min_samples_leaf=50,
+            )
 
-        metrics = {"alive_features": alive_count, "total_features": int(X_train.shape[1])}
+        metrics = {"alive_features": alive_count, "total_features": int(X_train.shape[1]), "engine": _ENGINE}
 
         # Head 1: Direction classifier (prob_cont, prob_rev, confidence)
         log.info("Training direction head: %d samples, %d features", len(X_scaled), alive_count)
-        self.direction_model = GradientBoostingClassifier(**gbt_params)
+        self.direction_model = _Classifier(**gbt_params)
         self.direction_model.fit(X_scaled, y_direction, sample_weight=sample_weight)
-        metrics["direction_trees"] = int(self.direction_model.n_estimators_)
+        metrics["direction_trees"] = int(getattr(self.direction_model, "n_estimators_", n_estimators))
         metrics["direction_accuracy"] = round(self.direction_model.score(X_scaled, y_direction) * 100, 1)
 
         # Head 2: Expected best R (magnitude of best action reward)
@@ -104,29 +127,29 @@ class GBTModel:
             worst_r = np.minimum(rewards_cont, rewards_rev)
 
             log.info("Training expected_best_r head")
-            self.expected_best_r_model = GradientBoostingRegressor(**reg_params)
+            self.expected_best_r_model = _Regressor(**reg_params)
             self.expected_best_r_model.fit(X_scaled, best_r)
 
             log.info("Training expected_worst_r head")
-            self.expected_worst_r_model = GradientBoostingRegressor(**reg_params)
+            self.expected_worst_r_model = _Regressor(**reg_params)
             self.expected_worst_r_model.fit(X_scaled, worst_r)
 
         # Head 3: Breakeven probability
         if breakeven_reached is not None:
             log.info("Training breakeven head")
-            self.breakeven_model = GradientBoostingClassifier(**gbt_params)
+            self.breakeven_model = _Classifier(**gbt_params)
             self.breakeven_model.fit(X_scaled, breakeven_reached.astype(np.int32))
             metrics["breakeven_accuracy"] = round(self.breakeven_model.score(X_scaled, breakeven_reached.astype(np.int32)) * 100, 1)
 
         # Head 4: Predicted levels captured
         if levels_captured is not None:
             log.info("Training levels head")
-            self.levels_model = GradientBoostingRegressor(**reg_params)
+            self.levels_model = _Regressor(**reg_params)
             self.levels_model.fit(X_scaled, np.clip(levels_captured, 0, 6))
 
         # Head 5: Stop distance
         log.info("Training stop head")
-        self.stop_model = GradientBoostingRegressor(**reg_params)
+        self.stop_model = _Regressor(**reg_params)
         self.stop_model.fit(X_scaled, stop_targets)
 
         return metrics

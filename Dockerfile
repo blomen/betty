@@ -20,7 +20,7 @@ COPY pyproject.toml ./
 COPY backend/src/ backend/src/
 RUN pip install --no-cache-dir -e ".[scrape]" && \
     pip install --no-cache-dir uvloop && \
-    pip install --no-cache-dir scikit-learn joblib && \
+    pip install --no-cache-dir scikit-learn joblib lightgbm && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Playwright browser
@@ -36,8 +36,10 @@ RUN cd frontend && npm run build
 # Backend source (refresh — earlier COPY was just for dep install caching)
 COPY backend/ backend/
 
-# Data directories
-RUN mkdir -p /app/data /app/logs /app/models
+# Data directories + symlink for RL (CLI resolves from backend/data/rl/)
+RUN mkdir -p /app/data /app/logs /app/models /app/data/rl && \
+    mkdir -p /app/backend/data && \
+    ln -s /app/data/rl /app/backend/data/rl
 
 ENV FIREV_DATA_DIR=/app/data
 ENV FIREV_LOGS_DIR=/app/logs
