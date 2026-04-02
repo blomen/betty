@@ -1432,7 +1432,7 @@ def get_engine():
         if db_url:
             # PostgreSQL — convert async URL to sync for Alembic
             sync_url = db_url.replace("+asyncpg", "+psycopg2")
-            _engine = create_engine(sync_url)
+            _engine = create_engine(sync_url, pool_size=20, max_overflow=20, pool_pre_ping=True)
         else:
             # SQLite fallback (local dev without Docker)
             from ..paths import get_db_path

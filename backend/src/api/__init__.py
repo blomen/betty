@@ -130,11 +130,9 @@ async def lifespan(app: FastAPI):
 
     async def _start_scheduler():
         try:
-            print("[Startup] Starting scheduler...", flush=True)
             await scheduler.start_continuous(interval_seconds=300)
-            print("[Startup] Scheduler started successfully", flush=True)
-        except Exception as e:
-            print(f"[Startup] Scheduler FAILED: {e}", flush=True)
+            logger.info("[Startup] Scheduler started successfully")
+        except Exception:
             logger.exception("[Startup] Scheduler start_continuous failed")
 
     _scheduler_task = asyncio.create_task(_start_scheduler())
