@@ -403,6 +403,7 @@ class LevelMonitor:
             "price": price,
             "confluence": level.cluster,
             "orderflow": snapshot,
+            "amt_dynamics": self._amt_tracker.snapshot(),
         })
         # Schedule async ML/macro fetch
         if self._loop and self._db_session_factory:
@@ -457,6 +458,7 @@ class LevelMonitor:
                         "day_type_confidence": indicators.get("ml_day_type_confidence"),
                     },
                     "macro": macro_data,
+                    "amt_dynamics": self._amt_tracker.snapshot(),
                 })
             except Exception as e:
                 logger.warning("Failed to emit level_context for %s: %s", level_name, e)
