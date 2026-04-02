@@ -16,7 +16,7 @@ interface Props {
 // ExecutionPanel
 // ---------------------------------------------------------------------------
 
-export function ExecutionPanel({ batch, onBack }: Props) {
+export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
   const [completed, setCompleted] = useState(false);
 
   if (completed) {
@@ -38,6 +38,7 @@ export function ExecutionPanel({ batch, onBack }: Props) {
   return (
     <FireWindow
       batch={batch}
+      wageringProjections={wageringProjections}
       onComplete={() => setCompleted(true)}
       onBack={onBack}
     />

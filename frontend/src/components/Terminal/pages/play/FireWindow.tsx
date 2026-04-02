@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   fireWindowApi,
   type ProviderQueueItem,
@@ -6,7 +6,7 @@ import {
   type FireResult,
 } from '@/services/api/fireWindow';
 import { ProviderName } from '../../ProviderName';
-import type { BatchBet } from '@/types';
+import type { BatchBet, WageringProjection } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -16,8 +16,19 @@ type Phase = 'queue' | 'activating' | 'monitoring' | 'firing' | 'result' | 'comp
 
 interface Props {
   batch: BatchBet[];
+  wageringProjections: WageringProjection[];
   onComplete: () => void;
   onBack: () => void;
+}
+
+interface BatchStats {
+  totalBets: number;
+  stakeSek: number;
+  stakeUsdc: number;
+  evSek: number;
+  evUsdc: number;
+  providers: number;
+  clusters: number;
 }
 
 interface ProviderResult {
@@ -53,7 +64,7 @@ const CATEGORY_CLASSES: Record<string, string> = {
 // FireWindow Component
 // ---------------------------------------------------------------------------
 
-export function FireWindow({ batch, onComplete, onBack }: Props) {
+export function FireWindow({ batch, wageringProjections, onComplete, onBack }: Props) {
   const [phase, setPhase] = useState<Phase>('queue');
   const [queue, setQueue] = useState<ProviderQueueItem[]>([]);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
@@ -63,6 +74,24 @@ export function FireWindow({ batch, onComplete, onBack }: Props) {
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const closedRef = useRef(false);
+
+  // Batch summary stats (computed once from the batch prop)
+  const stats = useMemo<BatchStats>(() => {
+    const funded = batch.filter((b) => b.funded);
+    const providers = new Set(funded.map((b) => b.provider_id));
+    const clusters = new Set(funded.filter((b) => b.cluster).map((b) => b.cluster));
+    const sek = funded.filter((b) => b.tier !== 'polymarket');
+    const usdc = funded.filter((b) => b.tier === 'polymarket');
+    return {
+      totalBets: funded.length,
+      stakeSek: Math.round(sek.reduce((s, b) => s + b.stake, 0)),
+      stakeUsdc: usdc.reduce((s, b) => s + b.stake, 0),
+      evSek: Math.round(sek.reduce((s, b) => s + b.expected_profit, 0)),
+      evUsdc: usdc.reduce((s, b) => s + b.expected_profit, 0),
+      providers: providers.size,
+      clusters: clusters.size,
+    };
+  }, [batch]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -229,13 +258,30 @@ export function FireWindow({ batch, onComplete, onBack }: Props) {
   // ---------------------------------------------------------------------------
 
   if (phase === 'queue') {
-    const pending = queue.filter((q) => !q.fired);
     return (
       <div className="flex flex-col gap-2">
+        {/* Summary header — mirrors CapitalPlanPanel style */}
+        <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
+          <span className="text-muted uppercase tracking-wider text-[10px]">Fire Window</span>
+          <span className="text-foreground">
+            {stats.totalBets} bets across {stats.providers} providers
+          </span>
+          <span className="text-muted text-[10px]">
+            Deployed{' '}
+            {stats.stakeSek > 0 && `${stats.stakeSek} kr`}
+            {stats.stakeSek > 0 && stats.stakeUsdc > 0 && ' + '}
+            {stats.stakeUsdc > 0 && `${stats.stakeUsdc.toFixed(2)} USDC`}
+            {stats.stakeSek === 0 && stats.stakeUsdc === 0 && '0 kr'}
+          </span>
+          <span className="text-success text-[10px] ml-auto">
+            +{stats.evSek > 0 ? `${stats.evSek} kr` : ''}
+            {stats.evSek > 0 && stats.evUsdc > 0 ? ' + ' : ''}
+            {stats.evUsdc > 0 ? `${stats.evUsdc.toFixed(2)} USDC` : ''} EV
+          </span>
+        </div>
+
+        {/* Provider queue */}
         <div className="border border-border bg-panel px-3 py-2">
-          <div className="text-sm text-foreground font-medium mb-2">
-            Provider Queue ({pending.length} remaining)
-          </div>
           {error && <p className="text-danger text-xs mb-2">{error}</p>}
           <div className="flex flex-col gap-1">
             {queue.map((item) => (
@@ -271,6 +317,43 @@ export function FireWindow({ batch, onComplete, onBack }: Props) {
           </div>
         </div>
 
+        {/* Wagering projections — same style as CapitalPlanPanel */}
+        {wageringProjections.length > 0 && (
+          <div className="border border-border bg-amber-500/5 px-3 py-1.5">
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-sm font-medium text-amber-500 tracking-wider uppercase">
+                Wagering After Batch
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+              {wageringProjections.map((proj) => {
+                const total = proj.wagering_total || proj.wagering_remaining;
+                const beforePct = total > 0 ? Math.round(((total - proj.wagering_remaining) / total) * 100) : 100;
+                const afterPct = total > 0 ? Math.round(((total - proj.projected_remaining) / total) * 100) : 100;
+                return (
+                  <div
+                    key={`${proj.provider_id}-${proj.cluster}`}
+                    className="flex items-center gap-1.5 text-sm"
+                  >
+                    <span className="text-amber-400 font-medium">
+                      {proj.provider_id}
+                    </span>
+                    <span className="text-muted">{beforePct}%</span>
+                    <span className="text-muted2">→</span>
+                    <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
+                    {proj.days_remaining != null && (
+                      <span className="text-muted text-[10px]">
+                        {proj.days_remaining}d
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Back button */}
         <div className="flex items-center gap-2 px-1">
           <button
             onClick={onBack}
