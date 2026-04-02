@@ -86,7 +86,7 @@ def main():
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     print("[fire] Starting local backend on http://127.0.0.1:8000")
-    print("[fire] Open Play tab → build batch → fire window → click Polymarket")
+    print("[fire] Open Play tab -> build batch -> fire window -> click Polymarket")
 
     import uvicorn
     uvicorn.run(

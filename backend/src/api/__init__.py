@@ -7,6 +7,7 @@ Connects to SQLite database and analysis modules.
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -147,7 +148,6 @@ async def lifespan(app: FastAPI):
     # Everything is gated on market hours: when Globex is closed (weekend),
     # nothing starts — zero threads, zero network, zero CPU.
     # A lightweight watcher sleeps until market opens, then boots everything.
-    import os
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
     if databento_key:
