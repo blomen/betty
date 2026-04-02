@@ -6,6 +6,7 @@ import {
   type FireResult,
 } from '@/services/api/fireWindow';
 import { ProviderName } from '../../ProviderName';
+import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import type { BatchBet, WageringProjection } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -52,15 +53,8 @@ function formatStake(amount: number, tier: string): string {
   return `${Math.round(amount)} SEK`;
 }
 
-function formatTTK(startTime: string | null): string {
-  if (!startTime) return '--';
-  const diff = new Date(startTime).getTime() - Date.now();
-  if (diff < 0) return 'LIVE';
-  const hours = Math.floor(diff / 3_600_000);
-  const mins = Math.floor((diff % 3_600_000) / 60_000);
-  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
-  if (hours > 0) return `${hours}h${mins > 0 ? String(mins).padStart(2, '0') + 'm' : ''}`;
-  return `${mins}m`;
+function oddsToCents(odds: number): number {
+  return odds > 1 ? Math.round(100 / odds) : 0;
 }
 
 const CATEGORY_CLASSES: Record<string, string> = {
@@ -404,7 +398,6 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
     const activeBets = liveState.bets.filter((b) => b.category !== 'negative');
     const excludedBets = liveState.bets.filter((b) => b.category === 'negative');
     const tier = liveState.tier;
-    const isPoly = tier === 'polymarket';
 
     return (
       <div className="flex flex-col gap-2">
@@ -430,67 +423,65 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
           <div className="text-danger text-xs px-3">{error}</div>
         )}
 
-        {/* Bet table */}
+        {/* Bet table — matches Poly tab layout + delta */}
         <div className="border border-border bg-panel overflow-x-auto">
-          <table className="text-xs sq w-full">
-            <thead className="bg-panel">
+          <table className="sq" style={{ width: '100%' }}>
+            <thead>
               <tr>
-                <th className="text-left px-2 py-1">Event / Outcome</th>
-                <th className="text-right px-2 py-1">Stake</th>
-                {isPoly && <th className="text-right px-2 py-1">&#162;</th>}
-                <th className="text-right px-2 py-1">Orig</th>
-                <th className="text-right px-2 py-1">Live</th>
-                <th className="text-right px-2 py-1">Fair</th>
-                <th className="text-right px-2 py-1">Edge</th>
-                <th className="text-right px-2 py-1">Delta</th>
-                <th className="text-right px-2 py-1">TTK</th>
+                <th style={{ width: '35%' }}>Event</th>
+                <th className="text-right">Outcome</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Fair</th>
+                <th className="text-right">Prob</th>
+                <th className="text-right">TTK</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">Edge</th>
+                <th className="text-right">Delta</th>
               </tr>
             </thead>
             <tbody>
               {liveState.bets.map((bet) => {
-                const catClass = CATEGORY_CLASSES[bet.category] ?? 'text-foreground';
+                const catClass = CATEGORY_CLASSES[bet.category] ?? '';
+                const liveOdds = bet.live_odds ?? bet.odds;
+                const liveCents = oddsToCents(liveOdds);
+                const fairCents = oddsToCents(bet.fair_odds);
                 const edgeVal = bet.live_edge ?? bet.edge_pct;
-                const edgeColor =
-                  edgeVal > 5 ? 'text-success' : edgeVal > 0 ? 'text-warning' : 'text-danger';
+                const ttk = getTTKFromNow(bet.start_time);
                 const deltaColor =
-                  bet.delta > 0 ? 'text-success' : bet.delta < 0 ? 'text-danger' : 'text-muted';
+                  bet.delta > 1 ? 'text-success' : bet.delta < -1 ? 'text-danger' : 'text-muted';
 
                 return (
                   <tr key={bet.bet_id} className={catClass}>
-                    <td className="px-2 py-1">
-                      <div className="truncate max-w-[260px]" title={`${bet.display_home} v ${bet.display_away}`}>
-                        {bet.display_home} v {bet.display_away}
+                    <td>
+                      <div className="truncate max-w-[300px] text-sm" title={`${bet.display_home} vs ${bet.display_away}`}>
+                        {bet.display_home} vs {bet.display_away}
                       </div>
-                      <div className="text-muted text-[10px]">
-                        {bet.outcome}
-                        {bet.point != null ? ` (${bet.point > 0 ? '+' : ''}${bet.point})` : ''}
+                      <div className="text-muted2 text-[11px]">
+                        {bet.sport}
+                        {bet.start_time && ` · ${new Date(bet.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${new Date(bet.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`}
                       </div>
                     </td>
-                    <td className="text-right px-2 py-1">
+                    <td className="text-right text-xs">{bet.outcome}{bet.point != null ? ` (${bet.point > 0 ? '+' : ''}${bet.point})` : ''}</td>
+                    <td className="text-right text-sm font-medium">
+                      {liveOdds.toFixed(2)} <span className="text-muted text-xs">({liveCents}&#162;)</span>
+                    </td>
+                    <td className="text-right text-muted text-sm">
+                      {bet.fair_odds.toFixed(2)} <span className="text-xs">({fairCents}&#162;)</span>
+                    </td>
+                    <td className="text-right text-muted text-sm">
+                      {bet.fair_odds > 1 ? `${(100 / bet.fair_odds).toFixed(0)}%` : '-'}
+                    </td>
+                    <td className="text-right">
+                      <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>
+                    </td>
+                    <td className="text-right text-sm font-medium">
                       {formatStake(bet.stake, tier)}
                     </td>
-                    {isPoly && (
-                      <td className="text-right px-2 py-1 text-tabPolymarket font-mono">
-                        {bet.live_price_cents != null ? `${bet.live_price_cents}` : '--'}
-                      </td>
-                    )}
-                    <td className="text-right px-2 py-1">{bet.odds.toFixed(2)}</td>
-                    <td className="text-right px-2 py-1 font-medium">
-                      {bet.live_odds != null ? bet.live_odds.toFixed(2) : '--'}
+                    <td className={`text-right font-semibold text-sm ${edgeVal > 0 ? 'text-success' : 'text-danger'}`}>
+                      {edgeVal > 0 ? '+' : ''}{edgeVal.toFixed(1)}%
                     </td>
-                    <td className="text-right px-2 py-1 text-muted">
-                      {bet.fair_odds.toFixed(2)}
-                    </td>
-                    <td className={`text-right px-2 py-1 font-semibold ${edgeColor}`}>
-                      {edgeVal > 0 ? '+' : ''}
-                      {edgeVal.toFixed(1)}%
-                    </td>
-                    <td className={`text-right px-2 py-1 ${deltaColor}`}>
-                      {bet.delta > 0 ? '+' : ''}
-                      {bet.delta.toFixed(2)}
-                    </td>
-                    <td className="text-right px-2 py-1 text-muted">
-                      {formatTTK(bet.start_time)}
+                    <td className={`text-right text-sm ${deltaColor}`}>
+                      {bet.delta > 0 ? '+' : ''}{bet.delta.toFixed(1)}
                     </td>
                   </tr>
                 );
