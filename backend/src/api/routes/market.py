@@ -127,54 +127,55 @@ async def trigger_compute(
     """Fetch market data and compute AMT analysis for a date."""
     data = await _offload(svc.compute_session, date)
 
-    # Refresh level monitor with new session data
-    level_monitor = getattr(request.app.state, "level_monitor", None)
-    if level_monitor:
-        expanded = await _offload(svc.build_expanded_session)
-        if expanded:
-            level_monitor.load_levels(expanded)
+    # Refresh level monitor + RL context — best-effort, never crashes the response
+    try:
+        level_monitor = getattr(request.app.state, "level_monitor", None)
+        if level_monitor and data:
+            expanded = await _offload(svc.build_expanded_session)
+            if expanded:
+                level_monitor.load_levels(expanded)
 
-        # Pass session context for DQN live inference
-        # The compute_session return dict contains the VWAP, VP, TPO, and level data
-        session = data.get("session", {})
-        rl_context = {
-            "vwap_bands": {
-                "vwap": session.get("vwap"),
-                "upper_1": session.get("vwap_1sd_upper"),
-                "lower_1": session.get("vwap_1sd_lower"),
-                "upper_2": session.get("vwap_2sd_upper"),
-                "lower_2": session.get("vwap_2sd_lower"),
-                "upper_3": session.get("vwap_3sd_upper"),
-                "lower_3": session.get("vwap_3sd_lower"),
-            } if session.get("vwap") else None,
-            "volume_profile": session.get("volume_profile"),
-            "session_levels": session.get("session_levels"),
-            "session_tpos": session.get("session_tpos"),
-            "tpo_profile": session.get("tpo"),
-            "session_context": session.get("session_context"),
-            "macro": session.get("macro"),
-            "day_type": session.get("day_type"),
-            "amt_context": session.get("amt_context", {}),
-            "fvgs": [],
-            "single_print_zones": [],
-            "swing_structure": expanded.get("swing_structure") if expanded else None,
-        }
-        # Enrich macro with live exchange stats from Databento stream
-        stream = _get_live_stream(request)
-        if stream:
-            ds = stream.daily_stats
-            if ds:
-                macro_dict = rl_context.get("macro") or {}
-                macro_dict.update({
-                    "oi": ds.get("open_interest", {}).get("value", 0),
-                    "oi_change": 0,  # No prior-day ref in live — zeroed
-                    "settlement_price": ds.get("settlement_price", {}).get("value", 0),
-                    "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
-                    "block_volume": ds.get("block_volume", {}).get("value", 0),
-                })
-                rl_context["macro"] = macro_dict
+            session = data if isinstance(data, dict) else {}
+            rl_context = {
+                "vwap_bands": {
+                    "vwap": session.get("vwap"),
+                    "upper_1": session.get("vwap_1sd_upper"),
+                    "lower_1": session.get("vwap_1sd_lower"),
+                    "upper_2": session.get("vwap_2sd_upper"),
+                    "lower_2": session.get("vwap_2sd_lower"),
+                    "upper_3": session.get("vwap_3sd_upper"),
+                    "lower_3": session.get("vwap_3sd_lower"),
+                } if session.get("vwap") else None,
+                "volume_profile": session.get("volume_profile"),
+                "session_levels": session.get("session_levels"),
+                "session_tpos": session.get("session_tpos"),
+                "tpo_profile": session.get("tpo"),
+                "session_context": session.get("session_context"),
+                "macro": session.get("macro"),
+                "day_type": session.get("day_type"),
+                "amt_context": session.get("amt_context", {}),
+                "fvgs": [],
+                "single_print_zones": [],
+                "swing_structure": expanded.get("swing_structure") if expanded else None,
+            }
+            stream = _get_live_stream(request)
+            if stream:
+                ds = stream.daily_stats
+                if ds:
+                    macro_dict = rl_context.get("macro") or {}
+                    macro_dict.update({
+                        "oi": ds.get("open_interest", {}).get("value", 0),
+                        "oi_change": 0,
+                        "settlement_price": ds.get("settlement_price", {}).get("value", 0),
+                        "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
+                        "block_volume": ds.get("block_volume", {}).get("value", 0),
+                    })
+                    rl_context["macro"] = macro_dict
 
-        level_monitor.set_session_context(rl_context)
+            level_monitor.set_session_context(rl_context)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("RL context enrichment failed (non-fatal)", exc_info=True)
 
     return data
 
