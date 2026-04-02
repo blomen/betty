@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -50,8 +51,9 @@ from .routes import (
 
 logger = logging.getLogger(__name__)
 
-# Track startup time for uptime calculation
+# Track startup time and boot ID for restart detection
 _startup_time: float = 0.0
+_boot_id: str = uuid.uuid4().hex[:8]
 _background_tasks: set = set()  # prevent GC of fire-and-forget tasks
 
 
@@ -554,8 +556,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Health check endpoints
 @app.get("/health")
 async def health():
-    """Basic health check endpoint."""
-    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+    """Basic health check endpoint with boot ID for restart detection."""
+    return {
+        "status": "ok",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "boot_id": _boot_id,
+        "uptime": round(time.time() - _startup_time) if _startup_time else 0,
+    }
 
 
 @app.get("/health/live")

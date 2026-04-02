@@ -1,6 +1,6 @@
 // frontend/src/services/connectionManager.ts
 
-export type ConnectionState = 'checking' | 'connecting' | 'ok' | 'slow' | 'down';
+export type ConnectionState = 'checking' | 'connecting' | 'restarting' | 'ok' | 'slow' | 'down';
 
 type Listener = (state: ConnectionState, latencyMs: number | null, message: string) => void;
 
@@ -10,6 +10,8 @@ const SLOW_THRESHOLD_MS = 3000;
 const STARTUP_GRACE_MS = 30_000;
 const HEALTH_TIMEOUT_MS = 10000;
 const CONSECUTIVE_FAIL_THRESHOLD = 2;
+// After this many consecutive fails, escalate from "restarting" to "down"
+const DOWN_ESCALATION_THRESHOLD = 20; // ~60s at 3s intervals
 
 class ConnectionManager {
   private _state: ConnectionState = 'checking';
@@ -21,6 +23,7 @@ class ConnectionManager {
   private _listeners = new Set<Listener>();
   private _pollTimer: ReturnType<typeof setTimeout> | null = null;
   private _waitResolvers = new Set<() => void>();
+  private _lastBootId: string | null = null;
 
   constructor() {
     this._poll();
@@ -42,7 +45,7 @@ class ConnectionManager {
 
   /** Sync check — true when backend is responding or state is unknown (don't block during startup). */
   isUp(): boolean {
-    return this._state !== 'down';
+    return this._state !== 'down' && this._state !== 'restarting';
   }
 
   /** Async — resolves immediately if already up, otherwise waits for next 'ok'/'slow' transition. */
@@ -79,7 +82,7 @@ class ConnectionManager {
 
     // Adjust poll interval based on state
     this._schedulePoll(
-      state === 'down' || state === 'connecting' ? POLL_DOWN_MS : POLL_OK_MS
+      state === 'down' || state === 'connecting' || state === 'restarting' ? POLL_DOWN_MS : POLL_OK_MS
     );
   }
 
@@ -99,10 +102,20 @@ class ConnectionManager {
 
       if (!res.ok) {
         this._onFail(latency, `API ${res.status}`);
-      } else if (latency > SLOW_THRESHOLD_MS) {
-        this._onSlow(latency);
       } else {
-        this._onSuccess(latency);
+        const data = await res.json().catch(() => null);
+        const bootId = data?.boot_id ?? null;
+        const uptime = data?.uptime ?? null;
+
+        // Detect restart: boot_id changed means backend restarted
+        const restarted = this._lastBootId !== null && bootId !== null && bootId !== this._lastBootId;
+        if (bootId) this._lastBootId = bootId;
+
+        if (latency > SLOW_THRESHOLD_MS) {
+          this._onSlow(latency);
+        } else {
+          this._onSuccess(latency, restarted, uptime);
+        }
       }
     } catch {
       const latency = Math.round(performance.now() - t0);
@@ -110,10 +123,16 @@ class ConnectionManager {
     }
   }
 
-  private _onSuccess(latency: number) {
+  private _onSuccess(latency: number, restarted: boolean, uptime: number | null) {
     this._consecutiveFails = 0;
     this._everConnected = true;
-    this._setState('ok', latency, '');
+
+    if (restarted && uptime !== null && uptime < 60) {
+      // Backend just restarted — show brief "restarted" message, auto-clears on next poll
+      this._setState('ok', latency, `Restarted (up ${uptime}s)`);
+    } else {
+      this._setState('ok', latency, '');
+    }
   }
 
   private _onSlow(latency: number) {
@@ -136,6 +155,9 @@ class ConnectionManager {
 
     if (inGrace) {
       this._setState('connecting', latency, 'Waiting for backend...');
+    } else if (this._everConnected && this._consecutiveFails < DOWN_ESCALATION_THRESHOLD) {
+      // Was connected before — likely a restart, not a real outage
+      this._setState('restarting', latency, 'Backend restarting...');
     } else if (this._consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
       this._setState('down', latency, reason);
     } else {

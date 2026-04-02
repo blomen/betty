@@ -11,6 +11,11 @@ export function ErrorNotificationBar() {
 /**
  * Shows a connection error banner when the backend API is unreachable.
  * Reads from the unified ConnectionManager — no independent polling.
+ *
+ * States:
+ * - connecting: initial page load, backend not yet reached
+ * - restarting: was connected, lost connection (deploy/restart)
+ * - down: extended outage (>60s unreachable)
  */
 export function ConnectionErrorBar() {
   const { status, message } = useConnectionStatus();
@@ -25,6 +30,19 @@ export function ConnectionErrorBar() {
       >
         <span className="text-orange-400 animate-pulse">●</span>
         <span className="text-orange-400">Connecting to backend...</span>
+      </div>
+    );
+  }
+
+  if (status === 'restarting') {
+    return (
+      <div
+        className="mx-3 mt-2 border border-yellow-500/30 bg-gradient-to-br from-yellow-500/12 to-yellow-500/4 text-xs font-mono px-3 py-2 flex items-center gap-2"
+        style={{ borderLeftWidth: 3, borderLeftColor: '#EAB308' }}
+      >
+        <span className="text-yellow-400 animate-pulse">↻</span>
+        <span className="text-yellow-400">Backend restarting...</span>
+        <span className="text-muted">Data may be stale until reconnected</span>
       </div>
     );
   }
