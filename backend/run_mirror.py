@@ -206,15 +206,35 @@ def main():
     threading.Thread(target=_open_browser_when_ready, daemon=True).start()
 
     print("[mirror] Starting local API server...")
+    print("[mirror] Press Ctrl+C to stop\n")
 
     import uvicorn
-    uvicorn.run(
-        "src.api:app",
-        host="127.0.0.1",
-        port=LOCAL_BACKEND_PORT,
-        timeout_keep_alive=120,
-    )
+
+    # Suppress noisy logs during shutdown
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
+    try:
+        uvicorn.run(
+            "src.api:app",
+            host="127.0.0.1",
+            port=LOCAL_BACKEND_PORT,
+            timeout_keep_alive=120,
+            log_level="info",
+        )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("\n[mirror] Shutting down...")
+        _kill_port(LOCAL_PG_PORT, "tunnel")
+        print("[mirror] Done.")
 
 
 if __name__ == "__main__":
-    main()
+    import logging
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[mirror] Interrupted.")
+    except Exception as e:
+        print(f"\n[mirror] Error: {e}")
+        input("Press Enter to exit...")
