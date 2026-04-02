@@ -47,7 +47,7 @@ def get_team_match_score(team1: str, team2: str) -> float:
     return _match_score_cached(norm1, norm2)
 
 
-@lru_cache(maxsize=16384)
+@lru_cache(maxsize=65536)
 def _match_score_cached(norm1: str, norm2: str) -> float:
     """LRU-cached fuzzy score on already-normalized names."""
     if norm1 == norm2:

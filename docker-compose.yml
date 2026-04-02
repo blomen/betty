@@ -8,6 +8,29 @@ services:
       - POSTGRES_USER=firev
       - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_DB=firev
+    # Tuned for bare metal with 64GB RAM — PostgreSQL gets ~12GB dedicated
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=10GB
+      - -c
+      - work_mem=256MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - wal_buffers=64MB
+      - -c
+      - max_connections=200
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=2GB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U firev"]
       interval: 5s

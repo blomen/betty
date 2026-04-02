@@ -91,7 +91,7 @@ def _load_aliases() -> Dict[str, str]:
     return lookup
 
 
-@lru_cache(maxsize=2048)
+@lru_cache(maxsize=8192)
 def normalize_team_name(name: str) -> str:
     """
     Normalize team name for matching.

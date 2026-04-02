@@ -91,7 +91,7 @@ orchestrator:
   cache:
     enabled: true
     ttl_seconds: 300
-    max_entries: 1000
+    max_entries: 5000                    # Scaled for 64GB RAM (was 1000)
     cache_layer: transport
     cache_per_provider: true
 

@@ -468,7 +468,7 @@ async def lifespan(app: FastAPI):
                     "MARKET_DATABASE_URL",
                     "postgresql://firev:firev2026secure@postgres:5432/market",
                 ).replace("+asyncpg", "")  # Use sync driver for thread safety
-                engine = create_engine(market_url)
+                engine = create_engine(market_url, pool_size=20, max_overflow=10, pool_pre_ping=True)
                 with engine.connect() as conn:
                     rows = conn.execute(text(
                         "SELECT ts, price, size FROM market_trades "
