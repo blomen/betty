@@ -131,6 +131,11 @@ def open_window(
                 bet.market_slug = meta["market_slug"]
                 outcome_map = meta.get("poly_outcome_map", {})
                 bet.poly_outcome = outcome_map.get(bet.outcome)
+                # Use Polymarket's full team names for display
+                if meta.get("poly_home"):
+                    bet.display_home = meta["poly_home"]
+                if meta.get("poly_away"):
+                    bet.display_away = meta["poly_away"]
 
     # Build provider order
     if provider_order is None:
@@ -169,7 +174,12 @@ def _resolve_polymarket_meta(bets: list[FireWindowBet]) -> dict:
             eid = row.event_id
             if eid not in result:
                 slug = meta.get("event_slug", "")
-                result[eid] = {"market_slug": slug, "poly_outcome_map": {}}
+                result[eid] = {
+                    "market_slug": slug,
+                    "poly_outcome_map": {},
+                    "poly_home": meta.get("poly_home", ""),
+                    "poly_away": meta.get("poly_away", ""),
+                }
             # Map canonical outcome -> Polymarket display name
             poly_home = meta.get("poly_home")
             poly_away = meta.get("poly_away")
