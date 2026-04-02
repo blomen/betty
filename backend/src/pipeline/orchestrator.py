@@ -387,7 +387,9 @@ class ExtractionPipeline:
         all_providers = self.engine.providers
 
         providers = [
+            ("pinnacle", "Pinnacle"),
             ("polymarket", "Polymarket"),
+            ("consensus", "Consensus"),
             *[(pid, (cfg.get("domain") or pid).title()) for pid, cfg in all_providers.items()]
         ]
 

@@ -121,7 +121,7 @@ class InterwettenRetriever(BrowserRetriever):
     MAX_DETAIL_EVENTS = 250
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
-        transport = transport or BrowserTransport(headless=False)
+        transport = transport or BrowserTransport(headless=True)
         super().__init__(config, transport=transport)
         self.base_url = config.get("site_url", "https://www.interwetten.se")
         # Interwetten only reads data-betting attributes — no CSS needed

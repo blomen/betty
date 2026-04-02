@@ -173,9 +173,9 @@ class ExtractorFactory:
             # BetConstruct/Swarm WebSocket - direct API (no browser needed)
             retriever = VbetRetriever(config)
         elif retriever_type == "interwetten":
-            # Interwetten SSR - browser-based DOM parsing (headed for Cloudflare)
+            # Interwetten SSR - browser-based DOM parsing (headless works fine)
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected
