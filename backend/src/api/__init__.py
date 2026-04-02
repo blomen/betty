@@ -127,8 +127,13 @@ async def lifespan(app: FastAPI):
             logger.warning("[Startup] Opportunity warmup failed: %s", e)
     threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
-    # Auto-start continuous extraction (server only — skip for local fire window)
-    if not os.environ.get("FIREV_NO_SCHEDULER"):
+    # Mirror-only mode: skip scheduler, trading features, RL collector
+    _mirror_only = bool(os.environ.get("FIREV_MIRROR_ONLY"))
+    if _mirror_only:
+        logger.info("[Startup] Mirror-only mode — skipping scheduler, trading, RL")
+
+    # Auto-start continuous extraction (server only — skip for local mirror)
+    if not _mirror_only:
         from ..pipeline.scheduler import get_scheduler
         scheduler = get_scheduler()
 
@@ -152,7 +157,7 @@ async def lifespan(app: FastAPI):
     # A lightweight watcher sleeps until market opens, then boots everything.
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
-    if databento_key:
+    if databento_key and not _mirror_only:
         from ..db.models import get_session as _get_db_session, get_market_session as _get_market_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
         from ..services.market_service import MarketService as _MS
@@ -452,32 +457,32 @@ async def lifespan(app: FastAPI):
 
     # Start live RL episode collector (measures outcomes from market_trades)
     _live_collector_task = None
-    try:
-        from ..rl.live_collector import get_live_collector
+    if not _mirror_only:
+        try:
+            from ..rl.live_collector import get_live_collector
 
-        async def _get_recent_trades(since, until):
-            """Query market_trades for outcome measurement."""
-            from sqlalchemy import text, create_engine
-            import os
-            market_url = os.environ.get(
-                "MARKET_DATABASE_URL",
-                "postgresql://firev:firev2026secure@postgres:5432/market",
-            ).replace("+asyncpg", "")  # Use sync driver for thread safety
-            engine = create_engine(market_url)
-            with engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT ts, price, size FROM market_trades "
-                    "WHERE ts >= :since AND ts <= :until ORDER BY ts"
-                ), {"since": since, "until": until}).fetchall()
-            return [{"ts": r[0], "price": r[1], "size": r[2]} for r in rows]
+            async def _get_recent_trades(since, until):
+                """Query market_trades for outcome measurement."""
+                from sqlalchemy import text, create_engine
+                market_url = os.environ.get(
+                    "MARKET_DATABASE_URL",
+                    "postgresql://firev:firev2026secure@postgres:5432/market",
+                ).replace("+asyncpg", "")  # Use sync driver for thread safety
+                engine = create_engine(market_url)
+                with engine.connect() as conn:
+                    rows = conn.execute(text(
+                        "SELECT ts, price, size FROM market_trades "
+                        "WHERE ts >= :since AND ts <= :until ORDER BY ts"
+                    ), {"since": since, "until": until}).fetchall()
+                return [{"ts": r[0], "price": r[1], "size": r[2]} for r in rows]
 
-        collector = get_live_collector()
-        _live_collector_task = asyncio.create_task(
-            collector.measure_outcomes_loop(_get_recent_trades)
-        )
-        logger.info("Live RL episode collector started")
-    except Exception:
-        logger.debug("Live RL episode collector not available", exc_info=True)
+            collector = get_live_collector()
+            _live_collector_task = asyncio.create_task(
+                collector.measure_outcomes_loop(_get_recent_trades)
+            )
+            logger.info("Live RL episode collector started")
+        except Exception:
+            logger.debug("Live RL episode collector not available", exc_info=True)
 
     yield  # App is running
 

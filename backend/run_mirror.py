@@ -1,11 +1,12 @@
 """
-Fire window launcher — local backend with SSH tunnel to production DB.
+Mirror launcher — local backend with SSH tunnel to production DB.
 
-Opens an SSH tunnel to the production PostgreSQL, then starts the local
-backend with a headed Chrome mirror for Polymarket bet firing.
+Opens an SSH tunnel to the production PostgreSQL, then starts a minimal
+local backend (no extraction, no trading, no RL) with a headed Chrome
+mirror for Polymarket bet firing.
 
 Usage:
-    python run_fire.py
+    python run_mirror.py
 
 Security:
     - DB traffic encrypted via SSH tunnel (no public DB port)
@@ -31,16 +32,10 @@ def _port_in_use(port: int) -> bool:
 
 
 def main():
-    # Start SSH tunnel: local:15432 -> server's docker postgres (via docker network)
-    # The postgres container is on the Docker bridge network, reachable from the
-    # server host via `docker compose exec`. We tunnel through the server host
-    # which can reach postgres on the Docker internal IP.
-
     if _port_in_use(LOCAL_PG_PORT):
-        print(f"[fire] Port {LOCAL_PG_PORT} already in use — tunnel may already be running")
+        print(f"[mirror] Port {LOCAL_PG_PORT} already in use -- tunnel may already be running")
     else:
-        print(f"[fire] Opening SSH tunnel to {SERVER} postgres via localhost:{LOCAL_PG_PORT}...")
-        # Postgres has no public port — resolve its Docker-internal IP dynamically
+        print(f"[mirror] Opening SSH tunnel to {SERVER} postgres via localhost:{LOCAL_PG_PORT}...")
         try:
             result = subprocess.run(
                 ["ssh", f"root@{SERVER}",
@@ -49,31 +44,30 @@ def main():
             )
             pg_ip = result.stdout.strip().strip("'")
             if not pg_ip:
-                pg_ip = "172.18.0.2"  # fallback
-                print(f"[fire] Could not resolve postgres IP, using fallback {pg_ip}")
+                pg_ip = "172.18.0.2"
+                print(f"[mirror] Could not resolve postgres IP, using fallback {pg_ip}")
         except Exception:
             pg_ip = "172.18.0.2"
-            print(f"[fire] SSH lookup failed, using fallback {pg_ip}")
+            print(f"[mirror] SSH lookup failed, using fallback {pg_ip}")
 
-        print(f"[fire] Tunneling to postgres at {pg_ip}:5432")
-        tunnel = subprocess.Popen(
+        print(f"[mirror] Tunneling to postgres at {pg_ip}:5432")
+        subprocess.Popen(
             ["ssh", "-N", "-L", f"{LOCAL_PG_PORT}:{pg_ip}:5432", f"root@{SERVER}"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        # Wait for tunnel to establish
         for _ in range(10):
             time.sleep(0.5)
             if _port_in_use(LOCAL_PG_PORT):
-                print(f"[fire] SSH tunnel established on localhost:{LOCAL_PG_PORT}")
+                print(f"[mirror] SSH tunnel established on localhost:{LOCAL_PG_PORT}")
                 break
         else:
-            print("[fire] WARNING: Tunnel may not be ready yet, proceeding anyway...")
+            print("[mirror] WARNING: Tunnel may not be ready yet, proceeding anyway...")
 
-    # Disable extraction scheduler — server handles extraction, not local fire window
-    os.environ["FIREV_NO_SCHEDULER"] = "1"
+    # Mirror-only mode: skip extraction scheduler, trading features, RL collector
+    os.environ["FIREV_MIRROR_ONLY"] = "1"
 
-    # Set DATABASE_URL to point through the tunnel
+    # Point at production DB through the SSH tunnel
     os.environ["DATABASE_URL"] = (
         f"postgresql+asyncpg://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/firev"
     )
@@ -81,12 +75,11 @@ def main():
         f"postgresql+asyncpg://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/market"
     )
 
-    # Windows: ProactorEventLoop for Playwright subprocess support
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    print("[fire] Starting local backend on http://127.0.0.1:8000")
-    print("[fire] Open Play tab -> build batch -> fire window -> click Polymarket")
+    print("[mirror] Starting local backend on http://127.0.0.1:8000")
+    print("[mirror] Open Play tab -> build batch -> fire window -> click Polymarket")
 
     import uvicorn
     uvicorn.run(
