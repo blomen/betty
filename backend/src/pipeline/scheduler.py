@@ -3,10 +3,11 @@ Extraction Scheduler
 
 Manages per-provider extraction scheduling:
 - Sharp (grouped): Pinnacle + Polymarket every 1 minute (run together)
-- API soft (independent): Each provider on its own 15-minute loop
-- Browser soft (independent): Each provider on its own 60-minute loop, serialized via semaphore
+- API soft (independent): Each provider on its own 5-minute loop (all parallel)
+- Browser soft (independent): Each provider on its own 15-minute loop (parallel via pool manager)
 
-Each soft provider gets its own async loop with independent cooldown after completion.
+Tuned for bare metal i7-7700 (4C/8T, 64GB RAM). All providers fire simultaneously —
+browser concurrency managed by pool manager semaphores, not scheduler-level locks.
 """
 
 import asyncio
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 class ProviderSchedule:
     """Schedule state for a single provider (or grouped sharp providers)."""
     provider_id: str              # Single provider or "sharp" for grouped
-    category: str                 # "sharp", "api_soft", "browser_soft"
+    category: str                 # "sharp", "api_soft", "browser_soft", "browser_antibot"
     interval_seconds: int         # Cooldown AFTER completion
     providers: list[str] | None = None  # Only for grouped (sharp): list of providers
     running: bool = False
@@ -53,8 +54,8 @@ class ExtractionScheduler:
     Manages per-provider extraction scheduling.
 
     Each provider (or grouped sharp providers) runs on its own async loop
-    with independent cooldown. Browser providers are serialized via a
-    semaphore to prevent concurrent browser sessions on slow machines.
+    with independent cooldown. Browser concurrency is managed by the pool
+    manager's semaphores (max_browser_instances), not scheduler-level locks.
 
     Usage:
         scheduler = ExtractionScheduler()
@@ -81,13 +82,8 @@ class ExtractionScheduler:
         self._watchdog_task: Optional[asyncio.Task] = None
         # Per-provider locks prevent the same provider from overlapping with itself.
         self._provider_locks: dict[str, asyncio.Lock] = {}
-        # Browser lock: only 1 browser extraction at a time (FIFO guaranteed)
-        self._browser_lock = asyncio.Lock()
-        # NOTE: _db_write_lock removed. SQLite WAL mode + busy_timeout=30s handles
-        # write serialization natively. The old app-level lock wrapped the ENTIRE
-        # extraction (network I/O + processing + DB writes), blocking frontend reads
-        # for minutes at a time. Now each provider runs independently — SQLite serializes
-        # only the brief actual write operations, while reads proceed unblocked.
+        # Browser concurrency controlled by pool manager semaphores (max_browser_instances=6).
+        # Old _browser_lock serialized all browsers on slow Hetzner vCPU — removed for bare metal.
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
         # Sharp-ready gate: soft providers wait for sharp's first run before starting.
@@ -250,7 +246,7 @@ class ExtractionScheduler:
             except asyncio.TimeoutError:
                 logger.warning(f"[Scheduler:{schedule.provider_id}] Sharp timeout (120s), starting anyway")
 
-        # Stagger start to avoid all soft providers hitting SQLite simultaneously
+        # Minimal stagger to spread initial network load
         if schedule.stagger_delay > 0:
             logger.info(f"[Scheduler:{schedule.provider_id}] Staggering start by {schedule.stagger_delay}s")
             try:
@@ -297,11 +293,7 @@ class ExtractionScheduler:
             start = datetime.now(timezone.utc)
             try:
                 async with self._provider_locks[schedule.provider_id]:
-                    if schedule.category == "browser_soft":
-                        async with self._browser_lock:
-                            results = await self._run_provider_extraction(schedule)
-                    else:
-                        results = await self._run_provider_extraction(schedule)
+                    results = await self._run_provider_extraction(schedule)
 
                 schedule.last_completed = datetime.now(timezone.utc)
                 schedule.last_duration = (schedule.last_completed - start).total_seconds()
@@ -354,9 +346,8 @@ class ExtractionScheduler:
     async def _run_provider_extraction(self, schedule: ProviderSchedule) -> dict:
         """Run extraction for a provider schedule.
 
-        ALL extractions run in a dedicated thread with their own event loop
-        so synchronous SQLite commits don't freeze the main event loop
-        (which would make /health and all API handlers hang).
+        Each extraction runs in a dedicated thread with its own event loop
+        to keep the main async loop responsive for /health and API handlers.
         """
         from src.pipeline.orchestrator import ExtractionPipeline
 
@@ -472,13 +463,13 @@ class ExtractionScheduler:
                 await self._start_schedule(schedule)
             else:
                 # One schedule per provider (independent loops)
-                # Stagger starts by 10s to avoid a write stampede on SQLite
+                # Minimal stagger (2s) — PostgreSQL handles concurrent writes natively
                 for i, provider_id in enumerate(providers):
                     schedule = ProviderSchedule(
                         provider_id=provider_id,
                         category=category_name,
                         interval_seconds=interval_seconds,
-                        stagger_delay=i * 10,
+                        stagger_delay=i * 2,
                     )
                     await self._start_schedule(schedule)
 
@@ -585,7 +576,7 @@ class ExtractionScheduler:
                         )
 
             # Starvation detection for browser providers
-            if (schedule.category == "browser_soft" and schedule.running
+            if (schedule.category in ("browser_soft", "browser_antibot") and schedule.running
                     and schedule.last_completed):
                 starvation_threshold = schedule.interval_seconds * 2
                 elapsed = (now - schedule.last_completed).total_seconds()

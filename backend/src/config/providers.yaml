@@ -1,48 +1,54 @@
 # Provider Configuration
 # Uses YAML anchors to reduce duplication
 # Bonus info source: https://speltips.se/ (check periodically for updates)
+#
+# Proxy: PROXY_URL env var (ISP residential) is used by:
+#   - Pinnacle (API via aiohttp)
+#   - Coolbet, ComeOn (Camoufox anti-detect browser)
+#   - Interwetten, Spectate (Playwright BrowserTransport)
 
 # Global orchestrator configuration
+# Tuned for bare metal i7-7700 (4C/8T), 64GB RAM, 2x 256GB SSD
 orchestrator:
   # Concurrency limits
-  # Type-aware scheduling allows higher total concurrent providers by mixing types
-  max_concurrent_providers: 10         # Increased - mixing allows higher total
-  max_concurrent_sports_per_provider: 2 # Reduced for proxy — parallel sports × leagues overwhelms single ISP proxy
-  max_browser_instances: 3             # Global browser limit (reduced from 6 — slow PC can't handle 7 concurrent browsers)
+  # Bare metal: no hypervisor tax, 8 dedicated threads, 64GB RAM
+  max_concurrent_providers: 16         # All providers can fire simultaneously
+  max_concurrent_sports_per_provider: 4 # 8 threads + fast CPU = handle parallel sport extraction
+  max_browser_instances: 6             # 4C/8T bare metal handles 6 concurrent browsers comfortably
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
   provider_groups:
     - name: kambi_api
       retriever_types: [kambi]
-      max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
+      max_concurrent: 2                # Bare metal: can handle 2 Kambi concurrent (rate limits are per-IP, not per-thread)
       shared_resource: api
-      health_check_delay_ms: 500       # 0.5s between Kambi health checks (reduced from 1s)
-      post_extraction_delay_ms: 5000   # 5s delay between providers (reduced from 10s)
+      health_check_delay_ms: 300       # 0.3s between Kambi health checks
+      post_extraction_delay_ms: 2000   # 2s delay between providers (faster recovery)
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
-      max_concurrent: 2                # Browser + shared Betsson infra
+      max_concurrent: 3                # Bare metal: 3 concurrent gecko browsers
       shared_resource: browser
 
     - name: spectate_browser
       retriever_types: [spectate]
-      max_concurrent: 2                # Browser-based
+      max_concurrent: 3                # Bare metal: more concurrent spectate
       shared_resource: browser
 
     - name: comeon_group
       retriever_types: [custom]
-      max_concurrent: 2                # Heavy - multi-page internal parallelism
+      max_concurrent: 2                # ComeOn internal parallelism already heavy — keep at 2
       shared_resource: browser
 
     - name: rest_api
       retriever_types: [pinnacle, altenar, betconstruct]
-      max_concurrent: 5                # Independent APIs - no limits
+      max_concurrent: 8                # All REST APIs fire simultaneously
       shared_resource: none
 
     - name: interwetten_browser
       retriever_types: [interwetten]
-      max_concurrent: 1                # Headed browser, heavy
+      max_concurrent: 2                # Bare metal: can handle 2 concurrent tabs
       shared_resource: browser
 
     - name: sbtech_browser
@@ -52,17 +58,17 @@ orchestrator:
 
     - name: coolbet_browser
       retriever_types: [coolbet]
-      max_concurrent: 1                # Browser-based, Imperva-sensitive
+      max_concurrent: 2                # Bare metal: Imperva still sensitive but can do 2
       shared_resource: browser
 
     - name: tipwin_browser
       retriever_types: [tipwin]
-      max_concurrent: 1                # Browser-based SPA
+      max_concurrent: 2                # Bare metal: 2 concurrent tipwin
       shared_resource: browser
 
-  # Timeouts (seconds) — generous defaults so slow PCs always finish
-  provider_timeout: 900                # Per-provider timeout (was 300 — too tight under load)
-  sport_timeout: 120                   # Per-sport timeout (was 60 — API providers need headroom)
+  # Timeouts (seconds) — tighter on bare metal (dedicated CPU, no contention)
+  provider_timeout: 600                # Per-provider timeout (bare metal finishes faster)
+  sport_timeout: 90                    # Per-sport timeout (dedicated threads = faster extraction)
 
   # Performance
   batch_commit_size: 100               # Events per DB commit
@@ -70,11 +76,11 @@ orchestrator:
   # Enhancement configurations (all optional, defaults shown)
   retry:
     enabled: true
-    max_retries: 2                     # Reduced from 3 — fewer retries on slow PC
-    initial_backoff_seconds: 2.0
-    max_backoff_seconds: 30.0          # Reduced from 60 — don't waste time waiting
+    max_retries: 3                     # Bare metal: can afford retries with dedicated CPU
+    initial_backoff_seconds: 1.0       # Faster backoff start
+    max_backoff_seconds: 15.0          # Shorter max wait — machine recovers fast
     exponential_base: 2.0
-    retry_on_timeout: false            # Don't retry timeouts — on slow PC retrying just burns more time
+    retry_on_timeout: true             # Bare metal: retries are cheap, timeouts are likely transient network issues
 
   circuit_breaker:
     enabled: true
@@ -838,6 +844,10 @@ providers:
 # ============================================================================
 
 extraction_scheduling:
+  # Bare metal i7-7700 (4C/8T, 64GB RAM): all tiers run aggressively in parallel.
+  # Old Hetzner CPX32 (4 shared vCPU, 8GB) forced sequential browser extraction and long intervals.
+  # Dedicated hardware means: more concurrent browsers, shorter intervals, fresher odds.
+
   sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
     # Grouped: run together as one unit every 1 minute
@@ -846,42 +856,46 @@ extraction_scheduling:
     grouped: true
 
   api_soft:
-    # Fast REST/WS/API-interception providers — each runs independently every 15 minutes
+    # Fast REST/WS/API-interception providers — all fire simultaneously every 5 minutes
     # Platform consolidation: only canonical providers extracted (others get fanned-out opportunities)
     providers:
       # Kambi — canonical only (represents 7 brands: unibet, leovegas, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
       # Altenar — canonical only (represents 6: betinia, campobet, lodur, quickcasino, swiper, dbet)
-      # dbet consolidated 2026-03-17 — odds 99.7% identical (avg diff 0.0006)
       - betinia
       # Gecko V2 — canonical only (represents 5: betsson, nordicbet, bethard, spelklubben, betsafe)
-      # Odds differ <0.02 avg — consolidated 2026-03-17
       - betsson
       # BetConstruct (1) — WebSocket API
       - vbet
-    interval_minutes: 15
+    interval_minutes: 5
     grouped: false
 
   browser_soft:
-    # Heavy browser-based extractors — each runs independently every 60 minutes
-    # Sequential via semaphore(1): this machine can't handle 2+ concurrent browser sessions
-    # (concurrency=2 tested 2026-03-17: both providers 2-3x slower than solo)
-    # Ordered fastest-first so data is available sooner
-    max_concurrent_browsers: 1
+    # Browser-based extractors WITHOUT aggressive anti-bot — run every 15 minutes
+    # Bare metal i7-7700: 8 threads + 64GB RAM handles 4-6 concurrent browsers easily
+    max_concurrent_browsers: 4
     providers:
       # Spectate — API-based, fastest (30-400s)
       - 888sport
-      # Coolbet — Camoufox, reliable (170-470s)
-      - coolbet
       # Interwetten — 16-20 concurrent tabs (500-700s)
       - interwetten
-      # ComeOn Group — Camoufox + SPA scraping (700-900s)
-      - comeon
       # 10Bet — DOM scraping, slowest (1000-1200s)
       - 10bet
       # Tipwin — API interception via page.route(), ~76s for 1500 events
       - tipwin
-    interval_minutes: 60
+    interval_minutes: 15
+    grouped: false
+
+  browser_antibot:
+    # Providers with aggressive anti-bot (Cloudflare, Imperva) — longer interval to avoid detection
+    # ComeOn: Cloudflare (migrated 2026-03-16, requires Camoufox)
+    # Coolbet: Imperva WAF, fingerprint-sensitive
+    # 30-min interval balances freshness vs detection risk (was 60min, 15min too aggressive)
+    max_concurrent_browsers: 2
+    providers:
+      - coolbet
+      - comeon
+    interval_minutes: 30
     grouped: false
 
 # ============================================================================

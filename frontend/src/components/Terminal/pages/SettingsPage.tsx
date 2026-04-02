@@ -7,6 +7,7 @@ const TIER_BADGES: Record<string, { label: string; cls: string }> = {
   sharp: { label: 'SHARP', cls: 'text-yellow-400 bg-yellow-400/10' },
   api_soft: { label: 'API', cls: 'text-blue-400 bg-blue-400/10' },
   browser_soft: { label: 'BROWSER', cls: 'text-orange-400 bg-orange-400/10' },
+  browser_antibot: { label: 'ANTIBOT', cls: 'text-red-400 bg-red-400/10' },
 };
 
 /* ── Checkbox ─────────────────────────────────────────────── */

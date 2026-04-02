@@ -398,7 +398,7 @@ async def start_tier(tier_name: str):
     """Start a specific extraction tier/category.
 
     Reads config from providers.yaml extraction_scheduling section.
-    Valid tier names: sharp, api_soft, browser_soft
+    Valid tier names: sharp, api_soft, browser_soft, browser_antibot
     """
     from ...pipeline.scheduler import get_scheduler, ProviderSchedule
 
