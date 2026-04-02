@@ -61,7 +61,7 @@ def _make_ctx(
 
 def test_amt_features_shape_all_none():
     feats = extract_amt_features(None, None, None, 19000.0)
-    assert feats.shape == (13,)
+    assert feats.shape == (20,)
     assert np.all(feats == 0.0)
 
 
@@ -69,7 +69,7 @@ def test_amt_features_zeros_on_missing_ib():
     """No IB levels available → return zeros gracefully."""
     sl = SessionLevels()  # ib_high / ib_low both None
     feats = extract_amt_features(sl, None, {}, 19000.0)
-    assert feats.shape == (13,)
+    assert feats.shape == (20,)
     assert np.all(feats == 0.0)
 
 
@@ -290,6 +290,52 @@ def test_daily_range_reconstructed_from_pct():
     # range_ratio = 190/100 = 1.9 → > 1.25
     ctx = {"daily_range_pct": 0.01}
     feats = extract_amt_features(sl, None, ctx, 19000.0)
-    assert feats.shape == (13,)
+    assert feats.shape == (20,)
     # At least one day type is set
     assert feats[:6].sum() == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Expanded features (indices 13-19)
+# ---------------------------------------------------------------------------
+
+def test_expanded_feature_count():
+    """Output vector is 20-dim after expansion."""
+    feats = extract_amt_features(None, None, None, 19000.0)
+    assert feats.shape == (20,)
+
+
+def test_ib_percentile_feature():
+    """ib_range_percentile from context maps to index 13."""
+    sl = _make_session_levels(ib_high=19100.0, ib_low=19000.0)
+    ctx = _make_ctx(daily_high=19120.0, daily_low=18980.0)
+    ctx["ib_range_percentile"] = 0.75
+    feats = extract_amt_features(sl, None, ctx, 19050.0)
+    assert feats[13] == pytest.approx(0.75)
+
+
+def test_overnight_gap_feature():
+    """overnight_gap from context maps to index 14."""
+    sl = _make_session_levels(ib_high=19100.0, ib_low=19000.0)
+    ctx = _make_ctx(daily_high=19120.0, daily_low=18980.0)
+    ctx["overnight_gap"] = 0.5
+    feats = extract_amt_features(sl, None, ctx, 19050.0)
+    assert feats[14] == pytest.approx(0.5)
+
+
+def test_prior_poor_high_feature():
+    """prior_poor_high=True maps to feats[17] == 1.0."""
+    sl = _make_session_levels(ib_high=19100.0, ib_low=19000.0)
+    ctx = _make_ctx(daily_high=19120.0, daily_low=18980.0)
+    ctx["prior_poor_high"] = True
+    feats = extract_amt_features(sl, None, ctx, 19050.0)
+    assert feats[17] == pytest.approx(1.0)
+
+
+def test_prior_excess_quality():
+    """prior_excess_quality=5 → 5/10 = 0.5 at index 19."""
+    sl = _make_session_levels(ib_high=19100.0, ib_low=19000.0)
+    ctx = _make_ctx(daily_high=19120.0, daily_low=18980.0)
+    ctx["prior_excess_quality"] = 5
+    feats = extract_amt_features(sl, None, ctx, 19050.0)
+    assert feats[19] == pytest.approx(0.5)

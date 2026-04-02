@@ -1,15 +1,23 @@
 """AMT (Auction Market Theory) feature extraction.
 
-Extracts 13 features encoding Dalton day type, opening type, and VA migration:
+Extracts 20 features encoding Dalton day type, opening type, VA migration,
+and session context enrichment:
 
   Indices 0-5   : Dalton day type (6-way one-hot)
                     0 non_trend, 1 normal, 2 neutral,
                     3 normal_variation, 4 trend, 5 double_distribution
   Indices 6-9   : Opening type (4-way one-hot)
                     6 OD, 7 OTD, 8 ORR, 9 OA
-  Index  10     : range_extension  (0-1 normalised)
-  Index  11     : va_overlap        (0-1 fraction overlap with prior VA)
-  Index  12     : value_migration   (-1 / 0 / +1 mapped to -1/0/+1)
+  Index  10     : range_extension       (0-1 normalised)
+  Index  11     : va_overlap            (0-1 fraction overlap with prior VA)
+  Index  12     : value_migration       (-1 / 0 / +1 mapped to -1/0/+1)
+  Index  13     : ib_percentile         (0-1, IB range percentile vs history)
+  Index  14     : overnight_gap         (-1 to +1, normalised gap direction)
+  Index  15     : open_vs_prior_poc     (-1 to +1, open relative to prior POC)
+  Index  16     : composite_va_overlap  (0-1, multi-session VA overlap)
+  Index  17     : prior_poor_high       (0/1, prior session had poor high)
+  Index  18     : prior_poor_low        (0/1, prior session had poor low)
+  Index  19     : prior_excess_quality  (-1 to +1, normalised excess quality)
 """
 from __future__ import annotations
 
@@ -17,7 +25,7 @@ import numpy as np
 
 from ...market_data.levels import SessionLevels, VolumeProfile
 
-_N_FEATURES = 13
+_N_FEATURES = 20
 
 # Day-type indices
 _IDX_NON_TREND = 0
@@ -37,6 +45,15 @@ _IDX_OA = 9
 _IDX_RANGE_EXT = 10
 _IDX_VA_OVERLAP = 11
 _IDX_VALUE_MIG = 12
+
+# Static AMT enrichment indices
+_IDX_IB_PERCENTILE = 13
+_IDX_OVERNIGHT_GAP = 14
+_IDX_OPEN_VS_PRIOR_POC = 15
+_IDX_COMPOSITE_VA_OVERLAP = 16
+_IDX_PRIOR_POOR_HIGH = 17
+_IDX_PRIOR_POOR_LOW = 18
+_IDX_PRIOR_EXCESS_QUALITY = 19
 
 
 def _classify_dalton_day(
@@ -117,7 +134,7 @@ def extract_amt_features(
     session_context: dict | None,
     price: float,
 ) -> np.ndarray:
-    """Extract 13 AMT features: 6 day type + 4 opening type + 3 scalars.
+    """Extract 20 AMT features: 6 day type + 4 opening type + 3 scalars + 7 enrichment.
 
     Degrades gracefully — returns zeros when data is missing.
 
@@ -128,7 +145,7 @@ def extract_amt_features(
         price: Current market price (used for daily_range reconstruction).
 
     Returns:
-        np.ndarray of shape (13,), float32.
+        np.ndarray of shape (20,), float32.
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -227,5 +244,18 @@ def extract_amt_features(
         elif poc < prior_val:
             feats[_IDX_VALUE_MIG] = -1.0
         # else: 0.0 (inside prior VA)
+
+    # --- Static AMT enrichment (indices 13-19) ---
+    feats[_IDX_IB_PERCENTILE] = float(np.clip(ctx.get("ib_range_percentile", 0.5), 0.0, 1.0))
+    feats[_IDX_OVERNIGHT_GAP] = float(np.clip(ctx.get("overnight_gap", 0), -1.0, 1.0))
+
+    open_vs_poc = ctx.get("open_vs_prior_poc")
+    if open_vs_poc is not None:
+        feats[_IDX_OPEN_VS_PRIOR_POC] = float(np.clip(open_vs_poc, -1.0, 1.0))
+
+    feats[_IDX_COMPOSITE_VA_OVERLAP] = float(np.clip(ctx.get("composite_va_overlap", 0), 0.0, 1.0))
+    feats[_IDX_PRIOR_POOR_HIGH] = 1.0 if ctx.get("prior_poor_high") else 0.0
+    feats[_IDX_PRIOR_POOR_LOW] = 1.0 if ctx.get("prior_poor_low") else 0.0
+    feats[_IDX_PRIOR_EXCESS_QUALITY] = float(np.clip(ctx.get("prior_excess_quality", 0) / 10.0, -1.0, 1.0))
 
     return feats
