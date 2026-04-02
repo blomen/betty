@@ -403,8 +403,8 @@ class ReplayEngine:
 
             self._session_levels = computed
 
-            # Initialize AMT tracker once IB is established (60 bars = first hour)
-            if bar_count == 60 and computed.ib_high and computed.ib_low:
+            # Initialize AMT tracker when IB levels first appear
+            if not self._amt_tracker._initialized and computed.ib_high and computed.ib_low:
                 vp = self._vp.get()
                 tpo_data = self._tpo_profile or {}
                 self._amt_tracker.initialize({
@@ -416,8 +416,8 @@ class ReplayEngine:
                     "single_prints": tpo_data.get("single_prints", []),
                 })
 
-            # Update AMT tracker on 30-min period close
-            if bar_count >= 60 and bar_count % 30 == 0:
+            # Update AMT tracker on 30-min period close (after initialization)
+            if self._amt_tracker._initialized and bar_count % 30 == 0:
                 vp = self._vp.get()
                 if vp and len(bars_1m) >= 30:
                     last_30 = bars_1m[-30:]
