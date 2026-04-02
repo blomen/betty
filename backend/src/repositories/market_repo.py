@@ -48,8 +48,16 @@ class MarketRepo:
             .first()
         )
 
+    @staticmethod
+    def _sanitize_numpy(val):
+        """Convert numpy scalars to native Python types for PostgreSQL."""
+        if hasattr(val, 'item'):  # np.float64, np.int64, etc.
+            return val.item()
+        return val
+
     def upsert_session(self, date: str, symbol: str, **kwargs) -> MarketSession:
         """Insert or update a market session."""
+        kwargs = {k: self._sanitize_numpy(v) for k, v in kwargs.items()}
         existing = self.get_session(date, symbol)
         if existing:
             for k, v in kwargs.items():
