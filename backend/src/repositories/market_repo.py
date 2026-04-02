@@ -53,6 +53,10 @@ class MarketRepo:
         """Convert numpy scalars to native Python types for PostgreSQL."""
         if hasattr(val, 'item'):  # np.float64, np.int64, etc.
             return val.item()
+        if isinstance(val, dict):
+            return {k: MarketRepo._sanitize_numpy(v) for k, v in val.items()}
+        if isinstance(val, list):
+            return [MarketRepo._sanitize_numpy(v) for v in val]
         return val
 
     def upsert_session(self, date: str, symbol: str, **kwargs) -> MarketSession:
@@ -226,6 +230,8 @@ class MarketRepo:
         for lv in levels:
             lv["symbol"] = symbol
             lv["date"] = date
+            for k, v in lv.items():
+                lv[k] = self._sanitize_numpy(v)
         self.db.bulk_insert_mappings(MarketLevel, levels)
         self.db.commit()
 
@@ -259,6 +265,8 @@ class MarketRepo:
 
     def upsert_session_metric(self, symbol: str, date: str, rf: int, aspr: float):
         """Insert or update session metric for ASPR/RF baselines."""
+        rf = self._sanitize_numpy(rf)
+        aspr = self._sanitize_numpy(aspr)
         existing = self.db.query(SessionMetric).filter(
             SessionMetric.symbol == symbol,
             SessionMetric.date == date,
