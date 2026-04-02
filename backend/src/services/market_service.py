@@ -2231,21 +2231,17 @@ class MarketService:
             return []
 
     async def _fetch_bars_range(self, symbol: str, start_date: str, daily: bool = False) -> list[dict]:
-        """Fetch bars from start_date to today. Use daily=True for long ranges."""
-        today_str = date.today().isoformat()
+        """Fetch bars from start_date to today from DB candles."""
         try:
-            provider = _get_provider()
-            config = get_market_data_config()
-            full_symbol = config.get("symbol", "NQ.FUT")
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            end_dt = datetime.now(timezone.utc)
             interval = "1d" if daily else "1m"
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt = datetime.strptime(today_str, "%Y-%m-%d")
-            bars = await provider.get_bars(full_symbol, interval, start_dt, end_dt)
-            if not bars:
+            rows = self.repo.get_candles(symbol, interval, start_dt, end_dt)
+            if not rows:
                 return []
-            return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
+            return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v or 1} for r in rows]
         except Exception as e:
-            logger.warning("Failed to fetch bars range %s to %s: %s", start_date, today_str, e)
+            logger.warning("Failed to fetch bars range %s: %s", start_date, e)
             return []
 
     def _get_cot_summary(self) -> dict | None:
