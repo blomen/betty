@@ -677,6 +677,88 @@ def replay(
 
 
 # ---------------------------------------------------------------------------
+# merge-live — merge live episodes into the main episode pool
+# ---------------------------------------------------------------------------
+
+@rl_app.command("merge-live")
+def merge_live() -> None:
+    """Merge live-collected episodes into the main episode pool for training."""
+    import numpy as np
+
+    episodes_dir = _EPISODES_DIR
+    live_dir = _DATA_DIR / "live_episodes"
+
+    if not live_dir.exists():
+        typer.echo("No live_episodes directory found.")
+        raise typer.Exit(0)
+
+    live_chunks = sorted(live_dir.glob("obs_*.npy"))
+    if not live_chunks:
+        typer.echo("No live episode chunks found.")
+        raise typer.Exit(0)
+
+    typer.echo(f"Found {len(live_chunks)} live episode chunks.")
+
+    # Load live episodes
+    live_obs = np.concatenate([np.load(f) for f in live_chunks])
+    live_rc = np.concatenate([np.load(live_dir / f"rc_{f.stem.split('_')[1]}.npy") for f in live_chunks])
+    live_rr = np.concatenate([np.load(live_dir / f"rr_{f.stem.split('_')[1]}.npy") for f in live_chunks])
+    live_lt = np.concatenate([np.load(live_dir / f"lt_{f.stem.split('_')[1]}.npy", allow_pickle=True) for f in live_chunks])
+    live_st = np.concatenate([np.load(live_dir / f"st_{f.stem.split('_')[1]}.npy") for f in live_chunks])
+
+    typer.echo(f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim)")
+
+    # Load existing main episodes
+    main_obs_path = episodes_dir / "observations.npy"
+    if main_obs_path.exists():
+        main_obs = np.load(main_obs_path)
+        main_rc = np.load(episodes_dir / "rewards_cont.npy")
+        main_rr = np.load(episodes_dir / "rewards_rev.npy")
+        main_lt = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+        main_st = np.load(episodes_dir / "stop_targets.npy")
+        typer.echo(f"Main episodes: {len(main_obs)} ({main_obs.shape[1]}-dim)")
+
+        # Check dim compatibility
+        if live_obs.shape[1] != main_obs.shape[1]:
+            typer.echo(f"Dimension mismatch: live={live_obs.shape[1]} vs main={main_obs.shape[1]}. Cannot merge.", err=True)
+            raise typer.Exit(1)
+
+        # Concatenate
+        merged_obs = np.concatenate([main_obs, live_obs])
+        merged_rc = np.concatenate([main_rc, live_rc])
+        merged_rr = np.concatenate([main_rr, live_rr])
+        merged_lt = np.concatenate([main_lt, live_lt])
+        merged_st = np.concatenate([main_st, live_st])
+    else:
+        merged_obs = live_obs
+        merged_rc = live_rc
+        merged_rr = live_rr
+        merged_lt = live_lt
+        merged_st = live_st
+
+    # Save merged
+    np.save(episodes_dir / "observations.npy", merged_obs)
+    np.save(episodes_dir / "rewards_cont.npy", merged_rc)
+    np.save(episodes_dir / "rewards_rev.npy", merged_rr)
+    np.save(episodes_dir / "level_types.npy", merged_lt)
+    np.save(episodes_dir / "stop_targets.npy", merged_st)
+
+    # Update normalizer
+    from src.rl.data.normalization import RunningNormalizer
+    normalizer = RunningNormalizer(dim=merged_obs.shape[1])
+    for obs in merged_obs:
+        normalizer.update(obs)
+    normalizer.save(episodes_dir / "normalizer.json")
+
+    typer.echo(f"Merged: {len(merged_obs)} total episodes ({len(live_obs)} live + {len(merged_obs) - len(live_obs)} historical)")
+
+    # Clean up live chunks (already merged)
+    for f in live_dir.glob("*.npy"):
+        f.unlink()
+    typer.echo("Live episode chunks cleaned up.")
+
+
+# ---------------------------------------------------------------------------
 # train
 # ---------------------------------------------------------------------------
 

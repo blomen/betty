@@ -758,6 +758,18 @@ class LevelMonitor:
                     **result,
                     "timestamp": time.time(),
                 })
+
+            # Collect live episode for continuous training
+            try:
+                from src.rl.live_collector import get_live_collector
+                approach = "up" if price < zone.center_price else "down"
+                get_live_collector().on_zone_touch(
+                    rl_state, price, approach,
+                    level_type=f"zone_{zone.member_count}m",
+                    zone_members=zone.member_count,
+                )
+            except Exception:
+                pass  # Never block inference for collection
         except Exception:
             logger.debug("DQN zone inference failed", exc_info=True)
 

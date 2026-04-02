@@ -448,9 +448,44 @@ async def lifespan(app: FastAPI):
     # event loop freezes it permanently. Mirrors should be started on-demand via UI.
     # asyncio.create_task(_start_all_mirrors())
 
+    # Start live RL episode collector (measures outcomes from market_trades)
+    _live_collector_task = None
+    try:
+        from ..rl.live_collector import get_live_collector
+
+        async def _get_recent_trades(since, until):
+            """Query market_trades for outcome measurement."""
+            from sqlalchemy import text, create_engine
+            import os
+            market_url = os.environ.get(
+                "MARKET_DATABASE_URL",
+                "postgresql://firev:firev2026secure@postgres:5432/market",
+            ).replace("+asyncpg", "")  # Use sync driver for thread safety
+            engine = create_engine(market_url)
+            with engine.connect() as conn:
+                rows = conn.execute(text(
+                    "SELECT ts, price, size FROM market_trades "
+                    "WHERE ts >= :since AND ts <= :until ORDER BY ts"
+                ), {"since": since, "until": until}).fetchall()
+            return [{"ts": r[0], "price": r[1], "size": r[2]} for r in rows]
+
+        collector = get_live_collector()
+        _live_collector_task = asyncio.create_task(
+            collector.measure_outcomes_loop(_get_recent_trades)
+        )
+        logger.info("Live RL episode collector started")
+    except Exception:
+        logger.debug("Live RL episode collector not available", exc_info=True)
+
     yield  # App is running
 
     # Graceful shutdown
+    if _live_collector_task and not _live_collector_task.done():
+        _live_collector_task.cancel()
+        try:
+            await _live_collector_task
+        except asyncio.CancelledError:
+            pass
     logger.info("Shutting down...")
 
     # Cancel the trading gate sleep loop (can block for hours when market closed)
