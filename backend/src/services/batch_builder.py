@@ -951,11 +951,15 @@ class BatchBuilder:
             to limit total bets per provider (funded + missed) because after
             depositing, ALL of them get placed. If every sibling in the cluster
             is at the cap, the bet is dropped (needs more siblings).
+
+            Sharp providers (pinnacle, polymarket) are exempt from the cap —
+            no suspicion risk, and we want all value bets visible.
             """
+            is_sharp = template.tier in ("polymarket", "pinnacle")
             sibs = all_siblings.get(cluster, [template.provider_id])
             target_pid = None
             for candidate in sibs:
-                if bets_assigned.get(candidate, 0) < cap:
+                if is_sharp or bets_assigned.get(candidate, 0) < cap:
                     target_pid = candidate
                     break
             if target_pid is None:
@@ -980,12 +984,10 @@ class BatchBuilder:
             missed.append(placed)
 
         def _try_assign_sharp(bet: BatchBet) -> bool:
-            """Try to fund a sharp bet on its own provider."""
+            """Try to fund a sharp bet on its own provider. No cap for sharp."""
             pid = bet.provider_id
             pb = provider_balances.get(pid)
             if pb is None:
-                return False
-            if bets_assigned.get(pid, 0) >= cap:
                 return False
             if pb.remaining < bet.stake:
                 return False
