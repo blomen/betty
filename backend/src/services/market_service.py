@@ -314,8 +314,9 @@ class MarketService:
             if self._is_globex_closed():
                 logger.info("Globex closed (weekend) — serving cached session for %s", symbol)
                 cached = self.repo.get_previous_session(symbol)
-                if cached:
-                    return cached
+                if cached and cached.session_json:
+                    sj = cached.session_json
+                    return sj if isinstance(sj, dict) else json.loads(sj) if isinstance(sj, str) else {}
                 return {}
 
         sessions_cfg = config.get("sessions", {})
