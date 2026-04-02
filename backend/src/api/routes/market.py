@@ -154,6 +154,7 @@ async def trigger_compute(
             "session_context": session.get("session_context"),
             "macro": session.get("macro"),
             "day_type": session.get("day_type"),
+            "amt_context": session.get("amt_context", {}),
             "fvgs": [],
             "single_print_zones": [],
             "swing_structure": expanded.get("swing_structure"),

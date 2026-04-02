@@ -269,3 +269,26 @@ class MarketRepo:
             SessionMetric.aspr.isnot(None),
         ).order_by(SessionMetric.date.desc()).limit(limit).all()
         return [r[0] for r in rows]
+
+    def get_historical_ib_ranges(self, symbol: str, limit: int = 20) -> list[float]:
+        """Get recent IB ranges for percentile computation."""
+        rows = self.db.query(MarketSession.ib_range).filter(
+            MarketSession.symbol == symbol,
+            MarketSession.ib_range.isnot(None),
+            MarketSession.ib_range > 0,
+        ).order_by(MarketSession.date.desc()).limit(limit).all()
+        return [r[0] for r in rows]
+
+    def get_recent_sessions(self, symbol: str, days: int = 5) -> list:
+        """Return last N sessions for composite VA computation."""
+        return (
+            self.db.query(MarketSession)
+            .filter(
+                MarketSession.symbol == symbol,
+                MarketSession.vah.isnot(None),
+                MarketSession.val.isnot(None),
+            )
+            .order_by(MarketSession.date.desc())
+            .limit(days)
+            .all()
+        )

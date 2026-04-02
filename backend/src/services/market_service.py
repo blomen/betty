@@ -467,6 +467,72 @@ class MarketService:
                 prev_session.vah, prev_session.val,
             )
 
+        # --- AMT static feature enrichment ---
+        historical_ibs = self.repo.get_historical_ib_ranges(symbol)
+        ib_range_val = session_data.get("ib_range", 0) or 0
+        ib_pct = sum(1 for h in historical_ibs if h <= ib_range_val) / max(len(historical_ibs), 1) if historical_ibs else 0.5
+
+        # Overnight gap: (RTH open - prior close) / IB range
+        overnight_gap = 0.0
+        prior_close_price = None
+        if prev_session and prev_session.session_json:
+            pj = prev_session.session_json
+            if isinstance(pj, str):
+                pj = json.loads(pj)
+            prior_close_price = pj.get("last_price") if pj else None
+
+        rth_open_price = None
+        if bars:
+            from zoneinfo import ZoneInfo as _ZI2
+            _et2 = _ZI2("US/Eastern")
+            h_rth, m_rth = map(int, rth_open.split(":"))
+            rth_open_time = datetime.strptime(rth_open, "%H:%M").time()
+            for b in bars:
+                if hasattr(b.timestamp, "astimezone"):
+                    bt = b.timestamp.astimezone(_et2).time()
+                    if bt >= rth_open_time:
+                        rth_open_price = b.open
+                        break
+
+        if prior_close_price and rth_open_price and ib_range_val > 0:
+            overnight_gap = (rth_open_price - prior_close_price) / ib_range_val
+
+        # Open vs prior POC
+        open_vs_poc = 0.0
+        if rth_open_price and analysis.prev_poc:
+            open_vs_poc = (rth_open_price - analysis.prev_poc) / 0.25 / 200.0
+
+        # Composite VA overlap (5-day)
+        composite_overlap = 0.0
+        recent_sessions = self.repo.get_recent_sessions(symbol, days=5)
+        if recent_sessions and session_data.get("vah") and session_data.get("val"):
+            comp_vah = max(s.vah for s in recent_sessions)
+            comp_val = min(s.val for s in recent_sessions)
+            curr_vah = session_data["vah"]
+            curr_val = session_data["val"]
+            overlap = max(0.0, min(curr_vah, comp_vah) - max(curr_val, comp_val))
+            comp_width = max(comp_vah - comp_val, 1e-9)
+            composite_overlap = min(overlap / comp_width, 1.0)
+
+        # Prior excess quality
+        prior_excess = 0
+        if prev_session and prev_session.session_json:
+            pj2 = prev_session.session_json
+            if isinstance(pj2, str):
+                pj2 = json.loads(pj2)
+            if pj2:
+                prior_excess = (pj2.get("upper_excess", 0) or 0) - (pj2.get("lower_excess", 0) or 0)
+
+        session_data["amt_context"] = {
+            "ib_range_percentile": ib_pct,
+            "overnight_gap": overnight_gap,
+            "open_vs_prior_poc": open_vs_poc,
+            "composite_va_overlap": composite_overlap,
+            "prior_poor_high": bool(prev_session.poor_high) if prev_session else False,
+            "prior_poor_low": bool(prev_session.poor_low) if prev_session else False,
+            "prior_excess_quality": prior_excess,
+        }
+
         self.repo.upsert_session(
             date=target_date,
             symbol=symbol,
