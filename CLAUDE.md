@@ -46,23 +46,30 @@ frontend/src/
 - **Server**: Hetzner CPX32 (4 vCPU, 8 GB RAM), Ubuntu 24.04
 - **IP**: `204.168.218.18`
 - **SSH**: `ssh root@204.168.218.18`
-- **App URL**: `http://204.168.218.18:8000`
+- **App URL**: `https://204.168.218.18` (behind nginx basic auth)
 - **Repo on server**: `/opt/firev` (main branch)
 
 ### Docker Containers
 3 containers via `docker-compose.yml`:
-- `firev-backend-1` — FastAPI + uvicorn + Playwright (port 8000)
-- `firev-postgres-1` — PostgreSQL 16 (port 5432)
-- `firev-nginx-1` — Nginx reverse proxy (ports 80/443, not yet configured with SSL)
+- `firev-backend-1` — FastAPI + uvicorn + Playwright (internal only, no public port)
+- `firev-postgres-1` — PostgreSQL 16 (internal only, no public port)
+- `firev-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
+
+### Security
+- **Nginx basic auth** protects all routes (credentials in `nginx/.htpasswd` on server, gitignored)
+- **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
+- **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
+- `/health` endpoint is exempted from auth (needed for Docker healthcheck)
+- To update the password: `ssh root@204.168.218.18 "htpasswd -cb /opt/firev/nginx/.htpasswd rasmus NEW_PASSWORD && cd /opt/firev && docker compose restart nginx"`
 
 ### Database
-- **Main DB**: `postgresql://firev:firev2026secure@postgres:5432/firev` (events, odds, bets, profiles, opportunities)
-- **Market DB**: `postgresql://firev:firev2026secure@postgres:5432/market` (trades, candles — high-frequency tick data)
+- **Main DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/firev` (events, odds, bets, profiles, opportunities)
+- **Market DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/market` (trades, candles — high-frequency tick data)
 - **No more SQLite** — fully migrated to PostgreSQL. SQLite fallback exists in code for local dev without Docker.
 
 ### Environment
 - `.env.docker` — API keys and DB config (loaded via `env_file` in docker-compose)
-- `.env` — just `DB_PASSWORD=firev2026secure` (for docker-compose `${DB_PASSWORD}` substitution)
+- `.env` — just `DB_PASSWORD=${DB_PASSWORD}` (for docker-compose `${DB_PASSWORD}` substitution)
 - `PROXY_URL` — ISP residential proxy for Pinnacle (datacenter IPs blocked)
 
 ### How to Deploy Changes

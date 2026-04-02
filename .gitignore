@@ -18,6 +18,7 @@ venv/
 # Environment
 .env
 .mcp.json
+.htpasswd
 .claude/
 /.playwright-mcp
 

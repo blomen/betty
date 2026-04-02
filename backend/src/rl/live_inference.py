@@ -45,26 +45,40 @@ class LiveInference:
         return self._model_type
 
     def try_load(self) -> bool:
-        """Attempt to find and load the best available model. GBT preferred."""
+        """Load both GBT (for decisions) and DQN (for visualization) if available."""
+        gbt_loaded = False
+        dqn_loaded = False
+
         for search_dir in _MODEL_SEARCH_DIRS:
             if not search_dir.exists():
                 continue
-            # Try GBT first
-            gbt_candidates = sorted(search_dir.glob("gbt_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if gbt_candidates:
-                if self._load_gbt(gbt_candidates[0]):
-                    return True
-            # Fall back to DQN
-            dqn_latest = search_dir / "dqn_latest.pt"
-            if dqn_latest.exists():
-                if self._load_dqn(dqn_latest):
-                    return True
-            dqn_candidates = sorted(search_dir.glob("dqn_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if dqn_candidates:
-                if self._load_dqn(dqn_candidates[0]):
-                    return True
-        log.info("No model checkpoint found — live visualization will show empty architecture")
-        return False
+            # Load GBT for decisions
+            if not gbt_loaded:
+                gbt_candidates = sorted(search_dir.glob("gbt_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if gbt_candidates:
+                    gbt_loaded = self._load_gbt(gbt_candidates[0])
+            # Load DQN for visualization (activations + connections)
+            if not dqn_loaded:
+                dqn_latest = search_dir / "dqn_latest.pt"
+                if dqn_latest.exists():
+                    dqn_loaded = self._load_dqn(dqn_latest)
+                if not dqn_loaded:
+                    dqn_candidates = sorted(search_dir.glob("dqn_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if dqn_candidates:
+                        dqn_loaded = self._load_dqn(dqn_candidates[0])
+
+        if gbt_loaded:
+            self._model_type = "gbt"
+            self._loaded = True
+        elif dqn_loaded:
+            self._model_type = "dqn"
+            self._loaded = True
+
+        if not self._loaded:
+            log.info("No model checkpoint found — live visualization will show empty architecture")
+        else:
+            log.info("Models loaded: GBT=%s DQN=%s (decisions=%s)", gbt_loaded, dqn_loaded, self._model_type)
+        return self._loaded
 
     def _load_normalizer(self, model_path: Path) -> None:
         """Load normalizer from episodes dir (sibling to models dir)."""
@@ -113,8 +127,10 @@ class LiveInference:
     def infer(self, state: dict) -> dict | None:
         """Run inference on a market state dict.
 
-        Returns None if no model is loaded.
-        Returns payload with q_values, action, confidence.
+        When both GBT and DQN are loaded:
+        - GBT provides the trading decision (action, confidence, stop)
+        - DQN provides the visualization (activations, connections)
+        The frontend gets both: accurate decisions + neural network visualization.
         """
         if not self._loaded:
             return None
@@ -131,44 +147,45 @@ class LiveInference:
         if self._normalizer is not None:
             obs = self._normalizer.normalize(obs)
 
-        if self._gbt is not None:
-            action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(obs)
-            stop_ticks = self._gbt.predict_stop(obs)
-            action_name = Action(action_idx).name
-            return {
-                "inputs": obs.tolist(),
-                "activations": {},
-                "q_values": [prob_cont, prob_rev, 0.0],
-                "action": action_name,
-                "confidence": confidence,
-                "stop_ticks": stop_ticks,
-                "connections": [],
-                "model_type": "gbt",
-            }
+        result: dict = {"inputs": obs.tolist()}
 
+        # DQN: always run for visualization if available
         if self._dqn is not None:
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
             with torch.no_grad():
                 activations = self._dqn.forward_with_activations(obs_tensor)
                 connections = self._dqn.extract_top_connections(activations, top_n=100)
-            q_vals = activations["q_values"][0].tolist()
-            action_idx = int(np.argmax(q_vals))
-            action_name = Action(action_idx).name
-            return {
-                "inputs": obs.tolist(),
-                "activations": {
-                    "layer1": activations["layer1"][0].tolist(),
-                    "layer2": activations["layer2"][0].tolist(),
-                    "layer3": activations["layer3"][0].tolist(),
-                    "layer4": activations["features"][0].tolist(),
-                },
-                "q_values": q_vals,
-                "action": action_name,
-                "connections": connections,
-                "model_type": "dqn",
+            dqn_q = activations["q_values"][0].tolist()
+            result["activations"] = {
+                "layer1": activations["layer1"][0].tolist(),
+                "layer2": activations["layer2"][0].tolist(),
+                "layer3": activations["layer3"][0].tolist(),
+                "layer4": activations["features"][0].tolist(),
             }
+            result["connections"] = connections
+            # Use DQN Q-values and action as defaults
+            result["q_values"] = dqn_q
+            result["action"] = Action(int(np.argmax(dqn_q))).name
+            result["model_type"] = "dqn"
 
-        return None
+        # GBT: override decision if available (better accuracy)
+        if self._gbt is not None:
+            action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(obs)
+            stop_ticks = self._gbt.predict_stop(obs)
+            result["q_values"] = [prob_cont, prob_rev, 0.0]
+            result["action"] = Action(action_idx).name
+            result["confidence"] = confidence
+            result["stop_ticks"] = stop_ticks
+            result["model_type"] = "gbt+dqn" if self._dqn is not None else "gbt"
+            # Fill visualization defaults if no DQN
+            if "activations" not in result:
+                result["activations"] = {}
+                result["connections"] = []
+
+        if "action" not in result:
+            return None
+
+        return result
 
 
 # Keep backward-compatible alias

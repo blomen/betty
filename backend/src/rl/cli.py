@@ -860,9 +860,10 @@ def train_gbt(
     rewards_cont = np.clip(rewards_cont, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
     rewards_rev = np.clip(rewards_rev, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
 
-    # Normalize observations
+    # Normalize observations — use data dim, not code-computed OBSERVATION_DIM
+    obs_dim = observations.shape[1]
     normalizer_path = episodes_dir / "normalizer.json"
-    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    normalizer = RunningNormalizer(dim=obs_dim)
     if normalizer_path.exists():
         normalizer.load(normalizer_path)
         typer.echo(f"Loaded normalizer (count={normalizer.count})")
@@ -918,7 +919,9 @@ def train_gbt(
 
     typer.echo(f"  Features: {metrics['alive_features']}/{metrics['total_features']} alive")
     typer.echo(f"  Trees used: {metrics['direction_trees']} (early stopping may reduce)")
-    typer.echo(f"  Train accuracy: {metrics['train_accuracy']}%")
+    typer.echo(f"  Direction accuracy: {metrics['direction_accuracy']}%")
+    if "breakeven_accuracy" in metrics:
+        typer.echo(f"  Breakeven accuracy: {metrics['breakeven_accuracy']}%")
 
     # Validation
     typer.echo("\nValidation:")

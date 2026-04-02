@@ -13,8 +13,7 @@ services:
       interval: 5s
       retries: 5
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    # No public port — only reachable by backend via Docker network
     logging:
       driver: json-file
       options:
@@ -23,8 +22,7 @@ services:
 
   backend:
     build: .
-    ports:
-      - "8000:8000"
+    # No public port — only reachable via nginx
     volumes:
       - firev_data:/app/data
       - firev_logs:/app/logs
@@ -61,6 +59,7 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       - certs:/etc/letsencrypt:ro
     depends_on:
       - backend
