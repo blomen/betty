@@ -124,21 +124,24 @@ async def lifespan(app: FastAPI):
             logger.warning("[Startup] Opportunity warmup failed: %s", e)
     threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
-    # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
-    from ..pipeline.scheduler import get_scheduler
-    scheduler = get_scheduler()
+    # Auto-start continuous extraction (server only — skip for local fire window)
+    if not os.environ.get("FIREV_NO_SCHEDULER"):
+        from ..pipeline.scheduler import get_scheduler
+        scheduler = get_scheduler()
 
-    async def _start_scheduler():
-        try:
-            await scheduler.start_continuous(interval_seconds=300)
-            logger.info("[Startup] Scheduler started successfully")
-        except Exception:
-            logger.exception("[Startup] Scheduler start_continuous failed")
+        async def _start_scheduler():
+            try:
+                await scheduler.start_continuous(interval_seconds=300)
+                logger.info("[Startup] Scheduler started successfully")
+            except Exception:
+                logger.exception("[Startup] Scheduler start_continuous failed")
 
-    _scheduler_task = asyncio.create_task(_start_scheduler())
-    _scheduler_task.set_name("scheduler-start")
-    _background_tasks.add(_scheduler_task)
-    _scheduler_task.add_done_callback(_background_tasks.discard)
+        _scheduler_task = asyncio.create_task(_start_scheduler())
+        _scheduler_task.set_name("scheduler-start")
+        _background_tasks.add(_scheduler_task)
+        _scheduler_task.add_done_callback(_background_tasks.discard)
+    else:
+        logger.info("[Startup] Scheduler disabled (FIREV_NO_SCHEDULER set)")
 
     # ── Trading features (Databento stream, level monitor, candle backfill) ──
     # Everything is gated on market hours: when Globex is closed (weekend),

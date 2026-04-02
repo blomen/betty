@@ -70,6 +70,9 @@ def main():
         else:
             print("[fire] WARNING: Tunnel may not be ready yet, proceeding anyway...")
 
+    # Disable extraction scheduler — server handles extraction, not local fire window
+    os.environ["FIREV_NO_SCHEDULER"] = "1"
+
     # Set DATABASE_URL to point through the tunnel
     os.environ["DATABASE_URL"] = (
         f"postgresql+asyncpg://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/firev"
