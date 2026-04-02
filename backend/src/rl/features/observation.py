@@ -15,12 +15,13 @@ Zone mode (state["zone"] present):
     macro                        11
     exchange stats                5
     setup                        14
-    AMT features                 13
+    AMT features                 20
+    AMT dynamics                 20
     micro (hand-crafted)         20
     approach direction            1
     execution context             7
     ---
-    total                       249
+    total                       276
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   31
@@ -32,12 +33,13 @@ Legacy mode (state["level_type"] present, no zone):
     macro                11
     exchange stats        5
     setup                14
-    AMT features         13
+    AMT features         20
+    AMT dynamics         20
     micro (hand-crafted) 20
     approach direction    1
     execution context     7
     ---
-    total               248
+    total               275
 """
 from __future__ import annotations
 
@@ -59,6 +61,7 @@ from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
 from .execution_features import extract_execution_features
 from .amt_features import extract_amt_features
+from .amt_dynamics_features import extract_amt_dynamics_features
 from .exchange_stats_features import extract_exchange_stats_features
 from ..zone_builder import Zone, ZoneMember
 
@@ -179,8 +182,12 @@ def build_observation(state: dict) -> np.ndarray:
     # 9. Setup detection (14)
     seg_setup = extract_setup_features(state)
 
-    # 10. AMT features (13) — Dalton day type, opening type, VA migration
+    # 10. AMT features (20) — Dalton day type, opening type, VA migration
     seg_amt = extract_amt_features(session_levels, volume_profile, session_context, price)
+
+    # 10b. AMT dynamics features (20) — real-time IB extensions, acceptance/rejection
+    amt_dynamics = state.get("amt_dynamics")
+    seg_amt_dynamics = extract_amt_dynamics_features(amt_dynamics)
 
     # 11. Micro features (20) — tick-level hand-crafted context
     seg_micro = extract_micro_features(recent_ticks, price)
@@ -205,7 +212,8 @@ def build_observation(state: dict) -> np.ndarray:
         seg_macro,        # 11
         seg_exchange,     # 5
         seg_setup,        # 14
-        seg_amt,          # 13
+        seg_amt,          # 20
+        seg_amt_dynamics, # 20
         seg_micro,        # 20
         seg_approach,     # 1
         seg_execution,    # 7
@@ -246,6 +254,7 @@ _dummy_state: dict = {
     "session_context": None,
     "day_type": None,
     "recent_ticks": [],
+    "amt_dynamics": None,
 }
 
 OBSERVATION_DIM: int = int(build_observation(_dummy_state).shape[0])
