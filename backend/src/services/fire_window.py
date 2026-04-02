@@ -52,6 +52,7 @@ class FireWindowBet:
     display_away: str
     sport: str
     tier: str
+    start_time: str | None = None
     market_slug: str | None = None
     poly_outcome: str | None = None
     original_outcome: str | None = None
@@ -116,6 +117,7 @@ def open_window(
             display_away=b.get("display_away", ""),
             sport=b.get("sport", ""),
             tier=b.get("tier", "soft"),
+            start_time=b.get("start_time"),
             original_outcome=b.get("original_outcome"),
         )
         provider_bets.setdefault(pid, []).append(bet)
@@ -402,8 +404,10 @@ def get_live_state() -> dict:
             "market_slug": bet.market_slug,
             "poly_outcome": bet.poly_outcome,
             "original_outcome": bet.original_outcome,
+            "start_time": bet.start_time,
             # Live data
             "live_odds": snap.live_odds if snap else None,
+            "live_price_cents": round(100 / snap.live_odds, 1) if snap and snap.live_odds and snap.live_odds > 0 else None,
             "live_edge": snap.live_edge if snap else None,
             "delta": snap.delta if snap else 0.0,
             "category": category,

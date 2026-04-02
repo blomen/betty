@@ -19,8 +19,10 @@ export interface FireWindowBet {
   market_slug: string | null;
   poly_outcome: string | null;
   original_outcome: string | null;
+  start_time: string | null;
   // Live data
   live_odds: number | null;
+  live_price_cents: number | null;
   live_edge: number | null;
   delta: number;
   category: 'improved' | 'stable' | 'degraded' | 'negative' | 'pending';

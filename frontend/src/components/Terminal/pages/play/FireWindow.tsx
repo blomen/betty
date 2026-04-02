@@ -52,6 +52,17 @@ function formatStake(amount: number, tier: string): string {
   return `${Math.round(amount)} SEK`;
 }
 
+function formatTTK(startTime: string | null): string {
+  if (!startTime) return '--';
+  const diff = new Date(startTime).getTime() - Date.now();
+  if (diff < 0) return 'LIVE';
+  const hours = Math.floor(diff / 3_600_000);
+  const mins = Math.floor((diff % 3_600_000) / 60_000);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
+  if (hours > 0) return `${hours}h${mins > 0 ? String(mins).padStart(2, '0') + 'm' : ''}`;
+  return `${mins}m`;
+}
+
 const CATEGORY_CLASSES: Record<string, string> = {
   improved: 'text-success',
   stable: 'text-foreground',
@@ -393,6 +404,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
     const activeBets = liveState.bets.filter((b) => b.category !== 'negative');
     const excludedBets = liveState.bets.filter((b) => b.category === 'negative');
     const tier = liveState.tier;
+    const isPoly = tier === 'polymarket';
 
     return (
       <div className="flex flex-col gap-2">
@@ -421,24 +433,17 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
         {/* Bet table */}
         <div className="border border-border bg-panel overflow-x-auto">
           <table className="text-xs sq w-full">
-            <colgroup>
-              <col />
-              <col style={{ width: '55px' }} />
-              <col style={{ width: '55px' }} />
-              <col style={{ width: '55px' }} />
-              <col style={{ width: '55px' }} />
-              <col style={{ width: '50px' }} />
-              <col style={{ width: '60px' }} />
-            </colgroup>
             <thead className="bg-panel">
               <tr>
                 <th className="text-left px-2 py-1">Event / Outcome</th>
                 <th className="text-right px-2 py-1">Stake</th>
+                {isPoly && <th className="text-right px-2 py-1">&#162;</th>}
                 <th className="text-right px-2 py-1">Orig</th>
                 <th className="text-right px-2 py-1">Live</th>
                 <th className="text-right px-2 py-1">Fair</th>
                 <th className="text-right px-2 py-1">Edge</th>
                 <th className="text-right px-2 py-1">Delta</th>
+                <th className="text-right px-2 py-1">TTK</th>
               </tr>
             </thead>
             <tbody>
@@ -464,6 +469,11 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
                     <td className="text-right px-2 py-1">
                       {formatStake(bet.stake, tier)}
                     </td>
+                    {isPoly && (
+                      <td className="text-right px-2 py-1 text-tabPolymarket font-mono">
+                        {bet.live_price_cents != null ? `${bet.live_price_cents}` : '--'}
+                      </td>
+                    )}
                     <td className="text-right px-2 py-1">{bet.odds.toFixed(2)}</td>
                     <td className="text-right px-2 py-1 font-medium">
                       {bet.live_odds != null ? bet.live_odds.toFixed(2) : '--'}
@@ -478,6 +488,9 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack }: P
                     <td className={`text-right px-2 py-1 ${deltaColor}`}>
                       {bet.delta > 0 ? '+' : ''}
                       {bet.delta.toFixed(2)}
+                    </td>
+                    <td className="text-right px-2 py-1 text-muted">
+                      {formatTTK(bet.start_time)}
                     </td>
                   </tr>
                 );
