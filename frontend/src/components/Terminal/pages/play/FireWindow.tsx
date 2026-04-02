@@ -6,7 +6,7 @@ import {
   type FireResult,
 } from '@/services/api/fireWindow';
 import { ProviderName } from '../../ProviderName';
-import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import type { BatchBet, WageringProjection } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -58,13 +58,6 @@ function oddsToCents(odds: number): number {
   return odds > 1 ? Math.round(100 / odds) : 0;
 }
 
-const CATEGORY_CLASSES: Record<string, string> = {
-  improved: 'text-success',
-  stable: 'text-foreground',
-  degraded: 'text-warning',
-  negative: 'text-danger line-through opacity-60',
-  pending: 'text-muted',
-};
 
 // ---------------------------------------------------------------------------
 // FireWindow Component
@@ -430,7 +423,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
           <div className="text-danger text-xs px-3">{error}</div>
         )}
 
-        {/* Bet table — matches Poly tab layout + delta */}
+        {/* Bet table — identical to Poly tab, with Delta instead of Upd */}
         <div className="border border-border bg-panel overflow-x-auto">
           <table className="sq" style={{ width: '100%' }}>
             <thead>
@@ -448,7 +441,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
             </thead>
             <tbody>
               {liveState.bets.map((bet) => {
-                const catClass = CATEGORY_CLASSES[bet.category] ?? '';
+                const isExcluded = bet.category === 'negative';
                 const liveOdds = bet.live_odds ?? bet.odds;
                 const liveCents = oddsToCents(liveOdds);
                 const fairCents = oddsToCents(bet.fair_odds);
@@ -458,22 +451,34 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
                   bet.delta > 1 ? 'text-success' : bet.delta < -1 ? 'text-danger' : 'text-muted';
 
                 return (
-                  <tr key={bet.bet_id} className={catClass}>
+                  <tr key={bet.bet_id} className={isExcluded ? 'opacity-50' : ''}>
                     <td>
-                      <div className="truncate max-w-[300px] text-sm" title={`${bet.display_home} vs ${bet.display_away}`}>
-                        {bet.display_home} vs {bet.display_away}
+                      <div className="flex items-center gap-2 min-w-0">
+                        {bet.market_slug ? (
+                          <a
+                            href={`https://polymarket.com/event/${bet.market_slug}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-text text-sm truncate hover:text-tabPolymarket transition-colors"
+                          >
+                            {bet.display_home} vs {bet.display_away}
+                          </a>
+                        ) : (
+                          <span className="text-text text-sm truncate">{bet.display_home} vs {bet.display_away}</span>
+                        )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {bet.sport}
-                        {bet.start_time && ` · ${new Date(bet.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${new Date(bet.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`}
+                        {bet.sport} · {formatDateTime(bet.start_time)}
                       </div>
                     </td>
-                    <td className="text-right text-xs">{bet.outcome}{bet.point != null ? ` (${bet.point > 0 ? '+' : ''}${bet.point})` : ''}</td>
+                    <td className="text-right text-text text-xs">
+                      {bet.outcome}{bet.point != null ? ` (${bet.point > 0 ? '+' : ''}${bet.point})` : ''}
+                    </td>
                     <td className="text-right text-sm font-medium">
-                      {liveOdds.toFixed(2)} <span className="text-muted text-xs">({liveCents}&#162;)</span>
+                      {liveOdds.toFixed(2)} <span className="text-muted text-xs font-normal">({liveCents}¢)</span>
                     </td>
                     <td className="text-right text-muted text-sm">
-                      {bet.fair_odds.toFixed(2)} <span className="text-xs">({fairCents}&#162;)</span>
+                      {bet.fair_odds.toFixed(2)} <span className="text-xs">({fairCents}¢)</span>
                     </td>
                     <td className="text-right text-muted text-sm">
                       {bet.fair_odds > 1 ? `${(100 / bet.fair_odds).toFixed(0)}%` : '-'}
@@ -484,7 +489,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
                     <td className="text-right text-sm font-medium">
                       {formatStake(bet.stake, tier)}
                     </td>
-                    <td className={`text-right font-semibold text-sm ${edgeVal > 0 ? 'text-success' : 'text-danger'}`}>
+                    <td className={`text-right font-semibold text-sm ${edgeVal > 0 ? 'text-success' : 'text-error'}`}>
                       {edgeVal > 0 ? '+' : ''}{edgeVal.toFixed(1)}%
                     </td>
                     <td className={`text-right text-sm ${deltaColor}`}>
