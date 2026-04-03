@@ -1437,3 +1437,365 @@ def backtest(
     typer.echo(f"\n  WORST SESSIONS:")
     for s in sorted_sessions[-5:]:
         typer.echo(f"    {s['date']}  {s['total_pnl_r']:+6.1f}R  trades={s['trades']}  flips={s['flips']}")
+
+
+# ---------------------------------------------------------------------------
+# label-setups
+# ---------------------------------------------------------------------------
+
+@rl_app.command("label-setups")
+def label_setups() -> None:
+    """Label all episodes with setup types (rule-based + clustering)."""
+    import numpy as np
+    from collections import Counter
+
+    from src.rl.config import LevelType
+    from src.rl.labeling.setup_labeler import label_episode
+    from src.rl.labeling.setup_types import SetupType
+
+    episodes_dir = _EPISODES_DIR
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(episodes_dir / "observations.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+
+    n = len(observations)
+    typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
+
+    # Decode zone composition multi-hot (indices 0:31) to zone type name lists
+    all_level_types = list(LevelType)  # 31 members, same order as multi-hot
+    zone_comp = observations[:, :31]
+
+    labels = np.empty(n, dtype=object)
+    for i in range(n):
+        # Decode zone types from multi-hot composition vector
+        active_mask = zone_comp[i] > 0.5
+        zone_types = [all_level_types[j].value for j in range(31) if active_mask[j]]
+
+        # Approach direction: index 268 (1.0=up, -1.0=down)
+        approach_dir = "up" if observations[i, 268] >= 0 else "down"
+
+        # Approximate forward_reversal_speed: |reward_rev| * 5 when reversal is better
+        rev_better = rewards_rev[i] > rewards_cont[i]
+        fwd_rev_speed = abs(float(rewards_rev[i])) * 5.0 if rev_better else 0.0
+
+        # Single print: check if zone_conf single_print_overlap (index 177) is active
+        has_sp = bool(observations[i, 177] > 0.5)
+
+        ep_dict = {
+            "zone_types": zone_types,
+            "approach_direction": approach_dir,
+            "reward_cont": float(rewards_cont[i]),
+            "reward_rev": float(rewards_rev[i]),
+            "has_single_print": has_sp,
+            "forward_reversal_speed": fwd_rev_speed,
+            # Fields used by labeler but not always available from obs alone
+            "price_vs_value": float(observations[i, 52]),  # struct_0: price_vs_vwap
+            "has_gap": False,  # Cannot determine from observation vector
+            "ib_closed": bool(observations[i, 57] > 0),  # struct_5: IB distance > 0
+            "delta_ratio": float(observations[i, 31]),  # orderflow index 0
+        }
+
+        labels[i] = label_episode(ep_dict).value
+
+    # Print distribution
+    counts = Counter(labels)
+    typer.echo(f"\n  Setup Label Distribution:")
+    for setup_type in SetupType:
+        c = counts.get(setup_type.value, 0)
+        pct = c / n * 100 if n > 0 else 0
+        flag = " *" if setup_type == SetupType.UNKNOWN else ""
+        typer.echo(f"    {setup_type.value:30s} {c:>7,}  ({pct:5.1f}%){flag}")
+
+    # Cluster unknowns if there are enough
+    unknown_count = counts.get(SetupType.UNKNOWN.value, 0)
+    if unknown_count > 1000:
+        typer.echo(f"\n  Clustering {unknown_count:,} unknown episodes...")
+        from src.rl.labeling.setup_clusterer import cluster_and_label
+
+        unknown_mask = np.array([lb == SetupType.UNKNOWN.value for lb in labels])
+        unknown_idx = np.where(unknown_mask)[0]
+
+        # Structure + TPO portion of observations (indices 52:154)
+        unknown_obs = observations[unknown_idx, 52:154]
+        unknown_zone_types = [
+            [all_level_types[j].value for j in range(31) if zone_comp[idx][j] > 0.5]
+            for idx in unknown_idx
+        ]
+        unknown_rc = rewards_cont[unknown_idx]
+        unknown_rr = rewards_rev[unknown_idx]
+        # price_vs_value from struct_0 (index 52)
+        unknown_pvv = observations[unknown_idx, 52]
+        # balance_width from AMT dynamics index 15 → observation index 228+15=243
+        unknown_bw = observations[unknown_idx, 243]
+
+        cluster_labels = cluster_and_label(
+            observations=unknown_obs,
+            zone_types_list=unknown_zone_types,
+            rewards_cont=unknown_rc,
+            rewards_rev=unknown_rr,
+            price_vs_value=unknown_pvv,
+            balance_widths=unknown_bw,
+            min_cluster_size=200,
+        )
+
+        # Merge cluster labels back
+        for i, idx in enumerate(unknown_idx):
+            labels[idx] = cluster_labels[i]
+
+        # Print updated distribution
+        counts = Counter(labels)
+        typer.echo(f"\n  Updated Distribution (after clustering):")
+        for setup_type in SetupType:
+            c = counts.get(setup_type.value, 0)
+            pct = c / n * 100 if n > 0 else 0
+            typer.echo(f"    {setup_type.value:30s} {c:>7,}  ({pct:5.1f}%)")
+
+    # Save
+    out_path = episodes_dir / "setup_labels.npy"
+    np.save(out_path, labels)
+    typer.echo(f"\n  Saved setup labels to {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# train-narrative-gbt
+# ---------------------------------------------------------------------------
+
+@rl_app.command("train-narrative-gbt")
+def train_narrative_gbt(
+    checkpoint: str = typer.Option("v5", help="Checkpoint name"),
+    trees: int = typer.Option(500, help="Number of trees"),
+    depth: int = typer.Option(5, help="Max depth"),
+    lr: float = typer.Option(0.05, help="Learning rate"),
+) -> None:
+    """Train the Narrative GBT on slow features -> day type + setup probs."""
+    import numpy as np
+
+    from src.rl.agent.narrative_gbt import NarrativeGBT
+    from src.rl.labeling.setup_types import NUM_SETUP_TYPES, SetupType
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    labels_path = episodes_dir / "setup_labels.npy"
+    if not labels_path.exists():
+        typer.echo(f"No setup_labels.npy. Run 'rl label-setups' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(obs_path)
+    setup_labels_raw = np.load(labels_path, allow_pickle=True)
+
+    n = len(observations)
+    typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
+
+    # Extract narrative-relevant features:
+    #   structure  52:116  (64)
+    #   TPO       116:154  (38)
+    #   macro     178:189  (11)
+    #   AMT       208:228  (20)
+    #   AMT_dyn   228:248  (20)
+    #   Total: 153 dims
+    X = np.concatenate([
+        observations[:, 52:116],    # structure (64)
+        observations[:, 116:154],   # TPO (38)
+        observations[:, 178:189],   # macro (11)
+        observations[:, 208:228],   # AMT (20)
+        observations[:, 228:248],   # AMT dynamics (20)
+    ], axis=1)
+    typer.echo(f"Narrative features: {X.shape[1]} dims")
+
+    # Day type labels: AMT day type one-hot at AMT indices 0-5 → obs indices 208:214
+    day_type_onehot = observations[:, 208:214]
+    day_type_labels = np.argmax(day_type_onehot, axis=1).astype(np.int32)
+    n_day_types = len(np.unique(day_type_labels))
+    typer.echo(f"Day types: {n_day_types} classes")
+
+    # Setup labels: convert string labels → binary matrix (N, NUM_SETUP_TYPES)
+    setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
+    setup_binary = np.zeros((n, NUM_SETUP_TYPES), dtype=np.int32)
+    for i, lbl in enumerate(setup_labels_raw):
+        for j, name in enumerate(setup_names):
+            if lbl == name:
+                setup_binary[i, j] = 1
+                break
+
+    pos_counts = setup_binary.sum(axis=0)
+    for j, name in enumerate(setup_names):
+        typer.echo(f"  Setup '{name}': {int(pos_counts[j]):,} positive samples")
+
+    # Train
+    model = NarrativeGBT()
+    typer.echo(f"\nTraining NarrativeGBT (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
+    metrics = model.train(
+        X=X,
+        day_type_labels=day_type_labels,
+        setup_labels=setup_binary,
+        n_estimators=trees,
+        max_depth=depth,
+        learning_rate=lr,
+    )
+
+    # Print metrics
+    typer.echo(f"\n  Results:")
+    typer.echo(f"    Engine           : {metrics['engine']}")
+    typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Day type acc     : {metrics['day_type_accuracy']}%")
+    typer.echo(f"    Trained setups   : {metrics['trained_setups']}")
+    typer.echo(f"    Skipped setups   : {metrics['skipped_setups']}")
+
+    # Feature importance
+    top_features = model.feature_importance(top_n=10)
+    typer.echo(f"\n  Top 10 feature importances (day type head):")
+    for idx, imp in top_features:
+        typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
+
+    # Save
+    save_path = models_dir / f"narrative_gbt_{checkpoint}.joblib"
+    model.save(save_path)
+    typer.echo(f"\n  Saved to {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# train-trigger-gbt
+# ---------------------------------------------------------------------------
+
+@rl_app.command("train-trigger-gbt")
+def train_trigger_gbt(
+    checkpoint: str = typer.Option("v5", help="Checkpoint name"),
+    trees: int = typer.Option(1000, help="Number of trees"),
+    depth: int = typer.Option(6, help="Max depth"),
+    lr: float = typer.Option(0.05, help="Learning rate"),
+) -> None:
+    """Train the Trigger GBT on trigger-layer features -> direction/reward forecast."""
+    import numpy as np
+
+    from src.rl.agent.narrative_gbt import NarrativeGBT
+    from src.rl.agent.trigger_gbt import TriggerGBT
+    from src.rl.features.passthrough_features import extract_passthrough
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(episodes_dir / "observations.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    stop_path = episodes_dir / "stop_targets.npy"
+    stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
+    be_path = episodes_dir / "breakeven_reached.npy"
+    breakeven_reached = np.load(be_path) if be_path.exists() else None
+    lc_path = episodes_dir / "levels_captured.npy"
+    levels_captured = np.load(lc_path) if lc_path.exists() else None
+
+    n = len(observations)
+    typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
+
+    # --- Narrative augment: setup_probs from NarrativeGBT if available ---
+    narrative_path = models_dir / f"narrative_gbt_{checkpoint}.joblib"
+    setup_probs = None
+    if narrative_path.exists():
+        typer.echo(f"Loading NarrativeGBT from {narrative_path}...")
+        narrative_model = NarrativeGBT.load(narrative_path)
+        # Extract the same narrative features used during training
+        narrative_feats = np.concatenate([
+            observations[:, 52:116],    # structure (64)
+            observations[:, 116:154],   # TPO (38)
+            observations[:, 178:189],   # macro (11)
+            observations[:, 208:228],   # AMT (20)
+            observations[:, 228:248],   # AMT dynamics (20)
+        ], axis=1)
+        setup_probs = narrative_model.predict_setup_probs_batch(narrative_feats)  # (N, 8)
+        typer.echo(f"  Setup probs shape: {setup_probs.shape}")
+    else:
+        typer.echo(f"No NarrativeGBT at {narrative_path} — training without narrative augment.")
+
+    # --- Build trigger feature vector ---
+    # Trigger-relevant raw features from observation:
+    #   zone_comp     0:31   (31)
+    #   orderflow    31:52   (21)
+    #   candles     154:169  (15)
+    #   zone_feat   169:173  (4)
+    #   zone_conf   173:178  (5)
+    #   micro       248:268  (20)
+    #   approach    268:269  (1)
+    # Total raw: 97 dims
+    raw_trigger = np.concatenate([
+        observations[:, 0:31],      # zone_comp (31)
+        observations[:, 31:52],     # orderflow (21)
+        observations[:, 154:169],   # candles (15)
+        observations[:, 169:173],   # zone_feat (4)
+        observations[:, 173:178],   # zone_conf (5)
+        observations[:, 248:268],   # micro (20)
+        observations[:, 268:269],   # approach (1)
+    ], axis=1)
+
+    # Passthrough features (10 high-importance raw features)
+    passthrough = np.stack([extract_passthrough(obs) for obs in observations])
+
+    # Assemble full trigger feature vector
+    parts = [raw_trigger, passthrough]
+    if setup_probs is not None:
+        parts.append(setup_probs)
+    X = np.concatenate(parts, axis=1)
+    typer.echo(f"Trigger features: {X.shape[1]} dims (raw={raw_trigger.shape[1]} + passthrough={passthrough.shape[1]}"
+               + (f" + narrative={setup_probs.shape[1]}" if setup_probs is not None else "") + ")")
+
+    # --- Labels ---
+    y_direction = (rewards_cont > rewards_rev).astype(np.int32)
+    reward_gap = np.abs(rewards_cont - rewards_rev)
+
+    cont_pct = y_direction.mean() * 100
+    typer.echo(f"Direction split: {cont_pct:.1f}% continuation, {100 - cont_pct:.1f}% reversal")
+
+    # --- Train ---
+    model = TriggerGBT()
+    typer.echo(f"\nTraining TriggerGBT (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
+    metrics = model.train(
+        X=X,
+        y_direction=y_direction,
+        rewards_cont=rewards_cont,
+        rewards_rev=rewards_rev,
+        stop_targets=stop_targets,
+        breakeven_reached=breakeven_reached,
+        levels_captured=levels_captured,
+        reward_gap=reward_gap,
+        n_estimators=trees,
+        max_depth=depth,
+        learning_rate=lr,
+    )
+
+    # Print metrics
+    typer.echo(f"\n  Results:")
+    typer.echo(f"    Engine           : {metrics['engine']}")
+    typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Direction acc    : {metrics['direction_accuracy']}%")
+    if "breakeven_accuracy" in metrics:
+        typer.echo(f"    Breakeven acc    : {metrics['breakeven_accuracy']}%")
+
+    # Feature importance
+    top_features = model.feature_importance(top_n=10)
+    typer.echo(f"\n  Top 10 feature importances (direction head):")
+    for idx, imp in top_features:
+        typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
+
+    # Save
+    save_path = models_dir / f"trigger_gbt_{checkpoint}.joblib"
+    model.save(save_path)
+    typer.echo(f"\n  Saved to {save_path}")
