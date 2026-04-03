@@ -1377,7 +1377,11 @@ class MirrorService:
             db.close()
 
     def _btn_index_for_outcome(self, original_outcome: str, market_type: str) -> int:
-        """Map outcome to Polymarket trading button index."""
+        """Map outcome to button index within a market section (0=home/over, 1=away/under/draw-for-2btn).
+
+        For 1x2 markets: home=0, draw=1, away=2.
+        For 2-button markets (ML, spread, total): home/over=0, away/under=1.
+        """
         if original_outcome in ("home", "over"):
             return 0
         elif original_outcome == "draw":
@@ -1385,6 +1389,14 @@ class MirrorService:
         elif original_outcome in ("away", "under"):
             return 2 if market_type == "1x2" else 1
         return 0
+
+    # Map internal market types to Polymarket section labels
+    _MARKET_SECTION_LABELS = {
+        "moneyline": ["moneyline", "match winner", "series winner", "winner"],
+        "1x2": ["moneyline", "match winner", "1x2", "winner"],
+        "spread": ["game handicap", "handicap", "spread", "map handicap"],
+        "total": ["total games", "total maps", "total", "over/under"],
+    }
 
     @staticmethod
     def _market_url(slug: str) -> str:
@@ -1394,18 +1406,82 @@ class MirrorService:
 
     @staticmethod
     async def _read_btn_prices(page) -> list[dict]:
-        """Read all trading button prices from a Polymarket page."""
-        return await page.evaluate(
-            "() => {"
-            "  const btns = [...document.querySelectorAll('button.trading-button')];"
-            "  return btns.map(b => {"
-            "    const text = b.textContent || '';"
-            "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
-            "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
-            "    return {text: text.trim().slice(0, 40), price};"
-            "  });"
-            "}"
-        )
+        """Read trading button prices from a Polymarket page, grouped by market section.
+
+        Returns list of {text, price, section} where section is the market label
+        (e.g. 'Moneyline', 'Game Handicap', 'Total Games').
+        """
+        return await page.evaluate("""() => {
+            const btns = [...document.querySelectorAll('button.trading-button')];
+            return btns.map(b => {
+                const text = b.textContent || '';
+                const priceMatch = text.match(/([\\.\\d]+)\\u00a2/);
+                const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;
+
+                // Walk up to find the market section label
+                let section = '';
+                let el = b.parentElement;
+                for (let i = 0; i < 15 && el; i++) {
+                    // Look for a sibling or child heading that names the market
+                    const headings = el.querySelectorAll('p, span, h3, h4');
+                    for (const h of headings) {
+                        const t = (h.textContent || '').trim().toLowerCase();
+                        if (['moneyline', 'match winner', 'series winner', 'winner',
+                             'game handicap', 'handicap', 'spread', 'map handicap',
+                             'total games', 'total maps', 'total', 'over/under',
+                             'game 1 winner', 'game 2 winner', 'game 3 winner',
+                             'map 1 winner', 'map 2 winner', 'map 3 winner',
+                             '1st half', '2nd half'].some(kw => t.includes(kw))) {
+                            section = t;
+                            break;
+                        }
+                    }
+                    if (section) break;
+                    el = el.parentElement;
+                }
+
+                return {text: text.trim().slice(0, 40), price, section};
+            });
+        }""")
+
+    def _find_btn_for_market(
+        self, buttons: list[dict], original_outcome: str, market_type: str,
+    ) -> dict | None:
+        """Find the correct button for a bet's market type and outcome.
+
+        Matches the button's section label against known market type labels,
+        then picks the correct index within that section.
+        """
+        target_labels = self._MARKET_SECTION_LABELS.get(market_type, ["moneyline", "winner"])
+
+        # Group buttons by section, preserving order
+        sections: dict[str, list[dict]] = {}
+        for btn in buttons:
+            sec = btn.get("section", "")
+            sections.setdefault(sec, []).append(btn)
+
+        # Find the matching section
+        matched_section = None
+        for sec_label, sec_btns in sections.items():
+            if any(kw in sec_label for kw in target_labels):
+                # Skip per-game markets (Game 1, Game 2) — we want the series/main line
+                if any(skip in sec_label for skip in ["game 1", "game 2", "game 3", "map 1", "map 2", "map 3"]):
+                    continue
+                matched_section = sec_btns
+                break
+
+        if matched_section is None:
+            # Fallback: if only one section or no labels found, use all buttons
+            if len(sections) <= 1:
+                matched_section = buttons
+            else:
+                # Try the first section (usually moneyline)
+                matched_section = list(sections.values())[0] if sections else buttons
+
+        btn_idx = self._btn_index_for_outcome(original_outcome, market_type)
+        if 0 <= btn_idx < len(matched_section):
+            return matched_section[btn_idx]
+        return None
 
     async def _ensure_poly_tabs(self, bets: list[dict]) -> None:
         """Ensure exactly one tab per unique market slug in the current batch.
@@ -1495,7 +1571,6 @@ class MirrorService:
 
             event_fair = fair_odds_map.get(event_id, {})
             fair = event_fair.get(original_outcome)
-            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
 
             page = self._poly_tabs.get(slug)
             if page is None:
@@ -1509,10 +1584,11 @@ class MirrorService:
 
             try:
                 btn_data = await self._read_btn_prices(page)
+                matched = self._find_btn_for_market(btn_data, original_outcome, market_type)
 
-                if btn_index < len(btn_data) and btn_data[btn_index]["price"] is not None:
-                    live_price = btn_data[btn_index]["price"]
-                    live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+                if matched and matched.get("price") is not None:
+                    live_price = matched["price"]
+                    live_odds = round(1 / live_price, 2) if 0 < live_price < 1 else 999
                     edge_pct = compute_edge("polymarket", live_odds, fair) if fair else None
 
                     status = "value" if edge_pct is not None and edge_pct > 0 else (
@@ -1592,20 +1668,19 @@ class MirrorService:
                 errors.append({"bet_id": bet_id, "reason": "Page load failed", "status": "error"})
                 continue
 
-            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
-
             try:
                 btn_data = await self._read_btn_prices(page)
             except Exception as e:
                 errors.append({"bet_id": bet_id, "reason": f"Could not read prices: {e}", "status": "error"})
                 continue
 
-            if btn_index >= len(btn_data) or btn_data[btn_index]["price"] is None:
-                errors.append({"bet_id": bet_id, "reason": f"No price at button index {btn_index}", "status": "error"})
+            matched = self._find_btn_for_market(btn_data, original_outcome, market_type)
+            if not matched or matched.get("price") is None:
+                errors.append({"bet_id": bet_id, "reason": f"No price for {market_type}/{original_outcome}", "status": "error"})
                 continue
 
-            live_price = btn_data[btn_index]["price"]
-            live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+            live_price = matched["price"]
+            live_odds = round(1 / live_price, 2) if 0 < live_price < 1 else 999
             edge_pct = compute_edge("polymarket", live_odds, fair)
 
             if edge_pct is None or edge_pct <= 0:

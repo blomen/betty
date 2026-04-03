@@ -328,9 +328,11 @@ async def _update_live_prices(provider_id: str, mirror_service) -> None:
 
             try:
                 buttons = await mirror_service._read_btn_prices(page)
-                idx = mirror_service._btn_index_for_outcome(bet.outcome, bet.market)
-                if 0 <= idx < len(buttons):
-                    price = buttons[idx].get("price")
+                matched = mirror_service._find_btn_for_market(
+                    buttons, bet.outcome, bet.market,
+                )
+                if matched:
+                    price = matched.get("price")
                     if price and 0 < price < 1:
                         # Polymarket prices are probabilities (0-1); convert to decimal odds
                         live_odds = round(1 / price, 4)
