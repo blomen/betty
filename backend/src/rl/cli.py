@@ -576,9 +576,9 @@ def replay(
         typer.echo(f"No Parquet files found in {ticks_dir}", err=True)
         raise typer.Exit(1)
 
-    # Auto-detect worker count: half of CPUs (leave room for extraction)
+    # Auto-detect worker count: 75% of CPUs (extraction is I/O-bound, RL is nice 19)
     if workers <= 0:
-        workers = max(1, multiprocessing.cpu_count() // 2)
+        workers = max(1, int(multiprocessing.cpu_count() * 0.75))
     workers = min(workers, len(parquet_files))
 
     typer.echo(f"Found {len(parquet_files)} tick file(s) to replay with {workers} worker(s).")
@@ -923,6 +923,11 @@ def train(
         if epoch % max(1, epochs // 20) == 0 or epoch == 1:
             lr = scheduler.get_last_lr()[0]
             typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={avg_loss:.4f}  epsilon={agent.epsilon:.3f}  lr={lr:.2e}")
+        # Checkpoint every 5 epochs so progress is never lost
+        if epoch % 5 == 0:
+            ckpt_path = models_dir / f"dqn_{checkpoint}.pt"
+            agent.save(ckpt_path)
+            typer.echo(f"  [checkpoint saved: epoch {epoch}]")
 
     # Validation: check if model predicts the better direction correctly
     typer.echo("\nRunning validation ...")

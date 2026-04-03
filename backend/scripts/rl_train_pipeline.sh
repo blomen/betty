@@ -57,7 +57,7 @@ echo "[3/6] Augmented replay complete."
 
 # Step 4: Train DQN on hybrid episodes (bigger batch, more epochs)
 echo ""
-echo "[4/6] Training DQN v4 on hybrid episodes (30 epochs, batch 256)..."
+echo "[4/6] Training DQN v4 on hybrid episodes (30 epochs, batch 1024)..."
 nice -n 19 python -m src.app rl train --epochs 30 --checkpoint v4
 echo "[4/6] DQN v4 trained."
 
