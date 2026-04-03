@@ -366,7 +366,7 @@ class AMTDynamicsTracker:
         if self.single_prints:
             session_mid = (self.session_high + self.session_low) / 2.0
             min_dist = min(
-                min(abs(session_mid - sp[0]), abs(session_mid - sp[1]))
+                abs(session_mid - (sp[0] if isinstance(sp, (list, tuple)) else sp))
                 for sp in self.single_prints
             )
             single_print_prox = max(0.0, 1.0 - min_dist / ib_range)
