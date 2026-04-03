@@ -60,12 +60,15 @@ def test_compute_provider_roi_basic(db_session):
     from src.db.models import Opportunity, Bet, Event
     from src.ml.analytics.engine import compute_provider_roi
 
+    from src.db.models import Provider
     evt = Event(
         id="football:team_a:team_b:2026-03-13",
         sport="football", league="Test League",
         home_team="team_a", away_team="team_b",
     )
     db_session.add(evt)
+    db_session.add(Provider(id="betsson", name="Betsson"))
+    db_session.flush()
 
     for i in range(5):
         db_session.add(Opportunity(
