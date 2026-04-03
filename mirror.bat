@@ -3,4 +3,4 @@
 start /min "SOCKS Tunnel" bash "%~dp0scripts\socks-tunnel.sh"
 
 cd /d "%~dp0backend"
-python run_mirror.py
+start /wait /b python run_mirror.py
