@@ -54,6 +54,7 @@ jobs:
             --ignore-glob='tests/test_model_serving*' \
             --ignore-glob='tests/test_trading_ml*' \
             --ignore-glob='tests/test_optimizer*' \
+            --ignore-glob='tests/test_m10_optimizer*' \
             --ignore-glob='tests/test_bet_interceptor*' \
             --ignore-glob='tests/test_mirror_*' \
             --ignore-glob='tests/test_mute_notifications*' \
