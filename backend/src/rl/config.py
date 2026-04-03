@@ -100,3 +100,13 @@ COST_PER_TRADE_TICKS = (SLIPPAGE_TICKS + COMMISSION_TICKS) * 2  # round-trip
 # --- Data ---
 DATABENTO_DATASET = "GLBX.MDP3"
 SYMBOL = "NQ.FUT"
+
+# --- V5 Hierarchical Architecture ---
+NARRATIVE_UPDATE_INTERVAL_S = 1800  # 30 minutes
+NARRATIVE_STRUCTURAL_TRIGGERS = [
+    "ib_close",
+    "new_swing_high",
+    "new_swing_low",
+    "value_area_breach",
+    "single_print_created",
+]

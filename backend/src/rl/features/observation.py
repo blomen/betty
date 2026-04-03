@@ -327,3 +327,30 @@ def build_position_state(
         unrealized_r, time_in_trade,
         session_pnl_norm, consec_norm, progress,
     ], dtype=np.float32)
+
+
+from .narrative_features import extract_narrative_features, NARRATIVE_DIM
+from .trigger_features import build_trigger_observation, TRIGGER_DIM
+from .passthrough_features import PASSTHROUGH_DIM
+
+# V5 dimensions
+NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 15
+TRIGGER_OBSERVATION_DIM = TRIGGER_DIM     # 141
+
+
+def build_narrative(state: dict) -> np.ndarray:
+    """Build the narrative observation (Stage 1 input)."""
+    return extract_narrative_features(state)
+
+
+def build_trigger(
+    narrative: np.ndarray,
+    setup_probs: np.ndarray,
+    state: dict,
+    trigger_gbt_forecast: np.ndarray | None = None,
+) -> np.ndarray:
+    """Build the trigger observation (Stage 2 input)."""
+    base_obs = build_observation(state)
+    return build_trigger_observation(
+        narrative, setup_probs, state, base_obs, trigger_gbt_forecast,
+    )
