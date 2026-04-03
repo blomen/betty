@@ -441,8 +441,8 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
               </tr>
             </thead>
             <tbody>
-              {liveState.bets.map((bet) => {
-                const isExcluded = bet.category === 'negative';
+              {activeBets.map((bet) => {
+                const isExcluded = false;
                 const liveOdds = bet.live_odds ?? bet.odds;
                 const liveCents = oddsToCents(liveOdds);
                 const fairCents = oddsToCents(bet.fair_odds);
