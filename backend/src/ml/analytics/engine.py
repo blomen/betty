@@ -127,8 +127,8 @@ def compute_coverage_gaps(session) -> list[dict]:
         SELECT provider_id, sport, events_matched, ml_count, spread_count, total_count
         FROM sport_run_metrics
         WHERE provider_id NOT IN ('pinnacle', 'polymarket')
-        AND run_id IN (
-            SELECT DISTINCT run_id FROM sport_run_metrics
+        AND run_id = (
+            SELECT run_id FROM sport_run_metrics
             WHERE provider_id NOT IN ('pinnacle', 'polymarket')
             ORDER BY id DESC
             LIMIT 1
