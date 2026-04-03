@@ -155,25 +155,13 @@ export function PlayPage() {
               {batchErrorMessage()}
             </div>
           ) : (
-            <>
-              <SessionBatchPanel
-                batch={batchData.batch}
-                summary={batchData.summary}
-                providerBalances={(batchData as any).provider_balances}
-                onRemoveBet={handleRemoveBet}
-              />
-
-              {batchData.batch.length > 0 && (
-                <div className="flex items-center justify-end px-1 py-1 shrink-0">
-                  <button
-                    className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
-                    onClick={handleFire}
-                  >
-                    Fire {batchData.batch.length} bets →
-                  </button>
-                </div>
-              )}
-            </>
+            <SessionBatchPanel
+              batch={batchData.batch}
+              summary={batchData.summary}
+              providerBalances={(batchData as any).provider_balances}
+              onRemoveBet={handleRemoveBet}
+              onFire={handleFire}
+            />
           )}
         </div>
       )}

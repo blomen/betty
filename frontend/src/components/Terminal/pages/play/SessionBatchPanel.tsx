@@ -55,6 +55,7 @@ interface Props {
   summary: BatchSummary;
   providerBalances?: Record<string, number>;
   onRemoveBet: (betKey: string) => void;
+  onFire?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ export function SessionBatchPanel({
   summary,
   providerBalances,
   onRemoveBet,
+  onFire,
 }: Props) {
   // Group bets by provider, sorted by cluster then EV descending
   const byProvider = useMemo(() => {
@@ -140,9 +142,17 @@ export function SessionBatchPanel({
           {sekStake > 0 && usdcStake > 0 && ' + '}
           {usdcStake > 0 && `${usdcStake.toFixed(2)} USDC`}
         </span>
-        <span className="text-success text-sm ml-auto">
+        <span className="text-success text-sm">
           +{totalEV.toFixed(0)} kr EV
         </span>
+        {onFire && batch.length > 0 && (
+          <button
+            className="ml-auto px-4 py-1 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+            onClick={onFire}
+          >
+            Fire {batch.length} bets →
+          </button>
+        )}
       </div>
 
       {/* Provider list grouped by cluster */}
