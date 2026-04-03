@@ -30,12 +30,12 @@ def get_proxy_dict(residential: bool = False, **kwargs) -> dict | None:
     """Parse proxy URL into Playwright/Camoufox proxy dict format.
 
     Args:
-        residential: If True, prefer RESIDENTIAL_PROXY_URL (real Swedish home IP,
-                     needed for sites that block VPN/datacenter IPs like tipwin).
+        residential: If True, prefer RESIDENTIAL_PROXY_URL (dedicated Bahnhof tunnel
+                     on port 1081, used by tipwin to avoid SSH tunnel contention).
                      Falls back to PROXY_URL if not set.
 
-    Handles format: http://user:pass@host:port → {server, username, password}
-                    socks5://user:pass@host:port → {server, username, password}
+    Handles format: socks5://host:port → {server}
+                    http://user:pass@host:port → {server, username, password}
     """
     import os
     from urllib.parse import urlparse
@@ -300,7 +300,7 @@ class BrowserTransport(Transport):
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
                  channel: Optional[str] = None, cdp_url: Optional[str] = None,
                  circuit_breaker: Any = None, use_proxy: bool = False,
-                 use_socks: bool = False, use_residential_proxy: bool = False):
+                 use_residential_proxy: bool = False):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
@@ -308,7 +308,7 @@ class BrowserTransport(Transport):
         self.circuit_breaker = circuit_breaker
         if use_residential_proxy:
             self._proxy_dict = get_proxy_dict(residential=True)
-        elif use_socks or use_proxy:
+        elif use_proxy:
             self._proxy_dict = get_proxy_dict()
         else:
             self._proxy_dict = None

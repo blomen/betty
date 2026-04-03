@@ -16,7 +16,7 @@ dependencies = [
     # WebSocket
     "websockets>=12.0",
 
-    # SOCKS proxy support for aiohttp (NordVPN SOCKS5)
+    # SOCKS proxy support for aiohttp (Bahnhof VPS SOCKS5)
     "aiohttp-socks>=0.8.0",
     "PySocks>=1.7.1",
 

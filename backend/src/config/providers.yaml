@@ -2,11 +2,12 @@
 # Uses YAML anchors to reduce duplication
 # Bonus info source: https://speltips.se/ (check periodically for updates)
 #
-# Proxy: PROXY_URL env var (NordVPN Swedish SOCKS5) is used by ALL providers:
+# Proxy: PROXY_URL env var (Bahnhof VPS, AS8473 Swedish ISP) is used by ALL providers:
 #   - Pinnacle, Altenar (aiohttp via aiohttp-socks ProxyConnector)
-#   - Kambi, Gecko V2, Interwetten, Tipwin, 10bet, Spectate (Playwright BrowserTransport)
+#   - Kambi, Gecko V2, Interwetten, 10bet, Spectate (Playwright BrowserTransport)
 #   - Coolbet, ComeOn (Camoufox anti-detect browser)
 #   - VBet (WebSocket via PySocks SOCKS5)
+#   - Tipwin uses RESIDENTIAL_PROXY_URL (dedicated tunnel to same Bahnhof VPS, port 1081)
 
 # Global orchestrator configuration
 # Tuned for bare metal i7-7700 (4C/8T), 64GB RAM, 2x 256GB SSD

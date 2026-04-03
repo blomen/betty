@@ -189,8 +189,7 @@ class ExtractorFactory:
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
             # Headless works fine (tested: 1,221 events vs 1,077 headed)
-            # Tipwin blocks VPN/datacenter IPs at application level — needs genuine
-            # Swedish residential IP (RESIDENTIAL_PROXY_URL). Falls back to PROXY_URL.
+            # Uses dedicated Bahnhof tunnel (port 1081) to avoid SSH tunnel contention
             from .core import BrowserTransport
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_residential_proxy=True)
             retriever = TipwinRetriever(config, transport=transport)
