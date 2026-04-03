@@ -540,9 +540,9 @@ _auth_exempt = {"/health", "/health/live", "/health/ready"}
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     if _api_key and request.url.path not in _auth_exempt:
-        # Skip if request already passed nginx basic auth (browser access)
-        has_basic_auth = request.headers.get("Authorization", "").startswith("Basic ")
-        if not has_basic_auth:
+        # Skip if request already passed nginx basic auth
+        passed_nginx = request.headers.get("X-Nginx-Authenticated")
+        if not passed_nginx:
             provided = request.headers.get("X-API-Key")
             if provided != _api_key:
                 return JSONResponse(status_code=401, content={"error": "Invalid or missing API key"})
