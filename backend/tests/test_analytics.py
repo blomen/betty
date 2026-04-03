@@ -100,7 +100,7 @@ def test_compute_provider_roi_basic(db_session):
 
 def test_compute_provider_roi_canonical_grouping(db_session):
     """Test that alias providers group under canonical."""
-    from src.db.models import Opportunity, Event
+    from src.db.models import Opportunity, Event, Provider
     from src.ml.analytics.engine import compute_provider_roi
 
     evt = Event(
@@ -109,6 +109,9 @@ def test_compute_provider_roi_canonical_grouping(db_session):
         home_team="team_c", away_team="team_d",
     )
     db_session.add(evt)
+    for pid in ["unibet", "leovegas", "expekt"]:
+        db_session.add(Provider(id=pid, name=pid.title()))
+    db_session.flush()
 
     for pid in ["unibet", "leovegas", "expekt"]:
         db_session.add(Opportunity(
@@ -341,7 +344,7 @@ def test_recommendation_manager_resolve(db_session):
 def test_analytics_refresh(db_session):
     """Test full refresh cycle: compute analytics + generate recommendations."""
     from src.ml.analytics.engine import AnalyticsEngine
-    from src.db.models import ProviderRecommendation, Event, Opportunity
+    from src.db.models import ProviderRecommendation, Event, Opportunity, Provider
     from sqlalchemy import text
 
     evt = Event(
@@ -349,6 +352,8 @@ def test_analytics_refresh(db_session):
         home_team="x", away_team="y",
     )
     db_session.add(evt)
+    db_session.add(Provider(id="comeon", name="ComeOn"))
+    db_session.flush()
 
     # Provider with poor match rate (15/42 = 36% < 40% critical threshold)
     # Note: table uses events_processed and odds_processed (not events_extracted/odds_extracted)
