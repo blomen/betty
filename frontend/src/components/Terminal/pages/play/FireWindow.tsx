@@ -7,6 +7,7 @@ import {
 } from '@/services/api/fireWindow';
 import { ProviderName } from '../../ProviderName';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { resolveOutcome } from '@/utils/betting';
 import type { BatchBet, WageringProjection } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -472,7 +473,11 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
                       </div>
                     </td>
                     <td className="text-right text-text text-xs">
-                      {bet.outcome}{bet.point != null ? ` (${bet.point > 0 ? '+' : ''}${bet.point})` : ''}
+                      {resolveOutcome(bet.outcome, {
+                        display_home: bet.display_home,
+                        display_away: bet.display_away,
+                        market: bet.market,
+                      }, bet.point, true)}
                     </td>
                     <td className="text-right text-sm font-medium">
                       {liveOdds.toFixed(2)} <span className="text-muted text-xs font-normal">({liveCents}¢)</span>
