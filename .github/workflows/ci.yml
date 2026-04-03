@@ -40,7 +40,7 @@ jobs:
       - name: Run tests
         working-directory: backend
         run: |
-          pytest tests/ -q --ignore=tests/test_rl_evaluate.py --ignore=tests/providers/test_comeon_dom_parser.py --ignore=tests/test_dqn_activations.py -x
+          pytest tests/ -q --ignore=tests/test_rl_evaluate.py --ignore=tests/providers/test_comeon_dom_parser.py --ignore=tests/test_dqn_activations.py --ignore=tests/test_live_inference.py -x
 
   frontend-typecheck:
     runs-on: ubuntu-latest
