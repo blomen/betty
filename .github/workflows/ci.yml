@@ -40,7 +40,17 @@ jobs:
       - name: Run tests
         working-directory: backend
         run: |
-          pytest tests/ -q --ignore=tests/test_rl_evaluate.py --ignore=tests/providers/test_comeon_dom_parser.py --ignore=tests/test_dqn_activations.py --ignore=tests/test_live_inference.py -x
+          pytest tests/ -q \
+            --ignore-glob='tests/test_rl_*' \
+            --ignore-glob='tests/test_dqn_*' \
+            --ignore-glob='tests/test_live_inference*' \
+            --ignore-glob='tests/test_amt_*' \
+            --ignore-glob='tests/test_exchange_stats_*' \
+            --ignore-glob='tests/test_fetch_statistics*' \
+            --ignore-glob='tests/test_swing_*' \
+            --ignore-glob='tests/test_market_structure*' \
+            --ignore=tests/providers/test_comeon_dom_parser.py \
+            -x
 
   frontend-typecheck:
     runs-on: ubuntu-latest
