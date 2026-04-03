@@ -1,23 +1,16 @@
 #!/bin/bash
-# Full RL training pipeline — runs unattended on the server.
-#
-# Usage:
-#   docker exec -d firev-backend-1 bash /app/backend/scripts/rl_train_pipeline.sh
-#
-# Resource management:
-#   - All RL work runs at low CPU priority (nice 19) so extraction always wins
-#   - Replay uses half the CPU cores (--workers 0 = auto)
-#   - GBT training via LightGBM (~30s, all cores burst)
-#   - DQN training uses 1 core + ~4GB RAM
+# Full RL training pipeline v5 — hierarchical observation architecture.
 #
 # Pipeline:
 #   0. Merge live episodes
 #   1. Replay historical ticks → base episodes (parallel)
-#   2. Train multi-target GBT on base episodes
-#   3. Re-replay with GBT augmentation → hybrid episodes (parallel)
-#   4. Train DQN on hybrid episodes
-#   5. Evaluate
-#   6. Deploy models
+#   2. Label episodes with setup types (rule-based + clustering)
+#   3. Train Narrative GBT (day type + setup probs)
+#   4. Train Trigger GBT (direction/reward on trigger features)
+#   5. Re-replay with both GBTs → hybrid trigger episodes (parallel)
+#   6. Train Trigger DQN on hybrid episodes
+#   7. Evaluate
+#   8. Deploy models
 
 set -e
 LOG=/app/data/rl/pipeline.log
@@ -26,7 +19,7 @@ exec > >(tee -a "$LOG") 2>&1
 renice -n 19 $$ >/dev/null 2>&1 || true
 
 echo "=========================================="
-echo "  RL TRAINING PIPELINE — $(date -u '+%Y-%m-%d %H:%M UTC')"
+echo "  RL TRAINING PIPELINE v5 — $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "  PID: $$ (nice 19 — low priority)"
 echo "=========================================="
 
@@ -34,47 +27,60 @@ cd /app/backend
 
 # Step 0: Merge live episodes
 echo ""
-echo "[0/6] Merging live episodes..."
+echo "[0/8] Merging live episodes..."
 python -m src.app rl merge-live 2>&1 || echo "  No live episodes to merge."
 
 # Step 1: Parallel replay → base episodes
 echo ""
-echo "[1/6] Replaying historical ticks → base episodes (parallel)..."
+echo "[1/8] Replaying historical ticks → base episodes..."
 nice -n 19 python -m src.app rl replay --all
-echo "[1/6] Replay complete."
+echo "[1/8] Replay complete."
 
-# Step 2: Train multi-target GBT (LightGBM, ~30s)
+# Step 2: Label setups
 echo ""
-echo "[2/6] Training multi-target GBT v3 (LightGBM)..."
-nice -n 19 python -m src.app rl train-gbt --checkpoint v3 --trees 1000 --depth 6 --lr 0.05
-echo "[2/6] GBT v3 trained."
+echo "[2/8] Labeling episodes with setup types..."
+python -m src.app rl label-setups
+echo "[2/8] Setup labeling complete."
 
-# Step 3: Re-replay with GBT augmentation (parallel)
+# Step 3: Train Narrative GBT
 echo ""
-echo "[3/6] Re-replaying with GBT augmentation → hybrid episodes (parallel)..."
-nice -n 19 python -m src.app rl replay --all --gbt gbt_v3.joblib
-echo "[3/6] Augmented replay complete."
+echo "[3/8] Training Narrative GBT v5..."
+nice -n 19 python -m src.app rl train-narrative-gbt --checkpoint v5 --trees 500 --depth 5 --lr 0.05
+echo "[3/8] Narrative GBT trained."
 
-# Step 4: Train DQN on hybrid episodes (bigger batch, more epochs)
+# Step 4: Train Trigger GBT
 echo ""
-echo "[4/6] Training DQN v4 on hybrid episodes (30 epochs, batch 1024)..."
-nice -n 19 python -m src.app rl train --epochs 30 --checkpoint v4
-echo "[4/6] DQN v4 trained."
+echo "[4/8] Training Trigger GBT v5..."
+nice -n 19 python -m src.app rl train-trigger-gbt --checkpoint v5 --trees 1000 --depth 6 --lr 0.05
+echo "[4/8] Trigger GBT trained."
 
-# Step 5: Evaluate
+# Step 5: Re-replay with GBT augmentation → hybrid trigger episodes
 echo ""
-echo "[5/6] Evaluating DQN v4..."
-python -m src.app rl eval --checkpoint v4 --skip-threshold 0.15
-echo "[5/6] Evaluation complete."
+echo "[5/8] Re-replaying with GBT augmentation → hybrid trigger episodes..."
+nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib
+echo "[5/8] Augmented replay complete."
 
-# Step 6: Deploy models for live inference
+# Step 6: Train Trigger DQN
 echo ""
-echo "[6/6] Deploying models..."
-cp -f /app/backend/data/rl/models/gbt_v3.joblib /app/backend/data/rl/models/gbt_latest.joblib 2>/dev/null || true
-cp -f /app/backend/data/rl/models/dqn_v4.pt /app/backend/data/rl/models/dqn_latest.pt 2>/dev/null || true
-echo "[6/6] Models deployed."
+echo "[6/8] Training Trigger DQN v5 (30 epochs, batch 4096)..."
+nice -n 19 python -m src.app rl train --epochs 30 --checkpoint v5
+echo "[6/8] DQN v5 trained."
+
+# Step 7: Evaluate
+echo ""
+echo "[7/8] Evaluating DQN v5..."
+python -m src.app rl eval --checkpoint v5 --skip-threshold 0.15
+echo "[7/8] Evaluation complete."
+
+# Step 8: Deploy
+echo ""
+echo "[8/8] Deploying v5 models..."
+cp -f /app/backend/data/rl/models/narrative_gbt_v5.joblib /app/backend/data/rl/models/narrative_gbt_latest.joblib 2>/dev/null || true
+cp -f /app/backend/data/rl/models/trigger_gbt_v5.joblib /app/backend/data/rl/models/trigger_gbt_latest.joblib 2>/dev/null || true
+cp -f /app/backend/data/rl/models/dqn_v5.pt /app/backend/data/rl/models/dqn_latest.pt 2>/dev/null || true
+echo "[8/8] Models deployed."
 
 echo ""
 echo "=========================================="
-echo "  PIPELINE COMPLETE — $(date -u '+%Y-%m-%d %H:%M UTC')"
+echo "  PIPELINE v5 COMPLETE — $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "=========================================="
