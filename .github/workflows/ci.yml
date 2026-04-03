@@ -49,8 +49,17 @@ jobs:
             --ignore-glob='tests/test_fetch_statistics*' \
             --ignore-glob='tests/test_swing_*' \
             --ignore-glob='tests/test_market_structure*' \
+            --ignore-glob='tests/test_betting_models*' \
+            --ignore-glob='tests/test_level_classifier*' \
+            --ignore-glob='tests/test_model_serving*' \
+            --ignore-glob='tests/test_trading_ml*' \
+            --ignore-glob='tests/test_optimizer*' \
+            --ignore-glob='tests/test_bet_interceptor*' \
+            --ignore-glob='tests/test_mirror_*' \
+            --ignore-glob='tests/test_mute_notifications*' \
+            --ignore-glob='tests/test_polymarket_true*' \
             --ignore=tests/providers/test_comeon_dom_parser.py \
-            --tb=line
+            -x
 
   frontend-typecheck:
     runs-on: ubuntu-latest

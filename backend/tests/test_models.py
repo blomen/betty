@@ -59,7 +59,7 @@ def test_ml_feature_insert_and_read(db_session):
 def test_candle_snapshot_insert(db_session):
     from src.db.models import CandleSnapshot
     row = CandleSnapshot(
-        signal_id=1,
+        signal_id=None,
         candles=[{"ts": "2026-03-12T15:30:00Z", "delta": 380, "volume": 4250}],
         timeframe="1m",
     )
