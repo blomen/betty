@@ -883,9 +883,8 @@ extraction_scheduling:
       - interwetten
       # 10Bet — DOM scraping, slowest (1000-1200s)
       - 10bet
-      # Tipwin — DISABLED: blocks all VPN/datacenter IPs, needs Swedish residential IP
-      # Re-enable when RESIDENTIAL_PROXY_URL is available (home tunnel or real ISP proxy)
-      # - tipwin
+      # Tipwin — re-enabled with Bahnhof VPS proxy (AS8473, classified as ISP)
+      - tipwin
     interval_minutes: 15
     grouped: false
 
