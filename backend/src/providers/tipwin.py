@@ -314,6 +314,13 @@ class TipwinRetriever(BrowserRetriever):
         except RetryableError:
             raise  # Let orchestrator retry
         except Exception as e:
+            if "ERR_PROXY_CONNECTION_FAILED" in str(e) or "ERR_SOCKS_CONNECTION_FAILED" in str(e):
+                # Proxy tunnel may be temporarily saturated — force full browser restart and retry once
+                logger.warning(f"[{self.provider_id}] Proxy connection failed, restarting browser for retry")
+                self._session_ready = False
+                await self.transport.close()
+                await asyncio.sleep(3)  # Brief pause for tunnel recovery
+                raise RetryableError(str(e), provider_id=self.provider_id)
             logger.error(f"[{self.provider_id}] Error extracting all sports: {e}", exc_info=True)
             return {}
 
