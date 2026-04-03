@@ -139,14 +139,20 @@ def test_compute_coverage_gaps(db_session):
     from sqlalchemy import text
 
     db_session.execute(text("""
+        INSERT INTO extraction_runs (id, start_time, duration_seconds,
+            providers_attempted, providers_succeeded, providers_failed,
+            total_events, total_odds, trigger)
+        VALUES ('run1', '2026-03-13 10:00:00', 30.0, 2, 2, 0, 200, 1200, 'api_soft')
+    """))
+    db_session.execute(text("""
         INSERT INTO sport_run_metrics (run_id, provider_id, sport, duration_seconds,
             events_extracted, events_new, events_matched, events_unmatched,
             odds_extracted, odds_new, ml_count, spread_count, total_count, success)
         VALUES
-            ('run1', 'betsson', 'football', 10.0, 80, 0, 65, 15, 500, 0, 65, 30, 40, 1),
-            ('run1', 'betsson', 'tennis', 5.0, 40, 0, 20, 20, 200, 0, 20, 0, 0, 1),
-            ('run1', 'pinnacle', 'football', 5.0, 100, 0, 100, 0, 800, 0, 100, 90, 95, 1),
-            ('run1', 'pinnacle', 'tennis', 3.0, 60, 0, 60, 0, 400, 0, 60, 50, 55, 1)
+            ('run1', 'betsson', 'football', 10.0, 80, 0, 65, 15, 500, 0, 65, 30, 40, true),
+            ('run1', 'betsson', 'tennis', 5.0, 40, 0, 20, 20, 200, 0, 20, 0, 0, true),
+            ('run1', 'pinnacle', 'football', 5.0, 100, 0, 100, 0, 800, 0, 100, 90, 95, true),
+            ('run1', 'pinnacle', 'tennis', 3.0, 60, 0, 60, 0, 400, 0, 60, 50, 55, true)
     """))
     db_session.commit()
 
@@ -356,6 +362,12 @@ def test_analytics_refresh(db_session):
     db_session.flush()
 
     # Provider with poor match rate (15/42 = 36% < 40% critical threshold)
+    db_session.execute(text("""
+        INSERT INTO extraction_runs (id, start_time, duration_seconds,
+            providers_attempted, providers_succeeded, providers_failed,
+            total_events, total_odds, trigger)
+        VALUES ('run1', '2026-03-13 10:00:00', 180.0, 1, 1, 0, 42, 200, 'api_soft')
+    """))
     # Note: table uses events_processed and odds_processed (not events_extracted/odds_extracted)
     db_session.execute(text("""
         INSERT INTO provider_run_metrics (run_id, provider_id, start_time, end_time,

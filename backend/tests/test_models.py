@@ -71,7 +71,10 @@ def test_candle_snapshot_insert(db_session):
 
 
 def test_opportunity_ml_columns(db_session):
-    from src.db.models import Opportunity
+    from src.db.models import Opportunity, Event, Provider
+    db_session.add(Event(id="evt-1", sport="football", league="Test", home_team="X", away_team="Y"))
+    db_session.add(Provider(id="betsson", name="Betsson"))
+    db_session.flush()
     opp = Opportunity(
         type="value",
         event_id="evt-1",
