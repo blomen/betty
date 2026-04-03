@@ -325,12 +325,51 @@ class LiveInferenceV5:
             for i, name in enumerate(NARRATIVE_NAMES)
         }
 
+        # Composite confidence scoring
+        from .confidence import compute_composite_confidence, size_multiplier
+        from .features.micro_features import extract_micro_features
+
+        # Trade direction: +1 long, -1 short, 0 skip (action_idx 0=cont, 1=rev, 2=skip)
+        approach_dir = state.get("approach_direction", "up")
+        if action_idx == 2:  # skip
+            trade_direction = 0
+        elif action_idx == 0:  # continuation
+            trade_direction = 1 if approach_dir == "up" else -1
+        else:  # reversal
+            trade_direction = -1 if approach_dir == "up" else 1
+
+        # Zone quality features
+        zone = state.get("zone")
+        zone_confluence_weight = float(zone.hierarchy_score) if zone is not None else 0.5
+        zone_member_count = int(zone.member_count) if zone is not None else 1
+
+        # Micro features from recent ticks
+        recent_ticks = state.get("recent_ticks", [])
+        price = float(state.get("price", 0.0))
+        micro_features = extract_micro_features(recent_ticks, price)
+
+        # Q-spread: use directional conviction from trigger GBT (|prob_cont - prob_rev|)
+        q_spread = abs(prob_cont - prob_rev)
+
+        composite = compute_composite_confidence(
+            setup_probs=setup_probs_arr,
+            narrative=narrative,
+            trigger_forecast=gbt_forecast,
+            q_spread=q_spread,
+            zone_confluence_weight=zone_confluence_weight,
+            zone_member_count=zone_member_count,
+            micro_features=micro_features,
+            trade_direction=trade_direction,
+        )
+
         return {
             "action": Action(action_idx).name,
             "confidence": float(confidence),
             "stop_ticks": float(stop_ticks),
             "setup_probs": setup_probs_dict,
             "narrative": narrative_dict,
+            "composite_confidence": composite,
+            "size_multiplier": size_multiplier(composite),
             "model_type": "v5_hierarchical",
         }
 
