@@ -959,7 +959,7 @@ class BatchBuilder:
             sibs = all_siblings.get(cluster, [template.provider_id])
             target_pid = None
             for candidate in sibs:
-                if is_sharp or bets_assigned.get(candidate, 0) < cap:
+                if is_sharp or bets_assigned.get(candidate, 0) < _get_cap(cluster):
                     target_pid = candidate
                     break
             if target_pid is None:
@@ -1003,8 +1003,9 @@ class BatchBuilder:
             cluster = bet.cluster
             siblings = funded_siblings.get(cluster, [])
 
+            provider_cap = _get_cap(cluster)
             for pid in siblings:
-                if bets_assigned.get(pid, 0) >= cap:
+                if bets_assigned.get(pid, 0) >= provider_cap:
                     continue
 
                 pb = provider_balances[pid]
@@ -1057,6 +1058,24 @@ class BatchBuilder:
                     return True
 
             return False
+
+        # -- Compute dynamic per-provider cap per cluster ----------------------
+        # Instead of flat 10-bet cap, distribute evenly across siblings:
+        # cap_per_provider = ceil(cluster_candidates / num_siblings)
+        # Clamped to [1, BETS_PER_PROVIDER] so we never exceed the hard max.
+        import math
+        cluster_candidate_counts: dict[str, int] = {}
+        for bet in candidates:
+            if bet.tier not in ("polymarket", "pinnacle"):
+                cluster_candidate_counts[bet.cluster] = cluster_candidate_counts.get(bet.cluster, 0) + 1
+
+        dynamic_cap: dict[str, int] = {}
+        for cluster, count in cluster_candidate_counts.items():
+            n_siblings = len(funded_siblings.get(cluster, [])) or 1
+            dynamic_cap[cluster] = min(cap, max(1, math.ceil(count / n_siblings)))
+
+        def _get_cap(cluster: str) -> int:
+            return dynamic_cap.get(cluster, cap)
 
         # -- Walk candidates in priority order ---------------------------------
         for bet in candidates:
