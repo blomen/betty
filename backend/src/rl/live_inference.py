@@ -188,6 +188,153 @@ class LiveInference:
         return result
 
 
+class LiveInferenceV5:
+    """Two-stage inference: narrative (slow) -> trigger (fast)."""
+
+    def __init__(self) -> None:
+        self._narrative_gbt = None
+        self._trigger_gbt = None
+        self._normalizer: RunningNormalizer | None = None
+        self._narrative_cache: np.ndarray | None = None
+
+    def try_load(self) -> bool:
+        """Load v5 models (narrative + trigger GBTs)."""
+        from .agent.narrative_gbt import NarrativeGBT
+        from .agent.trigger_gbt import TriggerGBT
+
+        narrative_loaded = False
+        trigger_loaded = False
+
+        for search_dir in _MODEL_SEARCH_DIRS:
+            if not search_dir.exists():
+                continue
+
+            if not narrative_loaded:
+                narrative_path = search_dir / "narrative_gbt_latest.joblib"
+                if narrative_path.exists():
+                    try:
+                        self._narrative_gbt = NarrativeGBT.load(narrative_path)
+                        narrative_loaded = True
+                        log.info("NarrativeGBT loaded from %s", narrative_path)
+                    except Exception:
+                        log.exception("Failed to load NarrativeGBT from %s", narrative_path)
+
+            if not trigger_loaded:
+                trigger_path = search_dir / "trigger_gbt_latest.joblib"
+                if trigger_path.exists():
+                    try:
+                        self._trigger_gbt = TriggerGBT.load(trigger_path)
+                        trigger_loaded = True
+                        log.info("TriggerGBT loaded from %s", trigger_path)
+                    except Exception:
+                        log.exception("Failed to load TriggerGBT from %s", trigger_path)
+
+            # Also try to load normalizer from first search dir that has models
+            if narrative_loaded and self._normalizer is None:
+                episodes_dir = search_dir / "episodes"
+                norm_path = episodes_dir / "normalizer.json"
+                if norm_path.exists():
+                    self._normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+                    self._normalizer.load(norm_path)
+                    log.info(
+                        "Normalizer loaded from %s (count=%d)",
+                        norm_path, self._normalizer.count,
+                    )
+
+        if narrative_loaded and trigger_loaded:
+            log.info("LiveInferenceV5: both models loaded successfully")
+        else:
+            log.info(
+                "LiveInferenceV5: narrative=%s trigger=%s",
+                narrative_loaded, trigger_loaded,
+            )
+        return narrative_loaded and trigger_loaded
+
+    def update_narrative(self, state: dict) -> None:
+        """Update narrative signals. Call every 30min or on structural events."""
+        from .features.narrative_features import extract_narrative_features
+        self._narrative_cache = extract_narrative_features(state)
+
+    def infer(self, state: dict) -> dict | None:
+        """Run two-stage inference at a zone touch."""
+        if self._narrative_gbt is None or self._trigger_gbt is None:
+            return None
+
+        # 1. Ensure narrative is up to date
+        if self._narrative_cache is None:
+            self.update_narrative(state)
+
+        # 2. Build base observation (for passthrough extraction)
+        lt = state.get("level_type")
+        if lt is not None and isinstance(lt, str):
+            try:
+                state["level_type"] = LevelType(lt)
+            except ValueError:
+                state["level_type"] = LevelType.VWAP
+
+        base_obs = build_observation(state)
+        if self._normalizer is not None:
+            base_obs = self._normalizer.normalize(base_obs)
+
+        # 3. Get narrative features for setup prob prediction
+        narrative = self._narrative_cache
+
+        # 4. Get setup_probs from narrative GBT
+        setup_probs_arr = self._narrative_gbt.predict_setup_probs(narrative)
+
+        # 5. Build trigger observation without GBT forecast
+        from .features.trigger_features import build_trigger_observation
+        trigger_obs_no_gbt = build_trigger_observation(
+            narrative=narrative,
+            setup_probs=setup_probs_arr,
+            state=state,
+            base_observation=base_obs,
+            trigger_gbt_forecast=None,
+        )
+
+        # 6. Get trigger GBT forecast
+        gbt_forecast = self._trigger_gbt.predict_full(trigger_obs_no_gbt)
+
+        # 7. Rebuild trigger observation WITH GBT forecast
+        trigger_obs = build_trigger_observation(
+            narrative=narrative,
+            setup_probs=setup_probs_arr,
+            state=state,
+            base_observation=base_obs,
+            trigger_gbt_forecast=gbt_forecast,
+        )
+
+        # 8. Final direction prediction from trigger GBT
+        action_idx, confidence, prob_cont, prob_rev = self._trigger_gbt.predict_direction(
+            trigger_obs
+        )
+        stop_ticks = self._trigger_gbt.predict_stop(trigger_obs)
+
+        # Build setup_probs dict
+        from .labeling.setup_types import SetupType
+        setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
+        setup_probs_dict = {
+            name: float(setup_probs_arr[i])
+            for i, name in enumerate(setup_names)
+        }
+
+        # Build narrative dict
+        from .features.narrative_features import NARRATIVE_NAMES
+        narrative_dict = {
+            name: float(narrative[i])
+            for i, name in enumerate(NARRATIVE_NAMES)
+        }
+
+        return {
+            "action": Action(action_idx).name,
+            "confidence": float(confidence),
+            "stop_ticks": float(stop_ticks),
+            "setup_probs": setup_probs_dict,
+            "narrative": narrative_dict,
+            "model_type": "v5_hierarchical",
+        }
+
+
 # Keep backward-compatible alias
 DQNLiveInference = LiveInference
 

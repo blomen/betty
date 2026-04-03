@@ -624,6 +624,16 @@ class SessionManager:
                for k, v in kwargs.items()},
         }
 
+    def on_structural_event(self, event_type: str, state: dict) -> None:
+        """Update narrative context when a structural event occurs.
+
+        Events: ib_close, new_swing_high, new_swing_low, value_area_breach,
+                single_print_created.
+        """
+        if hasattr(self, '_inference_v5') and self._inference_v5 is not None:
+            self._inference_v5.update_narrative(state)
+            log.info("Narrative updated on %s", event_type)
+
     def get_session_summary(self) -> dict:
         """Get session summary for reporting."""
         trades = self.session.trades

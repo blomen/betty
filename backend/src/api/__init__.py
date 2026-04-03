@@ -68,6 +68,16 @@ async def lifespan(app: FastAPI):
     from ..services.fire_window import close_window
     close_window()
 
+    # Kill orphaned browser processes from previous mirror session
+    import subprocess
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "firefox.exe", "/T"],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
     # Add extraction-specific log file (INFO level) alongside root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
     # which blocks the event loop with synchronous disk I/O.

@@ -45,12 +45,14 @@ export function ExecutionPanel({ batch, wageringProjections, onBack, onNewBatch 
   }
 
   return (
-    <FireWindow
-      batch={batch}
-      wageringProjections={wageringProjections}
-      onComplete={() => setCompleted(true)}
-      onBack={onBack}
-      onNewBatch={onNewBatch}
-    />
+    <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
+      <FireWindow
+        batch={batch}
+        wageringProjections={wageringProjections}
+        onComplete={() => setCompleted(true)}
+        onBack={onBack}
+        onNewBatch={onNewBatch}
+      />
+    </div>
   );
 }
