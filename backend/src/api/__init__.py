@@ -533,6 +533,19 @@ app = FastAPI(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+# App-level API key auth — defense-in-depth behind nginx basic auth
+_api_key = os.environ.get("FIREV_API_KEY")
+_auth_exempt = {"/health", "/health/live", "/health/ready"}
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if _api_key and request.url.path not in _auth_exempt:
+        provided = request.headers.get("X-API-Key")
+        if provided != _api_key:
+            return JSONResponse(status_code=401, content={"error": "Invalid or missing API key"})
+    return await call_next(request)
+
+
 # Cache-Control for GET API responses — lets the browser skip redundant fetches
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
@@ -551,7 +564,7 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 

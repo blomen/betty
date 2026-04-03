@@ -102,9 +102,11 @@ export interface ExtractionSettingsResponse {
 }
 
 export const API_BASE = '/api';
+export const API_KEY = import.meta.env.VITE_FIREV_API_KEY || '';
 
 export async function getMlHealth(): Promise<MlHealth> {
-  const res = await fetch(`${API_BASE}/trading/market/ml/health`);
+  const headers: HeadersInit = API_KEY ? { 'X-API-Key': API_KEY } : {};
+  const res = await fetch(`${API_BASE}/trading/market/ml/health`, { headers });
   return res.json();
 }
 
@@ -179,8 +181,11 @@ export async function fetchWithRetry<T>(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      const headers = new Headers((options?.headers as HeadersInit) || {});
+      if (API_KEY) headers.set('X-API-Key', API_KEY);
       const response = await fetch(`${API_BASE}${endpoint}`, {
         ...options,
+        headers,
         signal: controller.signal,
       });
 

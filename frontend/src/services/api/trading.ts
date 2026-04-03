@@ -1,4 +1,4 @@
-import { fetchJson, API_BASE } from './client';
+import { fetchJson, API_BASE, API_KEY } from './client';
 
 export const tradingApi = {
   // ============ Trading ============
@@ -231,14 +231,17 @@ export const tradingApi = {
   },
 
   async getMarketContext(symbol = 'NQ'): Promise<import('@/types/market').MarketContext> {
-    const res = await fetch(`${API_BASE}/trading/market/context?symbol=${symbol}`);
+    const headers: HeadersInit = API_KEY ? { 'X-API-Key': API_KEY } : {};
+    const res = await fetch(`${API_BASE}/trading/market/context?symbol=${symbol}`, { headers });
     return res.json();
   },
 
   async updateMarketContext(data: Partial<import('@/types/market').MarketContext>, symbol = 'NQ') {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (API_KEY) headers['X-API-Key'] = API_KEY;
     const res = await fetch(`${API_BASE}/trading/market/context?symbol=${symbol}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(data),
     });
     return res.json();

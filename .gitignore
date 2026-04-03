@@ -17,6 +17,7 @@ venv/
 
 # Environment
 .env
+.env.docker
 .mcp.json
 .htpasswd
 .claude/

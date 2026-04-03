@@ -63,7 +63,7 @@ frontend/src/
 - **Security headers**: CSP, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, `server_tokens off`
 - **CORS lockdown** — origins from `CORS_ORIGINS` env var (not hardcoded), explicit methods/headers only
 - `/health` endpoint is exempted from auth (needed for Docker healthcheck)
-- To update the password: `ssh root@148.251.40.251 "htpasswd -cb /opt/firev/nginx/.htpasswd rasmus NEW_PASSWORD && cd /opt/firev && docker compose restart nginx"`
+- To update the password: `ssh root@148.251.40.251 "openssl passwd -apr1 NEW_PASSWORD | xargs -I{} echo 'firev:{}' > /opt/firev/nginx/.htpasswd && cd /opt/firev && docker compose restart nginx"`
 
 ### Database
 - **Main DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/firev` (events, odds, bets, profiles, opportunities)

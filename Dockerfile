@@ -33,6 +33,8 @@ COPY frontend/package.json frontend/package-lock.json frontend/
 RUN cd frontend && npm ci --ignore-scripts
 
 COPY frontend/ frontend/
+ARG VITE_FIREV_API_KEY=""
+ENV VITE_FIREV_API_KEY=${VITE_FIREV_API_KEY}
 RUN cd frontend && npm run build
 
 # Backend source (refresh — earlier COPY was just for dep install caching)
