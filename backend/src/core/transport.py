@@ -26,18 +26,24 @@ def get_proxy_url() -> str | None:
     return os.environ.get("PROXY_URL")
 
 
-def get_proxy_dict(socks: bool = False) -> dict | None:
+def get_proxy_dict(residential: bool = False, **kwargs) -> dict | None:
     """Parse proxy URL into Playwright/Camoufox proxy dict format.
 
     Args:
-        socks: Deprecated — kept for backward compatibility, now ignored.
-               All providers use PROXY_URL (Swedish ISP residential proxy).
+        residential: If True, prefer RESIDENTIAL_PROXY_URL (real Swedish home IP,
+                     needed for sites that block VPN/datacenter IPs like tipwin).
+                     Falls back to PROXY_URL if not set.
 
     Handles format: http://user:pass@host:port → {server, username, password}
+                    socks5://user:pass@host:port → {server, username, password}
     """
     import os
     from urllib.parse import urlparse
-    proxy_url = os.environ.get("PROXY_URL")
+    proxy_url = None
+    if residential:
+        proxy_url = os.environ.get("RESIDENTIAL_PROXY_URL")
+    if not proxy_url:
+        proxy_url = os.environ.get("PROXY_URL")
     if not proxy_url:
         return None
     parsed = urlparse(proxy_url)
@@ -294,15 +300,15 @@ class BrowserTransport(Transport):
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
                  channel: Optional[str] = None, cdp_url: Optional[str] = None,
                  circuit_breaker: Any = None, use_proxy: bool = False,
-                 use_socks: bool = False):
+                 use_socks: bool = False, use_residential_proxy: bool = False):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
         self.cdp_url = cdp_url
         self.circuit_breaker = circuit_breaker
-        if use_socks:
-            self._proxy_dict = get_proxy_dict(socks=True)
-        elif use_proxy:
+        if use_residential_proxy:
+            self._proxy_dict = get_proxy_dict(residential=True)
+        elif use_socks or use_proxy:
             self._proxy_dict = get_proxy_dict()
         else:
             self._proxy_dict = None
