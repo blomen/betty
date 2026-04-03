@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   fireWindowApi,
   type ProviderQueueItem,
@@ -64,7 +64,7 @@ function oddsToCents(odds: number): number {
 // FireWindow Component
 // ---------------------------------------------------------------------------
 
-export function FireWindow({ batch, wageringProjections, onComplete, onBack, onNewBatch }: Props) {
+export function FireWindow({ batch, wageringProjections: _wageringProjections, onComplete, onBack, onNewBatch }: Props) {
   const [phase, setPhase] = useState<Phase>('queue');
   const [queue, setQueue] = useState<ProviderQueueItem[]>([]);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
@@ -258,100 +258,90 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
   // ---------------------------------------------------------------------------
 
   if (phase === 'queue') {
+    // Group queue by cluster (derived from batch prop)
+    const providerCluster: Record<string, string> = {};
+    for (const b of batch) {
+      if (b.cluster) providerCluster[b.provider_id] = b.cluster;
+    }
+
+    // Sort queue by cluster then EV
+    const sortedQueue = [...queue].sort((a, b) => {
+      const ca = providerCluster[a.provider_id] || a.provider_id;
+      const cb = providerCluster[b.provider_id] || b.provider_id;
+      if (ca !== cb) return ca.localeCompare(cb);
+      return b.total_ev - a.total_ev;
+    });
+
+    // Build cluster groups
+    const clusterGroups: { cluster: string; items: typeof sortedQueue }[] = [];
+    let curCluster = '';
+    for (const item of sortedQueue) {
+      const c = providerCluster[item.provider_id] || item.provider_id;
+      if (c !== curCluster) {
+        curCluster = c;
+        clusterGroups.push({ cluster: c, items: [] });
+      }
+      clusterGroups[clusterGroups.length - 1].items.push(item);
+    }
+
     return (
       <div className="flex flex-col gap-2">
-        {/* Summary header — mirrors CapitalPlanPanel style */}
+        {/* Summary header */}
         <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
-          <span className="text-muted uppercase tracking-wider text-[10px]">Fire Window</span>
-          <span className="text-foreground">
-            {stats.totalBets} bets across {stats.providers} providers
-          </span>
+          <span className="text-text font-medium">{stats.totalBets} bets</span>
           <span className="text-muted text-[10px]">
-            Deployed{' '}
             {stats.stakeSek > 0 && `${stats.stakeSek} kr`}
             {stats.stakeSek > 0 && stats.stakeUsdc > 0 && ' + '}
             {stats.stakeUsdc > 0 && `${stats.stakeUsdc.toFixed(2)} USDC`}
-            {stats.stakeSek === 0 && stats.stakeUsdc === 0 && '0 kr'}
           </span>
-          <span className="text-success text-[10px] ml-auto">
+          <span className="text-success text-sm ml-auto">
             +{stats.evSek > 0 ? `${stats.evSek} kr` : ''}
             {stats.evSek > 0 && stats.evUsdc > 0 ? ' + ' : ''}
             {stats.evUsdc > 0 ? `${stats.evUsdc.toFixed(2)} USDC` : ''} EV
           </span>
         </div>
 
-        {/* Provider queue */}
-        <div className="border border-border bg-panel px-3 py-2">
-          {error && <p className="text-danger text-xs mb-2">{error}</p>}
-          <div className="flex flex-col gap-1">
-            {queue.map((item) => (
-              <button
-                key={item.provider_id}
-                onClick={() => !item.fired && handleActivate(item.provider_id)}
-                disabled={item.fired}
-                className={`w-full flex items-center gap-3 px-3 py-2 border transition-colors text-left ${
-                  item.fired
-                    ? 'border-border/30 bg-panel2/50 opacity-40'
-                    : 'border-border hover:bg-panel2/50'
-                }`}
-              >
-                {item.fired ? (
-                  <span className="text-success text-sm font-bold">&#10003;</span>
-                ) : (
-                  <span className="text-muted text-sm">&#9675;</span>
-                )}
-                <span className="text-sm font-medium text-foreground">
-                  <ProviderName name={item.provider_id} />
-                </span>
-                <span className="text-xs text-muted">
-                  {item.bet_count} bets
-                </span>
-                <span className="text-xs text-muted">
-                  {formatStake(item.total_stake, item.tier)}
-                </span>
-                <span className="text-xs text-success ml-auto">
-                  +{formatStake(item.total_ev, item.tier)} EV
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+        {error && <p className="text-danger text-xs px-3">{error}</p>}
 
-        {/* Wagering projections — same style as CapitalPlanPanel */}
-        {wageringProjections.length > 0 && (
-          <div className="border border-border bg-amber-500/5 px-3 py-1.5">
-            <div className="flex items-center gap-1 mb-1">
-              <span className="text-sm font-medium text-amber-500 tracking-wider uppercase">
-                Wagering After Batch
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-              {wageringProjections.map((proj) => {
-                const total = proj.wagering_total || proj.wagering_remaining;
-                const beforePct = total > 0 ? Math.round(((total - proj.wagering_remaining) / total) * 100) : 100;
-                const afterPct = total > 0 ? Math.round(((total - proj.projected_remaining) / total) * 100) : 100;
-                return (
-                  <div
-                    key={`${proj.provider_id}-${proj.cluster}`}
-                    className="flex items-center gap-1.5 text-sm"
+        {/* Provider queue grouped by cluster — matches batch style */}
+        <div className="border border-border bg-panel">
+          {clusterGroups.map(({ cluster, items }) => {
+            const clusterBets = items.reduce((s, i) => s + i.bet_count, 0);
+            const clusterEv = items.reduce((s, i) => s + i.total_ev, 0);
+            const clusterTier = items[0]?.tier || 'soft';
+
+            return (
+              <React.Fragment key={cluster}>
+                {/* Cluster header */}
+                <div className="flex items-center gap-3 px-3 py-1 bg-panel2/30 border-b border-border">
+                  <span className="text-[10px] text-muted font-medium uppercase tracking-wider">{cluster}</span>
+                  <span className="text-[10px] text-muted">{clusterBets} bets · {items.length} {items.length === 1 ? 'provider' : 'providers'}</span>
+                  <span className="text-[10px] text-success ml-auto">+{formatStake(clusterEv, clusterTier)} EV</span>
+                </div>
+
+                {/* Provider rows */}
+                {items.map((item) => (
+                  <button
+                    key={item.provider_id}
+                    onClick={() => !item.fired && handleActivate(item.provider_id)}
+                    disabled={item.fired}
+                    className={`w-full flex items-center gap-3 px-3 pl-6 py-2 border-b border-border transition-colors text-left ${
+                      item.fired ? 'opacity-40' : 'hover:bg-panel2/50'
+                    }`}
                   >
-                    <span className="text-amber-400 font-medium">
-                      {proj.provider_id}
+                    <span className={`text-[10px] ${item.fired ? 'text-success' : 'text-muted/30'}`}>
+                      {item.fired ? '✓' : '●'}
                     </span>
-                    <span className="text-muted">{beforePct}%</span>
-                    <span className="text-muted2">→</span>
-                    <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
-                    {proj.days_remaining != null && (
-                      <span className="text-muted text-[10px]">
-                        {proj.days_remaining}d
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                    <span className="text-sm font-medium text-text w-28 truncate uppercase">{item.provider_id}</span>
+                    <span className="text-xs text-muted">{item.bet_count} bets</span>
+                    <span className="text-xs text-muted">{formatStake(item.total_stake, item.tier)}</span>
+                    <span className="text-xs text-success ml-auto">+{formatStake(item.total_ev, item.tier)} EV</span>
+                  </button>
+                ))}
+              </React.Fragment>
+            );
+          })}
+        </div>
 
         {/* Actions */}
         <div className="flex items-center gap-2 px-1">

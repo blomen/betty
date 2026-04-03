@@ -200,9 +200,9 @@ function SyncBanner({ syncAvailable, onDismiss }: {
           <span className="text-text">
             <span className="text-info font-semibold">{provider}</span>
             {' detected — '}
-            balance: <span className="text-text font-semibold">{balance.toFixed(0)} kr</span>
+            balance: <span className="text-text font-semibold">{provider === 'polymarket' ? `${balance.toFixed(2)} USDC` : `${balance.toFixed(0)} kr`}</span>
             {pending_bets > 0 && (
-              <>, {pending_bets} pending bet{pending_bets !== 1 ? 's' : ''} ({pending_stake.toFixed(0)} kr)</>
+              <>, {pending_bets} pending bet{pending_bets !== 1 ? 's' : ''} ({provider === 'polymarket' ? `${pending_stake.toFixed(2)} USDC` : `${pending_stake.toFixed(0)} kr`})</>
             )}
             {' — '}
             <span className="text-muted">open bet history to settle</span>

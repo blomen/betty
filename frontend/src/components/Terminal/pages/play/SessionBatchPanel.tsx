@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { resolveOutcome } from '@/utils/betting';
-import { marketLabel } from '@/utils/betting';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import type { ClusterBet, BatchSummary } from '@/types';
 
@@ -54,164 +53,8 @@ function outcomeLabel(b: ClusterBet): string {
 interface Props {
   batch: ClusterBet[];
   summary: BatchSummary;
-  capitalPlan?: any;
+  providerBalances?: Record<string, number>;
   onRemoveBet: (betKey: string) => void;
-}
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function ClusterHeader({
-  cluster,
-  bets,
-  expanded,
-  onToggle,
-}: {
-  cluster: string;
-  bets: ClusterBet[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const totalStake = bets.reduce((s, b) => s + b.stake, 0);
-  const totalEV = bets.reduce((s, b) => s + b.stake * (b.edge_pct / 100), 0);
-  const isPolymarket = cluster === 'polymarket';
-  const currency = isPolymarket ? 'USDC' : 'kr';
-
-  return (
-    <tr
-      className="cursor-pointer hover:bg-panel2/60 transition-colors"
-      onClick={onToggle}
-    >
-      <td colSpan={13} className="!py-1 !px-2 bg-panel border-b border-border">
-        <div className="flex items-center gap-2">
-          <span className="text-text text-sm w-3">{expanded ? '▾' : '▸'}</span>
-          <span className="text-sm font-medium text-text uppercase tracking-wider">
-            {cluster}
-          </span>
-          <span className="text-sm text-text">
-            {bets.length} {bets.length === 1 ? 'bet' : 'bets'}
-          </span>
-          <span className="text-sm text-text">·</span>
-          <span className="text-sm text-text">
-            {isPolymarket ? totalStake.toFixed(2) : totalStake.toFixed(0)} {currency}
-          </span>
-          <span className="text-sm text-success">+{totalEV.toFixed(0)} {currency} EV</span>
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function BetRow({
-  bet,
-  onRemove,
-}: {
-  bet: ClusterBet;
-  onRemove: () => void;
-}) {
-  const isPolymarket = bet.tier === 'polymarket';
-  const currency = isPolymarket ? 'USDC' : 'kr';
-  const market = marketLabel(bet.market);
-  const outcome = outcomeLabel(bet);
-  const event = eventLabel(bet);
-  const prob = bet.fair_odds > 0 ? (1 / bet.fair_odds) * 100 : 0;
-
-  return (
-    <tr className="hover:bg-panel/60 transition-colors">
-      {/* # */}
-      <td className="text-muted text-sm">{bet.rank}</td>
-
-      {/* Event */}
-      <td className="text-sm text-text truncate max-w-[180px]" title={event}>
-        {event}
-        <div className="text-sm text-muted">
-          {bet.sport}
-        </div>
-      </td>
-
-      {/* Market */}
-      <td className="text-sm text-muted">{market}</td>
-
-      {/* Outcome */}
-      <td className="text-sm text-text truncate max-w-[120px]" title={outcome}>
-        {outcome}
-      </td>
-
-      {/* Cluster */}
-      <td className="text-sm">
-        <span className="text-muted uppercase tracking-wider text-[10px]">{bet.cluster}</span>
-      </td>
-
-      {/* Odds */}
-      <td className="text-right text-sm font-medium text-text">
-        {bet.odds.toFixed(2)}
-      </td>
-
-      {/* Fair */}
-      <td className="text-right text-sm text-muted">
-        {bet.fair_odds.toFixed(2)}
-      </td>
-
-      {/* Prob */}
-      <td className="text-right text-sm text-muted">
-        {prob.toFixed(0)}%
-      </td>
-
-      {/* Edge */}
-      <td
-        className={`text-right text-sm font-semibold ${
-          bet.edge_pct > 0 ? 'text-success' : 'text-error'
-        }`}
-      >
-        {bet.edge_pct > 0 ? '+' : ''}
-        {bet.edge_pct.toFixed(1)}%
-      </td>
-
-      {/* Stake */}
-      <td className="text-right text-sm text-text whitespace-nowrap">
-        {isPolymarket
-          ? `${bet.stake.toFixed(2)} ${currency}`
-          : `${bet.stake.toFixed(0)} ${currency}`}
-      </td>
-
-      {/* TTK */}
-      <td className="text-right text-sm">
-        {(() => {
-          const ttk = getTTKFromNow(bet.start_time);
-          return <span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span>;
-        })()}
-      </td>
-
-      {/* Upd */}
-      <td className={`text-right text-sm ${getOddsAgeColor(bet.odds_age_minutes)}`}>
-        {formatOddsAge(bet.odds_age_minutes)}
-      </td>
-
-      {/* Remove */}
-      <td className="text-right text-sm">
-        <button
-          onClick={onRemove}
-          className="text-muted hover:text-error transition-colors"
-          title="Remove from batch"
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </td>
-    </tr>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -221,28 +64,62 @@ function BetRow({
 export function SessionBatchPanel({
   batch,
   summary,
-  capitalPlan,
+  providerBalances,
   onRemoveBet,
 }: Props) {
-  // Group all bets by cluster uniformly
-  const byCluster = useMemo(() => {
-    const order: string[] = [];
+  // Group bets by provider, sorted by cluster then EV descending
+  const byProvider = useMemo(() => {
     const groups: Record<string, ClusterBet[]> = {};
     for (const b of batch) {
-      const c = b.cluster ?? 'ungrouped';
-      if (!groups[c]) {
-        order.push(c);
-        groups[c] = [];
-      }
-      groups[c].push(b);
+      const pid = b.provider_id ?? 'unknown';
+      if (!groups[pid]) groups[pid] = [];
+      groups[pid].push(b);
     }
-    return order.map(c => ({ cluster: c, bets: groups[c] }));
+    // Sort: group by cluster, within cluster sort by total EV desc
+    const entries = Object.entries(groups).map(([pid, bets]) => ({
+      provider: pid,
+      bets,
+      cluster: bets[0]?.cluster ?? pid,
+      totalEv: bets.reduce((s, b) => s + b.expected_profit, 0),
+    }));
+    entries.sort((a, b) => {
+      if (a.cluster !== b.cluster) return a.cluster.localeCompare(b.cluster);
+      return b.totalEv - a.totalEv;
+    });
+    return entries;
   }, [batch]);
 
-  // Collapsed state — all start collapsed
-  const [expandedClusters, setExpandedClusters] = useState<Record<string, boolean>>({});
-  const toggleCluster = (cluster: string) =>
-    setExpandedClusters(prev => ({ ...prev, [cluster]: !prev[cluster] }));
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+
+  // SSE: track provider detection and live balance updates
+  const [liveBalances, setLiveBalances] = useState<Record<string, number>>({});
+  const [detectedProviders, setDetectedProviders] = useState<Set<string>>(new Set());
+
+  // SSE: single persistent connection, not dependent on batch refresh
+  useEffect(() => {
+    const es = new EventSource('/api/extraction/stream');
+
+    const handleSync = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const provider = data.provider as string;
+        if (data.balance != null) {
+          setLiveBalances(prev => ({ ...prev, [provider]: data.balance }));
+        }
+        setDetectedProviders(prev => {
+          if (prev.has(provider)) return prev;
+          const next = new Set(prev);
+          next.add(provider);
+          return next;
+        });
+      } catch { /* ignore */ }
+    };
+
+    es.addEventListener('sync_available', handleSync);
+    es.addEventListener('balance_synced', handleSync);
+    es.addEventListener('deposit_detected', handleSync);
+    return () => es.close();
+  }, []); // stable — no dependencies, persistent connection
 
   const sekBets = useMemo(() => batch.filter(b => b.tier !== 'polymarket'), [batch]);
   const usdcBets = useMemo(() => batch.filter(b => b.tier === 'polymarket'), [batch]);
@@ -250,195 +127,157 @@ export function SessionBatchPanel({
   const usdcStake = usdcBets.reduce((s, b) => s + b.stake, 0);
   const totalEV = summary.total_expected_profit;
 
+  const fmt = (v: number, tier: string) =>
+    tier === 'polymarket' ? `$${v.toFixed(1)} USDC` : `${Math.round(v)} kr`;
+
   return (
     <div className="flex flex-col min-h-0 flex-1">
-      {/* Summary bar */}
-      <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-panel text-sm flex-wrap">
-        <span className="text-text font-medium">
-          {batch.length} bets
+      {/* Summary header — fire window style */}
+      <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
+        <span className="text-text font-medium">{batch.length} bets</span>
+        <span className="text-muted text-[10px]">
+          {sekStake > 0 && `${sekStake.toFixed(0)} kr`}
+          {sekStake > 0 && usdcStake > 0 && ' + '}
+          {usdcStake > 0 && `${usdcStake.toFixed(2)} USDC`}
         </span>
-        <span className="text-muted">{sekStake.toFixed(0)} kr</span>
-        {usdcStake > 0 && (
-          <span className="text-muted">{usdcStake.toFixed(2)} USDC</span>
-        )}
-        <span className="text-success font-medium">
+        <span className="text-success text-sm ml-auto">
           +{totalEV.toFixed(0)} kr EV
         </span>
-        {summary.polymarket_bets > 0 && (
-          <>
-            <span className="text-muted">|</span>
-            <span className="text-tabPolymarket">
-              POLY {summary.polymarket_bets} (+{summary.polymarket_ev.toFixed(0)} USDC)
-            </span>
-          </>
-        )}
-        {summary.pinnacle_bets > 0 && (
-          <span className="text-tabReverse">
-            PIN {summary.pinnacle_bets} (+{summary.pinnacle_ev.toFixed(0)} kr)
-          </span>
-        )}
-        {summary.soft_bets > 0 && (
-          <>
-            <span className="text-success">
-              SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)} kr)
-            </span>
-          </>
-        )}
       </div>
 
-      {/* Batch table */}
+      {/* Provider list grouped by cluster */}
       {batch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border border-t-0 bg-panel">
           No bets in batch.
         </div>
       ) : (
-        <div className="border-l-2 border-tabPlay flex-1 min-h-0 relative">
-        <div className="absolute inset-0 overflow-y-auto">
-          <table className="sq w-full table-fixed">
-            <colgroup>
-              <col style={{ width: '3%' }} />
-              <col style={{ width: '18%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '4%' }} />
-            </colgroup>
-            <thead className="sticky top-0 z-10 bg-panel">
-              <tr>
-                <th className="text-left">#</th>
-                <th className="text-left">Event</th>
-                <th className="text-left">Market</th>
-                <th className="text-left">Outcome</th>
-                <th className="text-left">Cluster</th>
-                <th className="text-right">Odds</th>
-                <th className="text-right">Fair</th>
-                <th className="text-right">Prob</th>
-                <th className="text-right">Edge</th>
-                <th className="text-right">Stake</th>
-                <th className="text-right">TTK</th>
-                <th className="text-right">Upd</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {byCluster.map(({ cluster, bets }) => (
-                <React.Fragment key={cluster}>
-                  <ClusterHeader
-                    cluster={cluster}
-                    bets={bets}
-                    expanded={!!expandedClusters[cluster]}
-                    onToggle={() => toggleCluster(cluster)}
-                  />
-                  {expandedClusters[cluster] && bets.map((b) => (
-                    <BetRow
-                      key={betKey(b)}
-                      bet={b}
-                      onRemove={() => onRemoveBet(betKey(b))}
-                    />
-                  ))}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        </div>
-      )}
+        <div className="border border-border border-t-0 bg-panel flex-1 min-h-0 relative">
+          <div className="absolute inset-0 overflow-y-auto">
+            {(() => {
+              // Group providers by cluster for headers
+              const clusterGroups: { cluster: string; providers: typeof byProvider }[] = [];
+              let currentCluster = '';
+              for (const entry of byProvider) {
+                if (entry.cluster !== currentCluster) {
+                  currentCluster = entry.cluster;
+                  clusterGroups.push({ cluster: currentCluster, providers: [] });
+                }
+                clusterGroups[clusterGroups.length - 1].providers.push(entry);
+              }
 
-      {/* Inline capital plan */}
-      {capitalPlan?.actions?.length > 0 && (
-        <CapitalSummary actions={capitalPlan.actions} />
-      )}
-    </div>
-  );
-}
+              return clusterGroups.map(({ cluster, providers: clusterProviders }) => {
+                const clusterBets = clusterProviders.reduce((s, p) => s + p.bets.length, 0);
+                const clusterEv = clusterProviders.reduce((s, p) => s + p.totalEv, 0);
+                const clusterTier = clusterProviders[0]?.bets[0]?.tier || 'soft';
 
-// ---------------------------------------------------------------------------
-// Inline capital summary
-// ---------------------------------------------------------------------------
-
-function CapitalSummary({ actions }: { actions: any[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const deposits = actions.filter((a: any) => a.type === 'deposit');
-  const withdrawals = actions.filter((a: any) => a.type === 'withdraw');
-  const totalDeposit = deposits.reduce((s: number, a: any) => s + (a.amount || 0), 0);
-
-  if (deposits.length === 0 && withdrawals.length === 0) return null;
-
-  return (
-    <div className="border border-border bg-panel text-sm mt-1">
-      <div
-        className="flex items-center gap-4 px-3 py-1.5 cursor-pointer hover:bg-panel2/60"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="text-text text-xs w-3">{expanded ? '▾' : '▸'}</span>
-        <span className="text-muted font-medium text-xs uppercase tracking-wider">Capital Plan</span>
-        {deposits.length > 0 && (
-          <span className="text-amber-400 text-xs">
-            {deposits.length} deposit{deposits.length > 1 ? 's' : ''} needed · {Math.round(totalDeposit)} kr total
-          </span>
-        )}
-      </div>
-      {expanded && (
-        <div className="pb-2">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-muted">
-                <th className="text-left px-3 py-1 font-medium">Provider</th>
-                <th className="text-right px-3 py-1 font-medium">Balance</th>
-                <th className="text-right px-3 py-1 font-medium">Needed</th>
-                <th className="text-right px-3 py-1 font-medium">Deposit</th>
-                <th className="text-right px-3 py-1 font-medium">Bets</th>
-                <th className="text-right px-3 py-1 font-medium">EV</th>
-              </tr>
-            </thead>
-            <tbody>
-              {deposits.map((a: any, i: number) => {
-                const currentBal = (a.target_balance || 0) - (a.amount || 0);
                 return (
-                  <tr key={i} className="hover:bg-panel2/40">
-                    <td className="px-3 py-0.5 text-text">{a.provider_id}</td>
-                    <td className="px-3 py-0.5 text-right text-muted">
-                      {Math.round(currentBal)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
-                    </td>
-                    <td className="px-3 py-0.5 text-right text-text">
-                      {Math.round(a.target_balance || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
-                    </td>
-                    <td className="px-3 py-0.5 text-right text-amber-400 font-medium">
-                      +{Math.round(a.amount || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
-                    </td>
-                    <td className="px-3 py-0.5 text-right text-muted">
-                      {a.unlocks ?? '—'}
-                    </td>
-                    <td className="px-3 py-0.5 text-right text-success">
-                      +{Math.round(a.expected_ev || 0)}
-                    </td>
-                  </tr>
+                  <React.Fragment key={cluster}>
+                    {/* Cluster header */}
+                    <div className="flex items-center gap-3 px-3 py-1 bg-panel2/30 border-b border-border">
+                      <span className="text-[10px] text-muted font-medium uppercase tracking-wider">{cluster}</span>
+                      <span className="text-[10px] text-muted">{clusterBets} bets · {clusterProviders.length} {clusterProviders.length === 1 ? 'provider' : 'providers'}</span>
+                      <span className="text-[10px] text-success ml-auto">+{fmt(clusterEv, clusterTier)} EV</span>
+                    </div>
+
+                    {/* Provider rows */}
+                    {clusterProviders.map(({ provider, bets }) => {
+                      const tier = bets[0]?.tier || 'soft';
+                      const totalStake = bets.reduce((s, b) => s + b.stake, 0);
+                      const totalEv = bets.reduce((s, b) => s + b.expected_profit, 0);
+                      const isExpanded = expandedProvider === provider;
+                      const isDetected = detectedProviders.has(provider);
+                      // Use live SSE balance if available, else batch balance
+                      const bal = liveBalances[provider] ?? providerBalances?.[provider] ?? null;
+                      const hasBal = bal != null;
+                      const canCover = hasBal && bal >= totalStake;
+                      const shortfall = hasBal ? Math.max(0, totalStake - bal) : totalStake;
+
+                      // Dot color: green = can cover all bets, amber = detected but short, dim = not detected
+                      const dotColor = canCover ? 'text-success' : isDetected ? 'text-amber-400' : 'text-muted/30';
+
+                      return (
+                        <React.Fragment key={provider}>
+                          <div
+                            className="flex items-center gap-3 px-3 pl-6 py-2 border-b border-border hover:bg-panel2/50 cursor-pointer transition-colors"
+                            onClick={() => setExpandedProvider(isExpanded ? null : provider)}
+                          >
+                            <span className={`text-[10px] ${dotColor}`}>●</span>
+                            <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
+                            <span className="text-xs text-muted">{bets.length} bets</span>
+                            <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
+                            {hasBal && (
+                              <span className={`text-xs ${canCover ? 'text-success' : 'text-muted'}`}>
+                                bal {fmt(bal, tier)}
+                              </span>
+                            )}
+                            {!canCover && shortfall > 0 && (
+                              <span className="text-[10px] text-amber-400">
+                                need +{fmt(shortfall, tier)}
+                              </span>
+                            )}
+                            <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
+                            <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
+                          </div>
+
+                  {isExpanded && (
+                    <div className="border-b border-border bg-panel2/20">
+                      <table className="sq w-full">
+                        <thead>
+                          <tr className="text-muted text-[10px]">
+                            <th className="text-left pl-8">Event</th>
+                            <th className="text-left">Outcome</th>
+                            <th className="text-right">Odds</th>
+                            <th className="text-right">Fair</th>
+                            <th className="text-right">Edge</th>
+                            <th className="text-right">Stake</th>
+                            <th className="text-right">TTK</th>
+                            <th className="text-right">Upd</th>
+                            <th className="w-6"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bets.map((b) => {
+                            const ttk = getTTKFromNow(b.start_time);
+                            return (
+                              <tr key={betKey(b)} className={`hover:bg-panel2/40 ${b.funded === false ? 'opacity-50' : ''}`}>
+                                <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>
+                                  {eventLabel(b)}
+                                </td>
+                                <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
+                                <td className="text-right text-sm text-text">{b.odds.toFixed(2)}</td>
+                                <td className="text-right text-sm text-muted">{b.fair_odds.toFixed(2)}</td>
+                                <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
+                                  +{b.edge_pct.toFixed(1)}%
+                                </td>
+                                <td className="text-right text-sm text-text">{fmt(b.stake, tier)}</td>
+                                <td className="text-right text-sm">
+                                  <span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span>
+                                </td>
+                                <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>
+                                  {formatOddsAge(b.odds_age_minutes)}
+                                </td>
+                                <td className="text-right">
+                                  <button onClick={() => onRemoveBet(betKey(b))} className="text-muted hover:text-error text-xs">✕</button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </React.Fragment>
                 );
-              })}
-            </tbody>
-          </table>
-          {withdrawals.length > 0 && (
-            <div className="px-3 pt-2 border-t border-border mt-1">
-              <span className="text-muted text-xs uppercase tracking-wider">Withdrawals</span>
-              {withdrawals.map((a: any, i: number) => (
-                <div key={i} className="flex items-center gap-3 text-xs mt-1">
-                  <span className="text-text w-24">{a.provider_id}</span>
-                  <span className="text-success font-medium">
-                    {Math.round(a.amount || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+              });
+            })()}
+          </div>
         </div>
       )}
+
     </div>
   );
 }
+

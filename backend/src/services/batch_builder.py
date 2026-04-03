@@ -267,6 +267,12 @@ class BatchBuilder:
         from ..config import get_exchange_rate
         usdc_rate = get_exchange_rate("polymarket")
 
+        # Build provider balance map for frontend
+        bal_map = {
+            pid: round(pb.initial_balance, 2)
+            for pid, pb in provider_balances.items()
+        }
+
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
             "summary": self._build_summary(batch, usdc_rate),
@@ -276,6 +282,7 @@ class BatchBuilder:
             "withdrawal_recommendations": [],
             "capital_plan": {**capital_plan, "usdc_rate": usdc_rate},
             "wagering_projections": self._compute_wagering_projections(batch, provider_balances),
+            "provider_balances": bal_map,
         }
 
     # ------------------------------------------------------------------ #
@@ -484,7 +491,9 @@ class BatchBuilder:
                     ts = ts.replace(tzinfo=timezone.utc)
                 b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
-    # Max bets per provider to avoid suspicion.
+    # Max bets per provider — hard cap at 10 to avoid suspicion.
+    # Clusters needing more than 10 × current siblings auto-expand:
+    # ceil(bets/10) copies recommended, bets distributed evenly.
     BETS_PER_PROVIDER = 10
 
     @staticmethod
@@ -559,18 +568,27 @@ class BatchBuilder:
         batch: list[BatchBet] = []
         bets_assigned: dict[str, int] = {}
 
-        # -- Build cluster → all registered siblings ---------------------------
-        registered = registered_providers or set(provider_balances.keys())
+        # -- Build cluster → siblings (auto-expand to fit all bets) ------------
+        # All platform group members are available accounts. Use as many as
+        # needed: ceil(bets/10) copies per cluster, distribute evenly.
+        import math
+
+        # Count candidates per cluster first
+        cluster_candidate_counts: dict[str, int] = {}
+        for bet in candidates:
+            if bet.tier not in ("polymarket", "pinnacle"):
+                cluster_candidate_counts[bet.cluster] = cluster_candidate_counts.get(bet.cluster, 0) + 1
+
         all_siblings: dict[str, list[str]] = {}
         for group_name, group_info in PLATFORM_GROUPS.items():
-            members = [m for m in group_info["members"] if m in registered]
-            if members:
-                all_siblings[group_name] = members
-            else:
-                # Include canonical so bets still appear (as unfunded)
-                clusters_with_bets = {c.cluster for c in candidates}
-                if group_name in clusters_with_bets:
-                    all_siblings[group_name] = [group_info["canonical"]]
+            all_members = group_info["members"]
+            count = cluster_candidate_counts.get(group_name, 0)
+            needed = max(1, math.ceil(count / cap)) if count > 0 else 1
+            # Use up to `needed` members from the group
+            all_siblings[group_name] = all_members[:needed]
+
+        # Standalone providers (not in any platform group)
+        registered = registered_providers or set(provider_balances.keys())
         for pid in registered:
             cluster = _provider_to_cluster(pid)
             if cluster not in all_siblings:
@@ -581,7 +599,6 @@ class BatchBuilder:
             def _sort_key(pid: str) -> tuple:
                 pb = provider_balances.get(pid)
                 if pb and pb.lifecycle not in ("dormant", "available"):
-                    # Bonus siblings first (freebet/trigger), then by balance
                     if pb.lifecycle in ("deposited", "freebet"):
                         return (0, pb.bonus_amount, -pb.remaining)
                     return (1, 0, -pb.remaining)
@@ -589,6 +606,17 @@ class BatchBuilder:
             all_siblings[cluster] = sorted(sibs, key=_sort_key)
 
         total_bankroll = sum(pb.initial_balance for pb in provider_balances.values())
+
+        # -- Compute dynamic per-provider cap per cluster ----------------------
+        # Distribute evenly across the auto-expanded sibling list, capped at 10.
+        # e.g. 53 bets → ceil(53/10) = 6 copies → ceil(53/6) = 9 per copy
+        dynamic_cap: dict[str, int] = {}
+        for cluster, count in cluster_candidate_counts.items():
+            n_siblings = len(all_siblings.get(cluster, [])) or 1
+            dynamic_cap[cluster] = min(cap, max(1, math.ceil(count / n_siblings)))
+
+        def _get_cap(cluster: str) -> int:
+            return dynamic_cap.get(cluster, cap)
 
         # -- Assign bets -------------------------------------------------------
         for bet in candidates:
@@ -609,11 +637,12 @@ class BatchBuilder:
                 batch.append(placed)
                 continue
 
-            # Soft: find a sibling under the 10-bet cap
+            # Soft: find a sibling under the per-cluster cap
             sibs = all_siblings.get(cluster, [bet.provider_id])
+            provider_cap = _get_cap(cluster)
             assigned = False
             for pid in sibs:
-                if bets_assigned.get(pid, 0) >= cap:
+                if bets_assigned.get(pid, 0) >= provider_cap:
                     continue
                 pb = provider_balances.get(pid)
                 if pb is None:
@@ -664,17 +693,7 @@ class BatchBuilder:
                 assigned = True
                 break
 
-            if not assigned:
-                # All siblings at cap — still include, assign to least-loaded sibling
-                pid = min(sibs, key=lambda p: bets_assigned.get(p, 0))
-                pb = provider_balances.get(pid)
-                if pb is None:
-                    pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
-                placed = self._clone_bet_to_provider(bet, pid, pb)
-                placed.funded = False
-                placed.skip_reason = f"all siblings at {cap}-bet cap in {cluster}"
-                bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
-                batch.append(placed)
+            # All siblings at cap — bet dropped
 
         # Split into funded/missed for downstream compatibility
         funded = [b for b in batch if b.funded]

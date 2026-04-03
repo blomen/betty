@@ -64,6 +64,10 @@ async def lifespan(app: FastAPI):
     _startup_time = time.time()
     await asyncio.to_thread(init_db)
 
+    # Clear any stale fire window from previous session
+    from ..services.fire_window import close_window
+    close_window()
+
     # Add extraction-specific log file (INFO level) alongside root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
     # which blocks the event loop with synchronous disk I/O.

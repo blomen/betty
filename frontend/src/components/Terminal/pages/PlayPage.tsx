@@ -159,7 +159,7 @@ export function PlayPage() {
               <SessionBatchPanel
                 batch={batchData.batch}
                 summary={batchData.summary}
-                capitalPlan={batchData.capital_plan}
+                providerBalances={(batchData as any).provider_balances}
                 onRemoveBet={handleRemoveBet}
               />
 
