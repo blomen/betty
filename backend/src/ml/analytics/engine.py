@@ -110,7 +110,7 @@ def compute_coverage_gaps(session) -> list[dict]:
         SELECT sport, events_extracted, ml_count, spread_count, total_count
         FROM sport_run_metrics
         WHERE provider_id = 'pinnacle'
-        AND run_id = (SELECT run_id FROM sport_run_metrics WHERE provider_id = 'pinnacle' ORDER BY rowid DESC LIMIT 1)
+        AND run_id = (SELECT run_id FROM sport_run_metrics WHERE provider_id = 'pinnacle' ORDER BY id DESC LIMIT 1)
     """)).fetchall()
 
     if not pin_rows:
@@ -130,7 +130,7 @@ def compute_coverage_gaps(session) -> list[dict]:
         AND run_id IN (
             SELECT DISTINCT run_id FROM sport_run_metrics
             WHERE provider_id NOT IN ('pinnacle', 'polymarket')
-            ORDER BY rowid DESC
+            ORDER BY id DESC
             LIMIT 1
         )
     """)).fetchall()
