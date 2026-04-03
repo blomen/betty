@@ -50,7 +50,7 @@ jobs:
             --ignore-glob='tests/test_swing_*' \
             --ignore-glob='tests/test_market_structure*' \
             --ignore=tests/providers/test_comeon_dom_parser.py \
-            -x
+            --tb=line
 
   frontend-typecheck:
     runs-on: ubuntu-latest
