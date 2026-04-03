@@ -1415,8 +1415,11 @@ class MirrorService:
             const btns = [...document.querySelectorAll('button.trading-button')];
             return btns.map(b => {
                 const text = b.textContent || '';
-                const priceMatch = text.match(/([\\.\\d]+)\\u00a2/);
-                const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;
+                // Match cents price before ¢. Use last match to avoid spread numbers.
+                // "GEN -1.5  63¢" → captures "63", not "1.5"
+                const allMatches = [...text.matchAll(/(\\d{1,2})\\u00a2/g)];
+                const priceMatch = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null;
+                const price = priceMatch ? parseInt(priceMatch[1]) / 100 : null;
 
                 // Walk up to find the market section label
                 let section = '';

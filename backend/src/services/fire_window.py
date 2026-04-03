@@ -333,6 +333,12 @@ async def _update_live_prices(provider_id: str, mirror_service) -> None:
                 )
                 if matched:
                     price = matched.get("price")
+                    logger.debug(
+                        "[FireWindow] bet %s (%s/%s): matched=%s, all_sections=%s",
+                        bet.bet_id, bet.market, bet.outcome,
+                        {k: v for k, v in matched.items()},
+                        {btn.get("section", ""): btn.get("text", "")[:30] for btn in buttons[:8]},
+                    )
                     if price and 0 < price < 1:
                         # Polymarket prices are probabilities (0-1); convert to decimal odds
                         live_odds = round(1 / price, 4)
