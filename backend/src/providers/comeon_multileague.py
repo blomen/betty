@@ -118,7 +118,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             proxy = get_proxy_dict()
             self._camoufox_browser = await AsyncCamoufox(
                 headless=True,
-                geoip=True,
+                geoip=False,
                 humanize=0.2,
                 os="windows",
                 proxy=proxy,
