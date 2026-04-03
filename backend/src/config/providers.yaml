@@ -13,9 +13,10 @@
 orchestrator:
   # Concurrency limits
   # Bare metal: no hypervisor tax, 8 dedicated threads, 64GB RAM
-  max_concurrent_providers: 16         # All providers can fire simultaneously
+  max_concurrent_providers: 6          # Reduced: SSH tunnel to Bahnhof can't handle 16 concurrent
+  # TODO: Increase back to 16 once Bahnhof port 1080 is open (direct gost, no SSH overhead)
   max_concurrent_sports_per_provider: 4 # 8 threads + fast CPU = handle parallel sport extraction
-  max_browser_instances: 6             # 4C/8T bare metal handles 6 concurrent browsers comfortably
+  max_browser_instances: 3             # Reduced: SSH tunnel bottleneck. Restore to 6 with direct gost
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -873,27 +874,20 @@ extraction_scheduling:
     grouped: false
 
   browser_soft:
-    # Browser-based extractors WITHOUT aggressive anti-bot — run every 15 minutes
-    # Bare metal i7-7700: 8 threads + 64GB RAM handles 4-6 concurrent browsers easily
-    max_concurrent_browsers: 4
+    # Browser-based extractors — reduced concurrency to avoid SSH tunnel saturation
+    # TODO: Increase back to 4 concurrent + 15min interval once Bahnhof port 1080 is open
+    max_concurrent_browsers: 2
     providers:
-      # Spectate — API-based, fastest (30-400s)
       - 888sport
-      # Interwetten — 16-20 concurrent tabs (500-700s)
       - interwetten
-      # 10Bet — DOM scraping, slowest (1000-1200s)
       - 10bet
-      # Tipwin — re-enabled with Bahnhof VPS proxy (AS8473, classified as ISP)
       - tipwin
-    interval_minutes: 15
+    interval_minutes: 20
     grouped: false
 
   browser_antibot:
-    # Providers with aggressive anti-bot (Cloudflare, Imperva) — longer interval to avoid detection
-    # ComeOn: Cloudflare (migrated 2026-03-16, requires Camoufox)
-    # Coolbet: Imperva WAF, fingerprint-sensitive
-    # 30-min interval balances freshness vs detection risk (was 60min, 15min too aggressive)
-    max_concurrent_browsers: 2
+    # Providers with aggressive anti-bot (Cloudflare, Imperva)
+    max_concurrent_browsers: 1
     providers:
       - coolbet
       - comeon
