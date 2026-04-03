@@ -76,7 +76,7 @@ class FireWindow:
 
 _window: FireWindow | None = None
 
-POLL_INTERVAL_S = 3
+POLL_INTERVAL_S = 1
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +443,21 @@ def get_live_state() -> dict:
             "last_updated": snap.last_updated.isoformat() if snap and snap.last_updated else None,
         })
 
+    # Fetch current balance for this provider
+    balance = None
+    try:
+        from ..repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            profile_repo = ProfileRepo(db)
+            profile = profile_repo.get_active()
+            if profile:
+                balance = profile_repo.get_balance(profile.id, pid)
+        finally:
+            db.close()
+    except Exception:
+        pass
+
     return {
         "provider_id": pid,
         "tier": tier,
@@ -450,6 +465,7 @@ def get_live_state() -> dict:
         "total_providers": len(_window.provider_queue),
         "status": _window.status,
         "bets": bet_dicts,
+        "balance": round(balance, 2) if balance is not None else None,
         "summary": {
             "total_bets": len(bets),
             "active_bets": active_count,
@@ -486,14 +502,38 @@ async def fire_provider(mirror_service) -> dict:
     bets = _window.provider_bets.get(pid, [])
     to_fire = []
     excluded = []
+    skipped_balance = []
 
+    # Filter by edge first
+    positive_edge = []
     for bet in bets:
         snap = _window.live_snapshots.get(bet.bet_id)
         edge = snap.live_edge if snap else bet.edge_pct
         if edge is not None and edge > 0:
-            to_fire.append(bet)
+            positive_edge.append((bet, edge))
         else:
             excluded.append(bet)
+
+    # Sort by edge descending — fire best bets first within balance
+    positive_edge.sort(key=lambda x: -x[1])
+
+    # Check balance — fire as many as the provider balance allows
+    from ..repositories.profile_repo import ProfileRepo
+    db = get_session()
+    try:
+        profile_repo = ProfileRepo(db)
+        profile = profile_repo.get_active()
+        balance = profile_repo.get_balance(profile.id, pid) if profile else float("inf")
+    finally:
+        db.close()
+
+    remaining = balance
+    for bet, edge in positive_edge:
+        if remaining >= bet.stake:
+            to_fire.append(bet)
+            remaining -= bet.stake
+        else:
+            skipped_balance.append(bet)
 
     placed = []
     failed = []
@@ -546,12 +586,15 @@ async def fire_provider(mirror_service) -> dict:
         "provider_id": pid,
         "placed": placed,
         "failed": failed,
-        "excluded": [{"bet_id": b.bet_id, "reason": "negative_edge"} for b in excluded],
+        "excluded": (
+            [{"bet_id": b.bet_id, "reason": "negative_edge"} for b in excluded]
+            + [{"bet_id": b.bet_id, "reason": "insufficient_balance"} for b in skipped_balance]
+        ),
         "summary": {
             "total": len(bets),
             "fired": len(placed),
             "failed": len(failed),
-            "excluded": len(excluded),
+            "excluded": len(excluded) + len(skipped_balance),
         },
     }
 

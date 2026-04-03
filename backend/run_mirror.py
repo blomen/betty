@@ -23,7 +23,7 @@ import webbrowser
 SERVER = "148.251.40.251"
 LOCAL_PG_PORT = 15432
 LOCAL_BACKEND_PORT = 8000
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "firev2026secure")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "Skf8vRY3L26lAL4IhCge2V0tZBe7mnZn")
 LOCAL_URL = f"http://127.0.0.1:{LOCAL_BACKEND_PORT}"
 
 
@@ -147,7 +147,7 @@ def main():
         input("Press Enter to exit...")
         return
 
-    # Check production backend is healthy (via docker exec — port not exposed on host)
+    # Check production backend is healthy (non-blocking — mirror only needs DB)
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
@@ -155,11 +155,9 @@ def main():
             capture_output=True, text=True, timeout=20,
         )
         if result.returncode != 0:
-            print("[mirror] FAILED: Production backend not responding")
-            print("[mirror] Is the Docker container running?")
-            input("Press Enter to exit...")
-            return
-        print("[mirror] Production backend healthy")
+            print("[mirror] WARNING: Production backend not responding (mirror will still work)")
+        else:
+            print("[mirror] Production backend healthy")
     except Exception as e:
         print(f"[mirror] WARNING: Could not check backend health: {e}")
 
@@ -221,20 +219,25 @@ def main():
             timeout_keep_alive=120,
             log_level="info",
         )
-    except KeyboardInterrupt:
-        pass
     finally:
         print("\n[mirror] Shutting down...")
-        _kill_port(LOCAL_PG_PORT, "tunnel")
         print("[mirror] Done.")
 
 
 if __name__ == "__main__":
     import logging
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[mirror] Interrupted.")
-    except Exception as e:
-        print(f"\n[mirror] Error: {e}")
-        input("Press Enter to exit...")
+    while True:
+        try:
+            main()
+            break  # Clean exit (no Ctrl+C) — don't restart
+        except KeyboardInterrupt:
+            print("\n[mirror] Restarting in 2s... (Ctrl+C again to exit)")
+            try:
+                time.sleep(2)
+            except KeyboardInterrupt:
+                print("\n[mirror] Exiting.")
+                break
+        except Exception as e:
+            print(f"\n[mirror] Error: {e}")
+            input("Press Enter to exit...")
+            break

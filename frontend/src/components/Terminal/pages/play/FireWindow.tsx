@@ -137,7 +137,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
       }
     };
     poll();
-    pollRef.current = setInterval(poll, 3_000);
+    pollRef.current = setInterval(poll, 1_000);
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
@@ -410,6 +410,16 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
           <span className="text-xs text-muted">
             Provider {liveState.position} of {liveState.total_providers}
           </span>
+          {(liveState as any).balance != null && (
+            <span className={`text-xs ${(liveState as any).balance >= liveState.summary.total_stake ? 'text-success' : 'text-amber-400'}`}>
+              Balance: {formatStake((liveState as any).balance, tier)}
+              {(liveState as any).balance < liveState.summary.total_stake && (
+                <span className="text-muted ml-1">
+                  (need {formatStake(liveState.summary.total_stake, tier)})
+                </span>
+              )}
+            </span>
+          )}
           <span className="text-xs text-muted ml-auto">
             {liveState.summary.active_bets} active
             {liveState.summary.excluded_bets > 0 && (
@@ -424,7 +434,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
           <div className="text-danger text-xs px-3">{error}</div>
         )}
 
-        {/* Bet table — identical to Poly tab, with Delta instead of Upd */}
+        {/* Bet table — with Upd + Delta */}
         <div className="border border-border bg-panel overflow-x-auto">
           <table className="sq" style={{ width: '100%' }}>
             <thead>
@@ -437,6 +447,7 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
                 <th className="text-right">TTK</th>
                 <th className="text-right">Stake</th>
                 <th className="text-right">Edge</th>
+                <th className="text-right">Upd</th>
                 <th className="text-right">Delta</th>
               </tr>
             </thead>
@@ -496,6 +507,22 @@ export function FireWindow({ batch, wageringProjections, onComplete, onBack, onN
                     </td>
                     <td className={`text-right font-semibold text-sm ${edgeVal > 0 ? 'text-success' : 'text-error'}`}>
                       {edgeVal > 0 ? '+' : ''}{edgeVal.toFixed(1)}%
+                    </td>
+                    <td className={`text-right text-sm ${
+                      bet.last_updated
+                        ? ((Date.now() - new Date(bet.last_updated).getTime()) / 60000 <= 1
+                          ? 'text-success'
+                          : (Date.now() - new Date(bet.last_updated).getTime()) / 60000 <= 5
+                            ? 'text-amber-400'
+                            : 'text-danger')
+                        : 'text-muted'
+                    }`}>
+                      {bet.last_updated
+                        ? (() => {
+                            const mins = (Date.now() - new Date(bet.last_updated).getTime()) / 60000;
+                            return mins < 1 ? '<1m' : `${Math.round(mins)}m`;
+                          })()
+                        : '--'}
                     </td>
                     <td className={`text-right text-sm ${deltaColor}`}>
                       {bet.delta > 0 ? '+' : ''}{bet.delta.toFixed(1)}

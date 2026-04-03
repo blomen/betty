@@ -12,6 +12,20 @@ export function betKey(b: ClusterBet): string {
   return `${b.cluster}:${b.event_id}:${b.market}:${b.outcome}:${b.point ?? ''}`;
 }
 
+function formatOddsAge(minutes: number | null): string {
+  if (minutes == null) return '--';
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  return `${(minutes / 60).toFixed(1)}h`;
+}
+
+function getOddsAgeColor(minutes: number | null): string {
+  if (minutes == null) return 'text-muted';
+  if (minutes <= 5) return 'text-success';
+  if (minutes <= 15) return 'text-amber-400';
+  return 'text-danger';
+}
+
 function eventLabel(b: ClusterBet): string {
   const home = b.display_home || b.sport;
   const away = b.display_away || '';
@@ -40,6 +54,7 @@ function outcomeLabel(b: ClusterBet): string {
 interface Props {
   batch: ClusterBet[];
   summary: BatchSummary;
+  capitalPlan?: any;
   onRemoveBet: (betKey: string) => void;
 }
 
@@ -68,7 +83,7 @@ function ClusterHeader({
       className="cursor-pointer hover:bg-panel2/60 transition-colors"
       onClick={onToggle}
     >
-      <td colSpan={12} className="!py-1 !px-2 bg-panel border-b border-border">
+      <td colSpan={13} className="!py-1 !px-2 bg-panel border-b border-border">
         <div className="flex items-center gap-2">
           <span className="text-text text-sm w-3">{expanded ? '▾' : '▸'}</span>
           <span className="text-sm font-medium text-text uppercase tracking-wider">
@@ -168,6 +183,11 @@ function BetRow({
         })()}
       </td>
 
+      {/* Upd */}
+      <td className={`text-right text-sm ${getOddsAgeColor(bet.odds_age_minutes)}`}>
+        {formatOddsAge(bet.odds_age_minutes)}
+      </td>
+
       {/* Remove */}
       <td className="text-right text-sm">
         <button
@@ -201,6 +221,7 @@ function BetRow({
 export function SessionBatchPanel({
   batch,
   summary,
+  capitalPlan,
   onRemoveBet,
 }: Props) {
   // Group all bets by cluster uniformly
@@ -261,14 +282,6 @@ export function SessionBatchPanel({
             <span className="text-success">
               SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)} kr)
             </span>
-            {summary.tier_breakdown && Object.entries(summary.tier_breakdown)
-              .sort(([a], [b]) => Number(a) - Number(b))
-              .map(([tier, data]: [string, any]) => (
-                <span key={tier} className="ml-2 text-muted">
-                  T{tier}:{data.count}
-                </span>
-              ))
-            }
           </>
         )}
       </div>
@@ -284,16 +297,17 @@ export function SessionBatchPanel({
           <table className="sq w-full table-fixed">
             <colgroup>
               <col style={{ width: '3%' }} />
-              <col style={{ width: '19%' }} />
+              <col style={{ width: '18%' }} />
               <col style={{ width: '5%' }} />
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '10%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '9%' }} />
               <col style={{ width: '7%' }} />
               <col style={{ width: '7%' }} />
               <col style={{ width: '5%' }} />
               <col style={{ width: '7%' }} />
-              <col style={{ width: '10%' }} />
-              <col style={{ width: '7%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '5%' }} />
+              <col style={{ width: '5%' }} />
               <col style={{ width: '4%' }} />
             </colgroup>
             <thead className="sticky top-0 z-10 bg-panel">
@@ -309,6 +323,7 @@ export function SessionBatchPanel({
                 <th className="text-right">Edge</th>
                 <th className="text-right">Stake</th>
                 <th className="text-right">TTK</th>
+                <th className="text-right">Upd</th>
                 <th></th>
               </tr>
             </thead>
@@ -333,6 +348,95 @@ export function SessionBatchPanel({
             </tbody>
           </table>
         </div>
+        </div>
+      )}
+
+      {/* Inline capital plan */}
+      {capitalPlan?.actions?.length > 0 && (
+        <CapitalSummary actions={capitalPlan.actions} />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline capital summary
+// ---------------------------------------------------------------------------
+
+function CapitalSummary({ actions }: { actions: any[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const deposits = actions.filter((a: any) => a.type === 'deposit');
+  const withdrawals = actions.filter((a: any) => a.type === 'withdraw');
+  const totalDeposit = deposits.reduce((s: number, a: any) => s + (a.amount || 0), 0);
+
+  if (deposits.length === 0 && withdrawals.length === 0) return null;
+
+  return (
+    <div className="border border-border bg-panel text-sm mt-1">
+      <div
+        className="flex items-center gap-4 px-3 py-1.5 cursor-pointer hover:bg-panel2/60"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="text-text text-xs w-3">{expanded ? '▾' : '▸'}</span>
+        <span className="text-muted font-medium text-xs uppercase tracking-wider">Capital Plan</span>
+        {deposits.length > 0 && (
+          <span className="text-amber-400 text-xs">
+            {deposits.length} deposit{deposits.length > 1 ? 's' : ''} needed · {Math.round(totalDeposit)} kr total
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div className="pb-2">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-muted">
+                <th className="text-left px-3 py-1 font-medium">Provider</th>
+                <th className="text-right px-3 py-1 font-medium">Balance</th>
+                <th className="text-right px-3 py-1 font-medium">Needed</th>
+                <th className="text-right px-3 py-1 font-medium">Deposit</th>
+                <th className="text-right px-3 py-1 font-medium">Bets</th>
+                <th className="text-right px-3 py-1 font-medium">EV</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deposits.map((a: any, i: number) => {
+                const currentBal = (a.target_balance || 0) - (a.amount || 0);
+                return (
+                  <tr key={i} className="hover:bg-panel2/40">
+                    <td className="px-3 py-0.5 text-text">{a.provider_id}</td>
+                    <td className="px-3 py-0.5 text-right text-muted">
+                      {Math.round(currentBal)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
+                    </td>
+                    <td className="px-3 py-0.5 text-right text-text">
+                      {Math.round(a.target_balance || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
+                    </td>
+                    <td className="px-3 py-0.5 text-right text-amber-400 font-medium">
+                      +{Math.round(a.amount || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
+                    </td>
+                    <td className="px-3 py-0.5 text-right text-muted">
+                      {a.unlocks ?? '—'}
+                    </td>
+                    <td className="px-3 py-0.5 text-right text-success">
+                      +{Math.round(a.expected_ev || 0)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {withdrawals.length > 0 && (
+            <div className="px-3 pt-2 border-t border-border mt-1">
+              <span className="text-muted text-xs uppercase tracking-wider">Withdrawals</span>
+              {withdrawals.map((a: any, i: number) => (
+                <div key={i} className="flex items-center gap-3 text-xs mt-1">
+                  <span className="text-text w-24">{a.provider_id}</span>
+                  <span className="text-success font-medium">
+                    {Math.round(a.amount || 0)} {a.currency === 'USDC' ? 'USDC' : 'kr'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -19,13 +19,6 @@ from ..schemas import BonusMatchRequest
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Batch lock cache (in-memory, 30-minute TTL)
-# ---------------------------------------------------------------------------
-_locked_batches: dict[int, dict] = {}  # profile_id -> {"batch": [...], "locked_at": datetime}
-LOCK_TTL_SECONDS = 1800  # 30 minutes
-
-
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 
 # Response-level TTL cache for opportunities listing
@@ -284,86 +277,3 @@ def build_batch(
     return builder.build(profile.id, exclude=exclude)
 
 
-class LockBatchRequest(BaseModel):
-    batch: list[dict]
-
-
-@router.post("/play/lock-batch")
-def lock_batch(
-    body: LockBatchRequest,
-    db: Session = Depends(get_db),
-):
-    """Lock the current batch for capital allocation."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-    locked_at = datetime.now(timezone.utc)
-    _locked_batches[profile.id] = {
-        "batch": body.batch,
-        "locked_at": locked_at,
-    }
-    return {
-        "locked": True,
-        "count": len(body.batch),
-        "locked_at": locked_at.isoformat(),
-        "ttl_seconds": LOCK_TTL_SECONDS,
-    }
-
-
-@router.post("/play/unlock-batch")
-def unlock_batch(db: Session = Depends(get_db)):
-    """Clear the locked batch so a fresh one can be built."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-    _locked_batches.pop(profile.id, None)
-    return {"unlocked": True}
-
-
-class AllocateRequest(BaseModel):
-    skip_siblings: list[str] | None = None
-    budget_sek: float | None = None
-    budget_usdc: float | None = None
-
-
-@router.post("/play/allocate")
-def allocate_capital(
-    body: AllocateRequest | None = None,
-    db: Session = Depends(get_db),
-):
-    """Allocate locked batch to provider siblings. Uses fresh balances."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    lock = _locked_batches.get(profile.id)
-    if not lock:
-        raise HTTPException(400, "No locked batch found. Build and lock a batch first.")
-
-    age = (datetime.now(timezone.utc) - lock["locked_at"]).total_seconds()
-    if age > LOCK_TTL_SECONDS:
-        del _locked_batches[profile.id]
-        raise HTTPException(410, "Locked batch expired (>30 min). Rebuild the batch.")
-
-    skip = body.skip_siblings if body else None
-    b_sek = body.budget_sek if body else None
-    b_usdc = body.budget_usdc if body else None
-    builder = BatchBuilder(db)
-    return builder.allocate_capital(
-        lock["batch"], profile.id,
-        skip_siblings=skip,
-        budget_sek=b_sek,
-        budget_usdc=b_usdc,
-    )
-
-
-@router.post("/play/confirm-capital")
-def confirm_capital(
-    db: Session = Depends(get_db),
-):
-    """Rebuild batch after capital actions.
-
-    Balances are auto-synced by the mirror browser — this endpoint
-    just rebuilds the batch with current (already-synced) balances.
-    """
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-    builder = BatchBuilder(db)
-    return builder.build(profile.id)
