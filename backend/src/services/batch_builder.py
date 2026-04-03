@@ -1060,9 +1060,10 @@ class BatchBuilder:
             return False
 
         # -- Compute dynamic per-provider cap per cluster ----------------------
-        # Instead of flat 10-bet cap, distribute evenly across siblings:
-        # cap_per_provider = ceil(cluster_candidates / num_siblings)
-        # Clamped to [1, BETS_PER_PROVIDER] so we never exceed the hard max.
+        # Distribute bets evenly across ALL registered siblings (not just funded).
+        # If 25 candidates for a cluster with 3 siblings → ceil(25/3) = 9 each.
+        # Overflow beyond funded siblings becomes deposit recommendations.
+        # Clamped to max BETS_PER_PROVIDER (10) to avoid detection.
         import math
         cluster_candidate_counts: dict[str, int] = {}
         for bet in candidates:
@@ -1071,7 +1072,8 @@ class BatchBuilder:
 
         dynamic_cap: dict[str, int] = {}
         for cluster, count in cluster_candidate_counts.items():
-            n_siblings = len(funded_siblings.get(cluster, [])) or 1
+            # Use ALL registered siblings, not just funded — overflow goes to missed/deposit
+            n_siblings = len(all_siblings.get(cluster, [])) or 1
             dynamic_cap[cluster] = min(cap, max(1, math.ceil(count / n_siblings)))
 
         def _get_cap(cluster: str) -> int:
