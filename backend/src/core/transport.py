@@ -30,32 +30,18 @@ def get_proxy_dict(socks: bool = False) -> dict | None:
     """Parse proxy URL into Playwright/Camoufox proxy dict format.
 
     Args:
-        socks: If True, use SOCKS_PROXY_URL (Swedish residential SSH tunnel).
-               If False, use PROXY_URL (ISP proxy for API calls).
+        socks: Deprecated — kept for backward compatibility, now ignored.
+               All providers use PROXY_URL (Swedish ISP residential proxy).
 
     Handles format: http://user:pass@host:port → {server, username, password}
-    Also handles: socks5://host:port → {server}
-
-    For SOCKS, distributes load across ports 1080-1082 (3 SSH tunnels)
-    to avoid saturating a single tunnel with too many browser connections.
     """
     import os
-    import random
     from urllib.parse import urlparse
-    env_var = "SOCKS_PROXY_URL" if socks else "PROXY_URL"
-    proxy_url = os.environ.get(env_var)
+    proxy_url = os.environ.get("PROXY_URL")
     if not proxy_url:
-        # Fall back to PROXY_URL if SOCKS requested but not set
-        if socks:
-            proxy_url = os.environ.get("PROXY_URL")
-        if not proxy_url:
-            return None
+        return None
     parsed = urlparse(proxy_url)
-    port = parsed.port
-    # Distribute SOCKS connections across multiple tunnels (1080-1082)
-    if socks and port == 1080:
-        port = random.choice([1080, 1081, 1082])
-    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{port}"}
+    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
     if parsed.username:
         proxy["username"] = parsed.username
     if parsed.password:

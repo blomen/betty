@@ -1,6 +1,3 @@
 @echo off
-:: Start SOCKS tunnel to Hetzner (Swedish IP for VBet/ComeOn/Tipwin)
-start /min "SOCKS Tunnel" bash "%~dp0scripts\socks-tunnel.sh"
-
 cd /d "%~dp0backend"
-start /wait /b python run_mirror.py
+python run_mirror.py

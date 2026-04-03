@@ -115,7 +115,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
         t0 = time.time()
         try:
-            proxy = get_proxy_dict(socks=True)
+            proxy = get_proxy_dict()
             self._camoufox_browser = await AsyncCamoufox(
                 headless=True,
                 geoip=True,
@@ -125,7 +125,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             ).__aenter__()
 
             self._camoufox_page = await self._camoufox_browser.new_page()
-            proxy_msg = " with SOCKS proxy" if proxy else ""
+            proxy_msg = " with residential proxy" if proxy else ""
             logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time()-t0:.1f}s")
             return self._camoufox_page
         except Exception as e:

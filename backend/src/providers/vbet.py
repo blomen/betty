@@ -103,7 +103,7 @@ class VbetRetriever(Retriever):
         self.ws_url = config.get("ws_url", "wss://eu-swarm-newm.vbet.se/")
         self.site_id = config.get("site_id", 1088)
         self._rid_counter = 1000
-        self._socks_proxy = os.environ.get("SOCKS_PROXY_URL")
+        self._proxy_url = os.environ.get("PROXY_URL")
 
     def _next_rid(self) -> int:
         """Generate unique request ID."""
@@ -344,17 +344,19 @@ class VbetRetriever(Retriever):
                     close_timeout=10,
                     open_timeout=15,
                 )
-                # Route through SOCKS proxy if available (Swedish residential IP)
-                if self._socks_proxy:
-                    parsed_proxy = urlparse(self._socks_proxy)
+                # Route through HTTP proxy if available (Swedish ISP residential IP)
+                if self._proxy_url:
+                    parsed_proxy = urlparse(self._proxy_url)
                     parsed_ws = urlparse(self.ws_url)
                     ws_host = parsed_ws.hostname
                     ws_port = parsed_ws.port or 443
                     sock = socks.socksocket()
                     sock.set_proxy(
-                        socks.SOCKS5,
+                        socks.HTTP,
                         parsed_proxy.hostname,
-                        parsed_proxy.port or 1080,
+                        parsed_proxy.port or 12323,
+                        username=parsed_proxy.username,
+                        password=parsed_proxy.password,
                     )
                     sock.settimeout(15)
                     sock.connect((ws_host, ws_port))
