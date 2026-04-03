@@ -49,6 +49,10 @@ class DQNAgent:
         self.observation_dim = observation_dim
         self.epsilon = epsilon
 
+        # Use multiple CPU cores for matrix ops (extraction is I/O-bound)
+        torch.set_num_threads(4)
+        torch.set_num_interop_threads(2)
+
         # Networks
         self.q_network = DQNetwork(observation_dim)
         self.target_network = copy.deepcopy(self.q_network)
