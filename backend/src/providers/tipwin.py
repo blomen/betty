@@ -174,7 +174,6 @@ class TipwinRetriever(BrowserRetriever):
             async def intercept_offer_api(route):
                 """Intercept offer/data API calls, capture body before navigation disposes it."""
                 try:
-                    logger.info(f"[{self.provider_id}] Route matched: {route.request.url[:100]}")
                     response = await route.fetch()
                     body = await response.text()
                     data = _json.loads(body)
@@ -183,20 +182,10 @@ class TipwinRetriever(BrowserRetriever):
                         has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
                         if has_items or has_offer:
                             api_responses.append(data)
-                            logger.info(f"[{self.provider_id}] Captured offer/data response ({len(body)} bytes, keys={list(data.keys())[:5]})")
-                        else:
-                            logger.info(f"[{self.provider_id}] Skipped offer/data response (no items/offer, keys={list(data.keys())[:5]})")
                     await route.fulfill(response=response, body=body)
                 except Exception as e:
-                    logger.warning(f"[{self.provider_id}] Route intercept error: {e}")
+                    logger.debug(f"[{self.provider_id}] Route intercept error: {e}")
                     await route.continue_()
-
-            # Log all network requests for debugging
-            async def _log_responses(response):
-                url = response.url
-                if "offer" in url or "api-web" in url:
-                    logger.info(f"[{self.provider_id}] Network: {response.status} {url[:120]}")
-            page.on("response", _log_responses)
 
             # Intercept all offer/data API calls via route (reliable body capture)
             await page.route("**/offer/data*", intercept_offer_api)
@@ -209,14 +198,17 @@ class TipwinRetriever(BrowserRetriever):
                 self._session_ready = True
 
             # Navigate to full sports listing (page 1)
+            # SPA needs time: HTML loads → JS bundles → React hydration → API call
             full_url = f"{self.site_url}/sv/sports/full/"
-            await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
-            await asyncio.sleep(1)
+            await page.goto(full_url, wait_until='load', timeout=30000)
+
+            # Wait for the offer/data API call to fire (SPA takes 5-10s to bootstrap)
+            for _ in range(12):
+                if api_responses:
+                    break
+                await asyncio.sleep(1)
 
             if not api_responses:
-                # Retry — sometimes the first response fires before route is ready
-                await asyncio.sleep(2)
-                if not api_responses:
                     await page.unroute("**/offer/data*", intercept_offer_api)
                     raise RetryableError(
                         "No API responses captured after initial page load",
