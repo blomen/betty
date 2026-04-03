@@ -143,7 +143,7 @@ class DQNAgent:
 
         return loss.item()
 
-    def save(self, path: Path) -> None:
+    def save(self, path: Path, epoch: int = 0) -> None:
         """Persist agent state."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +154,7 @@ class DQNAgent:
                 "optimizer": self.optimizer.state_dict(),
                 "epsilon": self.epsilon,
                 "train_steps": self.train_steps,
+                "epoch": epoch,
             },
             path,
         )

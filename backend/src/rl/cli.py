@@ -817,6 +817,7 @@ def merge_live() -> None:
 def train(
     epochs: int = typer.Option(100, help="Number of training epochs"),
     checkpoint: str = typer.Option("v1", help="Checkpoint name for saved model"),
+    resume: bool = typer.Option(False, help="Resume from existing checkpoint"),
 ) -> None:
     """Train the DQN agent on replayed episodes."""
     import numpy as np
@@ -887,6 +888,19 @@ def train(
 
     agent = DQNAgent(observation_dim=obs_dim)
 
+    # Resume from checkpoint if requested
+    start_epoch = 1
+    model_path = models_dir / f"dqn_{checkpoint}.pt"
+    if resume and model_path.exists():
+        import torch as _torch
+        ckpt = _torch.load(model_path, weights_only=False, map_location="cpu")
+        agent.load(model_path)
+        start_epoch = ckpt.get("epoch", 0) + 1
+        typer.echo(f"Resumed from {model_path} (epoch {start_epoch - 1}, "
+                    f"epsilon={agent.epsilon:.3f}, steps={agent.train_steps})")
+    elif resume:
+        typer.echo(f"No checkpoint found at {model_path} — starting fresh.")
+
     for i in range(len(train_obs)):
         rc = float(train_rc[i])
         rr = float(train_rr[i])
@@ -909,11 +923,16 @@ def train(
     # Set up cosine annealing LR scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR
     scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=1e-5)
+    # Fast-forward scheduler if resuming
+    if start_epoch > 1:
+        for _ in range((start_epoch - 1) * steps_per_epoch):
+            scheduler.step()
 
     # Training loop
-    typer.echo(f"\nTraining for {epochs} epochs x {steps_per_epoch} steps/epoch = {total_steps:,} total steps ...")
-    typer.echo(f"LR: 3e-4 -> 1e-5 cosine | Epsilon: {agent.epsilon:.2f} -> 0.05 over {total_steps:,} steps")
-    for epoch in range(1, epochs + 1):
+    remaining = epochs - start_epoch + 1
+    typer.echo(f"\nTraining for {remaining} epochs ({start_epoch}-{epochs}) x {steps_per_epoch} steps/epoch ...")
+    typer.echo(f"LR: {scheduler.get_last_lr()[0]:.2e} -> 1e-5 cosine | Epsilon: {agent.epsilon:.2f} -> 0.05")
+    for epoch in range(start_epoch, epochs + 1):
         epoch_loss = 0.0
         for _step in range(steps_per_epoch):
             loss = agent.train_step()
@@ -926,7 +945,7 @@ def train(
         # Checkpoint every 5 epochs so progress is never lost
         if epoch % 5 == 0:
             ckpt_path = models_dir / f"dqn_{checkpoint}.pt"
-            agent.save(ckpt_path)
+            agent.save(ckpt_path, epoch=epoch)
             typer.echo(f"  [checkpoint saved: epoch {epoch}]")
 
     # Validation: check if model predicts the better direction correctly
@@ -946,7 +965,7 @@ def train(
 
     # Save model
     model_path = models_dir / f"dqn_{checkpoint}.pt"
-    agent.save(model_path)
+    agent.save(model_path, epoch=epochs)
     typer.echo(f"\nModel saved to: {model_path}")
 
 
