@@ -190,20 +190,19 @@ class TipwinRetriever(BrowserRetriever):
             # Intercept all offer/data API calls via route (reliable body capture)
             await page.route("**/offer/data*", intercept_offer_api)
 
-            # Handle cookie consent on initial load
-            if not self._session_ready:
-                await page.goto(self.site_url, wait_until='load', timeout=30000)
-                await self._handle_cookie_consent(page)
-                await asyncio.sleep(2)
-                self._session_ready = True
-
-            # Navigate to full sports listing (page 1)
-            # SPA needs time: HTML loads → JS bundles → React hydration → API call
+            # Navigate directly to full sports listing — SPA loads offer/data on first page
+            # (Previously loaded homepage first for cookie consent, but that wastes the API call
+            # since the SPA does a client-side route change to /sv/sports/full/ without re-fetching)
             full_url = f"{self.site_url}/sv/sports/full/"
             await page.goto(full_url, wait_until='load', timeout=30000)
 
+            # Handle cookie consent if needed (works on any page)
+            if not self._session_ready:
+                await self._handle_cookie_consent(page)
+                self._session_ready = True
+
             # Wait for the offer/data API call to fire (SPA takes 5-10s to bootstrap)
-            for _ in range(12):
+            for _ in range(15):
                 if api_responses:
                     break
                 await asyncio.sleep(1)
