@@ -260,11 +260,22 @@ async def activate_provider(provider_id: str, mirror_service) -> dict:
 
     bets = _window.provider_bets.get(provider_id, [])
     for bet in bets:
-        _window.live_snapshots[bet.bet_id] = LiveSnapshot(
-            bet_id=bet.bet_id,
-            fair_odds=bet.fair_odds,
-            original_edge=bet.edge_pct,
-        )
+        # Mark bets with invalid odds (< 1.0) as negative immediately
+        if bet.odds < 1.0:
+            _window.live_snapshots[bet.bet_id] = LiveSnapshot(
+                bet_id=bet.bet_id,
+                fair_odds=bet.fair_odds,
+                original_edge=bet.edge_pct,
+                live_odds=bet.odds,
+                live_edge=-99.0,
+                category="negative",
+            )
+        else:
+            _window.live_snapshots[bet.bet_id] = LiveSnapshot(
+                bet_id=bet.bet_id,
+                fair_odds=bet.fair_odds,
+                original_edge=bet.edge_pct,
+            )
 
     # Polymarket: open tabs then start polling
     if provider_id == "polymarket" and mirror_service is not None:
@@ -320,9 +331,9 @@ async def _update_live_prices(provider_id: str, mirror_service) -> None:
                 idx = mirror_service._btn_index_for_outcome(bet.outcome, bet.market)
                 if 0 <= idx < len(buttons):
                     price = buttons[idx].get("price")
-                    if price and price > 0:
+                    if price and 0 < price < 1:
                         # Polymarket prices are probabilities (0-1); convert to decimal odds
-                        live_odds = round(1 / price, 4) if price > 0 else None
+                        live_odds = round(1 / price, 4)
                         snap.live_odds = live_odds
                         snap.fair_odds = bet.fair_odds
                         if live_odds:
