@@ -29,8 +29,8 @@ from datetime import datetime, timezone
 import asyncio
 
 import websockets
+import socks
 import socket
-import ssl
 import base64
 from urllib.parse import urlparse
 
@@ -345,30 +345,45 @@ class VbetRetriever(Retriever):
                     close_timeout=10,
                     open_timeout=15,
                 )
-                # Route through HTTP CONNECT proxy if available (Swedish ISP residential IP)
+                # Route through proxy if available (Swedish residential IP)
                 if self._proxy_url:
                     parsed_proxy = urlparse(self._proxy_url)
                     parsed_ws = urlparse(self.ws_url)
                     ws_host = parsed_ws.hostname
                     ws_port = parsed_ws.port or 443
-                    # Manual HTTP CONNECT tunnel (PySocks HTTP auth doesn't work with this proxy)
-                    tunnel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    tunnel.settimeout(15)
-                    tunnel.connect((parsed_proxy.hostname, parsed_proxy.port or 12323))
-                    auth = base64.b64encode(
-                        f"{parsed_proxy.username}:{parsed_proxy.password}".encode()
-                    ).decode()
-                    tunnel.sendall(
-                        f"CONNECT {ws_host}:{ws_port} HTTP/1.1\r\n"
-                        f"Host: {ws_host}:{ws_port}\r\n"
-                        f"Proxy-Authorization: Basic {auth}\r\n"
-                        f"\r\n".encode()
-                    )
-                    resp = tunnel.recv(4096).decode()
-                    if "200" not in resp:
-                        tunnel.close()
-                        raise ConnectionError(f"HTTP CONNECT failed: {resp.strip()}")
-                    ws_kwargs["sock"] = tunnel
+                    scheme = parsed_proxy.scheme.lower()
+                    if scheme.startswith("socks5") or scheme.startswith("socks4"):
+                        proxy_type = socks.SOCKS5 if "5" in scheme else socks.SOCKS4
+                        sock = socks.socksocket()
+                        sock.set_proxy(
+                            proxy_type,
+                            parsed_proxy.hostname,
+                            parsed_proxy.port or 1080,
+                            username=parsed_proxy.username,
+                            password=parsed_proxy.password,
+                        )
+                        sock.settimeout(15)
+                        sock.connect((ws_host, ws_port))
+                        ws_kwargs["sock"] = sock
+                    else:
+                        # HTTP CONNECT tunnel fallback
+                        tunnel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        tunnel.settimeout(15)
+                        tunnel.connect((parsed_proxy.hostname, parsed_proxy.port or 12323))
+                        auth = base64.b64encode(
+                            f"{parsed_proxy.username}:{parsed_proxy.password}".encode()
+                        ).decode()
+                        tunnel.sendall(
+                            f"CONNECT {ws_host}:{ws_port} HTTP/1.1\r\n"
+                            f"Host: {ws_host}:{ws_port}\r\n"
+                            f"Proxy-Authorization: Basic {auth}\r\n"
+                            f"\r\n".encode()
+                        )
+                        resp = tunnel.recv(4096).decode()
+                        if "200" not in resp:
+                            tunnel.close()
+                            raise ConnectionError(f"HTTP CONNECT failed: {resp.strip()}")
+                        ws_kwargs["sock"] = tunnel
                 async with websockets.connect(
                     self.ws_url,
                     **ws_kwargs,

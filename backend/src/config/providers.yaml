@@ -2,12 +2,11 @@
 # Uses YAML anchors to reduce duplication
 # Bonus info source: https://speltips.se/ (check periodically for updates)
 #
-# Proxy: PROXY_URL env var (Swedish ISP residential — IPRoyal) is used by:
-#   - Pinnacle (API via aiohttp)
-#   - Betsson/Gecko V2, Interwetten, Tipwin (Playwright BrowserTransport)
+# Proxy: PROXY_URL env var (NordVPN Swedish SOCKS5) is used by ALL providers:
+#   - Pinnacle, Altenar (aiohttp via aiohttp-socks ProxyConnector)
+#   - Kambi, Gecko V2, Interwetten, Tipwin, 10bet, Spectate (Playwright BrowserTransport)
 #   - Coolbet, ComeOn (Camoufox anti-detect browser)
-#   - VBet (WebSocket via HTTP CONNECT tunnel)
-#   - Spectate/888sport (Playwright BrowserTransport)
+#   - VBet (WebSocket via PySocks SOCKS5)
 
 # Global orchestrator configuration
 # Tuned for bare metal i7-7700 (4C/8T), 64GB RAM, 2x 256GB SSD

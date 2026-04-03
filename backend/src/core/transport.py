@@ -86,7 +86,9 @@ class HttpTransport(Transport):
         self.headers = headers or {"User-Agent": _CHROME_UA}
         self.circuit_breaker = circuit_breaker
         self.rate_limit_config = rate_limit_config
-        self.proxy = proxy  # e.g. "http://user:pass@host:port"
+        self.proxy = proxy  # e.g. "http://user:pass@host:port" or "socks5://user:pass@host:port"
+        # SOCKS proxies are handled via ProxyConnector, not the proxy= kwarg
+        self._proxy_via_connector = bool(proxy and proxy.startswith("socks"))
         # Track consecutive 429s per provider for circuit breaker notification
         self._consecutive_429s: Dict[str, int] = {}
 
@@ -104,7 +106,14 @@ class HttpTransport(Transport):
         if not self.session:
             async with self._session_lock:
                 if not self.session:  # Double-check after lock
-                    self.session = aiohttp.ClientSession(headers=self.headers)
+                    connector = None
+                    if self.proxy and self.proxy.startswith("socks"):
+                        try:
+                            from aiohttp_socks import ProxyConnector
+                            connector = ProxyConnector.from_url(self.proxy)
+                        except ImportError:
+                            logger.warning("aiohttp-socks not installed, SOCKS proxy will not work for HTTP requests")
+                    self.session = aiohttp.ClientSession(headers=self.headers, connector=connector)
 
     async def get(
         self,
@@ -155,7 +164,7 @@ class HttpTransport(Transport):
 
         # Retry loop for 429 handling
         for attempt in range(max_retries + 1):
-            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout, proxy=self.proxy) as response:
+            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout, proxy=None if self._proxy_via_connector else self.proxy) as response:
                 # Handle 429 rate limit with exponential backoff
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
@@ -237,7 +246,7 @@ class HttpTransport(Transport):
         req_timeout = aiohttp.ClientTimeout(total=90)
 
         for attempt in range(max_retries + 1):
-            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout, proxy=self.proxy) as response:
+            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout, proxy=None if self._proxy_via_connector else self.proxy) as response:
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
                     try:
