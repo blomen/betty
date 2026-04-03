@@ -185,6 +185,9 @@ def compute_scheduling_efficiency(session) -> dict:
 
     results = {}
     for trigger, runs, avg_dur, avg_events, avg_odds in rows:
+        avg_dur = float(avg_dur)
+        avg_events = float(avg_events)
+        avg_odds = float(avg_odds)
         events_per_sec = round(avg_events / avg_dur, 1) if avg_dur > 0 else 0.0
         results[trigger] = {
             "runs": runs,
@@ -248,6 +251,9 @@ class AnalyticsEngine:
         all_recs = []
 
         for pid, avg_dur, avg_events, avg_mr, spr_cnt, tot_cnt in provider_metrics:
+            avg_dur = float(avg_dur) if avg_dur else 0
+            avg_events = float(avg_events) if avg_events else 0
+            avg_mr = float(avg_mr) if avg_mr else 0
             # Find matching ROI data
             roi_data = next((r for r in provider_roi if r["provider_id"] == pid), {})
             total_opps = roi_data.get("total_opportunities", 0)
@@ -255,9 +261,9 @@ class AnalyticsEngine:
 
             diag_data = {
                 "provider_id": pid,
-                "avg_match_rate": avg_mr or 0,
-                "avg_events": avg_events or 0,
-                "avg_duration": avg_dur or 0,
+                "avg_match_rate": avg_mr,
+                "avg_events": avg_events,
+                "avg_duration": avg_dur,
                 "total_opportunities": total_opps,
                 "seconds_per_value_bet": sec_per_vb,
                 "spread_count": spr_cnt or 0,
