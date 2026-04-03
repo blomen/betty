@@ -153,13 +153,23 @@ class PolymarketRetriever(Retriever):
     def _get_sport_url(self, sport: str) -> str:
         return ""
 
+    # Polymarket charges ~2% fee on net winnings
+    POLY_FEE_RATE = 0.02
+
     def _price_to_odds(self, price: float) -> float:
-        """Convert a probability price to decimal odds.
+        """Convert a probability price to effective decimal odds after fees.
 
         Price is already depth-adjusted (VWAP from order book) when CLOB is enabled.
+        Polymarket charges ~2% on net winnings, so effective payout is reduced:
+        raw_odds = 1/price, net_profit = (raw_odds - 1) * (1 - fee),
+        effective_odds = 1 + net_profit = 1 + (1/price - 1) * (1 - fee).
         """
         adjusted = min(price + self.spread_buffer, 0.99)
-        return round(1 / adjusted, 3) if adjusted > 0.01 else 100.0
+        if adjusted <= 0.01:
+            return 100.0
+        raw_odds = 1 / adjusted
+        effective_odds = 1 + (raw_odds - 1) * (1 - self.POLY_FEE_RATE)
+        return round(effective_odds, 3)
 
     def _is_liquid(self, token_id: str) -> bool:
         """Check if a token has sufficient order book depth."""

@@ -42,10 +42,9 @@ MAX_ODDS_RATIO = 1.35
 # handicap conventions, vig structures). Relaxed from 1.35 to 1.55.
 MAX_ODDS_RATIO_SPREAD = 1.55
 
-# Hard safety net — only trips on impossible data (e.g. wrong event match).
-# Real filtering happens upstream: provider EXCLUDE_PATTERNS, market type
-# restrictions, odds ratio checks, prob_sum validation.
-MAX_EDGE_PCT = 100.0
+# Hard safety net — edges above this are almost certainly data quality issues
+# (wrong event match, stale odds, prediction market divergence).
+MAX_EDGE_PCT = 50.0
 
 # Sports where Pinnacle uses SET handicaps but soft providers use GAME handicaps.
 # Comparing spread markets across providers would produce phantom edges because
@@ -1432,11 +1431,9 @@ class OpportunityScanner:
                         continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
-                # Skip for Polymarket — prediction market pricing naturally diverges from
-                # sportsbooks; the MAX_EDGE_PCT cap already catches truly bad data
                 # Spread/total markets use relaxed threshold — handicap pricing
                 # naturally diverges more between books than 1x2/moneyline
-                if po["provider"] != "polymarket" and pinnacle_raw and pinnacle_raw > 1:
+                if pinnacle_raw and pinnacle_raw > 1:
                     ratio = po["odds"] / pinnacle_raw
                     ratio_limit = MAX_ODDS_RATIO_SPREAD if is_spread_market else MAX_ODDS_RATIO
                     if ratio > ratio_limit:
