@@ -883,8 +883,9 @@ extraction_scheduling:
       - interwetten
       # 10Bet — DOM scraping, slowest (1000-1200s)
       - 10bet
-      # Tipwin — API interception via page.route(), ~76s for 1500 events
-      - tipwin
+      # Tipwin — DISABLED: blocks all VPN/datacenter IPs, needs Swedish residential IP
+      # Re-enable when RESIDENTIAL_PROXY_URL is available (home tunnel or real ISP proxy)
+      # - tipwin
     interval_minutes: 15
     grouped: false
 
