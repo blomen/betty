@@ -118,34 +118,6 @@ export function FireWindow({ batch, wageringProjections: _wageringProjections, o
     return () => { cancelled = true; };
   }, [batch]);
 
-  // Poll live state during monitoring phase
-  useEffect(() => {
-    if (phase !== 'monitoring') {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-    const poll = async () => {
-      if (closedRef.current) return;
-      try {
-        const state = await fireWindowApi.getState();
-        setLiveState(state);
-      } catch {
-        // Ignore poll errors
-      }
-    };
-    poll();
-    pollRef.current = setInterval(poll, 1_000);
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [phase]);
-
   // Activate a provider
   const handleActivate = useCallback(async (providerId: string) => {
     setError(null);
@@ -234,6 +206,56 @@ export function FireWindow({ batch, wageringProjections: _wageringProjections, o
       setPhase('complete');
     }
   }, [fireResult]);
+
+  // SSE: auto-activate providers when mirror detects login
+  const activatedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (phase !== 'queue' || queue.length === 0) return;
+    const es = new EventSource('/api/extraction/stream');
+
+    const handleSync = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const provider = data.provider as string;
+        const inQueue = queue.find(q => q.provider_id === provider && !q.fired);
+        if (inQueue && !activatedRef.current.has(provider)) {
+          activatedRef.current.add(provider);
+          handleActivate(provider);
+        }
+      } catch { /* ignore */ }
+    };
+
+    es.addEventListener('sync_available', handleSync);
+    return () => es.close();
+  }, [phase, queue, handleActivate]);
+
+  // Poll live state during monitoring phase
+  useEffect(() => {
+    if (phase !== 'monitoring') {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+    const poll = async () => {
+      if (closedRef.current) return;
+      try {
+        const state = await fireWindowApi.getState();
+        setLiveState(state);
+      } catch {
+        // Ignore poll errors
+      }
+    };
+    poll();
+    pollRef.current = setInterval(poll, 1_000);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [phase]);
 
   // ---------------------------------------------------------------------------
   // Render: Error

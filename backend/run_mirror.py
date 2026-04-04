@@ -118,48 +118,33 @@ def _open_browser_when_ready():
     print("[mirror] Backend did not start in 60s -- open manually")
 
 
-def main():
+def main(open_browser: bool = True):
     print("[mirror] Firev Mirror Launcher")
     print(f"[mirror] Server: {SERVER}")
 
     # Kill any previous mirror instance
     _cleanup_old_instance()
 
-    # Check production server is reachable
-    print(f"[mirror] Checking server {SERVER}...")
-    try:
-        result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}", "echo ok"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            print(f"[mirror] FAILED: Cannot SSH to {SERVER}")
-            print(f"[mirror] stderr: {result.stderr.strip()}")
+    # Check if tunnel already exists (skip SSH checks if so)
+    if _port_in_use(LOCAL_PG_PORT):
+        print(f"[mirror] Existing tunnel on localhost:{LOCAL_PG_PORT} — skipping SSH checks")
+    else:
+        print(f"[mirror] Checking server {SERVER}...")
+        try:
+            result = subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}", "echo ok"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                print(f"[mirror] WARNING: Cannot SSH to {SERVER} — will retry tunnel")
+            else:
+                print(f"[mirror] Server reachable")
+        except subprocess.TimeoutExpired:
+            print(f"[mirror] WARNING: SSH timed out — will retry tunnel")
+        except FileNotFoundError:
+            print("[mirror] FAILED: ssh not found. Install OpenSSH.")
             input("Press Enter to exit...")
             return
-        print(f"[mirror] Server reachable")
-    except subprocess.TimeoutExpired:
-        print(f"[mirror] FAILED: SSH to {SERVER} timed out")
-        input("Press Enter to exit...")
-        return
-    except FileNotFoundError:
-        print("[mirror] FAILED: ssh not found. Install OpenSSH.")
-        input("Press Enter to exit...")
-        return
-
-    # Check production backend is healthy (non-blocking — mirror only needs DB)
-    try:
-        result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
-             "cd /opt/firev && docker compose exec -T backend curl -sf http://localhost:8000/health"],
-            capture_output=True, text=True, timeout=20,
-        )
-        if result.returncode != 0:
-            print("[mirror] WARNING: Production backend not responding (mirror will still work)")
-        else:
-            print("[mirror] Production backend healthy")
-    except Exception as e:
-        print(f"[mirror] WARNING: Could not check backend health: {e}")
 
     # Start SSH tunnel
     if not _start_tunnel():
@@ -201,15 +186,24 @@ def main():
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     # Open browser once backend is ready
-    threading.Thread(target=_open_browser_when_ready, daemon=True).start()
+    if open_browser:
+        threading.Thread(target=_open_browser_when_ready, daemon=True).start()
 
     print("[mirror] Starting local API server...")
     print("[mirror] Press Ctrl+C to stop\n")
 
     import uvicorn
 
-    # Suppress noisy logs during shutdown
+    # Configure root logger so fire_window etc. show INFO
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    # Suppress noisy loggers
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("src.services.market_service").setLevel(logging.WARNING)
+    logging.getLogger("src.market_data").setLevel(logging.WARNING)
+    logging.getLogger("src.services.trading_service").setLevel(logging.WARNING)
+    logging.getLogger("src.rl").setLevel(logging.WARNING)
 
     try:
         uvicorn.run(
@@ -226,11 +220,13 @@ def main():
 
 if __name__ == "__main__":
     import logging
+    _first_start = True
     while True:
         try:
-            main()
+            main(open_browser=_first_start)
             break  # Clean exit (no Ctrl+C) — don't restart
         except KeyboardInterrupt:
+            _first_start = False
             print("\n[mirror] Restarting in 2s... (Ctrl+C again to exit)")
             try:
                 time.sleep(2)

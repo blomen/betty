@@ -1449,11 +1449,12 @@ class MirrorService:
 
     def _find_btn_for_market(
         self, buttons: list[dict], original_outcome: str, market_type: str,
+        home_name: str = "", away_name: str = "",
     ) -> dict | None:
         """Find the correct button for a bet's market type and outcome.
 
-        Matches the button's section label against known market type labels,
-        then picks the correct index within that section.
+        First matches by section label (market type), then matches by team
+        name in button text. Falls back to index-based matching if no text match.
         """
         target_labels = self._MARKET_SECTION_LABELS.get(market_type, ["moneyline", "winner"])
 
@@ -1467,20 +1468,41 @@ class MirrorService:
         matched_section = None
         for sec_label, sec_btns in sections.items():
             if any(kw in sec_label for kw in target_labels):
-                # Skip per-game markets (Game 1, Game 2) — we want the series/main line
                 if any(skip in sec_label for skip in ["game 1", "game 2", "game 3", "map 1", "map 2", "map 3"]):
                     continue
                 matched_section = sec_btns
                 break
 
         if matched_section is None:
-            # Fallback: if only one section or no labels found, use all buttons
             if len(sections) <= 1:
                 matched_section = buttons
             else:
-                # Try the first section (usually moneyline)
                 matched_section = list(sections.values())[0] if sections else buttons
 
+        if not matched_section:
+            return None
+
+        # Determine which team name to look for in button text
+        target_name = ""
+        if original_outcome == "home" and home_name:
+            target_name = home_name.lower()
+        elif original_outcome == "away" and away_name:
+            target_name = away_name.lower()
+        elif original_outcome == "over":
+            target_name = "o "  # "O 2.5"
+        elif original_outcome == "under":
+            target_name = "u "  # "U 2.5"
+        elif original_outcome == "draw":
+            target_name = "draw"
+
+        # Try text-based matching first (reliable — DOM order varies)
+        if target_name:
+            for btn in matched_section:
+                text = (btn.get("text") or "").lower()
+                if target_name in text:
+                    return btn
+
+        # Fallback: index-based matching
         btn_idx = self._btn_index_for_outcome(original_outcome, market_type)
         if 0 <= btn_idx < len(matched_section):
             return matched_section[btn_idx]

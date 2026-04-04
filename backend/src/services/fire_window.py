@@ -18,6 +18,7 @@ from ..analysis.value import compute_edge
 from ..db.models import Odds, get_session
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -317,30 +318,31 @@ async def _update_live_prices(provider_id: str, mirror_service) -> None:
     now = datetime.now(timezone.utc)
 
     if provider_id == "polymarket" and mirror_service is not None:
+        poly_tabs = getattr(mirror_service, "_poly_tabs", {})
+        if not poly_tabs:
+            pass  # No tabs yet
+
         for bet in bets:
             snap = _window.live_snapshots.get(bet.bet_id)
             if snap is None or not bet.market_slug:
                 continue
 
-            page = getattr(mirror_service, "_poly_tabs", {}).get(bet.market_slug)
+            page = poly_tabs.get(bet.market_slug)
             if page is None:
+                pass  # Tab not open yet
                 continue
 
             try:
                 buttons = await mirror_service._read_btn_prices(page)
                 matched = mirror_service._find_btn_for_market(
                     buttons, bet.outcome, bet.market,
+                    home_name=bet.display_home, away_name=bet.display_away,
                 )
                 if matched:
                     price = matched.get("price")
-                    logger.debug(
-                        "[FireWindow] bet %s (%s/%s): matched=%s, all_sections=%s",
-                        bet.bet_id, bet.market, bet.outcome,
-                        {k: v for k, v in matched.items()},
-                        {btn.get("section", ""): btn.get("text", "")[:30] for btn in buttons[:8]},
-                    )
+                    cents = round(price * 100)
+                    print(f"  *{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*{cents}c*")
                     if price and 0 < price < 1:
-                        # Polymarket prices are probabilities (0-1); convert to decimal odds
                         live_odds = round(1 / price, 4)
                         snap.live_odds = live_odds
                         snap.fair_odds = bet.fair_odds
@@ -349,6 +351,8 @@ async def _update_live_prices(provider_id: str, mirror_service) -> None:
                             snap.delta = (snap.live_edge or 0) - snap.original_edge
                             snap.category = _categorise(snap.live_edge, snap.delta)
                         snap.last_updated = now
+                else:
+                    print(f"  *{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*NO MATCH*")
             except Exception:
                 logger.debug("Price read failed for bet %s", bet.bet_id, exc_info=True)
     else:

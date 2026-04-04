@@ -399,10 +399,6 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
-        # Polymarket CLOB prices are volatile — require 5% min edge buffer
-        effective_min_edge = 0.05 if provider_id == "polymarket" else min_edge
-        if edge_raw < effective_min_edge:
-            return None
 
         # Kelly stake from total bankroll — no balance check
         result = calculate_stake(
