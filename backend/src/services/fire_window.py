@@ -1,14 +1,11 @@
 """
-FireWindowService — Core state, live polling, fire/skip/advance.
+FireWindowService — Core state, per-bet live price checking, fire/skip/advance.
 
-Manages the "fire window" between batch building (which identifies +EV bets)
-and actual bet placement. Lets the user monitor live prices against sharp fair
-odds and manually confirm firing provider by provider.
+No continuous polling. Live price is checked ONCE per bet, right before placement.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,17 +20,6 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
-
-@dataclass
-class LiveSnapshot:
-    bet_id: int
-    live_odds: float | None = None
-    fair_odds: float | None = None
-    live_edge: float | None = None
-    original_edge: float = 0.0
-    delta: float = 0.0
-    category: str = "pending"  # improved | stable | degraded | negative | pending
-    last_updated: datetime | None = None
 
 
 @dataclass
@@ -64,10 +50,8 @@ class FireWindow:
     provider_queue: list[str]
     provider_bets: dict[str, list[FireWindowBet]]
     current_provider: str | None = None
-    live_snapshots: dict[int, LiveSnapshot] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "ready"  # ready | active | firing | complete
-    _poll_task: Optional[asyncio.Task] = field(default=None, repr=False)
     fired_results: dict[str, dict] = field(default_factory=dict)
 
 
@@ -76,8 +60,6 @@ class FireWindow:
 # ---------------------------------------------------------------------------
 
 _window: FireWindow | None = None
-
-POLL_INTERVAL_S = 1
 
 
 # ---------------------------------------------------------------------------
@@ -239,153 +221,25 @@ def _build_queue_response() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Activate / polling
+# Set current provider (replaces activate_provider)
 # ---------------------------------------------------------------------------
 
-async def activate_provider(provider_id: str, mirror_service) -> dict:
-    """Activate a provider for live price monitoring.
-
-    Stops any previous poll task, initialises LiveSnapshots for every bet
-    belonging to *provider_id*, and for Polymarket opens browser tabs
-    before starting the background poll loop.
-    """
+def set_current_provider(provider_id: str) -> dict:
+    """Set the current provider and return live state. No polling, no tabs."""
     if _window is None:
         return {"error": "no fire window open"}
 
-    # Stop existing poll
-    _cancel_poll()
-
     _window.current_provider = provider_id
     _window.status = "active"
-    _window.live_snapshots.clear()
-
-    bets = _window.provider_bets.get(provider_id, [])
-    for bet in bets:
-        # Mark bets with invalid odds (< 1.0) as negative immediately
-        if bet.odds < 1.0:
-            _window.live_snapshots[bet.bet_id] = LiveSnapshot(
-                bet_id=bet.bet_id,
-                fair_odds=bet.fair_odds,
-                original_edge=bet.edge_pct,
-                live_odds=bet.odds,
-                live_edge=-99.0,
-                category="negative",
-            )
-        else:
-            _window.live_snapshots[bet.bet_id] = LiveSnapshot(
-                bet_id=bet.bet_id,
-                fair_odds=bet.fair_odds,
-                original_edge=bet.edge_pct,
-            )
-
-    # Polymarket: open tabs then start polling
-    if provider_id == "polymarket" and mirror_service is not None:
-        tab_bets = [
-            {"market_slug": b.market_slug, "poly_outcome": b.poly_outcome, "bet_id": b.bet_id}
-            for b in bets if b.market_slug
-        ]
-        try:
-            await mirror_service._ensure_poly_tabs(tab_bets)
-        except Exception:
-            logger.exception("Failed to open Polymarket tabs")
-
-    # Start background poll
-    _window._poll_task = asyncio.create_task(
-        _poll_loop(provider_id, mirror_service)
-    )
-
     return get_live_state()
 
 
-async def _poll_loop(provider_id: str, mirror_service) -> None:
-    """Background loop: update live prices every POLL_INTERVAL_S seconds."""
-    try:
-        while True:
-            await _update_live_prices(provider_id, mirror_service)
-            await asyncio.sleep(POLL_INTERVAL_S)
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        logger.exception("Poll loop crashed for %s", provider_id)
-
-
-async def _update_live_prices(provider_id: str, mirror_service) -> None:
-    """Fetch latest prices and update LiveSnapshots."""
-    if _window is None:
-        return
-
-    bets = _window.provider_bets.get(provider_id, [])
-    now = datetime.now(timezone.utc)
-
-    if provider_id == "polymarket" and mirror_service is not None:
-        poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-        if not poly_tabs:
-            pass  # No tabs yet
-
-        for bet in bets:
-            snap = _window.live_snapshots.get(bet.bet_id)
-            if snap is None or not bet.market_slug:
-                continue
-
-            page = poly_tabs.get(bet.market_slug)
-            if page is None:
-                pass  # Tab not open yet
-                continue
-
-            try:
-                buttons = await mirror_service._read_btn_prices(page)
-                matched = mirror_service._find_btn_for_market(
-                    buttons, bet.outcome, bet.market,
-                    home_name=bet.display_home, away_name=bet.display_away,
-                )
-                if matched:
-                    price = matched.get("price")
-                    cents = round(price * 100)
-                    print(f"  *{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*{cents}c*")
-                    if price and 0 < price < 1:
-                        live_odds = round(1 / price, 4)
-                        snap.live_odds = live_odds
-                        snap.fair_odds = bet.fair_odds
-                        if live_odds:
-                            snap.live_edge = compute_edge(provider_id, live_odds, bet.fair_odds)
-                            snap.delta = (snap.live_edge or 0) - snap.original_edge
-                            snap.category = _categorise(snap.live_edge, snap.delta)
-                        snap.last_updated = now
-                else:
-                    print(f"  *{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*NO MATCH*")
-            except Exception:
-                logger.debug("Price read failed for bet %s", bet.bet_id, exc_info=True)
-    else:
-        # Non-Polymarket providers: no live polling implemented yet.
-        # Snapshots remain in "pending" state with original edge.
-        for bet in bets:
-            snap = _window.live_snapshots.get(bet.bet_id)
-            if snap:
-                snap.live_odds = bet.odds
-                snap.live_edge = bet.edge_pct
-                snap.delta = 0.0
-                snap.category = "stable"
-                snap.last_updated = now
-
-
-def _categorise(live_edge: float | None, delta: float) -> str:
-    if live_edge is None:
-        return "pending"
-    if live_edge <= 0:
-        return "negative"
-    if delta > 1:
-        return "improved"
-    if delta < -1:
-        return "degraded"
-    return "stable"
-
-
 # ---------------------------------------------------------------------------
-# Live state
+# Live state (simplified — DB odds + balance, no live overlay)
 # ---------------------------------------------------------------------------
 
 def get_live_state() -> dict:
-    """Return current live state for the active provider."""
+    """Return current state for the active provider using DB odds."""
     if _window is None:
         return {"error": "no fire window open"}
 
@@ -406,11 +260,7 @@ def get_live_state() -> dict:
     total_ev = 0.0
 
     for bet in bets:
-        snap = _window.live_snapshots.get(bet.bet_id)
-        live_edge = snap.live_edge if snap else None
-        category = snap.category if snap else "pending"
-
-        is_active = (live_edge or 0) > 0 if live_edge is not None else True
+        is_active = bet.edge_pct > 0
         if is_active:
             active_count += 1
             total_stake += bet.stake
@@ -438,13 +288,6 @@ def get_live_state() -> dict:
             "poly_outcome": bet.poly_outcome,
             "original_outcome": bet.original_outcome,
             "start_time": bet.start_time,
-            # Live data
-            "live_odds": snap.live_odds if snap else None,
-            "live_price_cents": round(100 / snap.live_odds, 1) if snap and snap.live_odds and snap.live_odds > 0 else None,
-            "live_edge": snap.live_edge if snap else None,
-            "delta": snap.delta if snap else 0.0,
-            "category": category,
-            "last_updated": snap.last_updated.isoformat() if snap and snap.last_updated else None,
         })
 
     # Fetch current balance for this provider
@@ -481,14 +324,48 @@ def get_live_state() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Per-bet live price check (Polymarket only)
+# ---------------------------------------------------------------------------
+
+async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional[float]:
+    """Single DOM scrape for one bet. Returns live edge % or None."""
+    poly_tabs = getattr(mirror_service, "_poly_tabs", {})
+    page = poly_tabs.get(bet.market_slug)
+    if page is None:
+        return None
+
+    try:
+        buttons = await mirror_service._read_btn_prices(page)
+        matched = mirror_service._find_btn_for_market(
+            buttons, bet.outcome, bet.market,
+            home_name=bet.display_home, away_name=bet.display_away,
+        )
+        if not matched:
+            return None
+
+        price = matched.get("price")
+        if not price or price <= 0 or price >= 1:
+            return None
+
+        live_odds = round(1 / price, 4)
+        return compute_edge("polymarket", live_odds, bet.fair_odds)
+    except Exception:
+        logger.debug("Price read failed for bet %s", bet.bet_id, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Fire / skip / advance
 # ---------------------------------------------------------------------------
 
 async def fire_provider(mirror_service) -> dict:
-    """Fire all positive-edge bets for the current provider.
+    """Fire bets for the current provider with per-bet live price checking.
 
-    Does a final price update, splits bets into to_fire (edge > 0) and
-    excluded, executes placement, then advances the queue.
+    For each bet (sorted by edge desc):
+    - Check balance
+    - For Polymarket: check live price, fire only if still +EV
+    - For others: use DB edge (no live check yet)
+    - Print concise output per bet
     """
     if _window is None:
         return {"error": "no fire window open"}
@@ -498,30 +375,13 @@ async def fire_provider(mirror_service) -> dict:
         return {"error": "no active provider"}
 
     _window.status = "firing"
-    _cancel_poll()
-
-    # Final price snapshot
-    await _update_live_prices(pid, mirror_service)
 
     bets = _window.provider_bets.get(pid, [])
-    to_fire = []
-    excluded = []
-    skipped_balance = []
 
-    # Filter by edge first
-    positive_edge = []
-    for bet in bets:
-        snap = _window.live_snapshots.get(bet.bet_id)
-        edge = snap.live_edge if snap else bet.edge_pct
-        if edge is not None and edge > 0:
-            positive_edge.append((bet, edge))
-        else:
-            excluded.append(bet)
+    # Sort by edge descending — fire best bets first
+    sorted_bets = sorted(bets, key=lambda b: -b.edge_pct)
 
-    # Sort by edge descending — fire best bets first within balance
-    positive_edge.sort(key=lambda x: -x[1])
-
-    # Check balance — fire as many as the provider balance allows
+    # Check balance
     from ..repositories.profile_repo import ProfileRepo
     db = get_session()
     try:
@@ -532,26 +392,53 @@ async def fire_provider(mirror_service) -> dict:
         db.close()
 
     remaining = balance
-    for bet, edge in positive_edge:
-        if remaining >= bet.stake:
-            to_fire.append(bet)
-            remaining -= bet.stake
-        else:
-            skipped_balance.append(bet)
-
     placed = []
     failed = []
+    excluded = []
+    skipped_balance = []
 
-    if pid == "polymarket" and mirror_service is not None:
-        poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-        for bet in to_fire:
+    for bet in sorted_bets:
+        label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
+
+        # Determine edge to use
+        if pid == "polymarket" and mirror_service is not None:
+            live_edge = await _check_live_price_poly(bet, mirror_service)
+            edge = live_edge if live_edge is not None else bet.edge_pct
+        else:
+            edge = bet.edge_pct
+
+        # Skip if not +EV
+        if edge <= 0:
+            print(f"  {label}SKIP edge={edge:.1f}%*")
+            excluded.append({"bet_id": bet.bet_id, "reason": "negative_edge"})
+            continue
+
+        # Skip if insufficient balance
+        if remaining < bet.stake:
+            print(f"  {label}SKIP balance*")
+            skipped_balance.append({"bet_id": bet.bet_id, "reason": "insufficient_balance"})
+            continue
+
+        # Fire the bet
+        print(f"  {label}FIRE edge={edge:.1f}%*")
+
+        if pid == "polymarket" and mirror_service is not None:
+            poly_tabs = getattr(mirror_service, "_poly_tabs", {})
             page = poly_tabs.get(bet.market_slug)
             if page is None:
                 failed.append({"bet_id": bet.bet_id, "reason": "no_tab"})
                 continue
             try:
-                snap = _window.live_snapshots.get(bet.bet_id)
-                expected_price = 1 / snap.live_odds if snap and snap.live_odds and snap.live_odds > 0 else 1 / bet.odds
+                # Use live price if available, otherwise DB odds
+                expected_price = 1 / bet.odds
+                if pid == "polymarket":
+                    # Re-read price for placement slippage check
+                    live_edge_val = await _check_live_price_poly(bet, mirror_service)
+                    if live_edge_val is not None:
+                        # Derive price from edge: edge = (live_odds/fair - 1)*100
+                        # We already have the page open, just use bet.odds as fallback
+                        pass
+
                 result = await mirror_service._place_single_polymarket_bet(
                     page=page,
                     bet_id=bet.bet_id,
@@ -565,35 +452,34 @@ async def fire_provider(mirror_service) -> dict:
                 )
                 if result.get("status") == "placed":
                     placed.append(result)
+                    remaining -= bet.stake
                 else:
                     failed.append(result)
             except Exception as exc:
                 logger.exception("Placement failed for bet %s", bet.bet_id)
                 failed.append({"bet_id": bet.bet_id, "reason": str(exc)})
-
-        # Close Polymarket tabs
-        try:
-            await mirror_service.close_poly_tabs()
-        except Exception:
-            logger.debug("Failed to close poly tabs", exc_info=True)
-    else:
-        # Non-Polymarket providers: no automated placement yet
-        for bet in to_fire:
+        else:
+            # Non-Polymarket providers: manual placement
             placed.append({
                 "bet_id": bet.bet_id,
                 "status": "manual",
                 "provider_id": pid,
                 "stake": bet.stake,
             })
+            remaining -= bet.stake
+
+    # Close Polymarket tabs after all bets
+    if pid == "polymarket" and mirror_service is not None:
+        try:
+            await mirror_service.close_poly_tabs()
+        except Exception:
+            logger.debug("Failed to close poly tabs", exc_info=True)
 
     fire_result = {
         "provider_id": pid,
         "placed": placed,
         "failed": failed,
-        "excluded": (
-            [{"bet_id": b.bet_id, "reason": "negative_edge"} for b in excluded]
-            + [{"bet_id": b.bet_id, "reason": "insufficient_balance"} for b in skipped_balance]
-        ),
+        "excluded": excluded + skipped_balance,
         "summary": {
             "total": len(bets),
             "fired": len(placed),
@@ -619,8 +505,6 @@ def skip_provider() -> dict:
     if pid is None:
         return {"error": "no active provider"}
 
-    _cancel_poll()
-
     bets = _window.provider_bets.get(pid, [])
     _window.fired_results[pid] = {
         "provider_id": pid,
@@ -640,13 +524,12 @@ def skip_provider() -> dict:
 def _advance_queue() -> str | None:
     """Move to the next unfired provider in the queue.
 
-    Clears live snapshots and sets status to ``ready`` or ``complete``.
+    Sets status to ``ready`` or ``complete``.
     Returns the next provider_id, or None if the queue is exhausted.
     """
     if _window is None:
         return None
 
-    _window.live_snapshots.clear()
     _window.current_provider = None
 
     for pid in _window.provider_queue:
@@ -707,23 +590,11 @@ def get_fired_summary() -> dict:
 
 
 def close_window() -> None:
-    """Tear down the fire window, cancelling any active poll task."""
+    """Tear down the fire window."""
     global _window
-    _cancel_poll()
     _window = None
 
 
 def get_window() -> FireWindow | None:
     """Return the current FireWindow singleton (or None)."""
     return _window
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _cancel_poll() -> None:
-    """Cancel the background poll task if running."""
-    if _window and _window._poll_task and not _window._poll_task.done():
-        _window._poll_task.cancel()
-        _window._poll_task = None

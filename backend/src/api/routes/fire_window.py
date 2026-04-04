@@ -26,8 +26,8 @@ def open_fire_window(request: OpenRequest):
 
 
 @router.post("/activate/{provider_id}")
-async def activate_provider(provider_id: str):
-    """Open tabs for provider and start live price polling."""
+def activate_provider(provider_id: str):
+    """Set the current provider (no polling, no tabs)."""
     window = fw.get_window()
     if not window:
         raise HTTPException(400, "No fire window open")
@@ -35,29 +35,12 @@ async def activate_provider(provider_id: str):
     if provider_id not in window.provider_bets:
         raise HTTPException(400, f"Provider '{provider_id}' not in queue")
 
-    # Auto-ensure mirror is started for Polymarket
-    mirror = _get_active_mirror()
-    if not mirror and provider_id == "polymarket":
-        from ...mirror.service import MirrorService
-        from ...pipeline.broadcast import odds_broadcaster
-
-        async with _start_lock:
-            if not _any_running():
-                mirror = MirrorService(broadcaster=odds_broadcaster, provider_id="spelklubben")
-                await mirror.start()
-                _mirrors["spelklubben"] = mirror
-            else:
-                mirror = _get_active_mirror()
-
-    if not mirror:
-        raise HTTPException(400, "Could not start mirror browser")
-
-    return await fw.activate_provider(provider_id, mirror)
+    return fw.set_current_provider(provider_id)
 
 
 @router.get("/state")
 def get_state():
-    """Get current provider's live bet states + delta."""
+    """Get current provider's bet states + balance."""
     window = fw.get_window()
     if not window:
         raise HTTPException(400, "No fire window open")
@@ -71,7 +54,36 @@ async def fire_current_provider():
     if not window or not window.current_provider:
         raise HTTPException(400, "No active provider to fire")
 
+    pid = window.current_provider
     mirror = _get_active_mirror()
+
+    # Open Polymarket tabs before firing
+    if pid == "polymarket":
+        if not mirror:
+            from ...mirror.service import MirrorService
+            from ...pipeline.broadcast import odds_broadcaster
+
+            async with _start_lock:
+                if not _any_running():
+                    mirror = MirrorService(broadcaster=odds_broadcaster, provider_id="spelklubben")
+                    await mirror.start()
+                    _mirrors["spelklubben"] = mirror
+                else:
+                    mirror = _get_active_mirror()
+
+        if not mirror:
+            raise HTTPException(400, "Could not start mirror browser")
+
+        bets = window.provider_bets.get(pid, [])
+        tab_bets = [
+            {"market_slug": b.market_slug, "poly_outcome": b.poly_outcome, "bet_id": b.bet_id}
+            for b in bets if b.market_slug
+        ]
+        try:
+            await mirror._ensure_poly_tabs(tab_bets)
+        except Exception:
+            logger.exception("Failed to open Polymarket tabs")
+
     if not mirror:
         raise HTTPException(400, "No mirror running")
 
