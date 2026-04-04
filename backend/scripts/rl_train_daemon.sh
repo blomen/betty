@@ -5,38 +5,86 @@
 #   docker exec -d firev-backend-1 bash /app/backend/scripts/rl_train_daemon.sh
 #
 # Behavior:
-#   - Runs the full pipeline on startup
+#   - Runs the full pipeline on startup (with retry on failure)
 #   - Then checks for new live episodes every RETRAIN_INTERVAL seconds
 #   - If enough new episodes accumulated (MIN_NEW_EPISODES), retrains
 #   - All work runs at nice 19 — never starves extraction
+#   - Self-heals: retries failed pipeline runs with exponential backoff
+#   - Writes heartbeat file every check cycle for external monitoring
 #
 # Logs: /app/data/rl/daemon.log
 
-set -e
-
 RETRAIN_INTERVAL=14400  # Check every 4 hours
 MIN_NEW_EPISODES=100    # Minimum new live episodes to trigger retrain
+MAX_RETRIES=3           # Max retries per pipeline run
+RETRY_BASE_DELAY=300    # 5 min initial retry delay (doubles each retry)
 LOG=/app/data/rl/daemon.log
 LIVE_DIR=/app/data/rl/live_episodes
 PIPELINE=/app/backend/scripts/rl_train_pipeline.sh
+HEARTBEAT=/app/data/rl/daemon_heartbeat
+PID_FILE=/app/data/rl/daemon.pid
 
 renice -n 19 $$ >/dev/null 2>&1 || true
+
+# Write PID for external monitoring
+echo $$ > "$PID_FILE"
 
 log() {
     echo "[$(date -u '+%Y-%m-%d %H:%M UTC')] $1" | tee -a "$LOG"
 }
 
-log "RL training daemon started (PID: $$, interval: ${RETRAIN_INTERVAL}s, min_episodes: ${MIN_NEW_EPISODES})"
+heartbeat() {
+    date -u '+%Y-%m-%d %H:%M:%S UTC' > "$HEARTBEAT"
+}
 
-# Initial full pipeline run
+run_pipeline_with_retry() {
+    local attempt=1
+    local delay=$RETRY_BASE_DELAY
+
+    while [ "$attempt" -le "$MAX_RETRIES" ]; do
+        log "Pipeline attempt $attempt/$MAX_RETRIES..."
+        heartbeat
+
+        # Run pipeline WITHOUT set -e so failures don't kill the daemon
+        bash "$PIPELINE" 2>&1 | tee -a "$LOG"
+        local exit_code=${PIPESTATUS[0]}
+
+        if [ "$exit_code" -eq 0 ]; then
+            log "Pipeline completed successfully."
+            return 0
+        fi
+
+        log "Pipeline FAILED (exit code $exit_code) on attempt $attempt/$MAX_RETRIES."
+
+        if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+            log "Retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    log "Pipeline FAILED after $MAX_RETRIES attempts. Will retry next cycle."
+    return 1
+}
+
+# Cleanup on exit
+trap 'log "Daemon shutting down (PID $$)."; rm -f "$PID_FILE"' EXIT
+
+log "RL training daemon started (PID: $$, interval: ${RETRAIN_INTERVAL}s, min_episodes: ${MIN_NEW_EPISODES}, max_retries: ${MAX_RETRIES})"
+
+# Initial full pipeline run (with retry)
 log "Running initial full pipeline..."
-bash "$PIPELINE" 2>&1 | tee -a "$LOG"
-log "Initial pipeline complete."
+run_pipeline_with_retry
+log "Initial pipeline phase complete."
 
-# Continuous loop
+# Continuous loop — never exits
 while true; do
+    heartbeat
     log "Sleeping ${RETRAIN_INTERVAL}s until next check..."
     sleep "$RETRAIN_INTERVAL"
+
+    heartbeat
 
     # Count new live episodes
     NEW_CHUNKS=$(ls "$LIVE_DIR"/obs_*.npy 2>/dev/null | wc -l)
@@ -47,7 +95,7 @@ while true; do
 
         if [ "$ESTIMATED" -ge "$MIN_NEW_EPISODES" ]; then
             log "Threshold reached — starting retrain cycle..."
-            bash "$PIPELINE" 2>&1 | tee -a "$LOG"
+            run_pipeline_with_retry
             log "Retrain cycle complete."
         else
             log "Below threshold ($ESTIMATED < $MIN_NEW_EPISODES) — skipping."
