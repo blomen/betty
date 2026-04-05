@@ -96,14 +96,17 @@ class MirrorService:
         if not context or not context.pages:
             return
 
-        # Find the Polymarket page by URL (not always pages[0])
+        # Find the Polymarket page by URL — no fallback to other pages
         page = None
         for p in context.pages:
             if 'polymarket.com' in (p.url or ''):
                 page = p
                 break
         if page is None:
-            page = context.pages[0]  # Fallback
+            return  # No Polymarket tab open
+        # Verify we're actually on Polymarket (page may have been reused)
+        if 'polymarket.com' not in (page.url or ''):
+            return
         try:
             balance_text = await page.evaluate(
                 "() => {"
