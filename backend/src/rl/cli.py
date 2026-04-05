@@ -458,6 +458,17 @@ def _replay_single_file(
     df_renamed = df.rename(columns={"timestamp": "ts"})
     dates = sorted(df_renamed["_session_date"].unique())
 
+    # For large files, group by session upfront and release the full DataFrame
+    is_large = len(df_renamed) > 1_000_000
+    session_groups = {}
+    if is_large:
+        for session_date in dates:
+            session_groups[session_date] = df_renamed[df_renamed["_session_date"] == session_date].drop(
+                columns=["_session_date", "_ts_et"], errors="ignore"
+            )
+        del df, df_renamed  # release ~600MB
+        import gc; gc.collect()
+
     month_obs, month_rc, month_rr = [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
 
@@ -465,10 +476,14 @@ def _replay_single_file(
     prior_levels = None
 
     for session_date in dates:
-        day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
-            columns=["_session_date", "_ts_et"], errors="ignore"
-        )
+        if is_large:
+            day_df = session_groups.pop(session_date)  # pop to free memory after use
+        else:
+            day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
+                columns=["_session_date", "_ts_et"], errors="ignore"
+            )
         ticks = day_df.to_dict(orient="records")
+        del day_df  # free session DataFrame immediately
         if not ticks:
             continue
 
