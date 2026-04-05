@@ -119,12 +119,26 @@ class PinnacleWorkflow(ProviderWorkflow):
         return entries
 
     # ------------------------------------------------------------------
-    # Navigation (no-op — placement is API-based)
+    # Navigation — show the event on the Pinnacle page
     # ------------------------------------------------------------------
 
     async def navigate_to_event(self, page: "Page", bet) -> bool:
-        """No navigation needed — Pinnacle placement is API-based."""
-        return True
+        """Navigate to the event page so the user can see it before confirming."""
+        matchup_id = getattr(bet, "matchup_id", None)
+        if not matchup_id:
+            return False
+        # Pinnacle event URL: /sv/matchup/{matchupId}
+        url = f"https://www.pinnacle.se/sv/matchup/{matchup_id}"
+        try:
+            current = page.url or ""
+            if str(matchup_id) in current:
+                return True  # Already on this event
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            logger.info(f"[pinnacle] Navigated to matchup {matchup_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"[pinnacle] navigate failed: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Bet placement — full API automation

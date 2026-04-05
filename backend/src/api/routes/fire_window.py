@@ -18,60 +18,15 @@ class OpenRequest(BaseModel):
 
 
 @router.post("/open")
-async def open_fire_window(request: OpenRequest):
-    """Build fire window from an allocated batch, then auto-open tabs for all providers."""
+def open_fire_window(request: OpenRequest):
+    """Build fire window from an allocated batch.
+
+    Tabs are opened per-provider when activate is called — not here.
+    This avoids opening 15+ tabs at once.
+    """
     if not request.batch:
         raise HTTPException(400, "Empty batch")
-    result = fw.open_window(request.batch, request.provider_order)
-
-    # Auto-open tabs for all providers with balance
-    mirror = _get_active_mirror()
-    if mirror:
-        context = getattr(mirror, 'interceptor', None)
-        context = getattr(context, 'context', None) if context else None
-        if context:
-            from ...config.loader import load_config
-            from ...repositories.profile_repo import ProfileRepo
-            from ...db.models import get_session
-            from ...mirror.workflows import get_workflow
-
-            cfg = load_config()
-            window = fw.get_window()
-            db = get_session()
-            try:
-                repo = ProfileRepo(db)
-                profile = repo.get_active()
-                balances = repo.get_all_balances(profile.id) if profile else {}
-            finally:
-                db.close()
-
-            opened = []
-            for pid in (window.provider_queue if window else []):
-                if balances.get(pid, 0) < 10:
-                    continue
-                workflow = get_workflow(pid)
-                if workflow.domain:
-                    url = f"https://www.{workflow.domain}"
-                else:
-                    pconfig = cfg.get_provider(pid)
-                    url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig and pconfig.domain else None)
-                if not url:
-                    continue
-                # Skip if tab already exists
-                existing = await workflow.find_tab(context)
-                if existing:
-                    opened.append(pid)
-                    continue
-                try:
-                    page = await context.new_page()
-                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    opened.append(pid)
-                except Exception as e:
-                    logger.warning(f"Failed to open tab for {pid}: {e}")
-
-            result["tabs_opened"] = opened
-
-    return result
+    return fw.open_window(request.batch, request.provider_order)
 
 
 @router.post("/open-tabs")
