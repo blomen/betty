@@ -11,42 +11,50 @@ Which data we can capture per provider when the mirror browser is active.
 | - | Not yet wired |
 | N/A | Not applicable (e.g. no account) |
 
+### Workflow Column
+
+| Symbol | Meaning |
+|--------|---------|
+| A | Autonomous — full DOM automation, no user interaction |
+| G | Guided — workflow has login/balance API, user places manually |
+| M | Manual fallback — no workflow wired, interceptor catches API calls |
+
 ## Capabilities
 
-| # | Provider | Platform | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout | Mute Notifs |
-|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | campobet | Altenar | ~ | Y | Y | - | - | - | - |
-| 2 | quickcasino | Altenar | ~ | Y | Y | - | - | - | - |
-| 3 | betinia | Altenar | ~ | Y | Y | - | - | - | - |
-| 4 | swiper | Altenar | ~ | ~ | Y | - | - | - | - |
-| 5 | lodur | Altenar | ~ | ~ | Y | - | - | - | - |
-| 6 | dbet | Altenar | ~ | ~ | Y | - | - | - | - |
-| 7 | spelklubben | Gecko V2 | Y | - | ~ | - | - | - | - |
-| 8 | betsson | Gecko V2 | Y | - | ~ | - | - | - | - |
-| 9 | betsafe | Gecko V2 | Y | - | ~ | - | - | - | - |
-| 10 | nordicbet | Gecko V2 | Y | - | ~ | - | - | - | - |
-| 11 | bethard | Gecko V2 | Y | - | ~ | - | - | - | - |
-| 12 | unibet | Kambi | ~ | - | Y | - | - | - | Y |
-| 13 | leovegas | Kambi | ~ | - | - | - | - | - | - |
-| 14 | expekt | Kambi | ~ | - | - | - | - | - | - |
-| 15 | 888sport | Kambi | ~ | - | - | - | - | - | - |
-| 16 | speedybet | Kambi | ~ | - | - | - | - | - | - |
-| 17 | x3000 | Kambi | ~ | - | - | - | - | - | - |
-| 18 | goldenbull | Kambi | ~ | - | - | - | - | - | - |
-| 19 | 1x2 | Kambi | ~ | - | - | - | - | - | - |
-| 20 | comeon | Custom | - | - | - | - | - | - | - |
-| 21 | hajper | Custom | - | - | - | - | - | - | - |
-| 22 | lyllo | Custom | - | - | - | - | - | - | - |
-| 23 | snabbare | Snabbare | - | - | - | - | - | - | - |
-| 24 | 10bet | TenBet | - | - | - | - | - | - | - |
-| 25 | mrgreen | Spectate | - | - | - | - | - | - | - |
-| 26 | betmgm | Kambi | ~ | - | - | - | - | - | - |
-| 27 | vbet | BetConstruct | - | - | - | - | - | - | - |
-| 28 | interwetten | Interwetten | - | - | - | - | - | - | - |
-| 29 | coolbet | Coolbet | - | - | - | - | - | - | - |
-| 30 | tipwin | Tipwin | - | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | - | N/A | Y | - | - | - | - |
-| 32 | polymarket | Polymarket | ~ | N/A | Y | ~ | - | N/A | N/A |
+| # | Provider | Platform | Workflow | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout | Mute Notifs |
+|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | campobet | Altenar | G | ~ | Y | Y | - | - | - | - |
+| 2 | quickcasino | Altenar | G | ~ | Y | Y | - | - | - | - |
+| 3 | betinia | Altenar | G | ~ | Y | Y | - | - | - | - |
+| 4 | swiper | Altenar | G | ~ | ~ | Y | - | - | - | - |
+| 5 | lodur | Altenar | G | ~ | ~ | Y | - | - | - | - |
+| 6 | dbet | Altenar | G | ~ | ~ | Y | - | - | - | - |
+| 7 | spelklubben | Gecko V2 | G | Y | - | ~ | - | - | - | - |
+| 8 | betsson | Gecko V2 | G | Y | - | ~ | - | - | - | - |
+| 9 | betsafe | Gecko V2 | G | Y | - | ~ | - | - | - | - |
+| 10 | nordicbet | Gecko V2 | G | Y | - | ~ | - | - | - | - |
+| 11 | bethard | Gecko V2 | G | Y | - | ~ | - | - | - | - |
+| 12 | unibet | Kambi | G | ~ | - | Y | - | - | - | Y |
+| 13 | leovegas | Kambi | G | ~ | - | - | - | - | - | - |
+| 14 | expekt | Kambi | G | ~ | - | - | - | - | - | - |
+| 15 | 888sport | Kambi | M | ~ | - | - | - | - | - | - |
+| 16 | speedybet | Kambi | G | ~ | - | - | - | - | - | - |
+| 17 | x3000 | Kambi | G | ~ | - | - | - | - | - | - |
+| 18 | goldenbull | Kambi | G | ~ | - | - | - | - | - | - |
+| 19 | 1x2 | Kambi | G | ~ | - | - | - | - | - | - |
+| 20 | comeon | Custom | M | - | - | - | - | - | - | - |
+| 21 | hajper | Custom | M | - | - | - | - | - | - | - |
+| 22 | lyllo | Custom | M | - | - | - | - | - | - | - |
+| 23 | snabbare | Snabbare | M | - | - | - | - | - | - | - |
+| 24 | 10bet | TenBet | M | - | - | - | - | - | - | - |
+| 25 | mrgreen | Spectate | M | - | - | - | - | - | - | - |
+| 26 | betmgm | Kambi | G | ~ | - | - | - | - | - | - |
+| 27 | vbet | BetConstruct | M | - | - | - | - | - | - | - |
+| 28 | interwetten | Interwetten | M | - | - | - | - | - | - | - |
+| 29 | coolbet | Coolbet | M | - | - | - | - | - | - | - |
+| 30 | tipwin | Tipwin | M | - | - | - | - | - | - | - |
+| 31 | pinnacle | Pinnacle | G | - | N/A | Y | - | - | - | - |
+| 32 | polymarket | Polymarket | A | ~ | N/A | Y | ~ | - | N/A | N/A |
 
 ## Platform Notes
 
