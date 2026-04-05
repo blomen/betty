@@ -40,6 +40,8 @@ class MirrorService:
         self._load_notification_recipes()
         # Persistent tabs for Polymarket live edge: {slug: page}
         self._poly_tabs: dict[str, any] = {}
+        # Providers confirmed logged in (balance API returned 200)
+        self._logged_in_providers: set[str] = set()
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
@@ -117,6 +119,7 @@ class MirrorService:
             if balance_text:
                 balance = float(balance_text.replace(",", ""))
                 logger.info(f"[mirror] Polymarket logged in — cash balance: ${balance}")
+                self._logged_in_providers.add("polymarket")
                 await asyncio.to_thread(self._sync_balance, "polymarket", balance)
                 # NOW broadcast — we confirmed login via DOM balance
                 self._notify("sync_available", {
@@ -301,7 +304,9 @@ class MirrorService:
 
     def get_status(self) -> dict[str, Any]:
         """Get current mirror status."""
-        return self.interceptor.get_status()
+        status = self.interceptor.get_status()
+        status["logged_in_providers"] = sorted(self._logged_in_providers)
+        return status
 
     async def _handle_event_data(self, url: str, response_body: str):
         """Cache event participant data from events-table API responses."""
@@ -653,6 +658,7 @@ class MirrorService:
             else:
                 await asyncio.to_thread(self._sync_balance, provider_id, balance)
                 # Login confirmed — fire sync_available (green)
+                self._logged_in_providers.add(provider_id)
                 logger.info(f"[mirror] {provider_id} logged in — balance: {balance}")
                 self._notify("sync_available", {
                     "provider": provider_id,
