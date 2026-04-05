@@ -80,6 +80,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         cls = ManualWorkflow
 
     domain = provider.domain or ""
+    # Fallback domains for providers without explicit domain in config
+    if not domain:
+        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
     return cls(provider_id=provider_id, domain=domain)
 
 
