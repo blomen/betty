@@ -713,16 +713,21 @@ def replay(
                 typer.echo(f"  {pfile.name}: FAILED — {exc}")
             chunk_idx += 1
 
-    # Large files: always sequential (one at a time, no pool to crash)
+    # Large files: run each in an isolated subprocess so OOM kills don't take
+    # down the main process. ProcessPoolExecutor with max_workers=1 gives us
+    # subprocess isolation + automatic cleanup.
     if large_files:
-        typer.echo(f"\nSequential replay for {len(large_files)} large file(s)...")
+        typer.echo(f"\nSequential replay for {len(large_files)} large file(s) (subprocess-isolated)...")
         for pfile in large_files:
             try:
-                n_eps, n_sessions = _replay_single_file(
-                    pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                    chunk_idx=chunk_idx, macro_data=macro_data,
-                    summaries=summaries, gbt_path=gbt_path_str,
-                )
+                with ProcessPoolExecutor(max_workers=1) as single:
+                    future = single.submit(
+                        _replay_single_file,
+                        pfile_path=str(pfile), chunk_dir=str(chunk_dir),
+                        chunk_idx=chunk_idx, macro_data=macro_data,
+                        summaries=summaries, gbt_path=gbt_path_str,
+                    )
+                    n_eps, n_sessions = future.result(timeout=7200)  # 2h max per file
                 total_episodes += n_eps
                 typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
             except Exception as exc:
