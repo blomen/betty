@@ -68,6 +68,11 @@ async def lifespan(app: FastAPI):
     from ..services.fire_window import close_window
     close_window()
 
+    # Start auto-settlement background task
+    from ..services.auto_settle import auto_settle_loop
+    _settle_task = asyncio.create_task(auto_settle_loop())
+    _settle_task.set_name("auto-settle")
+
     # Kill orphaned browser processes from previous mirror session
     import subprocess
     try:
