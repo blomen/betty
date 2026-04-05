@@ -145,24 +145,14 @@ export function SessionBatchPanel({
         <span className="text-success text-sm">
           +{totalEV.toFixed(0)} kr EV
         </span>
-        {onFire && batch.length > 0 && (() => {
-          const funded = batch.filter(b => b.funded !== false);
-          const unfunded = batch.length - funded.length;
-          return (
-            <div className="ml-auto flex items-center gap-3">
-              {unfunded > 0 && (
-                <span className="text-xs text-amber-400">{unfunded} need deposit</span>
-              )}
-              <button
-                className="px-4 py-1 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-                onClick={onFire}
-                disabled={funded.length === 0}
-              >
-                Fire {funded.length} bets →
-              </button>
-            </div>
-          );
-        })()}
+        {onFire && batch.length > 0 && (
+          <button
+            className="ml-auto px-4 py-1 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+            onClick={onFire}
+          >
+            Fire {batch.length} bets →
+          </button>
+        )}
       </div>
 
       {/* Provider list grouped by cluster */}

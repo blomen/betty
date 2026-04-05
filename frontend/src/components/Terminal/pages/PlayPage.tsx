@@ -79,9 +79,7 @@ export function PlayPage() {
 
   const handleFire = useCallback(() => {
     if (!batchData) return;
-    // Only send funded bets to fire window
-    const funded = batchData.batch.filter((b: any) => b.funded !== false);
-    setFireBatch(funded);
+    setFireBatch(batchData.batch);
     setStep('execute');
   }, [batchData]);
 

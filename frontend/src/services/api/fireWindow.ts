@@ -121,6 +121,14 @@ export const fireWindowApi = {
     );
   },
 
+  openTabs() {
+    return fetchJson<{ opened: string[]; count: number }>(
+      '/fire-window/open-tabs',
+      { method: 'POST' },
+      60_000,
+    );
+  },
+
   getNextBet() {
     return fetchJson<any>('/fire-window/next-bet');
   },

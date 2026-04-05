@@ -62,28 +62,25 @@ class MirrorService:
     _SSR_PROVIDERS = frozenset({"unibet"})
 
     async def _handle_provider_detected(self, provider_id: str):
-        """Fires when user navigates to a known provider site."""
-        info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
-        logger.info(
-            f"[mirror] Sync available for {provider_id}: "
-            f"balance={info['balance']}, pending={info['pending_bets']}"
-        )
-        self._notify("sync_available", {
-            "provider": provider_id,
-            "balance": info["balance"],
-            "pending_bets": info["pending_bets"],
-            "pending_stake": info["pending_stake"],
-        })
+        """Fires when user navigates to a known provider site.
+
+        Only broadcasts provider_opened (amber) — NOT sync_available (green).
+        sync_available fires later when login is confirmed:
+        - Polymarket: DOM balance scrape
+        - Soft providers: intercepted API response with balance
+        """
+        logger.info(f"[mirror] Provider opened: {provider_id}")
+        self._notify("provider_opened", {"provider": provider_id})
         # Auto-mute notifications if we have a recipe
         await self._replay_notification_mute(provider_id)
         # Polymarket: scrape cash balance from DOM to verify login
-        # Don't trust DB balance — only report balance after DOM scrape confirms login
         if provider_id == "polymarket":
             asyncio.ensure_future(self._scrape_polymarket_balance())
-            return  # Don't broadcast stale DB balance — wait for DOM scrape
         # Auto-scrape bet history for SSR providers when pending bets exist
-        if provider_id in self._SSR_PROVIDERS and info["pending_bets"] > 0:
-            asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+        if provider_id in self._SSR_PROVIDERS:
+            info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
+            if info["pending_bets"] > 0:
+                asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
 
     async def _scrape_polymarket_balance(self):
         """Scrape USDC cash balance from Polymarket DOM.
@@ -616,6 +613,14 @@ class MirrorService:
                 await self._scrape_polymarket_balance()
             else:
                 await asyncio.to_thread(self._sync_balance, provider_id, balance)
+                # Login confirmed — fire sync_available (green)
+                logger.info(f"[mirror] {provider_id} logged in — balance: {balance}")
+                self._notify("sync_available", {
+                    "provider": provider_id,
+                    "balance": balance,
+                    "pending_bets": 0,
+                    "pending_stake": 0,
+                })
 
         # Polymarket: store deposit trace from Swapped widget
         if "swapped.com" in url and "create_order" in url:

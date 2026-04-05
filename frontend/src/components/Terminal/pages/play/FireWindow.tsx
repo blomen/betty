@@ -39,7 +39,8 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
   const [error, setError] = useState<string | null>(null);
   const closedRef = useRef(false);
 
-  // SSE-detected providers (logged in via mirror)
+  // Provider states: opened (amber) vs logged in (green)
+  const [openedProviders, setOpenedProviders] = useState<Set<string>>(new Set());
   const [detectedProviders, setDetectedProviders] = useState<Set<string>>(new Set());
 
   // Single-bet state (all hooks at top level — no conditionals)
@@ -79,6 +80,7 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
   }, []);
 
   // Open fire window on mount
+  // Open fire window + auto-open provider tabs in mirror
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -86,6 +88,8 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
         const res = await fireWindowApi.open(batch);
         if (cancelled) return;
         setQueue(res.queue);
+        // Auto-open tabs for all providers in the queue
+        fireWindowApi.openTabs().catch(() => {});
       } catch (err: any) {
         if (!cancelled) setError(err.message || 'Failed to open fire window');
       }
@@ -93,22 +97,35 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
     return () => { cancelled = true; };
   }, [batch]);
 
-  // SSE: detect providers + auto-start betting
+  // SSE: track provider states (opened = amber, sync_available = green)
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
-    const handle = (e: MessageEvent) => {
+
+    // Amber: site opened but not logged in yet
+    const handleOpened = (e: MessageEvent) => {
+      try {
+        const provider = JSON.parse(e.data).provider as string;
+        setOpenedProviders(prev => {
+          if (prev.has(provider)) return prev;
+          return new Set(prev).add(provider);
+        });
+      } catch { /* ignore */ }
+    };
+
+    // Green: logged in confirmed (balance detected)
+    const handleLoggedIn = (e: MessageEvent) => {
       try {
         const provider = JSON.parse(e.data).provider as string;
         setDetectedProviders(prev => {
           if (prev.has(provider)) return prev;
-          const next = new Set(prev);
-          next.add(provider);
-          return next;
+          return new Set(prev).add(provider);
         });
       } catch { /* ignore */ }
     };
-    es.addEventListener('sync_available', handle);
-    es.addEventListener('balance_synced', handle);
+
+    es.addEventListener('provider_opened', handleOpened);
+    es.addEventListener('sync_available', handleLoggedIn);
+    es.addEventListener('balance_synced', handleLoggedIn);
     return () => es.close();
   }, []);
 
@@ -164,7 +181,7 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
     }
   }, [fetchNextBet]);
 
-  // Auto-start: when a provider is detected and we're in queue phase
+  // Auto-start: when any provider is detected, start betting on it
   const autoStartRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (phase !== 'queue' || queue.length === 0) return;
@@ -372,9 +389,9 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
             {stats.stakeUsdc > 0 && `${stats.stakeUsdc.toFixed(2)} USDC`}
           </span>
           <span className="text-xs text-muted ml-auto">
-            {detectedProviders.size > 0
-              ? `${detectedProviders.size} providers detected — waiting for login`
-              : 'Open provider sites in mirror to start'}
+            {detectedProviders.size > 0 && `${detectedProviders.size} logged in`}
+            {openedProviders.size > 0 && detectedProviders.size === 0 && 'Waiting for login...'}
+            {openedProviders.size === 0 && detectedProviders.size === 0 && 'Opening sites...'}
           </span>
         </div>
 
@@ -397,7 +414,8 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
                 >
                   <span className={`text-[10px] ${
                     item.fired ? 'text-success' :
-                    detectedProviders.has(item.provider_id) ? 'text-success animate-pulse' :
+                    detectedProviders.has(item.provider_id) ? 'text-success' :
+                    openedProviders.has(item.provider_id) ? 'text-amber-400' :
                     'text-muted/30'
                   }`}>
                     {item.fired ? '✓' : '●'}
@@ -406,8 +424,14 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
                   <span className="text-xs text-muted">{item.bet_count} bets</span>
                   <span className="text-xs text-muted">{formatStake(item.total_stake, item.tier)}</span>
                   {!item.fired && (
-                    <span className={`text-[10px] ${detectedProviders.has(item.provider_id) ? 'text-success' : 'text-muted'}`}>
-                      {detectedProviders.has(item.provider_id) ? 'ready' : 'waiting'}
+                    <span className={`text-[10px] ${
+                      detectedProviders.has(item.provider_id) ? 'text-success' :
+                      openedProviders.has(item.provider_id) ? 'text-amber-400' :
+                      'text-muted'
+                    }`}>
+                      {detectedProviders.has(item.provider_id) ? 'logged in' :
+                       openedProviders.has(item.provider_id) ? 'login...' :
+                       'waiting'}
                     </span>
                   )}
                   <span className="text-xs text-success ml-auto">+{formatStake(item.total_ev, item.tier)} EV</span>
