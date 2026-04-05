@@ -50,10 +50,17 @@ class PinnacleWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: "Page") -> bool:
-        result = await self._evaluate_api(page, f"{_API}/wallet/balance")
-        if result and "__error" not in result:
-            logger.info(f"[pinnacle] Logged in — {result.get('amount')} {result.get('currency')}")
-            return True
+        import asyncio
+        # Wait for page to settle after navigation (redirects, cookie setup)
+        await asyncio.sleep(3)
+        # Retry up to 3 times — auth cookies may need a moment
+        for attempt in range(3):
+            result = await self._evaluate_api(page, f"{_API}/wallet/balance")
+            if result and "__error" not in result:
+                logger.info(f"[pinnacle] Logged in — {result.get('amount')} {result.get('currency')}")
+                return True
+            if attempt < 2:
+                await asyncio.sleep(2)
         return False
 
     async def sync_balance(self, page: "Page") -> float:
