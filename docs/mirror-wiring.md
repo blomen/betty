@@ -53,7 +53,7 @@ Which data we can capture per provider when the mirror browser is active.
 | 28 | interwetten | Interwetten | M | - | - | - | - | - | - | - |
 | 29 | coolbet | Coolbet | M | - | - | - | - | - | - | - |
 | 30 | tipwin | Tipwin | M | - | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | G | - | N/A | Y | - | - | - | - |
+| 31 | pinnacle | Pinnacle | A | Y | Y | Y | - | - | - | - |
 | 32 | polymarket | Polymarket | A | ~ | N/A | Y | ~ | - | N/A | N/A |
 
 ## Platform Notes
