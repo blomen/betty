@@ -277,3 +277,46 @@ def build_batch(
     return builder.build(profile.id, exclude=exclude)
 
 
+# ---------------------------------------------------------------------------
+# Settlement scan + confirm
+# ---------------------------------------------------------------------------
+
+
+@router.get("/play/settle-scan")
+async def settle_scan():
+    """Scan pending bets for resolved events. Returns proposals for confirmation."""
+    from ...services.auto_settle import scan_settlements
+    proposals = await scan_settlements()
+    return {"proposals": proposals, "count": len(proposals)}
+
+
+class ConfirmSettleRequest(BaseModel):
+    bet_id: int
+    result: str  # "won", "lost", "void"
+
+
+@router.post("/play/settle-confirm")
+def settle_confirm(body: ConfirmSettleRequest):
+    """Confirm settlement of a single bet."""
+    from ...services.auto_settle import confirm_settlement
+    if body.result not in ("won", "lost", "void"):
+        from fastapi import HTTPException
+        raise HTTPException(400, f"Invalid result: {body.result}")
+    return confirm_settlement(body.bet_id, body.result)
+
+
+@router.post("/play/settle-batch")
+async def settle_batch(body: list[ConfirmSettleRequest]):
+    """Confirm settlement of multiple bets at once."""
+    from ...services.auto_settle import confirm_settlement
+    results = []
+    for item in body:
+        if item.result not in ("won", "lost", "void"):
+            results.append({"bet_id": item.bet_id, "error": f"Invalid result: {item.result}"})
+            continue
+        resp = confirm_settlement(item.bet_id, item.result)
+        results.append(resp)
+    settled = sum(1 for r in results if r.get("status") == "settled")
+    return {"results": results, "settled": settled, "total": len(body)}
+
+
