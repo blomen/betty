@@ -280,6 +280,138 @@ def set_current_provider(provider_id: str) -> dict:
     return get_live_state()
 
 
+async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
+    """Run the full workflow setup when a provider is activated.
+
+    1. Find or open the provider's tab
+    2. Check login
+    3. Sync bet history → settle pending bets
+    4. Sync balance → update DB
+    """
+    result = {"provider_id": provider_id, "steps": {}}
+
+    workflow = get_workflow(provider_id)
+
+    # Get browser context
+    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        result["steps"]["tab"] = "no_browser_context"
+        return result
+
+    # Step 1: Find or open tab
+    page = await workflow.find_tab(context)
+    if not page:
+        # Open a new tab for this provider
+        from ..config.loader import load_config
+        cfg = load_config()
+        if workflow.domain:
+            url = f"https://www.{workflow.domain}"
+        else:
+            pconfig = cfg.get_provider(provider_id)
+            url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig and pconfig.domain else None)
+        if url:
+            try:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                result["steps"]["tab"] = "opened"
+                logger.info(f"[FireWindow] {provider_id}: opened tab → {url}")
+            except Exception as e:
+                result["steps"]["tab"] = f"failed:{e}"
+                return result
+        else:
+            result["steps"]["tab"] = "no_url"
+            return result
+    else:
+        result["steps"]["tab"] = "found"
+
+    # Step 2: Check login
+    try:
+        logged_in = await workflow.check_login(page)
+        result["steps"]["login"] = "ok" if logged_in else "not_logged_in"
+        if not logged_in:
+            return result
+    except Exception as e:
+        result["steps"]["login"] = f"error:{e}"
+        return result
+
+    # Step 3: Sync bet history → settle pending bets
+    try:
+        history = await workflow.sync_history(page)
+        if history:
+            settled = _settle_from_history(provider_id, history)
+            result["steps"]["history"] = {"fetched": len(history), "settled": settled}
+        else:
+            result["steps"]["history"] = {"fetched": 0, "settled": 0}
+    except Exception as e:
+        result["steps"]["history"] = f"error:{e}"
+        logger.warning(f"[FireWindow] {provider_id}: sync_history failed: {e}")
+
+    # Step 4: Sync balance
+    try:
+        balance = await workflow.sync_balance(page)
+        if balance >= 0:
+            from ..repositories.profile_repo import ProfileRepo
+            db = get_session()
+            try:
+                repo = ProfileRepo(db)
+                profile = repo.get_active()
+                if profile:
+                    old = repo.get_balance(profile.id, provider_id)
+                    repo.set_balance(profile.id, provider_id, balance)
+                    db.commit()
+                    result["steps"]["balance"] = {"old": round(old, 2), "new": round(balance, 2)}
+                    logger.info(f"[FireWindow] {provider_id}: balance {old:.2f} → {balance:.2f}")
+            finally:
+                db.close()
+        else:
+            result["steps"]["balance"] = "unknown"
+    except Exception as e:
+        result["steps"]["balance"] = f"error:{e}"
+        logger.warning(f"[FireWindow] {provider_id}: sync_balance failed: {e}")
+
+    return result
+
+
+def _settle_from_history(provider_id: str, history: list) -> int:
+    """Match history entries against pending bets in DB and settle them."""
+    from .bet_service import BetService
+    settled_count = 0
+    db = get_session()
+    try:
+        svc = BetService(db)
+        for entry in history:
+            if entry.status in ("won", "lost", "void", "cashout"):
+                # Try to find matching pending bet
+                from ..db.models import Bet
+                pending = (
+                    db.query(Bet)
+                    .filter(
+                        Bet.provider_id == provider_id,
+                        Bet.result == "pending",
+                        Bet.odds == entry.odds,
+                        Bet.stake == entry.stake,
+                    )
+                    .first()
+                )
+                if pending:
+                    pending.result = entry.status
+                    if entry.payout is not None:
+                        pending.payout = entry.payout
+                    settled_count += 1
+                    logger.info(
+                        f"[FireWindow] Settled {provider_id} bet #{pending.id}: "
+                        f"{entry.status} (payout={entry.payout})"
+                    )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[FireWindow] settle_from_history failed: {e}")
+    finally:
+        db.close()
+    return settled_count
+
+
 # ---------------------------------------------------------------------------
 # Live state (simplified — DB odds + balance, no live overlay)
 # ---------------------------------------------------------------------------
