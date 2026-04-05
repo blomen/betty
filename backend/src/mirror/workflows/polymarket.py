@@ -190,72 +190,93 @@ class PolymarketWorkflow(ProviderWorkflow):
     async def scrape_portfolio(self, page: "Page") -> list[dict]:
         """Scrape the portfolio/positions page and return each position.
 
-        Must be on polymarket.com/portfolio or the main page showing positions.
-        Returns list of {market, outcome, avg_price, now_price, traded, to_win, value, status, shares}.
+        Navigates to polymarket.com/portfolio and scrapes all position rows.
+        Returns list of {market, outcome_tag, avg_price, now_price, values, status, has_redeem, has_sell}.
         """
-        # Navigate to portfolio if not already there
-        if '/portfolio' not in (page.url or ''):
+        # Navigate to portfolio
+        current_url = page.url or ''
+        if '/portfolio' not in current_url:
             await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(3)  # Wait for positions to load
+            await asyncio.sleep(4)  # Wait for client-side render
 
-        positions = await page.evaluate("""() => {
-            const rows = document.querySelectorAll('[data-testid="position-row"], tr, [class*="position"], [class*="PortfolioRow"]');
-            const results = [];
+        # First, let's just dump what we can see to understand the DOM structure
+        debug_info = await page.evaluate("""() => {
+            const info = {
+                url: window.location.href,
+                title: document.title,
+                buttons: [],
+                text_samples: [],
+            };
 
-            // Try table rows approach
-            const allRows = document.querySelectorAll('table tbody tr, [class*="row"]');
-            for (const row of allRows) {
-                const cells = row.querySelectorAll('td, [class*="cell"], > div');
-                if (cells.length < 3) continue;
-
-                const text = row.textContent || '';
-
-                // Detect status: WON, LOST, or active (Sell button present)
-                let status = 'open';
-                if (text.includes('WON')) status = 'won';
-                else if (text.includes('LOST')) status = 'lost';
-
-                // Check for Redeem or Sell button
-                const buttons = row.querySelectorAll('button');
-                let hasRedeem = false;
-                let hasSell = false;
-                for (const btn of buttons) {
-                    const bt = (btn.textContent || '').trim();
-                    if (bt === 'Redeem') hasRedeem = true;
-                    if (bt === 'Sell') hasSell = true;
-                }
-
-                // Extract market name (first cell, usually has the market title)
-                const marketEl = row.querySelector('a, [class*="title"], [class*="market"]');
-                const market = marketEl ? marketEl.textContent.trim() : '';
-
-                // Extract outcome tag (colored pill like "Bigetron by Vitality 50.3¢")
-                const tagEl = row.querySelector('[class*="tag"], [class*="badge"], [class*="pill"], span[style]');
-                const outcomeTag = tagEl ? tagEl.textContent.trim() : '';
-
-                // Extract price info: "50.3¢ → 100¢" pattern
-                const priceMatch = text.match(/([\d.]+)¢\\s*→\\s*([\d.]+)¢/);
-                const avgPrice = priceMatch ? parseFloat(priceMatch[1]) : null;
-                const nowPrice = priceMatch ? parseFloat(priceMatch[2]) : null;
-
-                // Extract dollar values
-                const dollarValues = [...text.matchAll(/\\$([\d,.]+)/g)].map(m => parseFloat(m[1].replace(',', '')));
-
-                if (market || outcomeTag) {
-                    results.push({
-                        market: market.slice(0, 80),
-                        outcome_tag: outcomeTag,
-                        avg_price: avgPrice,
-                        now_price: nowPrice,
-                        values: dollarValues,
-                        status,
-                        has_redeem: hasRedeem,
-                        has_sell: hasSell,
+            // Find all buttons
+            const btns = document.querySelectorAll('button');
+            for (const btn of btns) {
+                const t = (btn.textContent || '').trim();
+                if (t === 'Redeem' || t === 'Sell') {
+                    // Walk up to find the row container
+                    let parent = btn.parentElement;
+                    let rowText = '';
+                    for (let i = 0; i < 8 && parent; i++) {
+                        rowText = (parent.textContent || '').trim();
+                        // Stop when we have enough context (market name + prices)
+                        if (rowText.length > 50 && rowText.includes('$')) break;
+                        parent = parent.parentElement;
+                    }
+                    info.buttons.push({
+                        type: t,
+                        row_text: rowText.slice(0, 300),
                     });
                 }
             }
-            return results;
+
+            return info;
         }""")
+
+        logger.info(f"[polymarket] Portfolio page: {debug_info.get('url')}, "
+                     f"buttons found: {len(debug_info.get('buttons', []))}")
+
+        # Now build positions from the button contexts
+        positions = []
+        for btn_info in debug_info.get('buttons', []):
+            text = btn_info.get('row_text', '')
+            btn_type = btn_info.get('type', '')
+
+            # Determine status from text
+            status = 'open'
+            if 'WON' in text:
+                status = 'won'
+            elif 'LOST' in text:
+                status = 'lost'
+
+            # Extract price movement: "50.3¢ → 100¢" or "12¢ → 0¢"
+            import re
+            price_match = re.search(r'([\d.]+)¢\s*→\s*([\d.]+)¢', text)
+            avg_price = float(price_match.group(1)) if price_match else None
+            now_price = float(price_match.group(2)) if price_match else None
+
+            # Extract dollar values
+            dollar_values = [float(m.replace(',', '')) for m in re.findall(r'\$([\d,.]+)', text)]
+
+            # Extract shares
+            shares_match = re.search(r'([\d.]+)\s*shares', text)
+            shares = float(shares_match.group(1)) if shares_match else None
+
+            # Market name: text before the first price/number section
+            market = text[:60].split('\n')[0] if text else ''
+            # Clean up: remove trailing numbers/symbols
+            market = re.sub(r'[\d¢$→].+', '', market).strip()
+
+            positions.append({
+                'market': market[:80],
+                'full_text': text[:200],
+                'avg_price': avg_price,
+                'now_price': now_price,
+                'values': dollar_values,
+                'shares': shares,
+                'status': status,
+                'has_redeem': btn_type == 'Redeem',
+                'has_sell': btn_type == 'Sell',
+            })
 
         logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
         return positions

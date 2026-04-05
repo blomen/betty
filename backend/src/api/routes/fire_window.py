@@ -239,7 +239,11 @@ async def polymarket_portfolio():
     if not page:
         raise HTTPException(400, "No Polymarket tab open")
 
-    positions = await workflow.scrape_portfolio(page)
+    try:
+        positions = await workflow.scrape_portfolio(page)
+    except Exception as e:
+        logger.exception(f"[polymarket] Portfolio scrape failed: {e}")
+        return {"positions": [], "error": str(e)}
 
     # Match against pending bets in DB
     from ...db.models import Bet, get_session
@@ -258,7 +262,10 @@ async def polymarket_portfolio():
             "positions": positions,
             "pending_bets": len(pending),
             "pending_stake": round(sum(b.stake for b in pending), 2),
+            "page_url": page.url,
         }
+    except Exception as e:
+        return {"positions": positions, "error": str(e), "page_url": page.url}
     finally:
         db.close()
 
