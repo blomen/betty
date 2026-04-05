@@ -9,10 +9,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
-from ..analysis.value import compute_edge
 from ..db.models import Odds, get_session
+from ..mirror.workflows import get_workflow
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -64,6 +63,64 @@ _window: FireWindow | None = None
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _round_stake(pid: str, stake: float) -> float:
+    """Round stake down: $1 for Polymarket, 10 kr for others."""
+    if pid == "polymarket":
+        return float(int(stake))
+    return float(int(stake / 10) * 10)
+
+
+def _min_bet(pid: str) -> float:
+    return 1.0 if pid == "polymarket" else 10.0
+
+
+def _resolve_provider_meta(provider_bets: dict[str, list[FireWindowBet]]) -> None:
+    """Resolve provider-specific metadata (slugs, matchup IDs) from the DB."""
+    # Polymarket: event slugs + outcome display names
+    if "polymarket" in provider_bets:
+        poly_meta = _resolve_polymarket_meta(provider_bets["polymarket"])
+        for bet in provider_bets["polymarket"]:
+            meta = poly_meta.get(bet.event_id)
+            if meta:
+                bet.market_slug = meta["market_slug"]
+                outcome_map = meta.get("poly_outcome_map", {})
+                bet.poly_outcome = outcome_map.get(bet.outcome)
+                if meta.get("poly_home"):
+                    bet.display_home = meta["poly_home"]
+                if meta.get("poly_away"):
+                    bet.display_away = meta["poly_away"]
+
+    # Pinnacle: matchup IDs for URL navigation
+    if "pinnacle" in provider_bets:
+        pin_event_ids = list({b.event_id for b in provider_bets["pinnacle"]})
+        if pin_event_ids:
+            db = get_session()
+            try:
+                rows = (
+                    db.query(Odds)
+                    .filter(
+                        Odds.provider_id == "pinnacle",
+                        Odds.event_id.in_(pin_event_ids),
+                    )
+                    .all()
+                )
+                matchup_map: dict[str, str] = {}
+                for row in rows:
+                    meta = row.provider_meta or {}
+                    mid = meta.get("matchup_id")
+                    if mid and row.event_id not in matchup_map:
+                        matchup_map[row.event_id] = str(mid)
+                for bet in provider_bets["pinnacle"]:
+                    bet.matchup_id = matchup_map.get(bet.event_id)
+            finally:
+                db.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -106,45 +163,8 @@ def open_window(
         )
         provider_bets.setdefault(pid, []).append(bet)
 
-    # Resolve Polymarket metadata from DB
-    if "polymarket" in provider_bets:
-        poly_meta = _resolve_polymarket_meta(provider_bets["polymarket"])
-        for bet in provider_bets["polymarket"]:
-            meta = poly_meta.get(bet.event_id)
-            if meta:
-                bet.market_slug = meta["market_slug"]
-                outcome_map = meta.get("poly_outcome_map", {})
-                bet.poly_outcome = outcome_map.get(bet.outcome)
-                # Use Polymarket's full team names for display
-                if meta.get("poly_home"):
-                    bet.display_home = meta["poly_home"]
-                if meta.get("poly_away"):
-                    bet.display_away = meta["poly_away"]
-
-    # Resolve Pinnacle matchup IDs for event navigation
-    if "pinnacle" in provider_bets:
-        pin_event_ids = list({b.event_id for b in provider_bets["pinnacle"]})
-        if pin_event_ids:
-            db = get_session()
-            try:
-                rows = (
-                    db.query(Odds)
-                    .filter(
-                        Odds.provider_id == "pinnacle",
-                        Odds.event_id.in_(pin_event_ids),
-                    )
-                    .all()
-                )
-                matchup_map: dict[str, str] = {}
-                for row in rows:
-                    meta = row.provider_meta or {}
-                    mid = meta.get("matchup_id")
-                    if mid and row.event_id not in matchup_map:
-                        matchup_map[row.event_id] = str(mid)
-                for bet in provider_bets["pinnacle"]:
-                    bet.matchup_id = matchup_map.get(bet.event_id)
-            finally:
-                db.close()
+    # Resolve provider-specific metadata (slugs, matchup IDs)
+    _resolve_provider_meta(provider_bets)
 
     # Build provider order
     if provider_order is None:
@@ -350,118 +370,6 @@ def get_live_state() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Per-bet live price check (Polymarket only)
-# ---------------------------------------------------------------------------
-
-async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional[float]:
-    """Single DOM scrape for one bet. Returns live edge % or None."""
-    import asyncio as _aio
-
-    poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-    page = poly_tabs.get(bet.market_slug)
-    if page is None:
-        return None
-
-    try:
-        # Wait for trading buttons to render (page may have just opened)
-        try:
-            await page.wait_for_selector('button.trading-button', timeout=10000)
-        except Exception:
-            pass  # Buttons might already be there or timeout — try reading anyway
-
-        # Retry up to 3 times with short delay (buttons may load after DOM ready)
-        for attempt in range(3):
-            buttons = await mirror_service._read_btn_prices(page)
-            matched = mirror_service._find_btn_for_market(
-                buttons, bet.outcome, bet.market,
-                home_name=bet.display_home, away_name=bet.display_away,
-            )
-            if matched and matched.get("price"):
-                break
-            await _aio.sleep(1)
-
-        if not matched:
-            return None
-
-        price = matched.get("price")
-        if not price or price <= 0 or price >= 1:
-            return None
-
-        live_odds = round(1 / price, 4)
-        edge = compute_edge("polymarket", live_odds, bet.fair_odds)
-        # Store live cents on the bet object for check_bet to read
-        bet._live_cents = round(price * 100)
-        return edge
-    except Exception:
-        logger.debug("Price read failed for bet %s", bet.bet_id, exc_info=True)
-        return None
-
-
-async def _check_live_price_pinnacle(page, bet) -> float | None:
-    """Read live odds from Pinnacle search results page.
-
-    Pinnacle search shows a table with team names and odds.
-    Returns live edge percentage, or None if can't read.
-    """
-    try:
-        # Read all odds cells from the search results
-        odds_data = await page.evaluate("""
-            () => {
-                const results = [];
-                // Find all rows in the results table
-                const rows = document.querySelectorAll('tr, [class*="row"], [class*="matchup"]');
-                for (const row of rows) {
-                    const text = row.textContent || '';
-                    // Extract all decimal odds (1.xxx to 999.xxx)
-                    const odds = [...text.matchAll(/(\\d{1,3}\\.\\d{2,3})/g)].map(m => parseFloat(m[1]));
-                    if (odds.length >= 2) {
-                        results.push({ text: text.slice(0, 200), odds });
-                    }
-                }
-                return results;
-            }
-        """)
-
-        if not odds_data:
-            return None
-
-        # Find the row containing our event (match team names)
-        target_home = bet.display_home.lower()[:4] if bet.display_home else ""
-        target_away = bet.display_away.lower()[:4] if bet.display_away else ""
-
-        for row in odds_data:
-            row_text = row["text"].lower()
-            if target_home in row_text and target_away in row_text:
-                odds_list = row["odds"]
-                # For 1X2: home=0, draw=1, away=2
-                # For moneyline: home=0, away=1
-                if bet.outcome == "home" and len(odds_list) >= 1:
-                    live_odds = odds_list[0]
-                elif bet.outcome == "draw" and len(odds_list) >= 2:
-                    live_odds = odds_list[1]
-                elif bet.outcome == "away":
-                    if bet.market == "1x2" and len(odds_list) >= 3:
-                        live_odds = odds_list[2]
-                    elif len(odds_list) >= 2:
-                        live_odds = odds_list[-1]
-                    else:
-                        continue
-                else:
-                    continue
-
-                if live_odds > 1:
-                    edge = compute_edge(bet.provider_id, live_odds, bet.fair_odds)
-                    logger.info(f"[FireWindow] pinnacle live: {bet.display_home} vs {bet.display_away} "
-                                f"{bet.outcome} @ {live_odds} (db {bet.odds:.2f}) edge={edge:.1f}%")
-                    return edge
-
-        return None
-    except Exception:
-        logger.debug("Pinnacle price read failed", exc_info=True)
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Single-bet flow: check → confirm → next
 # ---------------------------------------------------------------------------
 
@@ -526,16 +434,11 @@ def get_next_bet() -> dict:
         except Exception:
             pass
 
-        min_bet = 1.0 if pid == "polymarket" else 10.0
-        if balance < min_bet:
+        if balance < _min_bet(pid):
             continue  # Balance too low — skip to next or done
 
         # Adjust stake to remaining balance, round down to avoid exceeding
-        actual_stake = min(bet.stake, balance)
-        if pid == "polymarket":
-            actual_stake = float(int(actual_stake))
-        else:
-            actual_stake = float(int(actual_stake / 10) * 10)
+        actual_stake = _round_stake(pid, min(bet.stake, balance))
         actual_profit = actual_stake * (bet.edge_pct / 100)
 
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
@@ -577,7 +480,6 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     """Check live price for a specific bet. Returns price comparison."""
     if _window is None:
         return {"error": "no fire window open"}
-
     pid = _window.current_provider
     bets = _window.provider_bets.get(pid, [])
     bet = next((b for b in bets if b.bet_id == bet_id), None)
@@ -587,58 +489,16 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     live_edge = None
     live_cents = None
 
-    if pid == "polymarket" and mirror_service is not None:
-        live_edge = await _check_live_price_poly(bet, mirror_service)
-        live_cents = getattr(bet, '_live_cents', None)
-    elif mirror_service is not None and pid not in ("polymarket",):
-        # Navigate provider tab to the event page
-        matchup = getattr(bet, 'matchup_id', None)
-        if pid == "pinnacle":
-            # Use Pinnacle search with home team name — redirects to the event
-            home = bet.display_home.replace(" ", "%20") if bet.display_home else ""
-            event_url = f"https://www.pinnacle.se/en/search/{home}/" if home else None
-        else:
-            event_url = None
-
-        if event_url:
-            context = getattr(mirror_service, 'interceptor', None)
-            context = getattr(context, 'context', None) if context else None
-            if context:
-                # Find the provider's tab
-                provider_domain = pid.replace("_", "")  # crude domain match
-                target_page = None
-                for p in context.pages:
-                    page_url = p.url or ''
-                    if pid == "pinnacle" and 'pinnacle' in page_url:
-                        target_page = p
-                        break
-                    elif provider_domain in page_url:
-                        target_page = p
-                        break
-
-                if target_page:
-                    try:
-                        await target_page.goto(event_url, wait_until="domcontentloaded", timeout=15000)
-                        logger.info(f"[FireWindow] {pid}: navigated to {event_url}")
-
-                        # Read live odds from Pinnacle page
-                        if pid == "pinnacle":
-                            import asyncio as _aio
-                            await _aio.sleep(2)  # Wait for odds to render
-                            pin_edge = await _check_live_price_pinnacle(
-                                target_page, bet
-                            )
-                            if pin_edge is not None:
-                                live_edge = pin_edge
-                    except Exception as e:
-                        logger.warning(f"[FireWindow] {pid}: navigation failed: {e}")
-                else:
-                    logger.warning(f"[FireWindow] {pid}: no tab found in {len(context.pages)} pages")
-            else:
-                logger.warning(f"[FireWindow] {pid}: no browser context")
-        else:
-            if pid == "pinnacle":
-                logger.warning(f"[FireWindow] pinnacle: no matchup_id for {bet.event_id}")
+    if mirror_service is not None:
+        workflow = get_workflow(pid)
+        context = getattr(mirror_service, 'interceptor', None)
+        context = getattr(context, 'context', None) if context else None
+        if context:
+            page = await workflow.find_tab(context)
+            if page:
+                await workflow.navigate_to_event(page, bet)
+                live_edge = await workflow.check_live_price(page, bet)
+                live_cents = getattr(bet, '_live_cents', None)
 
     db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
     fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
@@ -686,59 +546,44 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
     except Exception:
         pass
 
-    actual_stake = min(bet.stake, balance)
-    # Round down to avoid exceeding balance after fees
-    if pid == "polymarket":
-        actual_stake = float(int(actual_stake))  # Round down to whole dollar
-    else:
-        actual_stake = float(int(actual_stake / 10) * 10)  # Round down to nearest 10 kr
-    min_bet = 1.0 if pid == "polymarket" else 10.0
-    if actual_stake < min_bet:
+    actual_stake = _round_stake(pid, min(bet.stake, balance))
+    if actual_stake < _min_bet(pid):
         return {"status": "skipped", "bet_id": bet_id, "reason": "insufficient_balance"}
 
     label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
-    placement_result = None
 
-    if pid == "polymarket" and mirror_service is not None:
-        poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-        page = poly_tabs.get(bet.market_slug)
-        if page is None:
-            return {"status": "failed", "bet_id": bet_id, "reason": "no_tab"}
-        try:
-            expected_price = 1 / bet.odds if bet.odds > 0 else 0
-            placement_result = await mirror_service._place_single_polymarket_bet(
-                page=page,
-                bet_id=bet.bet_id,
-                slug=bet.market_slug,
-                outcome=bet.poly_outcome or bet.outcome,
-                    amount=actual_stake,
-                expected_price=expected_price,
-                max_slippage=3.0,
-                original_outcome=bet.original_outcome,
-                market_type=bet.market,
-            )
-            if placement_result.get("status") != "placed":
-                print(f"  {label}FAILED*")
-                return placement_result
-            print(f"  {label}PLACED*")
-        except Exception as exc:
-            print(f"  {label}FAILED {exc}*")
-            return {"status": "failed", "bet_id": bet_id, "reason": str(exc)}
+    workflow = get_workflow(pid)
+    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
+    context = getattr(context, 'context', None) if context else None
+    page = await workflow.find_tab(context) if context else None
+
+    if page is None and workflow.mode.value == "autonomous":
+        print(f"  {label}FAILED no tab*")
+        return {"status": "failed", "bet_id": bet_id, "reason": "no_tab"}
+
+    if page:
+        result = await workflow.place_bet(page, bet, actual_stake)
     else:
-        # Non-Polymarket: user places manually in mirror browser
-        # The interceptor catches POST /bets/straight (Pinnacle) etc.
-        # and auto-records to DB + syncs balance
-        # "Confirm" here means "I placed this bet" — advance to next
-        print(f"  {label}MANUAL — place in mirror, interceptor records*")
-        placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": actual_stake}
+        from ..mirror.workflows.base import PlacementResult
+        result = PlacementResult(status="manual", bet_id=bet_id, actual_stake=actual_stake)
 
-    # For Polymarket: record bet + sync balance (we placed it)
-    # For manual providers: interceptor handles recording when it catches the API call
-    if placement_result.get("status") == "placed":
-        _record_bet(bet, pid, placement_result, actual_stake)
+    if result.status == "placed":
+        _record_bet(bet, pid, result.raw_response or {}, actual_stake)
         _sync_balance_after_bet(bet, pid)
+        print(f"  {label}PLACED*")
+    elif result.status == "manual":
+        print(f"  {label}MANUAL — place in mirror, interceptor records*")
+    else:
+        print(f"  {label}{result.status.upper()} {result.reason or ''}*")
 
-    return placement_result
+    return {
+        "status": result.status,
+        "bet_id": bet_id,
+        "provider_id": pid,
+        "stake": actual_stake,
+        "reason": result.reason,
+        **({"actual_odds": result.actual_odds} if result.actual_odds else {}),
+    }
 
 
 def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake: float | None = None) -> None:
@@ -812,8 +657,8 @@ async def fire_provider(mirror_service) -> dict:
 
     For each bet (sorted by edge desc):
     - Check balance
-    - For Polymarket: check live price, fire only if still +EV
-    - For others: use DB edge (no live check yet)
+    - Check live price via workflow (if supported)
+    - Fire only if still +EV
     - Print concise output per bet
     """
     if _window is None:
@@ -826,8 +671,6 @@ async def fire_provider(mirror_service) -> dict:
     _window.status = "firing"
 
     bets = _window.provider_bets.get(pid, [])
-
-    # Sort by edge descending — fire best bets first
     sorted_bets = sorted(bets, key=lambda b: -b.edge_pct)
 
     # Check balance
@@ -846,15 +689,22 @@ async def fire_provider(mirror_service) -> dict:
     excluded = []
     skipped_balance = []
 
+    # Get workflow + browser context once for the whole provider
+    workflow = get_workflow(pid)
+    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
+    context = getattr(context, 'context', None) if context else None
+    page = await workflow.find_tab(context) if context else None
+
     for bet in sorted_bets:
         label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
 
-        # Determine edge to use
-        if pid == "polymarket" and mirror_service is not None:
-            live_edge = await _check_live_price_poly(bet, mirror_service)
-            edge = live_edge if live_edge is not None else bet.edge_pct
-        else:
-            edge = bet.edge_pct
+        # Check live price via workflow if we have a page
+        edge = bet.edge_pct
+        if page is not None:
+            await workflow.navigate_to_event(page, bet)
+            live_edge = await workflow.check_live_price(page, bet)
+            if live_edge is not None:
+                edge = live_edge
 
         # Skip if not +EV
         if edge <= 0:
@@ -862,8 +712,9 @@ async def fire_provider(mirror_service) -> dict:
             excluded.append({"bet_id": bet.bet_id, "reason": "negative_edge"})
             continue
 
-        # Skip if insufficient balance
-        if remaining < bet.stake:
+        # Round stake and check balance
+        actual_stake = _round_stake(pid, min(bet.stake, remaining))
+        if actual_stake < _min_bet(pid):
             print(f"  {label}SKIP balance*")
             skipped_balance.append({"bet_id": bet.bet_id, "reason": "insufficient_balance"})
             continue
@@ -871,58 +722,33 @@ async def fire_provider(mirror_service) -> dict:
         # Fire the bet
         print(f"  {label}FIRE edge={edge:.1f}%*")
 
-        if pid == "polymarket" and mirror_service is not None:
-            poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-            page = poly_tabs.get(bet.market_slug)
-            if page is None:
-                failed.append({"bet_id": bet.bet_id, "reason": "no_tab"})
-                continue
+        if page is not None:
             try:
-                # Use live price if available, otherwise DB odds
-                expected_price = 1 / bet.odds
-                if pid == "polymarket":
-                    # Re-read price for placement slippage check
-                    live_edge_val = await _check_live_price_poly(bet, mirror_service)
-                    if live_edge_val is not None:
-                        # Derive price from edge: edge = (live_odds/fair - 1)*100
-                        # We already have the page open, just use bet.odds as fallback
-                        pass
-
-                result = await mirror_service._place_single_polymarket_bet(
-                    page=page,
-                    bet_id=bet.bet_id,
-                    slug=bet.market_slug,
-                    outcome=bet.poly_outcome or bet.outcome,
-                        amount=actual_stake,
-                    expected_price=expected_price,
-                    max_slippage=3.0,
-                    original_outcome=bet.original_outcome,
-                    market_type=bet.market,
-                )
-                if result.get("status") == "placed":
-                    placed.append(result)
-                    remaining -= bet.stake
+                result = await workflow.place_bet(page, bet, actual_stake)
+                if result.status == "placed":
+                    placed.append({"bet_id": bet.bet_id, "status": "placed", "provider_id": pid, "stake": actual_stake})
+                    _record_bet(bet, pid, result.raw_response or {}, actual_stake)
+                    _sync_balance_after_bet(bet, pid)
+                    remaining -= actual_stake
+                elif result.status == "manual":
+                    placed.append({"bet_id": bet.bet_id, "status": "manual", "provider_id": pid, "stake": actual_stake})
+                    remaining -= actual_stake
                 else:
-                    failed.append(result)
+                    failed.append({"bet_id": bet.bet_id, "reason": result.reason or result.status})
             except Exception as exc:
                 logger.exception("Placement failed for bet %s", bet.bet_id)
                 failed.append({"bet_id": bet.bet_id, "reason": str(exc)})
         else:
-            # Non-Polymarket providers: manual placement
-            placed.append({
-                "bet_id": bet.bet_id,
-                "status": "manual",
-                "provider_id": pid,
-                "stake": bet.stake,
-            })
-            remaining -= bet.stake
+            # No browser tab — manual placement
+            placed.append({"bet_id": bet.bet_id, "status": "manual", "provider_id": pid, "stake": actual_stake})
+            remaining -= actual_stake
 
-    # Close Polymarket tabs after all bets
-    if pid == "polymarket" and mirror_service is not None:
+    # Cleanup (e.g. close Polymarket tabs)
+    if page is not None:
         try:
-            await mirror_service.close_poly_tabs()
+            await workflow.cleanup(page)
         except Exception:
-            logger.debug("Failed to close poly tabs", exc_info=True)
+            logger.debug("Workflow cleanup failed", exc_info=True)
 
     fire_result = {
         "provider_id": pid,
