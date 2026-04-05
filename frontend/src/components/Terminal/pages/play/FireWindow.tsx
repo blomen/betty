@@ -133,6 +133,14 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
       try {
         const check = await fireWindowApi.checkBet(next.bet_id);
         setPriceCheck(check);
+        // Auto-skip negative edge bets
+        if (check.live_edge != null && check.live_edge <= 0) {
+          setChecking(false);
+          await fireWindowApi.skipBet(next.bet_id);
+          setSkippedCount(prev => prev + 1);
+          fetchNextBet(providerId);
+          return;
+        }
       } catch { /* show with DB odds */ }
       setChecking(false);
     } catch (err: any) {
@@ -257,12 +265,17 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
                   </div>
                 </td>
                 <td className="text-text text-sm">
-                  {bet.display_home} [{bet.market.toUpperCase()}]
-                  {bet.point != null && <span className="text-muted ml-1">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
+                  <span className="text-amber-400">{bet.outcome === 'home' ? bet.display_home : bet.outcome === 'away' ? bet.display_away : bet.outcome}</span>
+                  <span className="text-muted ml-1">[{bet.market.toUpperCase()}]</span>
+                  {bet.point != null && <span className="text-text font-medium ml-1">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
                 </td>
                 <td className="text-right text-sm font-medium">
                   {liveCents != null ? (
-                    <><span className="text-text">{(100 / liveCents).toFixed(2)}</span> <span className="text-muted text-xs">({liveCents}¢)</span></>
+                    <>
+                      <span className={liveCents !== bet.cents ? 'text-amber-400' : 'text-text'}>{(100 / liveCents).toFixed(2)}</span>
+                      <span className="text-muted text-xs"> ({liveCents}¢)</span>
+                      {liveCents !== bet.cents && <span className="text-muted text-[10px] ml-1">db {bet.cents}¢</span>}
+                    </>
                   ) : (
                     <><span className="text-text">{bet.odds.toFixed(2)}</span> <span className="text-muted text-xs">({bet.cents}¢)</span></>
                   )}

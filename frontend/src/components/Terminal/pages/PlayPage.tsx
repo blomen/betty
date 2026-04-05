@@ -33,11 +33,12 @@ export function PlayPage() {
   // Snapshot of batch at fire time
   const [fireBatch, setFireBatch] = useState<any[] | null>(null);
 
-  // Check pending bets on mount to decide initial step
+  // Check for resolved (settleable) bets on mount — only show settle if events finished
   useEffect(() => {
-    api.getPendingBets()
+    fetch('/api/opportunities/play/settle-scan')
+      .then(r => r.json())
       .then((res) => {
-        const count = res.total_pending ?? 0;
+        const count = res.count ?? 0;
         setPendingCount(count);
         setStep(count > 0 ? 'settle' : 'batch');
       })
@@ -78,8 +79,9 @@ export function PlayPage() {
 
   const handleFire = useCallback(() => {
     if (!batchData) return;
-    // Send all bets — fire window streams all odds, fires what balance allows
-    setFireBatch(batchData.batch);
+    // Only send funded bets to fire window
+    const funded = batchData.batch.filter((b: any) => b.funded !== false);
+    setFireBatch(funded);
     setStep('execute');
   }, [batchData]);
 

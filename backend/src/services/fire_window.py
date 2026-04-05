@@ -329,17 +329,31 @@ def get_live_state() -> dict:
 
 async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional[float]:
     """Single DOM scrape for one bet. Returns live edge % or None."""
+    import asyncio as _aio
+
     poly_tabs = getattr(mirror_service, "_poly_tabs", {})
     page = poly_tabs.get(bet.market_slug)
     if page is None:
         return None
 
     try:
-        buttons = await mirror_service._read_btn_prices(page)
-        matched = mirror_service._find_btn_for_market(
-            buttons, bet.outcome, bet.market,
-            home_name=bet.display_home, away_name=bet.display_away,
-        )
+        # Wait for trading buttons to render (page may have just opened)
+        try:
+            await page.wait_for_selector('button.trading-button', timeout=10000)
+        except Exception:
+            pass  # Buttons might already be there or timeout — try reading anyway
+
+        # Retry up to 3 times with short delay (buttons may load after DOM ready)
+        for attempt in range(3):
+            buttons = await mirror_service._read_btn_prices(page)
+            matched = mirror_service._find_btn_for_market(
+                buttons, bet.outcome, bet.market,
+                home_name=bet.display_home, away_name=bet.display_away,
+            )
+            if matched and matched.get("price"):
+                break
+            await _aio.sleep(1)
+
         if not matched:
             return None
 
@@ -348,7 +362,10 @@ async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional
             return None
 
         live_odds = round(1 / price, 4)
-        return compute_edge("polymarket", live_odds, bet.fair_odds)
+        edge = compute_edge("polymarket", live_odds, bet.fair_odds)
+        # Store live cents on the bet object for check_bet to read
+        bet._live_cents = round(price * 100)
+        return edge
     except Exception:
         logger.debug("Price read failed for bet %s", bet.bet_id, exc_info=True)
         return None
@@ -372,11 +389,33 @@ def get_next_bet() -> dict:
     bets = _window.provider_bets.get(pid, [])
     fired_ids = _window.fired_results.get(f"{pid}_bet_ids", set())
 
+    # Also check DB for already-placed bets (survives restart)
+    already_placed: set[str] = set()
+    try:
+        db = get_session()
+        existing = (
+            db.query(Bet.event_id, Bet.market, Bet.outcome)
+            .filter(Bet.provider_id == pid, Bet.result == "pending")
+            .all()
+        )
+        for row in existing:
+            already_placed.add(f"{row.event_id}:{row.market}:{row.outcome}")
+        db.close()
+        print(f"[FireWindow] Already placed: {len(already_placed)} bets for {pid}")
+        for k in already_placed:
+            print(f"  - {k}")
+    except Exception as e:
+        print(f"[FireWindow] DB check failed: {e}")
+
     # Sort by edge desc, find first unfired
     for bet in sorted(bets, key=lambda b: -b.edge_pct):
         if bet.bet_id in fired_ids:
             continue
         if bet.edge_pct <= 0:
+            continue
+        # Skip if already placed in DB
+        bet_key = f"{bet.event_id}:{bet.market}:{bet.outcome}"
+        if bet_key in already_placed:
             continue
 
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
@@ -428,21 +467,7 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
 
     if pid == "polymarket" and mirror_service is not None:
         live_edge = await _check_live_price_poly(bet, mirror_service)
-        if live_edge is not None:
-            # Derive live cents from the matched button
-            poly_tabs = getattr(mirror_service, "_poly_tabs", {})
-            page = poly_tabs.get(bet.market_slug)
-            if page:
-                try:
-                    buttons = await mirror_service._read_btn_prices(page)
-                    matched = mirror_service._find_btn_for_market(
-                        buttons, bet.outcome, bet.market,
-                        home_name=bet.display_home, away_name=bet.display_away,
-                    )
-                    if matched and matched.get("price"):
-                        live_cents = round(matched["price"] * 100)
-                except Exception:
-                    pass
+        live_cents = getattr(bet, '_live_cents', None)
 
     db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
     fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
