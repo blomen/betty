@@ -88,7 +88,7 @@ class BetInterceptor:
         "10bet.se": "10bet", "mrgreen.se": "mrgreen",
         "betmgm.se": "betmgm", "vbet.se": "vbet",
         "interwetten.se": "interwetten", "coolbet.com": "coolbet",
-        "tipwin.se": "tipwin", "pinnacle.com": "pinnacle",
+        "tipwin.se": "tipwin", "pinnacle.com": "pinnacle", "pinnacle.se": "pinnacle",
         "polymarket.com": "polymarket",
     }
 

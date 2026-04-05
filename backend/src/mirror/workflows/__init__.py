@@ -68,7 +68,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
 
     if provider is None:
         if provider_id in _PLATFORM_MAP:
-            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.com"}.get(provider_id, "")
+            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
             return _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
         from .manual import ManualWorkflow
         return ManualWorkflow(provider_id=provider_id, domain="")

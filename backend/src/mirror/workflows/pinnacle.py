@@ -41,7 +41,7 @@ _MARKET_KEY_MAP = {
 class PinnacleWorkflow(ProviderWorkflow):
     platform = "pinnacle"
 
-    def __init__(self, provider_id: str = "pinnacle", domain: str = "pinnacle.com",
+    def __init__(self, provider_id: str = "pinnacle", domain: str = "pinnacle.se",
                  mode: WorkflowMode = WorkflowMode.GUIDED):
         super().__init__(provider_id, domain, mode)
 
