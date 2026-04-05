@@ -1871,38 +1871,52 @@ class MirrorService:
         except Exception:
             await asyncio.sleep(5)  # Fallback wait
 
-        # 2. Click the outcome's trading-button on the market card
-        # Buttons use abbreviations (e.g. "juv27¢") not full team names.
-        # Strategy: use positional index based on outcome type:
-        #   1x2:        home=0, draw=1, away=2
-        #   moneyline:  home=0, away=1
-        #   spread/total: home=0, away=1 (or over=0, under=1)
+        # 2. Click the correct outcome button by matching team name in text
+        # Cannot use index — page has duplicate trading-button sets (order panel + chart)
         outcome_lower = (original_outcome or outcome).lower()
-        try:
-            if outcome_lower in ("home", "over"):
-                btn_index = 0
-            elif outcome_lower == "draw":
-                btn_index = 1
-            elif outcome_lower in ("away", "under"):
-                # For 1x2 away is index 2, for moneyline it's index 1
-                btn_index = 2 if market_type == "1x2" else 1
-            else:
-                btn_index = 0  # fallback
 
+        # Determine which team name to match
+        home_name = ""
+        away_name = ""
+        # Try to get display names from the bet's context
+        bets = _window.provider_bets.get("polymarket", []) if _window else []
+        for b in bets:
+            if b.bet_id == bet_id:
+                home_name = b.display_home
+                away_name = b.display_away
+                break
+
+        if outcome_lower in ("home", "over"):
+            target = home_name.lower()[:3] if home_name else ""
+        elif outcome_lower in ("away", "under"):
+            target = away_name.lower()[:3] if away_name else ""
+        elif outcome_lower == "draw":
+            target = "draw"
+        else:
+            target = outcome.lower()[:3]
+
+        try:
+            # Highlight the target button with a border, then click it
             clicked = await page.evaluate(
-                "(idx) => {"
-                "  const btns = document.querySelectorAll('button.trading-button');"
-                "  if (idx < btns.length) {"
-                "    btns[idx].click();"
-                "    return btns[idx].textContent.trim().slice(0, 40);"
+                "(target) => {"
+                "  const btns = [...document.querySelectorAll('button.trading-button')];"
+                "  for (const btn of btns) {"
+                "    const text = (btn.textContent || '').toLowerCase();"
+                "    if (target && text.includes(target)) {"
+                "      btn.style.outline = '3px solid #00ff00';"
+                "      btn.style.outlineOffset = '2px';"
+                "      btn.scrollIntoView({block: 'center'});"
+                "      btn.click();"
+                "      return btn.textContent.trim().slice(0, 40);"
+                "    }"
                 "  }"
                 "  return null;"
                 "}",
-                btn_index,
+                target,
             )
             if not clicked:
-                return {"bet_id": bet_id, "status": "failed", "reason": f"No trading button at index {btn_index} for '{outcome}'"}
-            logger.info(f"[mirror] Clicked outcome button #{btn_index}: '{clicked}' for bet {bet_id}")
+                return {"bet_id": bet_id, "status": "failed", "reason": f"No button matching '{target}' for '{outcome}'"}
+            logger.info(f"[mirror] Clicked outcome button: '{clicked}' (target='{target}') for bet {bet_id}")
             await asyncio.sleep(1)
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click outcome: {e}"}

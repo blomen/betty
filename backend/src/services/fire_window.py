@@ -440,8 +440,12 @@ def get_next_bet() -> dict:
         if balance < min_bet:
             continue  # Balance too low — skip to next or done
 
-        # Adjust stake to remaining balance if needed
+        # Adjust stake to remaining balance, round down to avoid exceeding
         actual_stake = min(bet.stake, balance)
+        if pid == "polymarket":
+            actual_stake = float(int(actual_stake))
+        else:
+            actual_stake = float(int(actual_stake / 10) * 10)
         actual_profit = actual_stake * (bet.edge_pct / 100)
 
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
@@ -543,6 +547,11 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         pass
 
     actual_stake = min(bet.stake, balance)
+    # Round down to avoid exceeding balance after fees
+    if pid == "polymarket":
+        actual_stake = float(int(actual_stake))  # Round down to whole dollar
+    else:
+        actual_stake = float(int(actual_stake / 10) * 10)  # Round down to nearest 10 kr
     min_bet = 1.0 if pid == "polymarket" else 10.0
     if actual_stake < min_bet:
         return {"status": "skipped", "bet_id": bet_id, "reason": "insufficient_balance"}
@@ -562,7 +571,7 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
                 bet_id=bet.bet_id,
                 slug=bet.market_slug,
                 outcome=bet.poly_outcome or bet.outcome,
-                amount=bet.stake,
+                    amount=actual_stake,
                 expected_price=expected_price,
                 max_slippage=3.0,
                 original_outcome=bet.original_outcome,
@@ -578,7 +587,7 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
     else:
         # Non-Polymarket: user places manually, we record it
         print(f"  {label}MANUAL*")
-        placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": bet.stake}
+        placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": actual_stake}
 
     # Record bet in DB (with adjusted stake)
     _record_bet(bet, pid, placement_result, actual_stake)
@@ -741,7 +750,7 @@ async def fire_provider(mirror_service) -> dict:
                     bet_id=bet.bet_id,
                     slug=bet.market_slug,
                     outcome=bet.poly_outcome or bet.outcome,
-                    amount=actual_stake,
+                        amount=actual_stake,
                     expected_price=expected_price,
                     max_slippage=3.0,
                     original_outcome=bet.original_outcome,
