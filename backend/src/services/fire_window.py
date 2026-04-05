@@ -43,6 +43,7 @@ class FireWindowBet:
     market_slug: str | None = None
     poly_outcome: str | None = None
     original_outcome: str | None = None
+    matchup_id: str | None = None  # Pinnacle event ID for URL navigation
 
 
 @dataclass
@@ -119,6 +120,31 @@ def open_window(
                     bet.display_home = meta["poly_home"]
                 if meta.get("poly_away"):
                     bet.display_away = meta["poly_away"]
+
+    # Resolve Pinnacle matchup IDs for event navigation
+    if "pinnacle" in provider_bets:
+        pin_event_ids = list({b.event_id for b in provider_bets["pinnacle"]})
+        if pin_event_ids:
+            db = get_session()
+            try:
+                rows = (
+                    db.query(Odds)
+                    .filter(
+                        Odds.provider_id == "pinnacle",
+                        Odds.event_id.in_(pin_event_ids),
+                    )
+                    .all()
+                )
+                matchup_map: dict[str, str] = {}
+                for row in rows:
+                    meta = row.provider_meta or {}
+                    mid = meta.get("matchup_id")
+                    if mid and row.event_id not in matchup_map:
+                        matchup_map[row.event_id] = str(mid)
+                for bet in provider_bets["pinnacle"]:
+                    bet.matchup_id = matchup_map.get(bet.event_id)
+            finally:
+                db.close()
 
     # Build provider order
     if provider_order is None:
@@ -476,6 +502,7 @@ def get_next_bet() -> dict:
             "cents": cents,
             "fair_cents": fair_cents,
             "remaining_bets": remaining,
+            "matchup_id": bet.matchup_id,
             "done": False,
         }
 
@@ -499,6 +526,24 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     if pid == "polymarket" and mirror_service is not None:
         live_edge = await _check_live_price_poly(bet, mirror_service)
         live_cents = getattr(bet, '_live_cents', None)
+    elif pid == "pinnacle" and mirror_service is not None and bet.matchup_id:
+        # Navigate Pinnacle tab to the event page
+        context = getattr(mirror_service, 'interceptor', None)
+        context = getattr(context, 'context', None) if context else None
+        if context:
+            pin_url = f"https://www.pinnacle.com/en/sports/matchup/{bet.matchup_id}"
+            # Find or create Pinnacle tab
+            pin_page = None
+            for p in context.pages:
+                if 'pinnacle' in (p.url or ''):
+                    pin_page = p
+                    break
+            if pin_page:
+                try:
+                    await pin_page.goto(pin_url, wait_until="domcontentloaded", timeout=15000)
+                    print(f"  [Pinnacle] Navigated to {pin_url}")
+                except Exception:
+                    pass
 
     db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
     fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
