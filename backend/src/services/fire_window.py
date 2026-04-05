@@ -397,6 +397,70 @@ async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional
         return None
 
 
+async def _check_live_price_pinnacle(page, bet) -> float | None:
+    """Read live odds from Pinnacle search results page.
+
+    Pinnacle search shows a table with team names and odds.
+    Returns live edge percentage, or None if can't read.
+    """
+    try:
+        # Read all odds cells from the search results
+        odds_data = await page.evaluate("""
+            () => {
+                const results = [];
+                // Find all rows in the results table
+                const rows = document.querySelectorAll('tr, [class*="row"], [class*="matchup"]');
+                for (const row of rows) {
+                    const text = row.textContent || '';
+                    // Extract all decimal odds (1.xxx to 999.xxx)
+                    const odds = [...text.matchAll(/(\\d{1,3}\\.\\d{2,3})/g)].map(m => parseFloat(m[1]));
+                    if (odds.length >= 2) {
+                        results.push({ text: text.slice(0, 200), odds });
+                    }
+                }
+                return results;
+            }
+        """)
+
+        if not odds_data:
+            return None
+
+        # Find the row containing our event (match team names)
+        target_home = bet.display_home.lower()[:4] if bet.display_home else ""
+        target_away = bet.display_away.lower()[:4] if bet.display_away else ""
+
+        for row in odds_data:
+            row_text = row["text"].lower()
+            if target_home in row_text and target_away in row_text:
+                odds_list = row["odds"]
+                # For 1X2: home=0, draw=1, away=2
+                # For moneyline: home=0, away=1
+                if bet.outcome == "home" and len(odds_list) >= 1:
+                    live_odds = odds_list[0]
+                elif bet.outcome == "draw" and len(odds_list) >= 2:
+                    live_odds = odds_list[1]
+                elif bet.outcome == "away":
+                    if bet.market == "1x2" and len(odds_list) >= 3:
+                        live_odds = odds_list[2]
+                    elif len(odds_list) >= 2:
+                        live_odds = odds_list[-1]
+                    else:
+                        continue
+                else:
+                    continue
+
+                if live_odds > 1:
+                    edge = compute_edge(bet.provider_id, live_odds, bet.fair_odds)
+                    logger.info(f"[FireWindow] pinnacle live: {bet.display_home} vs {bet.display_away} "
+                                f"{bet.outcome} @ {live_odds} (db {bet.odds:.2f}) edge={edge:.1f}%")
+                    return edge
+
+        return None
+    except Exception:
+        logger.debug("Pinnacle price read failed", exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Single-bet flow: check → confirm → next
 # ---------------------------------------------------------------------------
@@ -556,6 +620,16 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
                     try:
                         await target_page.goto(event_url, wait_until="domcontentloaded", timeout=15000)
                         logger.info(f"[FireWindow] {pid}: navigated to {event_url}")
+
+                        # Read live odds from Pinnacle page
+                        if pid == "pinnacle":
+                            import asyncio as _aio
+                            await _aio.sleep(2)  # Wait for odds to render
+                            pin_edge = await _check_live_price_pinnacle(
+                                target_page, bet
+                            )
+                            if pin_edge is not None:
+                                live_edge = pin_edge
                     except Exception as e:
                         logger.warning(f"[FireWindow] {pid}: navigation failed: {e}")
                 else:
