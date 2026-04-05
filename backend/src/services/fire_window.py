@@ -332,10 +332,16 @@ async def open_needed_tabs(mirror_service) -> dict:
     finally:
         db.close()
 
-    # Determine which providers need a tab
+    # Providers with ANY pending bets (need settlement check regardless of start_time)
+    providers_with_pending = {bet.provider_id for bet in pending}
+
+    # Determine which providers need a tab:
+    # 1. Has balance + in queue (can place bets)
+    # 2. Has expired pending bets (need settlement)
+    # 3. Has ANY pending bets (need settlement check — FIRST PRIORITY)
     queue_pids = set(_window.provider_queue) if _window else set()
     providers_with_balance = {pid for pid, bal in balances.items() if bal >= 10 and pid in queue_pids}
-    all_needing_tab = providers_with_balance | providers_needing_settle
+    all_needing_tab = providers_with_balance | providers_needing_settle | providers_with_pending
 
     logger.info(
         f"[FireWindow] Tabs needed: {len(all_needing_tab)} "
