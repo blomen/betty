@@ -42,63 +42,6 @@ async def open_fire_window(request: OpenRequest):
     return result
 
 
-@router.post("/open-tabs")
-async def open_provider_tabs():
-    """Open mirror browser tabs for all providers in the fire window queue."""
-    window = fw.get_window()
-    if not window:
-        raise HTTPException(400, "No fire window open")
-
-    mirror = _get_active_mirror()
-    if not mirror:
-        raise HTTPException(400, "No mirror running")
-
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
-    if not context:
-        raise HTTPException(400, "No browser context")
-
-    from ...config.loader import load_config
-    from ...repositories.profile_repo import ProfileRepo
-    from ...db.models import get_session
-    from ...mirror.workflows import get_workflow
-
-    cfg = load_config()
-    db = get_session()
-    try:
-        repo = ProfileRepo(db)
-        profile = repo.get_active()
-        balances = repo.get_all_balances(profile.id) if profile else {}
-    finally:
-        db.close()
-
-    opened = []
-    for pid in window.provider_queue:
-        if balances.get(pid, 0) < 10:
-            continue
-
-        workflow = get_workflow(pid)
-        # Build URL from workflow domain or provider config
-        if workflow.domain:
-            url = f"https://www.{workflow.domain}"
-        else:
-            pconfig = cfg.get_provider(pid)
-            if pconfig:
-                url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
-            else:
-                url = None
-        if not url:
-            continue
-
-        try:
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            opened.append(pid)
-        except Exception as e:
-            logger.warning(f"Failed to open tab for {pid}: {e}")
-
-    return {"opened": opened, "count": len(opened)}
-
 
 @router.post("/activate/{provider_id}")
 async def activate_provider(provider_id: str):
