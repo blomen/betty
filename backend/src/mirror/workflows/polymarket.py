@@ -282,37 +282,64 @@ class PolymarketWorkflow(ProviderWorkflow):
         return positions
 
     async def redeem_all(self, page: "Page") -> dict:
-        """Click all 'Redeem' buttons on the portfolio page to free cash.
+        """Click Redeem buttons ONLY for finished positions (WON or LOST).
 
-        Returns {redeemed: count, errors: count}.
+        NEVER clicks Sell on open positions — that would exit at market price.
+        Only redeems positions where the row text contains 'Won' or 'Lost'.
+
+        Returns {redeemed: count, skipped_open: count, errors: count}.
         """
         if '/portfolio' not in (page.url or ''):
             await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(3)
 
-        # Find all Redeem buttons and click them one by one
         redeemed = 0
+        skipped_open = 0
         errors = 0
 
-        # Count redeem buttons first
+        # Count ONLY Redeem buttons that are in finished (Won/Lost) rows
         count = await page.evaluate("""() => {
             const btns = document.querySelectorAll('button');
             let n = 0;
             for (const btn of btns) {
-                if (btn.textContent.trim() === 'Redeem') n++;
+                if (btn.textContent.trim() !== 'Redeem') continue;
+                // Walk up to find the row and check for Won/Lost text
+                let parent = btn.parentElement;
+                for (let i = 0; i < 8 && parent; i++) {
+                    const text = parent.textContent || '';
+                    if (text.includes('Won') || text.includes('Lost') ||
+                        text.includes('WON') || text.includes('LOST')) {
+                        n++;
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
             }
             return n;
         }""")
 
-        logger.info(f"[polymarket] Found {count} Redeem buttons")
+        logger.info(f"[polymarket] Found {count} redeemable finished positions")
 
         for i in range(count):
             try:
-                # Click the first visible "Redeem" button in the position row
+                # Click the first Redeem button that's in a finished (Won/Lost) row
                 clicked = await page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
                     for (const btn of btns) {
-                        if (btn.textContent.trim() === 'Redeem') {
+                        if (btn.textContent.trim() !== 'Redeem') continue;
+                        // Verify this is a finished position
+                        let parent = btn.parentElement;
+                        let isFinished = false;
+                        for (let i = 0; i < 8 && parent; i++) {
+                            const text = parent.textContent || '';
+                            if (text.includes('Won') || text.includes('Lost') ||
+                                text.includes('WON') || text.includes('LOST')) {
+                                isFinished = true;
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
+                        if (isFinished) {
                             btn.click();
                             return true;
                         }
@@ -355,7 +382,7 @@ class PolymarketWorkflow(ProviderWorkflow):
                 logger.warning(f"[polymarket] Redeem {i + 1} failed: {e}")
                 errors += 1
 
-        return {"redeemed": redeemed, "errors": errors, "total": count}
+        return {"redeemed": redeemed, "skipped_open": skipped_open, "errors": errors, "total": count}
 
     # ------------------------------------------------------------------
     # Cleanup
