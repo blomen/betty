@@ -239,35 +239,42 @@ async def polymarket_portfolio():
     if not page:
         raise HTTPException(400, "No Polymarket tab open")
 
+    page_url = page.url
     try:
         positions = await workflow.scrape_portfolio(page)
     except Exception as e:
         logger.exception(f"[polymarket] Portfolio scrape failed: {e}")
-        return {"positions": [], "error": str(e)}
+        return {"positions": [], "error": str(e), "page_url": page_url}
 
     # Match against pending bets in DB
-    from ...db.models import Bet, get_session
-    from ...repositories.profile_repo import ProfileRepo
-    db = get_session()
+    pending_count = 0
+    pending_stake = 0.0
     try:
-        repo = ProfileRepo(db)
-        profile = repo.get_active()
-        pending = db.query(Bet).filter(
-            Bet.profile_id == profile.id,
-            Bet.provider_id == "polymarket",
-            Bet.result == "pending",
-        ).all() if profile else []
-
-        return {
-            "positions": positions,
-            "pending_bets": len(pending),
-            "pending_stake": round(sum(b.stake for b in pending), 2),
-            "page_url": page.url,
-        }
+        from ...db.models import Bet, get_session
+        from ...repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            repo = ProfileRepo(db)
+            profile = repo.get_active()
+            if profile:
+                pending = db.query(Bet).filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                ).all()
+                pending_count = len(pending)
+                pending_stake = round(sum(b.stake for b in pending), 2)
+        finally:
+            db.close()
     except Exception as e:
-        return {"positions": positions, "error": str(e), "page_url": page.url}
-    finally:
-        db.close()
+        logger.warning(f"[polymarket] DB query failed: {e}")
+
+    return {
+        "positions": positions,
+        "pending_bets": pending_count,
+        "pending_stake": pending_stake,
+        "page_url": page_url,
+    }
 
 
 @router.post("/polymarket/redeem")
