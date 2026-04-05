@@ -190,3 +190,20 @@ async def close_fire_window():
 def get_summary():
     """Get summary of all fired providers."""
     return fw.get_fired_summary()
+
+
+@router.post("/settle-check")
+async def settle_check():
+    """Check ALL providers for pending bets that need settlement.
+
+    Returns a breakdown per provider with each bet's outcome and P&L.
+    User reviews this before confirming settlements.
+    """
+    mirror = _get_active_mirror()
+    return await fw.check_settlements(mirror)
+
+
+@router.post("/settle-confirm")
+async def settle_confirm():
+    """Confirm and apply the staged settlements."""
+    return fw.apply_settlements()

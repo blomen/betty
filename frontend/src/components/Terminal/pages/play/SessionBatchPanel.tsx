@@ -117,11 +117,10 @@ export function SessionBatchPanel({ batch, summary, providerBalances, onRemoveBe
   useEffect(() => {
     if (tabsOpenedRef.current || batch.length === 0) return;
     tabsOpenedRef.current = true;
-    // Open fire window first (needed for open-tabs), then open tabs
+    // Open fire window — tabs are opened per-provider on activate
     (async () => {
       try {
         await fireWindowApi.open(batch);
-        await fireWindowApi.openTabs();
       } catch { /* non-critical */ }
     })();
   }, [batch]);

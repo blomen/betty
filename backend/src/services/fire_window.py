@@ -1066,3 +1066,184 @@ def close_window() -> None:
 def get_window() -> FireWindow | None:
     """Return the current FireWindow singleton (or None)."""
     return _window
+
+
+# ---------------------------------------------------------------------------
+# Settlement — check and apply across all providers
+# ---------------------------------------------------------------------------
+
+# Staged settlements awaiting user confirmation
+_pending_settlements: list[dict] = []
+
+
+async def check_settlements(mirror_service) -> dict:
+    """Check ALL providers for pending bets that need settlement.
+
+    Returns a breakdown with each bet's outcome and P&L for user review.
+    """
+    global _pending_settlements
+    from ..db.models import Bet, Event
+    from ..repositories.profile_repo import ProfileRepo
+
+    db = get_session()
+    staged: list[dict] = []
+    now = datetime.now(timezone.utc)
+
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+        if not profile:
+            return {"error": "no active profile"}
+
+        pending = (
+            db.query(Bet)
+            .filter(Bet.profile_id == profile.id, Bet.result == "pending")
+            .all()
+        )
+
+        if not pending:
+            return {"settlements": [], "summary": {"total": 0}}
+
+        # Group by provider
+        by_provider: dict[str, list] = {}
+        for bet in pending:
+            by_provider.setdefault(bet.provider_id, []).append(bet)
+
+        # Check Polymarket via Gamma API (existing logic in MirrorService)
+        if "polymarket" in by_provider and mirror_service:
+            try:
+                poly_settled = mirror_service.settle_polymarket_bets()
+                staged.extend(poly_settled)
+            except Exception as e:
+                logger.warning(f"[settle] Polymarket settlement check failed: {e}")
+
+        # Check Pinnacle via bet history API
+        if "pinnacle" in by_provider and mirror_service:
+            try:
+                workflow = get_workflow("pinnacle")
+                context = getattr(mirror_service, 'interceptor', None)
+                context = getattr(context, 'context', None) if context else None
+                if context:
+                    page = await workflow.find_tab(context)
+                    if page:
+                        history = await workflow.sync_history(page)
+                        for entry in history:
+                            if entry.status in ("won", "lost", "void"):
+                                # Find matching pending bet
+                                for bet in by_provider.get("pinnacle", []):
+                                    if bet.odds == entry.odds and bet.stake == entry.stake and bet.result == "pending":
+                                        payout = entry.payout or 0
+                                        event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                                        event_name = f"{event.home_team} vs {event.away_team}" if event else bet.event_id
+                                        staged.append({
+                                            "bet_id": bet.id,
+                                            "provider": "pinnacle",
+                                            "event": event_name,
+                                            "market": bet.market,
+                                            "outcome": bet.outcome,
+                                            "odds": bet.odds,
+                                            "stake": bet.stake,
+                                            "result": entry.status,
+                                            "payout": round(payout, 2),
+                                            "pl": round(payout - bet.stake, 2),
+                                        })
+                                        break
+            except Exception as e:
+                logger.warning(f"[settle] Pinnacle settlement check failed: {e}")
+
+        # For other providers: flag expired events (start_time passed) as needing manual check
+        for pid, bets in by_provider.items():
+            if pid in ("polymarket", "pinnacle"):
+                continue  # Already handled above
+            for bet in bets:
+                start = getattr(bet, 'start_time', None)
+                if not start:
+                    event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                    start = getattr(event, 'start_time', None) if event else None
+                if start and start < now:
+                    event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                    event_name = f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id
+                    staged.append({
+                        "bet_id": bet.id,
+                        "provider": pid,
+                        "event": event_name,
+                        "market": bet.market,
+                        "outcome": bet.outcome,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": "expired",  # Needs manual check
+                        "payout": None,
+                        "pl": None,
+                    })
+
+    except Exception as e:
+        logger.error(f"[settle] check_settlements failed: {e}", exc_info=True)
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+    _pending_settlements = staged
+
+    # Build summary
+    wins = [s for s in staged if s["result"] == "won"]
+    losses = [s for s in staged if s["result"] == "lost"]
+    expired = [s for s in staged if s["result"] == "expired"]
+    total_staked = sum(s["stake"] for s in staged if s["result"] in ("won", "lost"))
+    total_payout = sum(s.get("payout") or 0 for s in staged if s["result"] in ("won", "lost"))
+
+    return {
+        "settlements": staged,
+        "summary": {
+            "total": len(staged),
+            "wins": len(wins),
+            "losses": len(losses),
+            "expired_needs_check": len(expired),
+            "total_staked": round(total_staked, 2),
+            "total_payout": round(total_payout, 2),
+            "net_pl": round(total_payout - total_staked, 2),
+        },
+    }
+
+
+def apply_settlements() -> dict:
+    """Apply staged settlements — update bet results in DB and sync balances."""
+    global _pending_settlements
+
+    if not _pending_settlements:
+        return {"error": "no pending settlements"}
+
+    from ..db.models import Bet
+    from ..repositories.profile_repo import ProfileRepo
+
+    db = get_session()
+    applied = 0
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+
+        for s in _pending_settlements:
+            if s["result"] in ("won", "lost", "void"):
+                bet = db.query(Bet).filter(Bet.id == s["bet_id"]).first()
+                if bet and bet.result == "pending":
+                    bet.result = s["result"]
+                    if s.get("payout") is not None:
+                        bet.payout = s["payout"]
+                    applied += 1
+                    logger.info(f"[settle] Applied: #{s['bet_id']} {s['provider']} → {s['result']} (P&L: {s.get('pl')})")
+
+                    # Sync balance: add payout back
+                    if s["result"] == "won" and s.get("payout") and profile:
+                        cur = repo.get_balance(profile.id, s["provider"])
+                        repo.set_balance(profile.id, s["provider"], cur + s["payout"])
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[settle] apply_settlements failed: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+    result = {"applied": applied, "total": len(_pending_settlements)}
+    _pending_settlements = []
+    return result

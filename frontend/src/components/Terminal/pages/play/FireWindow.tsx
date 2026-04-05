@@ -88,8 +88,7 @@ export function FireWindow({ batch, wageringProjections: _wp, onComplete, onBack
         const res = await fireWindowApi.open(batch);
         if (cancelled) return;
         setQueue(res.queue);
-        // Auto-open tabs for all providers in the queue
-        fireWindowApi.openTabs().catch(() => {});
+        // Tabs are opened per-provider on activate — not here
       } catch (err: any) {
         if (!cancelled) setError(err.message || 'Failed to open fire window');
       }
