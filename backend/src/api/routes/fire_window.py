@@ -32,8 +32,12 @@ async def open_fire_window(request: OpenRequest):
     # Auto-open tabs for providers that need action
     mirror = _get_active_mirror()
     if mirror:
-        tabs_result = await fw.open_needed_tabs(mirror)
-        result["tabs"] = tabs_result
+        try:
+            tabs_result = await fw.open_needed_tabs(mirror)
+            result["tabs"] = tabs_result
+        except Exception as e:
+            logger.exception(f"[open] open_needed_tabs failed: {e}")
+            result["tabs"] = {"error": str(e)}
 
     return result
 

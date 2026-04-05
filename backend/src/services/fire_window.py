@@ -317,8 +317,12 @@ async def open_needed_tabs(mirror_service) -> dict:
             if not start:
                 event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                 start = getattr(event, 'start_time', None) if event else None
-            if start and start < now:
-                providers_needing_settle.add(bet.provider_id)
+            if start:
+                # Normalize timezone — DB may store naive datetimes
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if start < now:
+                    providers_needing_settle.add(bet.provider_id)
     finally:
         db.close()
 
@@ -526,8 +530,11 @@ def _settle_expired_bets() -> dict:
                 event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                 start = event.start_time if event and hasattr(event, 'start_time') else None
 
-            if start and start < now:
-                expired_by_provider.setdefault(bet.provider_id, []).append(bet)
+            if start:
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if start < now:
+                    expired_by_provider.setdefault(bet.provider_id, []).append(bet)
 
         for pid, bets in expired_by_provider.items():
             result[pid] = len(bets)
@@ -1232,6 +1239,9 @@ async def check_settlements(mirror_service) -> dict:
                 if not start:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     start = getattr(event, 'start_time', None) if event else None
+                if start:
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=timezone.utc)
                 if start and start < now:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     event_name = f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id
