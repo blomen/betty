@@ -55,23 +55,36 @@ async def open_provider_tabs():
     finally:
         db.close()
 
+    print(f"[open-tabs] Queue: {window.provider_queue}")
+    print(f"[open-tabs] Balances >= 10: {[p for p, b in balances.items() if b >= 10]}")
+
     opened = []
     for pid in window.provider_queue:
-        if pid in ("polymarket", "pinnacle"):
+        # Skip providers with insufficient balance (< 10 kr / 1 USDC)
+        if balances.get(pid, 0) < 10:
             continue
-        # Skip providers with no balance
-        if balances.get(pid, 0) <= 0:
-            continue
-        pconfig = cfg.get_provider(pid)
-        if not pconfig:
-            continue
-        url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
-        if not url:
-            continue
+        # Special URLs for providers without site_url/domain in config
+        _SPECIAL_URLS = {
+            "polymarket": "https://polymarket.com",
+            "pinnacle": "https://www.pinnacle.com",
+        }
+        if pid in _SPECIAL_URLS:
+            url = _SPECIAL_URLS[pid]
+        else:
+            pconfig = cfg.get_provider(pid)
+            if not pconfig:
+                continue
+            url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
+            if not url:
+                continue
         try:
             page = await context.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             opened.append(pid)
+            # For Polymarket: immediately check login via DOM balance scrape
+            if pid == "polymarket":
+                import asyncio
+                asyncio.ensure_future(mirror._scrape_polymarket_balance())
         except Exception as e:
             logger.warning(f"Failed to open tab for {pid}: {e}")
 
