@@ -162,6 +162,27 @@ async def lifespan(app: FastAPI):
         _scheduler_task.set_name("scheduler-start")
         _background_tasks.add(_scheduler_task)
         _scheduler_task.add_done_callback(_background_tasks.discard)
+
+        # Auto-start RL training daemon (server only, runs at nice 19)
+        def _start_rl_daemon():
+            import subprocess as _sp
+            daemon_script = "/app/backend/scripts/rl_train_daemon.sh"
+            pid_file = "/app/data/rl/daemon.pid"
+            try:
+                # Check if daemon already running
+                try:
+                    with open(pid_file) as f:
+                        old_pid = int(f.read().strip())
+                    os.kill(old_pid, 0)  # signal 0 = check if alive
+                    logger.info("[Startup] RL daemon already running (PID %d)", old_pid)
+                    return
+                except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+                    pass  # not running
+                _sp.Popen(["bash", daemon_script], start_new_session=True)
+                logger.info("[Startup] RL training daemon started")
+            except Exception as e:
+                logger.warning("[Startup] RL daemon start failed: %s", e)
+        threading.Thread(target=_start_rl_daemon, daemon=True, name="startup-rl-daemon").start()
     else:
         logger.info("[Startup] Scheduler disabled (FIREV_NO_SCHEDULER set)")
 
