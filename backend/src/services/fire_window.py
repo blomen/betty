@@ -284,10 +284,9 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     """Run the full workflow setup when a provider is activated.
 
     1. Reuse blank tab or find existing — never create extra tabs
-    2. Check login
-    3. Settle finished events (start_time passed) across ALL providers
-    4. Sync bet history for this provider → settle pending bets
-    5. Sync balance → update DB
+    2. Login: interceptor detects it when user browses (balance API = green)
+    3. Settle finished events across ALL providers
+    4. Balance comes from DB (interceptor syncs it on page load)
     """
     result = {"provider_id": provider_id, "steps": {}}
 
@@ -331,15 +330,11 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     else:
         result["steps"]["tab"] = "found"
 
-    # Step 2: Check login
-    try:
-        logged_in = await workflow.check_login(page)
-        result["steps"]["login"] = "ok" if logged_in else "not_logged_in"
-        if not logged_in:
-            return result
-    except Exception as e:
-        result["steps"]["login"] = f"error:{e}"
-        return result
+    # Step 2: Login detection — interceptor handles this.
+    # When the page loads, the site's own JS calls balance/wallet APIs.
+    # The interceptor catches those and fires sync_available (green).
+    # We don't need to call APIs ourselves — just trust the interceptor.
+    result["steps"]["login"] = "interceptor_handles"
 
     # Step 3: Settle finished events across ALL providers
     try:
@@ -348,40 +343,20 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     except Exception as e:
         result["steps"]["settle_expired"] = f"error:{e}"
 
-    # Step 4: Sync bet history for this provider → settle pending bets
+    # Step 4: Read balance from DB (interceptor syncs it on page load)
     try:
-        history = await workflow.sync_history(page)
-        if history:
-            settled = _settle_from_history(provider_id, history)
-            result["steps"]["history"] = {"fetched": len(history), "settled": settled}
-        else:
-            result["steps"]["history"] = {"fetched": 0, "settled": 0}
-    except Exception as e:
-        result["steps"]["history"] = f"error:{e}"
-        logger.warning(f"[FireWindow] {provider_id}: sync_history failed: {e}")
-
-    # Step 5: Sync balance
-    try:
-        balance = await workflow.sync_balance(page)
-        if balance >= 0:
-            from ..repositories.profile_repo import ProfileRepo
-            db = get_session()
-            try:
-                repo = ProfileRepo(db)
-                profile = repo.get_active()
-                if profile:
-                    old = repo.get_balance(profile.id, provider_id)
-                    repo.set_balance(profile.id, provider_id, balance)
-                    db.commit()
-                    result["steps"]["balance"] = {"old": round(old, 2), "new": round(balance, 2)}
-                    logger.info(f"[FireWindow] {provider_id}: balance {old:.2f} → {balance:.2f}")
-            finally:
-                db.close()
-        else:
-            result["steps"]["balance"] = "unknown"
+        from ..repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            repo = ProfileRepo(db)
+            profile = repo.get_active()
+            if profile:
+                balance = repo.get_balance(profile.id, provider_id)
+                result["steps"]["balance"] = round(balance, 2)
+        finally:
+            db.close()
     except Exception as e:
         result["steps"]["balance"] = f"error:{e}"
-        logger.warning(f"[FireWindow] {provider_id}: sync_balance failed: {e}")
 
     return result
 
