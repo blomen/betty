@@ -107,6 +107,7 @@ class ProviderWorkflow(ABC):
                     async () => {{
                         const resp = await fetch("{url}", {{
                             method: "{method}",
+                            credentials: "include",
                             headers: {{"Content-Type": "application/json"}},
                             body: JSON.stringify({body_json})
                         }});
@@ -117,7 +118,10 @@ class ProviderWorkflow(ABC):
             else:
                 js = f"""
                     async () => {{
-                        const resp = await fetch("{url}", {{ method: "{method}" }});
+                        const resp = await fetch("{url}", {{
+                            method: "{method}",
+                            credentials: "include"
+                        }});
                         if (!resp.ok) return {{ __error: resp.status }};
                         return await resp.json();
                     }}
