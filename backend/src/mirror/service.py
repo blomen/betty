@@ -338,6 +338,8 @@ class MirrorService:
         except json.JSONDecodeError:
             return
 
+        provider_id = None
+
         # Gecko V2 coupon-history format: normalize to Altenar-compatible format
         if "coupon-history" in url:
             coupons = data.get("data", {}).get("coupons", [])
@@ -373,13 +375,43 @@ class MirrorService:
                     "totalWin": c.get("totalPayout", 0),
                     "eventName": event_name,
                 })
+        # Pinnacle: GET /0.1/bets → array of bet objects
+        elif "arcadia.pinnacle" in url and isinstance(data, list):
+            provider_id = "pinnacle"
+            bets = []
+            for b in data:
+                status_str = b.get("settledAt")  # settled if has settledAt
+                if not status_str:
+                    continue  # unsettled — skip for settlement
+                # Determine result from payout vs stake
+                risk_amount = float(b.get("riskAmount", 0))
+                win_amount = float(b.get("winAmount", 0))
+                if win_amount > 0:
+                    status_code = 1  # won
+                elif risk_amount > 0:
+                    status_code = 2  # lost
+                else:
+                    status_code = 3  # void
+                sels = b.get("selections", [])
+                event_name = ""
+                if sels:
+                    event_name = sels[0].get("matchup_id", "")
+                bets.append({
+                    "status": status_code,
+                    "totalStake": risk_amount,
+                    "totalOdds": float(b.get("price", 0)),
+                    "totalWin": win_amount,
+                    "eventName": str(event_name),
+                    "confirmation_id": str(b.get("id", "")),
+                })
         else:
             bets = data.get("bets", [])
 
         if not bets:
             return
 
-        provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
+        if not provider_id:
+            provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
         logger.info(f"[mirror] Bet history intercepted: {len(bets)} bets from {provider_id}")
 
         staged = await asyncio.to_thread(self._stage_settlements_sync, bets, provider_id)
@@ -777,7 +809,10 @@ class MirrorService:
             self._store_trace_sync, provider_id, url, request_body, response_body, "bet_placed"
         )
 
-        # Toast notification with whatever info we could extract
+        # Record bet to DB
+        recorded = await asyncio.to_thread(self._record_intercepted_bet, provider_id, bet_info)
+
+        # Toast notification
         toast = {
             "status": "ok",
             "provider": provider_id,
@@ -786,11 +821,11 @@ class MirrorService:
             "outcome": bet_info.get("outcome"),
             "odds": bet_info.get("odds"),
             "stake": bet_info.get("stake"),
-            "matched": False,
+            "matched": recorded,
         }
         logger.info(
-            f"[mirror] Bet recorded: {provider_id} — {toast['event']} "
-            f"@ {toast['odds']} × {toast['stake']}"
+            f"[mirror] Bet {'recorded' if recorded else 'captured'}: {provider_id} — "
+            f"{toast['event']} @ {toast['odds']} × {toast['stake']}"
         )
         self._notify("bet_mirrored", toast)
 
@@ -873,6 +908,20 @@ class MirrorService:
             bet_offers = coupon.get("betOffers", [])
             if bet_offers:
                 info["market"] = bet_offers[0].get("criterion", "")
+            return info
+
+        # --- Pinnacle (bets/straight) ---
+        if "bets/straight" in url_lower and "quote" not in url_lower:
+            info["confirmation_id"] = str(body.get("id", ""))
+            info["odds"] = body.get("price")
+            sels = body.get("selections", [])
+            if sels:
+                s = sels[0]
+                info["matchup_id"] = str(s.get("matchup_id", ""))
+                info["designation"] = s.get("designation", "")  # home/away
+                info["market"] = s.get("market_type", "")  # moneyline/spread/total
+            # Stake from request
+            info["stake"] = req.get("riskAmount") or req.get("stake")
             return info
 
         # --- Generic fallback: scan for common field names ---
@@ -1186,6 +1235,118 @@ class MirrorService:
             db.rollback()
             logger.error(f"[mirror] Error processing bet: {e}", exc_info=True)
             return {"status": "error", "error": str(e), "provider": provider_id}
+        finally:
+            db.close()
+
+    def _record_intercepted_bet(self, provider_id: str, bet_info: dict) -> bool:
+        """Record an intercepted bet placement to the database.
+
+        Matches the bet to our event DB using matchup_id (Pinnacle) or event name.
+        Returns True if recorded successfully.
+        """
+        from ..services.bet_service import BetService
+        from ..repositories.profile_repo import ProfileRepo
+
+        odds = bet_info.get("odds")
+        stake = bet_info.get("stake")
+        if not odds or not stake:
+            return False
+
+        odds = float(odds)
+        stake = float(stake)
+        confirmation_id = bet_info.get("confirmation_id")
+        market = bet_info.get("market", "moneyline")
+        designation = bet_info.get("designation", "")  # home/away
+        matchup_id = bet_info.get("matchup_id")
+
+        # Map designation to canonical outcome
+        outcome = designation if designation in ("home", "away", "draw", "over", "under") else "home"
+
+        # Normalize market type
+        if market.lower() in ("moneyline", "ml"):
+            market = "moneyline"
+        elif market.lower() in ("spread", "handicap"):
+            market = "spread"
+        elif market.lower() in ("total", "totals", "over_under"):
+            market = "total"
+        elif market.lower() in ("1x2",):
+            market = "1x2"
+
+        # Find event_id by matchup_id (Pinnacle) or by event name
+        event_id = None
+        db = get_session()
+        try:
+            if matchup_id:
+                from ..db.models import Odds as OddsModel
+                row = db.query(OddsModel.event_id).filter(
+                    OddsModel.provider_id == provider_id,
+                    OddsModel.provider_meta.contains({"matchup_id": matchup_id}),
+                ).first()
+                if not row:
+                    # Try text search in JSON
+                    from sqlalchemy import text
+                    row = db.execute(text(
+                        "SELECT event_id FROM odds WHERE provider_id = :pid "
+                        "AND provider_meta->>'matchup_id' = :mid LIMIT 1"
+                    ), {"pid": provider_id, "mid": str(matchup_id)}).first()
+                if row:
+                    event_id = row[0]
+
+            if not event_id:
+                logger.warning(f"[mirror] Could not match bet to event: {bet_info}")
+                db.close()
+                return False
+
+            # Check for duplicate
+            from ..db.models import Bet
+            existing = db.query(Bet).filter(
+                Bet.confirmation_id == str(confirmation_id),
+                Bet.provider_id == provider_id,
+            ).first()
+            if existing:
+                logger.info(f"[mirror] Bet already recorded: {confirmation_id}")
+                db.close()
+                return True
+
+            # Record via BetService
+            svc = BetService(db)
+            resp = svc.create_bet(
+                event_id=event_id,
+                provider_id=provider_id,
+                market=market,
+                outcome=outcome,
+                odds=odds,
+                stake=stake,
+                bet_type="value",
+            )
+            if "error" in resp:
+                logger.warning(f"[mirror] Bet recording failed: {resp['error']}")
+                db.close()
+                return False
+
+            # Update confirmation_id on the bet
+            bet_id = resp.get("id")
+            if bet_id and confirmation_id:
+                bet = db.query(Bet).filter(Bet.id == bet_id).first()
+                if bet:
+                    bet.confirmation_id = str(confirmation_id)
+
+            db.commit()
+
+            # Deduct balance
+            repo = ProfileRepo(db)
+            profile = repo.get_active()
+            if profile:
+                current = repo.get_balance(profile.id, provider_id)
+                repo.set_balance(profile.id, provider_id, max(0, current - stake))
+                db.commit()
+
+            logger.info(f"[mirror] Bet recorded to DB: {provider_id} {event_id} {market}/{outcome} @ {odds} × {stake}")
+            return True
+        except Exception as exc:
+            logger.exception(f"[mirror] Failed to record bet: {exc}")
+            db.rollback()
+            return False
         finally:
             db.close()
 

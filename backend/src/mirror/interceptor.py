@@ -49,7 +49,8 @@ class BetInterceptor:
 
     # Bet history / settlement patterns (Altenar + Gecko + generic)
     _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets",
-                             "widgetBetHistory", "coupon-history")
+                             "widgetBetHistory", "coupon-history",
+                             "arcadia.pinnacle.se/0.1/bets")
     # Gecko V2 bet history — same URL as placement but GET method (exclude /count)
     _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns

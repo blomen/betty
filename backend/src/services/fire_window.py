@@ -526,24 +526,31 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     if pid == "polymarket" and mirror_service is not None:
         live_edge = await _check_live_price_poly(bet, mirror_service)
         live_cents = getattr(bet, '_live_cents', None)
-    elif pid == "pinnacle" and mirror_service is not None and bet.matchup_id:
+    elif pid == "pinnacle" and mirror_service is not None:
         # Navigate Pinnacle tab to the event page
-        context = getattr(mirror_service, 'interceptor', None)
-        context = getattr(context, 'context', None) if context else None
-        if context:
-            pin_url = f"https://www.pinnacle.com/en/sports/matchup/{bet.matchup_id}"
-            # Find or create Pinnacle tab
-            pin_page = None
-            for p in context.pages:
-                if 'pinnacle' in (p.url or ''):
-                    pin_page = p
-                    break
-            if pin_page:
-                try:
-                    await pin_page.goto(pin_url, wait_until="domcontentloaded", timeout=15000)
-                    print(f"  [Pinnacle] Navigated to {pin_url}")
-                except Exception:
-                    pass
+        matchup = bet.matchup_id
+        if not matchup:
+            print(f"  [Pinnacle] No matchup_id for {bet.event_id}")
+        else:
+            context = getattr(mirror_service, 'interceptor', None)
+            context = getattr(context, 'context', None) if context else None
+            if not context:
+                print(f"  [Pinnacle] No browser context")
+            else:
+                pin_url = f"https://www.pinnacle.com/en/sports/matchup/{matchup}"
+                pin_page = None
+                for p in context.pages:
+                    if 'pinnacle' in (p.url or ''):
+                        pin_page = p
+                        break
+                if not pin_page:
+                    print(f"  [Pinnacle] No Pinnacle tab found in {len(context.pages)} pages")
+                else:
+                    try:
+                        await pin_page.goto(pin_url, wait_until="domcontentloaded", timeout=15000)
+                        print(f"  [Pinnacle] Navigated to {pin_url}")
+                    except Exception as e:
+                        print(f"  [Pinnacle] Navigation failed: {e}")
 
     db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
     fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
