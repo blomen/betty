@@ -18,15 +18,24 @@ class OpenRequest(BaseModel):
 
 
 @router.post("/open")
-def open_fire_window(request: OpenRequest):
-    """Build fire window from an allocated batch.
+async def open_fire_window(request: OpenRequest):
+    """Build fire window, then open tabs for providers that need action.
 
-    Tabs are opened per-provider when activate is called — not here.
-    This avoids opening 15+ tabs at once.
+    Opens tabs for providers with:
+    - Balance > 0 (can place bets), OR
+    - Pending bets where start_time has passed (can settle → free cash)
     """
     if not request.batch:
         raise HTTPException(400, "Empty batch")
-    return fw.open_window(request.batch, request.provider_order)
+    result = fw.open_window(request.batch, request.provider_order)
+
+    # Auto-open tabs for providers that need action
+    mirror = _get_active_mirror()
+    if mirror:
+        tabs_result = await fw.open_needed_tabs(mirror)
+        result["tabs"] = tabs_result
+
+    return result
 
 
 @router.post("/open-tabs")

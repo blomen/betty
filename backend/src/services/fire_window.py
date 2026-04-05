@@ -280,6 +280,103 @@ def set_current_provider(provider_id: str) -> dict:
     return get_live_state()
 
 
+async def open_needed_tabs(mirror_service) -> dict:
+    """Open tabs for providers that have balance OR unsettled expired bets.
+
+    This runs once when the fire window opens. Providers get a tab if:
+    - They're in the fire window queue AND have balance >= min_bet, OR
+    - They have pending bets where start_time has passed (need settlement)
+    """
+    from ..db.models import Bet, Event
+    from ..repositories.profile_repo import ProfileRepo
+    from ..config.loader import load_config
+
+    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        return {"error": "no_browser_context"}
+
+    cfg = load_config()
+    now = datetime.now(timezone.utc)
+
+    # Get balances
+    db = get_session()
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+        balances = repo.get_all_balances(profile.id) if profile else {}
+
+        # Find providers with expired pending bets
+        pending = db.query(Bet).filter(
+            Bet.profile_id == profile.id, Bet.result == "pending"
+        ).all() if profile else []
+
+        providers_needing_settle: set[str] = set()
+        for bet in pending:
+            start = getattr(bet, 'start_time', None)
+            if not start:
+                event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                start = getattr(event, 'start_time', None) if event else None
+            if start and start < now:
+                providers_needing_settle.add(bet.provider_id)
+    finally:
+        db.close()
+
+    # Determine which providers need a tab
+    queue_pids = set(_window.provider_queue) if _window else set()
+    providers_with_balance = {pid for pid, bal in balances.items() if bal >= 10 and pid in queue_pids}
+    all_needing_tab = providers_with_balance | providers_needing_settle
+
+    logger.info(
+        f"[FireWindow] Tabs needed: {len(all_needing_tab)} "
+        f"(balance: {providers_with_balance}, settle: {providers_needing_settle})"
+    )
+
+    # Open tabs — reuse blank first, then open new
+    opened = []
+    settle_needed = []
+    for pid in all_needing_tab:
+        workflow = get_workflow(pid)
+        # Already has a tab?
+        existing = await workflow.find_tab(context)
+        if existing:
+            opened.append(pid)
+            if pid in providers_needing_settle:
+                settle_needed.append(pid)
+            continue
+
+        # Build URL
+        if workflow.domain:
+            url = f"https://www.{workflow.domain}"
+        else:
+            pconfig = cfg.get_provider(pid)
+            url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig and pconfig.domain else None)
+        if not url:
+            continue
+
+        # Reuse blank tab for first provider, new tabs for rest
+        blank = next((p for p in context.pages if (p.url or "").startswith("about:")), None)
+        try:
+            if blank:
+                await blank.goto(url, wait_until="domcontentloaded", timeout=15000)
+                opened.append(pid)
+            else:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                opened.append(pid)
+            if pid in providers_needing_settle:
+                settle_needed.append(pid)
+            logger.info(f"[FireWindow] Opened tab: {pid} → {url}")
+        except Exception as e:
+            logger.warning(f"[FireWindow] Failed to open tab for {pid}: {e}")
+
+    return {
+        "opened": opened,
+        "settle_needed": settle_needed,
+        "count": len(opened),
+    }
+
+
 async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     """Run the full workflow setup when a provider is activated.
 
