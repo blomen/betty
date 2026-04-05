@@ -283,10 +283,11 @@ def set_current_provider(provider_id: str) -> dict:
 async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     """Run the full workflow setup when a provider is activated.
 
-    1. Find or open the provider's tab
+    1. Reuse blank tab or find existing — never create extra tabs
     2. Check login
-    3. Sync bet history → settle pending bets
-    4. Sync balance → update DB
+    3. Settle finished events (start_time passed) across ALL providers
+    4. Sync bet history for this provider → settle pending bets
+    5. Sync balance → update DB
     """
     result = {"provider_id": provider_id, "steps": {}}
 
@@ -299,10 +300,9 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         result["steps"]["tab"] = "no_browser_context"
         return result
 
-    # Step 1: Find or open tab
+    # Step 1: Find existing tab or reuse the blank tab
     page = await workflow.find_tab(context)
     if not page:
-        # Open a new tab for this provider
         from ..config.loader import load_config
         cfg = load_config()
         if workflow.domain:
@@ -310,17 +310,23 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         else:
             pconfig = cfg.get_provider(provider_id)
             url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig and pconfig.domain else None)
-        if url:
-            try:
+        if not url:
+            result["steps"]["tab"] = "no_url"
+            return result
+        # Reuse about:blank tab instead of creating new one
+        blank = next((p for p in context.pages if (p.url or "").startswith("about:")), None)
+        try:
+            if blank:
+                await blank.goto(url, wait_until="domcontentloaded", timeout=15000)
+                page = blank
+                result["steps"]["tab"] = "reused_blank"
+            else:
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 result["steps"]["tab"] = "opened"
-                logger.info(f"[FireWindow] {provider_id}: opened tab → {url}")
-            except Exception as e:
-                result["steps"]["tab"] = f"failed:{e}"
-                return result
-        else:
-            result["steps"]["tab"] = "no_url"
+            logger.info(f"[FireWindow] {provider_id}: tab → {url}")
+        except Exception as e:
+            result["steps"]["tab"] = f"failed:{e}"
             return result
     else:
         result["steps"]["tab"] = "found"
@@ -335,7 +341,14 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         result["steps"]["login"] = f"error:{e}"
         return result
 
-    # Step 3: Sync bet history → settle pending bets
+    # Step 3: Settle finished events across ALL providers
+    try:
+        settled_global = _settle_expired_bets()
+        result["steps"]["settle_expired"] = settled_global
+    except Exception as e:
+        result["steps"]["settle_expired"] = f"error:{e}"
+
+    # Step 4: Sync bet history for this provider → settle pending bets
     try:
         history = await workflow.sync_history(page)
         if history:
@@ -347,7 +360,7 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         result["steps"]["history"] = f"error:{e}"
         logger.warning(f"[FireWindow] {provider_id}: sync_history failed: {e}")
 
-    # Step 4: Sync balance
+    # Step 5: Sync balance
     try:
         balance = await workflow.sync_balance(page)
         if balance >= 0:
@@ -410,6 +423,54 @@ def _settle_from_history(provider_id: str, history: list) -> int:
     finally:
         db.close()
     return settled_count
+
+
+def _settle_expired_bets() -> dict:
+    """Check ALL pending bets across all providers where event start_time has passed.
+
+    For events that have started, mark them as needing settlement check.
+    Returns {provider_id: count} of bets flagged for settlement.
+    """
+    from ..db.models import Bet, Event
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    result = {}
+    db = get_session()
+    try:
+        # Find pending bets where the event has started
+        pending = (
+            db.query(Bet)
+            .filter(Bet.result == "pending")
+            .all()
+        )
+
+        expired_by_provider: dict[str, list] = {}
+        for bet in pending:
+            # Check start_time on the bet itself or the linked event
+            start = bet.start_time if hasattr(bet, 'start_time') and bet.start_time else None
+            if not start:
+                # Try to get from event table
+                event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                start = event.start_time if event and hasattr(event, 'start_time') else None
+
+            if start and start < now:
+                expired_by_provider.setdefault(bet.provider_id, []).append(bet)
+
+        for pid, bets in expired_by_provider.items():
+            result[pid] = len(bets)
+            logger.info(f"[FireWindow] {pid}: {len(bets)} pending bets with expired events")
+
+        if result:
+            total = sum(result.values())
+            logger.info(f"[FireWindow] Total expired pending bets: {total} across {len(result)} providers")
+
+    except Exception as e:
+        logger.warning(f"[FireWindow] _settle_expired_bets failed: {e}")
+    finally:
+        db.close()
+
+    return result
 
 
 # ---------------------------------------------------------------------------
