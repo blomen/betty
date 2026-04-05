@@ -382,69 +382,34 @@ async def open_needed_tabs(mirror_service) -> dict:
 
 
 async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
-    """Run the full workflow setup when a provider is activated.
+    """Run workflow setup when a provider is activated.
 
-    1. Reuse blank tab or find existing — never create extra tabs
-    2. Login: interceptor detects it when user browses (balance API = green)
-    3. Settle finished events across ALL providers
-    4. Balance comes from DB (interceptor syncs it on page load)
+    Tab was already opened by open_needed_tabs. This just:
+    1. Finds the existing tab
+    2. Settles expired bets across ALL providers
+    3. Reads balance from DB
     """
     result = {"provider_id": provider_id, "steps": {}}
 
     workflow = get_workflow(provider_id)
 
-    # Get browser context
+    # Find existing tab (opened by open_needed_tabs)
     context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
     context = getattr(context, 'context', None) if context else None
-    if not context:
-        result["steps"]["tab"] = "no_browser_context"
-        return result
-
-    # Step 1: Find existing tab or reuse the blank tab
-    page = await workflow.find_tab(context)
-    if not page:
-        from ..config.loader import load_config
-        cfg = load_config()
-        if workflow.domain:
-            url = f"https://www.{workflow.domain}"
-        else:
-            pconfig = cfg.get_provider(provider_id)
-            url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig and pconfig.domain else None)
-        if not url:
-            result["steps"]["tab"] = "no_url"
-            return result
-        # Reuse about:blank tab instead of creating new one
-        blank = next((p for p in context.pages if (p.url or "").startswith("about:")), None)
-        try:
-            if blank:
-                await blank.goto(url, wait_until="domcontentloaded", timeout=15000)
-                page = blank
-                result["steps"]["tab"] = "reused_blank"
-            else:
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                result["steps"]["tab"] = "opened"
-            logger.info(f"[FireWindow] {provider_id}: tab → {url}")
-        except Exception as e:
-            result["steps"]["tab"] = f"failed:{e}"
-            return result
+    if context:
+        page = await workflow.find_tab(context)
+        result["steps"]["tab"] = "found" if page else "not_found"
     else:
-        result["steps"]["tab"] = "found"
+        result["steps"]["tab"] = "no_browser_context"
 
-    # Step 2: Login detection — interceptor handles this.
-    # When the page loads, the site's own JS calls balance/wallet APIs.
-    # The interceptor catches those and fires sync_available (green).
-    # We don't need to call APIs ourselves — just trust the interceptor.
-    result["steps"]["login"] = "interceptor_handles"
-
-    # Step 3: Settle finished events across ALL providers
+    # Settle expired bets across ALL providers
     try:
         settled_global = _settle_expired_bets()
         result["steps"]["settle_expired"] = settled_global
     except Exception as e:
         result["steps"]["settle_expired"] = f"error:{e}"
 
-    # Step 4: Read balance from DB (interceptor syncs it on page load)
+    # Read balance from DB (interceptor syncs it on page load)
     try:
         from ..repositories.profile_repo import ProfileRepo
         db = get_session()
