@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...services import fire_window as fw
-from .mirror import _get_active_mirror, _mirrors, _start_lock, _any_running
+from .mirror import _get_active_mirror
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +41,12 @@ async def open_provider_tabs():
     if not context:
         raise HTTPException(400, "No browser context")
 
-    # Only open tabs for providers with balance > 0
     from ...config.loader import load_config
     from ...repositories.profile_repo import ProfileRepo
     from ...db.models import get_session
-    cfg = load_config()
+    from ...mirror.workflows import get_workflow
 
+    cfg = load_config()
     db = get_session()
     try:
         repo = ProfileRepo(db)
@@ -55,48 +55,30 @@ async def open_provider_tabs():
     finally:
         db.close()
 
-    print(f"[open-tabs] Queue: {window.provider_queue}")
-    print(f"[open-tabs] Balances >= 10: {[p for p, b in balances.items() if b >= 10]}")
-
     opened = []
     for pid in window.provider_queue:
-        # Skip providers with insufficient balance (< 10 kr / 1 USDC)
         if balances.get(pid, 0) < 10:
             continue
-        # Special URLs for providers without site_url/domain in config
-        _SPECIAL_URLS = {
-            "polymarket": "https://polymarket.com",
-            "pinnacle": "https://www.pinnacle.com",
-        }
-        if pid in _SPECIAL_URLS:
-            url = _SPECIAL_URLS[pid]
+
+        workflow = get_workflow(pid)
+        # Build URL from workflow domain or provider config
+        if workflow.domain:
+            url = f"https://www.{workflow.domain}"
         else:
             pconfig = cfg.get_provider(pid)
-            if not pconfig:
-                continue
-            url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
-            if not url:
-                continue
+            if pconfig:
+                url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
+            else:
+                url = None
+        if not url:
+            continue
+
         try:
             page = await context.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             opened.append(pid)
-            # For Polymarket: immediately check login via DOM balance scrape
-            if pid == "polymarket":
-                import asyncio
-                asyncio.ensure_future(mirror._scrape_polymarket_balance())
         except Exception as e:
             logger.warning(f"Failed to open tab for {pid}: {e}")
-
-    # Polymarket: open tabs for bets
-    if "polymarket" in window.provider_bets and mirror:
-        poly_bets = window.provider_bets["polymarket"]
-        tab_bets = [
-            {"market_slug": b.market_slug, "poly_outcome": b.poly_outcome, "bet_id": b.bet_id}
-            for b in poly_bets if b.market_slug
-        ]
-        # Don't open all tabs — just register that polymarket is ready
-        # Individual tabs are opened per bet during check_bet
 
     return {"opened": opened, "count": len(opened)}
 
@@ -144,26 +126,11 @@ def get_next_bet():
 
 @router.post("/check-bet/{bet_id}")
 async def check_bet(bet_id: int):
-    """Check live price for a specific bet. Opens only this bet's tab."""
+    """Check live price for a specific bet."""
     window = fw.get_window()
     if not window:
         raise HTTPException(400, "No fire window open")
-
     mirror = _get_active_mirror()
-
-    # Open only this bet's tab (not all bets)
-    pid = window.current_provider
-    if pid == "polymarket" and mirror:
-        bets = window.provider_bets.get(pid, [])
-        bet = next((b for b in bets if b.bet_id == bet_id), None)
-        if bet and bet.market_slug:
-            try:
-                await mirror._ensure_poly_tabs([
-                    {"market_slug": bet.market_slug, "poly_outcome": bet.poly_outcome, "bet_id": bet.bet_id}
-                ])
-            except Exception:
-                pass
-
     return await fw.check_bet(bet_id, mirror)
 
 
@@ -203,13 +170,7 @@ def get_queue():
 
 @router.post("/close")
 async def close_fire_window():
-    """Close fire window, cleanup tabs."""
-    mirror = _get_active_mirror()
-    if mirror:
-        try:
-            await mirror.close_poly_tabs()
-        except Exception:
-            pass
+    """Close fire window."""
     fw.close_window()
     return {"status": "closed"}
 
