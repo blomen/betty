@@ -1277,18 +1277,11 @@ class MirrorService:
         db = get_session()
         try:
             if matchup_id:
-                from ..db.models import Odds as OddsModel
-                row = db.query(OddsModel.event_id).filter(
-                    OddsModel.provider_id == provider_id,
-                    OddsModel.provider_meta.contains({"matchup_id": matchup_id}),
-                ).first()
-                if not row:
-                    # Try text search in JSON
-                    from sqlalchemy import text
-                    row = db.execute(text(
-                        "SELECT event_id FROM odds WHERE provider_id = :pid "
-                        "AND provider_meta->>'matchup_id' = :mid LIMIT 1"
-                    ), {"pid": provider_id, "mid": str(matchup_id)}).first()
+                from sqlalchemy import text
+                row = db.execute(text(
+                    "SELECT event_id FROM odds WHERE provider_id = :pid "
+                    "AND provider_meta->>'matchup_id' = :mid LIMIT 1"
+                ), {"pid": provider_id, "mid": str(matchup_id)}).first()
                 if row:
                     event_id = row[0]
 

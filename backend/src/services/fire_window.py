@@ -650,123 +650,19 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         except Exception as exc:
             print(f"  {label}FAILED {exc}*")
             return {"status": "failed", "bet_id": bet_id, "reason": str(exc)}
-    elif pid == "pinnacle" and mirror_service is not None and bet.matchup_id:
-        # Pinnacle: place via API call using browser session
-        context = getattr(mirror_service, 'interceptor', None)
-        context = getattr(context, 'context', None) if context else None
-        pin_page = None
-        if context:
-            for p in context.pages:
-                if 'pinnacle' in (p.url or ''):
-                    pin_page = p
-                    break
-
-        if not pin_page:
-            print(f"  {label}NO PINNACLE TAB*")
-            placement_result = {"status": "failed", "bet_id": bet_id, "reason": "no_pinnacle_tab"}
-        else:
-            # Get market_id and line_id from provider_meta
-            market_id = None
-            line_id = None
-            try:
-                _db = get_session()
-                from sqlalchemy import text as _text
-                row = _db.execute(_text(
-                    "SELECT provider_meta FROM odds "
-                    "WHERE provider_id = 'pinnacle' AND event_id = :eid "
-                    "AND market = :mkt AND outcome = :out LIMIT 1"
-                ), {"eid": bet.event_id, "mkt": bet.market, "out": bet.outcome}).first()
-                if row and row[0]:
-                    import json as _json
-                    meta = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
-                    market_id = meta.get("line_id") or meta.get("market_id")
-                    line_id = meta.get("line_id")
-                _db.close()
-            except Exception:
-                pass
-
-            if not market_id:
-                print(f"  {label}NO MARKET_ID*")
-                placement_result = {"status": "failed", "bet_id": bet_id, "reason": "no_market_id"}
-            else:
-                # Map outcome to designation + team_type
-                designation = bet.outcome  # home/away
-                team_type = "team1" if designation == "home" else "team2"
-
-                # Map market to bet_type
-                if bet.market in ("moneyline", "1x2"):
-                    bet_type = "MONEYLINE"
-                    market_key = "s;0;m"
-                elif bet.market == "spread":
-                    bet_type = "SPREAD"
-                    market_key = "s;0;s"
-                elif bet.market == "total":
-                    bet_type = "TOTAL_POINTS"
-                    market_key = "s;0;ou"
-                else:
-                    bet_type = "MONEYLINE"
-                    market_key = "s;0;m"
-
-                try:
-                    result = await pin_page.evaluate("""
-                        async (params) => {
-                            const resp = await fetch('https://api.arcadia.pinnacle.se/0.1/bets/straight', {
-                                method: 'POST',
-                                credentials: 'include',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    oddsFormat: 'decimal',
-                                    selections: [{
-                                        matchupId: params.matchupId,
-                                        marketId: params.marketId,
-                                        marketKey: params.marketKey,
-                                        designation: params.designation,
-                                        price: params.price,
-                                        period: 0,
-                                    }],
-                                    riskAmount: params.stake,
-                                    acceptBetterLine: true,
-                                }),
-                            });
-                            const data = await resp.json();
-                            return { status: resp.status, data };
-                        }
-                    """, {
-                        "matchupId": int(bet.matchup_id),
-                        "marketId": int(market_id),
-                        "marketKey": market_key,
-                        "designation": designation,
-                        "price": bet.odds,
-                        "stake": actual_stake,
-                    })
-
-                    if result.get("status") == 200 and result.get("data", {}).get("id"):
-                        print(f"  {label}PLACED via API (id={result['data']['id']})*")
-                        placement_result = {
-                            "status": "placed",
-                            "bet_id": bet_id,
-                            "provider_id": pid,
-                            "stake": actual_stake,
-                            "confirmation_id": str(result["data"]["id"]),
-                            "actual_odds": result["data"].get("price"),
-                        }
-                    else:
-                        error_msg = str(result.get("data", {}))[:200]
-                        print(f"  {label}API FAILED: {error_msg}*")
-                        placement_result = {"status": "failed", "bet_id": bet_id, "reason": error_msg}
-                except Exception as exc:
-                    print(f"  {label}API ERROR: {exc}*")
-                    placement_result = {"status": "failed", "bet_id": bet_id, "reason": str(exc)}
     else:
-        # Other providers: user places manually
-        print(f"  {label}MANUAL*")
+        # Non-Polymarket: user places manually in mirror browser
+        # The interceptor catches POST /bets/straight (Pinnacle) etc.
+        # and auto-records to DB + syncs balance
+        # "Confirm" here means "I placed this bet" — advance to next
+        print(f"  {label}MANUAL — place in mirror, interceptor records*")
         placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": actual_stake}
 
-    # Record bet in DB (with adjusted stake)
-    _record_bet(bet, pid, placement_result, actual_stake)
-
-    # Sync balance after placement
-    _sync_balance_after_bet(bet, pid)
+    # For Polymarket: record bet + sync balance (we placed it)
+    # For manual providers: interceptor handles recording when it catches the API call
+    if placement_result.get("status") == "placed":
+        _record_bet(bet, pid, placement_result, actual_stake)
+        _sync_balance_after_bet(bet, pid)
 
     return placement_result
 
