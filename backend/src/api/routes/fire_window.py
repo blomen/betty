@@ -220,3 +220,64 @@ async def settle_check():
 async def settle_confirm():
     """Confirm and apply the staged settlements."""
     return fw.apply_settlements()
+
+
+@router.post("/polymarket/portfolio")
+async def polymarket_portfolio():
+    """Scrape Polymarket portfolio positions from DOM."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.polymarket import PolymarketWorkflow
+    workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+    page = await workflow.find_tab(context)
+    if not page:
+        raise HTTPException(400, "No Polymarket tab open")
+
+    positions = await workflow.scrape_portfolio(page)
+
+    # Match against pending bets in DB
+    from ...db.models import Bet, get_session
+    from ...repositories.profile_repo import ProfileRepo
+    db = get_session()
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+        pending = db.query(Bet).filter(
+            Bet.profile_id == profile.id,
+            Bet.provider_id == "polymarket",
+            Bet.result == "pending",
+        ).all() if profile else []
+
+        return {
+            "positions": positions,
+            "pending_bets": len(pending),
+            "pending_stake": round(sum(b.stake for b in pending), 2),
+        }
+    finally:
+        db.close()
+
+
+@router.post("/polymarket/redeem")
+async def polymarket_redeem():
+    """Click all Redeem buttons on Polymarket portfolio page."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.polymarket import PolymarketWorkflow
+    workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+    page = await workflow.find_tab(context)
+    if not page:
+        raise HTTPException(400, "No Polymarket tab open")
+
+    return await workflow.redeem_all(page)

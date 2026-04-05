@@ -184,6 +184,133 @@ class PolymarketWorkflow(ProviderWorkflow):
             return None
 
     # ------------------------------------------------------------------
+    # Portfolio scraping + settlement
+    # ------------------------------------------------------------------
+
+    async def scrape_portfolio(self, page: "Page") -> list[dict]:
+        """Scrape the portfolio/positions page and return each position.
+
+        Must be on polymarket.com/portfolio or the main page showing positions.
+        Returns list of {market, outcome, avg_price, now_price, traded, to_win, value, status, shares}.
+        """
+        # Navigate to portfolio if not already there
+        if '/portfolio' not in (page.url or ''):
+            await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(3)  # Wait for positions to load
+
+        positions = await page.evaluate("""() => {
+            const rows = document.querySelectorAll('[data-testid="position-row"], tr, [class*="position"], [class*="PortfolioRow"]');
+            const results = [];
+
+            // Try table rows approach
+            const allRows = document.querySelectorAll('table tbody tr, [class*="row"]');
+            for (const row of allRows) {
+                const cells = row.querySelectorAll('td, [class*="cell"], > div');
+                if (cells.length < 3) continue;
+
+                const text = row.textContent || '';
+
+                // Detect status: WON, LOST, or active (Sell button present)
+                let status = 'open';
+                if (text.includes('WON')) status = 'won';
+                else if (text.includes('LOST')) status = 'lost';
+
+                // Check for Redeem or Sell button
+                const buttons = row.querySelectorAll('button');
+                let hasRedeem = false;
+                let hasSell = false;
+                for (const btn of buttons) {
+                    const bt = (btn.textContent || '').trim();
+                    if (bt === 'Redeem') hasRedeem = true;
+                    if (bt === 'Sell') hasSell = true;
+                }
+
+                // Extract market name (first cell, usually has the market title)
+                const marketEl = row.querySelector('a, [class*="title"], [class*="market"]');
+                const market = marketEl ? marketEl.textContent.trim() : '';
+
+                // Extract outcome tag (colored pill like "Bigetron by Vitality 50.3¢")
+                const tagEl = row.querySelector('[class*="tag"], [class*="badge"], [class*="pill"], span[style]');
+                const outcomeTag = tagEl ? tagEl.textContent.trim() : '';
+
+                // Extract price info: "50.3¢ → 100¢" pattern
+                const priceMatch = text.match(/([\d.]+)¢\\s*→\\s*([\d.]+)¢/);
+                const avgPrice = priceMatch ? parseFloat(priceMatch[1]) : null;
+                const nowPrice = priceMatch ? parseFloat(priceMatch[2]) : null;
+
+                // Extract dollar values
+                const dollarValues = [...text.matchAll(/\\$([\d,.]+)/g)].map(m => parseFloat(m[1].replace(',', '')));
+
+                if (market || outcomeTag) {
+                    results.push({
+                        market: market.slice(0, 80),
+                        outcome_tag: outcomeTag,
+                        avg_price: avgPrice,
+                        now_price: nowPrice,
+                        values: dollarValues,
+                        status,
+                        has_redeem: hasRedeem,
+                        has_sell: hasSell,
+                    });
+                }
+            }
+            return results;
+        }""")
+
+        logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
+        return positions
+
+    async def redeem_all(self, page: "Page") -> dict:
+        """Click all 'Redeem' buttons on the portfolio page to free cash.
+
+        Returns {redeemed: count, errors: count}.
+        """
+        if '/portfolio' not in (page.url or ''):
+            await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(3)
+
+        # Find all Redeem buttons and click them one by one
+        redeemed = 0
+        errors = 0
+
+        # Count redeem buttons first
+        count = await page.evaluate("""() => {
+            const btns = document.querySelectorAll('button');
+            let n = 0;
+            for (const btn of btns) {
+                if (btn.textContent.trim() === 'Redeem') n++;
+            }
+            return n;
+        }""")
+
+        logger.info(f"[polymarket] Found {count} Redeem buttons")
+
+        for i in range(count):
+            try:
+                # Click the first visible Redeem button (they shift after each click)
+                clicked = await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button');
+                    for (const btn of btns) {
+                        if (btn.textContent.trim() === 'Redeem') {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""")
+                if clicked:
+                    await asyncio.sleep(2)  # Wait for transaction
+                    redeemed += 1
+                    logger.info(f"[polymarket] Redeemed position {i + 1}/{count}")
+                else:
+                    break
+            except Exception as e:
+                logger.warning(f"[polymarket] Redeem {i + 1} failed: {e}")
+                errors += 1
+
+        return {"redeemed": redeemed, "errors": errors, "total": count}
+
+    # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
 
