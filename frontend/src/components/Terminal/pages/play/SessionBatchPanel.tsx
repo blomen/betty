@@ -155,12 +155,33 @@ export function SessionBatchPanel({ batch, summary, providerBalances, onRemoveBe
     setPlacedCount(0);
     setSkippedCount(0);
     try {
-      // Ensure fire window is open
+      // Step 1: Check for settled bets first
+      try {
+        const scanResult = await fetch('/api/opportunities/play/settle-scan').then(r => r.json());
+        if (scanResult.count > 0) {
+          // Auto-confirm all settlements
+          const settlements = scanResult.proposals
+            .filter((p: any) => p.provider_id === providerId)
+            .map((p: any) => ({ bet_id: p.bet_id, result: p.proposed_result }));
+          if (settlements.length > 0) {
+            await fetch('/api/opportunities/play/settle-batch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(settlements),
+            });
+            console.log(`[Play] Auto-settled ${settlements.length} bets for ${providerId}`);
+          }
+        }
+      } catch { /* non-critical */ }
+
+      // Step 2: Open fire window + activate
       if (!fireWindowOpen) {
         await fireWindowApi.open(batch);
         setFireWindowOpen(true);
       }
       await fireWindowApi.activate(providerId);
+
+      // Step 3: Start proposing bets
       fetchNextBet(providerId);
     } catch (err: any) {
       setError(err.message);
