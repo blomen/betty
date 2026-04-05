@@ -392,18 +392,21 @@ def get_next_bet() -> dict:
     # Also check DB for already-placed bets (survives restart)
     already_placed: set[str] = set()
     try:
-        db = get_session()
-        existing = (
-            db.query(Bet.event_id, Bet.market, Bet.outcome)
-            .filter(Bet.provider_id == pid, Bet.result == "pending")
-            .all()
-        )
-        for row in existing:
-            already_placed.add(f"{row.event_id}:{row.market}:{row.outcome}")
-        db.close()
+        import os
+        from sqlalchemy import create_engine, text
+        db_url = os.environ.get("DATABASE_URL", "")
+        sync_url = db_url.replace("+asyncpg", "+psycopg2")
+        if sync_url:
+            eng = create_engine(sync_url, pool_pre_ping=True)
+            with eng.connect() as conn:
+                rows = conn.execute(text(
+                    "SELECT event_id, market, outcome FROM bets "
+                    "WHERE provider_id = :pid AND result = 'pending'"
+                ), {"pid": pid}).fetchall()
+                for row in rows:
+                    already_placed.add(f"{row[0]}:{row[1]}:{row[2]}")
+            eng.dispose()
         print(f"[FireWindow] Already placed: {len(already_placed)} bets for {pid}")
-        for k in already_placed:
-            print(f"  - {k}")
     except Exception as e:
         print(f"[FireWindow] DB check failed: {e}")
 
@@ -418,10 +421,34 @@ def get_next_bet() -> dict:
         if bet_key in already_placed:
             continue
 
+        # Check balance — adjust stake if needed, skip if too low
+        balance = 0
+        try:
+            from ..repositories.profile_repo import ProfileRepo
+            _db = get_session()
+            try:
+                _repo = ProfileRepo(_db)
+                _profile = _repo.get_active()
+                if _profile:
+                    balance = _repo.get_balance(_profile.id, pid)
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+        min_bet = 1.0 if pid == "polymarket" else 10.0
+        if balance < min_bet:
+            continue  # Balance too low — skip to next or done
+
+        # Adjust stake to remaining balance if needed
+        actual_stake = min(bet.stake, balance)
+        actual_profit = actual_stake * (bet.edge_pct / 100)
+
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
         fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
 
-        remaining = len([b for b in bets if b.bet_id not in fired_ids and b.edge_pct > 0])
+        remaining = len([b for b in bets if b.bet_id not in fired_ids and b.edge_pct > 0
+                         and f"{b.event_id}:{b.market}:{b.outcome}" not in already_placed])
 
         return {
             "bet_id": bet.bet_id,
@@ -435,8 +462,8 @@ def get_next_bet() -> dict:
             "odds": bet.odds,
             "fair_odds": bet.fair_odds,
             "edge_pct": bet.edge_pct,
-            "stake": bet.stake,
-            "expected_profit": bet.expected_profit,
+            "stake": round(actual_stake, 2),
+            "expected_profit": round(actual_profit, 2),
             "tier": bet.tier,
             "market_slug": bet.market_slug,
             "poly_outcome": bet.poly_outcome,
@@ -500,6 +527,26 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         _window.fired_results[fired_key] = set()
     _window.fired_results[fired_key].add(bet_id)
 
+    # Adjust stake to available balance
+    balance = float('inf')
+    try:
+        from ..repositories.profile_repo import ProfileRepo
+        _db = get_session()
+        try:
+            _repo = ProfileRepo(_db)
+            _profile = _repo.get_active()
+            if _profile:
+                balance = _repo.get_balance(_profile.id, pid)
+        finally:
+            _db.close()
+    except Exception:
+        pass
+
+    actual_stake = min(bet.stake, balance)
+    min_bet = 1.0 if pid == "polymarket" else 10.0
+    if actual_stake < min_bet:
+        return {"status": "skipped", "bet_id": bet_id, "reason": "insufficient_balance"}
+
     label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
     placement_result = None
 
@@ -533,8 +580,8 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         print(f"  {label}MANUAL*")
         placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": bet.stake}
 
-    # Record bet in DB
-    _record_bet(bet, pid, placement_result)
+    # Record bet in DB (with adjusted stake)
+    _record_bet(bet, pid, placement_result, actual_stake)
 
     # Sync balance after placement
     _sync_balance_after_bet(bet, pid)
@@ -542,9 +589,10 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
     return placement_result
 
 
-def _record_bet(bet: FireWindowBet, provider_id: str, result: dict) -> None:
+def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake: float | None = None) -> None:
     """Record placed bet to the database."""
     from .bet_service import BetService
+    stake = actual_stake if actual_stake is not None else bet.stake
     db = get_session()
     try:
         svc = BetService(db)
@@ -554,7 +602,7 @@ def _record_bet(bet: FireWindowBet, provider_id: str, result: dict) -> None:
             market=bet.market,
             outcome=bet.outcome,
             odds=bet.odds,
-            stake=bet.stake,
+            stake=stake,
             point=bet.point,
             fair_odds_at_placement=bet.fair_odds,
             bet_type="value",
@@ -693,7 +741,7 @@ async def fire_provider(mirror_service) -> dict:
                     bet_id=bet.bet_id,
                     slug=bet.market_slug,
                     outcome=bet.poly_outcome or bet.outcome,
-                    amount=bet.stake,
+                    amount=actual_stake,
                     expected_price=expected_price,
                     max_slippage=3.0,
                     original_outcome=bet.original_outcome,
