@@ -183,7 +183,7 @@ function SyncBanner({ syncAvailable, onDismiss }: {
 }) {
   useEffect(() => {
     if (!syncAvailable) return;
-    const timer = setTimeout(onDismiss, 5000);
+    const timer = setTimeout(onDismiss, 3000);
     return () => clearTimeout(timer);
   }, [syncAvailable, onDismiss]);
 

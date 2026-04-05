@@ -76,9 +76,11 @@ class MirrorService:
         })
         # Auto-mute notifications if we have a recipe
         await self._replay_notification_mute(provider_id)
-        # Polymarket: scrape cash balance from DOM (not available via API)
+        # Polymarket: scrape cash balance from DOM to verify login
+        # Don't trust DB balance — only report balance after DOM scrape confirms login
         if provider_id == "polymarket":
             asyncio.ensure_future(self._scrape_polymarket_balance())
+            return  # Don't broadcast stale DB balance — wait for DOM scrape
         # Auto-scrape bet history for SSR providers when pending bets exist
         if provider_id in self._SSR_PROVIDERS and info["pending_bets"] > 0:
             asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
@@ -110,10 +112,17 @@ class MirrorService:
             )
             if balance_text:
                 balance = float(balance_text.replace(",", ""))
-                logger.info(f"[mirror] Polymarket cash balance from DOM: ${balance}")
+                logger.info(f"[mirror] Polymarket logged in — cash balance: ${balance}")
                 await asyncio.to_thread(self._sync_balance, "polymarket", balance)
+                # NOW broadcast — we confirmed login via DOM balance
+                self._notify("sync_available", {
+                    "provider": "polymarket",
+                    "balance": balance,
+                    "pending_bets": 0,
+                    "pending_stake": 0,
+                })
             else:
-                logger.debug("[mirror] Could not find Polymarket cash balance in DOM")
+                logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
 
@@ -1400,9 +1409,8 @@ class MirrorService:
 
     @staticmethod
     def _market_url(slug: str) -> str:
-        """Build Polymarket sports market URL from slug."""
-        league = slug.split("-")[0] if slug else ""
-        return f"https://polymarket.com/sports/{league}/{slug}"
+        """Build Polymarket event URL from slug."""
+        return f"https://polymarket.com/event/{slug}"
 
     @staticmethod
     async def _read_btn_prices(page) -> list[dict]:
@@ -1482,25 +1490,32 @@ class MirrorService:
         if not matched_section:
             return None
 
-        # Determine which team name to look for in button text
-        target_name = ""
+        # Build candidate names to search for in button text
+        # Polymarket abbreviates: "Alba Berlin" → "ALB", "Cloud9" → "C9"
+        target_names: list[str] = []
         if original_outcome == "home" and home_name:
-            target_name = home_name.lower()
+            name = home_name.lower()
+            target_names.append(name)                    # "alba berlin"
+            target_names.append(name.split()[0])         # "alba"
+            target_names.append(name[:3])                # "alb"
         elif original_outcome == "away" and away_name:
-            target_name = away_name.lower()
+            name = away_name.lower()
+            target_names.append(name)
+            target_names.append(name.split()[0])
+            target_names.append(name[:3])
         elif original_outcome == "over":
-            target_name = "o "  # "O 2.5"
+            target_names.append("o ")
         elif original_outcome == "under":
-            target_name = "u "  # "U 2.5"
+            target_names.append("u ")
         elif original_outcome == "draw":
-            target_name = "draw"
+            target_names.append("draw")
 
-        # Try text-based matching first (reliable — DOM order varies)
-        if target_name:
-            for btn in matched_section:
-                text = (btn.get("text") or "").lower()
-                if target_name in text:
-                    return btn
+        # Try text-based matching — try each candidate name
+        if target_names and len(matched_section) >= 2:
+            for target in target_names:
+                matches = [btn for btn in matched_section if target in (btn.get("text") or "").lower()]
+                if len(matches) == 1:
+                    return matches[0]  # Unique match — confident
 
         # Fallback: index-based matching
         btn_idx = self._btn_index_for_outcome(original_outcome, market_type)
@@ -1834,8 +1849,7 @@ class MirrorService:
         # Polymarket sports URLs: /sports/{league}/{slug} or just /{slug}
         # Extract league prefix from slug (e.g. "bra2" from "bra2-juv-nov-2026-03-31")
         slug_parts = slug.split("-")
-        league = slug_parts[0] if slug_parts else ""
-        market_url = f"https://polymarket.com/sports/{league}/{slug}"
+        market_url = f"https://polymarket.com/event/{slug}"
         logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
         await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
 

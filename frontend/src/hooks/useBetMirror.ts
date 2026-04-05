@@ -136,9 +136,14 @@ export function useBetMirror() {
       setPendingSettlements(JSON.parse(e.data));
     });
 
+    const shownProviders = new Set<string>();
     es.addEventListener('sync_available', (e: MessageEvent) => {
       resetDelay();
-      setSyncAvailable(JSON.parse(e.data));
+      const data = JSON.parse(e.data);
+      // Only show toast once per provider per session
+      if (shownProviders.has(data.provider)) return;
+      shownProviders.add(data.provider);
+      setSyncAvailable(data);
     });
 
     es.addEventListener('balance_synced', (e: MessageEvent) => {

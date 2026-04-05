@@ -49,45 +49,62 @@ def get_state():
 
 @router.post("/fire")
 async def fire_current_provider():
-    """Fire +EV bets for current provider, advance to next."""
+    """Fire +EV bets for current provider (legacy batch fire)."""
     window = fw.get_window()
     if not window or not window.current_provider:
         raise HTTPException(400, "No active provider to fire")
+    mirror = _get_active_mirror()
+    return await fw.fire_provider(mirror)
 
-    pid = window.current_provider
+
+@router.get("/next-bet")
+def get_next_bet():
+    """Get the next unfired bet for the current provider."""
+    window = fw.get_window()
+    if not window or not window.current_provider:
+        raise HTTPException(400, "No active provider")
+    return fw.get_next_bet()
+
+
+@router.post("/check-bet/{bet_id}")
+async def check_bet(bet_id: int):
+    """Check live price for a specific bet. Opens only this bet's tab."""
+    window = fw.get_window()
+    if not window:
+        raise HTTPException(400, "No fire window open")
+
     mirror = _get_active_mirror()
 
-    # Open Polymarket tabs before firing
-    if pid == "polymarket":
-        if not mirror:
-            from ...mirror.service import MirrorService
-            from ...pipeline.broadcast import odds_broadcaster
-
-            async with _start_lock:
-                if not _any_running():
-                    mirror = MirrorService(broadcaster=odds_broadcaster, provider_id="spelklubben")
-                    await mirror.start()
-                    _mirrors["spelklubben"] = mirror
-                else:
-                    mirror = _get_active_mirror()
-
-        if not mirror:
-            raise HTTPException(400, "Could not start mirror browser")
-
+    # Open only this bet's tab (not all bets)
+    pid = window.current_provider
+    if pid == "polymarket" and mirror:
         bets = window.provider_bets.get(pid, [])
-        tab_bets = [
-            {"market_slug": b.market_slug, "poly_outcome": b.poly_outcome, "bet_id": b.bet_id}
-            for b in bets if b.market_slug
-        ]
-        try:
-            await mirror._ensure_poly_tabs(tab_bets)
-        except Exception:
-            logger.exception("Failed to open Polymarket tabs")
+        bet = next((b for b in bets if b.bet_id == bet_id), None)
+        if bet and bet.market_slug:
+            try:
+                await mirror._ensure_poly_tabs([
+                    {"market_slug": bet.market_slug, "poly_outcome": bet.poly_outcome, "bet_id": bet.bet_id}
+                ])
+            except Exception:
+                pass
 
-    if not mirror:
-        raise HTTPException(400, "No mirror running")
+    return await fw.check_bet(bet_id, mirror)
 
-    return await fw.fire_provider(mirror)
+
+@router.post("/place-bet/{bet_id}")
+async def place_bet(bet_id: int):
+    """Place a single confirmed bet."""
+    window = fw.get_window()
+    if not window:
+        raise HTTPException(400, "No fire window open")
+    mirror = _get_active_mirror()
+    return await fw.place_bet(bet_id, mirror)
+
+
+@router.post("/skip-bet/{bet_id}")
+def skip_single_bet(bet_id: int):
+    """Skip a single bet without placing."""
+    return fw.skip_bet(bet_id)
 
 
 @router.post("/skip")

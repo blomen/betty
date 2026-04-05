@@ -355,7 +355,231 @@ async def _check_live_price_poly(bet: FireWindowBet, mirror_service) -> Optional
 
 
 # ---------------------------------------------------------------------------
-# Fire / skip / advance
+# Single-bet flow: check → confirm → next
+# ---------------------------------------------------------------------------
+
+def get_next_bet() -> dict:
+    """Get the next unfired bet for the current provider, sorted by edge desc.
+
+    Returns bet details + position info, or {"done": True} if no more bets.
+    """
+    if _window is None:
+        return {"error": "no fire window open"}
+    pid = _window.current_provider
+    if pid is None:
+        return {"error": "no active provider"}
+
+    bets = _window.provider_bets.get(pid, [])
+    fired_ids = _window.fired_results.get(f"{pid}_bet_ids", set())
+
+    # Sort by edge desc, find first unfired
+    for bet in sorted(bets, key=lambda b: -b.edge_pct):
+        if bet.bet_id in fired_ids:
+            continue
+        if bet.edge_pct <= 0:
+            continue
+
+        cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
+        fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
+
+        remaining = len([b for b in bets if b.bet_id not in fired_ids and b.edge_pct > 0])
+
+        return {
+            "bet_id": bet.bet_id,
+            "provider_id": pid,
+            "event_id": bet.event_id,
+            "display_home": bet.display_home,
+            "display_away": bet.display_away,
+            "market": bet.market,
+            "outcome": bet.outcome,
+            "point": bet.point,
+            "odds": bet.odds,
+            "fair_odds": bet.fair_odds,
+            "edge_pct": bet.edge_pct,
+            "stake": bet.stake,
+            "expected_profit": bet.expected_profit,
+            "tier": bet.tier,
+            "market_slug": bet.market_slug,
+            "poly_outcome": bet.poly_outcome,
+            "original_outcome": bet.original_outcome,
+            "start_time": bet.start_time,
+            "cents": cents,
+            "fair_cents": fair_cents,
+            "remaining_bets": remaining,
+            "done": False,
+        }
+
+    return {"done": True, "provider_id": pid}
+
+
+async def check_bet(bet_id: int, mirror_service) -> dict:
+    """Check live price for a specific bet. Returns price comparison."""
+    if _window is None:
+        return {"error": "no fire window open"}
+
+    pid = _window.current_provider
+    bets = _window.provider_bets.get(pid, [])
+    bet = next((b for b in bets if b.bet_id == bet_id), None)
+    if bet is None:
+        return {"error": f"bet {bet_id} not found"}
+
+    live_edge = None
+    live_cents = None
+
+    if pid == "polymarket" and mirror_service is not None:
+        live_edge = await _check_live_price_poly(bet, mirror_service)
+        if live_edge is not None:
+            # Derive live cents from the matched button
+            poly_tabs = getattr(mirror_service, "_poly_tabs", {})
+            page = poly_tabs.get(bet.market_slug)
+            if page:
+                try:
+                    buttons = await mirror_service._read_btn_prices(page)
+                    matched = mirror_service._find_btn_for_market(
+                        buttons, bet.outcome, bet.market,
+                        home_name=bet.display_home, away_name=bet.display_away,
+                    )
+                    if matched and matched.get("price"):
+                        live_cents = round(matched["price"] * 100)
+                except Exception:
+                    pass
+
+    db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
+    fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
+
+    return {
+        "bet_id": bet_id,
+        "db_cents": db_cents,
+        "live_cents": live_cents,
+        "fair_cents": fair_cents,
+        "db_edge": bet.edge_pct,
+        "live_edge": live_edge,
+        "is_positive": (live_edge or bet.edge_pct) > 0,
+    }
+
+
+async def place_bet(bet_id: int, mirror_service) -> dict:
+    """Place a single confirmed bet, record to DB, sync balance."""
+    if _window is None:
+        return {"error": "no fire window open"}
+
+    pid = _window.current_provider
+    bets = _window.provider_bets.get(pid, [])
+    bet = next((b for b in bets if b.bet_id == bet_id), None)
+    if bet is None:
+        return {"error": f"bet {bet_id} not found"}
+
+    # Track fired bets
+    fired_key = f"{pid}_bet_ids"
+    if fired_key not in _window.fired_results:
+        _window.fired_results[fired_key] = set()
+    _window.fired_results[fired_key].add(bet_id)
+
+    label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
+    placement_result = None
+
+    if pid == "polymarket" and mirror_service is not None:
+        poly_tabs = getattr(mirror_service, "_poly_tabs", {})
+        page = poly_tabs.get(bet.market_slug)
+        if page is None:
+            return {"status": "failed", "bet_id": bet_id, "reason": "no_tab"}
+        try:
+            expected_price = 1 / bet.odds if bet.odds > 0 else 0
+            placement_result = await mirror_service._place_single_polymarket_bet(
+                page=page,
+                bet_id=bet.bet_id,
+                slug=bet.market_slug,
+                outcome=bet.poly_outcome or bet.outcome,
+                amount=bet.stake,
+                expected_price=expected_price,
+                max_slippage=3.0,
+                original_outcome=bet.original_outcome,
+                market_type=bet.market,
+            )
+            if placement_result.get("status") != "placed":
+                print(f"  {label}FAILED*")
+                return placement_result
+            print(f"  {label}PLACED*")
+        except Exception as exc:
+            print(f"  {label}FAILED {exc}*")
+            return {"status": "failed", "bet_id": bet_id, "reason": str(exc)}
+    else:
+        # Non-Polymarket: user places manually, we record it
+        print(f"  {label}MANUAL*")
+        placement_result = {"status": "manual", "bet_id": bet_id, "provider_id": pid, "stake": bet.stake}
+
+    # Record bet in DB
+    _record_bet(bet, pid, placement_result)
+
+    # Sync balance after placement
+    _sync_balance_after_bet(bet, pid)
+
+    return placement_result
+
+
+def _record_bet(bet: FireWindowBet, provider_id: str, result: dict) -> None:
+    """Record placed bet to the database."""
+    from .bet_service import BetService
+    db = get_session()
+    try:
+        svc = BetService(db)
+        resp = svc.create_bet(
+            event_id=bet.event_id,
+            provider_id=provider_id,
+            market=bet.market,
+            outcome=bet.outcome,
+            odds=bet.odds,
+            stake=bet.stake,
+            point=bet.point,
+            fair_odds_at_placement=bet.fair_odds,
+            bet_type="value",
+        )
+        if "error" in resp:
+            logger.warning("[FireWindow] Bet recording failed: %s", resp["error"])
+        else:
+            logger.info("[FireWindow] Bet recorded: id=%s", resp.get("id"))
+        db.commit()
+    except Exception as exc:
+        logger.exception("[FireWindow] Failed to record bet: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _sync_balance_after_bet(bet: FireWindowBet, provider_id: str) -> None:
+    """Deduct stake from provider balance after placement."""
+    from ..repositories.profile_repo import ProfileRepo
+    db = get_session()
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+        if profile:
+            current = repo.get_balance(profile.id, provider_id)
+            new_balance = max(0, current - bet.stake)
+            repo.set_balance(profile.id, provider_id, new_balance)
+            db.commit()
+            logger.info("[FireWindow] Balance synced: %s %.2f → %.2f", provider_id, current, new_balance)
+    except Exception as exc:
+        logger.exception("[FireWindow] Balance sync failed: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def skip_bet(bet_id: int) -> dict:
+    """Skip a bet without placing it."""
+    if _window is None:
+        return {"error": "no fire window open"}
+    pid = _window.current_provider
+    fired_key = f"{pid}_bet_ids"
+    if fired_key not in _window.fired_results:
+        _window.fired_results[fired_key] = set()
+    _window.fired_results[fired_key].add(bet_id)
+    return {"status": "skipped", "bet_id": bet_id}
+
+
+# ---------------------------------------------------------------------------
+# Fire all (legacy — kept for batch fire)
 # ---------------------------------------------------------------------------
 
 async def fire_provider(mirror_service) -> dict:

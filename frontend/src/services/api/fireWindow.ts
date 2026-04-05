@@ -120,4 +120,20 @@ export const fireWindowApi = {
       '/fire-window/summary',
     );
   },
+
+  getNextBet() {
+    return fetchJson<any>('/fire-window/next-bet');
+  },
+
+  checkBet(betId: number) {
+    return fetchJson<any>(`/fire-window/check-bet/${betId}`, { method: 'POST' }, 30_000);
+  },
+
+  placeBet(betId: number) {
+    return fetchJson<any>(`/fire-window/place-bet/${betId}`, { method: 'POST' }, 60_000);
+  },
+
+  skipBet(betId: number) {
+    return fetchJson<any>(`/fire-window/skip-bet/${betId}`, { method: 'POST' });
+  },
 };
