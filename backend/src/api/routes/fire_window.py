@@ -83,12 +83,44 @@ async def fire_current_provider():
 
 
 @router.get("/next-bet")
-def get_next_bet():
-    """Get the next unfired bet for the current provider."""
+async def get_next_bet():
+    """Get the next unfired bet and navigate the provider tab to the event."""
     window = fw.get_window()
     if not window or not window.current_provider:
         raise HTTPException(400, "No active provider")
-    return fw.get_next_bet()
+
+    result = fw.get_next_bet()
+
+    # Auto-navigate the provider's tab to this event
+    if not result.get("done") and result.get("bet_id"):
+        mirror = _get_active_mirror()
+        if mirror:
+            pid = window.current_provider
+            try:
+                from ...mirror.workflows import get_workflow
+                workflow = get_workflow(pid)
+                context = getattr(mirror, 'interceptor', None)
+                context = getattr(context, 'context', None) if context else None
+                if context:
+                    page = await workflow.find_tab(context)
+                    if page:
+                        # Build a minimal bet object for navigate_to_event
+                        class BetNav:
+                            pass
+                        bet = BetNav()
+                        bet.bet_id = result["bet_id"]
+                        bet.market_slug = result.get("market_slug")
+                        bet.matchup_id = result.get("matchup_id")
+                        bet.display_home = result.get("display_home", "")
+                        bet.display_away = result.get("display_away", "")
+                        bet.outcome = result.get("outcome", "")
+                        bet.market = result.get("market", "")
+                        await workflow.navigate_to_event(page, bet)
+                        result["navigated"] = True
+            except Exception as e:
+                logger.warning(f"[next-bet] Navigation failed: {e}")
+
+    return result
 
 
 @router.post("/check-bet/{bet_id}")
