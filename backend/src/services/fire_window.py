@@ -280,6 +280,9 @@ def set_current_provider(provider_id: str) -> dict:
     return get_live_state()
 
 
+_tabs_opened = False  # Guard against double-call from React strict mode
+
+
 async def open_needed_tabs(mirror_service) -> dict:
     """Open tabs for providers that have balance OR unsettled expired bets.
 
@@ -287,6 +290,9 @@ async def open_needed_tabs(mirror_service) -> dict:
     - They're in the fire window queue AND have balance >= min_bet, OR
     - They have pending bets where start_time has passed (need settlement)
     """
+    global _tabs_opened
+    if _tabs_opened:
+        return {"opened": [], "settle_needed": [], "count": 0, "skipped": "already_opened"}
     from ..db.models import Bet, Event
     from ..repositories.profile_repo import ProfileRepo
     from ..config.loader import load_config
@@ -374,6 +380,7 @@ async def open_needed_tabs(mirror_service) -> dict:
         except Exception as e:
             logger.warning(f"[FireWindow] Failed to open tab for {pid}: {e}")
 
+    _tabs_opened = True
     return {
         "opened": opened,
         "settle_needed": settle_needed,
@@ -1103,13 +1110,58 @@ def get_fired_summary() -> dict:
 
 def close_window() -> None:
     """Tear down the fire window."""
-    global _window
+    global _window, _tabs_opened
     _window = None
+    _tabs_opened = False
 
 
 def get_window() -> FireWindow | None:
     """Return the current FireWindow singleton (or None)."""
     return _window
+
+
+def _match_polymarket_position(bet, event, positions: list[dict]) -> dict | None:
+    """Match a pending Polymarket bet against scraped portfolio positions.
+
+    Uses team names from the event to find the matching position.
+    """
+    if not event:
+        return None
+
+    # Build search keywords from event
+    keywords = []
+    if event.home_team:
+        # Use first significant word (>3 chars) from team name
+        for word in event.home_team.split():
+            if len(word) > 3:
+                keywords.append(word.lower())
+                break
+    if event.away_team:
+        for word in event.away_team.split():
+            if len(word) > 3:
+                keywords.append(word.lower())
+                break
+
+    if not keywords:
+        return None
+
+    # Deduplicate positions (scraper returns each position twice — collapsed + expanded)
+    seen_markets = set()
+    for pos in positions:
+        full_text = (pos.get("full_text") or "").lower()
+        market = pos.get("market", "")
+
+        # Skip duplicates
+        dedup_key = f"{market}:{pos.get('has_redeem')}:{pos.get('has_sell')}"
+        if dedup_key in seen_markets:
+            continue
+        seen_markets.add(dedup_key)
+
+        # Check if all keywords appear in the position text
+        if all(kw in full_text for kw in keywords):
+            return pos
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1153,13 +1205,47 @@ async def check_settlements(mirror_service) -> dict:
         for bet in pending:
             by_provider.setdefault(bet.provider_id, []).append(bet)
 
-        # Check Polymarket via Gamma API (existing logic in MirrorService)
+        # Check Polymarket via DOM portfolio scrape
         if "polymarket" in by_provider and mirror_service:
             try:
-                poly_settled = mirror_service.settle_polymarket_bets()
-                staged.extend(poly_settled)
+                from ..mirror.workflows.polymarket import PolymarketWorkflow
+                poly_wf = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+                context = getattr(mirror_service, 'interceptor', None)
+                context = getattr(context, 'context', None) if context else None
+                if context:
+                    poly_page = await poly_wf.find_tab(context)
+                    if poly_page:
+                        positions = await poly_wf.scrape_portfolio(poly_page)
+                        # Match positions against pending bets
+                        for bet in by_provider["polymarket"]:
+                            event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
+                            event_name = f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id or ""
+                            # Find matching position by checking if event keywords appear in full_text
+                            matched_pos = _match_polymarket_position(bet, event, positions)
+                            if matched_pos:
+                                status = matched_pos["status"]
+                                if "Won" in matched_pos.get("full_text", "") or "WON" in matched_pos.get("full_text", ""):
+                                    status = "won"
+                                elif "Lost" in matched_pos.get("full_text", "") or "LOST" in matched_pos.get("full_text", ""):
+                                    status = "lost"
+                                if status in ("won", "lost"):
+                                    vals = matched_pos.get("values", [])
+                                    payout = vals[0] if status == "won" and vals else 0
+                                    staged.append({
+                                        "bet_id": bet.id,
+                                        "provider": "polymarket",
+                                        "event": event_name,
+                                        "market": bet.market,
+                                        "outcome": bet.outcome,
+                                        "odds": bet.odds,
+                                        "stake": bet.stake,
+                                        "result": status,
+                                        "payout": round(payout, 2),
+                                        "pl": round(payout - bet.stake, 2),
+                                        "has_redeem": matched_pos.get("has_redeem", False),
+                                    })
             except Exception as e:
-                logger.warning(f"[settle] Polymarket settlement check failed: {e}")
+                logger.warning(f"[settle] Polymarket settlement check failed: {e}", exc_info=True)
 
         # Check Pinnacle via bet history API
         if "pinnacle" in by_provider and mirror_service:

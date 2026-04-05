@@ -308,7 +308,7 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         for i in range(count):
             try:
-                # Click the first visible Redeem button (they shift after each click)
+                # Click the first visible "Redeem" button in the position row
                 clicked = await page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
                     for (const btn of btns) {
@@ -319,12 +319,38 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                     return false;
                 }""")
-                if clicked:
-                    await asyncio.sleep(2)  # Wait for transaction
-                    redeemed += 1
-                    logger.info(f"[polymarket] Redeemed position {i + 1}/{count}")
-                else:
+                if not clicked:
                     break
+
+                # Wait for the confirmation modal to appear
+                await asyncio.sleep(2)
+
+                # Click the confirmation button in the modal ("Redeem $X.XX")
+                confirmed = await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button');
+                    for (const btn of btns) {
+                        const t = (btn.textContent || '').trim();
+                        if (t.startsWith('Redeem $') || t.startsWith('Redeem $')) {
+                            btn.click();
+                            return t;
+                        }
+                    }
+                    return null;
+                }""")
+                if confirmed:
+                    await asyncio.sleep(3)  # Wait for blockchain transaction
+                    redeemed += 1
+                    logger.info(f"[polymarket] Redeemed {i + 1}/{count}: {confirmed}")
+                else:
+                    # Modal might not have appeared — try closing any overlay
+                    logger.warning(f"[polymarket] No confirm button found for redeem {i + 1}")
+                    # Try to close the modal
+                    await page.evaluate("""() => {
+                        const close = document.querySelector('[class*="close"], [aria-label="Close"]');
+                        if (close) close.click();
+                    }""")
+                    await asyncio.sleep(1)
+                    errors += 1
             except Exception as e:
                 logger.warning(f"[polymarket] Redeem {i + 1} failed: {e}")
                 errors += 1
