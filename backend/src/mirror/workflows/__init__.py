@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PLATFORM_MAP: dict[str, type[ProviderWorkflow]] | None = None
+_WORKFLOW_CACHE: dict[str, ProviderWorkflow] = {}  # Cached instances per provider_id
 
 
 def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
@@ -57,7 +58,10 @@ _RETRIEVER_TO_PLATFORM = {
 
 
 def get_workflow(provider_id: str) -> ProviderWorkflow:
-    """Get the workflow instance for a provider."""
+    """Get the workflow instance for a provider. Cached per provider_id."""
+    if provider_id in _WORKFLOW_CACHE:
+        return _WORKFLOW_CACHE[provider_id]
+
     global _PLATFORM_MAP
     if _PLATFORM_MAP is None:
         _PLATFORM_MAP = _load_platform_map()
@@ -69,9 +73,13 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     if provider is None:
         if provider_id in _PLATFORM_MAP:
             domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
-            return _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
+            instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
+            _WORKFLOW_CACHE[provider_id] = instance
+            return instance
         from .manual import ManualWorkflow
-        return ManualWorkflow(provider_id=provider_id, domain="")
+        instance = ManualWorkflow(provider_id=provider_id, domain="")
+        _WORKFLOW_CACHE[provider_id] = instance
+        return instance
 
     platform = _RETRIEVER_TO_PLATFORM.get(provider.retriever_type, provider.retriever_type)
     cls = _PLATFORM_MAP.get(platform)
@@ -83,7 +91,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     # Fallback domains for providers without explicit domain in config
     if not domain:
         domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
-    return cls(provider_id=provider_id, domain=domain)
+    instance = cls(provider_id=provider_id, domain=domain)
+    _WORKFLOW_CACHE[provider_id] = instance
+    return instance
 
 
 __all__ = [
