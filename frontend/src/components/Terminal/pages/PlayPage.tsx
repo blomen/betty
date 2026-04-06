@@ -120,8 +120,13 @@ export function PlayPage() {
     setExcludedBets(prev => [...prev, key]);
   }, []);
 
-  const pendingProviders = pendingData?.providers ?? [];
-  const pendingCount = pendingData?.total_bets ?? 0;
+  // Build lookup: provider_id → number of unsettled bets
+  const settleMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const p of pendingData?.providers ?? []) m[p.provider_id] = p.bet_count;
+    return m;
+  }, [pendingData]);
+
   const batch = batchData?.batch ?? [];
   const summary = batchData?.summary;
 
@@ -178,31 +183,6 @@ export function PlayPage() {
         </h2>
       </div>
 
-      {/* Settlement banner — shows providers with unsettled bets + login status */}
-      {pendingCount > 0 && (
-        <div className="border border-amber-400/30 bg-amber-400/5 px-3 py-1.5">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs text-amber-400 font-medium">{pendingCount} bets to settle</span>
-            <span className="text-[10px] text-muted">— login & open bet history</span>
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-            {pendingProviders.map(p => {
-              const status = providerStatus.get(p.provider_id);
-              const dot = status === 'logged_in' ? 'text-success' : status === 'opened' ? 'text-amber-400' : 'text-muted/30';
-              const label = status === 'logged_in' ? 'logged in' : status === 'opened' ? 'logging in...' : 'opening...';
-              return (
-                <span key={p.provider_id} className="flex items-center gap-1 text-xs">
-                  <span className={`text-[10px] ${dot}`}>●</span>
-                  <span className="text-text uppercase font-medium">{p.provider_id}</span>
-                  <span className="text-muted">({p.bet_count})</span>
-                  <span className={`text-[10px] ${status === 'logged_in' ? 'text-success' : 'text-muted'}`}>{label}</span>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Batch */}
       {batchLoading ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Building batch...</div>
@@ -241,6 +221,7 @@ export function PlayPage() {
 
                     {clusterProviders.map(({ provider, bets, tier, totalStake, totalEv }) => {
                       const isExpanded = expandedProvider === provider;
+                      const settleCount = settleMap[provider] ?? 0;
                       return (
                         <Fragment key={provider}>
                           <div
@@ -250,6 +231,9 @@ export function PlayPage() {
                             <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
                             <span className="text-xs text-muted">{bets.length} bets</span>
                             <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
+                            {settleCount > 0 && (
+                              <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>
+                            )}
                             <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
                             <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
                           </div>
