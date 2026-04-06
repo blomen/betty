@@ -98,11 +98,11 @@ class PinnacleWorkflow(ProviderWorkflow):
             # Flatten newlines to spaces for easier regex
             flat = raw.replace('\n', ' ').replace('\r', '')
 
-            # Find all bet cards: "Settled: DATE ... @ ODDS ... Stake: X"
-            # Pattern: capture everything between consecutive "Settled:" markers
-            cards = re.split(r'(?=Settled:\s)', flat)
+            # Split by "Settled:" or "Rättat:" markers (EN/SV)
+            cards = re.split(r'(?=(?:Settled|Rättat):\s)', flat)
             for card in cards:
-                if 'Stake:' not in card:
+                # Must have stake field (EN: "Stake:", SV: "Insats:")
+                if 'Stake:' not in card and 'Insats:' not in card:
                     continue
 
                 # Odds: "@ 7.420"
@@ -111,19 +111,25 @@ class PinnacleWorkflow(ProviderWorkflow):
                     continue
                 odds = float(odds_match.group(1))
 
-                # Stake: "Stake: 90.00" (may have comma separator)
-                stake_match = re.search(r'Stake:\s*([\d,.]+)', card)
+                # Stake: EN "Stake: 90.00" or SV "Insats: 90,00"
+                stake_match = re.search(r'(?:Stake|Insats):\s*([\d.,]+)', card)
                 if not stake_match:
                     continue
-                stake = float(stake_match.group(1).replace(',', ''))
+                stake = float(stake_match.group(1).replace(',', '.'))
 
-                # Result: "SETTLED – LOSS" or "SETTLED – WIN" or "LOSS" or "WIN"
+                # Result: EN "SETTLED – LOSS/WIN" or SV "RÄTTAT – FÖRLUST/VINST"
                 card_upper = card.upper()
-                if 'SETTLED' in card_upper and 'LOSS' in card_upper:
+                if 'FÖRLUST' in card_upper or ('SETTLED' in card_upper and 'LOSS' in card_upper):
                     status = "lost"
-                elif 'SETTLED' in card_upper and 'WIN' in card_upper and 'LOSS' not in card_upper:
-                    status = "won"
-                elif 'VOID' in card_upper or 'CANCEL' in card_upper:
+                elif 'VINST' in card_upper or ('SETTLED' in card_upper and 'WIN' in card_upper):
+                    # "Vinst:" field exists for all bets (potential win) — check RÄTTAT–VINST label
+                    # RÄTTAT – FÖRLUST = loss, even though "Vinst: 577" is shown
+                    # Only mark as won if the LABEL says VINST, not the field
+                    if 'FÖRLUST' in card_upper:
+                        status = "lost"  # Label says FÖRLUST, "Vinst:" is just potential
+                    else:
+                        status = "won"
+                elif 'VOID' in card_upper or 'CANCEL' in card_upper or 'OGILTIG' in card_upper:
                     status = "void"
                 else:
                     continue
