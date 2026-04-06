@@ -95,47 +95,56 @@ class PinnacleWorkflow(ProviderWorkflow):
             raw = ""
 
         if raw:
-            # Split by "Settled:" markers — each is a bet card
-            cards = re.split(r'(?=Settled:\s)', raw)
+            # Flatten newlines to spaces for easier regex
+            flat = raw.replace('\n', ' ').replace('\r', '')
+
+            # Find all bet cards: "Settled: DATE ... @ ODDS ... Stake: X"
+            # Pattern: capture everything between consecutive "Settled:" markers
+            cards = re.split(r'(?=Settled:\s)', flat)
             for card in cards:
                 if 'Stake:' not in card:
                     continue
 
-                # Result: look for "SETTLED – LOSS" or "SETTLED – WIN" or just "LOSS"/"WIN"
-                if 'LOSS' in card.upper():
+                # Odds: "@ 7.420"
+                odds_match = re.search(r'@\s*([\d.]+)', card)
+                if not odds_match:
+                    continue
+                odds = float(odds_match.group(1))
+
+                # Stake: "Stake: 90.00" (may have comma separator)
+                stake_match = re.search(r'Stake:\s*([\d,.]+)', card)
+                if not stake_match:
+                    continue
+                stake = float(stake_match.group(1).replace(',', ''))
+
+                # Result: "SETTLED – LOSS" or "SETTLED – WIN" or "LOSS" or "WIN"
+                card_upper = card.upper()
+                if 'SETTLED' in card_upper and 'LOSS' in card_upper:
                     status = "lost"
-                elif 'WIN' in card.upper() and 'SETTLED' in card.upper():
+                elif 'SETTLED' in card_upper and 'WIN' in card_upper and 'LOSS' not in card_upper:
                     status = "won"
-                elif 'VOID' in card.upper() or 'CANCELLED' in card.upper():
+                elif 'VOID' in card_upper or 'CANCEL' in card_upper:
                     status = "void"
                 else:
-                    continue  # unsettled or unknown
+                    continue
 
-                # Event name: line after "Settled: DATE"
-                event_match = re.search(r'(?:⚽|🎾|🏀|⚾|🏒|.)?\s*(.+?vs\s+.+?)(?:\n|$)', card)
-                event_name = event_match.group(1).strip() if event_match else ""
+                # Event name: "Team A vs Team B" pattern
+                event_match = re.search(r'(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)', card)
+                event_name = f"{event_match.group(1).strip()} vs {event_match.group(2).strip()}" if event_match else ""
 
-                # Outcome + odds: "Team Name @ 7.420"
-                odds_match = re.search(r'(.+?)\s*@\s*([\d.]+)', card)
-                outcome_name = odds_match.group(1).strip() if odds_match else ""
-                odds = float(odds_match.group(2)) if odds_match else 0
+                # Outcome name: text before "@ ODDS"
+                outcome_match = re.search(r'(?:vs\s+\S.*?)\s+(.+?)\s*@\s*[\d.]+', card)
+                outcome_name = outcome_match.group(1).strip() if outcome_match else ""
 
-                # Stake
-                stake_match = re.search(r'Stake:\s*([\d,.]+)', card)
-                stake = float(stake_match.group(1).replace(',', '')) if stake_match else 0
-
-                # Payout (actual payout — 0 for losses on Pinnacle, but field shows potential)
-                # For losses: actual payout = 0
-                # For wins: actual payout = stake + win
+                # Payout: 0 for losses, actual payout for wins
                 if status == "lost":
                     payout = 0.0
                 elif status == "won":
-                    payout_match = re.search(r'Payout:\s*([\d,.]+)', card)
-                    payout = float(payout_match.group(1).replace(',', '')) if payout_match else stake * odds
+                    payout = stake * odds
                 else:
-                    payout = stake  # void
+                    payout = stake
 
-                # Bet ID
+                # Bet ID: "#2220898232"
                 bet_id_match = re.search(r'#(\d+)', card)
                 bet_id = bet_id_match.group(1) if bet_id_match else ""
 
