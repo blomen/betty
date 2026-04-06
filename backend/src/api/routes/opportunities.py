@@ -166,60 +166,6 @@ def get_play_session(db: Session = Depends(get_db)):
     return service.get_session(profile.id)
 
 
-@router.get("/play/pending-bets")
-def get_pending_bets(db: Session = Depends(get_db)):
-    """Get all pending (unsettled) bets grouped by provider."""
-    from ...db.models import Bet, Event
-    from ...repositories import ProfileRepo
-
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    pending = (
-        db.query(Bet)
-        .filter(Bet.profile_id == profile.id, Bet.result == "pending")
-        .order_by(Bet.provider_id, Bet.placed_at)
-        .all()
-    )
-
-    # Build event name lookup
-    event_ids = {b.event_id for b in pending if b.event_id}
-    events = {}
-    if event_ids:
-        for ev in db.query(Event).filter(Event.id.in_(event_ids)).all():
-            events[ev.id] = f"{ev.home_team} vs {ev.away_team}" if ev.home_team and ev.away_team else ev.id
-
-    # Group by provider
-    from collections import defaultdict
-    groups: dict[str, list] = defaultdict(list)
-    for bet in pending:
-        groups[bet.provider_id].append({
-            "id": bet.id,
-            "event_name": events.get(bet.event_id, bet.event_id or "Unknown"),
-            "market": bet.market,
-            "outcome": bet.outcome,
-            "odds": bet.odds,
-            "stake": bet.stake,
-            "currency": bet.currency or "SEK",
-            "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
-        })
-
-    providers = [
-        {
-            "provider_id": pid,
-            "pending_count": len(bets),
-            "total_stake": sum(b["stake"] for b in bets),
-            "bets": bets,
-        }
-        for pid, bets in sorted(groups.items())
-    ]
-
-    return {
-        "providers": providers,
-        "total_pending": len(pending),
-        "total_stake": sum(b.stake for b in pending),
-    }
-
 
 class SettleBetRequest(BaseModel):
     bet_id: int
