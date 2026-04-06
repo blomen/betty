@@ -57,12 +57,19 @@ class ProviderWorkflow(ABC):
         self.mode = mode
 
     async def find_tab(self, context: "BrowserContext") -> "Page | None":
-        """Find this provider's tab in the browser context."""
+        """Find this provider's tab in the browser context.
+
+        Prefers the page with the longest URL (most likely logged in / deepest page).
+        """
+        best = None
+        best_len = 0
         for page in context.pages:
             url = page.url or ""
             if self.domain and self.domain in url:
-                return page
-        return None
+                if len(url) > best_len:
+                    best = page
+                    best_len = len(url)
+        return best
 
     @abstractmethod
     async def check_login(self, page: "Page") -> bool:
