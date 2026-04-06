@@ -182,6 +182,34 @@ export function PlayPage() {
     setExcludedBets(prev => [...prev, key]);
   }, []);
 
+  // Active bet — navigating mirror to event
+  const [activeBet, setActiveBet] = useState<string | null>(null); // betKey
+  const [liveEdge, setLiveEdge] = useState<number | null>(null);
+  const [navigating, setNavigating] = useState(false);
+
+  const handlePlayBet = useCallback(async (b: ClusterBet) => {
+    const key = betKey(b);
+    setActiveBet(key);
+    setLiveEdge(null);
+    setNavigating(true);
+    try {
+      const res = await api.navigateBet({
+        provider_id: b.provider_id,
+        event_id: b.event_id,
+        market: b.market,
+        outcome: b.outcome,
+        point: b.point,
+        odds: b.odds,
+        fair_odds: b.fair_odds,
+        stake: b.stake,
+        display_home: b.display_home,
+        display_away: b.display_away,
+      });
+      if (res.live_edge != null) setLiveEdge(res.live_edge);
+    } catch { /* */ }
+    finally { setNavigating(false); }
+  }, []);
+
   // Lookups
   const settleMap = useMemo(() => {
     const m: Record<string, number> = {};
@@ -383,16 +411,28 @@ export function PlayPage() {
                                   {bets.map(b => {
                                     const ttk = getTTKFromNow(b.start_time);
                                     return (
-                                      <tr key={betKey(b)} className={`hover:bg-panel2/40 ${b.funded === false ? 'opacity-50' : ''}`}>
-                                        <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>{eventLabel(b)}</td>
+                                      <tr
+                                        key={betKey(b)}
+                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
+                                        onClick={() => handlePlayBet(b)}
+                                      >
+                                        <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>
+                                          {activeBet === betKey(b) && navigating && <span className="text-amber-400 text-[10px] mr-1">⟳</span>}
+                                          {eventLabel(b)}
+                                        </td>
                                         <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
                                         <td className="text-right text-sm text-text">{b.odds.toFixed(2)}</td>
                                         <td className="text-right text-sm text-muted">{b.fair_odds.toFixed(2)}</td>
-                                        <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>+{b.edge_pct.toFixed(1)}%</td>
+                                        <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
+                                          {activeBet === betKey(b) && liveEdge != null
+                                            ? <span className={liveEdge > 0 ? 'text-success' : 'text-danger'}>{liveEdge > 0 ? '+' : ''}{liveEdge.toFixed(1)}% live</span>
+                                            : `+${b.edge_pct.toFixed(1)}%`
+                                          }
+                                        </td>
                                         <td className="text-right text-sm text-text">{fmt(b.stake, tier)}</td>
                                         <td className="text-right text-sm"><span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span></td>
                                         <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>{formatOddsAge(b.odds_age_minutes)}</td>
-                                        <td className="text-right"><button onClick={() => handleRemoveBet(betKey(b))} className="text-muted hover:text-error text-xs">✕</button></td>
+                                        <td className="text-right"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(betKey(b)); }} className="text-muted hover:text-error text-xs">✕</button></td>
                                       </tr>
                                     );
                                   })}

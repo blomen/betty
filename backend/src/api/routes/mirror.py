@@ -161,6 +161,105 @@ async def scrape_poly_portfolio():
     return {"staged": len(staged), "settlements": staged}
 
 
+class NavigateBetRequest(BaseModel):
+    provider_id: str
+    event_id: str
+    market: str
+    outcome: str
+    point: float | None = None
+    odds: float
+    fair_odds: float
+    stake: float
+    display_home: str = ""
+    display_away: str = ""
+
+
+@router.post("/navigate-bet")
+async def navigate_to_bet(req: NavigateBetRequest):
+    """Navigate mirror browser to an event page and check live price.
+
+    Generic for all providers — uses the workflow's navigate_to_event.
+    Returns the live edge if available.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+
+    from ...mirror.workflows import get_workflow
+    from ...db.models import Odds, get_session
+
+    workflow = get_workflow(req.provider_id)
+    context = mirror.interceptor.context
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    page = await workflow.find_tab(context)
+    if not page:
+        # Try to open a new tab
+        url = f"https://www.{workflow.domain}" if workflow.domain else None
+        if not url:
+            raise HTTPException(400, f"No tab and no domain for {req.provider_id}")
+        page = await context.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+
+    # Get event_slug for Polymarket from DB
+    market_slug = None
+    poly_outcome = None
+    if req.provider_id == "polymarket":
+        db = get_session()
+        try:
+            odds_row = db.query(Odds).filter(
+                Odds.event_id == req.event_id,
+                Odds.provider_id == "polymarket",
+                Odds.market == req.market,
+                Odds.outcome == req.outcome,
+            ).first()
+            if odds_row and odds_row.provider_meta:
+                meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
+                market_slug = meta.get("event_slug", "")
+                poly_outcome = meta.get("poly_home") if req.outcome == "home" else meta.get("poly_away")
+        finally:
+            db.close()
+
+    # Build a bet-like object for the workflow
+    class BetProxy:
+        pass
+    bet = BetProxy()
+    bet.bet_id = 0
+    bet.event_id = req.event_id
+    bet.market = req.market
+    bet.outcome = req.outcome
+    bet.original_outcome = req.outcome
+    bet.point = req.point
+    bet.odds = req.odds
+    bet.fair_odds = req.fair_odds
+    bet.stake = req.stake
+    bet.display_home = req.display_home
+    bet.display_away = req.display_away
+    bet.market_slug = market_slug
+    bet.poly_outcome = poly_outcome or req.outcome
+
+    # Navigate
+    navigated = await workflow.navigate_to_event(page, bet)
+
+    # Check live price
+    live_edge = None
+    try:
+        live_edge = await workflow.check_live_price(page, bet)
+    except Exception:
+        pass
+
+    return {
+        "navigated": navigated,
+        "provider_id": req.provider_id,
+        "event_id": req.event_id,
+        "market_slug": market_slug,
+        "live_edge": round(live_edge, 1) if live_edge is not None else None,
+        "db_edge": round(req.odds / req.fair_odds * 100 - 100, 1) if req.fair_odds > 0 else None,
+        "page_url": page.url[:100] if page else None,
+    }
+
+
 @router.post("/settle/{provider_id}")
 async def settle_provider(provider_id: str):
     """Trigger settlement sync for a provider using its workflow API."""

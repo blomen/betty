@@ -184,6 +184,18 @@ export const settingsApi = {
     return fetchJson('/mirror/open-settle-tabs', { method: 'POST' }, 60_000);
   },
 
+  async navigateBet(bet: {
+    provider_id: string; event_id: string; market: string; outcome: string;
+    point?: number | null; odds: number; fair_odds: number; stake: number;
+    display_home?: string; display_away?: string;
+  }): Promise<{ navigated: boolean; live_edge: number | null; db_edge: number | null; page_url: string | null }> {
+    return fetchJson('/mirror/navigate-bet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bet),
+    }, 30_000);
+  },
+
   async scrapePolyPortfolio(): Promise<{ staged: number; settlements: any[] }> {
     return fetchJson('/mirror/scrape-poly-portfolio', { method: 'POST' }, 30_000);
   },
