@@ -202,19 +202,40 @@ async def debug_history(provider_id: str):
     if not page:
         return {"error": f"No {provider_id} tab found", "domain": domain, "pages": all_urls}
 
+    # First try API
     entries = await workflow.sync_history(page)
+
+    # Also get raw DOM text for debugging
+    try:
+        dom_text = await page.evaluate("() => document.body.innerText.slice(0, 3000)")
+    except Exception:
+        dom_text = "(could not read)"
+
+    # Try API call directly to see error
+    api_result = None
+    try:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        url = f"https://api.arcadia.pinnacle.se/0.1/bets?status=settled&startDate={start}&endDate={end}"
+        api_result = await page.evaluate(f"""async () => {{
+            try {{
+                const r = await fetch("{url}", {{credentials: "include"}});
+                if (!r.ok) return {{error: r.status, text: await r.text()}};
+                return await r.json();
+            }} catch(e) {{ return {{error: e.message}}; }}
+        }}""")
+    except Exception as e:
+        api_result = {"error": str(e)}
+
     return {
         "provider": provider_id,
         "page_url": page.url[:100],
-        "entries": len(entries),
-        "settled": [
-            {"event": e.event_name, "odds": e.odds, "stake": e.stake, "status": e.status, "payout": e.payout}
-            for e in entries if e.status in ("won", "lost", "void")
-        ],
-        "pending": [
-            {"event": e.event_name, "odds": e.odds, "stake": e.stake, "status": e.status}
-            for e in entries if e.status == "pending"
-        ],
+        "domain": domain,
+        "entries_from_sync_history": len(entries),
+        "api_raw": str(api_result)[:500] if api_result else None,
+        "dom_preview": dom_text[:500] if dom_text else None,
     }
 
 
