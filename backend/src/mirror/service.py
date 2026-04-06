@@ -158,6 +158,18 @@ class MirrorService:
                     logger.warning(f"[mirror] Polymarket history scrape failed: {e}")
             return
 
+        # Pinnacle bet history page — use API sync
+        if provider_id == "pinnacle" and ("spelhistorik" in url or "bet-history" in url or "account" in url):
+            info = await asyncio.to_thread(self._get_provider_sync_info, "pinnacle")
+            if info["pending_bets"] > 0:
+                logger.info(f"[mirror] Pinnacle history page detected — syncing {info['pending_bets']} pending bets via API")
+                await asyncio.sleep(2)
+                try:
+                    await self._settle_via_workflow("pinnacle")
+                except Exception as e:
+                    logger.warning(f"[mirror] Pinnacle history sync failed: {e}")
+            return
+
         # Kambi bet history page (SSR — needs DOM scrape)
         if provider_id in self._SSR_PROVIDERS:
             bet_history_paths = ("/betting/sports/bethistory",)
@@ -172,6 +184,87 @@ class MirrorService:
                             if provider_id in (page.url or '').lower() or any(p in (page.url or '') for p in bet_history_paths):
                                 await self._scrape_ssr_bet_history(provider_id, page)
                                 return
+
+    async def _settle_via_workflow(self, provider_id: str):
+        """Use a provider workflow's sync_history API to settle pending bets.
+
+        Works for providers with REST API bet history (Pinnacle, etc.).
+        Fetches settled bets via API, matches against pending DB bets by odds+stake.
+        """
+        from .workflows import get_workflow
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(context)
+        if not page:
+            logger.warning(f"[mirror] No {provider_id} tab found for history sync")
+            return
+
+        entries = await workflow.sync_history(page)
+        if not entries:
+            logger.info(f"[mirror] No history entries from {provider_id} API")
+            return
+
+        # Filter to settled only
+        settled_entries = [e for e in entries if e.status in ("won", "lost", "void")]
+        if not settled_entries:
+            logger.info(f"[mirror] No settled entries from {provider_id}")
+            return
+
+        logger.info(f"[mirror] {provider_id} API returned {len(settled_entries)} settled bets")
+
+        # Get pending bets from DB
+        pending = await asyncio.to_thread(self._get_pending_bets_sync, provider_id)
+        if not pending:
+            return
+
+        staged = []
+        for entry in settled_entries:
+            for pb in pending:
+                # Match by odds (within 1%) and stake (within 1 unit)
+                odds_match = abs(entry.odds - pb["odds"]) / max(pb["odds"], 0.01) < 0.02
+                stake_match = abs(entry.stake - pb["stake"]) < 2
+                if not (odds_match and stake_match):
+                    continue
+
+                payout = entry.payout if entry.payout is not None else 0.0
+
+                staged.append({
+                    "bet_id": pb["id"],
+                    "provider": provider_id,
+                    "event": entry.event_name or "Unknown",
+                    "odds": pb["odds"],
+                    "stake": pb["stake"],
+                    "result": entry.status,
+                    "payout": round(payout, 2),
+                })
+                pending.remove(pb)
+                break
+
+        if staged:
+            self._pending_settlements = staged
+            wins = [s for s in staged if s["result"] == "won"]
+            losses = [s for s in staged if s["result"] == "lost"]
+            voids = [s for s in staged if s["result"] == "void"]
+            total_staked = sum(s["stake"] for s in staged)
+            total_payout = sum(s["payout"] for s in staged)
+            logger.info(
+                f"[mirror] {provider_id}: {len(staged)} settlement(s) — "
+                f"{len(wins)}W {len(losses)}L {len(voids)}V, net={total_payout - total_staked:+.0f}"
+            )
+            self._notify("settlements_pending", {
+                "provider": provider_id,
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": total_staked,
+                "total_payout": total_payout,
+                "net": total_payout - total_staked,
+                "settlements": staged,
+            })
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""
