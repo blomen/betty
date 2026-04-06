@@ -49,6 +49,7 @@ class MirrorService:
             on_financial_data=self._handle_financial_data,
             on_provider_detected=self._handle_provider_detected,
             on_notification_settings=self._handle_notification_settings,
+            on_page_navigated=self._handle_page_navigated,
         )
 
     async def start(self, site_url: str | None = None):
@@ -136,6 +137,41 @@ class MirrorService:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
+
+    async def _handle_page_navigated(self, provider_id: str, url: str):
+        """Fires on every page navigation to a known provider.
+
+        Detects bet history pages and auto-scrapes for settlement:
+        - Polymarket: /portfolio?tab=history
+        - Kambi: /betting/sports/bethistory
+        - Altenar/Gecko: bet history API responses handled by _handle_bet_history
+        """
+        # Polymarket history tab
+        if provider_id == "polymarket" and "tab=history" in url:
+            info = await asyncio.to_thread(self._get_provider_sync_info, "polymarket")
+            if info["pending_bets"] > 0:
+                logger.info(f"[mirror] Polymarket history tab detected — scraping {info['pending_bets']} pending bets")
+                await asyncio.sleep(4)  # Wait for DOM render
+                try:
+                    await self.scrape_polymarket_settlements()
+                except Exception as e:
+                    logger.warning(f"[mirror] Polymarket history scrape failed: {e}")
+            return
+
+        # Kambi bet history page (SSR — needs DOM scrape)
+        if provider_id in self._SSR_PROVIDERS:
+            bet_history_paths = ("/betting/sports/bethistory",)
+            if any(p in url for p in bet_history_paths):
+                info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
+                if info["pending_bets"] > 0:
+                    logger.info(f"[mirror] {provider_id} bet history page detected — scraping")
+                    await asyncio.sleep(3)
+                    context = self.interceptor.context
+                    if context:
+                        for page in context.pages:
+                            if provider_id in (page.url or '').lower() or any(p in (page.url or '') for p in bet_history_paths):
+                                await self._scrape_ssr_bet_history(provider_id, page)
+                                return
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""

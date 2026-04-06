@@ -100,6 +100,7 @@ class BetInterceptor:
         on_financial_data: Callable[[str, str], Awaitable[None]] | None = None,
         on_provider_detected: Callable[[str], Awaitable[None]] | None = None,
         on_notification_settings: Callable[..., Awaitable[None]] | None = None,
+        on_page_navigated: Callable[[str, str], Awaitable[None]] | None = None,
     ):
         self.on_bet_response = on_bet_response
         self.on_event_data = on_event_data
@@ -107,6 +108,7 @@ class BetInterceptor:
         self.on_financial_data = on_financial_data
         self.on_provider_detected = on_provider_detected
         self.on_notification_settings = on_notification_settings
+        self.on_page_navigated = on_page_navigated
         self._detected_providers: set[str] = set()  # Track already-detected to avoid spam
         self.status = "stopped"
         self.context = None
@@ -174,8 +176,7 @@ class BetInterceptor:
         def _attach_page(page):
             page.on("response", self._on_response)
             page.on("websocket", self._on_websocket)
-            if self.on_provider_detected:
-                page.on("framenavigated", lambda frame: self._check_provider_navigation(frame))
+            page.on("framenavigated", lambda frame: self._on_frame_navigated(frame))
 
         for page in self.context.pages:
             _attach_page(page)
@@ -362,6 +363,30 @@ class BetInterceptor:
         ws.on("framereceived", _on_frame_received)
         ws.on("framesent", _on_frame_sent)
         ws.on("close", lambda: logger.debug(f"[mirror] WebSocket closed: {url}"))
+
+    def _on_frame_navigated(self, frame):
+        """Handle frame navigation — provider detection + URL-specific callbacks."""
+        try:
+            if frame.parent_frame:
+                return
+            url = frame.url
+            if not url or url.startswith("about:") or url.startswith("chrome:"):
+                return
+            # Provider detection (first visit only)
+            if self.on_provider_detected:
+                self._check_provider_navigation(frame)
+            # URL callback (every navigation — for history tab detection etc.)
+            if self.on_page_navigated:
+                from urllib.parse import urlparse
+                hostname = urlparse(url).hostname or ""
+                clean = hostname.removeprefix("www.")
+                for domain, provider_id in self._PROVIDER_DOMAINS.items():
+                    if clean == domain or clean.endswith("." + domain):
+                        import asyncio
+                        asyncio.ensure_future(self.on_page_navigated(provider_id, url))
+                        return
+        except Exception as e:
+            logger.debug(f"[mirror] Frame navigation error: {e}")
 
     def _check_provider_navigation(self, frame):
         """Detect when user navigates to a known provider site."""
