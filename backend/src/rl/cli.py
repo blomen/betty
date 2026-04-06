@@ -1661,7 +1661,7 @@ def train_narrative_gbt(
         idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
         idx.sort()
         observations = observations[idx]
-        setup_labels = setup_labels[idx]
+        setup_labels_raw = setup_labels_raw[idx]
         n = MAX_GBT_SAMPLES
         typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
 
