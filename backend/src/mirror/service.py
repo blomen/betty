@@ -744,14 +744,18 @@ class MirrorService:
             logger.warning("[mirror] No browser context for portfolio scrape")
             return []
 
+        # Find polymarket page — prefer history tab (longest URL)
         page = None
+        best_len = 0
         for p in context.pages:
-            if 'polymarket.com' in (p.url or ''):
+            url = p.url or ""
+            if 'polymarket.com' in url and len(url) > best_len:
                 page = p
-                break
+                best_len = len(url)
         if not page:
             logger.warning("[mirror] No Polymarket tab open")
             return []
+        logger.info(f"[mirror] Poly scrape using page: {page.url[:80]}")
 
         # Parse flat DOM text — more reliable than element-based scraping
         try:
