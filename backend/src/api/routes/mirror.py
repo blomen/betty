@@ -149,6 +149,16 @@ async def open_settle_tabs():
     return {"opened": opened, "count": len(opened)}
 
 
+@router.post("/scrape-poly-portfolio")
+async def scrape_poly_portfolio():
+    """Scrape Polymarket portfolio page and stage settlements for pending bets."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    staged = await mirror.scrape_polymarket_settlements()
+    return {"staged": len(staged), "settlements": staged}
+
+
 @router.get("/status")
 def mirror_status():
     """Get mirror status — returns running if any mirror instance is active."""

@@ -124,17 +124,29 @@ class MirrorService:
                 logger.info(f"[mirror] Polymarket logged in — cash balance: ${balance}")
                 self._logged_in_providers.add("polymarket")
                 await asyncio.to_thread(self._sync_balance, "polymarket", balance)
-                # NOW broadcast — we confirmed login via DOM balance
+                # Check for pending bets to populate the banner count
+                info = await asyncio.to_thread(self._get_provider_sync_info, "polymarket")
                 self._notify("sync_available", {
                     "provider": "polymarket",
                     "balance": balance,
-                    "pending_bets": 0,
-                    "pending_stake": 0,
+                    "pending_bets": info["pending_bets"],
+                    "pending_stake": info["pending_stake"],
                 })
+                # Auto-scrape portfolio if pending bets exist
+                if info["pending_bets"] > 0:
+                    asyncio.ensure_future(self._auto_scrape_polymarket_portfolio())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
+
+    async def _auto_scrape_polymarket_portfolio(self):
+        """Wait for portfolio page to render, then scrape positions and stage settlements."""
+        await asyncio.sleep(5)  # Let DOM render
+        try:
+            await self.scrape_polymarket_settlements()
+        except Exception as e:
+            logger.warning(f"[mirror] Auto portfolio scrape failed: {e}")
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""
@@ -548,6 +560,134 @@ class MirrorService:
         count = len(self._pending_settlements)
         self._pending_settlements.clear()
         return {"rejected": count}
+
+    async def scrape_polymarket_settlements(self) -> list[dict]:
+        """Scrape Polymarket portfolio page and match positions against pending bets.
+
+        Uses now_price to determine result:
+        - 100¢ = won (shares worth $1)
+        - 0¢ = lost (shares worth $0)
+        - ~50¢ = void / push
+        - Anything else = still open, skip
+
+        Also checks for WON/LOST text in the row as confirmation.
+        """
+        from .workflows.polymarket import PolymarketWorkflow
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            logger.warning("[mirror] No browser context for portfolio scrape")
+            return []
+
+        # Find the Polymarket page
+        page = None
+        for p in context.pages:
+            if 'polymarket.com' in (p.url or ''):
+                page = p
+                break
+        if not page:
+            logger.warning("[mirror] No Polymarket tab open")
+            return []
+
+        workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+        positions = await workflow.scrape_portfolio(page)
+
+        if not positions:
+            logger.info("[mirror] No portfolio positions found")
+            return []
+
+        # Get pending Polymarket bets from DB
+        pending = await asyncio.to_thread(self._get_pending_bets_sync, "polymarket")
+        if not pending:
+            logger.info("[mirror] No pending Polymarket bets to settle")
+            return []
+
+        # Match positions against pending bets
+        staged = []
+        for pos in positions:
+            now = pos.get("now_price")
+            if now is None:
+                continue
+
+            # Determine result from now_price
+            if now >= 95:  # ~100¢ = won
+                result = "won"
+            elif now <= 5:  # ~0¢ = lost
+                result = "lost"
+            elif 45 <= now <= 55:  # ~50¢ = void/push
+                result = "void"
+            else:
+                continue  # Still open
+
+            # Confirm with WON/LOST text if available
+            status = pos.get("status", "")
+            if status == "won" and result != "won":
+                result = "won"
+            elif status == "lost" and result != "lost":
+                result = "lost"
+
+            avg_price = pos.get("avg_price")
+            shares = pos.get("shares")
+            values = pos.get("values", [])
+            market_text = pos.get("market", "")
+
+            # Match against pending bets by avg_price (≈ our buy price) and shares
+            for pb in pending:
+                # Our bet odds → cents: 1/odds * 100 ≈ avg_price
+                bet_cents = round(100 / pb["odds"], 1) if pb["odds"] > 0 else 0
+                # Our shares ≈ stake / avg_price_decimal
+                bet_shares = round(pb["stake"] / (bet_cents / 100), 1) if bet_cents > 0 else 0
+
+                # Match by avg_price (within 2¢) and shares (within 10%)
+                price_match = avg_price is not None and abs(avg_price - bet_cents) <= 2
+                shares_match = shares is not None and bet_shares > 0 and abs(shares - bet_shares) / bet_shares < 0.15
+
+                if not (price_match and shares_match):
+                    continue
+
+                # Calculate payout
+                if result == "won":
+                    # Won: shares × $1 = shares value
+                    payout = shares if shares else pb["stake"] * pb["odds"]
+                elif result == "void":
+                    payout = pb["stake"]
+                else:
+                    payout = 0.0
+
+                staged.append({
+                    "bet_id": pb["id"],
+                    "provider": "polymarket",
+                    "event": market_text or "Polymarket position",
+                    "odds": pb["odds"],
+                    "stake": pb["stake"],
+                    "result": result,
+                    "payout": round(payout, 2),
+                })
+                pending.remove(pb)
+                break
+
+        if staged:
+            self._pending_settlements = staged
+            wins = [s for s in staged if s["result"] == "won"]
+            losses = [s for s in staged if s["result"] == "lost"]
+            total_staked = sum(s["stake"] for s in staged)
+            total_payout = sum(s["payout"] for s in staged)
+            logger.info(
+                f"[mirror] Polymarket portfolio: {len(staged)} settlement(s) — "
+                f"{len(wins)}W {len(losses)}L, net={total_payout - total_staked:+.2f} USDC"
+            )
+            self._notify("settlements_pending", {
+                "provider": "polymarket",
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": total_staked,
+                "total_payout": total_payout,
+                "net": total_payout - total_staked,
+                "settlements": staged,
+            })
+
+        return staged
 
     def settle_polymarket_bets(self) -> list[dict]:
         """Check for resolved Polymarket markets and stage settlements for pending bets.
