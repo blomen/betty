@@ -241,10 +241,14 @@ class MirrorService:
         if not pending:
             return
 
+        # Build full history of ALL bets from provider (settled + pending on provider)
+        all_provider_bets = entries  # Everything the provider shows
+
         staged = []
+        matched_db_ids = set()
         for entry in settled_entries:
             for pb in pending:
-                # Match by odds (within 1%) and stake (within 1 unit)
+                # Match by odds (within 2%) and stake (within 2 units)
                 odds_match = abs(entry.odds - pb["odds"]) / max(pb["odds"], 0.01) < 0.02
                 stake_match = abs(entry.stake - pb["stake"]) < 2
                 if not (odds_match and stake_match):
@@ -261,8 +265,31 @@ class MirrorService:
                     "result": entry.status,
                     "payout": round(payout, 2),
                 })
+                matched_db_ids.add(pb["id"])
                 pending.remove(pb)
                 break
+
+        # Any remaining pending DB bets that DON'T appear in provider history = ghost bets
+        # Check if they match ANY entry (settled or pending) from provider
+        for pb in pending:
+            found_on_provider = False
+            for entry in all_provider_bets:
+                odds_match = abs(entry.odds - pb["odds"]) / max(pb["odds"], 0.01) < 0.05
+                stake_match = abs(entry.stake - pb["stake"]) < 5
+                if odds_match and stake_match:
+                    found_on_provider = True
+                    break
+            if not found_on_provider:
+                # Ghost bet — not on provider at all, void it
+                staged.append({
+                    "bet_id": pb["id"],
+                    "provider": provider_id,
+                    "event": f"[NOT FOUND ON {provider_id.upper()}]",
+                    "odds": pb["odds"],
+                    "stake": pb["stake"],
+                    "result": "void",
+                    "payout": 0.0,  # No money was risked
+                })
 
         if staged:
             self._pending_settlements = staged
