@@ -171,6 +171,39 @@ async def settle_provider(provider_id: str):
     return {"staged": len(mirror._pending_settlements), "settlements": mirror._pending_settlements}
 
 
+@router.get("/debug-history/{provider_id}")
+async def debug_history(provider_id: str):
+    """Debug: fetch raw history entries from a provider workflow."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+
+    from ...mirror.workflows import get_workflow
+    workflow = get_workflow(provider_id)
+    context = mirror.interceptor.context
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    page = await workflow.find_tab(context)
+    if not page:
+        return {"error": f"No {provider_id} tab found", "pages": [p.url[:80] for p in context.pages]}
+
+    entries = await workflow.sync_history(page)
+    return {
+        "provider": provider_id,
+        "page_url": page.url[:100],
+        "entries": len(entries),
+        "settled": [
+            {"event": e.event_name, "odds": e.odds, "stake": e.stake, "status": e.status, "payout": e.payout}
+            for e in entries if e.status in ("won", "lost", "void")
+        ],
+        "pending": [
+            {"event": e.event_name, "odds": e.odds, "stake": e.stake, "status": e.status}
+            for e in entries if e.status == "pending"
+        ],
+    }
+
+
 @router.get("/status")
 def mirror_status():
     """Get mirror status — returns running if any mirror instance is active."""
