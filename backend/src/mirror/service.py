@@ -744,18 +744,34 @@ class MirrorService:
             logger.warning("[mirror] No browser context for portfolio scrape")
             return []
 
-        # Find polymarket page — prefer history tab (longest URL)
+        # Find polymarket portfolio page — prefer /portfolio URL
         page = None
-        best_len = 0
+        fallback = None
         for p in context.pages:
             url = p.url or ""
-            if 'polymarket.com' in url and len(url) > best_len:
+            if 'polymarket.com' not in url:
+                continue
+            if '/portfolio' in url:
                 page = p
-                best_len = len(url)
+                break
+            if not fallback:
+                fallback = p
+        if not page:
+            page = fallback
         if not page:
             logger.warning("[mirror] No Polymarket tab open")
             return []
         logger.info(f"[mirror] Poly scrape using page: {page.url[:80]}")
+
+        # Navigate to portfolio if not there
+        if '/portfolio' not in (page.url or ''):
+            try:
+                await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(3)
+                logger.info("[mirror] Navigated to Polymarket portfolio")
+            except Exception as e:
+                logger.warning(f"[mirror] Could not navigate to portfolio: {e}")
+                return []
 
         # Ensure we're on the History tab — click it if needed
         if '/portfolio' in (page.url or ''):
