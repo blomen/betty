@@ -348,11 +348,11 @@ export function PlayPage() {
                                         <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
                                         <td className="text-right text-sm text-text">
                                           {b.odds.toFixed(2)}
-                                          {tier === 'polymarket' && <span className="text-muted text-[10px] ml-0.5">{Math.round(100 / b.odds)}¢</span>}
+                                          {tier === 'polymarket' && <span className="text-muted text-[10px] ml-0.5">{(100 / b.odds).toFixed(1)}¢</span>}
                                         </td>
                                         <td className="text-right text-sm text-muted">
                                           {b.fair_odds.toFixed(2)}
-                                          {tier === 'polymarket' && <span className="text-[10px] ml-0.5">{Math.round(100 / b.fair_odds)}¢</span>}
+                                          {tier === 'polymarket' && <span className="text-[10px] ml-0.5">{(100 / b.fair_odds).toFixed(1)}¢</span>}
                                         </td>
                                         <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
                                           {activeBet === betKey(b) && liveEdge != null
