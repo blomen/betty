@@ -97,7 +97,7 @@ class NarrativeGBT:
                 subsample=subsample,
                 min_child_samples=50,
                 colsample_bytree=0.7,
-                n_jobs=-1,
+                n_jobs=2,  # limit threads to avoid OOM (LightGBM duplicates data per thread)
                 verbose=-1,
             )
         else:

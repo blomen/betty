@@ -116,7 +116,7 @@ class TriggerGBT:
                 subsample=subsample,
                 min_child_samples=50,
                 colsample_bytree=0.7,
-                n_jobs=-1,
+                n_jobs=2,
                 verbose=-1,
             )
             reg_params = dict(
@@ -125,7 +125,7 @@ class TriggerGBT:
                 learning_rate=learning_rate,
                 subsample=subsample,
                 min_child_samples=50,
-                n_jobs=-1,
+                n_jobs=2,
                 verbose=-1,
             )
         else:
