@@ -84,7 +84,7 @@ function ToastItem({ toast, onDismiss }: { toast: MirroredBet; onDismiss: () => 
             <span className="text-muted">{toast.market} {toast.outcome}</span>
             <span className="text-text">@ {toast.odds?.toFixed(2)}</span>
             <span className="text-muted">—</span>
-            <span className="text-text">{toast.stake} kr</span>
+            <span className="text-text">{toast.provider === 'polymarket' ? `$${toast.stake}` : `${toast.stake} kr`}</span>
             {!toast.matched && <span className="text-warning">(unmatched)</span>}
           </>
         )}
@@ -131,12 +131,12 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
             {' '}
             <span className="text-error">{losses}L</span>
             {' — '}
-            staked {total_staked.toFixed(0)}
+            staked {provider === 'polymarket' ? `$${total_staked.toFixed(0)}` : `${total_staked.toFixed(0)} kr`}
             {' → '}
-            payout {total_payout.toFixed(0)}
+            payout {provider === 'polymarket' ? `$${total_payout.toFixed(0)}` : `${total_payout.toFixed(0)} kr`}
             {' = '}
             <span className={net >= 0 ? 'text-success' : 'text-error'}>
-              {net >= 0 ? '+' : ''}{net.toFixed(0)} kr
+              {net >= 0 ? '+' : ''}{provider === 'polymarket' ? `$${net.toFixed(0)}` : `${net.toFixed(0)} kr`}
             </span>
           </span>
         </div>
@@ -166,9 +166,9 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
             <span className="text-muted w-8 text-right">#{s.bet_id}</span>
             <span className="flex-1 text-text truncate">{s.event}</span>
             <span className="text-muted w-10 text-right">@{s.odds}</span>
-            <span className="text-text w-10 text-right">{s.stake}kr</span>
+            <span className="text-text w-10 text-right">{provider === 'polymarket' ? `$${s.stake}` : `${s.stake}kr`}</span>
             <span className={`w-14 text-right ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
-              {s.result === 'won' ? `+${s.payout}` : '-' + s.stake}
+              {s.result === 'won' ? `+${provider === 'polymarket' ? '$' : ''}${s.payout}` : `-${provider === 'polymarket' ? '$' : ''}${s.stake}`}
             </span>
           </div>
         ))}
