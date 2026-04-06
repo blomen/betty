@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, Fragment } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { ClusterBatchResult, ClusterBet, PendingBetsResponse } from '@/types';
 import { NetworkError, TimeoutError } from '@/services/api/client';
@@ -7,10 +7,38 @@ import { resolveOutcome } from '@/utils/betting';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface Settlement {
+  bet_id: number;
+  provider: string;
+  event: string;
+  odds: number;
+  stake: number;
+  result: string;
+  payout: number;
+}
+
+interface SettlementGroup {
+  provider: string;
+  count: number;
+  wins: number;
+  losses: number;
+  total_staked: number;
+  total_payout: number;
+  net: number;
+  settlements: Settlement[];
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function fmt(v: number, tier: string): string {
   if (tier === 'polymarket') return `$${v.toFixed(1)} USDC`;
+  return `${Math.round(v)} kr`;
+}
+
+function fmtCurrency(v: number, provider: string): string {
+  if (provider === 'polymarket') return `$${v.toFixed(2)}`;
   return `${Math.round(v)} kr`;
 }
 
@@ -50,9 +78,10 @@ function outcomeLabel(b: ClusterBet): string {
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function PlayPage() {
+  const queryClient = useQueryClient();
   const [excludedBets, setExcludedBets] = useState<string[]>([]);
 
-  // 1. Start mirror + open settle tabs for providers with unsettled bets
+  // 1. Start mirror + open settle tabs
   const settleTabsOpened = useRef(false);
   useEffect(() => {
     (async () => {
@@ -66,7 +95,7 @@ export function PlayPage() {
     })();
   }, []);
 
-  // 2. Pending bets (settlement check)
+  // 2. Pending bets
   const { data: pendingData } = useQuery<PendingBetsResponse>({
     queryKey: ['pending-bets'],
     queryFn: () => api.getPendingBets(),
@@ -74,7 +103,7 @@ export function PlayPage() {
     refetchInterval: 30_000,
   });
 
-  // 3. Batch (main view)
+  // 3. Batch
   const {
     data: batchData,
     isLoading: batchLoading,
@@ -86,8 +115,15 @@ export function PlayPage() {
     refetchInterval: 10_000,
   });
 
-  // Track provider login status via SSE (for status dots on rows)
+  // Track provider login status via SSE
   const [providerStatus, setProviderStatus] = useState<Map<string, 'opened' | 'logged_in'>>(new Map());
+
+  // Settlement panel — populated from SSE or manual scan
+  const [settlements, setSettlements] = useState<SettlementGroup | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
     es.addEventListener('provider_opened', (e: MessageEvent) => {
@@ -113,14 +149,54 @@ export function PlayPage() {
         setProviderStatus(prev => { const next = new Map(prev); next.set(provider, 'logged_in'); return next; });
       } catch { /* */ }
     });
+    // Settlement detection from mirror interceptor
+    es.addEventListener('settlements_pending', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SettlementGroup;
+        setSettlements(data);
+        setConfirmMsg(null);
+      } catch { /* */ }
+    });
+    es.addEventListener('settlements_confirmed', () => {
+      setSettlements(null);
+      queryClient.invalidateQueries({ queryKey: ['pending-bets'] });
+    });
     return () => es.close();
+  }, [queryClient]);
+
+  const handleConfirm = useCallback(async () => {
+    setConfirming(true);
+    try {
+      const res = await api.confirmMirrorSettlements();
+      setConfirmMsg(`Settled ${res.settled} bet${res.settled !== 1 ? 's' : ''}`);
+      setSettlements(null);
+      queryClient.invalidateQueries({ queryKey: ['pending-bets'] });
+    } catch (err: any) {
+      setConfirmMsg(`Error: ${err.message}`);
+    } finally {
+      setConfirming(false);
+    }
+  }, [queryClient]);
+
+  const handleDismiss = useCallback(() => {
+    api.rejectMirrorSettlements().catch(() => {});
+    setSettlements(null);
+  }, []);
+
+  const handleScanPortfolio = useCallback(async () => {
+    setScanning(true);
+    try {
+      await api.scrapePolyPortfolio();
+      // SSE will deliver settlements_pending if any found
+    } catch { /* */ }
+    finally { setScanning(false); }
   }, []);
 
   const handleRemoveBet = useCallback((key: string) => {
     setExcludedBets(prev => [...prev, key]);
   }, []);
 
-  // Build lookup: provider_id → number of unsettled bets
+  // Lookups
   const settleMap = useMemo(() => {
     const m: Record<string, number> = {};
     for (const p of pendingData?.providers ?? []) m[p.provider_id] = p.bet_count;
@@ -130,7 +206,6 @@ export function PlayPage() {
   const batch = batchData?.batch ?? [];
   const summary = batchData?.summary;
 
-  // Group batch by cluster → provider
   const clusterGroups = useMemo(() => {
     const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number }[]> = {};
     const byProvider: Record<string, ClusterBet[]> = {};
@@ -143,16 +218,13 @@ export function PlayPage() {
       const cluster = bets[0]?.cluster ?? pid;
       if (!groups[cluster]) groups[cluster] = [];
       groups[cluster].push({
-        provider: pid,
-        bets,
+        provider: pid, bets,
         tier: bets[0]?.tier || 'soft',
         totalEv: bets.reduce((s, b) => s + b.expected_profit, 0),
         totalStake: bets.reduce((s, b) => s + b.stake, 0),
       });
     }
-    // Sort within clusters by EV desc
     for (const list of Object.values(groups)) list.sort((a, b) => b.totalEv - a.totalEv);
-    // Sort clusters by total EV desc
     return Object.entries(groups).sort((a, b) => {
       const evA = a[1].reduce((s, p) => s + p.totalEv, 0);
       const evB = b[1].reduce((s, p) => s + p.totalEv, 0);
@@ -161,7 +233,6 @@ export function PlayPage() {
   }, [batch]);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
-
   const sekStake = batch.filter(b => b.tier !== 'polymarket').reduce((s, b) => s + b.stake, 0);
   const usdcStake = batch.filter(b => b.tier === 'polymarket').reduce((s, b) => s + b.stake, 0);
   const totalEV = summary?.total_expected_profit ?? 0;
@@ -182,6 +253,85 @@ export function PlayPage() {
           Play
         </h2>
       </div>
+
+      {/* ─── Settlement breakdown panel ─── */}
+      {settlements && (
+        <div className="border border-border bg-panel">
+          <div className="px-3 py-2 border-b border-border flex items-center gap-3">
+            <span className="text-sm font-medium text-text uppercase">{settlements.provider}</span>
+            <span className="text-xs text-muted">{settlements.count} positions detected</span>
+            <span className="text-xs text-success">{settlements.wins}W</span>
+            <span className="text-xs text-danger">{settlements.losses}L</span>
+            {settlements.count - settlements.wins - settlements.losses > 0 && (
+              <span className="text-xs text-muted">{settlements.count - settlements.wins - settlements.losses}V</span>
+            )}
+            <span className={`text-xs ml-auto font-semibold ${settlements.net >= 0 ? 'text-success' : 'text-danger'}`}>
+              {settlements.net >= 0 ? '+' : ''}{fmtCurrency(settlements.net, settlements.provider)} net
+            </span>
+          </div>
+
+          <table className="sq w-full">
+            <thead>
+              <tr className="text-muted text-[10px]">
+                <th className="text-left pl-3">Event</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">Result</th>
+                <th className="text-right">Payout</th>
+                <th className="text-right pr-3">P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {settlements.settlements.map(s => {
+                const pl = s.payout - s.stake;
+                return (
+                  <tr key={s.bet_id} className="border-t border-border">
+                    <td className="pl-3 text-sm text-text truncate max-w-[250px]" title={s.event}>{s.event}</td>
+                    <td className="text-right text-sm text-muted">{s.odds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-text">{fmtCurrency(s.stake, settlements.provider)}</td>
+                    <td className="text-right text-sm">
+                      <span className={
+                        s.result === 'won' ? 'text-success font-semibold' :
+                        s.result === 'lost' ? 'text-danger font-semibold' :
+                        'text-amber-400 font-semibold'
+                      }>
+                        {s.result.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="text-right text-sm">
+                      <span className={s.payout > 0 ? 'text-success' : 'text-muted'}>
+                        {fmtCurrency(s.payout, settlements.provider)}
+                      </span>
+                    </td>
+                    <td className={`text-right text-sm pr-3 font-semibold ${pl >= 0 ? 'text-success' : 'text-danger'}`}>
+                      {pl >= 0 ? '+' : ''}{fmtCurrency(pl, settlements.provider)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+            <span className="text-xs text-muted">
+              Staked: {fmtCurrency(settlements.total_staked, settlements.provider)}
+              {' '}| Payout: {fmtCurrency(settlements.total_payout, settlements.provider)}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={handleDismiss} className="px-3 py-1 text-xs text-muted hover:text-foreground">Dismiss</button>
+              <button
+                onClick={handleConfirm}
+                disabled={confirming}
+                className="px-4 py-1.5 text-xs bg-success text-bg font-medium hover:opacity-90 disabled:opacity-50"
+              >
+                {confirming ? 'Saving...' : 'Confirm & Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmMsg && <div className="text-xs text-success px-3">{confirmMsg}</div>}
 
       {/* Batch */}
       {batchLoading ? (
@@ -236,6 +386,15 @@ export function PlayPage() {
                             <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
                             {settleCount > 0 && (
                               <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>
+                            )}
+                            {settleCount > 0 && provider === 'polymarket' && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleScanPortfolio(); }}
+                                disabled={scanning}
+                                className="text-[10px] text-text bg-border px-2 py-0.5 hover:opacity-80 disabled:opacity-50"
+                              >
+                                {scanning ? 'Scanning...' : 'Scan'}
+                              </button>
                             )}
                             <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
                             <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>

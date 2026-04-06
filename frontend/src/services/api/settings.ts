@@ -184,6 +184,10 @@ export const settingsApi = {
     return fetchJson('/mirror/open-settle-tabs', { method: 'POST' }, 60_000);
   },
 
+  async scrapePolyPortfolio(): Promise<{ staged: number; settlements: any[] }> {
+    return fetchJson('/mirror/scrape-poly-portfolio', { method: 'POST' }, 30_000);
+  },
+
   async getMirrorSettlements(): Promise<{ settlements: any[] }> {
     return fetchJson('/mirror/settlements');
   },
