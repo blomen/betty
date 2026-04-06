@@ -206,6 +206,118 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Portfolio scraping + settlement
     # ------------------------------------------------------------------
 
+    async def scrape_history(self, page: "Page") -> list[dict]:
+        """Scrape the History tab at /portfolio?tab=history.
+
+        Returns list of {activity, market, outcome_tag, shares, value, time_ago}.
+        Activity is 'Bought', 'Lost', 'Claimed', 'Deposited', etc.
+        """
+        current_url = page.url or ''
+        if 'tab=history' not in current_url:
+            await page.goto("https://polymarket.com/portfolio?tab=history", wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(4)
+
+        rows = await page.evaluate("""() => {
+            const results = [];
+            // Each history row is a container with Activity, Market info, Value, Time
+            // Walk all rows by looking for activity labels
+            const activityLabels = ['Bought', 'Lost', 'Claimed', 'Sold', 'Deposited', 'Withdrawn'];
+            const allElements = document.querySelectorAll('div, span, p');
+
+            // Strategy: find elements that contain exactly an activity label,
+            // then walk up to the row container and extract siblings
+            const seen = new Set();
+            for (const el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (!activityLabels.includes(text)) continue;
+                // Must be a leaf-ish element (not a huge container)
+                if (el.children.length > 2) continue;
+
+                // Walk up to find the row container
+                let row = el.parentElement;
+                for (let i = 0; i < 6 && row; i++) {
+                    // Row usually has multiple columns and is wide
+                    if (row.offsetWidth > 500 && row.children.length >= 3) break;
+                    row = row.parentElement;
+                }
+                if (!row) continue;
+
+                // Dedup by row element
+                const rowId = row.textContent.slice(0, 100);
+                if (seen.has(rowId)) continue;
+                seen.add(rowId);
+
+                const rowText = row.textContent || '';
+
+                // Extract activity
+                const activity = text;
+
+                // Extract market name — usually the longest text chunk
+                let market = '';
+                const links = row.querySelectorAll('a, [href]');
+                for (const a of links) {
+                    const t = (a.textContent || '').trim();
+                    if (t.length > market.length && t.length > 10 && !activityLabels.includes(t)) {
+                        market = t;
+                    }
+                }
+                if (!market) {
+                    // Fallback: grab text that's not the activity or value
+                    for (const child of row.querySelectorAll('span, p, div')) {
+                        const t = (child.textContent || '').trim();
+                        if (t.length > 20 && !t.includes('$') && !activityLabels.includes(t) && t.length > market.length) {
+                            market = t.slice(0, 120);
+                        }
+                    }
+                }
+
+                // Extract outcome tag (colored badge like "Team Solid 26¢")
+                let outcomeTag = '';
+                let shares = 0;
+                for (const child of row.querySelectorAll('span, div, p')) {
+                    const t = (child.textContent || '').trim();
+                    // Outcome tag pattern: "Name XX¢"
+                    const tagMatch = t.match(/^(.+?)\\s+(\\d+)¢$/);
+                    if (tagMatch && t.length < 50) {
+                        outcomeTag = tagMatch[1];
+                    }
+                    // Shares pattern: "XX.X shares"
+                    const sharesMatch = t.match(/([\\d.]+)\\s*shares/);
+                    if (sharesMatch) {
+                        shares = parseFloat(sharesMatch[1]);
+                    }
+                }
+
+                // Extract value ($XX.XX) — look for elements with $ sign
+                let value = 0;
+                for (const child of row.querySelectorAll('span, p, div')) {
+                    const t = (child.textContent || '').trim();
+                    const valMatch = t.match(/^[+-]?\\$(\\d[\\d,.]*)/);
+                    if (valMatch && child.children.length <= 1) {
+                        value = parseFloat(valMatch[1].replace(',', ''));
+                        if (t.startsWith('-')) value = -value;
+                        break;
+                    }
+                }
+
+                // Time
+                let timeAgo = '';
+                for (const child of row.querySelectorAll('span, p, div')) {
+                    const t = (child.textContent || '').trim();
+                    if (t.match(/\\d+[hmd]\\s*ago|\\d+\\s*(hour|min|day|second)/i)) {
+                        timeAgo = t;
+                        break;
+                    }
+                }
+
+                results.push({ activity, market: market.slice(0, 120), outcomeTag, shares, value, timeAgo });
+            }
+            return results;
+        }""")
+
+        logger.info(f"[polymarket] Scraped {len(rows)} history entries")
+        return rows
+
     async def scrape_portfolio(self, page: "Page") -> list[dict]:
         """Scrape the portfolio/positions page and return each position.
 

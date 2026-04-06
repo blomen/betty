@@ -562,24 +562,23 @@ class MirrorService:
         return {"rejected": count}
 
     async def scrape_polymarket_settlements(self) -> list[dict]:
-        """Scrape Polymarket portfolio page and match positions against pending bets.
+        """Scrape Polymarket History tab and match against pending bets.
 
-        Uses now_price to determine result:
-        - 100¢ = won (shares worth $1)
-        - 0¢ = lost (shares worth $0)
-        - ~50¢ = void / push
-        - Anything else = still open, skip
+        History tab shows:
+        - "Lost" rows = resolved to $0 → lost
+        - "Claimed" rows = resolved, payout received → won or void
+        - "Bought" rows = original purchase (skip for settlement)
 
-        Also checks for WON/LOST text in the row as confirmation.
+        Matching: by market name fuzzy match + stake/shares alignment.
         """
         from .workflows.polymarket import PolymarketWorkflow
+        from rapidfuzz import fuzz
 
         context = self.interceptor.context
         if not context or not context.pages:
             logger.warning("[mirror] No browser context for portfolio scrape")
             return []
 
-        # Find the Polymarket page
         page = None
         for p in context.pages:
             if 'polymarket.com' in (p.url or ''):
@@ -590,88 +589,87 @@ class MirrorService:
             return []
 
         workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
-        positions = await workflow.scrape_portfolio(page)
+        history = await workflow.scrape_history(page)
 
-        if not positions:
-            logger.info("[mirror] No portfolio positions found")
+        if not history:
+            logger.info("[mirror] No history entries found")
             return []
 
-        # Get pending Polymarket bets from DB
-        pending = await asyncio.to_thread(self._get_pending_bets_sync, "polymarket")
+        # Filter to settlement-relevant entries only
+        settle_entries = [h for h in history if h.get("activity") in ("Lost", "Claimed")]
+        if not settle_entries:
+            logger.info("[mirror] No Lost/Claimed entries in history")
+            return []
+
+        logger.info(f"[mirror] History: {len(settle_entries)} Lost/Claimed entries")
+
+        # Get pending Polymarket bets from DB (with event names for matching)
+        pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
         if not pending:
             logger.info("[mirror] No pending Polymarket bets to settle")
             return []
 
-        # Match positions against pending bets
         staged = []
-        for pos in positions:
-            now = pos.get("now_price")
-            if now is None:
+        for entry in settle_entries:
+            activity = entry.get("activity", "")
+            market = entry.get("market", "")
+            value = abs(entry.get("value", 0))
+            shares = entry.get("shares", 0)
+
+            if activity == "Lost":
+                result = "lost"
+                payout = 0.0
+            elif activity == "Claimed":
+                result = "won"  # May be void — check below
+                payout = value
+            else:
                 continue
 
-            # Determine result from now_price (cents)
-            # 100¢ = won, 0¢ = lost, 50¢ = void (push / refund)
-            # Polymarket shows "WON" for voids too (you get money back) — ignore that text.
-            # Only trust the price.
-            if now >= 95:  # ~100¢ = won
-                result = "won"
-            elif now <= 5:  # ~0¢ = lost
-                result = "lost"
-            elif 45 <= now <= 55:  # ~50¢ = void/push
-                result = "void"
-            else:
-                continue  # Still open, price hasn't resolved
-
-            avg_price = pos.get("avg_price")
-            shares = pos.get("shares")
-            values = pos.get("values", [])
-            market_text = pos.get("market", "")
-
-            # Match against pending bets by avg_price (≈ our buy price) and shares
+            # Match against pending bets by market name
+            best_match = None
+            best_score = 0
             for pb in pending:
-                # Our bet odds → cents: 1/odds * 100 ≈ avg_price
-                bet_cents = round(100 / pb["odds"], 1) if pb["odds"] > 0 else 0
-                # Our shares ≈ stake / avg_price_decimal
-                bet_shares = round(pb["stake"] / (bet_cents / 100), 1) if bet_cents > 0 else 0
+                # Build matchable name from event
+                event_name = pb.get("event_name", "")
+                # Try fuzzy match on market name vs event name
+                score = fuzz.partial_ratio(market.lower(), event_name.lower())
+                if score > best_score and score >= 65:
+                    best_score = score
+                    best_match = pb
 
-                # Match by avg_price (within 2¢) and shares (within 10%)
-                price_match = avg_price is not None and abs(avg_price - bet_cents) <= 2
-                shares_match = shares is not None and bet_shares > 0 and abs(shares - bet_shares) / bet_shares < 0.15
+            if not best_match:
+                logger.debug(f"[mirror] No DB match for history entry: {market[:60]} (best score: {best_score})")
+                continue
 
-                if not (price_match and shares_match):
-                    continue
+            # For Claimed: check if payout ≈ stake → void (got money back, no profit)
+            if result == "won" and best_match["stake"] > 0:
+                profit_ratio = payout / best_match["stake"]
+                if 0.85 <= profit_ratio <= 1.15:
+                    # Payout ≈ stake → void (push)
+                    result = "void"
+                    payout = best_match["stake"]
 
-                # Calculate payout based on resolution price
-                if result == "won":
-                    # Won: shares × $1.00
-                    payout = shares if shares else pb["stake"] * pb["odds"]
-                elif result == "void":
-                    # Void: shares × $0.50 (market pushed)
-                    payout = shares * 0.50 if shares else pb["stake"]
-                else:
-                    payout = 0.0
-
-                staged.append({
-                    "bet_id": pb["id"],
-                    "provider": "polymarket",
-                    "event": market_text or "Polymarket position",
-                    "odds": pb["odds"],
-                    "stake": pb["stake"],
-                    "result": result,
-                    "payout": round(payout, 2),
-                })
-                pending.remove(pb)
-                break
+            staged.append({
+                "bet_id": best_match["id"],
+                "provider": "polymarket",
+                "event": market[:80] or "Polymarket",
+                "odds": best_match["odds"],
+                "stake": best_match["stake"],
+                "result": result,
+                "payout": round(payout, 2),
+            })
+            pending.remove(best_match)
 
         if staged:
             self._pending_settlements = staged
             wins = [s for s in staged if s["result"] == "won"]
             losses = [s for s in staged if s["result"] == "lost"]
+            voids = [s for s in staged if s["result"] == "void"]
             total_staked = sum(s["stake"] for s in staged)
             total_payout = sum(s["payout"] for s in staged)
             logger.info(
-                f"[mirror] Polymarket portfolio: {len(staged)} settlement(s) — "
-                f"{len(wins)}W {len(losses)}L, net={total_payout - total_staked:+.2f} USDC"
+                f"[mirror] Polymarket history: {len(staged)} settlement(s) — "
+                f"{len(wins)}W {len(losses)}L {len(voids)}V, net={total_payout - total_staked:+.2f} USDC"
             )
             self._notify("settlements_pending", {
                 "provider": "polymarket",
@@ -685,6 +683,44 @@ class MirrorService:
             })
 
         return staged
+
+    def _get_pending_poly_bets_sync(self) -> list[dict]:
+        """Get pending Polymarket bets with event names for matching."""
+        from ..db.models import Bet, Event
+        from ..repositories.profile_repo import ProfileRepo
+
+        db = get_session()
+        try:
+            profile = ProfileRepo(db).get_active()
+            pending = (
+                db.query(Bet, Event)
+                .join(Event, Bet.event_id == Event.id, isouter=True)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                )
+                .all()
+            )
+            result = []
+            for bet, event in pending:
+                event_name = ""
+                if event:
+                    h = event.display_home or event.home_team or ""
+                    a = event.display_away or event.away_team or ""
+                    event_name = f"{h} vs {a}" if h and a else h or a
+                result.append({
+                    "id": bet.id,
+                    "odds": bet.odds,
+                    "stake": bet.stake,
+                    "event_name": event_name,
+                    "event_id": bet.event_id,
+                    "outcome": bet.outcome,
+                    "market": bet.market,
+                })
+            return result
+        finally:
+            db.close()
 
     def settle_polymarket_bets(self) -> list[dict]:
         """Check for resolved Polymarket markets and stage settlements for pending bets.
