@@ -128,13 +128,17 @@ class PolymarketWorkflow(ProviderWorkflow):
                 home_name=getattr(bet, "display_home", ""),
                 away_name=getattr(bet, "display_away", ""),
             )
+            logger.info(f"[polymarket] _place_single result: {result}")
             status = result.get("status", "failed")
+            reason = result.get("error") or result.get("reason")
+            if status != "placed":
+                reason = reason or f"unexpected_status:{status}"
             return PlacementResult(
-                status="placed" if status == "placed" else status,
+                status="placed" if status == "placed" else "failed",
                 bet_id=bet.bet_id,
                 actual_stake=result.get("amount"),
                 actual_odds=result.get("price"),
-                reason=result.get("error"),
+                reason=reason,
                 raw_response=result,
             )
         except Exception as e:
