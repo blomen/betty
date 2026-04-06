@@ -2096,13 +2096,60 @@ class MirrorService:
         except Exception as e:
             logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
 
-        # 4. Enter amount
+        # 4. Enter amount — try multiple selectors for the amount input
         try:
-            amount_input = page.locator('input[placeholder="$0"]').first
-            await amount_input.click()
-            await amount_input.fill("")
-            await amount_input.type(str(int(amount)), delay=50)
-            await asyncio.sleep(0.5)
+            filled = await page.evaluate(
+                "(amount) => {"
+                "  // Try common input selectors for amount field"
+                "  const selectors = ["
+                "    'input[placeholder=\"$0\"]',"
+                "    'input[placeholder=\"0\"]',"
+                "    'input[type=\"number\"]',"
+                "    'input[inputmode=\"decimal\"]',"
+                "    'input[inputmode=\"numeric\"]',"
+                "  ];"
+                "  for (const sel of selectors) {"
+                "    const input = document.querySelector(sel);"
+                "    if (input) {"
+                "      input.focus();"
+                "      input.value = '';"
+                "      input.dispatchEvent(new Event('input', {bubbles: true}));"
+                "      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
+                "      nativeSet.call(input, String(amount));"
+                "      input.dispatchEvent(new Event('input', {bubbles: true}));"
+                "      input.dispatchEvent(new Event('change', {bubbles: true}));"
+                "      return sel;"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                int(amount),
+            )
+            if filled:
+                logger.info(f"[mirror] Filled amount ${int(amount)} via {filled}")
+                await asyncio.sleep(0.5)
+            else:
+                # Fallback: click quick-add buttons
+                logger.warning(f"[mirror] No amount input found, trying quick-add buttons")
+                remaining = int(amount)
+                for btn_val in [100, 10, 5, 1]:
+                    while remaining >= btn_val:
+                        clicked = await page.evaluate(
+                            f"() => {{"
+                            f"  const btns = document.querySelectorAll('button');"
+                            f"  for (const btn of btns) {{"
+                            f"    if (btn.textContent.trim() === '+${btn_val}') {{"
+                            f"      btn.click(); return true;"
+                            f"    }}"
+                            f"  }}"
+                            f"  return false;"
+                            f"}}"
+                        )
+                        if clicked:
+                            remaining -= btn_val
+                            await asyncio.sleep(0.3)
+                        else:
+                            break
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
 

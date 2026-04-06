@@ -748,7 +748,10 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
             if page:
                 await workflow.navigate_to_event(page, bet)
                 live_edge = await workflow.check_live_price(page, bet)
-                live_cents = getattr(bet, '_live_cents', None)
+                # Get live price from prepare result if available
+                prep = getattr(workflow, '_last_prepare', None)
+                if prep and prep.get("live_price"):
+                    live_cents = round(prep["live_price"] * 100)
 
     db_cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
     fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
