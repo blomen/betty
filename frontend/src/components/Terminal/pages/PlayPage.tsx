@@ -122,8 +122,6 @@ export function PlayPage() {
   const [settlements, setSettlements] = useState<SettlementGroup | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
-
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
     es.addEventListener('provider_opened', (e: MessageEvent) => {
@@ -181,15 +179,6 @@ export function PlayPage() {
   const handleDismiss = useCallback(() => {
     api.rejectMirrorSettlements().catch(() => {});
     setSettlements(null);
-  }, []);
-
-  const handleScanPortfolio = useCallback(async () => {
-    setScanning(true);
-    try {
-      await api.scrapePolyPortfolio();
-      // SSE will deliver settlements_pending if any found
-    } catch { /* */ }
-    finally { setScanning(false); }
   }, []);
 
   const handleRemoveBet = useCallback((key: string) => {
@@ -392,15 +381,6 @@ export function PlayPage() {
                             )}
                             {settleCount > 0 && (
                               <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>
-                            )}
-                            {settleCount > 0 && provider === 'polymarket' && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleScanPortfolio(); }}
-                                disabled={scanning}
-                                className="text-[10px] text-text bg-border px-2 py-0.5 hover:opacity-80 disabled:opacity-50"
-                              >
-                                {scanning ? 'Scanning...' : 'Scan'}
-                              </button>
                             )}
                             <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
                             <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
