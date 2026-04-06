@@ -184,9 +184,12 @@ async def debug_history(provider_id: str):
     if not context:
         raise HTTPException(400, "No browser context")
 
+    # Debug: show domain matching
+    all_urls = [p.url[:80] for p in context.pages]
+    domain = workflow.domain
     page = await workflow.find_tab(context)
     if not page:
-        return {"error": f"No {provider_id} tab found", "pages": [p.url[:80] for p in context.pages]}
+        return {"error": f"No {provider_id} tab found", "domain": domain, "pages": all_urls}
 
     entries = await workflow.sync_history(page)
     return {
