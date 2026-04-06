@@ -98,8 +98,8 @@ class PinnacleWorkflow(ProviderWorkflow):
             # Flatten newlines to spaces for easier regex
             flat = raw.replace('\n', ' ').replace('\r', '')
 
-            # Split by "Settled:" or "Rättat:" markers (EN/SV)
-            cards = re.split(r'(?=(?:Settled|Rättat):\s)', flat)
+            # Split by "Settled:" or "Rättat:"/"Rattat:" markers (EN/SV, handles encoding)
+            cards = re.split(r'(?=(?:Settled|R.ttat):\s)', flat)
             for card in cards:
                 # Must have stake field (EN: "Stake:", SV: "Insats:")
                 if 'Stake:' not in card and 'Insats:' not in card:
@@ -118,19 +118,15 @@ class PinnacleWorkflow(ProviderWorkflow):
                 stake = float(stake_match.group(1).replace(',', '.'))
 
                 # Result: EN "SETTLED – LOSS/WIN" or SV "RÄTTAT – FÖRLUST/VINST"
+                # Use encoding-safe patterns (.RLUST for FÖRLUST, etc.)
                 card_upper = card.upper()
-                if 'FÖRLUST' in card_upper or ('SETTLED' in card_upper and 'LOSS' in card_upper):
+                if 'RLUST' in card_upper or 'LOSS' in card_upper:
                     status = "lost"
-                elif 'VINST' in card_upper or ('SETTLED' in card_upper and 'WIN' in card_upper):
-                    # "Vinst:" field exists for all bets (potential win) — check RÄTTAT–VINST label
-                    # RÄTTAT – FÖRLUST = loss, even though "Vinst: 577" is shown
-                    # Only mark as won if the LABEL says VINST, not the field
-                    if 'FÖRLUST' in card_upper:
-                        status = "lost"  # Label says FÖRLUST, "Vinst:" is just potential
-                    else:
-                        status = "won"
                 elif 'VOID' in card_upper or 'CANCEL' in card_upper or 'OGILTIG' in card_upper:
                     status = "void"
+                elif 'SETTLED' in card_upper or 'TTAT' in card_upper:
+                    # Has a settled marker but no LOSS/VOID — must be a win
+                    status = "won"
                 else:
                     continue
 
