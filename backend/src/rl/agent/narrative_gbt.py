@@ -24,7 +24,7 @@ except ImportError:
     from sklearn.ensemble import GradientBoostingClassifier as _Classifier  # type: ignore[assignment]
     _ENGINE = "sklearn"
 
-from backend.src.rl.labeling.setup_types import NUM_SETUP_TYPES, SetupType
+from src.rl.labeling.setup_types import NUM_SETUP_TYPES, SetupType
 
 log = logging.getLogger(__name__)
 
