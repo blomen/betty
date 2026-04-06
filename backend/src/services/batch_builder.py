@@ -544,154 +544,29 @@ class BatchBuilder:
         registered_providers: set[str],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Capital-blind allocation — gather ALL +EV bets and distribute across
-        siblings using a 10-bet-per-provider cap.
-
-        Sibling scaling: if a cluster has >10 bets, use ceil(count/10)
-        siblings. Each provider gets at most 10 bets.
-
-        Sharp (pinnacle/polymarket): assigned to their own provider, no cap.
-        Soft: round-robin across siblings in the cluster.
-
-        Funding status (funded=True/False) is determined by checking balance
-        AFTER assignment — it doesn't gate inclusion.
-
-        Returns (batch, missed) where missed is always empty (all bets included).
+        Simple allocation — each bet stays on its original provider.
+        Sorted by edge descending (already done upstream).
+        Funding status annotated but never gates inclusion.
         """
-        import math
-
-        cap = self.BETS_PER_PROVIDER
         batch: list[BatchBet] = []
-        bets_assigned: dict[str, int] = {}
 
-        # -- Build cluster → siblings (auto-expand to fit all bets) ------------
-        # All platform group members are available accounts. Use as many as
-        # needed: ceil(bets/10) copies per cluster, distribute evenly.
-        import math
-
-        # Count candidates per cluster first
-        cluster_candidate_counts: dict[str, int] = {}
         for bet in candidates:
-            if bet.tier not in ("polymarket", "pinnacle"):
-                cluster_candidate_counts[bet.cluster] = cluster_candidate_counts.get(bet.cluster, 0) + 1
+            pid = bet.provider_id
+            pb = provider_balances.get(pid)
+            if pb is None:
+                pb = ProviderBalance(provider_id=pid, cluster=bet.cluster, initial_balance=0)
 
-        all_siblings: dict[str, list[str]] = {}
-        for group_name, group_info in PLATFORM_GROUPS.items():
-            all_members = group_info["members"]
-            count = cluster_candidate_counts.get(group_name, 0)
-            needed = max(1, math.ceil(count / cap)) if count > 0 else 1
-            # Use up to `needed` members from the group
-            all_siblings[group_name] = all_members[:needed]
+            placed = self._clone_bet_to_provider(bet, pid, pb)
+            placed.funded = pb.remaining >= bet.stake
+            if placed.funded:
+                pb.allocated += placed.stake
+            else:
+                placed.skip_reason = f"insufficient balance on {pid}"
+                pb.missed_bets += 1
+                pb.missed_ev += bet.expected_profit
 
-        # Standalone providers (not in any platform group)
-        registered = registered_providers or set(provider_balances.keys())
-        for pid in registered:
-            cluster = _provider_to_cluster(pid)
-            if cluster not in all_siblings:
-                all_siblings[cluster] = [pid]
+            batch.append(placed)
 
-        # Sort siblings: funded first (by balance desc), then unfunded
-        for cluster, sibs in all_siblings.items():
-            def _sort_key(pid: str) -> tuple:
-                pb = provider_balances.get(pid)
-                if pb and pb.lifecycle not in ("dormant", "available"):
-                    if pb.lifecycle in ("deposited", "freebet"):
-                        return (0, pb.bonus_amount, -pb.remaining)
-                    return (1, 0, -pb.remaining)
-                return (2, 0, 0)  # unfunded last
-            all_siblings[cluster] = sorted(sibs, key=_sort_key)
-
-        total_bankroll = sum(pb.initial_balance for pb in provider_balances.values())
-
-        # -- Compute dynamic per-provider cap per cluster ----------------------
-        # Distribute evenly across the auto-expanded sibling list, capped at 10.
-        # e.g. 53 bets → ceil(53/10) = 6 copies → ceil(53/6) = 9 per copy
-        dynamic_cap: dict[str, int] = {}
-        for cluster, count in cluster_candidate_counts.items():
-            n_siblings = len(all_siblings.get(cluster, [])) or 1
-            dynamic_cap[cluster] = min(cap, max(1, math.ceil(count / n_siblings)))
-
-        def _get_cap(cluster: str) -> int:
-            return dynamic_cap.get(cluster, cap)
-
-        # -- Assign bets -------------------------------------------------------
-        for bet in candidates:
-            is_sharp = bet.tier in ("polymarket", "pinnacle")
-            cluster = bet.cluster
-
-            if is_sharp:
-                # Sharp: always assign to own provider, no cap
-                pid = bet.provider_id
-                pb = provider_balances.get(pid)
-                if pb is None:
-                    pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
-                placed = self._clone_bet_to_provider(bet, pid, pb)
-                placed.funded = pb.remaining >= bet.stake
-                if placed.funded:
-                    pb.allocated += placed.stake
-                bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
-                batch.append(placed)
-                continue
-
-            # Soft: find a sibling under the per-cluster cap
-            sibs = all_siblings.get(cluster, [bet.provider_id])
-            provider_cap = _get_cap(cluster)
-            assigned = False
-            for pid in sibs:
-                if bets_assigned.get(pid, 0) >= provider_cap:
-                    continue
-                pb = provider_balances.get(pid)
-                if pb is None:
-                    pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
-
-                # Determine stake and bonus context
-                stake = bet.stake
-                is_bonus = False
-                bonus_type = None
-
-                if pb.is_bonus_phase and pb.bonus_amount > 0:
-                    stake = pb.bonus_amount
-                    is_bonus = True
-                    bonus_type = "freebet"
-                elif pb.lifecycle == "deposited" and pb.trigger_mode == "single":
-                    stake = pb.bonus_amount if pb.bonus_amount > 0 else bet.stake
-                    bonus_type = "trigger"
-
-                placed = self._clone_bet_to_provider(
-                    bet, pid, pb,
-                    stake=stake,
-                    is_bonus=is_bonus,
-                    bonus_type=bonus_type,
-                )
-
-                # Mark funded based on balance availability
-                if is_bonus:
-                    placed.funded = pb.bonus_amount > 0
-                elif bonus_type == "trigger":
-                    safe = total_bankroll >= stake * 2
-                    placed.funded = safe and pb.remaining >= stake
-                    if placed.funded:
-                        pb.allocated += placed.stake
-                else:
-                    placed.funded = pb.remaining >= bet.stake
-                    if placed.funded:
-                        pb.allocated += placed.stake
-
-                if not placed.funded:
-                    placed.skip_reason = f"insufficient balance on {pid}"
-                    target_pb = provider_balances.get(pid)
-                    if target_pb:
-                        target_pb.missed_bets += 1
-                        target_pb.missed_ev += bet.expected_profit
-
-                bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
-                batch.append(placed)
-                assigned = True
-                break
-
-            # All siblings at cap — bet dropped
-
-        # Split into funded/missed for downstream compatibility
         funded = [b for b in batch if b.funded]
         missed = [b for b in batch if not b.funded]
         return funded, missed
