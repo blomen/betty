@@ -894,17 +894,25 @@ class MirrorService:
             best_match = None
             best_score = 0
             for pb in pending:
-                # Build matchable name from event
                 event_name = pb.get("event_name", "")
-                # Try fuzzy match on market name vs event name
-                score = fuzz.partial_ratio(market.lower(), event_name.lower())
-                if score > best_score and score >= 65:
+                # Try multiple fuzzy strategies — Polymarket titles differ from our event names
+                # e.g. "Will Cheltenham Town FC win on 2026-04-06?" vs "Cheltenham Town vs Cambridge United"
+                s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
+                s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
+                # Also try matching just the home/away team names
+                s3 = 0
+                home = pb.get("event_name", "").split(" vs ")[0].strip() if " vs " in pb.get("event_name", "") else ""
+                if home and len(home) > 3:
+                    s3 = fuzz.partial_ratio(home.lower(), market.lower())
+                score = max(s1, s2, s3)
+                if score > best_score and score >= 55:
                     best_score = score
                     best_match = pb
 
             if not best_match:
-                logger.debug(f"[mirror] No DB match for history entry: {market[:60]} (best score: {best_score})")
+                logger.info(f"[mirror] No DB match for history entry: {market[:60]} (best score: {best_score})")
                 continue
+            logger.info(f"[mirror] Matched: {market[:40]} -> {best_match['event_name'][:40]} (score={best_score})")
 
             # For Claimed: check if payout ≈ stake → void (got money back, no profit)
             if result == "won" and best_match["stake"] > 0:
