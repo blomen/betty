@@ -976,7 +976,7 @@ def train(
 
     # Set up cosine annealing LR scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR
-    scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=1e-5)
+    scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=3e-5)
     # Fast-forward scheduler if resuming
     if start_epoch > 1:
         for _ in range((start_epoch - 1) * steps_per_epoch):

@@ -116,8 +116,8 @@ class DQNAgent:
         td_errors = q_pred - target_q
         q_loss = (weights_t * F.smooth_l1_loss(q_pred, target_q, reduction="none")).mean()
 
-        # Stop distance loss (MSE, weighted 0.1x so it doesn't dominate)
-        stop_loss = 0.1 * F.mse_loss(stop_pred.squeeze(1), stop_t)
+        # Stop distance loss (MSE, weighted to improve stop predictions)
+        stop_loss = 0.5 * F.mse_loss(stop_pred.squeeze(1), stop_t)
 
         loss = q_loss + stop_loss
 

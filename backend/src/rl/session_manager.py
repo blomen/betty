@@ -589,11 +589,12 @@ class SessionManager:
             return min(self.position.stop_price, new_stop_from_model)
 
     def _compute_size(self, confidence: float) -> float:
-        """Compute position size based on confidence + session P&L."""
+        """Compute position size based on composite confidence + session P&L."""
+        from src.rl.confidence import size_multiplier
         base = self.BASE_SIZE
 
-        # Confidence scaling: 50% to 100% of base
-        size = base * (0.5 + 0.5 * confidence)
+        # Composite confidence → sizing tier (0x to 1.5x)
+        size = base * size_multiplier(confidence)
 
         # Intraday compounding: increase after profits ONLY if no recent losses
         # (Fabio: "never raise exposure to recover")
