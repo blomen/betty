@@ -202,7 +202,23 @@ class MirrorService:
             return
 
         workflow = get_workflow(provider_id)
+
+        # Find tab: try workflow.find_tab, then fallback to domain/provider name match
         page = await workflow.find_tab(context)
+        if not page:
+            # Fallback: search by known domains from interceptor
+            from .interceptor import BetInterceptor
+            for p in context.pages:
+                url = (p.url or "").lower()
+                if provider_id in url:
+                    page = p
+                    break
+                for domain, pid in BetInterceptor._PROVIDER_DOMAINS.items():
+                    if pid == provider_id and domain in url:
+                        page = p
+                        break
+                if page:
+                    break
         if not page:
             logger.warning(f"[mirror] No {provider_id} tab found for history sync")
             return

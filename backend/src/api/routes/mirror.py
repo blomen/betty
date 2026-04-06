@@ -184,10 +184,21 @@ async def debug_history(provider_id: str):
     if not context:
         raise HTTPException(400, "No browser context")
 
-    # Debug: show domain matching
-    all_urls = [p.url[:80] for p in context.pages]
+    # Find tab directly — workflow.find_tab may miss due to domain mismatch
+    page = None
     domain = workflow.domain
-    page = await workflow.find_tab(context)
+    all_urls = []
+    for p in context.pages:
+        u = p.url or ""
+        all_urls.append(u[:80])
+        if domain and domain in u:
+            page = p
+            break
+        # Fallback: match provider_id in URL
+        if provider_id in u.lower():
+            page = p
+            break
+
     if not page:
         return {"error": f"No {provider_id} tab found", "domain": domain, "pages": all_urls}
 
