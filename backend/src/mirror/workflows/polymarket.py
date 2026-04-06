@@ -214,8 +214,8 @@ class PolymarketWorkflow(ProviderWorkflow):
         """
         current_url = page.url or ''
         if 'tab=history' not in current_url:
-            await page.goto("https://polymarket.com/portfolio?tab=history", wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(4)
+            logger.info(f"[polymarket] Not on history tab ({current_url[:60]}), skipping scrape")
+            return []
 
         rows = await page.evaluate("""() => {
             const results = [];

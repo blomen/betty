@@ -132,21 +132,10 @@ class MirrorService:
                     "pending_bets": info["pending_bets"],
                     "pending_stake": info["pending_stake"],
                 })
-                # Auto-scrape portfolio if pending bets exist
-                if info["pending_bets"] > 0:
-                    asyncio.ensure_future(self._auto_scrape_polymarket_portfolio())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
-
-    async def _auto_scrape_polymarket_portfolio(self):
-        """Wait for portfolio page to render, then scrape positions and stage settlements."""
-        await asyncio.sleep(5)  # Let DOM render
-        try:
-            await self.scrape_polymarket_settlements()
-        except Exception as e:
-            logger.warning(f"[mirror] Auto portfolio scrape failed: {e}")
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""
