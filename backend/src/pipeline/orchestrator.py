@@ -844,7 +844,7 @@ class ExtractionPipeline:
                         log_progress(f"Extracting {len(available_providers)} providers...")
 
                 # Create tasks for parallel extraction
-                # Provider timeout from config (default 300s = 5 min)
+                # Provider timeout from config (None = no timeout, run to completion)
                 default_provider_timeout = self.orchestrator_config.provider_timeout
 
                 async def extract_with_error_handling(provider_id):
@@ -893,14 +893,15 @@ class ExtractionPipeline:
                         if self.metrics:
                             self.metrics.set_provider_total_sports(provider_id, len(provider_sports))
 
-                        # Use retry wrapper with timeout enforcement
-                        provider_results = await asyncio.wait_for(
-                            self._extract_provider_with_retry(
-                                provider_id, provider_sports, max_events_per_sport, sharp_sports,
-                                sharp_leagues=getattr(self, 'sharp_leagues', None),
-                            ),
-                            timeout=provider_timeout,
+                        # Use retry wrapper with optional timeout enforcement
+                        _extract_coro = self._extract_provider_with_retry(
+                            provider_id, provider_sports, max_events_per_sport, sharp_sports,
+                            sharp_leagues=getattr(self, 'sharp_leagues', None),
                         )
+                        if provider_timeout:
+                            provider_results = await asyncio.wait_for(_extract_coro, timeout=provider_timeout)
+                        else:
+                            provider_results = await _extract_coro
 
                         # End provider metrics on success
                         if self.metrics:

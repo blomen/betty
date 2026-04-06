@@ -256,6 +256,13 @@ def extract_level_touch_features(
     regime: str | None = None,
     regime_score: float | None = None,
     macro_bias: str | None = None,
+    # Approach volume (6)
+    approach_vol_slope: float | None = None,
+    approach_vol_ratio: float | None = None,
+    approach_delta_slope: float | None = None,
+    approach_buy_pct_trend: float | None = None,
+    approach_vol_accel: float | None = None,
+    approach_big_vol_count: int | None = None,
     # Candle pattern (5)
     last_3_candles_direction: int | None = None,
     last_candle_is_doji: bool | None = None,
@@ -325,6 +332,13 @@ def extract_level_touch_features(
         "regime": regime,
         "regime_score": regime_score,
         "macro_bias": macro_bias,
+        # Approach volume
+        "approach_vol_slope": approach_vol_slope,
+        "approach_vol_ratio": approach_vol_ratio,
+        "approach_delta_slope": approach_delta_slope,
+        "approach_buy_pct_trend": approach_buy_pct_trend,
+        "approach_vol_accel": approach_vol_accel,
+        "approach_big_vol_count": approach_big_vol_count,
         # Candle pattern
         "last_3_candles_direction": last_3_candles_direction,
         "last_candle_is_doji": last_candle_is_doji,

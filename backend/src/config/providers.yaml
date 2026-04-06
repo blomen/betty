@@ -70,7 +70,8 @@ orchestrator:
       shared_resource: browser
 
   # Timeouts (seconds) — tighter on bare metal (dedicated CPU, no contention)
-  provider_timeout: 600                # Per-provider timeout (bare metal finishes faster)
+  # No provider_timeout — let providers run until all sports complete.
+  # Individual sport_timeout (per-sport) still acts as safety net.
   sport_timeout: 90                    # Per-sport timeout (dedicated threads = faster extraction)
 
   # Performance
@@ -592,7 +593,6 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
-    provider_timeout: 1200             # DOM scraping — needs headroom for slow PC
     sport_timeout: 600                 # Football has 60+ leagues, 360s too tight under load
     supported_sports:
       # Fast/small sports first — ensures coverage even if provider timeout hits
@@ -621,7 +621,6 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
-    provider_timeout: 1200             # 10 sports × up to 360s each (sequential, browser-based)
     sport_timeout: 360                 # Football has 60+ leagues × ~3s/league — 240s was too tight
     supported_sports:
       - football
@@ -652,8 +651,7 @@ providers:
     domain: comeon.com
     retriever_type: custom
     site_url: https://www.comeon.com
-    provider_timeout: 1800             # 5 sports × ~200s each through SOCKS proxy (adds latency)
-    sport_timeout: 360                 # Football has 60+ leagues × ~5s each; 180s was too tight
+    sport_timeout: 600                 # Football has 60+ leagues × ~5s each; 360s was too tight
     bonus:
       type: bonusdeposit
       amount: 500
@@ -678,7 +676,6 @@ providers:
     domain: hajper.com
     retriever_type: custom
     site_url: https://www.hajper.com
-    provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
     sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: freebet                    # 100% matched FREE BET, not deposit match
@@ -702,7 +699,6 @@ providers:
     domain: lyllocasino.com
     retriever_type: custom
     site_url: https://www.lyllocasino.com
-    provider_timeout: 900              # 12 sports × ~45s each (date scrolling)
     sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: freebet
@@ -761,8 +757,7 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
-    provider_timeout: 700              # DOM scraping with concurrent league+detail tabs
-    sport_timeout: 400                 # Raised from 300 — football needs ~200s for leagues + ~150s for detail enrichment
+    sport_timeout: 600                 # Football needs ~200s for leagues + ~150s for detail enrichment
     supported_sports:
       - football
       - ice_hockey
@@ -793,7 +788,6 @@ providers:
     domain: coolbet.com
     retriever_type: coolbet
     site_url: https://www.coolbet.com
-    provider_timeout: 600              # Camoufox startup ~30s + 9 sports ~120s + page recovery overhead + margin
     sport_timeout: 240                 # Football has heavy pagination (50+ categories)
     supported_sports:
       - football
@@ -820,7 +814,6 @@ providers:
     domain: tipwin.se
     retriever_type: tipwin
     site_url: https://www.tipwin.se
-    provider_timeout: 420  # Full pagination (~180s standalone) + processing all 11 sports
     sport_timeout: 300  # Loads ALL sports on first call (~180s pagination), needs full timeout
     supported_sports:
       - football

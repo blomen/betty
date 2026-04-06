@@ -88,11 +88,11 @@ def _fetch_macro_sync() -> MacroSnapshot:
         except Exception as e:
             logger.debug("US10Y fetch failed: %s", e)
 
-        # US 2Y yield (^TWO)
+        # US 2Y yield (2-year Treasury futures)
         try:
-            two = yf.download("^TWO", start=start, end=end, progress=False, auto_adjust=True)
+            two = yf.download("2YY=F", start=start, end=end, progress=False, auto_adjust=True)
             if not two.empty and len(two) >= 1:
-                snapshot.us2y = round(_scalar(two, "Close", -1) / 10, 3)
+                snapshot.us2y = round(_scalar(two, "Close", -1), 3)
         except Exception as e:
             logger.debug("US2Y fetch failed: %s", e)
 

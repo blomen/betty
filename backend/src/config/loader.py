@@ -175,7 +175,7 @@ class OrchestratorConfig(BaseModel):
     max_concurrent_providers: int = 5
     max_concurrent_sports_per_provider: int = 3
     max_browser_instances: int = 4  # Global browser limit for pool manager
-    provider_timeout: int = 300
+    provider_timeout: int | None = None  # None = no timeout, let providers run to completion
     sport_timeout: int = 60
     batch_commit_size: int = 100
 

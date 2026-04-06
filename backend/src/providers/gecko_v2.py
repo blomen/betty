@@ -201,16 +201,21 @@ class GeckoV2Retriever(BrowserRetriever):
             # Navigate to site
             url = f"{self.site_url}{self._init_path}"
             logger.debug(f"[{self.provider_id}] Loading {url} for session init")
-            await page.goto(url, wait_until='load', timeout=60000)
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
 
             # Handle cookie consent
             await self._handle_cookie_consent(page)
-            await asyncio.sleep(2)
+
+            # Wait for API headers to be captured (up to 15s after page load)
+            for _ in range(30):
+                if captured:
+                    break
+                await asyncio.sleep(0.5)
 
             await page.unroute('**/api/sb/**')
 
             if not captured:
-                logger.error(f"[{self.provider_id}] No API headers captured")
+                logger.error(f"[{self.provider_id}] No API headers captured after page load")
                 return False
 
             # Extract only the custom headers needed for API calls
@@ -304,15 +309,15 @@ class GeckoV2Retriever(BrowserRetriever):
             )
 
         try:
-            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=75)
+            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
         except asyncio.TimeoutError:
-            logger.error(f"[{self.provider_id}] Session init timed out after 75s")
+            logger.error(f"[{self.provider_id}] Session init timed out after 120s")
             self._api_headers = None
             self._api_base = None
             self._session_ready = False
             self._session_init_failed = True  # Prevent retries for remaining sports
             raise RetryableError(
-                "Session init timed out after 45s",
+                "Session init timed out after 120s",
                 provider_id=self.provider_id,
             )
         if not session_ok:

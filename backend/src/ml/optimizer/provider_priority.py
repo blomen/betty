@@ -38,7 +38,7 @@ class ProviderPriorityScorer:
             health = session.execute(text(
                 "SELECT "
                 "  COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) as failures, "
-                "  COALESCE(SUM(CASE WHEN circuit_breaker_tripped = 1 THEN 1 ELSE 0 END), 0) as cb_trips, "
+                "  COALESCE(SUM(CASE WHEN circuit_breaker_tripped = true THEN 1 ELSE 0 END), 0) as cb_trips, "
                 "  COUNT(*) as total, "
                 "  COALESCE(AVG(spread_count), 0) as avg_spread, "
                 "  COALESCE(AVG(total_count), 0) as avg_total "
