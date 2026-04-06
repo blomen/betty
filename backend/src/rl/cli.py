@@ -1654,6 +1654,17 @@ def train_narrative_gbt(
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
+    # Subsample to fit in memory (LightGBM duplicates data per thread)
+    MAX_GBT_SAMPLES = 250_000
+    if n > MAX_GBT_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
+        idx.sort()
+        observations = observations[idx]
+        setup_labels = setup_labels[idx]
+        n = MAX_GBT_SAMPLES
+        typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
+
     # Extract narrative-relevant features:
     #   structure  52:116  (64)
     #   TPO       116:154  (38)
@@ -1760,6 +1771,23 @@ def train_trigger_gbt(
 
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
+
+    # Subsample to fit in memory (LightGBM duplicates data per thread)
+    MAX_GBT_SAMPLES = 250_000
+    if n > MAX_GBT_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
+        idx.sort()  # preserve chronological order
+        observations = observations[idx]
+        rewards_cont = rewards_cont[idx]
+        rewards_rev = rewards_rev[idx]
+        stop_targets = stop_targets[idx]
+        if breakeven_reached is not None:
+            breakeven_reached = breakeven_reached[idx]
+        if levels_captured is not None:
+            levels_captured = levels_captured[idx]
+        n = MAX_GBT_SAMPLES
+        typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
 
     # --- Narrative augment: setup_probs from NarrativeGBT if available ---
     narrative_path = models_dir / f"narrative_gbt_{checkpoint}.joblib"
