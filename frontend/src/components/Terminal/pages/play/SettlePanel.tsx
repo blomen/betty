@@ -57,7 +57,7 @@ function BetRow({
     >
       {/* Event info */}
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-text truncate">{bet.event_name}</div>
+        <div className="text-sm text-text truncate">{bet.home_team && bet.away_team ? `${bet.home_team} v ${bet.away_team}` : bet.event_id}</div>
         <div className="text-[11px] text-muted flex items-center gap-2">
           {bet.market && <span>{bet.market}</span>}
           {bet.outcome && <span className="text-text">{bet.outcome}</span>}
@@ -199,7 +199,7 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
   // Update pending count for step indicator
   useEffect(() => {
     if (data) {
-      const remaining = data.total_pending - Object.keys(settledBets).length;
+      const remaining = data.total_bets - Object.keys(settledBets).length;
       setPendingCount(Math.max(0, remaining));
     }
   }, [data, settledBets, setPendingCount]);
@@ -283,7 +283,7 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
   }
 
   const providers = data?.providers || [];
-  const totalPending = data?.total_pending || 0;
+  const totalPending = data?.total_bets || 0;
   const settledCount = Object.keys(settledBets).length;
   const remaining = totalPending - settledCount;
 
