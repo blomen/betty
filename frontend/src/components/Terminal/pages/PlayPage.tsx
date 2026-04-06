@@ -120,10 +120,48 @@ export function PlayPage() {
     setExcludedBets(prev => [...prev, key]);
   }, []);
 
-  // Active bet — navigating mirror to event
+  // Active bet + placed tracking
   const [activeBet, setActiveBet] = useState<string | null>(null); // betKey
   const [liveEdge, setLiveEdge] = useState<number | null>(null);
   const [navigating, setNavigating] = useState(false);
+  const [placedBets, setPlacedBets] = useState<Set<string>>(new Set());
+  const [activeProviderBets, setActiveProviderBets] = useState<ClusterBet[]>([]);
+
+  // Listen for bet_mirrored SSE → mark placed, advance to next
+  useEffect(() => {
+    const es = new EventSource('/api/extraction/stream');
+    es.addEventListener('bet_mirrored', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        // Find which bet was placed by matching provider + odds + stake
+        if (activeBet && activeProviderBets.length > 0) {
+          const currentIdx = activeProviderBets.findIndex(b => betKey(b) === activeBet);
+          if (currentIdx >= 0) {
+            const current = activeProviderBets[currentIdx];
+            // Check if mirrored bet matches the active bet (odds within 5%, stake within 20%)
+            const oddsMatch = data.odds && Math.abs(data.odds - current.odds) / current.odds < 0.05;
+            const stakeMatch = data.stake && Math.abs(data.stake - current.stake) / current.stake < 0.2;
+            if (oddsMatch || stakeMatch || !data.odds) {
+              // Mark as placed
+              setPlacedBets(prev => new Set(prev).add(activeBet));
+              // Advance to next unplaced bet
+              for (let i = currentIdx + 1; i < activeProviderBets.length; i++) {
+                const next = activeProviderBets[i];
+                if (!placedBets.has(betKey(next))) {
+                  handlePlayBet(next);
+                  return;
+                }
+              }
+              // No more bets — clear active
+              setActiveBet(null);
+              setLiveEdge(null);
+            }
+          }
+        }
+      } catch { /* */ }
+    });
+    return () => es.close();
+  }, [activeBet, activeProviderBets, placedBets]);
 
   const handlePlayBet = useCallback(async (b: ClusterBet) => {
     const key = betKey(b);
@@ -248,10 +286,13 @@ export function PlayPage() {
                           setExpandedProvider(null);
                           setActiveBet(null);
                           setLiveEdge(null);
+                          setActiveProviderBets([]);
                         } else {
                           setExpandedProvider(provider);
-                          // Auto-navigate to first bet
-                          if (bets.length > 0) handlePlayBet(bets[0]);
+                          setActiveProviderBets(bets);
+                          // Auto-navigate to first unplaced bet
+                          const first = bets.find(b => !placedBets.has(betKey(b)));
+                          if (first) handlePlayBet(first);
                         }
                       };
                       const settleCount = settleMap[provider] ?? 0;
@@ -295,11 +336,13 @@ export function PlayPage() {
                                     return (
                                       <tr
                                         key={betKey(b)}
-                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
-                                        onClick={() => handlePlayBet(b)}
+                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''} ${placedBets.has(betKey(b)) ? 'opacity-40' : ''}`}
+                                        onClick={() => !placedBets.has(betKey(b)) && handlePlayBet(b)}
                                       >
                                         <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>
+                                          {placedBets.has(betKey(b)) && <span className="text-success text-[10px] mr-1">✓</span>}
                                           {activeBet === betKey(b) && navigating && <span className="text-amber-400 text-[10px] mr-1">⟳</span>}
+                                          {activeBet === betKey(b) && !navigating && !placedBets.has(betKey(b)) && <span className="text-success text-[10px] mr-1">▸</span>}
                                           {eventLabel(b)}
                                         </td>
                                         <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
