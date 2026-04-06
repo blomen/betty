@@ -196,6 +196,12 @@ export const settingsApi = {
     }, 30_000);
   },
 
+  async getLivePrice(provider_id: string, event_id: string, market: string, outcome: string, fair_odds: number, point?: number | null): Promise<{ live_edge: number | null; live_cents: number | null }> {
+    const params = new URLSearchParams({ event_id, market, outcome, fair_odds: String(fair_odds) });
+    if (point != null) params.set('point', String(point));
+    return fetchJson(`/mirror/live-price/${provider_id}?${params}`);
+  },
+
   async scrapePolyPortfolio(): Promise<{ staged: number; settlements: any[] }> {
     return fetchJson('/mirror/scrape-poly-portfolio', { method: 'POST' }, 30_000);
   },

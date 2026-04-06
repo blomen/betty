@@ -122,7 +122,9 @@ export function PlayPage() {
 
   // Active bet + placed tracking
   const [activeBet, setActiveBet] = useState<string | null>(null); // betKey
+  const [activeBetObj, setActiveBetObj] = useState<ClusterBet | null>(null);
   const [liveEdge, setLiveEdge] = useState<number | null>(null);
+  const [liveCents, setLiveCents] = useState<number | null>(null);
   const [navigating, setNavigating] = useState(false);
   const [placedBets, setPlacedBets] = useState<Set<string>>(new Set());
   const [activeProviderBets, setActiveProviderBets] = useState<ClusterBet[]>([]);
@@ -166,7 +168,9 @@ export function PlayPage() {
   const handlePlayBet = useCallback(async (b: ClusterBet) => {
     const key = betKey(b);
     setActiveBet(key);
+    setActiveBetObj(b);
     setLiveEdge(null);
+    setLiveCents(null);
     setNavigating(true);
     try {
       const res = await api.navigateBet({
@@ -185,6 +189,25 @@ export function PlayPage() {
     } catch { /* */ }
     finally { setNavigating(false); }
   }, []);
+
+  // Poll live price every 5s while a bet is active
+  useEffect(() => {
+    if (!activeBetObj || navigating) return;
+    const poll = async () => {
+      try {
+        const res = await api.getLivePrice(
+          activeBetObj.provider_id, activeBetObj.event_id,
+          activeBetObj.market, activeBetObj.outcome,
+          activeBetObj.fair_odds, activeBetObj.point,
+        );
+        if (res.live_edge != null) setLiveEdge(res.live_edge);
+        if (res.live_cents != null) setLiveCents(res.live_cents);
+      } catch { /* */ }
+    };
+    poll(); // Immediate first check
+    const iv = setInterval(poll, 5000);
+    return () => clearInterval(iv);
+  }, [activeBetObj, navigating]);
 
   // Lookups
   const settleMap = useMemo(() => {
@@ -348,7 +371,11 @@ export function PlayPage() {
                                         <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
                                         <td className="text-right text-sm text-text">
                                           {b.odds.toFixed(2)}
-                                          {tier === 'polymarket' && <span className="text-muted text-[10px] ml-0.5">{(100 / b.odds).toFixed(1)}¢</span>}
+                                          {tier === 'polymarket' && (
+                                            activeBet === betKey(b) && liveCents != null
+                                              ? <span className="text-amber-400 text-[10px] ml-0.5">{liveCents.toFixed(1)}¢</span>
+                                              : <span className="text-muted text-[10px] ml-0.5">{(100 / b.odds).toFixed(1)}¢</span>
+                                          )}
                                         </td>
                                         <td className="text-right text-sm text-muted">
                                           {b.fair_odds.toFixed(2)}
