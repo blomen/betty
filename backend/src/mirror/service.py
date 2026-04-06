@@ -609,7 +609,10 @@ class MirrorService:
             if now is None:
                 continue
 
-            # Determine result from now_price
+            # Determine result from now_price (cents)
+            # 100¢ = won, 0¢ = lost, 50¢ = void (push / refund)
+            # Polymarket shows "WON" for voids too (you get money back) — ignore that text.
+            # Only trust the price.
             if now >= 95:  # ~100¢ = won
                 result = "won"
             elif now <= 5:  # ~0¢ = lost
@@ -617,14 +620,7 @@ class MirrorService:
             elif 45 <= now <= 55:  # ~50¢ = void/push
                 result = "void"
             else:
-                continue  # Still open
-
-            # Confirm with WON/LOST text if available
-            status = pos.get("status", "")
-            if status == "won" and result != "won":
-                result = "won"
-            elif status == "lost" and result != "lost":
-                result = "lost"
+                continue  # Still open, price hasn't resolved
 
             avg_price = pos.get("avg_price")
             shares = pos.get("shares")
@@ -645,12 +641,13 @@ class MirrorService:
                 if not (price_match and shares_match):
                     continue
 
-                # Calculate payout
+                # Calculate payout based on resolution price
                 if result == "won":
-                    # Won: shares × $1 = shares value
+                    # Won: shares × $1.00
                     payout = shares if shares else pb["stake"] * pb["odds"]
                 elif result == "void":
-                    payout = pb["stake"]
+                    # Void: shares × $0.50 (market pushed)
+                    payout = shares * 0.50 if shares else pb["stake"]
                 else:
                     payout = 0.0
 
