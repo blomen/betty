@@ -161,6 +161,67 @@ async def scrape_poly_portfolio():
     return {"staged": len(staged), "settlements": staged}
 
 
+@router.get("/debug-poly-dom")
+async def debug_poly_dom():
+    """Debug: read Polymarket portfolio DOM and show parsed entries."""
+    import re
+    mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor.context:
+        raise HTTPException(400, "No mirror running")
+
+    # Find polymarket page
+    page = None
+    for p in mirror.interceptor.context.pages:
+        url = p.url or ""
+        if 'polymarket.com' in url and '/portfolio' in url:
+            page = p
+            break
+    if not page:
+        for p in mirror.interceptor.context.pages:
+            if 'polymarket.com' in (p.url or ''):
+                page = p
+                break
+    if not page:
+        return {"error": "No polymarket page"}
+
+    raw = await page.evaluate("() => document.body.innerText")
+    lines = raw.split('\n')
+
+    entries = []
+    for i, line in enumerate(lines):
+        a = line.strip()
+        if a not in ('Lost', 'Claimed'):
+            continue
+        context_lines = []
+        market = ''
+        for j in range(i + 1, min(i + 8, len(lines))):
+            l = lines[j].strip()
+            context_lines.append(l)
+            if not l or l == '-':
+                continue
+            if re.match(r'\d+[hmd]\s*ago', l):
+                break
+            if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
+                continue
+            if re.search(r'([\d.]+)\s*shares', l):
+                continue
+            if re.match(r'^[+-]?\$([\d,.]+)$', l):
+                continue
+            if not market and len(l) > 10:
+                market = l
+        entries.append({
+            "activity": a,
+            "market": market[:80],
+            "context": context_lines[:6],
+        })
+
+    return {
+        "page_url": page.url[:100],
+        "total_lines": len(lines),
+        "entries": entries,
+    }
+
+
 class NavigateBetRequest(BaseModel):
     provider_id: str
     event_id: str
