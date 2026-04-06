@@ -372,6 +372,17 @@ export function PlayPage() {
 
                     {clusterProviders.map(({ provider, bets, tier, totalStake, totalEv, balance }) => {
                       const isExpanded = expandedProvider === provider;
+                      const handleExpand = () => {
+                        if (isExpanded) {
+                          setExpandedProvider(null);
+                          setActiveBet(null);
+                          setLiveEdge(null);
+                        } else {
+                          setExpandedProvider(provider);
+                          // Auto-navigate to first bet
+                          if (bets.length > 0) handlePlayBet(bets[0]);
+                        }
+                      };
                       const settleCount = settleMap[provider] ?? 0;
                       const status = providerStatus.get(provider);
                       const dotColor = status === 'logged_in' ? 'text-success' : status === 'opened' ? 'text-amber-400' : 'text-muted/30';
@@ -379,7 +390,7 @@ export function PlayPage() {
                         <Fragment key={provider}>
                           <div
                             className="flex items-center gap-3 px-3 pl-6 py-2 border-b border-border hover:bg-panel2/50 cursor-pointer transition-colors"
-                            onClick={() => setExpandedProvider(isExpanded ? null : provider)}
+                            onClick={handleExpand}
                           >
                             <span className={`text-[10px] ${dotColor}`}>●</span>
                             <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
