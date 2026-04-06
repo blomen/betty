@@ -753,20 +753,71 @@ class MirrorService:
             logger.warning("[mirror] No Polymarket tab open")
             return []
 
-        workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
-        history = await workflow.scrape_history(page)
-
-        if not history:
-            logger.info("[mirror] No history entries found")
+        # Parse flat DOM text — more reliable than element-based scraping
+        try:
+            raw = await page.evaluate("() => document.body.innerText")
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read Polymarket DOM: {e}")
             return []
 
-        # Filter to settlement-relevant entries only
-        settle_entries = [h for h in history if h.get("activity") in ("Lost", "Claimed")]
+        if not raw:
+            return []
+
+        # Extract Lost/Claimed entries from flat text
+        # Format: "Claimed\nMarket Name\n+$15.01\n2h ago" or "Lost\nMarket Name\nYes 16¢ 55.7 shares\n-\n6h ago"
+        import re
+        settle_entries = []
+        lines = raw.split('\n')
+        for i, line in enumerate(lines):
+            activity = line.strip()
+            if activity not in ('Lost', 'Claimed'):
+                continue
+            # Next non-empty line(s) are the market name
+            market = ''
+            value = 0.0
+            shares = 0.0
+            for j in range(i + 1, min(i + 6, len(lines))):
+                l = lines[j].strip()
+                if not l:
+                    continue
+                # Dollar value: "+$15.01" or "-$9.00" or "-"
+                val_match = re.match(r'^[+-]?\$([\d,.]+)$', l)
+                if val_match:
+                    value = float(val_match.group(1).replace(',', ''))
+                    if l.startswith('-'):
+                        value = -value
+                    continue
+                # Shares: "55.7 shares"
+                shares_match = re.search(r'([\d.]+)\s*shares', l)
+                if shares_match:
+                    shares = float(shares_match.group(1))
+                    continue
+                # Time: "2h ago", "19h ago"
+                if re.match(r'\d+[hmd]\s*ago', l):
+                    break
+                # Skip dash placeholder
+                if l == '-':
+                    continue
+                # Skip tags like "Yes 16¢"
+                if re.match(r'^.+\d+¢$', l):
+                    continue
+                # Market name — first substantial text
+                if not market and len(l) > 10:
+                    market = l
+
+            if market:
+                settle_entries.append({
+                    'activity': activity,
+                    'market': market[:120],
+                    'value': abs(value),
+                    'shares': shares,
+                })
+
         if not settle_entries:
-            logger.info("[mirror] No Lost/Claimed entries in history")
+            logger.info("[mirror] No Lost/Claimed entries in Polymarket history")
             return []
 
-        logger.info(f"[mirror] History: {len(settle_entries)} Lost/Claimed entries")
+        logger.info(f"[mirror] Polymarket history: {len(settle_entries)} Lost/Claimed entries")
 
         # Get pending Polymarket bets from DB (with event names for matching)
         pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
