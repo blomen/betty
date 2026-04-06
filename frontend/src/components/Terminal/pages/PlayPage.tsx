@@ -205,9 +205,10 @@ export function PlayPage() {
 
   const batch = batchData?.batch ?? [];
   const summary = batchData?.summary;
+  const balances: Record<string, number> = (batchData as any)?.provider_balances ?? {};
 
   const clusterGroups = useMemo(() => {
-    const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number }[]> = {};
+    const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number; balance: number }[]> = {};
     const byProvider: Record<string, ClusterBet[]> = {};
     for (const b of batch) {
       const pid = b.provider_id ?? 'unknown';
@@ -222,15 +223,17 @@ export function PlayPage() {
         tier: bets[0]?.tier || 'soft',
         totalEv: bets.reduce((s, b) => s + b.expected_profit, 0),
         totalStake: bets.reduce((s, b) => s + b.stake, 0),
+        balance: balances[pid] ?? 0,
       });
     }
-    for (const list of Object.values(groups)) list.sort((a, b) => b.totalEv - a.totalEv);
+    // Sort providers within cluster by balance desc
+    for (const list of Object.values(groups)) list.sort((a, b) => b.balance - a.balance);
     return Object.entries(groups).sort((a, b) => {
       const evA = a[1].reduce((s, p) => s + p.totalEv, 0);
       const evB = b[1].reduce((s, p) => s + p.totalEv, 0);
       return evB - evA;
     });
-  }, [batch]);
+  }, [batch, balances]);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const sekStake = batch.filter(b => b.tier !== 'polymarket').reduce((s, b) => s + b.stake, 0);
@@ -369,7 +372,7 @@ export function PlayPage() {
                       <span className="text-[10px] text-success ml-auto">+{fmt(clusterEv, clusterTier)} EV</span>
                     </div>
 
-                    {clusterProviders.map(({ provider, bets, tier, totalStake, totalEv }) => {
+                    {clusterProviders.map(({ provider, bets, tier, totalStake, totalEv, balance }) => {
                       const isExpanded = expandedProvider === provider;
                       const settleCount = settleMap[provider] ?? 0;
                       const status = providerStatus.get(provider);
@@ -384,6 +387,9 @@ export function PlayPage() {
                             <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
                             <span className="text-xs text-muted">{bets.length} bets</span>
                             <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
+                            {balance > 0 && (
+                              <span className="text-xs text-success">bal {fmt(balance, tier)}</span>
+                            )}
                             {settleCount > 0 && (
                               <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>
                             )}
