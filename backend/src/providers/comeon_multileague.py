@@ -191,7 +191,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         all_events = []
         sports_attempted = 0
-        provider_timeout = self.config.get("provider_timeout", 900)
         provider_start = time.time()
 
         # Sort sports by priority (fast sports first, heavy sports last)
@@ -201,17 +200,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         )
 
         for sport_idx, sport_key in enumerate(sports_to_extract):
-            # Provider-level time budget: stop starting new sports at 90% of provider timeout
-            elapsed = time.time() - provider_start
-            if elapsed > provider_timeout * 0.90:
-                remaining = [s for s in sports_to_extract if s not in
-                             [sk for sk in sports_to_extract[:sports_to_extract.index(sport_key)]]]
-                logger.warning(
-                    f"[{self.provider_id}] Provider time-budget exit at {elapsed:.0f}s "
-                    f"({sports_attempted} sports, {len(all_events)} events). "
-                    f"Skipping: {remaining[1:] if len(remaining) > 1 else 'none'}"
-                )
-                break
 
             # Proactively recycle the Camoufox page between sports.
             # After 20+ page.goto() calls per sport, the page accumulates SPA state
