@@ -299,7 +299,13 @@ class CoolbetRetriever(BrowserRetriever):
             return events[:limit]
 
         except Exception as e:
+            err_str = str(e)
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
+            # Proxy/network error — kill browser so next run gets a fresh one
+            if "NS_ERROR" in err_str or "PROXY" in err_str or "net::" in err_str:
+                logger.warning(f"[{self.provider_id}] Network error — restarting browser for next run")
+                self._session_ready = False
+                await self._cleanup_camoufox()
             return []
 
     CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (restored from 4 — I/O-bound, Camoufox handles fine)

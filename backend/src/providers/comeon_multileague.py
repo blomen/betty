@@ -188,6 +188,14 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 logger.info(f"[{self.provider_id}] Camoufox session warmed up")
             except Exception as e:
                 logger.warning(f"[{self.provider_id}] Warm-up failed: {e}")
+                # Proxy/network error — kill browser so next run gets a fresh one
+                if "NS_ERROR" in str(e) or "PROXY" in str(e) or "net::" in str(e):
+                    logger.warning(f"[{self.provider_id}] Network error on warm-up — restarting browser")
+                    await self._cleanup_camoufox()
+                    raise RetryableError(
+                        f"Warm-up network error: {e}",
+                        provider_id=self.provider_id,
+                    )
 
         all_events = []
         sports_attempted = 0
