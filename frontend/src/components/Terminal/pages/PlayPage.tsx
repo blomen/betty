@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect, useMemo, useRef, Fragment } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import type { ClusterBatchResult, ClusterBet, PendingBetsResponse, PendingBet } from '@/types';
+import type { ClusterBatchResult, ClusterBet, PendingBetsResponse } from '@/types';
 import { NetworkError, TimeoutError } from '@/services/api/client';
-import { resolveOutcome, marketLabel } from '@/utils/betting';
+import { resolveOutcome } from '@/utils/betting';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 
@@ -60,30 +60,17 @@ function betKey(b: ClusterBet): string {
   return `${b.cluster}:${b.event_id}:${b.market}:${b.outcome}:${b.point ?? ''}`;
 }
 
-function clusterEventLabel(b: ClusterBet): string {
+function eventLabel(b: ClusterBet): string {
   const home = b.display_home || b.sport;
   const away = b.display_away || '';
   if (home && away) return `${home} v ${away}`;
   return home || away || b.event_id;
 }
 
-function clusterOutcomeLabel(b: ClusterBet): string {
+function outcomeLabel(b: ClusterBet): string {
   return resolveOutcome(
     b.outcome,
     { home_team: b.display_home, away_team: b.display_away, display_home: b.display_home, display_away: b.display_away, market: b.market },
-    b.point,
-  );
-}
-
-function pendingEventLabel(b: PendingBet): string {
-  if (b.home_team && b.away_team) return `${b.home_team} v ${b.away_team}`;
-  return b.home_team || b.away_team || b.event_id;
-}
-
-function pendingOutcomeLabel(b: PendingBet): string {
-  return resolveOutcome(
-    b.outcome,
-    { home_team: b.home_team, away_team: b.away_team, display_home: b.home_team, display_away: b.away_team, market: b.market },
     b.point,
   );
 }
@@ -94,7 +81,7 @@ export function PlayPage() {
   const queryClient = useQueryClient();
   const [excludedBets, setExcludedBets] = useState<string[]>([]);
 
-  // 1. Start mirror + open settle tabs
+  // Start mirror + open settle tabs
   const settleTabsOpened = useRef(false);
   useEffect(() => {
     (async () => {
@@ -108,7 +95,7 @@ export function PlayPage() {
     })();
   }, []);
 
-  // 2. Pending bets (settlement check)
+  // Pending bets (for settle indicators on rows)
   const { data: pendingData } = useQuery<PendingBetsResponse>({
     queryKey: ['pending-bets'],
     queryFn: () => api.getPendingBets(),
@@ -116,7 +103,7 @@ export function PlayPage() {
     refetchInterval: 30_000,
   });
 
-  // 3. Batch
+  // Batch
   const {
     data: batchData,
     isLoading: batchLoading,
@@ -196,13 +183,11 @@ export function PlayPage() {
   }, []);
 
   // Lookups
-  const pendingProviders = pendingData?.providers ?? [];
-  const pendingCount = pendingData?.total_bets ?? 0;
   const settleMap = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const p of pendingProviders) m[p.provider_id] = p.bet_count;
+    for (const p of pendingData?.providers ?? []) m[p.provider_id] = p.bet_count;
     return m;
-  }, [pendingProviders]);
+  }, [pendingData]);
 
   const batch = batchData?.batch ?? [];
   const summary = batchData?.summary;
@@ -236,12 +221,9 @@ export function PlayPage() {
   }, [batch, balances]);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
-  const [expandedSettleProvider, setExpandedSettleProvider] = useState<string | null>(null);
   const sekStake = batch.filter(b => b.tier !== 'polymarket').reduce((s, b) => s + b.stake, 0);
   const usdcStake = batch.filter(b => b.tier === 'polymarket').reduce((s, b) => s + b.stake, 0);
   const totalEV = summary?.total_expected_profit ?? 0;
-
-  const showRightPanel = pendingCount > 0 || settlements != null;
 
   function batchErrorMessage(): string {
     if (!batchError) return 'No batch data available.';
@@ -250,10 +232,83 @@ export function PlayPage() {
     return batchError.message || 'Failed to load batch data.';
   }
 
-  // ─── Batch panel (left or full) ───────────────────────────────────────────
+  return (
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+          <TabIcon name="play" color={TAB_COLORS.play} size={16} />
+          Play
+        </h2>
+      </div>
 
-  const batchPanel = (
-    <div className="flex flex-col flex-1 min-h-0 min-w-0">
+      {/* Settlement breakdown — appears when mirror detects settlements */}
+      {settlements && (
+        <div className="border border-border bg-panel">
+          <div className="px-3 py-2 border-b border-border flex items-center gap-3">
+            <span className="text-sm font-medium text-text uppercase">{settlements.provider}</span>
+            <span className="text-xs text-muted">{settlements.count} detected</span>
+            <span className="text-xs text-success">{settlements.wins}W</span>
+            <span className="text-xs text-danger">{settlements.losses}L</span>
+            {settlements.count - settlements.wins - settlements.losses > 0 && (
+              <span className="text-xs text-amber-400">{settlements.count - settlements.wins - settlements.losses}V</span>
+            )}
+            <span className={`text-xs ml-auto font-semibold ${settlements.net >= 0 ? 'text-success' : 'text-danger'}`}>
+              {settlements.net >= 0 ? '+' : ''}{fmtCurrency(settlements.net, settlements.provider)} net
+            </span>
+          </div>
+          <table className="sq w-full">
+            <thead>
+              <tr className="text-muted text-[10px]">
+                <th className="text-left pl-3">Event</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">Result</th>
+                <th className="text-right">Payout</th>
+                <th className="text-right pr-3">P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {settlements.settlements.map(s => {
+                const pl = s.payout - s.stake;
+                return (
+                  <tr key={s.bet_id} className="border-t border-border">
+                    <td className="pl-3 text-sm text-text truncate max-w-[250px]" title={s.event}>{s.event}</td>
+                    <td className="text-right text-sm text-muted">{s.odds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-text">{fmtCurrency(s.stake, settlements.provider)}</td>
+                    <td className="text-right text-sm">
+                      <span className={
+                        s.result === 'won' ? 'text-success font-semibold' :
+                        s.result === 'lost' ? 'text-danger font-semibold' :
+                        'text-amber-400 font-semibold'
+                      }>{s.result.toUpperCase()}</span>
+                    </td>
+                    <td className="text-right text-sm">
+                      <span className={s.payout > 0 ? 'text-success' : 'text-muted'}>{fmtCurrency(s.payout, settlements.provider)}</span>
+                    </td>
+                    <td className={`text-right text-sm pr-3 font-semibold ${pl >= 0 ? 'text-success' : 'text-danger'}`}>
+                      {pl >= 0 ? '+' : ''}{fmtCurrency(pl, settlements.provider)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
+            <span className="text-xs text-muted">
+              Staked: {fmtCurrency(settlements.total_staked, settlements.provider)} | Payout: {fmtCurrency(settlements.total_payout, settlements.provider)}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={handleDismiss} className="px-3 py-1 text-xs text-muted hover:text-foreground">Dismiss</button>
+              <button onClick={handleConfirm} disabled={confirming} className="px-4 py-1.5 text-xs bg-success text-bg font-medium hover:opacity-90 disabled:opacity-50">
+                {confirming ? 'Saving...' : 'Confirm & Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmMsg && <div className="text-xs text-success px-3">{confirmMsg}</div>}
+
+      {/* Batch */}
       {batchLoading ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Building batch...</div>
       ) : !batchData ? (
@@ -261,7 +316,7 @@ export function PlayPage() {
       ) : batch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets in batch.</div>
       ) : (
-        <>
+        <div className="flex flex-col flex-1 min-h-0">
           <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
             <span className="text-text font-medium">{batch.length} bets</span>
             <span className="text-muted text-[10px]">
@@ -283,7 +338,7 @@ export function PlayPage() {
                   <Fragment key={cluster}>
                     <div className="flex items-center gap-3 px-3 py-1 bg-panel2/30 border-b border-border">
                       <span className="text-[10px] text-muted font-medium uppercase tracking-wider">{cluster}</span>
-                      <span className="text-[10px] text-muted">{clusterBets} bets · {clusterProviders.length} prov</span>
+                      <span className="text-[10px] text-muted">{clusterBets} bets · {clusterProviders.length} providers</span>
                       <span className="text-[10px] text-success ml-auto">+{fmt(clusterEv, clusterTier)} EV</span>
                     </div>
 
@@ -295,17 +350,17 @@ export function PlayPage() {
                       return (
                         <Fragment key={provider}>
                           <div
-                            className="flex items-center gap-2 px-3 pl-6 py-1.5 border-b border-border hover:bg-panel2/50 cursor-pointer transition-colors"
+                            className="flex items-center gap-3 px-3 pl-6 py-2 border-b border-border hover:bg-panel2/50 cursor-pointer transition-colors"
                             onClick={() => setExpandedProvider(isExpanded ? null : provider)}
                           >
                             <span className={`text-[10px] ${dotColor}`}>●</span>
-                            <span className="text-sm font-medium text-text truncate uppercase" style={{ width: showRightPanel ? '5rem' : '7rem' }}>{provider}</span>
-                            <span className="text-xs text-muted">{bets.length}</span>
+                            <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
+                            <span className="text-xs text-muted">{bets.length} bets</span>
                             <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
                             {balance > 0 && <span className="text-xs text-success">bal {fmt(balance, tier)}</span>}
-                            {settleCount > 0 && <span className="text-[10px] text-amber-400 font-medium">{settleCount}⏳</span>}
-                            <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)}</span>
-                            <span className="text-muted text-xs">{isExpanded ? '▾' : '▸'}</span>
+                            {settleCount > 0 && <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>}
+                            <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
+                            <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
                           </div>
 
                           {isExpanded && (
@@ -321,7 +376,7 @@ export function PlayPage() {
                                     <th className="text-right">Stake</th>
                                     <th className="text-right">TTK</th>
                                     <th className="text-right">Upd</th>
-                                    <th className="w-5"></th>
+                                    <th className="w-6"></th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -329,8 +384,8 @@ export function PlayPage() {
                                     const ttk = getTTKFromNow(b.start_time);
                                     return (
                                       <tr key={betKey(b)} className={`hover:bg-panel2/40 ${b.funded === false ? 'opacity-50' : ''}`}>
-                                        <td className="pl-8 text-sm text-text truncate max-w-[180px]" title={clusterEventLabel(b)}>{clusterEventLabel(b)}</td>
-                                        <td className="text-sm text-text truncate max-w-[90px]">{clusterOutcomeLabel(b)}</td>
+                                        <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>{eventLabel(b)}</td>
+                                        <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
                                         <td className="text-right text-sm text-text">{b.odds.toFixed(2)}</td>
                                         <td className="text-right text-sm text-muted">{b.fair_odds.toFixed(2)}</td>
                                         <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>+{b.edge_pct.toFixed(1)}%</td>
@@ -353,162 +408,7 @@ export function PlayPage() {
               })}
             </div>
           </div>
-        </>
-      )}
-    </div>
-  );
-
-  // ─── Settle panel (right) ─────────────────────────────────────────────────
-
-  const settlePanel = (
-    <div className="flex flex-col min-h-0 min-w-0" style={{ width: '420px', flexShrink: 0 }}>
-      {/* Settlement breakdown — detected from mirror */}
-      {settlements ? (
-        <div className="border border-border bg-panel flex flex-col flex-1 min-h-0">
-          <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-            <span className="text-sm font-medium text-text uppercase">{settlements.provider}</span>
-            <span className="text-xs text-muted">{settlements.count} detected</span>
-            <span className="text-xs text-success">{settlements.wins}W</span>
-            <span className="text-xs text-danger">{settlements.losses}L</span>
-            {settlements.count - settlements.wins - settlements.losses > 0 && (
-              <span className="text-xs text-amber-400">{settlements.count - settlements.wins - settlements.losses}V</span>
-            )}
-            <span className={`text-xs ml-auto font-semibold ${settlements.net >= 0 ? 'text-success' : 'text-danger'}`}>
-              {settlements.net >= 0 ? '+' : ''}{fmtCurrency(settlements.net, settlements.provider)}
-            </span>
-          </div>
-
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <table className="sq w-full">
-              <thead>
-                <tr className="text-muted text-[10px]">
-                  <th className="text-left pl-3">Event</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">Result</th>
-                  <th className="text-right pr-3">P&L</th>
-                </tr>
-              </thead>
-              <tbody>
-                {settlements.settlements.map(s => {
-                  const pl = s.payout - s.stake;
-                  return (
-                    <tr key={s.bet_id} className="border-t border-border">
-                      <td className="pl-3 text-sm text-text truncate max-w-[160px]" title={s.event}>{s.event}</td>
-                      <td className="text-right text-sm text-muted">{s.odds.toFixed(2)}</td>
-                      <td className="text-right text-sm text-text">{fmtCurrency(s.stake, settlements.provider)}</td>
-                      <td className="text-right text-sm">
-                        <span className={
-                          s.result === 'won' ? 'text-success font-semibold' :
-                          s.result === 'lost' ? 'text-danger font-semibold' :
-                          'text-amber-400 font-semibold'
-                        }>{s.result.toUpperCase()}</span>
-                      </td>
-                      <td className={`text-right text-sm pr-3 font-semibold ${pl >= 0 ? 'text-success' : 'text-danger'}`}>
-                        {pl >= 0 ? '+' : ''}{fmtCurrency(pl, settlements.provider)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="flex items-center gap-2 px-3 py-2 border-t border-border">
-            <button onClick={handleDismiss} className="px-3 py-1 text-xs text-muted hover:text-foreground">Dismiss</button>
-            <button
-              onClick={handleConfirm}
-              disabled={confirming}
-              className="px-4 py-1.5 text-xs bg-success text-bg font-medium hover:opacity-90 disabled:opacity-50 ml-auto"
-            >
-              {confirming ? 'Saving...' : 'Confirm & Save'}
-            </button>
-          </div>
         </div>
-      ) : (
-        /* Pending bets — waiting for settlement detection */
-        <div className="border border-border bg-panel flex flex-col flex-1 min-h-0">
-          <div className="px-3 py-1.5 border-b border-border flex items-center gap-2">
-            <span className="text-[10px] text-muted font-medium uppercase tracking-wider">Settle</span>
-            <span className="text-xs text-amber-400">{pendingCount} pending</span>
-            {confirmMsg && <span className="text-xs text-success ml-auto">{confirmMsg}</span>}
-          </div>
-
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {pendingProviders.map(prov => {
-              const status = providerStatus.get(prov.provider_id);
-              const dotColor = status === 'logged_in' ? 'text-success' : status === 'opened' ? 'text-amber-400' : 'text-muted/30';
-              const statusLabel = status === 'logged_in' ? 'logged in — open bet history' : status === 'opened' ? 'logging in...' : 'opening...';
-              const isExpanded = expandedSettleProvider === prov.provider_id;
-
-              return (
-                <Fragment key={prov.provider_id}>
-                  <div
-                    className="flex items-center gap-2 px-3 py-2 border-b border-border hover:bg-panel2/50 cursor-pointer"
-                    onClick={() => setExpandedSettleProvider(isExpanded ? null : prov.provider_id)}
-                  >
-                    <span className={`text-[10px] ${dotColor}`}>●</span>
-                    <span className="text-sm font-medium text-text uppercase">{prov.provider_id}</span>
-                    <span className="text-xs text-muted">{prov.bet_count} bets</span>
-                    <span className="text-xs text-muted">{fmtCurrency(prov.total_stake, prov.provider_id)}</span>
-                    <span className={`text-[10px] ml-auto ${status === 'logged_in' ? 'text-success' : 'text-muted'}`}>{statusLabel}</span>
-                    <span className="text-muted text-xs">{isExpanded ? '▾' : '▸'}</span>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="border-b border-border bg-panel2/20">
-                      <table className="sq w-full">
-                        <thead>
-                          <tr className="text-muted text-[10px]">
-                            <th className="text-left pl-4">Event</th>
-                            <th className="text-left">Pick</th>
-                            <th className="text-right">Odds</th>
-                            <th className="text-right pr-3">Stake</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {prov.bets.map(b => (
-                            <tr key={b.id} className="hover:bg-panel2/40">
-                              <td className="pl-4 text-sm text-text truncate max-w-[140px]" title={pendingEventLabel(b)}>{pendingEventLabel(b)}</td>
-                              <td className="text-sm">
-                                <span className="text-amber-400">{pendingOutcomeLabel(b)}</span>
-                                <span className="text-muted text-[10px] ml-1">[{marketLabel(b.market)}]</span>
-                              </td>
-                              <td className="text-right text-sm text-text">{b.odds.toFixed(2)}</td>
-                              <td className="text-right text-sm text-text pr-3">{fmtCurrency(b.stake, prov.provider_id)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </Fragment>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  // ─── Layout ───────────────────────────────────────────────────────────────
-
-  return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <TabIcon name="play" color={TAB_COLORS.play} size={16} />
-          Play
-        </h2>
-      </div>
-
-      {showRightPanel ? (
-        <div className="flex flex-1 min-h-0 gap-2">
-          {batchPanel}
-          {settlePanel}
-        </div>
-      ) : (
-        batchPanel
       )}
     </div>
   );
