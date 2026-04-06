@@ -130,7 +130,7 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
             status = result.get("status", "failed")
             return PlacementResult(
-                status="placed" if status == "success" else "failed",
+                status="placed" if status == "placed" else status,
                 bet_id=bet.bet_id,
                 actual_stake=result.get("amount"),
                 actual_odds=result.get("price"),
@@ -138,7 +138,7 @@ class PolymarketWorkflow(ProviderWorkflow):
                 raw_response=result,
             )
         except Exception as e:
-            logger.error(f"[{self.provider_id}] place_bet failed: {e}")
+            logger.error(f"[{self.provider_id}] place_bet failed: {e}", exc_info=True)
             return PlacementResult(
                 status="failed",
                 bet_id=bet.bet_id,
