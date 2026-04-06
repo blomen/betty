@@ -817,13 +817,17 @@ class MirrorService:
             logger.info("[mirror] No Lost/Claimed entries in Polymarket history")
             return []
 
-        logger.info(f"[mirror] Polymarket history: {len(settle_entries)} Lost/Claimed entries")
+        for se in settle_entries:
+            logger.info(f"[mirror] Poly history entry: {se['activity']} | {se['market'][:60]} | val={se['value']}")
 
         # Get pending Polymarket bets from DB (with event names for matching)
         pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
         if not pending:
             logger.info("[mirror] No pending Polymarket bets to settle")
             return []
+
+        for pb in pending:
+            logger.info(f"[mirror] Poly pending DB: id={pb['id']} | {pb['event_name'][:60]} | odds={pb['odds']} stake={pb['stake']}")
 
         staged = []
         for entry in settle_entries:
