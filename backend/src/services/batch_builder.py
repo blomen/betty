@@ -544,28 +544,71 @@ class BatchBuilder:
         registered_providers: set[str],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Simple allocation — each bet stays on its original provider.
-        Sorted by edge descending (already done upstream).
-        Funding status annotated but never gates inclusion.
+        Fill-then-spill allocation: for each cluster, fill the first sibling
+        with up to 10 bets, then spill to the next sibling. Top edge first.
+
+        Sharp (pinnacle/polymarket): no cap, stays on own provider.
         """
+        cap = self.BETS_PER_PROVIDER
         batch: list[BatchBet] = []
+        bets_assigned: dict[str, int] = {}  # provider_id → count
+
+        # Build sibling list per cluster, sorted by balance desc
+        siblings: dict[str, list[str]] = {}
+        for group_name, group_info in PLATFORM_GROUPS.items():
+            sibs = list(group_info["members"])
+            sibs.sort(key=lambda pid: -(provider_balances.get(pid, ProviderBalance(pid, group_name, 0)).initial_balance))
+            siblings[group_name] = sibs
+
+        # Standalone providers (not in any platform group)
+        registered = registered_providers or set(provider_balances.keys())
+        for pid in registered:
+            cluster = _provider_to_cluster(pid)
+            if cluster not in siblings:
+                siblings[cluster] = [pid]
 
         for bet in candidates:
-            pid = bet.provider_id
-            pb = provider_balances.get(pid)
-            if pb is None:
-                pb = ProviderBalance(provider_id=pid, cluster=bet.cluster, initial_balance=0)
+            cluster = bet.cluster
 
-            placed = self._clone_bet_to_provider(bet, pid, pb)
-            placed.funded = pb.remaining >= bet.stake
-            if placed.funded:
-                pb.allocated += placed.stake
-            else:
-                placed.skip_reason = f"insufficient balance on {pid}"
-                pb.missed_bets += 1
-                pb.missed_ev += bet.expected_profit
+            if bet.tier in ("polymarket", "pinnacle"):
+                # Sharp: no cap, stays on own provider
+                pid = bet.provider_id
+                pb = provider_balances.get(pid)
+                if pb is None:
+                    pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
+                placed = self._clone_bet_to_provider(bet, pid, pb)
+                placed.funded = pb.remaining >= bet.stake
+                if placed.funded:
+                    pb.allocated += placed.stake
+                bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
+                batch.append(placed)
+                continue
 
-            batch.append(placed)
+            # Soft: find first sibling under cap
+            sibs = siblings.get(cluster, [bet.provider_id])
+            assigned = False
+            for pid in sibs:
+                if bets_assigned.get(pid, 0) >= cap:
+                    continue
+                pb = provider_balances.get(pid)
+                if pb is None:
+                    pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
+
+                placed = self._clone_bet_to_provider(bet, pid, pb)
+                placed.funded = pb.remaining >= bet.stake
+                if placed.funded:
+                    pb.allocated += placed.stake
+                else:
+                    placed.skip_reason = f"insufficient balance on {pid}"
+                    pb.missed_bets += 1
+                    pb.missed_ev += bet.expected_profit
+
+                bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
+                batch.append(placed)
+                assigned = True
+                break
+
+            # All siblings at cap — bet dropped
 
         funded = [b for b in batch if b.funded]
         missed = [b for b in batch if not b.funded]
