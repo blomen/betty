@@ -21,40 +21,53 @@ Which data we can capture per provider when the mirror browser is active.
 
 ## Capabilities
 
-| # | Provider | Platform | Workflow | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout | Mute Notifs |
-|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | campobet | Altenar | G | ~ | Y | Y | - | - | - | - |
-| 2 | quickcasino | Altenar | G | ~ | Y | Y | - | - | - | - |
-| 3 | betinia | Altenar | G | ~ | Y | Y | - | - | - | - |
-| 4 | swiper | Altenar | G | ~ | ~ | Y | - | - | - | - |
-| 5 | lodur | Altenar | G | ~ | ~ | Y | - | - | - | - |
-| 6 | dbet | Altenar | G | ~ | ~ | Y | - | - | - | - |
-| 7 | spelklubben | Gecko V2 | G | Y | - | ~ | - | - | - | - |
-| 8 | betsson | Gecko V2 | G | Y | - | ~ | - | - | - | - |
-| 9 | betsafe | Gecko V2 | G | Y | - | ~ | - | - | - | - |
-| 10 | nordicbet | Gecko V2 | G | Y | - | ~ | - | - | - | - |
-| 11 | bethard | Gecko V2 | G | Y | - | ~ | - | - | - | - |
-| 12 | unibet | Kambi | G | ~ | - | Y | - | - | - | Y |
-| 13 | leovegas | Kambi | G | ~ | - | - | - | - | - | - |
-| 14 | expekt | Kambi | G | ~ | - | - | - | - | - | - |
-| 15 | 888sport | Kambi | M | ~ | - | - | - | - | - | - |
-| 16 | speedybet | Kambi | G | ~ | - | - | - | - | - | - |
-| 17 | x3000 | Kambi | G | ~ | - | - | - | - | - | - |
-| 18 | goldenbull | Kambi | G | ~ | - | - | - | - | - | - |
-| 19 | 1x2 | Kambi | G | ~ | - | - | - | - | - | - |
-| 20 | comeon | Custom | M | - | - | - | - | - | - | - |
-| 21 | hajper | Custom | M | - | - | - | - | - | - | - |
-| 22 | lyllo | Custom | M | - | - | - | - | - | - | - |
-| 23 | snabbare | Snabbare | M | - | - | - | - | - | - | - |
-| 24 | 10bet | TenBet | M | - | - | - | - | - | - | - |
-| 25 | mrgreen | Spectate | M | - | - | - | - | - | - | - |
-| 26 | betmgm | Kambi | G | ~ | - | - | - | - | - | - |
-| 27 | vbet | BetConstruct | M | - | - | - | - | - | - | - |
-| 28 | interwetten | Interwetten | M | - | - | - | - | - | - | - |
-| 29 | coolbet | Coolbet | M | - | - | - | - | - | - | - |
-| 30 | tipwin | Tipwin | M | - | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | A | Y | Y | Y | - | - | - | - |
-| 32 | polymarket | Polymarket | A | ~ | N/A | Y | ~ | - | N/A | N/A |
+| # | Provider | Platform | Workflow | Bet Placement | Settle Bets | Sync Balance | Settle Method |
+|---|----------|----------|:---:|:---:|:---:|:---:|---|
+| 1 | campobet | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
+| 2 | quickcasino | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
+| 3 | betinia | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
+| 4 | swiper | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |
+| 5 | lodur | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |
+| 6 | dbet | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |
+| 7 | spelklubben | Gecko V2 | G | Y | ~ | ~ | API intercept: coupon-history |
+| 8 | betsson | Gecko V2 | G | Y | ~ | ~ | API intercept: coupon-history |
+| 9 | betsafe | Gecko V2 | G | Y | ~ | ~ | API intercept: coupon-history |
+| 10 | nordicbet | Gecko V2 | G | Y | ~ | ~ | API intercept: coupon-history |
+| 11 | bethard | Gecko V2 | G | Y | ~ | ~ | API intercept: coupon-history |
+| 12 | unibet | Kambi | G | ~ | ~ | Y | DOM scrape: /bethistory (Swedish) |
+| 13 | leovegas | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 14 | expekt | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 15 | 888sport | Kambi | M | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 16 | speedybet | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 17 | x3000 | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 18 | goldenbull | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 19 | 1x2 | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 20 | comeon | Custom | M | - | - | - | Not wired |
+| 21 | hajper | Custom | M | - | - | - | Not wired |
+| 22 | lyllo | Custom | M | - | - | - | Not wired |
+| 23 | snabbare | Snabbare | M | - | - | - | Not wired |
+| 24 | 10bet | TenBet | M | - | - | - | Not wired |
+| 25 | mrgreen | Spectate | M | - | - | - | Not wired |
+| 26 | betmgm | Kambi | G | ~ | ~ | - | DOM scrape: /bethistory (Swedish) |
+| 27 | vbet | BetConstruct | M | - | - | - | Not wired |
+| 28 | interwetten | Interwetten | M | - | - | - | Not wired |
+| 29 | coolbet | Coolbet | M | - | - | - | Not wired |
+| 30 | tipwin | Tipwin | M | - | - | - | Not wired |
+| 31 | pinnacle | Pinnacle | A | Y | Y | Y | API: /0.1/bets?status=settled |
+| 32 | polymarket | Polymarket | A | ~ | ~ | Y | DOM scrape: /portfolio?tab=history |
+
+### Settlement Auto-Detection
+
+When the user navigates to a provider's bet history page in the mirror browser,
+the system auto-detects and scrapes settlements. Detection triggers:
+
+| Platform | Trigger URL | Method |
+|----------|-------------|--------|
+| Pinnacle | Any page with `spelhistorik` or `account` in URL | API call via page session |
+| Altenar | Auto — interceptor catches `widgetBetHistory` API response | HTTP response intercept |
+| Gecko V2 | Auto — interceptor catches `coupon-history` API response | HTTP response intercept |
+| Kambi | `/betting/sports/bethistory` | DOM scrape (Swedish regex) |
+| Polymarket | `/portfolio?tab=history` | DOM scrape (Lost/Claimed rows) |
 
 ## Platform Notes
 
