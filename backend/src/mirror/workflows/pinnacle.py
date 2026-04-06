@@ -74,55 +74,121 @@ class PinnacleWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: "Page") -> list[HistoryEntry]:
-        """Fetch settled + unsettled bets from Pinnacle API."""
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        """Scrape bet history from Pinnacle DOM + try API fallback.
+
+        DOM format per bet card:
+          "Settled: DATE ... EVENT_NAME ... OUTCOME @ ODDS ...
+           SETTLED – LOSS/WIN ... Stake: X ... Payout: Y"
+
+        The "LOSS" label in bet details is the actual result.
+        "Win:" and "Payout:" fields show potential, not actual outcome.
+        """
+        import re
 
         entries: list[HistoryEntry] = []
-        for status_filter in ("settled", "unsettled"):
-            url = f"{_API}/bets?status={status_filter}&startDate={start}&endDate={end}"
-            result = await self._evaluate_api(page, url)
-            if not result or "__error" in (result or {}):
-                continue
-            bets = result.get("bets", [])
-            for b in bets:
-                risk = float(b.get("stake", 0))
-                price = float(b.get("price", 0))
-                outcome_str = b.get("outcome", "none")
-                sels = b.get("selections", [])
 
-                if outcome_str == "none":
-                    status = "pending"
-                    payout = None
-                elif outcome_str == "win":
-                    status = "won"
-                    payout = risk * price
-                elif outcome_str == "loss":
+        # Try DOM scrape first (always works when logged in)
+        try:
+            raw = await page.evaluate("() => document.body.innerText")
+        except Exception as e:
+            logger.warning(f"[pinnacle] Could not read DOM: {e}")
+            raw = ""
+
+        if raw:
+            # Split by "Settled:" markers — each is a bet card
+            cards = re.split(r'(?=Settled:\s)', raw)
+            for card in cards:
+                if 'Stake:' not in card:
+                    continue
+
+                # Result: look for "SETTLED – LOSS" or "SETTLED – WIN" or just "LOSS"/"WIN"
+                if 'LOSS' in card.upper():
                     status = "lost"
-                    payout = 0
-                else:
+                elif 'WIN' in card.upper() and 'SETTLED' in card.upper():
+                    status = "won"
+                elif 'VOID' in card.upper() or 'CANCELLED' in card.upper():
                     status = "void"
-                    payout = risk
+                else:
+                    continue  # unsettled or unknown
 
-                sel = sels[0] if sels else {}
-                matchup = sel.get("matchup", {})
-                participants = matchup.get("participants", [])
-                home_name = next((p["name"] for p in participants if p.get("alignment") == "home"), "")
-                away_name = next((p["name"] for p in participants if p.get("alignment") == "away"), "")
-                event_name = f"{home_name} vs {away_name}" if home_name else str(matchup.get("id", ""))
-                market_info = sel.get("market", {})
+                # Event name: line after "Settled: DATE"
+                event_match = re.search(r'(?:⚽|🎾|🏀|⚾|🏒|.)?\s*(.+?vs\s+.+?)(?:\n|$)', card)
+                event_name = event_match.group(1).strip() if event_match else ""
 
-                entries.append(HistoryEntry(
-                    provider_bet_id=str(b.get("id", "")),
-                    event_name=event_name,
-                    market=market_info.get("type", ""),
-                    outcome=sel.get("designation", ""),
-                    odds=price,
-                    stake=risk,
-                    status=status,
-                    payout=payout,
-                ))
+                # Outcome + odds: "Team Name @ 7.420"
+                odds_match = re.search(r'(.+?)\s*@\s*([\d.]+)', card)
+                outcome_name = odds_match.group(1).strip() if odds_match else ""
+                odds = float(odds_match.group(2)) if odds_match else 0
+
+                # Stake
+                stake_match = re.search(r'Stake:\s*([\d,.]+)', card)
+                stake = float(stake_match.group(1).replace(',', '')) if stake_match else 0
+
+                # Payout (actual payout — 0 for losses on Pinnacle, but field shows potential)
+                # For losses: actual payout = 0
+                # For wins: actual payout = stake + win
+                if status == "lost":
+                    payout = 0.0
+                elif status == "won":
+                    payout_match = re.search(r'Payout:\s*([\d,.]+)', card)
+                    payout = float(payout_match.group(1).replace(',', '')) if payout_match else stake * odds
+                else:
+                    payout = stake  # void
+
+                # Bet ID
+                bet_id_match = re.search(r'#(\d+)', card)
+                bet_id = bet_id_match.group(1) if bet_id_match else ""
+
+                if stake > 0 and odds > 0:
+                    entries.append(HistoryEntry(
+                        provider_bet_id=bet_id,
+                        event_name=event_name,
+                        market="",
+                        outcome=outcome_name,
+                        odds=odds,
+                        stake=stake,
+                        status=status,
+                        payout=payout,
+                    ))
+
+        logger.info(f"[pinnacle] DOM scrape: {len(entries)} bet(s) from history page")
+
+        # API fallback if DOM scrape found nothing
+        if not entries:
+            now = datetime.now(timezone.utc)
+            start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            for status_filter in ("settled",):
+                url = f"{_API}/bets?status={status_filter}&startDate={start}&endDate={end}"
+                result = await self._evaluate_api(page, url)
+                if not result or "__error" in (result or {}):
+                    continue
+                for b in result.get("bets", []):
+                    risk = float(b.get("stake", 0))
+                    price = float(b.get("price", 0))
+                    outcome_str = b.get("outcome", "none")
+                    if outcome_str == "win":
+                        st, pay = "won", risk * price
+                    elif outcome_str == "loss":
+                        st, pay = "lost", 0
+                    elif outcome_str == "none":
+                        continue
+                    else:
+                        st, pay = "void", risk
+                    sels = b.get("selections", [])
+                    sel = sels[0] if sels else {}
+                    matchup = sel.get("matchup", {})
+                    parts = matchup.get("participants", [])
+                    home = next((p["name"] for p in parts if p.get("alignment") == "home"), "")
+                    away = next((p["name"] for p in parts if p.get("alignment") == "away"), "")
+                    entries.append(HistoryEntry(
+                        provider_bet_id=str(b.get("id", "")),
+                        event_name=f"{home} vs {away}" if home else "",
+                        market=sel.get("market", {}).get("type", ""),
+                        outcome=sel.get("designation", ""),
+                        odds=price, stake=risk, status=st, payout=pay,
+                    ))
+
         return entries
 
     # ------------------------------------------------------------------
