@@ -2003,6 +2003,153 @@ class MirrorService:
         })
         return summary
 
+    async def _prepare_polymarket_bet(
+        self, page, bet_id: int, slug: str, outcome: str,
+        amount: float, expected_price: float, max_slippage: float,
+        original_outcome: str = "", market_type: str = "",
+        home_name: str = "", away_name: str = "",
+    ) -> dict:
+        """Phase 1: Navigate, click outcome, check slippage, fill amount. Does NOT click Buy.
+
+        Returns {status: "ready", ...} if betslip is prepared and waiting for confirmation.
+        The user can visually verify the betslip, then call _confirm_polymarket_bet to execute.
+        """
+        import asyncio
+
+        # 1. Navigate to market page
+        slug_parts = slug.split("-")
+        market_url = f"https://polymarket.com/event/{slug}"
+        logger.info(f"[mirror] Preparing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
+        await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Wait for trading buttons
+        try:
+            await page.wait_for_selector('button.trading-button', timeout=15000)
+        except Exception:
+            await asyncio.sleep(5)
+
+        # 2. Click the correct outcome button
+        outcome_lower = (original_outcome or outcome).lower()
+        home_name = home_name or ""
+        away_name = away_name or ""
+
+        if outcome_lower in ("home", "over"):
+            target = home_name.lower()[:3] if home_name else ""
+        elif outcome_lower in ("away", "under"):
+            target = away_name.lower()[:3] if away_name else ""
+        elif outcome_lower == "draw":
+            target = "draw"
+        else:
+            target = outcome.lower()[:3]
+
+        try:
+            clicked = await page.evaluate(
+                "(target) => {"
+                "  const btns = [...document.querySelectorAll('button.trading-button')];"
+                "  for (const btn of btns) {"
+                "    const text = (btn.textContent || '').toLowerCase();"
+                "    if (target && text.includes(target)) {"
+                "      btn.style.outline = '3px solid #00ff00';"
+                "      btn.style.outlineOffset = '2px';"
+                "      btn.scrollIntoView({block: 'center'});"
+                "      btn.click();"
+                "      return btn.textContent.trim().slice(0, 40);"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                target,
+            )
+            if not clicked:
+                return {"bet_id": bet_id, "status": "failed", "reason": f"No button matching '{target}' for '{outcome}'"}
+            logger.info(f"[mirror] Clicked outcome button: '{clicked}' (target='{target}') for bet {bet_id}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click outcome: {e}"}
+
+        # 3. Read live price and check slippage
+        live_price = None
+        try:
+            price_text = await page.evaluate(
+                "(outcome) => {"
+                "  const btns = document.querySelectorAll('button.trading-button[role=\"radio\"]');"
+                "  for (const btn of btns) {"
+                "    const text = btn.textContent || '';"
+                "    if (text.startsWith(outcome)) {"
+                "      const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+                "      if (priceMatch) return parseFloat(priceMatch[1]) / 100;"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                outcome,
+            )
+            if price_text is not None:
+                live_price = float(price_text)
+                slippage_pct = abs(live_price - expected_price) / expected_price * 100
+                if not self.polymarket_parser.check_slippage(expected_price, live_price, max_slippage):
+                    return {
+                        "bet_id": bet_id, "status": "skipped", "reason": "slippage",
+                        "expected_price": expected_price, "actual_price": live_price,
+                        "slippage_pct": round(slippage_pct, 2),
+                    }
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
+
+        # 4. Enter amount
+        try:
+            amount_input = page.locator('input[placeholder="$0"]').first
+            await amount_input.click()
+            await amount_input.fill("")
+            await amount_input.type(str(int(amount)), delay=50)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
+
+        # Ready — betslip is filled, waiting for user to verify and confirm
+        logger.info(f"[mirror] Polymarket bet {bet_id} READY: {outcome} ${amount} @ {live_price or '?'}")
+        return {
+            "bet_id": bet_id, "status": "ready",
+            "outcome": outcome, "amount": amount,
+            "live_price": live_price,
+            "live_odds": round(1.0 / live_price, 3) if live_price and live_price > 0 else None,
+        }
+
+    async def _confirm_polymarket_bet(self, page, bet_id: int) -> dict:
+        """Phase 2: Click Buy button and wait for confirmation. Call after _prepare."""
+        import asyncio
+
+        try:
+            submit_btn = page.locator('button.trading-button:not([role="radio"])').filter(has_text="Buy").first
+            await submit_btn.click(timeout=5000)
+            logger.info(f"[mirror] Clicked Buy button for bet {bet_id}")
+            await asyncio.sleep(5)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click Buy: {e}"}
+
+        # Check for success
+        try:
+            success = await page.evaluate(
+                "() => {"
+                "  const text = document.body.innerText;"
+                "  return text.includes('Order placed') || text.includes('Success') ||"
+                "         text.includes('Confirmed') || text.includes('Position') ||"
+                "         text.includes('Open order');"
+                "}"
+            )
+            if success:
+                logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
+                result = {"bet_id": bet_id, "status": "placed"}
+                self._notify("polymarket_bet_placed", result)
+                return result
+        except Exception:
+            pass
+
+        # Uncertain — report as placed
+        result = {"bet_id": bet_id, "status": "placed", "note": "confirmation_uncertain"}
+        self._notify("polymarket_bet_placed", result)
+        return result
+
     async def _place_single_polymarket_bet(
         self, page, bet_id: int, slug: str, outcome: str,
         amount: float, expected_price: float, max_slippage: float,

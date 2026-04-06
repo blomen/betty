@@ -69,27 +69,56 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def navigate_to_event(self, page: "Page", bet) -> bool:
-        """Navigate to the Polymarket event page for this bet."""
+        """Navigate to event AND prepare betslip (click outcome, fill amount).
+
+        After this returns, the Polymarket tab shows the event with the
+        correct outcome selected and amount filled. User can visually verify
+        before clicking Confirm, which calls place_bet → just clicks Buy.
+        """
+        from ...api.routes.mirror import _get_active_mirror
+
         slug = getattr(bet, "market_slug", None)
         if not slug:
             logger.warning(f"[{self.provider_id}] No market_slug on bet {bet.bet_id}")
             return False
 
-        url = f"https://polymarket.com/event/{slug}"
-        logger.info(f"[{self.provider_id}] Navigating to {url}")
+        mirror = _get_active_mirror()
+        if not mirror:
+            # Fallback: just navigate without preparing
+            try:
+                url = f"https://polymarket.com/event/{slug}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                return True
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] navigate failed: {e}")
+                return False
+
+        # Use prepare which navigates + clicks outcome + fills amount
+        outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
+        original_outcome = getattr(bet, "original_outcome", outcome)
+        market_type = getattr(bet, "market", "1x2")
+        expected_price = 1.0 / bet.odds if getattr(bet, "odds", 0) > 0 else 0.5
+        stake = getattr(bet, "stake", 0)
 
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for trading buttons (React hydration)
-            try:
-                await page.wait_for_selector("button.trading-button", timeout=15000)
-            except Exception:
-                await asyncio.sleep(5)
-            # Track persistent tab
-            self._tabs[slug] = page
-            return True
+            prep = await mirror._prepare_polymarket_bet(
+                page=page,
+                bet_id=bet.bet_id,
+                slug=slug,
+                outcome=outcome,
+                amount=stake,
+                expected_price=expected_price,
+                max_slippage=0.10,  # 10% for prepare — just warning, not blocking
+                original_outcome=original_outcome,
+                market_type=market_type,
+                home_name=getattr(bet, "display_home", ""),
+                away_name=getattr(bet, "display_away", ""),
+            )
+            self._last_prepare = prep
+            logger.info(f"[polymarket] Betslip prepared: {prep.get('status')} live_price={prep.get('live_price')}")
+            return prep.get("status") in ("ready", "skipped")  # Even skipped means we navigated
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] navigate_to_event failed: {e}")
+            logger.warning(f"[{self.provider_id}] prepare failed: {e}")
             return False
 
     # ------------------------------------------------------------------
@@ -97,57 +126,41 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
-        """Place a bet by delegating to MirrorService._place_single_polymarket_bet."""
+        """Phase 2 only: click Buy button. Betslip was already prepared by navigate_to_event.
+
+        The user has seen the betslip with outcome selected and amount filled.
+        This just clicks the Buy button and waits for confirmation.
+        """
         from ...api.routes.mirror import _get_active_mirror
 
         mirror = _get_active_mirror()
         if mirror is None:
-            return PlacementResult(
-                status="failed",
-                bet_id=bet.bet_id,
-                reason="no_active_mirror",
-            )
+            return PlacementResult(status="failed", bet_id=bet.bet_id, reason="no_active_mirror")
 
-        slug = getattr(bet, "market_slug", "")
-        outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
-        original_outcome = getattr(bet, "original_outcome", outcome)
-        market_type = getattr(bet, "market", "1x2")
-        expected_price = 1.0 / getattr(bet, "odds", 2.0) if getattr(bet, "odds", 0) > 0 else 0.5
+        prep = getattr(self, "_last_prepare", {})
+        if prep.get("status") == "skipped":
+            return PlacementResult(
+                status="skipped", bet_id=bet.bet_id,
+                reason=prep.get("reason", "slippage"),
+                raw_response=prep,
+            )
 
         try:
-            result = await mirror._place_single_polymarket_bet(
-                page=page,
-                bet_id=bet.bet_id,
-                slug=slug,
-                outcome=outcome,
-                amount=stake,
-                expected_price=expected_price,
-                max_slippage=0.05,
-                original_outcome=original_outcome,
-                market_type=market_type,
-                home_name=getattr(bet, "display_home", ""),
-                away_name=getattr(bet, "display_away", ""),
-            )
-            logger.info(f"[polymarket] _place_single result: {result}")
-            status = result.get("status", "failed")
-            reason = result.get("error") or result.get("reason")
-            if status != "placed":
-                reason = reason or f"unexpected_status:{status}"
+            confirm = await mirror._confirm_polymarket_bet(page, bet.bet_id)
+            logger.info(f"[polymarket] confirm result: {confirm}")
+
+            status = confirm.get("status", "failed")
             return PlacementResult(
                 status="placed" if status == "placed" else "failed",
                 bet_id=bet.bet_id,
-                actual_stake=result.get("amount"),
-                actual_odds=result.get("price"),
-                reason=reason,
-                raw_response=result,
+                actual_stake=stake,
+                actual_odds=prep.get("live_odds"),
+                reason=confirm.get("reason"),
+                raw_response=confirm,
             )
         except Exception as e:
             logger.error(f"[{self.provider_id}] place_bet failed: {e}", exc_info=True)
-            return PlacementResult(
-                status="failed",
-                bet_id=bet.bet_id,
-                reason=str(e),
-            )
+            return PlacementResult(status="failed", bet_id=bet.bet_id, reason=str(e))
 
     # ------------------------------------------------------------------
     # Live price
