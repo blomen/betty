@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus, SpecialOdds
-from ..analysis.devig import get_fair_odds_for_outcome
-from ..constants import SHARP_PROVIDERS
+from ..analysis.devig import get_fair_odds_for_outcome, compute_consensus_fair_odds
+from ..constants import SHARP_PROVIDERS, PLATFORM_MAP
 from ..config import get_exchange_rate, get_provider_currency
 
 logger = logging.getLogger(__name__)
@@ -335,11 +335,49 @@ class BetService:
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _build_odds_by_outcome(self, event_id: str, market: str, point: float | None = None) -> dict[str, list[dict]]:
+        """Build {outcome: [{provider, odds}, ...]} from current DB odds for an event/market."""
+        query = self.db.query(Odds).filter(
+            Odds.event_id == event_id,
+            Odds.market == market,
+        )
+        if market in ("spread", "total") and point is not None:
+            query = query.filter(Odds.point == point)
+
+        result: dict[str, list[dict]] = {}
+        for row in query.all():
+            if row.odds <= 1.0:
+                continue
+            result.setdefault(row.outcome, []).append({
+                "provider": row.provider_id,
+                "odds": row.odds,
+            })
+        return result
+
+    def _consensus_closing_odds(self, bet: Bet) -> float | None:
+        """Compute consensus soft book fair odds for a Pinnacle bet's CLV."""
+        odds_by_outcome = self._build_odds_by_outcome(bet.event_id, bet.market, bet.point)
+        if not odds_by_outcome:
+            return None
+
+        result = compute_consensus_fair_odds(
+            outcome=bet.outcome,
+            odds_by_outcome=odds_by_outcome,
+            platform_map=PLATFORM_MAP,
+            sharp_providers=SHARP_PROVIDERS,
+            min_platforms=2,
+        )
+        if result is None:
+            return None
+        consensus_fair, _ = result
+        return consensus_fair if consensus_fair > 1.0 else None
+
     def _calculate_clv(self, bet: Bet) -> float | None:
         """
         Calculate Closing Line Value for a settled bet.
 
-        Pinnacle CLV = (bet_odds / pinnacle_closing_odds - 1) * 100
+        Soft book bets: CLV = (bet_odds / pinnacle_closing_odds - 1) * 100
+        Pinnacle bets:  CLV = (bet_odds / consensus_soft_closing - 1) * 100
         Provider CLV = (bet_odds / provider_closing_odds - 1) * 100  (Polymarket only)
 
         Positive CLV means the bet was placed at better odds than the
@@ -348,13 +386,22 @@ class BetService:
         if not bet.event_id or not bet.outcome or not bet.market:
             return None
 
-        # --- Pinnacle CLV (cross-market) ---
+        # --- CLV for Pinnacle bets: compare against soft consensus closing ---
+        is_sharp_bet = bet.provider_id in SHARP_PROVIDERS
+
+        # --- Main CLV ---
         pinnacle_clv = None
         if bet.closing_odds is not None:
             # snapshot_closing_odds already captured it
             pinnacle_clv = round((bet.odds / bet.closing_odds - 1) * 100, 2)
+        elif is_sharp_bet:
+            # Pinnacle bet: use consensus of soft books as the closing benchmark
+            consensus = self._consensus_closing_odds(bet)
+            if consensus:
+                bet.closing_odds = consensus
+                pinnacle_clv = round((bet.odds / consensus - 1) * 100, 2)
         else:
-            # Look up current Pinnacle odds for same event/market/outcome
+            # Soft book bet: use Pinnacle closing odds as benchmark
             query = self.db.query(Odds).filter(
                 Odds.event_id == bet.event_id,
                 Odds.provider_id.in_(SHARP_PROVIDERS),
@@ -433,23 +480,34 @@ class BetService:
             if not bet.outcome or not bet.market:
                 continue
 
-            # --- Pinnacle CLV (cross-market edge) ---
+            # --- CLV snapshot ---
             if bet.closing_odds is None:
-                query = self.db.query(Odds).filter(
-                    Odds.event_id == bet.event_id,
-                    Odds.provider_id.in_(SHARP_PROVIDERS),
-                    Odds.market == bet.market,
-                    Odds.outcome == bet.outcome,
-                )
-                if bet.market in ("spread", "total") and bet.point is not None:
-                    query = query.filter(Odds.point == bet.point)
+                is_sharp_bet = bet.provider_id in SHARP_PROVIDERS
 
-                pinnacle_odds = query.first()
+                if is_sharp_bet:
+                    # Pinnacle bet: use consensus soft book closing as benchmark
+                    consensus = self._consensus_closing_odds(bet)
+                    if consensus:
+                        bet.closing_odds = consensus
+                        bet.clv_pct = round((bet.odds / consensus - 1) * 100, 2)
+                        updated += 1
+                else:
+                    # Soft book bet: use Pinnacle closing odds as benchmark
+                    query = self.db.query(Odds).filter(
+                        Odds.event_id == bet.event_id,
+                        Odds.provider_id.in_(SHARP_PROVIDERS),
+                        Odds.market == bet.market,
+                        Odds.outcome == bet.outcome,
+                    )
+                    if bet.market in ("spread", "total") and bet.point is not None:
+                        query = query.filter(Odds.point == bet.point)
 
-                if pinnacle_odds and pinnacle_odds.odds > 1.0:
-                    bet.closing_odds = pinnacle_odds.odds
-                    bet.clv_pct = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
-                    updated += 1
+                    pinnacle_odds = query.first()
+
+                    if pinnacle_odds and pinnacle_odds.odds > 1.0:
+                        bet.closing_odds = pinnacle_odds.odds
+                        bet.clv_pct = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
+                        updated += 1
 
             # --- Provider CLV (same-market, Polymarket only) ---
             if bet.provider_id == "polymarket" and bet.provider_closing_odds is None:
