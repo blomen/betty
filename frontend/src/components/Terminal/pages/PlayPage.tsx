@@ -86,36 +86,6 @@ export function PlayPage() {
     refetchInterval: 10_000,
   });
 
-  // Track provider login status via SSE
-  const [providerStatus, setProviderStatus] = useState<Map<string, 'opened' | 'logged_in'>>(new Map());
-  useEffect(() => {
-    const es = new EventSource('/api/extraction/stream');
-    es.addEventListener('provider_opened', (e: MessageEvent) => {
-      try {
-        const { provider } = JSON.parse(e.data);
-        setProviderStatus(prev => {
-          if (prev.get(provider) === 'logged_in') return prev;
-          const next = new Map(prev);
-          next.set(provider, 'opened');
-          return next;
-        });
-      } catch { /* */ }
-    });
-    es.addEventListener('sync_available', (e: MessageEvent) => {
-      try {
-        const { provider } = JSON.parse(e.data);
-        setProviderStatus(prev => { const next = new Map(prev); next.set(provider, 'logged_in'); return next; });
-      } catch { /* */ }
-    });
-    es.addEventListener('balance_synced', (e: MessageEvent) => {
-      try {
-        const { provider } = JSON.parse(e.data);
-        setProviderStatus(prev => { const next = new Map(prev); next.set(provider, 'logged_in'); return next; });
-      } catch { /* */ }
-    });
-    return () => es.close();
-  }, []);
-
   const handleRemoveBet = useCallback((key: string) => {
     setExcludedBets(prev => [...prev, key]);
   }, []);
