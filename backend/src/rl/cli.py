@@ -553,6 +553,7 @@ def replay(
     month: Optional[str] = typer.Option(None, help="Replay a specific month YYYY-MM"),
     gbt: Optional[str] = typer.Option(None, help="GBT model for augmented observations (hybrid GBT+DQN)"),
     workers: int = typer.Option(0, help="Parallel workers (0 = auto, 1 = sequential)"),
+    clean: bool = typer.Option(False, help="Delete existing chunks before replaying (fresh start)"),
 ) -> None:
     """Replay tick sessions through ReplayEngine and save episodes as .npy files.
 
@@ -648,101 +649,104 @@ def replay(
     obs_dim = AUGMENTED_OBSERVATION_DIM if gbt_path_str else OBSERVATION_DIM
     typer.echo(f"Observation dim: {obs_dim} ({'augmented' if gbt_path_str else 'base'})")
 
-    # Chunk dir for results
+    # Chunk dir for results — RESUME-SAFE: skip files that already have chunks
     chunk_dir = episodes_dir / "_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
-    for old in chunk_dir.glob("*.npy"):
-        old.unlink()
+    if clean:
+        for old in chunk_dir.glob("*.npy"):
+            old.unlink()
+        typer.echo("Cleaned existing chunks (--clean flag).")
+    existing_chunks = set(chunk_dir.glob("obs_*.npy"))
 
-    # --- Parallel replay with OOM resilience ---
-    # Large files (>30MB) are replayed sequentially to avoid OOM kills
-    # that take down the entire ProcessPool.
-    _LARGE_FILE_THRESHOLD = 30 * 1024 * 1024  # 30MB
-    small_files = [p for p in parquet_files if p.stat().st_size <= _LARGE_FILE_THRESHOLD]
-    large_files = [p for p in parquet_files if p.stat().st_size > _LARGE_FILE_THRESHOLD]
-    if large_files:
-        typer.echo(f"\n{len(large_files)} large file(s) will be replayed sequentially to avoid OOM:")
-        for lf in large_files:
-            typer.echo(f"  {lf.name} ({lf.stat().st_size / 1024 / 1024:.0f}MB)")
+    # Build file→chunk_idx mapping and skip already-completed files
+    all_files_indexed = list(enumerate(parquet_files))
+    todo_files = []
+    skipped = 0
+    for idx, pfile in all_files_indexed:
+        chunk_path = chunk_dir / f"obs_{idx:04d}.npy"
+        if chunk_path.exists():
+            skipped += 1
+        else:
+            todo_files.append((idx, pfile))
 
-    total_episodes = 0
-    chunk_idx = 0
+    if skipped:
+        typer.echo(f"\nResuming: {skipped} file(s) already have chunks, {len(todo_files)} remaining.")
+    if not todo_files:
+        typer.echo("All files already replayed — skipping to concatenation.")
+    else:
+        # Split into small (parallel) and large (subprocess-isolated)
+        _LARGE_FILE_THRESHOLD = 30 * 1024 * 1024  # 30MB
+        small_todo = [(i, p) for i, p in todo_files if p.stat().st_size <= _LARGE_FILE_THRESHOLD]
+        large_todo = [(i, p) for i, p in todo_files if p.stat().st_size > _LARGE_FILE_THRESHOLD]
+        if large_todo:
+            typer.echo(f"\n{len(large_todo)} large file(s) will use subprocess isolation:")
+            for _, lf in large_todo:
+                typer.echo(f"  {lf.name} ({lf.stat().st_size / 1024 / 1024:.0f}MB)")
 
-    if workers > 1 and small_files:
-        typer.echo(f"\nParallel replay: {workers} workers across {len(small_files)} files...")
-        try:
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                futures = {}
-                for pfile in small_files:
-                    future = executor.submit(
-                        _replay_single_file,
-                        pfile_path=str(pfile),
-                        chunk_dir=str(chunk_dir),
-                        chunk_idx=chunk_idx,
-                        macro_data=macro_data,
-                        summaries=summaries,
-                        gbt_path=gbt_path_str,
-                    )
-                    futures[future] = pfile.name
-                    chunk_idx += 1
-
-                for future in as_completed(futures):
-                    fname = futures[future]
-                    try:
-                        n_eps, n_sessions = future.result()
-                        total_episodes += n_eps
-                        typer.echo(f"  {fname}: {n_eps} episodes across {n_sessions} session(s)")
-                    except Exception as exc:
-                        typer.echo(f"  {fname}: FAILED — {exc}")
-        except Exception as pool_exc:
-            typer.echo(f"  ProcessPool crashed: {pool_exc}")
-            typer.echo("  Continuing with sequential replay for remaining files...")
-
-    elif small_files:
-        typer.echo(f"\nSequential replay: {len(small_files)} files...")
-        for pfile in small_files:
+        # Parallel replay for small files
+        if workers > 1 and small_todo:
+            typer.echo(f"\nParallel replay: {workers} workers across {len(small_todo)} files...")
             try:
-                n_eps, n_sessions = _replay_single_file(
-                    pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                    chunk_idx=chunk_idx, macro_data=macro_data,
-                    summaries=summaries, gbt_path=gbt_path_str,
-                )
-                total_episodes += n_eps
-                typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
-            except Exception as exc:
-                typer.echo(f"  {pfile.name}: FAILED — {exc}")
-            chunk_idx += 1
+                with ProcessPoolExecutor(max_workers=workers) as executor:
+                    futures = {}
+                    for idx, pfile in small_todo:
+                        future = executor.submit(
+                            _replay_single_file,
+                            pfile_path=str(pfile), chunk_dir=str(chunk_dir),
+                            chunk_idx=idx, macro_data=macro_data,
+                            summaries=summaries, gbt_path=gbt_path_str,
+                        )
+                        futures[future] = pfile.name
+                    for future in as_completed(futures):
+                        fname = futures[future]
+                        try:
+                            n_eps, n_sessions = future.result()
+                            typer.echo(f"  {fname}: {n_eps} episodes across {n_sessions} session(s)")
+                        except Exception as exc:
+                            typer.echo(f"  {fname}: FAILED — {exc}")
+            except Exception as pool_exc:
+                typer.echo(f"  ProcessPool crashed: {pool_exc}")
 
-    # Large files: run each in an isolated subprocess so OOM kills don't take
-    # down the main process. ProcessPoolExecutor with max_workers=1 gives us
-    # subprocess isolation + automatic cleanup.
-    if large_files:
-        typer.echo(f"\nSequential replay for {len(large_files)} large file(s) (subprocess-isolated)...")
-        for pfile in large_files:
-            try:
-                with ProcessPoolExecutor(max_workers=1) as single:
-                    future = single.submit(
-                        _replay_single_file,
+        elif small_todo:
+            typer.echo(f"\nSequential replay: {len(small_todo)} files...")
+            for idx, pfile in small_todo:
+                try:
+                    n_eps, n_sessions = _replay_single_file(
                         pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                        chunk_idx=chunk_idx, macro_data=macro_data,
+                        chunk_idx=idx, macro_data=macro_data,
                         summaries=summaries, gbt_path=gbt_path_str,
                     )
-                    n_eps, n_sessions = future.result(timeout=7200)  # 2h max per file
-                total_episodes += n_eps
-                typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
-            except Exception as exc:
-                typer.echo(f"  {pfile.name}: FAILED — {exc}")
-            chunk_idx += 1
+                    typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
+                except Exception as exc:
+                    typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
-    if total_episodes == 0:
-        typer.echo("No episodes generated. Check tick data and replay engine.")
-        raise typer.Exit(1)
+        # Large files: subprocess-isolated (OOM kills only the subprocess)
+        if large_todo:
+            typer.echo(f"\nSubprocess replay for {len(large_todo)} large file(s)...")
+            for idx, pfile in large_todo:
+                try:
+                    with ProcessPoolExecutor(max_workers=1) as single:
+                        future = single.submit(
+                            _replay_single_file,
+                            pfile_path=str(pfile), chunk_dir=str(chunk_dir),
+                            chunk_idx=idx, macro_data=macro_data,
+                            summaries=summaries, gbt_path=gbt_path_str,
+                        )
+                        n_eps, n_sessions = future.result(timeout=7200)
+                    typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
+                except Exception as exc:
+                    typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
-    # Concatenate all chunks from disk — discover by glob (parallel produces non-sequential indices)
+    # Concatenate all chunks from disk (including previously completed + new)
     chunk_indices = sorted(
         int(f.stem.split("_")[1]) for f in chunk_dir.glob("obs_*.npy")
     )
+    if not chunk_indices:
+        typer.echo("No episodes generated. Check tick data and replay engine.")
+        raise typer.Exit(1)
+
     n_chunks = len(chunk_indices)
+    total_episodes = sum(len(np.load(chunk_dir / f"obs_{i:04d}.npy")) for i in chunk_indices)
     typer.echo(f"\nConcatenating {n_chunks} chunks ({total_episodes} episodes)...")
 
     obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
