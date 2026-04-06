@@ -163,7 +163,7 @@ class MirrorService:
             return
 
         # Pinnacle bet history page — use API sync
-        if provider_id == "pinnacle" and ("spelhistorik" in url or "bet-history" in url or "account" in url):
+        if provider_id == "pinnacle" and ("bets/history" in url or "spelhistorik" in url):
             info = await asyncio.to_thread(self._get_provider_sync_info, "pinnacle")
             if info["pending_bets"] > 0:
                 logger.info(f"[mirror] Pinnacle history page detected — syncing {info['pending_bets']} pending bets via API")

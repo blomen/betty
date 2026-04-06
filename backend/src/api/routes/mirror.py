@@ -161,6 +161,16 @@ async def scrape_poly_portfolio():
     return {"staged": len(staged), "settlements": staged}
 
 
+@router.post("/settle/{provider_id}")
+async def settle_provider(provider_id: str):
+    """Trigger settlement sync for a provider using its workflow API."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    await mirror._settle_via_workflow(provider_id)
+    return {"staged": len(mirror._pending_settlements), "settlements": mirror._pending_settlements}
+
+
 @router.get("/status")
 def mirror_status():
     """Get mirror status — returns running if any mirror instance is active."""
