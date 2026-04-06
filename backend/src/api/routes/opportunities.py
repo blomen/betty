@@ -278,8 +278,67 @@ def build_batch(
 
 
 # ---------------------------------------------------------------------------
-# Settlement scan + confirm
+# Settlement: pending bets, scan, confirm
 # ---------------------------------------------------------------------------
+
+
+@router.get("/play/pending-bets")
+def get_pending_bets(db: Session = Depends(get_db)):
+    """Return all pending bets grouped by provider, for the settlement flow.
+
+    Only includes bets where start_time has passed (event should be finished).
+    """
+    from ...db.models import Bet, Event
+
+    now = datetime.now(timezone.utc)
+    profile = ProfileRepo(db).get_active()
+
+    pending = (
+        db.query(Bet, Event)
+        .join(Event, Bet.event_id == Event.id, isouter=True)
+        .filter(
+            Bet.profile_id == profile.id,
+            Bet.result == "pending",
+            Bet.start_time < now,
+        )
+        .order_by(Bet.start_time.asc())
+        .all()
+    )
+
+    by_provider: dict[str, list] = {}
+    for bet, event in pending:
+        pid = bet.provider_id
+        by_provider.setdefault(pid, [])
+        by_provider[pid].append({
+            "id": bet.id,
+            "event_id": bet.event_id,
+            "provider_id": pid,
+            "market": bet.market,
+            "outcome": bet.outcome,
+            "point": bet.point,
+            "odds": bet.odds,
+            "stake": bet.stake,
+            "currency": bet.currency or "SEK",
+            "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
+            "start_time": bet.start_time.isoformat() if bet.start_time else None,
+            "home_team": (event.display_home or event.home_team) if event else None,
+            "away_team": (event.display_away or event.away_team) if event else None,
+            "sport": event.sport if event else None,
+        })
+
+    providers = []
+    for pid, bets in by_provider.items():
+        total_stake = sum(b["stake"] for b in bets)
+        providers.append({
+            "provider_id": pid,
+            "bet_count": len(bets),
+            "total_stake": total_stake,
+            "currency": bets[0]["currency"],
+            "bets": bets,
+        })
+    providers.sort(key=lambda p: p["bet_count"], reverse=True)
+
+    return {"providers": providers, "total_bets": sum(p["bet_count"] for p in providers)}
 
 
 @router.get("/play/settle-scan")

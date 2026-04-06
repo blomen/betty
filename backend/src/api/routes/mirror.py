@@ -81,6 +81,74 @@ async def stop_mirror():
     return {"running": False, "status": "stopped"}
 
 
+@router.post("/open-settle-tabs")
+async def open_settle_tabs():
+    """Open browser tabs for providers that have unsettled bets (start_time passed)."""
+    mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor.context:
+        raise HTTPException(400, "No mirror running")
+
+    from datetime import datetime, timezone
+    from ...db.models import Bet, get_session
+    from ...repositories.profile_repo import ProfileRepo
+    from ...mirror.workflows import get_workflow
+    from ...config.loader import load_config
+
+    now = datetime.now(timezone.utc)
+    db = get_session()
+    try:
+        profile = ProfileRepo(db).get_active()
+        pending = db.query(Bet).filter(
+            Bet.profile_id == profile.id,
+            Bet.result == "pending",
+            Bet.start_time < now,
+        ).all()
+        provider_ids = sorted({b.provider_id for b in pending})
+    finally:
+        db.close()
+
+    if not provider_ids:
+        return {"opened": [], "count": 0}
+
+    context = mirror.interceptor.context
+    cfg = load_config()
+    opened = []
+
+    for pid in provider_ids:
+        workflow = get_workflow(pid)
+        # Skip if tab already exists
+        existing = await workflow.find_tab(context)
+        if existing:
+            opened.append(pid)
+            continue
+
+        # Build URL from workflow domain or config
+        url = None
+        if workflow.domain:
+            url = f"https://www.{workflow.domain}"
+        else:
+            pconfig = cfg.get_provider(pid)
+            if pconfig:
+                url = pconfig.site_url or (f"https://www.{pconfig.domain}" if pconfig.domain else None)
+        if not url:
+            continue
+
+        try:
+            # Reuse blank tab or open new
+            blank = next((p for p in context.pages if (p.url or "").startswith("about:")), None)
+            if blank:
+                await blank.goto(url, wait_until="domcontentloaded", timeout=15000)
+            else:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            opened.append(pid)
+            logger.info(f"[mirror] Opened settle tab: {pid} → {url}")
+        except Exception as e:
+            logger.warning(f"[mirror] Failed to open tab for {pid}: {e}")
+
+    return {"opened": opened, "count": len(opened)}
+
+
 @router.get("/status")
 def mirror_status():
     """Get mirror status — returns running if any mirror instance is active."""

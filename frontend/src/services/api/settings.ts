@@ -180,6 +180,10 @@ export const settingsApi = {
     return fetchJson('/mirror/stop', { method: 'POST' });
   },
 
+  async openSettleTabs(): Promise<{ opened: string[]; count: number }> {
+    return fetchJson('/mirror/open-settle-tabs', { method: 'POST' }, 60_000);
+  },
+
   async getMirrorSettlements(): Promise<{ settlements: any[] }> {
     return fetchJson('/mirror/settlements');
   },

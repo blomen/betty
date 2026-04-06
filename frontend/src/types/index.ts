@@ -851,26 +851,32 @@ export interface BatchResult {
 
 export interface PendingBet {
   id: number;
-  event_name: string;
+  event_id: string;
+  provider_id: string;
   market: string;
   outcome: string;
+  point: number | null;
   odds: number;
   stake: number;
   currency: string;
   placed_at: string | null;
+  start_time: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  sport: string | null;
 }
 
 export interface PendingProvider {
   provider_id: string;
-  pending_count: number;
+  bet_count: number;
   total_stake: number;
+  currency: string;
   bets: PendingBet[];
 }
 
 export interface PendingBetsResponse {
   providers: PendingProvider[];
-  total_pending: number;
-  total_stake: number;
+  total_bets: number;
 }
 
 export interface SettleBetResult {
