@@ -125,6 +125,8 @@ class PolymarketWorkflow(ProviderWorkflow):
                 max_slippage=0.05,
                 original_outcome=original_outcome,
                 market_type=market_type,
+                home_name=getattr(bet, "display_home", ""),
+                away_name=getattr(bet, "display_away", ""),
             )
             status = result.get("status", "failed")
             return PlacementResult(

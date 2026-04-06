@@ -2007,6 +2007,7 @@ class MirrorService:
         self, page, bet_id: int, slug: str, outcome: str,
         amount: float, expected_price: float, max_slippage: float,
         original_outcome: str = "", market_type: str = "",
+        home_name: str = "", away_name: str = "",
     ) -> dict:
         """Place a single bet on Polymarket via browser automation.
 
@@ -2039,15 +2040,7 @@ class MirrorService:
         outcome_lower = (original_outcome or outcome).lower()
 
         # Determine which team name to match
-        home_name = ""
-        away_name = ""
-        # Try to get display names from the bet's context
-        bets = _window.provider_bets.get("polymarket", []) if _window else []
-        for b in bets:
-            if b.bet_id == bet_id:
-                home_name = b.display_home
-                away_name = b.display_away
-                break
+        # home_name/away_name passed from workflow caller
 
         if outcome_lower in ("home", "over"):
             target = home_name.lower()[:3] if home_name else ""
