@@ -88,27 +88,24 @@ async def open_settle_tabs():
     if not mirror or not mirror.interceptor.context:
         raise HTTPException(400, "No mirror running")
 
-    from datetime import datetime, timezone
     from ...db.models import Bet, get_session
     from ...repositories.profile_repo import ProfileRepo
     from ...mirror.workflows import get_workflow
     from ...config.loader import load_config
 
-    now = datetime.now(timezone.utc)
     db = get_session()
     try:
         profile = ProfileRepo(db).get_active()
-        # Providers with unsettled bets
+        # Providers with any pending bets
         pending = db.query(Bet).filter(
             Bet.profile_id == profile.id,
             Bet.result == "pending",
-            Bet.start_time < now,
         ).all()
-        settle_pids = {b.provider_id for b in pending}
+        pending_pids = {b.provider_id for b in pending}
         # Providers with balance (can place bets)
         balances = ProfileRepo(db).get_all_balances(profile.id)
         balance_pids = {pid for pid, bal in balances.items() if bal >= 10}
-        provider_ids = sorted(settle_pids | balance_pids)
+        provider_ids = sorted(pending_pids | balance_pids)
     finally:
         db.close()
 

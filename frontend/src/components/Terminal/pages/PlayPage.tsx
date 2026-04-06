@@ -358,7 +358,7 @@ export function PlayPage() {
                             <span className="text-xs text-muted">{bets.length} bets</span>
                             <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
                             {balance > 0 && <span className="text-xs text-success">bal {fmt(balance, tier)}</span>}
-                            {settleCount > 0 && <span className="text-[10px] text-amber-400 font-medium">{settleCount} to settle</span>}
+                            {settleCount > 0 && <span className="text-[10px] text-amber-400 font-medium">{settleCount} pending</span>}
                             <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
                             <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
                           </div>

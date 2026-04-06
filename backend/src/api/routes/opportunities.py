@@ -230,13 +230,9 @@ def build_batch(
 
 @router.get("/play/pending-bets")
 def get_pending_bets(db: Session = Depends(get_db)):
-    """Return all pending bets grouped by provider, for the settlement flow.
-
-    Only includes bets where start_time has passed (event should be finished).
-    """
+    """Return all pending bets grouped by provider."""
     from ...db.models import Bet, Event
 
-    now = datetime.now(timezone.utc)
     profile = ProfileRepo(db).get_active()
 
     pending = (
@@ -245,7 +241,6 @@ def get_pending_bets(db: Session = Depends(get_db)):
         .filter(
             Bet.profile_id == profile.id,
             Bet.result == "pending",
-            Bet.start_time < now,
         )
         .order_by(Bet.start_time.asc())
         .all()
