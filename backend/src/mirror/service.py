@@ -843,8 +843,8 @@ class MirrorService:
                 # Skip dash placeholder
                 if l == '-':
                     continue
-                # Skip tags like "Yes 16¢"
-                if re.match(r'^.+\d+¢$', l):
+                # Skip tags like "Yes 16¢" or "Team Solid 26¢" (outcome badge + price)
+                if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
                     continue
                 # Market name — first substantial text
                 if not market and len(l) > 10:
