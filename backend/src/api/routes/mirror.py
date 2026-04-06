@@ -153,12 +153,160 @@ async def open_settle_tabs():
 
 @router.post("/scrape-poly-portfolio")
 async def scrape_poly_portfolio():
-    """Scrape Polymarket portfolio page and stage settlements for pending bets."""
+    """Scrape Polymarket portfolio page and stage settlements for pending bets.
+
+    Uses the inline DOM parser directly (same as debug-poly-dom) to avoid
+    code path differences with the service method.
+    """
+    import re
+    from rapidfuzz import fuzz
+
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    staged = await mirror.scrape_polymarket_settlements()
-    return {"staged": len(staged), "settlements": staged}
+
+    context = mirror.interceptor.context
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    # Find polymarket portfolio page
+    page = None
+    for p in context.pages:
+        url = p.url or ""
+        if 'polymarket.com' in url and '/portfolio' in url:
+            page = p
+            break
+    if not page:
+        for p in context.pages:
+            if 'polymarket.com' in (p.url or ''):
+                page = p
+                break
+    if not page:
+        return {"error": "No polymarket page", "staged": 0, "settlements": []}
+
+    # Navigate to portfolio if needed
+    if '/portfolio' not in (page.url or ''):
+        await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(3)
+
+    # Click History tab if needed
+    has_history = await page.evaluate("() => (document.body.innerText || '').includes('Claimed') || (document.body.innerText || '').includes('Lost')")
+    if not has_history:
+        await page.evaluate("""() => {
+            for (const t of document.querySelectorAll('a, button, div[role="tab"]')) {
+                if ((t.textContent || '').trim() === 'History') { t.click(); return true; }
+            }
+            return false;
+        }""")
+        await asyncio.sleep(4)
+
+    # Read full DOM
+    raw = await page.evaluate("() => document.body.innerText")
+    lines = raw.split('\n')
+
+    # Parse entries
+    entries = []
+    for i, line in enumerate(lines):
+        a = line.strip()
+        if a not in ('Lost', 'Claimed'):
+            continue
+        market = ''
+        value = 0.0
+        for j in range(i + 1, min(i + 8, len(lines))):
+            l = lines[j].strip()
+            if not l or l == '-':
+                continue
+            if re.match(r'\d+[hmd]\s*ago', l):
+                break
+            val_match = re.match(r'^[+-]?\$([\d,.]+)$', l)
+            if val_match:
+                value = float(val_match.group(1).replace(',', ''))
+                if l.startswith('-'):
+                    value = -value
+                continue
+            if re.search(r'([\d.]+)\s*shares', l):
+                continue
+            if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
+                continue
+            if not market and len(l) > 10:
+                market = l
+        if market:
+            entries.append({'activity': a, 'market': market[:120], 'value': abs(value)})
+
+    if not entries:
+        return {"staged": 0, "settlements": [], "page_url": page.url, "note": "no Lost/Claimed entries found"}
+
+    # Get pending poly bets
+    pending = await asyncio.to_thread(mirror._get_pending_poly_bets_sync)
+    if not pending:
+        return {"staged": 0, "settlements": [], "entries_found": len(entries), "note": "no pending poly bets"}
+
+    # Match
+    staged = []
+    for entry in entries:
+        activity = entry['activity']
+        market = entry['market']
+        value = entry['value']
+
+        if activity == 'Lost':
+            result = 'lost'
+            payout = 0.0
+        elif activity == 'Claimed':
+            result = 'won'
+            payout = value
+        else:
+            continue
+
+        best_match = None
+        best_score = 0
+        for pb in pending:
+            event_name = pb.get('event_name', '')
+            s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
+            s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
+            home = event_name.split(' vs ')[0].strip() if ' vs ' in event_name else ''
+            s3 = fuzz.partial_ratio(home.lower(), market.lower()) if home and len(home) > 3 else 0
+            score = max(s1, s2, s3)
+            if score > best_score and score >= 55:
+                best_score = score
+                best_match = pb
+
+        if not best_match:
+            continue
+
+        if result == 'won' and best_match['stake'] > 0:
+            if 0.85 <= payout / best_match['stake'] <= 1.15:
+                result = 'void'
+                payout = best_match['stake']
+
+        staged.append({
+            'bet_id': best_match['id'],
+            'provider': 'polymarket',
+            'event': market[:80],
+            'odds': best_match['odds'],
+            'stake': best_match['stake'],
+            'result': result,
+            'payout': round(payout, 2),
+        })
+        pending.remove(best_match)
+
+    if staged:
+        mirror._pending_settlements = staged
+        wins = [s for s in staged if s['result'] == 'won']
+        losses = [s for s in staged if s['result'] == 'lost']
+        total_staked = sum(s['stake'] for s in staged)
+        total_payout = sum(s['payout'] for s in staged)
+        mirror._notify('settlements_pending', {
+            'provider': 'polymarket',
+            'count': len(staged),
+            'wins': len(wins),
+            'losses': len(losses),
+            'total_staked': total_staked,
+            'total_payout': total_payout,
+            'net': total_payout - total_staked,
+            'settlements': staged,
+        })
+
+    return {"staged": len(staged), "settlements": staged, "entries_found": len(entries), "pending_count": len(pending) + len(staged)}
 
 
 @router.get("/debug-poly-dom")
