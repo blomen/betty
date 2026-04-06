@@ -757,6 +757,31 @@ class MirrorService:
             return []
         logger.info(f"[mirror] Poly scrape using page: {page.url[:80]}")
 
+        # Ensure we're on the History tab — click it if needed
+        if '/portfolio' in (page.url or ''):
+            try:
+                # Check if History tab content is visible
+                has_history = await page.evaluate("""() => {
+                    const text = document.body.innerText || '';
+                    return text.includes('Lost') || text.includes('Claimed');
+                }""")
+                if not has_history:
+                    # Click the History tab
+                    await page.evaluate("""() => {
+                        const tabs = document.querySelectorAll('a, button, div[role="tab"]');
+                        for (const t of tabs) {
+                            if ((t.textContent || '').trim() === 'History') {
+                                t.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""")
+                    await asyncio.sleep(3)  # Wait for tab content to load
+                    logger.info("[mirror] Clicked History tab on Polymarket portfolio")
+            except Exception as e:
+                logger.debug(f"[mirror] History tab click attempt: {e}")
+
         # Parse flat DOM text — more reliable than element-based scraping
         try:
             raw = await page.evaluate("() => document.body.innerText")
