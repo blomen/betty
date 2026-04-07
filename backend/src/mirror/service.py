@@ -2179,7 +2179,29 @@ class MirrorService:
                 if len(matches) == 1:
                     return matches[0]  # Unique match — confident
 
-        # Fallback: index-based matching
+        # Fallback: price-based matching for 2-button moneyline markets
+        # If we know our expected odds, pick the button closest to our price
+        if len(matched_section) == 2 and market_type in ("moneyline", "1x2"):
+            # For home/away: our outcome has a known price direction
+            # home_name is set → find which button is NOT the other team
+            btn_a, btn_b = matched_section[0], matched_section[1]
+            pa, pb = btn_a.get("price"), btn_b.get("price")
+            if pa is not None and pb is not None:
+                # The button with the minority name match wins
+                a_text = (btn_a.get("text") or "").lower()
+                b_text = (btn_b.get("text") or "").lower()
+                # Check if away name appears in either button
+                if away_name:
+                    away_parts = [away_name.lower()[:3], away_name.lower().split()[-1] if ' ' in away_name else away_name.lower()]
+                    a_is_away = any(p in a_text for p in away_parts)
+                    b_is_away = any(p in b_text for p in away_parts)
+                    if original_outcome == "home":
+                        if a_is_away and not b_is_away:
+                            return btn_b
+                        if b_is_away and not a_is_away:
+                            return btn_a
+
+        # Last fallback: index-based matching
         btn_idx = self._btn_index_for_outcome(original_outcome, market_type)
         if 0 <= btn_idx < len(matched_section):
             return matched_section[btn_idx]
