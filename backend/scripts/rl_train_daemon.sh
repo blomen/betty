@@ -27,6 +27,13 @@ PID_FILE=/app/data/rl/daemon.pid
 renice -n 19 $$ >/dev/null 2>&1 || true
 
 # Write PID for external monitoring
+# Check for disable flag (touch /app/data/rl/daemon_disabled to prevent auto-start)
+DISABLE_FLAG=/app/data/rl/daemon_disabled
+if [ -f "$DISABLE_FLAG" ]; then
+    echo "[$(date -u '+%Y-%m-%d %H:%M UTC')] Daemon disabled (${DISABLE_FLAG} exists). Remove to re-enable." >&2
+    exit 0
+fi
+
 echo $$ > "$PID_FILE"
 
 log() {
