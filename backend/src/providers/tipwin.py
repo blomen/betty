@@ -275,8 +275,8 @@ class TipwinRetriever(BrowserRetriever):
 
             for sid, sinfo in merged_sports.items():
                 abrv = sinfo.get('abrv', '')
-                    if abrv:
-                        all_sport_abrvs.add(abrv)
+                if abrv:
+                    all_sport_abrvs.add(abrv)
 
                 # Parse items format (full listing page) — use merged lookups
                 for category in resp_data.get('items', []):
