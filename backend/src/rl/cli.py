@@ -442,9 +442,25 @@ def _replay_single_file(
 
     # Load GBT in this subprocess if needed
     gbt_model = None
+    gbt_is_trigger = False
+    narrative_gbt = None
     if gbt_path:
-        from src.rl.agent.gbt_model import GBTModel
-        gbt_model = GBTModel.load(Path(gbt_path))
+        import joblib as _jl
+        _gbt_data = _jl.load(Path(gbt_path))
+        if isinstance(_gbt_data, dict) and _gbt_data.get("version", "").startswith("v5_trigger"):
+            # v5 trigger GBT: needs narrative features + trigger feature assembly
+            from src.rl.agent.trigger_gbt import TriggerGBT
+            from src.rl.agent.narrative_gbt import NarrativeGBT
+            gbt_model = TriggerGBT.load(Path(gbt_path))
+            gbt_is_trigger = True
+            # Try to load narrative GBT for setup probs
+            ngbt_path = Path(gbt_path).parent / "narrative_gbt_v5.joblib"
+            if ngbt_path.exists():
+                narrative_gbt = NarrativeGBT.load(ngbt_path)
+        else:
+            # v4 or earlier: standard GBTModel on 276-dim observations
+            from src.rl.agent.gbt_model import GBTModel
+            gbt_model = GBTModel.load(Path(gbt_path))
 
     engine = ReplayEngine(macro_data=macro_data)
 
@@ -521,7 +537,29 @@ def _replay_single_file(
         for ep in episodes:
             obs = ep.observation
             if gbt_model is not None:
-                gbt_forecast = gbt_model.predict_full(obs)
+                if gbt_is_trigger:
+                    # v5: extract narrative features from base obs, build trigger input
+                    from src.rl.features.narrative_features import extract_narrative_features
+                    from src.rl.features.passthrough_features import extract_passthrough
+                    # Approximate narrative from observation indices
+                    # (we don't have state dict, so extract from obs vector)
+                    narr_feats = np.concatenate([
+                        obs[52:116], obs[116:154], obs[178:189],
+                        obs[208:228], obs[228:248],
+                    ])  # 153 dims for narrative GBT input
+                    setup_probs = np.zeros(8, dtype=np.float32)
+                    if narrative_gbt is not None:
+                        setup_probs = narrative_gbt.predict_setup_probs(narr_feats)
+                    passthrough = extract_passthrough(obs)
+                    # Build trigger-like input for trigger GBT
+                    trigger_raw = np.concatenate([
+                        obs[0:31], obs[31:52], obs[154:169],
+                        obs[169:173], obs[173:178], obs[248:268], obs[268:269],
+                    ])  # 97 dims
+                    trigger_input = np.concatenate([trigger_raw, passthrough, setup_probs])
+                    gbt_forecast = gbt_model.predict_full(trigger_input)
+                else:
+                    gbt_forecast = gbt_model.predict_full(obs)
                 pos_state = build_position_state()
                 obs = augment_observation(obs, gbt_forecast, pos_state)
             month_obs.append(obs)
