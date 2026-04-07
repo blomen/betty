@@ -278,6 +278,7 @@ class TipwinRetriever(BrowserRetriever):
                 if abrv:
                     all_sport_abrvs.add(abrv)
 
+            for resp_data in api_responses:
                 # Parse items format (full listing page) — use merged lookups
                 for category in resp_data.get('items', []):
                     sport_id = category.get('sportId', '')
