@@ -308,8 +308,24 @@ class MirrorService:
                 break
 
         # Any remaining pending DB bets that DON'T appear in provider history = ghost bets
-        # Check if they match ANY entry (settled or pending) from provider
+        # Only check bets where start_time has passed (future bets may not show in history yet)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
         for pb in pending:
+            # Skip future bets — they won't be in history yet
+            start = pb.get("start_time")
+            if start:
+                if hasattr(start, 'tzinfo') and start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if isinstance(start, str):
+                    try:
+                        from datetime import datetime as dt
+                        start = dt.fromisoformat(start.replace("Z", "+00:00"))
+                    except Exception:
+                        continue
+                if start > now:
+                    continue  # Event hasn't started — not a ghost
+
             found_on_provider = False
             for entry in all_provider_bets:
                 odds_match = abs(entry.odds - pb["odds"]) / max(pb["odds"], 0.01) < 0.05
@@ -318,7 +334,6 @@ class MirrorService:
                     found_on_provider = True
                     break
             if not found_on_provider:
-                # Ghost bet — not on provider at all, void it
                 staged.append({
                     "bet_id": pb["id"],
                     "provider": provider_id,
@@ -326,7 +341,7 @@ class MirrorService:
                     "odds": pb["odds"],
                     "stake": pb["stake"],
                     "result": "void",
-                    "payout": 0.0,  # No money was risked
+                    "payout": 0.0,
                 })
 
         if staged:
@@ -493,7 +508,7 @@ class MirrorService:
                 Bet.provider_id == provider_id,
                 Bet.result == "pending",
             ).all()
-            return [{"id": b.id, "odds": b.odds, "stake": b.stake} for b in pending]
+            return [{"id": b.id, "odds": b.odds, "stake": b.stake, "start_time": b.start_time} for b in pending]
         finally:
             db.close()
 
