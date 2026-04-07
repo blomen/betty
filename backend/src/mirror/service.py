@@ -1379,6 +1379,21 @@ class MirrorService:
             info["stake"] = req.get("riskAmount") or req.get("stake")
             return info
 
+        # --- Polymarket (clob.polymarket.com/order) ---
+        if "clob.polymarket" in url_lower and "order" in url_lower:
+            # Response: {orderID, status, ...}
+            # Request: {tokenID, price, size, side, ...}
+            info["confirmation_id"] = str(body.get("orderID", body.get("id", "")))
+            # Price from request (decimal, e.g. 0.44 = 44¢)
+            price = req.get("price")
+            if price:
+                info["odds"] = round(1 / float(price), 2) if float(price) > 0 else 0
+            # Size/amount from request
+            info["stake"] = req.get("amount") or req.get("size")
+            # Token ID for matching
+            info["token_id"] = req.get("tokenID", "")
+            return info
+
         # --- Generic fallback: scan for common field names ---
         for key in ("totalStake", "stake", "amount"):
             if key in body:

@@ -42,6 +42,8 @@ class BetInterceptor:
         # Pinnacle
         ("/0.1/bets/straight", "POST"),
         ("/0.1/bets/parlay", "POST"),
+        # Polymarket (CLOB order placement)
+        ("clob.polymarket.com/order", "POST"),
     )
 
     # WebSocket URLs to monitor for bet placement frames (Kambi etc.)
