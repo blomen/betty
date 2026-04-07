@@ -167,52 +167,48 @@ class TipwinRetriever(BrowserRetriever):
                 await self.transport._ensure_browser()
                 page = self.transport.page
 
-            # Storage for intercepted API data — captured inline via route handler
+            # Storage for intercepted API data — captured via response listener
             import json as _json
             api_responses: List[Dict] = []
 
-            async def intercept_offer_api(route):
-                """Intercept offer/data API calls, capture body before navigation disposes it."""
+            async def on_response(response):
+                """Capture offer/data API responses via passive listener."""
+                url = response.url
+                if 'offer/data' not in url or response.status != 200:
+                    return
                 try:
-                    response = await route.fetch()
-                    body = await response.text()
-                    data = _json.loads(body)
+                    data = await response.json()
                     if isinstance(data, dict):
                         has_items = 'items' in data and isinstance(data.get('items'), list)
                         has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
                         if has_items or has_offer:
                             api_responses.append(data)
-                    await route.fulfill(response=response, body=body)
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Route intercept error: {e}")
-                    await route.continue_()
+                    logger.debug(f"[{self.provider_id}] Response parse error: {e}")
 
-            # Intercept all offer/data API calls via route (reliable body capture)
-            await page.route("**/offer/data*", intercept_offer_api)
+            page.on("response", on_response)
 
-            # Navigate directly to full sports listing — SPA loads offer/data on first page
-            # (Previously loaded homepage first for cookie consent, but that wastes the API call
-            # since the SPA does a client-side route change to /sv/sports/full/ without re-fetching)
+            # Navigate directly to full sports listing
             full_url = f"{self.site_url}/sv/sports/full/"
             await page.goto(full_url, wait_until='load', timeout=30000)
 
-            # Handle cookie consent if needed (works on any page)
+            # Handle cookie consent if needed
             if not self._session_ready:
                 await self._handle_cookie_consent(page)
                 self._session_ready = True
 
-            # Wait for the offer/data API call to fire (SPA takes 5-10s to bootstrap)
+            # Wait for the offer/data API call to fire
             for _ in range(15):
                 if api_responses:
                     break
                 await asyncio.sleep(1)
 
             if not api_responses:
-                    await page.unroute("**/offer/data*", intercept_offer_api)
-                    raise RetryableError(
-                        "No API responses captured after initial page load",
-                        provider_id=self.provider_id,
-                    )
+                page.remove_listener("response", on_response)
+                raise RetryableError(
+                    "No API responses captured after initial page load",
+                    provider_id=self.provider_id,
+                )
 
             # Get total pages from the items-format response
             total_pages = 0
@@ -224,7 +220,7 @@ class TipwinRetriever(BrowserRetriever):
                         total_pages = (total + ps - 1) // ps
                         break
             if total_pages == 0:
-                total_pages = 30  # Fallback: paginate until empty
+                total_pages = 30
 
             max_pages = min(total_pages, 120)
             logger.info(
@@ -232,23 +228,22 @@ class TipwinRetriever(BrowserRetriever):
                 f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
             )
 
-            # Paginate via direct ?page=N URL navigation
+            # Paginate — response listener captures each page's API response
             for pg in range(2, max_pages + 1):
                 try:
                     prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    # Wait for route handler to capture the API response (up to 3s)
+                    # Wait for response listener to capture (up to 3s)
                     for _ in range(15):
                         if len(api_responses) > prev_count:
                             break
                         await asyncio.sleep(0.2)
-
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
                     break
 
-            await page.unroute("**/offer/data*", intercept_offer_api)
+            page.remove_listener("response", on_response)
 
             logger.info(
                 f"[{self.provider_id}] Captured {len(api_responses)} API responses "
