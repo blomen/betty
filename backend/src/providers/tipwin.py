@@ -141,13 +141,28 @@ class TipwinRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
+    # Sport slugs for per-sport navigation (from tipwin.se sport menu API)
+    SPORT_SLUGS: Dict[str, str] = {
+        "football": "soccer",
+        "tennis": "tennis",
+        "basketball": "basketball",
+        "ice_hockey": "ice-hockey",
+        "handball": "handball",
+        "volleyball": "volleyball",
+        "mma": "mma",
+        "boxing": "boxing",
+        "baseball": "baseball",
+        "table_tennis": "table-tennis",
+        "rugby": "rugby",
+        "darts": "darts",
+        "esports": "esports",
+        "american_football": "american-football",
+    }
+
     async def _extract_all(self) -> Dict[str, List[StandardEvent]]:
         """
-        Navigate to /sv/sports/full/ and paginate through all pages
-        to collect events for every sport.
-
-        Uses page.route() to intercept API responses inline (captures body
-        before navigation disposes it). Direct ?page=N URL navigation.
+        Navigate to each sport page (/sv/sports/{sport}/full/) individually
+        and capture the offer/data API response for each.
         """
         try:
             if not isinstance(self.transport, BrowserTransport):
@@ -167,118 +182,61 @@ class TipwinRetriever(BrowserRetriever):
                 await self.transport._ensure_browser()
                 page = self.transport.page
 
-            # Storage for intercepted API data — captured via response listener
-            import json as _json
             api_responses: List[Dict] = []
 
-            async def on_response(response):
-                """Capture offer/data API responses via passive listener."""
-                url = response.url
-                if 'offer/data' not in url or response.status != 200:
-                    return
-                try:
-                    data = await response.json()
-                    if isinstance(data, dict):
-                        has_items = 'items' in data and isinstance(data.get('items'), list)
-                        has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
-                        if has_items or has_offer:
-                            api_responses.append(data)
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Response parse error: {e}")
-
-            page.on("response", on_response)
-
-            # Navigate directly to full sports listing
-            full_url = f"{self.site_url}/sv/sports/full/"
-            await page.goto(full_url, wait_until='load', timeout=30000)
-
-            # Handle cookie consent if needed
+            # Handle cookie consent on first visit
             if not self._session_ready:
+                await page.goto(f"{self.site_url}/sv/sports/full/", wait_until='load', timeout=30000)
                 await self._handle_cookie_consent(page)
                 self._session_ready = True
 
-            # Wait for the offer/data API call to fire
-            for _ in range(15):
-                if api_responses:
-                    break
-                await asyncio.sleep(1)
+            # Get supported sports from config
+            from ..config.loader import ConfigLoader
+            config = ConfigLoader.get_instance()
+            provider_cfg = config.get_provider(self.provider_id)
+            supported = getattr(provider_cfg, 'supported_sports', None) or list(self.SPORT_SLUGS.keys())
 
-            if not api_responses:
-                page.remove_listener("response", on_response)
-                raise RetryableError(
-                    "No API responses captured after initial page load",
-                    provider_id=self.provider_id,
-                )
+            # Navigate to each sport page and capture the offer/data response
+            for sport in supported:
+                slug = self.SPORT_SLUGS.get(sport)
+                if not slug:
+                    continue
 
-            # Get total pages from the items-format response
-            total_pages = 0
-            for resp in api_responses:
-                if 'items' in resp and isinstance(resp.get('items'), list):
-                    total = resp.get('totalNumberOfItems', 0)
-                    ps = resp.get('pageSize', 5)
-                    if total and ps:
-                        total_pages = (total + ps - 1) // ps
-                        break
-            if total_pages == 0:
-                total_pages = 30
+                sport_url = f"{self.site_url}/sv/sports/{slug}/full/"
+                captured = []
 
-            max_pages = min(total_pages, 120)
-            logger.info(
-                f"[{self.provider_id}] Paginating {max_pages} pages "
-                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
-            )
+                async def on_sport_response(response):
+                    if 'offer/data' in response.url and response.status == 200:
+                        try:
+                            data = await response.json()
+                            if isinstance(data, dict) and (data.get('items') or data.get('offer')):
+                                captured.append(data)
+                        except Exception:
+                            pass
 
-            # Extract API URL from the first captured response for direct fetching
-            page.remove_listener("response", on_response)
+                page.on("response", on_sport_response)
+                try:
+                    await page.goto(sport_url, wait_until='load', timeout=30000)
+                    # Wait for API response (up to 10s)
+                    for _ in range(20):
+                        if captured:
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] {sport} page load error: {e}")
+                finally:
+                    page.remove_listener("response", on_sport_response)
 
-            # Extract the filter token from the first API URL
-            first_url = None
-            async def capture_url(response):
-                nonlocal first_url
-                if 'offer/data' in response.url and response.status == 200 and not first_url:
-                    first_url = response.url
-            page.on("response", capture_url)
-            await page.reload(wait_until='load', timeout=30000)
-            for _ in range(15):
-                if first_url:
-                    break
-                await asyncio.sleep(1)
-            page.remove_listener("response", capture_url)
-
-            if first_url:
-                # Fetch all pages directly via JavaScript fetch() in browser context
-                logger.info(f"[{self.provider_id}] Direct API pagination via page.evaluate()")
-                base_api_url = first_url.split('?')[0]
-                filter_param = first_url.split('filter=')[1].split('&')[0] if 'filter=' in first_url else ''
-
-                js_results = await page.evaluate(f"""
-                    async () => {{
-                        const results = [];
-                        const baseUrl = "{base_api_url}";
-                        const filter = "{filter_param}";
-                        for (let pg = 2; pg <= {max_pages}; pg++) {{
-                            try {{
-                                const url = baseUrl + "?filter=" + filter + "&page=" + pg;
-                                const resp = await fetch(url, {{credentials: 'include'}});
-                                if (resp.status !== 200) continue;
-                                const data = await resp.json();
-                                if (data && (data.items || data.offer)) {{
-                                    results.push(data);
-                                }}
-                            }} catch(e) {{ continue; }}
-                        }}
-                        return results;
-                    }}
-                """)
-                if js_results:
-                    api_responses.extend(js_results)
-                    logger.info(f"[{self.provider_id}] JS fetch captured {len(js_results)} additional pages")
-            else:
-                logger.warning(f"[{self.provider_id}] Could not extract API URL for direct pagination")
+                if captured:
+                    api_responses.extend(captured)
+                    items = sum(len(r.get('items', [])) for r in captured)
+                    logger.info(f"[{self.provider_id}] {sport}: {items} items captured")
+                else:
+                    logger.debug(f"[{self.provider_id}] {sport}: no API response captured")
 
             logger.info(
                 f"[{self.provider_id}] Captured {len(api_responses)} API responses "
-                f"across {max_pages} pages"
+                f"across {len(supported)} sports"
             )
 
             # Parse all responses into events grouped by sport
