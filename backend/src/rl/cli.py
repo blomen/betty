@@ -518,7 +518,9 @@ def _replay_single_file(
                 prior_session_levels=prior_levels,
                 precomputed_levels=precomputed,
             )
-        except Exception:
+        except Exception as _replay_exc:
+            import sys
+            print(f"  replay_session FAILED for {session_date}: {_replay_exc}", file=sys.stderr)
             continue
 
         prior_levels = engine.get_prior_session_for_chaining()
