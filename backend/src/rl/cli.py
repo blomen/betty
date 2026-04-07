@@ -1770,6 +1770,21 @@ def train_trigger_gbt(
     levels_captured = np.load(lc_path) if lc_path.exists() else None
 
     n = len(observations)
+    # Auto-fix size mismatches from interrupted replays
+    for name, arr in [("stop_targets", stop_targets)]:
+        if len(arr) != n:
+            padded = np.full(n, 10.0, dtype=np.float32)
+            padded[:len(arr)] = arr
+            stop_targets = padded
+    if breakeven_reached is not None and len(breakeven_reached) != n:
+        padded = np.zeros(n, dtype=breakeven_reached.dtype)
+        padded[:len(breakeven_reached)] = breakeven_reached
+        breakeven_reached = padded
+    if levels_captured is not None and len(levels_captured) != n:
+        padded = np.zeros(n, dtype=levels_captured.dtype)
+        padded[:len(levels_captured)] = levels_captured
+        levels_captured = padded
+
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
     # Subsample to fit in memory (LightGBM duplicates data per thread)
