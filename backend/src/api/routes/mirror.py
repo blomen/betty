@@ -411,24 +411,26 @@ async def navigate_to_bet(req: NavigateBetRequest):
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
-    # Get event_slug for Polymarket from DB
+    # Get provider-specific metadata from DB (event_slug for Poly, matchup_id for Pinnacle)
     market_slug = None
     poly_outcome = None
-    if req.provider_id == "polymarket":
-        db = get_session()
-        try:
-            odds_row = db.query(Odds).filter(
-                Odds.event_id == req.event_id,
-                Odds.provider_id == "polymarket",
-                Odds.market == req.market,
-                Odds.outcome == req.outcome,
-            ).first()
-            if odds_row and odds_row.provider_meta:
-                meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
-                market_slug = meta.get("event_slug", "")
+    matchup_id = None
+    db = get_session()
+    try:
+        odds_row = db.query(Odds).filter(
+            Odds.event_id == req.event_id,
+            Odds.provider_id == req.provider_id,
+            Odds.market == req.market,
+            Odds.outcome == req.outcome,
+        ).first()
+        if odds_row and odds_row.provider_meta:
+            meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
+            market_slug = meta.get("event_slug", "")
+            matchup_id = meta.get("matchup_id", "")
+            if req.provider_id == "polymarket":
                 poly_outcome = meta.get("poly_home") if req.outcome == "home" else meta.get("poly_away")
-        finally:
-            db.close()
+    finally:
+        db.close()
 
     # Build a bet-like object for the workflow
     class BetProxy:
@@ -460,6 +462,7 @@ async def navigate_to_bet(req: NavigateBetRequest):
     bet.display_away = req.display_away
     bet.market_slug = market_slug
     bet.poly_outcome = poly_outcome or req.outcome
+    bet.matchup_id = matchup_id
 
     # Navigate
     navigated = await workflow.navigate_to_event(page, bet)
