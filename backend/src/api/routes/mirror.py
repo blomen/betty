@@ -83,7 +83,7 @@ async def stop_mirror():
 
 @router.post("/open-settle-tabs")
 async def open_settle_tabs():
-    """Open browser tabs ONLY for providers with pending bets. Not balance — that's too noisy."""
+    """Open browser tabs for providers with pending bets OR balance available."""
     mirror = _get_active_mirror()
     if not mirror or not mirror.interceptor.context:
         raise HTTPException(400, "No mirror running")
@@ -101,7 +101,11 @@ async def open_settle_tabs():
             Bet.profile_id == profile.id,
             Bet.result == "pending",
         ).all()
-        provider_ids = sorted({b.provider_id for b in pending})
+        pending_pids = {b.provider_id for b in pending}
+        # Providers with real balance (from mirror login, not stale DB)
+        balances = ProfileRepo(db).get_all_balances(profile.id)
+        balance_pids = {pid for pid, bal in balances.items() if bal >= 10}
+        provider_ids = sorted(pending_pids | balance_pids)
     finally:
         db.close()
 
