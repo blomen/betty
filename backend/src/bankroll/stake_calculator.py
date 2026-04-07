@@ -18,7 +18,7 @@ Key safety features:
 Monte Carlo optimal parameters (0% ruin, ~271% median growth at 7.5k):
 - max_kelly: 0.75 (3/4 Kelly ceiling at high bankrolls)
 - min_kelly: 0.25 (quarter Kelly floor for low-edge bets)
-- single_bet_cap: 2% of bankroll (3% at low BR, tapers to 2% at 10k+)
+- single_bet_cap: 2% of bankroll (flat, all levels)
 - min_expected_profit: 0.75 kr
 - Dynamic boost at low bankrolls: kelly * 1.5 below 5k, taper to 5k-10k
 """
@@ -321,17 +321,8 @@ def calculate_stake(
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
 
-    # Dynamic single bet cap: 3% at low bankrolls, taper to 2% at 10k+
-    # MC-optimal: lets Kelly differentiate edges (24% cap hit vs 67% at 1%)
-    effective_cap_pct = single_bet_cap_pct
-    if bankroll_total <= DYNAMIC_KELLY_LOW_THRESHOLD:
-        effective_cap_pct = max(single_bet_cap_pct, 0.03)
-    elif bankroll_total < DYNAMIC_KELLY_HIGH_THRESHOLD:
-        t = (bankroll_total - DYNAMIC_KELLY_LOW_THRESHOLD) / (DYNAMIC_KELLY_HIGH_THRESHOLD - DYNAMIC_KELLY_LOW_THRESHOLD)
-        effective_cap_pct = max(single_bet_cap_pct, 0.03 - t * 0.01)
-
-    # Apply single bet cap
-    single_bet_cap = bankroll_total * effective_cap_pct
+    # Flat 2% single bet cap at all bankroll levels
+    single_bet_cap = bankroll_total * single_bet_cap_pct
     stake = min(raw_stake, single_bet_cap)
     was_capped_single = raw_stake > single_bet_cap
 
