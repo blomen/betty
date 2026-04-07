@@ -812,7 +812,7 @@ providers:
     domain: tipwin.se
     retriever_type: tipwin
     site_url: https://www.tipwin.se
-    sport_timeout: 300  # Loads ALL sports on first call (~180s pagination), needs full timeout
+    sport_timeout: 600  # 92 pages × 3s + overhead. Loads ALL sports on first call
     supported_sports:
       - football
       - basketball
