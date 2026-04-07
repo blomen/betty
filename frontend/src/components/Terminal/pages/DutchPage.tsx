@@ -2,12 +2,12 @@ import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo 
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { SearchInput, relativeTime } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
 import { useToast, ToastContainer } from '../Toast';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -379,8 +379,12 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const { placeBet, placeBatchBets } = useBetMutations();
   const [activeTab, setActiveTab] = usePersistedState<DutchTab>('bbq_dutch_tab', 'dutch');
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
+  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [searchInput, setSearchInput] = usePersistedState('bbq_dutch_search', '');
   const search = useDeferredValue(searchInput);
+  const [scanResults, setScanResults] = useState<DutchOpp[] | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Place bet state (kept at page level for toasts / query invalidation)
   const [isPlacing, setIsPlacing] = useState(false);
@@ -409,6 +413,25 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     setMyBetsCount(betsData.bets.filter(dutchBetFilter).length);
   }, [betsData]);
 
+  const availableProviders = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of providers) set.add(p.id);
+    for (const opp of opportunities) {
+      for (const leg of opp.legs || []) {
+        set.add(leg.provider);
+      }
+    }
+    return Array.from(set).sort();
+  }, [providers, opportunities]);
+
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    for (const opp of opportunities) {
+      if (opp.league) set.add(opp.league);
+    }
+    return Array.from(set).sort();
+  }, [opportunities]);
+
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -416,8 +439,19 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   }, [providers]);
 
   const filtered = useMemo(() => {
-    let result = opportunities;
+    let result = scanResults !== null ? scanResults : opportunities;
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
+    if (selectedProviders.size > 0) {
+      result = result.filter(d => {
+        const legs = d.legs || [];
+        if (!legs.every(leg => selectedProviders.has(leg.provider))) return false;
+        if (selectedProviders.size < 3 && legs.length > selectedProviders.size) return false;
+        return true;
+      });
+    }
+    if (selectedLeagues.size > 0) {
+      result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       result = result.filter(d =>
@@ -433,7 +467,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, search]);
+  }, [opportunities, scanResults, selectedProviders, selectedLeagues, search]);
 
   type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
@@ -462,6 +496,40 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const paddingBottom = virtualItems.length > 0
     ? totalVirtualHeight - virtualItems[virtualItems.length - 1].end
     : 0;
+
+  const toggleProvider = (p: string) => {
+    setScanResults(null);
+    setSelectedProviders(prev => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p); else next.add(p);
+      return next;
+    });
+  };
+
+  const handleScanBetween = async () => {
+    const providerList = [...selectedProviders];
+    setIsScanning(true);
+    try {
+      const res = await api.getDutchWorkflow(providerList, false, 100, providerList);
+      const items = (res.opportunities as unknown as DutchOpp[]).map((o, i) => ({
+        ...o,
+        id: -(i + 1),
+      }));
+      setScanResults(items);
+    } catch {
+      addToast('Scan failed', 'error');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
+      return next;
+    });
+  };
 
   const handlePlaceLeg = async (
     opp: DutchOpp,
@@ -615,13 +683,51 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       {/* Feedback toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
+      {/* Filters */}
+      <FilterBar>
+        {availableProviders.length > 0 && (
+          <MultiSelectDropdown
+            label="Provider"
+            options={availableProviders}
+            selected={selectedProviders}
+            onToggle={toggleProvider}
+            onClear={() => { setSelectedProviders(new Set()); setScanResults(null); }}
+            format={formatProviderWithPlatform}
+            accentColor="success"
+          />
+        )}
+        {selectedProviders.size >= 2 && (
+          <button
+            onClick={handleScanBetween}
+            disabled={isScanning}
+            className="px-3 py-1.5 text-xs bg-success/10 border border-success/30 text-success hover:bg-success/20 rounded disabled:opacity-50"
+          >
+            {isScanning ? 'Scanning...' : `Scan between ${[...selectedProviders].map(formatProviderName).join(' + ')}`}
+          </button>
+        )}
+        {availableLeagues.length > 0 && (
+          <MultiSelectDropdown
+            label="League"
+            options={availableLeagues}
+            selected={selectedLeagues}
+            onToggle={toggleLeague}
+            onClear={() => setSelectedLeagues(new Set())}
+            accentColor="success"
+          />
+        )}
+      </FilterBar>
+
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
       ) : sortedDutch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel flex flex-col items-center gap-3">
-          {opportunities.length === 0 ? (
+          {isScanning ? (
+            <span>Scanning between selected providers...</span>
+          ) : scanResults !== null ? (
+            <span>No dutch found between selected providers.</span>
+          ) : opportunities.length === 0 ? (
             <span>No dutch opportunities found. Run extraction first.</span>
           ) : (
             <span>No matches for current filters.</span>
