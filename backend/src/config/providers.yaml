@@ -14,9 +14,9 @@
 orchestrator:
   # Concurrency limits
   # Bare metal: no hypervisor tax, 8 dedicated threads, 64GB RAM
-  max_concurrent_providers: 10         # Direct gost — no SSH tunnel bottleneck
+  max_concurrent_providers: 16         # Direct gost + 65% CPU idle — push it
   max_concurrent_sports_per_provider: 4 # 8 threads + fast CPU = handle parallel sport extraction
-  max_browser_instances: 5             # Direct gost — high concurrency restored
+  max_browser_instances: 6             # 52 GB free RAM — browsers are ~500MB each
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -867,18 +867,18 @@ extraction_scheduling:
       - betsson
       # BetConstruct (1) — WebSocket API
       - vbet
-    interval_minutes: 3
+    interval_minutes: 2
     grouped: false
 
   browser_soft:
-    # Browser-based extractors — direct gost, restored concurrency
+    # Browser-based extractors — direct gost, 65% CPU idle
     max_concurrent_browsers: 4
     providers:
       - 888sport
       - interwetten
       - 10bet
       - tipwin
-    interval_minutes: 10
+    interval_minutes: 8
     grouped: false
 
   browser_antibot:
@@ -887,7 +887,7 @@ extraction_scheduling:
     providers:
       - coolbet
       - comeon
-    interval_minutes: 15
+    interval_minutes: 10
     grouped: false
 
 # ============================================================================
