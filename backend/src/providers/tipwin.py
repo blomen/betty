@@ -260,23 +260,28 @@ class TipwinRetriever(BrowserRetriever):
             seen: set = set()
             all_sport_abrvs: set = set()
 
+            # Build merged lookups across all pages — individual pages have incomplete lookups
+            # (e.g., page 1 only has soccer in sports lookup, but page 50 has tennis items)
+            merged_teams: Dict = {}
+            merged_tournaments: Dict = {}
+            merged_btypes: Dict = {}
+            merged_sports: Dict = {}
             for resp_data in api_responses:
                 lookup = resp_data.get('lookup', {})
-                teams = lookup.get('teams', {})
-                tournaments = lookup.get('tournaments', {})
-                btypes = lookup.get('bettingTypes', {})
-                sports_lookup = lookup.get('sports', {})
+                merged_teams.update(lookup.get('teams', {}))
+                merged_tournaments.update(lookup.get('tournaments', {}))
+                merged_btypes.update(lookup.get('bettingTypes', {}))
+                merged_sports.update(lookup.get('sports', {}))
 
-                # Log all sports available in this response's lookup
-                for sid, sinfo in sports_lookup.items():
-                    abrv = sinfo.get('abrv', '')
+            for sid, sinfo in merged_sports.items():
+                abrv = sinfo.get('abrv', '')
                     if abrv:
                         all_sport_abrvs.add(abrv)
 
-                # Parse items format (full listing page)
+                # Parse items format (full listing page) — use merged lookups
                 for category in resp_data.get('items', []):
                     sport_id = category.get('sportId', '')
-                    sport_info = sports_lookup.get(sport_id) or sports_lookup.get(str(sport_id), {})
+                    sport_info = merged_sports.get(sport_id) or merged_sports.get(str(sport_id), {})
                     sport_abrv = sport_info.get('abrv', '')
                     canonical_sport = self.SPORT_ABRV_MAP.get(sport_abrv)
                     if not canonical_sport:
@@ -286,7 +291,7 @@ class TipwinRetriever(BrowserRetriever):
 
                     for tournament_group in category.get('items', []):
                         tid = tournament_group.get('tournamentId', '')
-                        tinfo = tournaments.get(tid) or tournaments.get(str(tid), {})
+                        tinfo = merged_tournaments.get(tid) or merged_tournaments.get(str(tid), {})
                         tname = tinfo.get('name', 'Unknown')
 
                         # Skip special/prop markets
@@ -295,7 +300,7 @@ class TipwinRetriever(BrowserRetriever):
 
                         for ev_data in tournament_group.get('events', []):
                             event = self._parse_full_event(
-                                ev_data, canonical_sport, tname, teams, btypes
+                                ev_data, canonical_sport, tname, merged_teams, merged_btypes
                             )
                             if event:
                                 key = f"{event.home_team}:{event.away_team}:{event.start_time}"
@@ -305,7 +310,7 @@ class TipwinRetriever(BrowserRetriever):
 
                 # Parse offer format (highlights page — from initial site load)
                 for ev_data in resp_data.get('offer', []):
-                    event = self._parse_offer_event(ev_data, teams, tournaments, btypes, sports_lookup)
+                    event = self._parse_offer_event(ev_data, merged_teams, merged_tournaments, merged_btypes, merged_sports)
                     if event:
                         key = f"{event.home_team}:{event.away_team}:{event.start_time}"
                         if key not in seen:
