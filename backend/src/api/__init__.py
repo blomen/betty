@@ -308,6 +308,39 @@ async def lifespan(app: FastAPI):
                     loop.close()
                 threading.Thread(target=_load_initial_data, daemon=True, name="startup-levels").start()
 
+                # Periodic session recompute — rebuild zones every 5 min as candle data accumulates
+                async def _periodic_recompute():
+                    await asyncio.sleep(300)  # wait 5 min for initial data to settle
+                    while True:
+                        try:
+                            svc = MarketService(_get_db_session())
+                            try:
+                                session_data = await svc.compute_session()
+                                expanded = await svc.build_expanded_session()
+                                if expanded and level_monitor:
+                                    level_monitor.load_levels(expanded)
+                                    if session_data and isinstance(session_data, dict):
+                                        rl_context = {
+                                            "volume_profile": session_data.get("volume_profile"),
+                                            "session_levels": session_data.get("session_levels"),
+                                            "session_context": session_data.get("session_context"),
+                                            "macro": session_data.get("macro"),
+                                            "swing_structure": expanded.get("swing_structure") if expanded else None,
+                                            "atr": session_data.get("atr", 40.0),
+                                        }
+                                        level_monitor.set_session_context(rl_context)
+                                    logger.debug("Periodic recompute: zones rebuilt")
+                            finally:
+                                svc.db.close()
+                        except Exception:
+                            logger.debug("Periodic recompute failed", exc_info=True)
+                        await asyncio.sleep(300)  # every 5 min
+
+                _recompute_task = asyncio.create_task(_periodic_recompute())
+                _recompute_task.set_name("periodic-recompute")
+                _background_tasks.add(_recompute_task)
+                _recompute_task.add_done_callback(_background_tasks.discard)
+
                 # Start news impact recorder (measures NQ price after economic events)
                 from ..ml.macro.news_impact_recorder import news_impact_loop
                 asyncio.create_task(news_impact_loop(_get_db_session, _databento_stream))

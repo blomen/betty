@@ -265,6 +265,9 @@ class LevelMonitor:
         self._zone_debounce &= still_in_zones
 
         for zone in newly_entered_zones:
+            logger.info("Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
+                        price, zone.center_price, zone.lower_bound, zone.upper_bound,
+                        zone.member_count)
             self._emit_zone_dqn_inference(zone, price)
 
         self._check_positions(price)
