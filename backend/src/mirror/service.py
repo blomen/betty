@@ -2216,10 +2216,19 @@ class MirrorService:
         elif original_outcome == "draw":
             target_names.append("draw")
 
+        # Deduplicate buttons by text (Polymarket renders same buttons in sidebar + main)
+        seen_texts = set()
+        deduped = []
+        for btn in matched_section:
+            t = (btn.get("text") or "").lower()
+            if t not in seen_texts:
+                seen_texts.add(t)
+                deduped.append(btn)
+
         # Try text-based matching — try each candidate name
-        if target_names and len(matched_section) >= 2:
+        if target_names and len(deduped) >= 2:
             for target in target_names:
-                matches = [btn for btn in matched_section if target in (btn.get("text") or "").lower()]
+                matches = [btn for btn in deduped if target in (btn.get("text") or "").lower()]
                 if len(matches) == 1:
                     return matches[0]  # Unique match — confident
 
