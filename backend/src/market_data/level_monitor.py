@@ -759,6 +759,21 @@ class LevelMonitor:
                     "timestamp": time.time(),
                 })
 
+                # Persist signal for post-session review
+                try:
+                    from src.rl.signal_log import log_signal
+                    approach = "up" if price < zone.center_price else "down"
+                    log_signal(
+                        price=price,
+                        zone_center=zone.center_price,
+                        zone_members=zone.member_count,
+                        zone_hierarchy=zone.hierarchy_score,
+                        inference_result=result,
+                        approach_direction=approach,
+                    )
+                except Exception:
+                    pass
+
             # Collect live episode for continuous training
             try:
                 from src.rl.live_collector import get_live_collector

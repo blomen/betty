@@ -272,3 +272,29 @@ def auto_reset_daily(svc: TradingService = Depends(_svc)):
 @router.post("/reset/weekly")
 def auto_reset_weekly(svc: TradingService = Depends(_svc)):
     return svc.auto_reset_weekly()
+
+
+@router.get("/signals")
+def get_signals(date: str = Query(None, description="Date YYYY-MM-DD, defaults to today")):
+    """Get all specialist signals for a given session date."""
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    if date is None:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    signals_dir = Path("data/rl/signals")
+    filepath = signals_dir / f"{date}.jsonl"
+
+    if not filepath.exists():
+        return {"date": date, "signals": [], "count": 0}
+
+    signals = []
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                signals.append(json.loads(line))
+
+    return {"date": date, "signals": signals, "count": len(signals)}
