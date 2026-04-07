@@ -442,20 +442,19 @@ async def navigate_to_bet(req: NavigateBetRequest):
     bet.point = req.point
     bet.odds = req.odds
     bet.fair_odds = req.fair_odds
-    # Cap stake to available balance
+    # Cap stake to available balance - $0.10 buffer
     actual_stake = req.stake
-    if req.provider_id == "polymarket":
-        try:
-            from ...repositories.profile_repo import ProfileRepo
-            from ..deps import get_db as _get_db
-            db = next(_get_db())
-            profile = ProfileRepo(db).get_active()
-            bal = ProfileRepo(db).get_balance(profile.id, "polymarket")
-            if bal > 0 and actual_stake > bal:
-                actual_stake = round(bal * 0.95, 2)  # Leave 5% buffer for fees
-            db.close()
-        except Exception:
-            pass
+    try:
+        from ...repositories.profile_repo import ProfileRepo
+        from ..deps import get_db as _get_db
+        db = next(_get_db())
+        profile = ProfileRepo(db).get_active()
+        bal = ProfileRepo(db).get_balance(profile.id, req.provider_id)
+        if bal > 0 and actual_stake > bal - 0.10:
+            actual_stake = round(max(0, bal - 0.10), 2)
+        db.close()
+    except Exception:
+        pass
     bet.stake = actual_stake
     bet.display_home = req.display_home
     bet.display_away = req.display_away

@@ -240,7 +240,7 @@ export function PlayPage() {
     const loggedIn = new Set([...providerStatus.entries()].filter(([_, s]) => s === 'logged_in').map(([p]) => p));
     const playable = new Set([...fundedProviders, ...loggedIn]);
 
-    const sorted = [...batch].sort((a, b) => b.edge_pct - a.edge_pct);
+    const sorted = [...batch].filter(b => b.edge_pct > 0).sort((a, b) => b.edge_pct - a.edge_pct);
     const top = sorted.find(b => !placedBets.has(betKey(b)) && playable.has(b.provider_id));
     if (top) {
       setExpandedProvider(top.provider_id);
@@ -384,7 +384,7 @@ export function PlayPage() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {bets.map(b => {
+                                  {bets.filter(b => b.edge_pct > 0 || (activeBet === betKey(b) && liveEdge != null && liveEdge > 0)).map(b => {
                                     const ttk = getTTKFromNow(b.start_time);
                                     return (
                                       <tr
