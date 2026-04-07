@@ -143,13 +143,13 @@ class TenBetRetriever(BrowserRetriever):
     # Football was 60 but timed out at 600s in 4/5 runs — reduced to 30
     # (top competitions discovered first, covers ~90% of Pinnacle matches).
     SPORT_COMPETITION_CAPS: Dict[str, int] = {
-        "football": 30,
-        "basketball": 35,
-        "ice_hockey": 30,
-        "tennis": 25,
-        "handball": 25,
-        "mma": 10,
-        "esports": 10,
+        "football": 60,     # No provider timeout — extract all valuable competitions
+        "basketball": 50,
+        "ice_hockey": 40,
+        "tennis": 35,
+        "handball": 30,
+        "mma": 15,
+        "esports": 15,
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -885,7 +885,7 @@ class TenBetRetriever(BrowserRetriever):
             return None
         return {"type": "total", "outcomes": outcomes}
 
-    MAX_DETAIL_EVENTS = 120  # Increased from 75 — point bug fix means initial DOM also gets spread/total
+    MAX_DETAIL_EVENTS = 300  # No provider timeout — enrich all events
 
     async def _enrich_events_with_details(
         self, events: List[StandardEvent], sport: str

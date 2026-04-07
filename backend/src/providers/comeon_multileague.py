@@ -298,12 +298,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
     # Sorted by eventCount (highest first) so we get the most valuable leagues.
     SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 30,     # Increased from 20 — API discovery is fast, more leagues = more events
-        "basketball": 20,
-        "ice_hockey": 20,
-        "tennis": 20,
+        "football": 60,     # No provider timeout — extract all valuable leagues
+        "basketball": 40,
+        "ice_hockey": 30,
+        "tennis": 30,
     }
-    DEFAULT_LEAGUE_CAP = 10
+    DEFAULT_LEAGUE_CAP = 15
 
     async def _discover_leagues_via_api(self, page, sport: str) -> list[dict]:
         """Discover leagues using the REST API instead of accordion expansion.

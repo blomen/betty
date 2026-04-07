@@ -235,10 +235,14 @@ class TipwinRetriever(BrowserRetriever):
             # Paginate via direct ?page=N URL navigation
             for pg in range(2, max_pages + 1):
                 try:
+                    prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    # Route handler captures response inline — just a brief yield
-                    await asyncio.sleep(0.3)
+                    # Wait for route handler to capture the API response (up to 3s)
+                    for _ in range(15):
+                        if len(api_responses) > prev_count:
+                            break
+                        await asyncio.sleep(0.2)
 
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
