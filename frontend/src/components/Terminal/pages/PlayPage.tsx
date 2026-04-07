@@ -285,11 +285,17 @@ export function PlayPage() {
         balance: balances[pid] ?? 0,
       });
     }
+    // Sort providers within cluster by balance desc
     for (const list of Object.values(groups)) list.sort((a, b) => b.balance - a.balance);
+    // Sort clusters: highest total balance first, then by pending count
     return Object.entries(groups).sort((a, b) => {
-      const evA = a[1].reduce((s, p) => s + p.totalEv, 0);
-      const evB = b[1].reduce((s, p) => s + p.totalEv, 0);
-      return evB - evA;
+      const balA = a[1].reduce((s, p) => s + p.balance, 0);
+      const balB = b[1].reduce((s, p) => s + p.balance, 0);
+      if (balA !== balB) return balB - balA;
+      // Same balance (0) — sort by pending count
+      const pendA = a[1].reduce((s, p) => s + (settleMap[p.provider] ?? 0), 0);
+      const pendB = b[1].reduce((s, p) => s + (settleMap[p.provider] ?? 0), 0);
+      return pendB - pendA;
     });
   }, [batch, balances]);
 
