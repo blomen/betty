@@ -409,7 +409,7 @@ export function PlayPage() {
                                     return (
                                       <tr
                                         key={betKey(b)}
-                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
+                                        className={`hover:bg-panel2/40 cursor-pointer ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
                                         onClick={() => handlePlayBet(b)}
                                       >
                                         <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>

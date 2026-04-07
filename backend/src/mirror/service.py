@@ -1311,6 +1311,18 @@ class MirrorService:
         # Pass page URL for event matching (Polymarket uses URL slug)
         bet_info["page_url"] = page_url or ""
 
+        # Try to get event name from page title if missing
+        if not bet_info.get("event_name") and page_url:
+            try:
+                for p in self.interceptor.context.pages:
+                    if page_url and page_url in (p.url or ""):
+                        title = await p.title()
+                        if title and len(title) > 5:
+                            bet_info["event_name"] = title.split("|")[0].strip()[:60]
+                        break
+            except Exception:
+                pass
+
         # Record bet to DB
         recorded = await asyncio.to_thread(self._record_intercepted_bet, provider_id, bet_info)
 
@@ -1808,7 +1820,8 @@ class MirrorService:
                 from sqlalchemy import text
                 # Extract slug from URL: polymarket.com/event/{slug} or /sports/.../slug
                 import re
-                slug_match = re.search(r'polymarket\.com/(?:event|sports/[^/]+)/([a-z0-9-]+)', page_url)
+                # Extract slug = last path segment with date pattern (e.g. lol-ff1-big1-2026-04-07)
+                slug_match = re.search(r'polymarket\.com/.+/([a-z0-9][\w-]+-\d{4}-\d{2}-\d{2})', page_url.lower())
                 if slug_match:
                     slug = slug_match.group(1)
                     row = db.execute(text(
