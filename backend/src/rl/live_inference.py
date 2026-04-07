@@ -374,16 +374,96 @@ class LiveInferenceV5:
         }
 
 
+class LiveInferenceSpecialists:
+    """Specialist ensemble inference — CONT and REV experts.
+
+    Preferred over single-model approaches. Each specialist answers
+    its own question independently, then the ensemble picks the
+    higher-EV action.
+    """
+
+    def __init__(self) -> None:
+        self._ensemble = None
+        self._normalizer: RunningNormalizer | None = None
+        self._loaded = False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def try_load(self) -> bool:
+        from .agent.specialists import SpecialistEnsemble
+
+        for search_dir in _MODEL_SEARCH_DIRS:
+            if not search_dir.exists():
+                continue
+            for name in ["specialists_latest.joblib", "specialists_v5.joblib"]:
+                path = search_dir / name
+                if path.exists():
+                    try:
+                        self._ensemble = SpecialistEnsemble.load(path)
+                        log.info("Specialists loaded from %s", path)
+
+                        # Load normalizer
+                        for ep_dir in [search_dir.parent / "episodes", search_dir / "episodes"]:
+                            norm_path = ep_dir / "normalizer.json"
+                            if norm_path.exists():
+                                self._normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+                                self._normalizer.load(norm_path)
+                                log.info("Normalizer loaded (count=%d)", self._normalizer.count)
+                                break
+
+                        self._loaded = True
+                        return True
+                    except Exception:
+                        log.exception("Failed to load specialists from %s", path)
+        return False
+
+    def infer(self, state: dict) -> dict | None:
+        """Run specialist inference at a zone touch."""
+        if self._ensemble is None:
+            return None
+
+        obs = build_observation(state)
+        if self._normalizer is not None:
+            obs = self._normalizer.normalize(obs)
+
+        decision = self._ensemble.decide(obs)
+
+        # Map action string to Action enum for compatibility
+        action_map = {"continuation": Action.CONTINUATION, "reversal": Action.REVERSAL, "skip": Action.SKIP}
+        action = action_map.get(decision["action"], Action.SKIP)
+
+        return {
+            "action": action.name,
+            "confidence": decision["confidence"],
+            "cont_p": decision["cont_p"],
+            "rev_p": decision["rev_p"],
+            "cont_ev": decision["cont_ev"],
+            "rev_ev": decision["rev_ev"],
+            "sizing_signal": decision["sizing_signal"],
+            "model_type": "specialists",
+        }
+
+
 # Keep backward-compatible alias
 DQNLiveInference = LiveInference
 
-_instance: LiveInference | None = None
+_instance = None
 
 
-def get_dqn_inference() -> LiveInference:
-    """Get the global inference singleton."""
+def get_dqn_inference():
+    """Get the global inference singleton. Prefers specialists > GBT > DQN."""
     global _instance
     if _instance is None:
+        # Try specialists first (best model)
+        spec = LiveInferenceSpecialists()
+        if spec.try_load():
+            _instance = spec
+            log.info("Using specialist ensemble for live inference")
+            return _instance
+
+        # Fallback to GBT/DQN
         _instance = LiveInference()
         _instance.try_load()
     return _instance

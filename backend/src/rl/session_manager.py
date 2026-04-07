@@ -124,6 +124,23 @@ class SessionManager:
         if not self._use_gbt:
             self._network.eval()
 
+        # Try to load specialist ensemble (preferred for CONT/REV decisions)
+        self._specialists = None
+        try:
+            from .agent.specialists import SpecialistEnsemble
+            from pathlib import Path
+            for search_dir in [Path("data/rl/models"), Path("backend/data/rl/models")]:
+                for name in ["specialists_latest.joblib", "specialists_v5.joblib"]:
+                    p = search_dir / name
+                    if p.exists():
+                        self._specialists = SpecialistEnsemble.load(p)
+                        log.info("SessionManager: loaded specialists from %s", p)
+                        break
+                if self._specialists:
+                    break
+        except Exception:
+            log.debug("Specialists not available, using %s", type(network).__name__)
+
         self.position = Position(side=PositionSide.FLAT, entry_price=0.0, stop_price=0.0)
         self.session = SessionState()
 
@@ -165,12 +182,28 @@ class SessionManager:
             if 0 < minutes_since_open < self.IB_NO_TRADE_MINUTES:
                 return self._signal("skip", current_price, reason="ib_formation")
 
-        # Run inference
+        # Run inference — prefer specialists if available
         obs = build_observation(state)
         if self._normalizer is not None:
             obs = self._normalizer.normalize(obs)
 
-        if self._use_gbt:
+        # Try specialist ensemble first
+        _specialists = getattr(self, '_specialists', None)
+        if _specialists is not None:
+            decision = _specialists.decide(obs)
+            if decision["action"] == "continuation":
+                q_cont, q_rev = decision["cont_ev"], decision["rev_ev"]
+                q_spread = decision["confidence"]
+                stop_ticks = 15.0  # default, specialists don't have stop head
+            elif decision["action"] == "reversal":
+                q_cont, q_rev = decision["cont_ev"], decision["rev_ev"]
+                q_spread = decision["confidence"]
+                stop_ticks = 15.0
+            else:
+                q_cont, q_rev = 0.0, 0.0
+                q_spread = 0.0
+                stop_ticks = 10.0
+        elif self._use_gbt:
             action_idx, confidence, prob_cont, prob_rev = self._network.predict_direction(obs)
             stop_ticks = self._network.predict_stop(obs)
             q_cont, q_rev = prob_cont, prob_rev
