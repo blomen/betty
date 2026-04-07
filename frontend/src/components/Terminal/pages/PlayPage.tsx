@@ -248,13 +248,12 @@ export function PlayPage() {
     // Debounce: don't re-trigger within 3s
     if (Date.now() - lastAutoNav.current < 3000) return;
     lastAutoNav.current = Date.now();
-    // Only auto-navigate to providers we're logged into or have balance
-    const fundedProviders = new Set(Object.entries(balances).filter(([_, b]) => b >= 10).map(([p]) => p));
+    // Only auto-navigate to providers confirmed logged in via SSE
     const loggedIn = new Set([...providerStatus.entries()].filter(([_, s]) => s === 'logged_in').map(([p]) => p));
-    const playable = new Set([...fundedProviders, ...loggedIn]);
+    if (loggedIn.size === 0) return; // Wait until at least one provider is logged in
 
     const sorted = [...batch].filter(b => b.edge_pct > 0).sort((a, b) => b.edge_pct - a.edge_pct);
-    const top = sorted.find(b => !placedBets.has(betKey(b)) && playable.has(b.provider_id));
+    const top = sorted.find(b => !placedBets.has(betKey(b)) && loggedIn.has(b.provider_id));
     if (top) {
       setExpandedProvider(top.provider_id);
       const providerBets = batch.filter(b => b.provider_id === top.provider_id);
@@ -397,7 +396,13 @@ export function PlayPage() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {bets.filter(b => b.edge_pct > 0).map(b => {
+                                  {bets.filter(b => {
+                                    // Hide if DB edge is negative
+                                    if (b.edge_pct <= 0) return false;
+                                    // Hide if this is the active bet and live edge is negative
+                                    if (activeBet === betKey(b) && liveEdge != null && liveEdge <= 0) return false;
+                                    return true;
+                                  }).map(b => {
                                     const ttk = getTTKFromNow(b.start_time);
                                     return (
                                       <tr
