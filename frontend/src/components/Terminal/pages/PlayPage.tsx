@@ -391,7 +391,7 @@ export function PlayPage() {
                                         <td className="text-right text-sm text-text">{fmt(b.stake, tier)}</td>
                                         <td className="text-right text-sm"><span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span></td>
                                         <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>{formatOddsAge(b.odds_age_minutes)}</td>
-                                        <td className="text-right"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(betKey(b)); }} className="text-muted hover:text-error text-xs">✕</button></td>
+                                        <td className="text-right pr-2"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(betKey(b)); }} className="text-muted hover:text-error text-sm px-1">✕</button></td>
                                       </tr>
                                     );
                                   })}
