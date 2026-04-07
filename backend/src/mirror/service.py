@@ -2685,10 +2685,10 @@ class MirrorService:
                 "  }"
                 "  return null;"
                 "}",
-                int(amount),
+                round(amount, 2),
             )
             if filled:
-                logger.info(f"[mirror] Filled amount ${int(amount)} via {filled}")
+                logger.info(f"[mirror] Filled amount ${round(amount, 2)} via {filled}")
                 await asyncio.sleep(0.5)
             else:
                 # Fallback: click quick-add buttons
