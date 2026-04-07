@@ -214,7 +214,7 @@ class BatchBuilder:
         candidates = self._collect_candidates(total_bankroll, profile)
 
         # Filter out blacklisted bets (persisted across sessions)
-        from ..db.models import BetBlacklist
+        from ..db.models import BetBlacklist, Bet
         blacklisted = {
             (bl.event_id, bl.provider_id)
             for bl in self.db.query(BetBlacklist).filter(
@@ -223,6 +223,31 @@ class BatchBuilder:
         }
         if blacklisted:
             candidates = [c for c in candidates if (c.event_id, c.provider_id) not in blacklisted]
+
+        # Filter out events that already have a pending bet (already placed)
+        placed_events = set()
+        for cluster_name, group_info in PLATFORM_GROUPS.items():
+            members = set(group_info["members"])
+            pending_bets = self.db.query(Bet.event_id).filter(
+                Bet.profile_id == profile_id,
+                Bet.result == "pending",
+                Bet.provider_id.in_(members),
+            ).all()
+            for (eid,) in pending_bets:
+                placed_events.add((eid, cluster_name))
+        # Also check standalone providers
+        standalone_pending = self.db.query(Bet.event_id, Bet.provider_id).filter(
+            Bet.profile_id == profile_id,
+            Bet.result == "pending",
+        ).all()
+        for eid, pid in standalone_pending:
+            placed_events.add((eid, _provider_to_cluster(pid)))
+        if placed_events:
+            before = len(candidates)
+            candidates = [c for c in candidates if (c.event_id, c.cluster) not in placed_events]
+            skipped = before - len(candidates)
+            if skipped:
+                logger.info(f"[batch] Skipped {skipped} already-placed events")
 
         # Filter out session-excluded bets (UI "remove" action, non-persisted)
         if exclude:

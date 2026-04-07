@@ -1264,6 +1264,9 @@ class MirrorService:
             self._store_trace_sync, provider_id, url, request_body, response_body, "bet_placed"
         )
 
+        # Pass page URL for event matching (Polymarket uses URL slug)
+        bet_info["page_url"] = page_url or ""
+
         # Record bet to DB
         recorded = await asyncio.to_thread(self._record_intercepted_bet, provider_id, bet_info)
 
@@ -1742,8 +1745,9 @@ class MirrorService:
         elif market.lower() in ("1x2",):
             market = "1x2"
 
-        # Find event_id by matchup_id (Pinnacle) or by event name
+        # Find event_id by matchup_id (Pinnacle), page URL slug (Polymarket), or event name
         event_id = None
+        page_url = bet_info.get("page_url", "")
         db = get_session()
         try:
             if matchup_id:
@@ -1754,6 +1758,22 @@ class MirrorService:
                 ), {"pid": provider_id, "mid": str(matchup_id)}).first()
                 if row:
                     event_id = row[0]
+
+            # Polymarket: match by event_slug from page URL
+            if not event_id and provider_id == "polymarket" and page_url:
+                from sqlalchemy import text
+                # Extract slug from URL: polymarket.com/event/{slug} or /sports/.../slug
+                import re
+                slug_match = re.search(r'polymarket\.com/(?:event|sports/[^/]+)/([a-z0-9-]+)', page_url)
+                if slug_match:
+                    slug = slug_match.group(1)
+                    row = db.execute(text(
+                        "SELECT event_id FROM odds WHERE provider_id = 'polymarket' "
+                        "AND provider_meta->>'event_slug' = :slug LIMIT 1"
+                    ), {"slug": slug}).first()
+                    if row:
+                        event_id = row[0]
+                        logger.info(f"[mirror] Polymarket event matched by slug: {slug} → {event_id}")
 
             if not event_id:
                 logger.warning(f"[mirror] Could not match bet to event: {bet_info}")
