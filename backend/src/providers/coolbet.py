@@ -262,10 +262,32 @@ class CoolbetRetriever(BrowserRetriever):
                 logger.info(f"[{self.provider_id}] Session established — Imperva bypassed")
                 self._session_ready = True
 
-            # Fetch ALL categories with pagination
-            category_data = await self._fetch_all_categories(
-                page, sport_conf['category_id']
-            )
+            # Strategy: discover leaf-level league IDs from fo-tree, then fetch each
+            # This bypasses the sport-level pagination cap (MAX_OFFSET=500)
+            league_ids = await self._discover_league_ids(page, sport_conf['category_id'])
+
+            if league_ids:
+                # Fetch categories for each league individually (no pagination needed)
+                category_data = []
+                seen_cat_ids = set()
+                tasks = [
+                    self._fetch_category_page(page, league_id)
+                    for league_id in league_ids
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for cats in results:
+                    if isinstance(cats, Exception) or not cats:
+                        continue
+                    for cat in cats:
+                        cid = cat.get("id")
+                        if cid not in seen_cat_ids:
+                            seen_cat_ids.add(cid)
+                            category_data.append(cat)
+            else:
+                # Fallback to sport-level pagination
+                category_data = await self._fetch_all_categories(
+                    page, sport_conf['category_id']
+                )
 
             if not category_data:
                 logger.warning(f"[{self.provider_id}] No category data for {sport}")
@@ -309,6 +331,47 @@ class CoolbetRetriever(BrowserRetriever):
             return []
 
     CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (restored from 4 — I/O-bound, Camoufox handles fine)
+
+    async def _discover_league_ids(self, page, sport_category_id: int) -> List[int]:
+        """Discover all leaf-level league IDs from the fo-tree endpoint.
+
+        The fo-tree returns a nested tree of sports → regions → leagues.
+        Each leaf node has a sport_category_id and matches_count.
+        Returns league IDs that have matches, for the given sport.
+        """
+        try:
+            tree_data = await asyncio.wait_for(page.evaluate("""
+                async (sportCatId) => {
+                    const resp = await fetch('/s/sbgate/category/fo-tree/sv?country=SE');
+                    const tree = await resp.json();
+                    const leagues = [];
+                    function walk(node) {
+                        if (node.sport_category_id === sportCatId && node.matches_count > 0 && (!node.children || node.children.length === 0)) {
+                            leagues.push({id: node.id, name: node.name, matches: node.matches_count});
+                        }
+                        for (const child of (node.children || [])) {
+                            walk(child);
+                        }
+                    }
+                    // Find the sport branch that uses this category ID
+                    for (const sport of (tree.children || [])) {
+                        walk(sport);
+                    }
+                    return leagues;
+                }
+            """, sport_category_id), timeout=15000)
+
+            if tree_data:
+                total_matches = sum(l.get('matches', 0) for l in tree_data)
+                logger.info(
+                    f"[{self.provider_id}] fo-tree: {len(tree_data)} leagues with "
+                    f"{total_matches} matches for category {sport_category_id}"
+                )
+            return [l['id'] for l in (tree_data or [])]
+
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] fo-tree discovery failed: {e}")
+            return []
 
     async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
         """Fetch all categories with pagination (API returns 10 per page).

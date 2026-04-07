@@ -1038,6 +1038,44 @@ async def page_eval(js: str = "() => document.body.innerText"):
     return {"url": page.url, "result": result}
 
 
+@router.get("/page-query")
+async def page_query(selector: str, action: str = "count"):
+    """Query elements via Playwright locator (pierces shadow DOM).
+
+    action: count | texts | click | snapshot
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    loc = page.locator(selector)
+
+    if action == "count":
+        n = await loc.count()
+        return {"selector": selector, "count": n}
+    elif action == "texts":
+        texts = await loc.all_text_contents()
+        return {"selector": selector, "count": len(texts), "texts": texts[:50]}
+    elif action == "click":
+        await loc.first.click()
+        return {"selector": selector, "clicked": True}
+    elif action == "snapshot":
+        n = await loc.count()
+        items = []
+        for i in range(min(n, 20)):
+            el = loc.nth(i)
+            text = (await el.text_content() or "").strip()[:60]
+            visible = await el.is_visible()
+            box = await el.bounding_box()
+            items.append({"text": text, "visible": visible, "box": box})
+        return {"selector": selector, "count": n, "items": items}
+    else:
+        raise HTTPException(400, f"Unknown action: {action}")
+
+
 @router.get("/notification-recipes")
 def get_notification_recipes():
     """List all stored notification mute recipes."""

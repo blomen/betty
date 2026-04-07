@@ -180,6 +180,32 @@ class MirrorService:
         except Exception as e:
             logger.warning(f"[mirror] Auto polymarket settle failed: {e}")
 
+    async def _auto_settle_via_history(self, provider_id: str):
+        """Generic settle-first: navigate provider's tab to bet history page.
+
+        Works for any provider with a workflow that implements sync_history().
+        The interceptor catches bet history API responses (widgetBetHistory,
+        coupon-history, etc.) and stages settlements automatically.
+        """
+        await asyncio.sleep(2)  # Wait for page to stabilize
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        try:
+            from .workflows import get_workflow
+            workflow = get_workflow(provider_id)
+            page = await workflow.find_tab(context)
+            if not page:
+                logger.debug(f"[mirror] No tab found for {provider_id} — skipping auto-settle")
+                return
+
+            logger.info(f"[mirror] Auto-settle: navigating {provider_id} to bet history")
+            await workflow.sync_history(page)
+        except Exception as e:
+            logger.warning(f"[mirror] Auto-settle failed for {provider_id}: {e}")
+
     async def _handle_page_navigated(self, provider_id: str, url: str):
         """Fires on every page navigation to a known provider.
 
@@ -1308,14 +1334,19 @@ class MirrorService:
             else:
                 await asyncio.to_thread(self._sync_balance, provider_id, balance)
                 # Login confirmed — fire sync_available (green)
+                first_login = provider_id not in self._logged_in_providers
                 self._logged_in_providers.add(provider_id)
-                logger.info(f"[mirror] {provider_id} logged in — balance: {balance}")
+                info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
+                logger.info(f"[mirror] {provider_id} logged in — balance: {balance}, pending: {info['pending_bets']}")
                 self._notify("sync_available", {
                     "provider": provider_id,
                     "balance": balance,
-                    "pending_bets": 0,
-                    "pending_stake": 0,
+                    "pending_bets": info["pending_bets"],
+                    "pending_stake": info["pending_stake"],
                 })
+                # Auto-navigate to bet history on first login if pending bets exist
+                if first_login and info["pending_bets"] > 0:
+                    asyncio.ensure_future(self._auto_settle_via_history(provider_id))
 
         # Polymarket: store deposit trace from Swapped widget
         if "swapped.com" in url and "create_order" in url:

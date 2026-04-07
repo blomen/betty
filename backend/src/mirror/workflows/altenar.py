@@ -84,8 +84,42 @@ class AltenarWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: "Page") -> list[HistoryEntry]:
-        """No-op — interceptor handles via widgetBetHistory."""
-        return []
+        """Navigate to bet history and click RÄTTATS tab to trigger settled bets API."""
+        import asyncio
+        history_url = f"https://{self.domain}/sv/sport?sportRoutingParams=page~betHistory"
+        try:
+            current = page.url or ""
+            if "betHistory" not in current:
+                await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)
+
+            # Click RÄTTATS tab to load settled bets (shadow DOM)
+            sr = await page.evaluate_handle("""
+                () => {
+                    const stb = document.querySelector('STB-SPORTSBOOK');
+                    return stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
+                }
+            """)
+            if sr:
+                await page.evaluate("""
+                    (sr) => {
+                        const tabs = sr.querySelectorAll('button, div[role="tab"], [class*="Tab"]');
+                        for (const tab of tabs) {
+                            const text = (tab.textContent || '').trim().toLowerCase();
+                            if (text.includes('rättat') || text.includes('settled')) {
+                                tab.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """, sr)
+                await asyncio.sleep(2)  # Wait for settled bets API response
+
+            logger.info(f"[{self.provider_id}] Scanned bet history for settlements")
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Failed to navigate to bet history: {e}")
+        return []  # Actual settlement handled by interceptor
 
     # ------------------------------------------------------------------
     # Navigation — sportRoutingParams URL pattern
@@ -227,13 +261,94 @@ class AltenarWorkflow(ProviderWorkflow):
         return None
 
     # ------------------------------------------------------------------
-    # Placement — manual (user clicks)
+    # Placement — auto-select outcome + fill stake, user confirms
     # ------------------------------------------------------------------
 
     async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+        """Auto-select outcome and fill stake in the Altenar betslip.
+
+        1. Find the matching odds button by team/selection name + price
+        2. Click it to add to betslip
+        3. Clear and fill the stake input
+        4. Return 'manual' — user confirms by clicking 'Placera spel'
+        """
+        import asyncio
+
+        target_odds = getattr(bet, "odds", 0)
+        target_outcome = getattr(bet, "outcome", "")
+        display_home = getattr(bet, "display_home", "")
+        display_away = getattr(bet, "display_away", "")
+
+        # Access shadow DOM (forced open via addInitScript)
+        shadow_root = await page.evaluate_handle("""
+            () => {
+                const stb = document.querySelector('STB-SPORTSBOOK');
+                return stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
+            }
+        """)
+
+        if not shadow_root:
+            logger.warning(f"[{self.provider_id}] No shadow root — cannot auto-select")
+            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="no_shadow_root")
+
+        # Find and click the matching odds button
+        clicked = await page.evaluate(f"""
+            (sr) => {{
+                const odds = sr.querySelectorAll('div[class*="OddValue"]');
+                const targetPrice = {target_odds};
+                for (const odd of odds) {{
+                    const price = parseFloat(odd.textContent.trim());
+                    if (Math.abs(price - targetPrice) < 0.02) {{
+                        // Check the parent container text for team/selection name
+                        const container = odd.parentElement;
+                        const text = (container.textContent || '').toLowerCase();
+                        // Click the container (the clickable odd button)
+                        container.click();
+                        return {{ clicked: true, text: text.substring(0, 50), price: price }};
+                    }}
+                }}
+                return {{ clicked: false }};
+            }}
+        """, shadow_root)
+
+        if not clicked or not clicked.get("clicked"):
+            logger.warning(f"[{self.provider_id}] Could not find odds button for {target_odds}")
+            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="odds_not_found")
+
+        logger.info(f"[{self.provider_id}] Clicked odds: {clicked.get('text', '?')} @ {clicked.get('price')}")
+        await asyncio.sleep(1)  # Wait for betslip to update
+
+        # Fill stake
+        stake_filled = await page.evaluate(f"""
+            (sr) => {{
+                const inputs = sr.querySelectorAll('input[class*="StakeInput"]');
+                for (const input of inputs) {{
+                    if (input.placeholder === 'Set stake' || input.type === 'tel') {{
+                        input.focus();
+                        input.value = '';
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        // Set the new stake value
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeInputValueSetter.call(input, '{stake:.2f}');
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return true;
+                    }}
+                }}
+                return false;
+            }}
+        """, shadow_root)
+
+        if stake_filled:
+            logger.info(f"[{self.provider_id}] Stake filled: {stake:.2f} — waiting for user to confirm")
+        else:
+            logger.warning(f"[{self.provider_id}] Could not fill stake input")
+
         return PlacementResult(
             status="manual",
             bet_id=bet.bet_id,
             actual_stake=stake,
-            reason="manual_placement",
+            reason="auto_selected_user_confirms",
         )

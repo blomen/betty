@@ -182,10 +182,11 @@ class TipwinRetriever(BrowserRetriever):
                 await self.transport._ensure_browser()
                 page = self.transport.page
 
+            import json as _json
             api_responses: List[Dict] = []
 
+            # Capture initial offer/data via HTTP response listener
             async def on_response(response):
-                """Capture offer/data API responses."""
                 if 'offer/data' not in response.url or response.status != 200:
                     return
                 try:
@@ -195,7 +196,40 @@ class TipwinRetriever(BrowserRetriever):
                 except Exception:
                     pass
 
+            # Capture pagination data via SignalR WebSocket
+            ws_responses: List[Dict] = []
+
+            def on_websocket(ws):
+                if 'signalr' not in ws.url:
+                    return
+                logger.debug(f"[{self.provider_id}] SignalR WebSocket opened")
+
+                def on_frame(event):
+                    payload = event.payload if hasattr(event, 'payload') else str(event)
+                    for msg in payload.split('\x1e'):
+                        if not msg:
+                            continue
+                        try:
+                            parsed = _json.loads(msg)
+                            # type 1 = Invocation (server pushing data to client)
+                            if parsed.get('type') == 1:
+                                target = parsed.get('target', '')
+                                args = parsed.get('arguments', [])
+                                for arg in args:
+                                    if isinstance(arg, dict) and (arg.get('items') or arg.get('offer')):
+                                        ws_responses.append(arg)
+                            # type 3 = Completion (response to client invocation)
+                            elif parsed.get('type') == 3:
+                                result = parsed.get('result')
+                                if isinstance(result, dict) and (result.get('items') or result.get('offer')):
+                                    ws_responses.append(result)
+                        except Exception:
+                            pass
+
+                ws.on('framereceived', on_frame)
+
             page.on("response", on_response)
+            page.on("websocket", on_websocket)
 
             # Navigate to full sports listing
             full_url = f"{self.site_url}/sv/sports/full/"
@@ -205,7 +239,7 @@ class TipwinRetriever(BrowserRetriever):
                 await self._handle_cookie_consent(page)
                 self._session_ready = True
 
-            # Wait for initial API response
+            # Wait for initial HTTP API response
             for _ in range(15):
                 if api_responses:
                     break
@@ -218,31 +252,25 @@ class TipwinRetriever(BrowserRetriever):
                     provider_id=self.provider_id,
                 )
 
-            # Calculate total pages
-            total_pages = 0
-            for resp in api_responses:
-                if 'items' in resp:
-                    total = resp.get('totalNumberOfItems', 0)
-                    ps = resp.get('pageSize', 5)
-                    if total and ps:
-                        total_pages = (total + ps - 1) // ps
-                        break
-            max_pages = min(total_pages or 30, 120)
+            # Now paginate — the SPA sends page data via SignalR WebSocket
+            total_items = api_responses[0].get('totalNumberOfItems', 0)
+            page_size = api_responses[0].get('pageSize', 5)
+            max_pages = min((total_items + page_size - 1) // page_size if total_items else 30, 120)
 
             logger.info(
                 f"[{self.provider_id}] Paginating {max_pages} pages "
-                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
+                f"({total_items} items, capturing via SignalR WebSocket)"
             )
 
-            # Paginate with 2s wait per page (SPA needs time to fire API call)
-            # Volume > speed: capture all pages even if slow
+            # Navigate through pages — SPA pushes data via WebSocket
             for pg in range(2, max_pages + 1):
                 try:
-                    prev_count = len(api_responses)
+                    prev_ws = len(ws_responses)
+                    prev_http = len(api_responses)
                     await page.goto(f"{full_url}?page={pg}", wait_until='domcontentloaded', timeout=10000)
-                    # Wait up to 3s for response (2s was reliable in manual testing)
+                    # Wait for either WS or HTTP response (up to 3s)
                     for _ in range(6):
-                        if len(api_responses) > prev_count:
+                        if len(ws_responses) > prev_ws or len(api_responses) > prev_http:
                             break
                         await asyncio.sleep(0.5)
                 except Exception as e:
@@ -251,9 +279,11 @@ class TipwinRetriever(BrowserRetriever):
 
             page.remove_listener("response", on_response)
 
+            # Merge HTTP + WebSocket responses
+            all_responses = api_responses + ws_responses
             logger.info(
-                f"[{self.provider_id}] Captured {len(api_responses)} API responses "
-                f"across {max_pages} pages"
+                f"[{self.provider_id}] Captured {len(api_responses)} HTTP + "
+                f"{len(ws_responses)} WebSocket = {len(all_responses)} total responses"
             )
 
             # Parse all responses into events grouped by sport
@@ -267,7 +297,7 @@ class TipwinRetriever(BrowserRetriever):
             merged_tournaments: Dict = {}
             merged_btypes: Dict = {}
             merged_sports: Dict = {}
-            for resp_data in api_responses:
+            for resp_data in all_responses:
                 lookup = resp_data.get('lookup', {})
                 merged_teams.update(lookup.get('teams', {}))
                 merged_tournaments.update(lookup.get('tournaments', {}))
@@ -279,7 +309,7 @@ class TipwinRetriever(BrowserRetriever):
                 if abrv:
                     all_sport_abrvs.add(abrv)
 
-            for resp_data in api_responses:
+            for resp_data in all_responses:
                 # Parse items format (full listing page) — use merged lookups
                 for category in resp_data.get('items', []):
                     sport_id = category.get('sportId', '')

@@ -171,6 +171,15 @@ class BetInterceptor:
 
         self.context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
 
+        # Force open shadow DOM on all pages (Altenar widget uses closed shadow)
+        await self.context.add_init_script("""
+            const _origAttachShadow = Element.prototype.attachShadow;
+            Element.prototype.attachShadow = function(opts) {
+                opts.mode = 'open';
+                return _origAttachShadow.call(this, opts);
+            };
+        """)
+
         # Start recording
         self.recorder.start()
 
