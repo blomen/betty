@@ -411,10 +411,11 @@ async def navigate_to_bet(req: NavigateBetRequest):
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
-    # Get provider-specific metadata from DB (event_slug for Poly, matchup_id for Pinnacle)
+    # Get provider-specific metadata from DB (event_slug for Poly, matchup_id for Pinnacle, event_id for Altenar)
     market_slug = None
     poly_outcome = None
     matchup_id = None
+    provider_meta = {}
     db = get_session()
     try:
         odds_row = db.query(Odds).filter(
@@ -424,11 +425,11 @@ async def navigate_to_bet(req: NavigateBetRequest):
             Odds.outcome == req.outcome,
         ).first()
         if odds_row and odds_row.provider_meta:
-            meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
-            market_slug = meta.get("event_slug", "")
-            matchup_id = meta.get("matchup_id", "")
+            provider_meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
+            market_slug = provider_meta.get("event_slug", "")
+            matchup_id = provider_meta.get("matchup_id", "")
             if req.provider_id == "polymarket":
-                poly_outcome = meta.get("poly_home") if req.outcome == "home" else meta.get("poly_away")
+                poly_outcome = provider_meta.get("poly_home") if req.outcome == "home" else provider_meta.get("poly_away")
     finally:
         db.close()
 
@@ -463,6 +464,7 @@ async def navigate_to_bet(req: NavigateBetRequest):
     bet.market_slug = market_slug
     bet.poly_outcome = poly_outcome or req.outcome
     bet.matchup_id = matchup_id
+    bet.altenar_event_id = provider_meta.get("event_id", "")
 
     # Navigate
     navigated = await workflow.navigate_to_event(page, bet)

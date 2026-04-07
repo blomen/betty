@@ -56,8 +56,23 @@ class AltenarWorkflow(ProviderWorkflow):
         return []
 
     async def navigate_to_event(self, page: "Page", bet) -> bool:
-        """User navigates manually."""
-        return True
+        """Navigate to event page via hash URL: {domain}/sv/odds#/event/{altenar_event_id}."""
+        altenar_event_id = getattr(bet, "altenar_event_id", None)
+        if not altenar_event_id:
+            logger.warning(f"[{self.provider_id}] No altenar_event_id for navigation")
+            return False
+
+        url = f"https://{self.domain}/sv/odds#/event/{altenar_event_id}"
+        try:
+            current = page.url or ""
+            if f"event/{altenar_event_id}" in current:
+                return True  # Already there
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            logger.info(f"[{self.provider_id}] Navigated to event {altenar_event_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Navigate failed: {e}")
+            return False
 
     async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
         """Manual placement — user places via provider UI."""
