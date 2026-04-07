@@ -902,27 +902,30 @@ class MirrorService:
             else:
                 continue
 
-            # Match against pending bets by market name
+            # Match against pending bets by market name — require high confidence
             best_match = None
             best_score = 0
             for pb in pending:
                 event_name = pb.get("event_name", "")
-                # Try multiple fuzzy strategies — Polymarket titles differ from our event names
-                # e.g. "Will Cheltenham Town FC win on 2026-04-06?" vs "Cheltenham Town vs Cambridge United"
                 s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
                 s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
-                # Also try matching just the home/away team names
+                # Match home team name
                 s3 = 0
-                home = pb.get("event_name", "").split(" vs ")[0].strip() if " vs " in pb.get("event_name", "") else ""
+                home = event_name.split(" vs ")[0].strip() if " vs " in event_name else ""
                 if home and len(home) > 3:
                     s3 = fuzz.partial_ratio(home.lower(), market.lower())
-                score = max(s1, s2, s3)
-                if score > best_score and score >= 55:
+                # Match away team name
+                s4 = 0
+                away = event_name.split(" vs ")[1].strip() if " vs " in event_name else ""
+                if away and len(away) > 3:
+                    s4 = fuzz.partial_ratio(away.lower(), market.lower())
+                score = max(s1, s2, s3, s4)
+                if score > best_score and score >= 75:
                     best_score = score
                     best_match = pb
 
             if not best_match:
-                logger.info(f"[mirror] No DB match for history entry: {market[:60]} (best score: {best_score})")
+                logger.debug(f"[mirror] No DB match for: {market[:60]} (best={best_score})")
                 continue
             logger.info(f"[mirror] Matched: {market[:40]} -> {best_match['event_name'][:40]} (score={best_score})")
 
