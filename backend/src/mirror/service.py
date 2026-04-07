@@ -137,9 +137,10 @@ class MirrorService:
                     "pending_bets": info["pending_bets"],
                     "pending_stake": info["pending_stake"],
                 })
-                # Auto-settle if pending bets exist
-                if info["pending_bets"] > 0:
-                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — auto-triggering settle scrape")
+                # Auto-settle once if pending bets exist (don't re-trigger)
+                if info["pending_bets"] > 0 and not getattr(self, '_poly_settle_triggered', False):
+                    self._poly_settle_triggered = True
+                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — auto-triggering settle scrape (once)")
                     asyncio.ensure_future(self._auto_settle_polymarket())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
@@ -147,8 +148,33 @@ class MirrorService:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
 
     async def _auto_settle_polymarket(self):
-        """Auto-navigate to portfolio history and scrape settlements."""
-        await asyncio.sleep(5)  # Wait for page to settle
+        """Auto-scrape portfolio history IF any pending bets have finished."""
+        from datetime import datetime, timezone
+        await asyncio.sleep(5)
+
+        # Check if any pending poly bets have passed start_time
+        pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
+        now = datetime.now(timezone.utc)
+        has_finished = False
+        for pb in pending:
+            st = pb.get("start_time")
+            if st:
+                from datetime import datetime as dt
+                try:
+                    if isinstance(st, str):
+                        st = dt.fromisoformat(st.replace("Z", "+00:00"))
+                    if st.tzinfo is None:
+                        st = st.replace(tzinfo=timezone.utc)
+                    if st < now:
+                        has_finished = True
+                        break
+                except Exception:
+                    pass
+
+        if not has_finished:
+            logger.info("[mirror] Polymarket: no finished pending bets — skipping settle scrape")
+            return
+
         try:
             await self.scrape_polymarket_settlements()
         except Exception as e:
@@ -729,6 +755,8 @@ class MirrorService:
         })
         # Reset provider detection so balance re-syncs on next page visit
         self.interceptor.reset_detected_providers()
+        # Allow auto-settle to re-trigger in future
+        self._poly_settle_triggered = False
 
         return {"settled": settled, "provider": provider_id, "settlements": summary}
 
@@ -1005,6 +1033,7 @@ class MirrorService:
                     "event_id": bet.event_id,
                     "outcome": bet.outcome,
                     "market": bet.market,
+                    "start_time": bet.start_time,
                 })
             return result
         finally:
