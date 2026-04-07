@@ -63,7 +63,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Tennis/handball/mma complete in <60s. Football/basketball often timeout at 360s.
     # Extracting fast sports first ensures we get data before provider timeout hits.
     SPORT_PRIORITY = [
-        'tennis', 'esports',
+        'mma', 'handball', 'tennis', 'esports',
         'ice_hockey', 'basketball', 'football',
     ]
 

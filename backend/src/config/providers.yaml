@@ -596,11 +596,12 @@ providers:
       - mma
       - esports
       - handball
+      - volleyball        # Retry: 16 Pinnacle events
+      - boxing            # Retry: 13 Pinnacle events
       - tennis
       - ice_hockey
       - basketball
       - football
-      # Removed: american_football (0 events ever), baseball (0 events ever)
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -663,9 +664,8 @@ providers:
       - tennis
       - ice_hockey
       - esports
-      # Removed: american_football (0 events), baseball (1ev/0odds/11s), cricket (1ev/2odds/50s),
-      #          mma (30ev/0odds/80s), handball (20ev/0odds/13s), rugby (59ev/0odds/246s),
-      #          table_tennis (0 events) — total ~500s wasted per extraction
+      - mma              # Retry: 21 Pinnacle events, was 30ev/0odds months ago
+      - handball          # Retry: 19 Pinnacle events, was 20ev/0odds months ago
 
   hajper:
     id: hajper
@@ -793,7 +793,8 @@ providers:
       - handball
       - esports
       - mma
-      # Removed: tennis (0 events/10s), american_football (0 events), baseball (16ev/12ML/0spr/0tot/6s)
+      - tennis            # Retry: 133 Pinnacle events, was 0 months ago
+      - volleyball        # Retry: 16 Pinnacle events
     bonus:
       type: bonusdeposit
       amount: 1000
