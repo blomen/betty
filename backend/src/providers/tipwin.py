@@ -228,33 +228,53 @@ class TipwinRetriever(BrowserRetriever):
                 f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
             )
 
-            # Paginate — use wait_for_response() for guaranteed capture
-            page.remove_listener("response", on_response)  # Remove passive listener
+            # Extract API URL from the first captured response for direct fetching
+            page.remove_listener("response", on_response)
 
-            def is_offer_response(response):
-                return 'offer/data' in response.url and response.status == 200
-
-            for pg in range(2, max_pages + 1):
-                try:
-                    page_url = f"{full_url}?page={pg}"
-                    # Start waiting BEFORE navigation to catch the response
-                    resp_task = asyncio.create_task(
-                        page.wait_for_response(is_offer_response, timeout=5000)
-                    )
-                    await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    response = await resp_task
-                    data = await response.json()
-                    if isinstance(data, dict):
-                        has_items = 'items' in data and isinstance(data.get('items'), list)
-                        has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
-                        if has_items or has_offer:
-                            api_responses.append(data)
-                except asyncio.TimeoutError:
-                    logger.debug(f"[{self.provider_id}] Page {pg}: no API response (timeout)")
-                    continue  # Skip page, don't break — next page might work
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
+            # Extract the filter token from the first API URL
+            first_url = None
+            async def capture_url(response):
+                nonlocal first_url
+                if 'offer/data' in response.url and response.status == 200 and not first_url:
+                    first_url = response.url
+            page.on("response", capture_url)
+            await page.reload(wait_until='load', timeout=30000)
+            for _ in range(15):
+                if first_url:
                     break
+                await asyncio.sleep(1)
+            page.remove_listener("response", capture_url)
+
+            if first_url:
+                # Fetch all pages directly via JavaScript fetch() in browser context
+                logger.info(f"[{self.provider_id}] Direct API pagination via page.evaluate()")
+                base_api_url = first_url.split('?')[0]
+                filter_param = first_url.split('filter=')[1].split('&')[0] if 'filter=' in first_url else ''
+
+                js_results = await page.evaluate(f"""
+                    async () => {{
+                        const results = [];
+                        const baseUrl = "{base_api_url}";
+                        const filter = "{filter_param}";
+                        for (let pg = 2; pg <= {max_pages}; pg++) {{
+                            try {{
+                                const url = baseUrl + "?filter=" + filter + "&page=" + pg;
+                                const resp = await fetch(url, {{credentials: 'include'}});
+                                if (resp.status !== 200) continue;
+                                const data = await resp.json();
+                                if (data && (data.items || data.offer)) {{
+                                    results.push(data);
+                                }}
+                            }} catch(e) {{ continue; }}
+                        }}
+                        return results;
+                    }}
+                """)
+                if js_results:
+                    api_responses.extend(js_results)
+                    logger.info(f"[{self.provider_id}] JS fetch captured {len(js_results)} additional pages")
+            else:
+                logger.warning(f"[{self.provider_id}] Could not extract API URL for direct pagination")
 
             logger.info(
                 f"[{self.provider_id}] Captured {len(api_responses)} API responses "
