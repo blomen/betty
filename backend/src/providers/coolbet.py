@@ -32,9 +32,9 @@ from ..matching.normalizer import normalize_team_name, normalize_outcome
 
 logger = logging.getLogger(__name__)
 
-# Page size for category API (fixed server-side)
-CATEGORY_PAGE_SIZE = 10
-MAX_OFFSET = 500
+# Page size for category API (matches limit=500 in the URL)
+CATEGORY_PAGE_SIZE = 500
+MAX_OFFSET = 5000  # Allow deep pagination for large sports
 
 # Camoufox persistent profile directory (preserves cookies between runs)
 CAMOUFOX_PROFILE_DIR = None  # Will use temp dir; set for cookie persistence

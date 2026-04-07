@@ -228,22 +228,33 @@ class TipwinRetriever(BrowserRetriever):
                 f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
             )
 
-            # Paginate — response listener captures each page's API response
+            # Paginate — use wait_for_response() for guaranteed capture
+            page.remove_listener("response", on_response)  # Remove passive listener
+
+            def is_offer_response(response):
+                return 'offer/data' in response.url and response.status == 200
+
             for pg in range(2, max_pages + 1):
                 try:
-                    prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
+                    # Start waiting BEFORE navigation to catch the response
+                    resp_task = asyncio.create_task(
+                        page.wait_for_response(is_offer_response, timeout=5000)
+                    )
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    # Wait for response listener to capture (up to 3s)
-                    for _ in range(15):
-                        if len(api_responses) > prev_count:
-                            break
-                        await asyncio.sleep(0.2)
+                    response = await resp_task
+                    data = await response.json()
+                    if isinstance(data, dict):
+                        has_items = 'items' in data and isinstance(data.get('items'), list)
+                        has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
+                        if has_items or has_offer:
+                            api_responses.append(data)
+                except asyncio.TimeoutError:
+                    logger.debug(f"[{self.provider_id}] Page {pg}: no API response (timeout)")
+                    continue  # Skip page, don't break — next page might work
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
                     break
-
-            page.remove_listener("response", on_response)
 
             logger.info(
                 f"[{self.provider_id}] Captured {len(api_responses)} API responses "

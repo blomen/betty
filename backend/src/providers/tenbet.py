@@ -691,16 +691,16 @@ class TenBetRetriever(BrowserRetriever):
         }
 
     def _parse_prices(self, prices: List[str]) -> Optional[List[float]]:
-        """Parse price strings to floats, filtering invalid values."""
+        """Parse price strings to floats, skipping invalid values."""
         result = []
         for p in prices:
             try:
                 val = float(p.replace(',', '.').strip())
                 if val <= 1.0:
-                    return None  # Invalid odds
+                    continue  # Skip invalid odds instead of killing entire market
                 result.append(val)
             except (ValueError, AttributeError):
-                return None
+                continue  # Skip unparseable instead of killing entire market
         return result if result else None
 
     def _extract_point_value(self, info_texts: List[str]) -> Optional[float]:
