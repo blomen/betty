@@ -1428,14 +1428,26 @@ class MirrorService:
         if "bets/straight" in url_lower and "quote" not in url_lower:
             info["confirmation_id"] = str(body.get("id", ""))
             info["odds"] = body.get("price")
-            sels = body.get("selections", [])
-            if sels:
-                s = sels[0]
-                info["matchup_id"] = str(s.get("matchup_id", ""))
-                info["designation"] = s.get("designation", "")  # home/away
-                info["market"] = s.get("market_type", "")  # moneyline/spread/total
+            # matchup_id is in the REQUEST selections, not response
+            req_sels = req.get("selections", [])
+            if req_sels:
+                rs = req_sels[0]
+                info["matchup_id"] = str(rs.get("matchupId", rs.get("matchup_id", "")))
+                info["designation"] = rs.get("designation", "")
+                # Derive market from marketKey: s;0;m=moneyline, s;0;s=spread, s;0;ou=total
+                mk = rs.get("marketKey", "")
+                if mk.startswith("s;0;m"):
+                    info["market"] = "moneyline"
+                elif mk.startswith("s;0;s"):
+                    info["market"] = "spread"
+                elif mk.startswith("s;0;ou"):
+                    info["market"] = "total"
+            # Response selections may have extra info
+            resp_sels = body.get("selections", [])
+            if resp_sels and not info.get("designation"):
+                info["designation"] = resp_sels[0].get("designation", "")
             # Stake from request
-            info["stake"] = req.get("riskAmount") or req.get("stake")
+            info["stake"] = req.get("stake") or req.get("riskAmount")
             return info
 
         # --- Polymarket (clob.polymarket.com/order) ---
