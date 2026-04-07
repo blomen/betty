@@ -228,6 +228,21 @@ export function PlayPage() {
   const summary = batchData?.summary;
   const balances: Record<string, number> = (batchData as any)?.provider_balances ?? {};
 
+  // Auto-navigate to top edge bet when batch loads and no active bet
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoStarted.current || activeBet || !batch.length || batchLoading) return;
+    const sorted = [...batch].sort((a, b) => b.edge_pct - a.edge_pct);
+    const top = sorted.find(b => !placedBets.has(betKey(b)));
+    if (top) {
+      autoStarted.current = true;
+      setExpandedProvider(top.provider_id);
+      const providerBets = batch.filter(b => b.provider_id === top.provider_id);
+      setActiveProviderBets(providerBets);
+      handlePlayBet(top);
+    }
+  }, [batch, activeBet, batchLoading, placedBets]);
+
   const clusterGroups = useMemo(() => {
     const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number; balance: number }[]> = {};
     const byProvider: Record<string, ClusterBet[]> = {};
