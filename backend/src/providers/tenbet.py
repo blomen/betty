@@ -470,7 +470,13 @@ class TenBetRetriever(BrowserRetriever):
                 });
             }""")
 
-            logger.debug(f"[{self.provider_id}] Scraped {len(scraped)} items from {comp_name}")
+            # Log scrape stats for debugging
+            part_counts = [len(item.get('participants', [])) for item in scraped]
+            valid_items = sum(1 for p in part_counts if p == 2)
+            logger.info(
+                f"[{self.provider_id}] {comp_name}: scraped {len(scraped)} DOM items "
+                f"({valid_items} with 2 participants, sizes: {sorted(set(part_counts))})"
+            )
 
             for item in scraped:
                 ev = self._parse_event(item, sport, comp_name, url, comp_id)
@@ -531,6 +537,10 @@ class TenBetRetriever(BrowserRetriever):
             all_markets.append(parsed_market)
 
         if not all_markets:
+            logger.debug(
+                f"[{self.provider_id}] Dropped {home_raw} vs {away_raw}: "
+                f"no valid markets from {len(item.get('markets', []))} raw markets"
+            )
             return None
 
         # Build event ID from href or participants
