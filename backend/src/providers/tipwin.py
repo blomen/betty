@@ -184,59 +184,76 @@ class TipwinRetriever(BrowserRetriever):
 
             api_responses: List[Dict] = []
 
-            # Handle cookie consent on first visit
+            async def on_response(response):
+                """Capture offer/data API responses."""
+                if 'offer/data' not in response.url or response.status != 200:
+                    return
+                try:
+                    data = await response.json()
+                    if isinstance(data, dict) and (data.get('items') or data.get('offer')):
+                        api_responses.append(data)
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            # Navigate to full sports listing
+            full_url = f"{self.site_url}/sv/sports/full/"
+            await page.goto(full_url, wait_until='load', timeout=30000)
+
             if not self._session_ready:
-                await page.goto(f"{self.site_url}/sv/sports/full/", wait_until='load', timeout=30000)
                 await self._handle_cookie_consent(page)
                 self._session_ready = True
 
-            # Get supported sports from config
-            from ..config.loader import ConfigLoader
-            config = ConfigLoader.get_instance()
-            provider_cfg = config.get_provider(self.provider_id)
-            supported = getattr(provider_cfg, 'supported_sports', None) or list(self.SPORT_SLUGS.keys())
+            # Wait for initial API response
+            for _ in range(15):
+                if api_responses:
+                    break
+                await asyncio.sleep(1)
 
-            # Navigate to each sport page and capture the offer/data response
-            for sport in supported:
-                slug = self.SPORT_SLUGS.get(sport)
-                if not slug:
-                    continue
+            if not api_responses:
+                page.remove_listener("response", on_response)
+                raise RetryableError(
+                    "No API responses captured after page load",
+                    provider_id=self.provider_id,
+                )
 
-                sport_url = f"{self.site_url}/sv/sports/{slug}/full/"
-                captured = []
+            # Calculate total pages
+            total_pages = 0
+            for resp in api_responses:
+                if 'items' in resp:
+                    total = resp.get('totalNumberOfItems', 0)
+                    ps = resp.get('pageSize', 5)
+                    if total and ps:
+                        total_pages = (total + ps - 1) // ps
+                        break
+            max_pages = min(total_pages or 30, 120)
 
-                async def on_sport_response(response):
-                    if 'offer/data' in response.url and response.status == 200:
-                        try:
-                            data = await response.json()
-                            if isinstance(data, dict) and (data.get('items') or data.get('offer')):
-                                captured.append(data)
-                        except Exception:
-                            pass
+            logger.info(
+                f"[{self.provider_id}] Paginating {max_pages} pages "
+                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
+            )
 
-                page.on("response", on_sport_response)
+            # Paginate with 2s wait per page (SPA needs time to fire API call)
+            # Volume > speed: capture all pages even if slow
+            for pg in range(2, max_pages + 1):
                 try:
-                    await page.goto(sport_url, wait_until='load', timeout=30000)
-                    # Wait for API response (up to 10s)
-                    for _ in range(20):
-                        if captured:
+                    prev_count = len(api_responses)
+                    await page.goto(f"{full_url}?page={pg}", wait_until='domcontentloaded', timeout=10000)
+                    # Wait up to 3s for response (2s was reliable in manual testing)
+                    for _ in range(6):
+                        if len(api_responses) > prev_count:
                             break
                         await asyncio.sleep(0.5)
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] {sport} page load error: {e}")
-                finally:
-                    page.remove_listener("response", on_sport_response)
+                    logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
+                    continue
 
-                if captured:
-                    api_responses.extend(captured)
-                    items = sum(len(r.get('items', [])) for r in captured)
-                    logger.info(f"[{self.provider_id}] {sport}: {items} items captured")
-                else:
-                    logger.debug(f"[{self.provider_id}] {sport}: no API response captured")
+            page.remove_listener("response", on_response)
 
             logger.info(
                 f"[{self.provider_id}] Captured {len(api_responses)} API responses "
-                f"across {len(supported)} sports"
+                f"across {max_pages} pages"
             )
 
             # Parse all responses into events grouped by sport
