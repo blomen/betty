@@ -316,6 +316,8 @@ class LevelMonitor:
         if "atr" in ctx:
             self._session_atr = ctx["atr"]
         logger.info("LevelMonitor session context updated (%d keys)", len(ctx))
+        # Rebuild zones with correct ATR (startup used default ATR=40.0)
+        self._rebuild_zones()
 
     def set_tick_buffer(self, tick_buffer) -> None:
         """Provide access to the stream's TickBuffer for orderflow computation."""
