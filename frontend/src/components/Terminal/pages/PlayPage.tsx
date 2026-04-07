@@ -228,20 +228,22 @@ export function PlayPage() {
   const summary = batchData?.summary;
   const balances: Record<string, number> = (batchData as any)?.provider_balances ?? {};
 
-  // Auto-navigate to top edge bet when batch loads and no active bet
-  const autoStarted = useRef(false);
+  // Auto-navigate to top edge bet when no active bet
+  const lastAutoNav = useRef(0);
   useEffect(() => {
-    if (autoStarted.current || activeBet || !batch.length || batchLoading) return;
+    if (activeBet || navigating || !batch.length || batchLoading) return;
+    // Debounce: don't re-trigger within 3s
+    if (Date.now() - lastAutoNav.current < 3000) return;
+    lastAutoNav.current = Date.now();
     const sorted = [...batch].sort((a, b) => b.edge_pct - a.edge_pct);
     const top = sorted.find(b => !placedBets.has(betKey(b)));
     if (top) {
-      autoStarted.current = true;
       setExpandedProvider(top.provider_id);
       const providerBets = batch.filter(b => b.provider_id === top.provider_id);
       setActiveProviderBets(providerBets);
       handlePlayBet(top);
     }
-  }, [batch, activeBet, batchLoading, placedBets]);
+  }, [batch, activeBet, navigating, batchLoading, placedBets]);
 
   const clusterGroups = useMemo(() => {
     const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number; balance: number }[]> = {};
