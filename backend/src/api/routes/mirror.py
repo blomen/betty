@@ -527,6 +527,21 @@ async def get_live_price(
         return {"live_edge": None, "live_cents": None}
 
 
+@router.get("/debug-buttons")
+async def debug_buttons():
+    """Debug: read all trading buttons from the current Polymarket page."""
+    mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor.context:
+        return {"error": "no mirror"}
+    from ...mirror.workflows import get_workflow
+    wf = get_workflow("polymarket")
+    page = await wf.find_tab(mirror.interceptor.context)
+    if not page:
+        return {"error": "no poly page", "pages": [p.url[:60] for p in mirror.interceptor.context.pages]}
+    btns = await mirror._read_btn_prices(page)
+    return {"url": page.url[:80], "buttons": btns}
+
+
 @router.post("/settle/{provider_id}")
 async def settle_provider(provider_id: str):
     """Trigger settlement sync for a provider using its workflow API."""

@@ -413,7 +413,7 @@ export function PlayPage() {
                                         </td>
                                         <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
                                           {activeBet === betKey(b) && liveEdge != null
-                                            ? <span className={liveEdge > 0 ? 'text-success' : 'text-danger'}>{liveEdge > 0 ? '+' : ''}{liveEdge.toFixed(1)}% live</span>
+                                            ? <span className={liveEdge > 0 ? 'text-success' : 'text-danger'}>{liveEdge > 0 ? '+' : ''}{liveEdge.toFixed(1)}%</span>
                                             : `+${b.edge_pct.toFixed(1)}%`
                                           }
                                         </td>
