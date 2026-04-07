@@ -156,3 +156,52 @@ POST  api.fun.xyz/v1/fops                                            # tx execut
 POST  widget.swapped.com/api/v1/order/create_order                   # fiat deposit
 GET   polymarket.com/api/account/has-deposited?address={wallet}      # deposit status
 ```
+
+## Generic Wiring Workflow
+
+For every provider, follow this process. Try API first (from JSONL recordings), fall back to DOM.
+
+### Recording
+
+The mirror records two types of data to JSONL (`data/mirror_recordings/mirror/*.jsonl`):
+
+1. **HTTP traffic** — every API call with full request/response bodies
+2. **DOM events** — every click (tag, text, class, coords) and input (name, value)
+
+Both are in the same JSONL file, distinguished by `"type": "dom"` for DOM events.
+
+### Wiring Steps (per provider)
+
+When user visits a new provider site:
+
+**Step 1: Discover APIs from JSONL**
+```bash
+# Find all unique API endpoints for a provider domain
+grep "provider-domain.com" recordings.jsonl | jq -r '.url' | sort -u
+```
+
+**Step 2: Wire each capability (API first, DOM fallback)**
+
+| Capability | API approach | DOM fallback |
+|---|---|---|
+| **Login detection** | Intercept balance/auth API response | DOM scrape for username/balance text |
+| **Balance sync** | Intercept balance API (`/wallets`, `/balance`) | DOM scrape nav bar |
+| **Settle bets** | Intercept bet history API response | DOM scrape bet history page |
+| **Navigate to event** | Build URL from event slug/ID | Click through sport → league → event |
+| **Read live price** | API call from page context (`page.evaluate(fetch)`) | DOM scrape price buttons |
+| **Place bet** | API call with auth cookies from page context | DOM: click outcome → type stake → click confirm |
+| **Record bet** | Parse API response (odds, stake, confirmation) | Parse DOM confirmation toast |
+
+**Step 3: Test manually, then automate**
+1. User does it once manually → JSONL captures the full path (HTTP + DOM clicks)
+2. Wire the API/DOM approach into the workflow
+3. User confirms it works → mark provider as wired in this doc
+4. Enable auto-play when confident
+
+### File Locations
+
+- `backend/src/mirror/interceptor.py` — HTTP/WS/DOM listeners, bet patterns
+- `backend/src/mirror/service.py` — orchestration, settlement, recording
+- `backend/src/mirror/workflows/*.py` — per-platform implementations
+- `backend/src/mirror/recorder.py` — JSONL writer (HTTP + DOM events)
+- `backend/data/mirror_recordings/` — raw JSONL files per session
