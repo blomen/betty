@@ -344,9 +344,10 @@ class ReplayEngine:
                 # Append narrative features (18-dim) so the DQN sees
                 # breakout_score, ib_extension_ready, trend_conviction
                 # during training — not just at inference time.
+                import numpy as _np
                 from ..features.narrative_features import extract_narrative_features
                 narrative = extract_narrative_features(state)
-                observation = np.concatenate([base_obs, narrative])
+                observation = _np.concatenate([base_obs, narrative])
 
                 # Gather zone centers above and below for multi-level trailing reward
                 zone_centers_above = sorted([z.center_price for z in self._active_zones if z.center_price > price + TICK_SIZE])
