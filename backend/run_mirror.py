@@ -226,7 +226,6 @@ if __name__ == "__main__":
             main(open_browser=_first_start)
             break  # Clean exit (no Ctrl+C) — don't restart
         except KeyboardInterrupt:
-            _first_start = False
             print("\n[mirror] Restarting in 2s... (Ctrl+C again to exit)")
             try:
                 time.sleep(2)
