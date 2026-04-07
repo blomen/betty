@@ -1411,6 +1411,27 @@ class ProviderExtractionSetting(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class BetBlacklist(Base):
+    """Events blacklisted from the play batch for a profile.
+
+    When a user removes a bet, the event+provider+market+outcome is persisted
+    here so it doesn't reappear after re-extraction.
+    """
+    __tablename__ = "bet_blacklist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
+    event_id = Column(String, nullable=False)
+    provider_id = Column(String, nullable=False)
+    market = Column(String, nullable=True)
+    outcome = Column(String, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "event_id", "provider_id", "market", "outcome", name="uq_bet_blacklist"),
+    )
+
+
 # ============ Database Functions ============
 
 # Singleton engines with connection pooling

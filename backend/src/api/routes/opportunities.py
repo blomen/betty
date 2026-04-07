@@ -224,6 +224,43 @@ def build_batch(
 
 
 # ---------------------------------------------------------------------------
+# Bet blacklist
+# ---------------------------------------------------------------------------
+
+
+class BlacklistRequest(BaseModel):
+    event_id: str
+    provider_id: str
+    market: str | None = None
+    outcome: str | None = None
+
+
+@router.post("/play/blacklist")
+def blacklist_bet(body: BlacklistRequest, db: Session = Depends(get_db)):
+    """Permanently exclude an event/provider from the play batch."""
+    from ...db.models import BetBlacklist
+
+    profile = ProfileRepo(db).get_active()
+    existing = db.query(BetBlacklist).filter(
+        BetBlacklist.profile_id == profile.id,
+        BetBlacklist.event_id == body.event_id,
+        BetBlacklist.provider_id == body.provider_id,
+    ).first()
+    if existing:
+        return {"status": "already_blacklisted"}
+
+    db.add(BetBlacklist(
+        profile_id=profile.id,
+        event_id=body.event_id,
+        provider_id=body.provider_id,
+        market=body.market,
+        outcome=body.outcome,
+    ))
+    db.commit()
+    return {"status": "blacklisted", "event_id": body.event_id, "provider_id": body.provider_id}
+
+
+# ---------------------------------------------------------------------------
 # Settlement: pending bets, scan, confirm
 # ---------------------------------------------------------------------------
 

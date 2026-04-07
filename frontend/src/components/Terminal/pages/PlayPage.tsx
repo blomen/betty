@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, Fragment } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { ClusterBatchResult, ClusterBet, PendingBetsResponse } from '@/types';
 import { NetworkError, TimeoutError } from '@/services/api/client';
@@ -50,7 +50,6 @@ function outcomeLabel(b: ClusterBet): string {
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function PlayPage() {
-  const [excludedBets, setExcludedBets] = useState<string[]>([]);
 
   // Start mirror + open settle tabs
   const settleTabsOpened = useRef(false);
@@ -80,8 +79,8 @@ export function PlayPage() {
     isLoading: batchLoading,
     error: batchError,
   } = useQuery<ClusterBatchResult>({
-    queryKey: ['play-batch', excludedBets],
-    queryFn: () => api.getPlayBatch(excludedBets.length > 0 ? excludedBets : undefined),
+    queryKey: ['play-batch'],
+    queryFn: () => api.getPlayBatch(),
     staleTime: 5_000,
     refetchInterval: 10_000,
   });
@@ -116,9 +115,14 @@ export function PlayPage() {
     return () => es.close();
   }, []);
 
-  const handleRemoveBet = useCallback((key: string) => {
-    setExcludedBets(prev => [...prev, key]);
-  }, []);
+  const queryClient = useQueryClient();
+
+  const handleRemoveBet = useCallback(async (b: ClusterBet) => {
+    try {
+      await api.blacklistBet(b.event_id, b.provider_id, b.market, b.outcome);
+      queryClient.invalidateQueries({ queryKey: ['play-batch'] });
+    } catch { /* */ }
+  }, [queryClient]);
 
   // Active bet + placed tracking
   const [activeBet, setActiveBet] = useState<string | null>(null); // betKey
@@ -391,7 +395,7 @@ export function PlayPage() {
                                         <td className="text-right text-sm text-text">{fmt(b.stake, tier)}</td>
                                         <td className="text-right text-sm"><span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span></td>
                                         <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>{formatOddsAge(b.odds_age_minutes)}</td>
-                                        <td className="text-right pr-2"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(betKey(b)); }} className="text-muted hover:text-error text-sm px-1">✕</button></td>
+                                        <td className="text-right pr-2"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(b); }} className="text-muted hover:text-error text-sm px-1">✕</button></td>
                                       </tr>
                                     );
                                   })}

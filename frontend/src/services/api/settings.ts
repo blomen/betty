@@ -204,6 +204,14 @@ export const settingsApi = {
     return fetchJson(`/mirror/live-price/${provider_id}?${params}`);
   },
 
+  async blacklistBet(event_id: string, provider_id: string, market?: string, outcome?: string): Promise<{ status: string }> {
+    return fetchJson('/opportunities/play/blacklist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id, provider_id, market, outcome }),
+    });
+  },
+
   async scrapePolyPortfolio(): Promise<{ staged: number; settlements: any[] }> {
     return fetchJson('/mirror/scrape-poly-portfolio', { method: 'POST' }, 30_000);
   },

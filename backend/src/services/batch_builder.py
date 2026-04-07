@@ -213,8 +213,18 @@ class BatchBuilder:
         # -- Phase 1: balance-blind candidate collection -----------------------
         candidates = self._collect_candidates(total_bankroll, profile)
 
-        # Filter out excluded bets (UI "remove" action)
-        # Frontend sends cluster:event_id:market:outcome:point
+        # Filter out blacklisted bets (persisted across sessions)
+        from ..db.models import BetBlacklist
+        blacklisted = {
+            (bl.event_id, bl.provider_id)
+            for bl in self.db.query(BetBlacklist).filter(
+                BetBlacklist.profile_id == profile_id
+            ).all()
+        }
+        if blacklisted:
+            candidates = [c for c in candidates if (c.event_id, c.provider_id) not in blacklisted]
+
+        # Filter out session-excluded bets (UI "remove" action, non-persisted)
         if exclude:
             exclude_set = set(exclude)
             candidates = [
