@@ -235,8 +235,13 @@ export function PlayPage() {
     // Debounce: don't re-trigger within 3s
     if (Date.now() - lastAutoNav.current < 3000) return;
     lastAutoNav.current = Date.now();
+    // Only auto-navigate to providers we're logged into or have balance
+    const fundedProviders = new Set(Object.entries(balances).filter(([_, b]) => b >= 10).map(([p]) => p));
+    const loggedIn = new Set([...providerStatus.entries()].filter(([_, s]) => s === 'logged_in').map(([p]) => p));
+    const playable = new Set([...fundedProviders, ...loggedIn]);
+
     const sorted = [...batch].sort((a, b) => b.edge_pct - a.edge_pct);
-    const top = sorted.find(b => !placedBets.has(betKey(b)));
+    const top = sorted.find(b => !placedBets.has(betKey(b)) && playable.has(b.provider_id));
     if (top) {
       setExpandedProvider(top.provider_id);
       const providerBets = batch.filter(b => b.provider_id === top.provider_id);
