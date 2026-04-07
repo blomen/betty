@@ -138,6 +138,79 @@ class ReversalSpecialist(_Specialist):
         super().__init__("reversal")
 
 
+class StopSpecialist:
+    """Predicts optimal stop distance in ticks for a given setup.
+
+    Trained on MAE-derived optimal stops: the distance that maximizes
+    realized P&L — tight enough to limit losses, wide enough to not
+    get clipped by noise before the move develops.
+
+    Output: stop distance in ticks (6-40 range, continuous).
+    """
+
+    def __init__(self) -> None:
+        self.model = None
+        self.scaler: StandardScaler | None = None
+        self._alive_mask: np.ndarray | None = None
+
+    def train(
+        self,
+        X: np.ndarray,
+        stop_targets: np.ndarray,
+        n_estimators: int = 300,
+        max_depth: int = 5,
+        learning_rate: float = 0.05,
+    ) -> dict:
+        try:
+            from lightgbm import LGBMRegressor
+            _Reg = LGBMRegressor
+        except ImportError:
+            from sklearn.ensemble import GradientBoostingRegressor
+            _Reg = GradientBoostingRegressor
+
+        stds = X.std(axis=0)
+        self._alive_mask = stds > 1e-8
+        X_alive = X[:, self._alive_mask]
+
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X_alive)
+
+        self.model = _Reg(
+            n_estimators=n_estimators, max_depth=max_depth,
+            learning_rate=learning_rate, subsample=0.8,
+            n_jobs=2, verbose=-1,
+        )
+        self.model.fit(X_scaled, stop_targets)
+
+        preds = self.model.predict(X_scaled)
+        mae = np.abs(preds - stop_targets).mean()
+        return {
+            "name": "stop",
+            "samples": len(X),
+            "alive_features": int(self._alive_mask.sum()),
+            "mae_ticks": round(mae, 1),
+            "mean_pred": round(preds.mean(), 1),
+            "mean_actual": round(stop_targets.mean(), 1),
+        }
+
+    def predict(self, obs: np.ndarray) -> float:
+        """Predict optimal stop distance in ticks."""
+        if self.model is None or self._alive_mask is None:
+            return 15.0  # default
+        x = obs[self._alive_mask].reshape(1, -1)
+        x = self.scaler.transform(x)
+        pred = float(self.model.predict(x)[0])
+        return max(6.0, min(40.0, pred))  # clamp to valid range
+
+    def predict_batch(self, obs: np.ndarray) -> np.ndarray:
+        """Batch predict stop distances."""
+        if self.model is None or self._alive_mask is None:
+            return np.full(len(obs), 15.0, dtype=np.float32)
+        X = self.scaler.transform(obs[:, self._alive_mask])
+        preds = self.model.predict(X)
+        return np.clip(preds, 6.0, 40.0).astype(np.float32)
+
+
 class SpecialistEnsemble:
     """Combines CONT and REV specialists for trading decisions.
 
@@ -155,9 +228,11 @@ class SpecialistEnsemble:
         self,
         cont_specialist: ContinuationSpecialist,
         rev_specialist: ReversalSpecialist,
+        stop_specialist: StopSpecialist | None = None,
     ) -> None:
         self.cont = cont_specialist
         self.rev = rev_specialist
+        self.stop = stop_specialist
 
     def decide(self, obs: np.ndarray) -> dict:
         """Make a trading decision from a single observation.
@@ -194,6 +269,9 @@ class SpecialistEnsemble:
         winner_p = cont_p if action == "continuation" else rev_p
         sizing_signal = min(1.0, winner_p * spread) if action != "skip" else 0.0
 
+        # Dynamic stop placement
+        stop_ticks = self.stop.predict(obs) if self.stop is not None else 15.0
+
         return {
             "action": action,
             "cont_p": round(cont_p, 3),
@@ -202,6 +280,7 @@ class SpecialistEnsemble:
             "rev_ev": round(rev_ev, 3),
             "confidence": round(confidence, 3),
             "sizing_signal": round(sizing_signal, 3),
+            "stop_ticks": round(stop_ticks, 1),
         }
 
     def decide_batch(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -239,7 +318,7 @@ class SpecialistEnsemble:
         import joblib
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({
+        data = {
             "cont_classifier": self.cont.classifier,
             "cont_reward": self.cont.reward_model,
             "cont_scaler": self.cont.scaler,
@@ -249,7 +328,12 @@ class SpecialistEnsemble:
             "rev_scaler": self.rev.scaler,
             "rev_alive": self.rev._alive_mask,
             "version": "v5_specialists",
-        }, path)
+        }
+        if self.stop is not None:
+            data["stop_model"] = self.stop.model
+            data["stop_scaler"] = self.stop.scaler
+            data["stop_alive"] = self.stop._alive_mask
+        joblib.dump(data, path)
 
     @classmethod
     def load(cls, path: Path) -> SpecialistEnsemble:
@@ -265,4 +349,10 @@ class SpecialistEnsemble:
         rev.reward_model = data["rev_reward"]
         rev.scaler = data["rev_scaler"]
         rev._alive_mask = data["rev_alive"]
-        return cls(cont, rev)
+        stop = None
+        if "stop_model" in data:
+            stop = StopSpecialist()
+            stop.model = data["stop_model"]
+            stop.scaler = data["stop_scaler"]
+            stop._alive_mask = data["stop_alive"]
+        return cls(cont, rev, stop)

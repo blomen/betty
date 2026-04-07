@@ -1078,7 +1078,7 @@ def train_specialists(
     import numpy as np
 
     from src.rl.agent.specialists import (
-        ContinuationSpecialist, ReversalSpecialist, SpecialistEnsemble,
+        ContinuationSpecialist, ReversalSpecialist, StopSpecialist, SpecialistEnsemble,
     )
 
     episodes_dir = _EPISODES_DIR
@@ -1088,6 +1088,8 @@ def train_specialists(
     observations = np.load(episodes_dir / "observations.npy")
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    stop_path = episodes_dir / "stop_targets.npy"
+    stop_targets = np.load(stop_path) if stop_path.exists() else None
 
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
@@ -1101,6 +1103,8 @@ def train_specialists(
         observations = observations[idx]
         rewards_cont = rewards_cont[idx]
         rewards_rev = rewards_rev[idx]
+        if stop_targets is not None:
+            stop_targets = stop_targets[idx] if len(stop_targets) >= n else stop_targets
         n = MAX_SAMPLES
         typer.echo(f"Subsampled to {n:,}")
 
@@ -1130,8 +1134,20 @@ def train_specialists(
                                   n_estimators=trees, max_depth=depth, learning_rate=lr)
     typer.echo(f"  Results: {rev_metrics}")
 
+    # --- Stop Specialist ---
+    stop_spec = None
+    if stop_targets is not None and len(stop_targets) >= train_end:
+        typer.echo(f"\n=== Training Stop Specialist ===")
+        st_train = stop_targets[:train_end]
+        typer.echo(f"  Samples: {len(X_train):,}, mean_stop: {st_train.mean():.1f} ticks")
+
+        stop_spec = StopSpecialist()
+        stop_metrics = stop_spec.train(X_train, st_train,
+                                        n_estimators=trees, max_depth=depth, learning_rate=lr)
+        typer.echo(f"  Results: {stop_metrics}")
+
     # --- Ensemble Evaluation ---
-    ensemble = SpecialistEnsemble(cont_spec, rev_spec)
+    ensemble = SpecialistEnsemble(cont_spec, rev_spec, stop_spec)
 
     # Evaluate on test set
     val_start = int(n * 0.67)
