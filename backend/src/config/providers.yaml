@@ -70,8 +70,7 @@ orchestrator:
       shared_resource: browser
 
   # Timeouts (seconds) — tighter on bare metal (dedicated CPU, no contention)
-  # No provider_timeout — let providers run until all sports complete.
-  # Individual sport_timeout (per-sport) still acts as safety net.
+  provider_timeout: 3600             # 1 hour — generous but prevents zombie connections killing the proxy tunnel
   sport_timeout: 90                    # Per-sport timeout (dedicated threads = faster extraction)
 
   # Performance
