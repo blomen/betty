@@ -271,6 +271,8 @@ export function PlayPage() {
       byProvider[pid].push(b);
     }
     for (const [pid, bets] of Object.entries(byProvider)) {
+      // Sort bets within each provider by edge descending
+      bets.sort((a, b) => b.edge_pct - a.edge_pct);
       const cluster = bets[0]?.cluster ?? pid;
       if (!groups[cluster]) groups[cluster] = [];
       groups[cluster].push({
@@ -356,7 +358,7 @@ export function PlayPage() {
                           setExpandedProvider(provider);
                           setActiveProviderBets(bets);
                           // Auto-navigate to first unplaced bet
-                          const first = bets.find(b => !placedBets.has(betKey(b)));
+                          const first = bets.find(b => b.edge_pct > 0 && !placedBets.has(betKey(b)));
                           if (first) handlePlayBet(first);
                         }
                       };
