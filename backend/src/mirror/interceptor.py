@@ -179,10 +179,56 @@ class BetInterceptor:
             page.on("response", self._on_response)
             page.on("websocket", self._on_websocket)
             page.on("framenavigated", lambda frame: self._on_frame_navigated(frame))
+            # Inject DOM event recorder for clicks and inputs
+            page.on("load", lambda: _inject_dom_recorder(page))
+
+        async def _inject_dom_recorder(page):
+            """Inject JS that exposes click/input events via console.log for recording."""
+            try:
+                await page.evaluate("""() => {
+                    if (window.__firevRecorder) return;
+                    window.__firevRecorder = true;
+                    document.addEventListener('click', (e) => {
+                        const el = e.target;
+                        const tag = el.tagName?.toLowerCase() || '?';
+                        const text = (el.textContent || '').trim().slice(0, 60);
+                        const cls = (el.className || '').toString().slice(0, 60);
+                        const href = el.href || '';
+                        console.log(JSON.stringify({
+                            __firev: 'click', tag, text, cls, href: href.slice(0, 100),
+                            x: e.clientX, y: e.clientY, url: location.href.slice(0, 100)
+                        }));
+                    }, true);
+                    document.addEventListener('change', (e) => {
+                        const el = e.target;
+                        const tag = el.tagName?.toLowerCase() || '?';
+                        const name = el.name || el.id || '';
+                        const val = el.type === 'password' ? '***' : (el.value || '').slice(0, 30);
+                        console.log(JSON.stringify({
+                            __firev: 'input', tag, name, value: val, url: location.href.slice(0, 100)
+                        }));
+                    }, true);
+                }""")
+            except Exception:
+                pass  # Page may have navigated away
+
+        # Record console messages from injected DOM recorder
+        def _on_console(msg):
+            text = msg.text
+            if not text.startswith('{"__firev"'):
+                return
+            try:
+                import json as _json
+                data = _json.loads(text)
+                event_type = data.pop("__firev", "unknown")
+                self.recorder.record_dom_event(event_type, data)
+            except Exception:
+                pass
 
         for page in self.context.pages:
             _attach_page(page)
-        self.context.on("page", _attach_page)
+            page.on("console", _on_console)
+        self.context.on("page", lambda p: (_attach_page(p), p.on("console", _on_console)))
 
         self.status = "listening"
         self._started_at = datetime.now(timezone.utc)

@@ -123,3 +123,17 @@ class NetworkRecorder:
 
         except Exception as e:
             logger.debug(f"[recorder:{self.provider_id}] Error recording {url}: {e}")
+
+    def record_dom_event(self, event_type: str, data: dict) -> None:
+        """Record a DOM interaction (click, input, navigation) to the JSONL file."""
+        if not self._file:
+            return
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "type": "dom",
+            "event": event_type,
+            **data,
+        }
+        self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self._file.flush()
+        self._count += 1
