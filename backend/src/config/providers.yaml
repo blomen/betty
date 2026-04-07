@@ -14,10 +14,10 @@
 orchestrator:
   # Concurrency limits
   # Bare metal: no hypervisor tax, 8 dedicated threads, 64GB RAM
-  max_concurrent_providers: 6          # Reduced: SSH tunnel to Bahnhof can't handle 16 concurrent
+  max_concurrent_providers: 4          # Reduced: SSH tunnel saturates at higher concurrency
   # TODO: Increase back to 16 once Bahnhof port 1080 is open (direct gost, no SSH overhead)
   max_concurrent_sports_per_provider: 4 # 8 threads + fast CPU = handle parallel sport extraction
-  max_browser_instances: 3             # Reduced: SSH tunnel bottleneck. Restore to 6 with direct gost
+  max_browser_instances: 2             # Reduced: SSH tunnel bottleneck. Restore to 6 with direct gost
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -31,12 +31,12 @@ orchestrator:
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
-      max_concurrent: 3                # Bare metal: 3 concurrent gecko browsers
+      max_concurrent: 2                # Reduced: SSH tunnel bottleneck
       shared_resource: browser
 
     - name: spectate_browser
       retriever_types: [spectate]
-      max_concurrent: 3                # Bare metal: more concurrent spectate
+      max_concurrent: 2                # Reduced: SSH tunnel bottleneck
       shared_resource: browser
 
     - name: comeon_group

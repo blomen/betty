@@ -183,9 +183,13 @@ class TestEmptyState:
         """
         result = extract_narrative_features({})
         assert result.shape == (NARRATIVE_DIM,)
-        # session_phase defaults to -1 (minutes=0 → start of session), not a bug
+        # session_phase defaults to -1 (minutes=0 → start of session)
+        # breakout_score defaults to -1 (0/4 signals)
+        # ib_extension_ready defaults to -1 (no conditions)
         expected = np.zeros(NARRATIVE_DIM, dtype=np.float32)
         expected[7] = -1.0
+        expected[15] = -1.0
+        expected[16] = -1.0
         np.testing.assert_array_equal(result, expected), f"Unexpected values: {result}"
 
     def test_none_values_produce_zeros(self):
@@ -202,12 +206,15 @@ class TestEmptyState:
         }
         result = extract_narrative_features(state)
         assert result.shape == (NARRATIVE_DIM,)
-        # session_phase (index 7) is computed from minutes_since_rth=0 → -1.0, not 0
+        # session_phase (index 7) is computed from time-of-day → -1.0, not 0
+        # breakout_score (15) and ib_extension_ready (16) default to -1.0 (no signals)
         # everything else should be 0
         mask = np.ones(NARRATIVE_DIM, dtype=bool)
-        mask[7] = False  # session_phase depends on time-of-day, not on None data
+        mask[7] = False   # session_phase depends on time-of-day
+        mask[15] = False  # breakout_score: 0/4 signals → -1.0
+        mask[16] = False  # ib_extension_ready: no conditions met → -1.0
         assert np.all(result[mask] == 0.0), (
-            f"Expected zeros for all non-time signals: {result}"
+            f"Expected zeros for masked signals: {result}"
         )
 
     def test_price_only_state(self):

@@ -32,7 +32,7 @@ import numpy as np
 from ...market_data.levels import SessionLevels, VolumeProfile, VWAPBands, SwingStructure
 from ..config import TICK_SIZE
 
-NARRATIVE_DIM: int = 15
+NARRATIVE_DIM: int = 18
 
 NARRATIVE_NAMES: list[str] = [
     # Market Regime
@@ -53,6 +53,10 @@ NARRATIVE_NAMES: list[str] = [
     "price_vs_ib",
     "trend_alignment",
     "excess_nearby",
+    # Breakout Likelihood (distinguishes CONT vs REV scenarios)
+    "breakout_score",       # composite: trend_day × initiative × outside_value × post_ib
+    "ib_extension_ready",   # post-IB + price at IB edge + initiative flow
+    "trend_conviction",     # htf_trend × day_type × initiative alignment
 ]
 
 assert len(NARRATIVE_NAMES) == NARRATIVE_DIM, "NARRATIVE_NAMES length mismatch"
@@ -301,6 +305,58 @@ def extract_narrative_features(state: dict) -> np.ndarray:
             # 0 ticks = +1, 200+ ticks = -1
             proximity = float(np.clip(1.0 - min_dist_ticks / _DIST_NORM, 0.0, 1.0))
             out[14] = float(proximity * 2.0 - 1.0)
+
+    # -------------------------------------------------------------------------
+    # 15: breakout_score — composite signal for "this level will break"
+    # Combines: trend day + initiative aligned + price outside value + post-IB
+    # Each component is 0 or 1, final score = average → [0, 1] mapped to [-1, 1]
+    # -------------------------------------------------------------------------
+    bo_signals = 0.0
+    bo_count = 4.0
+    # Is it a trend day? (day_type > 0.3 on our -1 to 1 scale)
+    if out[3] > 0.3:
+        bo_signals += 1.0
+    # Is initiative aligned with price direction?
+    if abs(out[8]) > 0.3:  # initiative_direction has conviction
+        bo_signals += 1.0
+    # Is price outside value area? (either side)
+    if abs(out[10]) > 0.5:  # price_vs_value beyond VA edge
+        bo_signals += 1.0
+    # Are we post-IB? (session_phase > 0 means post-IB)
+    if out[7] > 0.0:
+        bo_signals += 1.0
+    out[15] = float(bo_signals / bo_count * 2.0 - 1.0)
+
+    # -------------------------------------------------------------------------
+    # 16: ib_extension_ready — specific signal for IB breakout
+    # Post-IB + price at IB edge + initiative flow in breakout direction
+    # -------------------------------------------------------------------------
+    ib_ext = 0.0
+    if out[7] > 0.0:  # post-IB
+        ib_ext += 0.33
+    if abs(out[12]) > 0.7:  # price near IB high or low
+        ib_ext += 0.33
+    if abs(out[8]) > 0.4:  # initiative flow
+        ib_ext += 0.34
+    out[16] = float(np.clip(ib_ext * 2.0 - 1.0, -1.0, 1.0))
+
+    # -------------------------------------------------------------------------
+    # 17: trend_conviction — do all narrative layers agree on direction?
+    # htf_trend × day_type × initiative — all same sign = strong conviction
+    # -------------------------------------------------------------------------
+    htf = out[1]       # htf_trend
+    dt = out[3]        # day_type
+    init = out[8]      # initiative_direction
+    if abs(htf) > 0.1 and abs(dt) > 0.1 and abs(init) > 0.1:
+        # All three have a direction — check if they agree
+        signs_agree = (htf > 0) == (dt > 0) == (init > 0)
+        magnitude = (abs(htf) + abs(dt) + abs(init)) / 3.0
+        if signs_agree:
+            # Strong conviction: direction × magnitude
+            direction = 1.0 if htf > 0 else -1.0
+            out[17] = float(np.clip(direction * magnitude, -1.0, 1.0))
+        else:
+            out[17] = 0.0  # conflicting signals = no conviction
 
     # Final safety: clip all to [-1, 1] and ensure finite
     np.clip(out, -1.0, 1.0, out=out)

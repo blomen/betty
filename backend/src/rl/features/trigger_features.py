@@ -62,9 +62,9 @@ TRIGGER_DIM: int = (
     + _APPROACH_DIM       #  1
     + TRIGGER_GBT_DIM     #  8
     + EXEC_PASSTHROUGH_DIM#  3
-)  # = 141
+)  # 144 (18 narrative + 8 setup + 10 passthrough + 20 micro + 21 orderflow + 15 candles + 4 zone + 5 conf + 31 comp + 1 approach + 8 gbt + 3 exec)
 
-assert TRIGGER_DIM == 141, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
+assert TRIGGER_DIM == 144, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
 
 # Ordered segment map — (name: dim) preserving layout order
 TRIGGER_SEGMENTS: dict[str, int] = {

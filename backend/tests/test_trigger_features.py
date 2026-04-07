@@ -77,8 +77,8 @@ class TestOutputShape:
         )
         assert obs.dtype == np.float32
 
-    def test_trigger_dim_is_141(self):
-        assert TRIGGER_DIM == 141
+    def test_trigger_dim_is_144(self):
+        assert TRIGGER_DIM == 144
 
     def test_no_nans_or_infs(self):
         obs = build_trigger_observation(
@@ -115,7 +115,7 @@ class TestSegmentSums:
         assert set(TRIGGER_SEGMENTS.keys()) == expected
 
     def test_segment_dims(self):
-        assert TRIGGER_SEGMENTS["narrative"] == NARRATIVE_DIM == 15
+        assert TRIGGER_SEGMENTS["narrative"] == NARRATIVE_DIM == 18
         assert TRIGGER_SEGMENTS["setup_probs"] == SETUP_PROB_DIM == 8
         assert TRIGGER_SEGMENTS["structural_passthrough"] == 10
         assert TRIGGER_SEGMENTS["micro"] == 20

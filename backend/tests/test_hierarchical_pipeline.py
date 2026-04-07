@@ -73,8 +73,8 @@ class TestFullPipelineDimensions:
         assert obs.shape == (NARRATIVE_DIM,), f"Expected ({NARRATIVE_DIM},), got {obs.shape}"
         assert obs.dtype == np.float32
 
-    def test_narrative_dim_is_15(self):
-        assert NARRATIVE_DIM == 15, f"NARRATIVE_DIM should be 15, got {NARRATIVE_DIM}"
+    def test_narrative_dim_is_18(self):
+        assert NARRATIVE_DIM == 18, f"NARRATIVE_DIM should be 18, got {NARRATIVE_DIM}"
 
     def test_passthrough_shape(self):
         # passthrough takes a 276-dim base observation
@@ -95,8 +95,8 @@ class TestFullPipelineDimensions:
         assert obs.shape == (TRIGGER_DIM,), f"Expected ({TRIGGER_DIM},), got {obs.shape}"
         assert obs.dtype == np.float32
 
-    def test_trigger_dim_is_141(self):
-        assert TRIGGER_DIM == 141, f"TRIGGER_DIM should be 141, got {TRIGGER_DIM}"
+    def test_trigger_dim_is_144(self):
+        assert TRIGGER_DIM == 144, f"TRIGGER_DIM should be 144, got {TRIGGER_DIM}"
 
     def test_all_outputs_finite_from_empty_state(self):
         state = _minimal_state()
@@ -306,9 +306,9 @@ class TestV5ExportsAvailable:
         from src.rl.features.observation import TRIGGER_OBSERVATION_DIM
         assert isinstance(TRIGGER_OBSERVATION_DIM, int)
 
-    def test_trigger_observation_dim_is_141(self):
-        assert TRIGGER_OBSERVATION_DIM == 141, (
-            f"TRIGGER_OBSERVATION_DIM should be 141, got {TRIGGER_OBSERVATION_DIM}"
+    def test_trigger_observation_dim_is_144(self):
+        assert TRIGGER_OBSERVATION_DIM == 144, (
+            f"TRIGGER_OBSERVATION_DIM should be 144, got {TRIGGER_OBSERVATION_DIM}"
         )
 
     def test_build_narrative_returns_correct_shape(self):
