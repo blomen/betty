@@ -1064,6 +1064,128 @@ def train(
 
 
 # ---------------------------------------------------------------------------
+# train-specialists
+# ---------------------------------------------------------------------------
+
+@rl_app.command("train-specialists")
+def train_specialists(
+    checkpoint: str = typer.Option("v5", help="Checkpoint name"),
+    trees: int = typer.Option(300, help="Trees per specialist"),
+    depth: int = typer.Option(5, help="Max depth"),
+    lr: float = typer.Option(0.05, help="Learning rate"),
+) -> None:
+    """Train CONT and REV specialist models for binary direction prediction."""
+    import numpy as np
+
+    from src.rl.agent.specialists import (
+        ContinuationSpecialist, ReversalSpecialist, SpecialistEnsemble,
+    )
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    observations = np.load(episodes_dir / "observations.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+
+    n = len(observations)
+    typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
+
+    # Subsample for memory safety
+    MAX_SAMPLES = 250_000
+    if n > MAX_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_SAMPLES, replace=False)
+        idx.sort()
+        observations = observations[idx]
+        rewards_cont = rewards_cont[idx]
+        rewards_rev = rewards_rev[idx]
+        n = MAX_SAMPLES
+        typer.echo(f"Subsampled to {n:,}")
+
+    # Chronological split
+    train_end = int(n * 0.67)
+    X_train = observations[:train_end]
+    rc_train = rewards_cont[:train_end]
+    rr_train = rewards_rev[:train_end]
+
+    # --- Continuation Specialist ---
+    typer.echo(f"\n=== Training Continuation Specialist ===")
+    cont_success = (rc_train > 0).astype(np.int32)
+    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {cont_success.mean()*100:.1f}%")
+
+    cont_spec = ContinuationSpecialist()
+    cont_metrics = cont_spec.train(X_train, cont_success, rc_train,
+                                    n_estimators=trees, max_depth=depth, learning_rate=lr)
+    typer.echo(f"  Results: {cont_metrics}")
+
+    # --- Reversal Specialist ---
+    typer.echo(f"\n=== Training Reversal Specialist ===")
+    rev_success = (rr_train > 0).astype(np.int32)
+    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {rev_success.mean()*100:.1f}%")
+
+    rev_spec = ReversalSpecialist()
+    rev_metrics = rev_spec.train(X_train, rev_success, rr_train,
+                                  n_estimators=trees, max_depth=depth, learning_rate=lr)
+    typer.echo(f"  Results: {rev_metrics}")
+
+    # --- Ensemble Evaluation ---
+    ensemble = SpecialistEnsemble(cont_spec, rev_spec)
+
+    # Evaluate on test set
+    val_start = int(n * 0.67)
+    val_end = int(n * 0.83)
+    X_val = observations[val_start:val_end]
+    rc_val = rewards_cont[val_start:val_end]
+    rr_val = rewards_rev[val_start:val_end]
+
+    actions, confidences, sizing = ensemble.decide_batch(X_val)
+    val_n = len(X_val)
+
+    typer.echo(f"\n=== Ensemble Validation ({val_n:,} episodes) ===")
+    from collections import Counter
+    ac = Counter(actions.tolist())
+    typer.echo(f"  CONT: {ac.get(0,0)} ({ac.get(0,0)/val_n*100:.1f}%)")
+    typer.echo(f"  REV:  {ac.get(1,0)} ({ac.get(1,0)/val_n*100:.1f}%)")
+    typer.echo(f"  SKIP: {ac.get(2,0)} ({ac.get(2,0)/val_n*100:.1f}%)")
+
+    # Performance
+    trade_mask = actions != 2
+    traded_r = np.where(actions[trade_mask] == 0, rc_val[trade_mask], rr_val[trade_mask])
+    if len(traded_r) > 0:
+        wins = (traded_r > 0).sum()
+        typer.echo(f"\n  Trades: {trade_mask.sum():,}")
+        typer.echo(f"  Win rate: {wins/len(traded_r)*100:.1f}%")
+        typer.echo(f"  Avg R: {traded_r.mean():.3f}")
+        typer.echo(f"  Total R: {traded_r.sum():.1f}")
+        pf = traded_r[traded_r > 0].sum() / abs(traded_r[traded_r < 0].sum()) if (traded_r < 0).any() else float('inf')
+        typer.echo(f"  Profit factor: {pf:.2f}")
+
+        # CONT vs REV breakdown
+        cont_mask = actions[trade_mask] == 0
+        rev_mask = actions[trade_mask] == 1
+        if cont_mask.sum() > 0:
+            cr = rc_val[trade_mask][cont_mask]
+            typer.echo(f"\n  CONT trades: n={cont_mask.sum()}, win={((cr>0).sum()/len(cr))*100:.1f}%, avg_R={cr.mean():.3f}")
+        if rev_mask.sum() > 0:
+            rr2 = rr_val[trade_mask][rev_mask]
+            typer.echo(f"  REV trades:  n={rev_mask.sum()}, win={((rr2>0).sum()/len(rr2))*100:.1f}%, avg_R={rr2.mean():.3f}")
+
+        # Direction accuracy
+        trade_idx = np.where(trade_mask)[0]
+        correct = sum(1 for i in trade_idx
+                      if (actions[i] == 0 and rc_val[i] >= rr_val[i])
+                      or (actions[i] == 1 and rr_val[i] > rc_val[i]))
+        typer.echo(f"\n  Direction accuracy: {correct}/{len(trade_idx)} ({correct/len(trade_idx)*100:.1f}%)")
+
+    # Save
+    path = models_dir / f"specialists_{checkpoint}.joblib"
+    ensemble.save(path)
+    typer.echo(f"\nSaved to {path}")
+
+
+# ---------------------------------------------------------------------------
 # train-gbt
 # ---------------------------------------------------------------------------
 
