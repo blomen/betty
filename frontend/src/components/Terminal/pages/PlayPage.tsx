@@ -139,31 +139,34 @@ export function PlayPage() {
     es.addEventListener('bet_mirrored', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
-        // Find which bet was placed by matching provider + odds + stake
-        if (activeBet && activeProviderBets.length > 0) {
-          const currentIdx = activeProviderBets.findIndex(b => betKey(b) === activeBet);
-          if (currentIdx >= 0) {
-            const current = activeProviderBets[currentIdx];
-            // Check if mirrored bet matches the active bet (odds within 5%, stake within 20%)
-            const oddsMatch = data.odds && Math.abs(data.odds - current.odds) / current.odds < 0.05;
-            const stakeMatch = data.stake && Math.abs(data.stake - current.stake) / current.stake < 0.2;
-            if (oddsMatch || stakeMatch || !data.odds) {
-              // Mark as placed
-              setPlacedBets(prev => new Set(prev).add(activeBet));
-              // Advance to next unplaced bet
-              for (let i = currentIdx + 1; i < activeProviderBets.length; i++) {
-                const next = activeProviderBets[i];
-                if (!placedBets.has(betKey(next))) {
-                  handlePlayBet(next);
-                  return;
-                }
-              }
-              // No more bets — clear active
-              setActiveBet(null);
-              setLiveEdge(null);
-            }
+        if (!activeBet || !activeProviderBets.length) return;
+        if (!data.provider || !data.matched) return; // Only act on confirmed matches
+
+        const currentIdx = activeProviderBets.findIndex(b => betKey(b) === activeBet);
+        if (currentIdx < 0) return;
+        const current = activeProviderBets[currentIdx];
+
+        // Must be same provider
+        if (data.provider !== current.provider_id) return;
+
+        // Must have odds AND stake that roughly match
+        if (!data.odds || !data.stake) return;
+        const oddsMatch = Math.abs(data.odds - current.odds) / current.odds < 0.10;
+        const stakeMatch = Math.abs(data.stake - current.stake) / current.stake < 0.30;
+        if (!oddsMatch && !stakeMatch) return;
+
+        // Mark as placed
+        setPlacedBets(prev => new Set(prev).add(activeBet));
+        // Advance to next unplaced bet
+        for (let i = currentIdx + 1; i < activeProviderBets.length; i++) {
+          const next = activeProviderBets[i];
+          if (!placedBets.has(betKey(next))) {
+            handlePlayBet(next);
+            return;
           }
         }
+        setActiveBet(null);
+        setLiveEdge(null);
       } catch { /* */ }
     });
     return () => es.close();
