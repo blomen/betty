@@ -844,10 +844,16 @@ extraction_scheduling:
   sharp:
     # Sharp reference (Pinnacle) — highest priority, freshest odds
     # Pinnacle finishes in 8-37s via direct gost. Run every 60s for near-realtime odds.
-    # Polymarket grouped — adds ~60s but doesn't block Pinnacle (runs in parallel).
-    providers: [pinnacle, polymarket]
+    # Polymarket split out — it takes 17-48s and would drag Pinnacle's refresh rate.
+    providers: [pinnacle]
     interval_minutes: 1
-    grouped: true
+    grouped: false
+
+  polymarket:
+    # Event matching only (not a sharp source). Doesn't need real-time refresh.
+    providers: [polymarket]
+    interval_minutes: 5
+    grouped: false
 
   api_soft:
     # Fast REST/WS/API-interception providers — all fire simultaneously
