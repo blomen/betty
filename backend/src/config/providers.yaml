@@ -69,7 +69,7 @@ orchestrator:
       shared_resource: browser
 
   # Timeouts — no provider_timeout, direct gost has no connection limit
-  sport_timeout: 90                    # Per-sport timeout (dedicated threads = faster extraction)
+  sport_timeout: 1800                  # 30 min safety net — let sports run to completion
 
   # Performance
   batch_commit_size: 100               # Events per DB commit

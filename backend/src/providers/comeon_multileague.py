@@ -489,15 +489,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         leagues_scraped = 0
 
         for league_info in filtered_leagues:
-            # Time-budget early exit: stop if we've used 85% of sport timeout
-            elapsed = time.time() - sport_start
-            if elapsed > sport_timeout * 0.85:
-                logger.warning(
-                    f"[{self.provider_id}] {sport_normalized}: time-budget exit at "
-                    f"{elapsed:.0f}s ({leagues_scraped}/{len(filtered_leagues)} leagues, "
-                    f"{len(all_events)} events)"
-                )
-                break
 
             try:
                 events = await scrape_league_page(

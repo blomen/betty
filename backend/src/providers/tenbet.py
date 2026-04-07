@@ -209,15 +209,6 @@ class TenBetRetriever(BrowserRetriever):
             if len(all_events) >= limit:
                 break
 
-            # Time-budget check: stop if we've used 70% of sport timeout
-            elapsed = _time.time() - extract_start
-            if elapsed > sport_timeout * 0.70:
-                logger.warning(
-                    f"[{self.provider_id}] {sport}: time-budget exit at {elapsed:.0f}s "
-                    f"({batch_start}/{len(competitions)} comps, {len(all_events)} events)"
-                )
-                break
-
             batch = competitions[batch_start:batch_start + batch_size]
             tasks = [process_competition(c) for c in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -233,9 +224,7 @@ class TenBetRetriever(BrowserRetriever):
         logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s")
 
         # Pass 2: Enrich events with detail page spread/total
-        # Skip if competition scraping already consumed most of the timeout
-        elapsed = _time.time() - extract_start
-        if all_events and sport in self.DETAIL_SPORTS and elapsed < sport_timeout * 0.80:
+        if all_events and sport in self.DETAIL_SPORTS:
             detail_count = await self._enrich_events_with_details(all_events, sport)
             logger.info(
                 f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} with spread/total"

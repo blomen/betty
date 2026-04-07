@@ -196,16 +196,9 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await league_page_pool.put(worker_page)
 
-        # Scrape leagues in batches with time-budget checks
+        # Scrape leagues in batches
         batch_size = 40
         for batch_start in range(0, len(leagues), batch_size):
-            elapsed = _time.time() - extract_start
-            if elapsed > sport_timeout * 0.85:
-                logger.warning(
-                    f"[{self.provider_id}] {sport}: time-budget exit at {elapsed:.0f}s "
-                    f"({batch_start}/{len(leagues)} leagues, {len(all_events)} events)"
-                )
-                break
 
             batch = leagues[batch_start:batch_start + batch_size]
             tasks = [extract_league_concurrent(lg) for lg in batch]
@@ -230,22 +223,15 @@ class InterwettenRetriever(BrowserRetriever):
         )
 
         # --- Pass 2: Event detail pages (spread + total) ---
-        elapsed = _time.time() - extract_start
         if all_events and event_hrefs and sport in self.DETAIL_SPORTS:
-            if elapsed < sport_timeout * 0.80:
-                detail_count = await self._enrich_with_detail_markets(
-                    page, all_events, event_hrefs, sport,
-                    extract_start=extract_start, sport_timeout=sport_timeout,
-                )
-                logger.info(
-                    f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} "
-                    f"events with spread/total"
-                )
-            else:
-                logger.warning(
-                    f"[{self.provider_id}] {sport}: skipping detail enrichment — "
-                    f"{elapsed:.0f}s already elapsed (budget: {sport_timeout}s)"
-                )
+            detail_count = await self._enrich_with_detail_markets(
+                page, all_events, event_hrefs, sport,
+                extract_start=extract_start, sport_timeout=None,
+            )
+            logger.info(
+                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} "
+                f"events with spread/total"
+            )
 
         total_elapsed = _time.time() - extract_start
         logger.info(
@@ -444,9 +430,9 @@ class InterwettenRetriever(BrowserRetriever):
             if errors > 20:
                 return
 
-            # Time-budget check: stop if approaching sport timeout
+            # Time-budget check: stop if approaching sport timeout (if set)
             import time as _time
-            if extract_start and _time.time() - extract_start > sport_timeout * 0.90:
+            if sport_timeout and extract_start and _time.time() - extract_start > sport_timeout * 0.90:
                 return
 
             worker_page = await page_pool.get()
