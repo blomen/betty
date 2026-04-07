@@ -25,7 +25,7 @@ Which data we can capture per provider when the mirror browser is active.
 |---|----------|----------|:---:|:---:|:---:|:---:|---|
 | 1 | campobet | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
 | 2 | quickcasino | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
-| 3 | betinia | Altenar | G | ~ | Y | Y | API intercept: widgetBetHistory |
+| 3 | betinia | Altenar | G | Y | Y | Y | API intercept: widgetBetHistory |
 | 4 | swiper | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |
 | 5 | lodur | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |
 | 6 | dbet | Altenar | G | ~ | ~ | Y | API intercept: widgetBetHistory |

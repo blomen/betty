@@ -542,7 +542,31 @@ class MirrorService:
         return status
 
     async def _handle_event_data(self, url: str, response_body: str):
-        """Cache event participant data from events-table API responses."""
+        """Cache event data from events-table or GetEventDetails responses."""
+        # Altenar GetEventDetails — forward to workflow for live price reading
+        if "GetEventDetails" in url:
+            try:
+                data = json.loads(response_body)
+                eid = str(data.get("id", ""))
+                if eid:
+                    from .workflows import get_workflow
+                    from .workflows.altenar import AltenarWorkflow
+                    provider_id = self._detect_provider_from_request(None) or self._detect_provider(url)
+                    # Find any Altenar workflow and cache the data
+                    for pid in (provider_id, *self._logged_in_providers):
+                        if pid:
+                            try:
+                                wf = get_workflow(pid)
+                                if isinstance(wf, AltenarWorkflow):
+                                    wf.cache_event_details(eid, data)
+                                    logger.debug(f"[mirror] Cached GetEventDetails for event {eid} ({pid})")
+                                    break
+                            except Exception:
+                                pass
+            except (json.JSONDecodeError, Exception) as e:
+                logger.debug(f"[mirror] Could not parse GetEventDetails: {e}")
+            return
+
         try:
             data = json.loads(response_body)
             events = data.get("data", {}).get("events", [])
@@ -675,10 +699,128 @@ class MirrorService:
                 "settlements": staged,
             })
 
+        # Record any untracked open bets (status 0) as pending
+        open_bets = [b for b in bets if b.get("status") == 0]
+        if open_bets and provider_id:
+            recorded = await asyncio.to_thread(self._record_open_bets_sync, open_bets, provider_id)
+            if recorded:
+                logger.info(f"[mirror] Recorded {recorded} untracked open bet(s) from {provider_id} history")
+
         # Also store trace for audit
         await asyncio.to_thread(
             self._store_trace_sync, provider_id, url, request_body, response_body, "history"
         )
+
+    def _record_open_bets_sync(self, open_bets: list[dict], provider_id: str) -> int:
+        """Record untracked open bets from history as pending in DB."""
+        from ..db.models import Odds
+        from ..services.bet_service import BetService
+        from ..repositories.profile_repo import ProfileRepo
+
+        db = get_session()
+        recorded = 0
+        try:
+            for hb in open_bets:
+                confirmation_id = str(hb.get("id", ""))
+                if not confirmation_id:
+                    continue
+
+                # Skip if already tracked
+                existing = db.query(Bet).filter(
+                    Bet.confirmation_id == confirmation_id,
+                    Bet.provider_id == provider_id,
+                ).first()
+                if existing:
+                    continue
+
+                stake = float(hb.get("totalStake", 0))
+                odds = float(hb.get("totalOdds", 0))
+                event_name = hb.get("eventName", "")
+                if not stake or not odds:
+                    continue
+
+                # Match by odds + future event + name similarity
+                from ..db.models import Event
+                from sqlalchemy import func
+                from datetime import datetime, timedelta
+
+                now = datetime.utcnow()
+                # Find odds matching this provider + odds value + future events only
+                candidates = db.query(Odds, Event).join(
+                    Event, Odds.event_id == Event.id
+                ).filter(
+                    Odds.provider_id == provider_id,
+                    func.abs(Odds.odds - odds) < 0.02,
+                    Event.start_time > now - timedelta(hours=6),
+                ).all()
+
+                if not candidates:
+                    logger.warning(f"[mirror] Could not match open bet to odds: {provider_id} {event_name} @ {odds}")
+                    continue
+
+                # Score by name similarity if event_name available
+                best_row = None
+                if event_name and len(candidates) > 1:
+                    from rapidfuzz import fuzz
+                    best_score = 0
+                    for odds_row, ev in candidates:
+                        db_name = f"{ev.home_team} vs {ev.away_team}"
+                        score = fuzz.token_set_ratio(event_name.lower(), db_name.lower())
+                        if score > best_score:
+                            best_score = score
+                            best_row = odds_row
+                    logger.debug(f"[mirror] Best name match: {best_score}% for {event_name}")
+                else:
+                    best_row = candidates[0][0]
+
+                if not best_row:
+                    continue
+
+                event_id = best_row.event_id
+                market = best_row.market
+                outcome = best_row.outcome
+
+                # Record via BetService
+                svc = BetService(db)
+                resp = svc.create_bet(
+                    event_id=event_id,
+                    provider_id=provider_id,
+                    market=market,
+                    outcome=outcome,
+                    odds=odds,
+                    stake=stake,
+                    bet_type="value",
+                )
+                if "error" in resp:
+                    logger.warning(f"[mirror] Open bet recording failed: {resp['error']}")
+                    continue
+
+                bet_id = resp.get("id")
+                if bet_id and confirmation_id:
+                    bet_obj = db.query(Bet).filter(Bet.id == bet_id).first()
+                    if bet_obj:
+                        bet_obj.confirmation_id = confirmation_id
+
+                db.commit()
+
+                # Deduct balance
+                repo = ProfileRepo(db)
+                profile = repo.get_active()
+                if profile:
+                    current = repo.get_balance(profile.id, provider_id)
+                    repo.set_balance(profile.id, provider_id, max(0, current - stake))
+                    db.commit()
+
+                recorded += 1
+                logger.info(
+                    f"[mirror] Recovered open bet from history: {provider_id} "
+                    f"{event_name} @ {odds} × {stake} (id={confirmation_id}) → {event_id}"
+                )
+        except Exception as e:
+            logger.error(f"[mirror] Error recording open bets: {e}", exc_info=True)
+        finally:
+            db.close()
+        return recorded
 
     def _stage_settlements_sync(self, history_bets: list[dict], provider_id: str) -> list[dict]:
         """Match bet history against pending bets — stage for confirmation, don't commit."""
@@ -1376,6 +1518,10 @@ class MirrorService:
 
         # --- Altenar (placeWidget) ---
         if "placewidget" in url_lower:
+            # Skip error responses (stake adjustment) — only process successful placements
+            if "error" in body and "bets" not in body:
+                return info  # Empty — will be skipped by _record_intercepted_bet
+
             bets = body.get("bets", [])
             if bets:
                 b = bets[0]
@@ -1388,6 +1534,26 @@ class MirrorService:
                     info["event_name"] = s.get("eventName", "")
                     info["outcome"] = s.get("name", "")
                     info["market"] = s.get("marketName", "")
+                    if s.get("eventId"):
+                        info["altenar_event_id"] = str(s["eventId"])
+                    # Map Altenar marketTypeId to canonical market
+                    mt = s.get("marketTypeId", 0)
+                    _ALTENAR_MARKET_MAP = {
+                        1: "1x2", 186: "moneyline", 219: "moneyline", 251: "moneyline",
+                        406: "moneyline", 30001: "moneyline",
+                        18: "total", 189: "total", 225: "total", 238: "total",
+                        258: "total", 412: "total",
+                        16: "spread", 187: "spread", 223: "spread", 237: "spread",
+                        256: "spread", 410: "spread",
+                    }
+                    if mt in _ALTENAR_MARKET_MAP:
+                        info["market"] = _ALTENAR_MARKET_MAP[mt]
+                    # Map outcome via selectionTypeId: 1=home, 2=draw, 3=away, 12=over, 13=under
+                    st = s.get("selectionTypeId", 0)
+                    _ALTENAR_OUTCOME_MAP = {1: "home", 2: "draw", 3: "away", 12: "over", 13: "under",
+                                            1714: "home", 1715: "away"}
+                    if st in _ALTENAR_OUTCOME_MAP:
+                        info["designation"] = _ALTENAR_OUTCOME_MAP[st]
             # Request has richer data
             markets = req.get("betMarkets", [])
             if markets and not info.get("event_name"):
@@ -1396,7 +1562,8 @@ class MirrorService:
                 odds_list = m.get("odds", [])
                 if odds_list:
                     info["outcome"] = odds_list[0].get("selectionName", "")
-                    info["market"] = odds_list[0].get("marketName", "")
+                    if not info.get("market"):
+                        info["market"] = odds_list[0].get("marketName", "")
             stakes = req.get("stakes", [])
             if stakes and not info.get("stake"):
                 info["stake"] = stakes[0]
@@ -1842,6 +2009,18 @@ class MirrorService:
                 if row:
                     event_id = row[0]
 
+            # Altenar: match by event_id in provider_meta
+            altenar_eid = bet_info.get("altenar_event_id")
+            if not event_id and altenar_eid:
+                from sqlalchemy import text
+                row = db.execute(text(
+                    "SELECT event_id FROM odds WHERE provider_id = :pid "
+                    "AND provider_meta->>'event_id' = :eid LIMIT 1"
+                ), {"pid": provider_id, "eid": str(altenar_eid)}).first()
+                if row:
+                    event_id = row[0]
+                    logger.info(f"[mirror] Altenar event matched by event_id: {altenar_eid} → {event_id}")
+
             # Polymarket: match by event_slug from page URL
             if not event_id and provider_id == "polymarket" and page_url:
                 from sqlalchemy import text
@@ -1858,6 +2037,31 @@ class MirrorService:
                     if row:
                         event_id = row[0]
                         logger.info(f"[mirror] Polymarket event matched by slug: {slug} → {event_id}")
+
+            # Fallback: match by event name (home vs away) against events table
+            event_name = bet_info.get("event_name", "")
+            if not event_id and event_name:
+                from ..matching.normalizer import normalize_team_name
+                import re
+                # Split "Home vs. Away" or "Home vs Away"
+                parts = re.split(r'\s+vs\.?\s+', event_name, maxsplit=1)
+                if len(parts) == 2:
+                    home_norm = normalize_team_name(parts[0].strip())
+                    away_norm = normalize_team_name(parts[1].strip())
+                    from ..db.models import Event
+                    from datetime import datetime, timedelta
+                    cutoff = datetime.utcnow() - timedelta(days=3)
+                    candidates = db.query(Event).filter(
+                        Event.start_time >= cutoff,
+                    ).all()
+                    for ev in candidates:
+                        ev_home = normalize_team_name(ev.home_team)
+                        ev_away = normalize_team_name(ev.away_team)
+                        if (ev_home == home_norm and ev_away == away_norm) or \
+                           (ev_home == away_norm and ev_away == home_norm):
+                            event_id = ev.id
+                            logger.info(f"[mirror] Event matched by name: '{event_name}' → {event_id}")
+                            break
 
             if not event_id:
                 logger.warning(f"[mirror] Could not match bet to event: {bet_info}")

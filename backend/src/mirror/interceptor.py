@@ -269,6 +269,14 @@ class BetInterceptor:
                 except Exception as e:
                     logger.debug(f"[mirror] Could not read events-table response: {e}")
 
+            # Cache Altenar GetEventDetails for live price reading
+            if self.on_event_data and "GetEventDetails" in url and method == "GET":
+                try:
+                    body_text = await response.text()
+                    await self.on_event_data(url, body_text)
+                except Exception as e:
+                    logger.debug(f"[mirror] Could not read GetEventDetails response: {e}")
+
             # Intercept bet history / settlement responses
             _is_bet_history = any(kw in url for kw in self._BET_HISTORY_KEYWORDS)
             # Gecko V2: GET to coupons endpoint = bet history (POST = placement)
