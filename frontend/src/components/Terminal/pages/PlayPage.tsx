@@ -199,6 +199,7 @@ export function PlayPage() {
           activeBetObj.provider_id, activeBetObj.event_id,
           activeBetObj.market, activeBetObj.outcome,
           activeBetObj.fair_odds, activeBetObj.point,
+          activeBetObj.display_home, activeBetObj.display_away,
         );
         if (res.live_edge != null) setLiveEdge(res.live_edge);
         if (res.live_cents != null) setLiveCents(res.live_cents);

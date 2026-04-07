@@ -470,7 +470,11 @@ async def navigate_to_bet(req: NavigateBetRequest):
 
 
 @router.get("/live-price/{provider_id}")
-async def get_live_price(provider_id: str, event_id: str, market: str, outcome: str, fair_odds: float, point: float | None = None):
+async def get_live_price(
+    provider_id: str, event_id: str, market: str, outcome: str,
+    fair_odds: float, point: float | None = None,
+    display_home: str = "", display_away: str = "",
+):
     """Read live price from the current mirror page DOM. No navigation."""
     mirror = _get_active_mirror()
     if not mirror:
@@ -480,11 +484,11 @@ async def get_live_price(provider_id: str, event_id: str, market: str, outcome: 
     workflow = get_workflow(provider_id)
     context = mirror.interceptor.context
     if not context:
-        return {"live_edge": None}
+        return {"live_edge": None, "live_cents": None}
 
     page = await workflow.find_tab(context)
     if not page:
-        return {"live_edge": None}
+        return {"live_edge": None, "live_cents": None}
 
     class BetProxy:
         pass
@@ -497,23 +501,22 @@ async def get_live_price(provider_id: str, event_id: str, market: str, outcome: 
     bet.point = point
     bet.odds = 0
     bet.fair_odds = fair_odds
-    bet.display_home = ""
-    bet.display_away = ""
+    bet.display_home = display_home
+    bet.display_away = display_away
 
     try:
         live_edge = await workflow.check_live_price(page, bet)
-        # Also read the raw price for display
+        # Read the matched button price for display
         live_cents = None
         if provider_id == "polymarket":
             try:
                 btn_data = await mirror._read_btn_prices(page)
-                if btn_data:
-                    for btn in btn_data:
-                        price = btn.get("price")
-                        if price and price > 0:
-                            # Find the one matching our outcome direction
-                            live_cents = round(price * 100, 1)
-                            break
+                matched = mirror._find_btn_for_market(
+                    btn_data, outcome, market,
+                    home_name=display_home, away_name=display_away,
+                )
+                if matched and matched.get("price") is not None:
+                    live_cents = round(matched["price"] * 100, 1)
             except Exception:
                 pass
         return {
