@@ -842,16 +842,16 @@ extraction_scheduling:
   # Dedicated hardware means: more concurrent browsers, shorter intervals, fresher odds.
 
   sharp:
-    # Sharp reference (Pinnacle) + event matching (Polymarket)
-    # Grouped: run together as one unit every 2 minutes
-    # Pinnacle ~55s + Polymarket ~60s = ~115s total, fits in 120s window
+    # Sharp reference (Pinnacle) — highest priority, freshest odds
+    # Pinnacle finishes in 8-37s via direct gost. Run every 60s for near-realtime odds.
+    # Polymarket grouped — adds ~60s but doesn't block Pinnacle (runs in parallel).
     providers: [pinnacle, polymarket]
-    interval_minutes: 2
+    interval_minutes: 1
     grouped: true
 
   api_soft:
-    # Fast REST/WS/API-interception providers — all fire simultaneously every 5 minutes
-    # Platform consolidation: only canonical providers extracted (others get fanned-out opportunities)
+    # Fast REST/WS/API-interception providers — all fire simultaneously
+    # Direct gost: no tunnel bottleneck, tighten to 3 minutes
     providers:
       # Kambi — canonical only (represents 7 brands: unibet, leovegas, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
@@ -861,28 +861,27 @@ extraction_scheduling:
       - betsson
       # BetConstruct (1) — WebSocket API
       - vbet
-    interval_minutes: 5
+    interval_minutes: 3
     grouped: false
 
   browser_soft:
-    # Browser-based extractors — reduced concurrency to avoid SSH tunnel saturation
-    # TODO: Increase back to 4 concurrent + 15min interval once Bahnhof port 1080 is open
-    max_concurrent_browsers: 2
+    # Browser-based extractors — direct gost, restored concurrency
+    max_concurrent_browsers: 4
     providers:
       - 888sport
       - interwetten
       - 10bet
       - tipwin
-    interval_minutes: 20
+    interval_minutes: 10
     grouped: false
 
   browser_antibot:
     # Providers with aggressive anti-bot (Cloudflare, Imperva)
-    max_concurrent_browsers: 1
+    max_concurrent_browsers: 2
     providers:
       - coolbet
       - comeon
-    interval_minutes: 30
+    interval_minutes: 15
     grouped: false
 
 # ============================================================================
