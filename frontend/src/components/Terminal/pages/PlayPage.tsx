@@ -208,7 +208,20 @@ export function PlayPage() {
           activeBetObj.fair_odds, activeBetObj.point,
           activeBetObj.display_home, activeBetObj.display_away,
         );
-        if (res.live_edge != null) setLiveEdge(res.live_edge);
+        if (res.live_edge != null) {
+          setLiveEdge(res.live_edge);
+          // Auto-skip if live edge is negative — move to next positive bet
+          if (res.live_edge <= 0 && activeBetObj) {
+            const positives = [...batch].filter(b => b.edge_pct > 0 && !placedBets.has(betKey(b)));
+            positives.sort((a, b) => b.edge_pct - a.edge_pct);
+            const currentKey = betKey(activeBetObj);
+            const nextIdx = positives.findIndex(b => betKey(b) === currentKey) + 1;
+            if (nextIdx > 0 && nextIdx < positives.length) {
+              handlePlayBet(positives[nextIdx]);
+              return;
+            }
+          }
+        }
         if (res.live_cents != null) setLiveCents(res.live_cents);
       } catch { /* */ }
     };
@@ -384,18 +397,17 @@ export function PlayPage() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {bets.filter(b => b.edge_pct > 0 || (activeBet === betKey(b) && liveEdge != null && liveEdge > 0)).map(b => {
+                                  {bets.filter(b => b.edge_pct > 0).map(b => {
                                     const ttk = getTTKFromNow(b.start_time);
                                     return (
                                       <tr
                                         key={betKey(b)}
-                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''} ${placedBets.has(betKey(b)) ? 'opacity-40' : ''}`}
-                                        onClick={() => !placedBets.has(betKey(b)) && handlePlayBet(b)}
+                                        className={`hover:bg-panel2/40 cursor-pointer ${b.funded === false ? 'opacity-50' : ''} ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
+                                        onClick={() => handlePlayBet(b)}
                                       >
                                         <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>
-                                          {placedBets.has(betKey(b)) && <span className="text-success text-[10px] mr-1">✓</span>}
                                           {activeBet === betKey(b) && navigating && <span className="text-amber-400 text-[10px] mr-1">⟳</span>}
-                                          {activeBet === betKey(b) && !navigating && !placedBets.has(betKey(b)) && <span className="text-success text-[10px] mr-1">▸</span>}
+                                          {activeBet === betKey(b) && !navigating && <span className="text-success text-[10px] mr-1">▸</span>}
                                           {eventLabel(b)}
                                         </td>
                                         <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
