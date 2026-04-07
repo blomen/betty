@@ -137,10 +137,22 @@ class MirrorService:
                     "pending_bets": info["pending_bets"],
                     "pending_stake": info["pending_stake"],
                 })
+                # Auto-settle if pending bets exist
+                if info["pending_bets"] > 0:
+                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — auto-triggering settle scrape")
+                    asyncio.ensure_future(self._auto_settle_polymarket())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
+
+    async def _auto_settle_polymarket(self):
+        """Auto-navigate to portfolio history and scrape settlements."""
+        await asyncio.sleep(5)  # Wait for page to settle
+        try:
+            await self.scrape_polymarket_settlements()
+        except Exception as e:
+            logger.warning(f"[mirror] Auto polymarket settle failed: {e}")
 
     async def _handle_page_navigated(self, provider_id: str, url: str):
         """Fires on every page navigation to a known provider.
