@@ -2151,13 +2151,19 @@ class MirrorService:
         target_names: list[str] = []
         if original_outcome == "home" and home_name:
             name = home_name.lower()
-            target_names.append(name)                    # "alba berlin"
-            target_names.append(name.split()[0])         # "alba"
-            target_names.append(name[:3])                # "alb"
+            parts = name.split()
+            target_names.append(name)                    # "indiana pacers"
+            if len(parts) > 1:
+                target_names.append(parts[-1])           # "pacers"
+                target_names.append(parts[0])            # "indiana"
+            target_names.append(name[:3])                # "ind"
         elif original_outcome == "away" and away_name:
             name = away_name.lower()
+            parts = name.split()
             target_names.append(name)
-            target_names.append(name.split()[0])
+            if len(parts) > 1:
+                target_names.append(parts[-1])
+                target_names.append(parts[0])
             target_names.append(name[:3])
         elif original_outcome == "over":
             target_names.append("o ")
