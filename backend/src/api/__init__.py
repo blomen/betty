@@ -253,10 +253,26 @@ async def lifespan(app: FastAPI):
                         try:
                             svc = MarketService(_get_db_session())
                             try:
+                                # Compute session + load levels
+                                session_data = await svc.compute_session()
                                 expanded = await svc.build_expanded_session()
                                 if expanded:
                                     level_monitor.load_levels(expanded)
                                     logger.info("Initial levels loaded")
+
+                                # Set session context so zones get correct ATR bounds
+                                if session_data and isinstance(session_data, dict):
+                                    rl_context = {
+                                        "volume_profile": session_data.get("volume_profile"),
+                                        "session_levels": session_data.get("session_levels"),
+                                        "session_context": session_data.get("session_context"),
+                                        "macro": session_data.get("macro"),
+                                        "swing_structure": expanded.get("swing_structure") if expanded else None,
+                                        "atr": session_data.get("atr", 40.0),
+                                    }
+                                    level_monitor.set_session_context(rl_context)
+                                    logger.info("Auto-compute: session context set (ATR=%.1f)",
+                                                rl_context.get("atr", 0))
                             finally:
                                 svc.db.close()
                         except Exception as e:
