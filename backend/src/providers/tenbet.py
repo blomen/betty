@@ -143,11 +143,11 @@ class TenBetRetriever(BrowserRetriever):
     # Football was 60 but timed out at 600s in 4/5 runs — reduced to 30
     # (top competitions discovered first, covers ~90% of Pinnacle matches).
     SPORT_COMPETITION_CAPS: Dict[str, int] = {
-        "football": 60,     # No provider timeout — extract all valuable competitions
-        "basketball": 50,
-        "ice_hockey": 40,
-        "tennis": 35,
-        "handball": 30,
+        "football": 40,     # Each comp ~4-5s with Semaphore(4). 40 × 5s / 4 = 50s
+        "basketball": 40,
+        "ice_hockey": 35,
+        "tennis": 30,
+        "handball": 25,
         "mma": 15,
         "esports": 15,
     }

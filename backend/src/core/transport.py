@@ -346,10 +346,15 @@ class BrowserTransport(Transport):
 
         async def _block_unnecessary(route):
             try:
+                # Let API requests fall through to page-level route handlers
+                # (gecko_v2 uses page.route('**/api/sb/**') to capture headers)
+                url = route.request.url.lower()
+                if '/api/sb/' in url or '/api/' in url and route.request.resource_type == "xhr":
+                    await route.fallback()
+                    return
                 if route.request.resource_type in blocked_types:
                     await route.abort()
                     return
-                url = route.request.url.lower()
                 for pattern in self._BLOCKED_URL_PATTERNS:
                     if pattern in url:
                         await route.abort()

@@ -258,6 +258,7 @@ class TipwinRetriever(BrowserRetriever):
             # Parse all responses into events grouped by sport
             events_by_sport: Dict[str, List[StandardEvent]] = {}
             seen: set = set()
+            all_sport_abrvs: set = set()
 
             for resp_data in api_responses:
                 lookup = resp_data.get('lookup', {})
@@ -266,6 +267,12 @@ class TipwinRetriever(BrowserRetriever):
                 btypes = lookup.get('bettingTypes', {})
                 sports_lookup = lookup.get('sports', {})
 
+                # Log all sports available in this response's lookup
+                for sid, sinfo in sports_lookup.items():
+                    abrv = sinfo.get('abrv', '')
+                    if abrv:
+                        all_sport_abrvs.add(abrv)
+
                 # Parse items format (full listing page)
                 for category in resp_data.get('items', []):
                     sport_id = category.get('sportId', '')
@@ -273,6 +280,8 @@ class TipwinRetriever(BrowserRetriever):
                     sport_abrv = sport_info.get('abrv', '')
                     canonical_sport = self.SPORT_ABRV_MAP.get(sport_abrv)
                     if not canonical_sport:
+                        if sport_abrv:
+                            logger.debug(f"[{self.provider_id}] Skipping unmapped sport: {sport_abrv} (id={sport_id})")
                         continue
 
                     for tournament_group in category.get('items', []):
@@ -305,7 +314,10 @@ class TipwinRetriever(BrowserRetriever):
 
             total = sum(len(v) for v in events_by_sport.values())
             sport_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items()))
-            logger.info(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
+            logger.info(
+                f"[{self.provider_id}] Total: {total} events ({sport_summary}). "
+                f"Sports in API: {sorted(all_sport_abrvs)}"
+            )
 
             if not events_by_sport:
                 raise RetryableError(
