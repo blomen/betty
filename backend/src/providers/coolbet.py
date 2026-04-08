@@ -58,6 +58,9 @@ class CoolbetRetriever(BrowserRetriever):
         "mma":               {"slug": "mma",                 "category_id": 20491},
         "esports":           {"slug": "esports",             "category_id": 65035},
         "handball":          {"slug": "handboll",            "category_id": 68},
+        "volleyball":        {"slug": "volleyboll",          "category_id": 73},
+        "boxing":            {"slug": "boxning",             "category_id": 78},
+        "rugby":             {"slug": "rugby-union",         "category_id": 76},
     }
 
     # Exact market name → standard type (all observed names from API)
@@ -267,13 +270,16 @@ class CoolbetRetriever(BrowserRetriever):
             league_ids = await self._discover_league_ids(page, sport_conf['category_id'])
 
             if league_ids:
-                # Fetch categories for each league individually (no pagination needed)
+                # Fetch categories per league in throttled batches (Imperva blocks burst)
                 category_data = []
                 seen_cat_ids = set()
-                tasks = [
-                    self._fetch_category_page(page, league_id)
-                    for league_id in league_ids
-                ]
+                sem = asyncio.Semaphore(self.CONCURRENT_CATEGORY_FETCHES)
+
+                async def fetch_league(lid):
+                    async with sem:
+                        return await self._fetch_category_page(page, lid)
+
+                tasks = [fetch_league(lid) for lid in league_ids]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for cats in results:
                     if isinstance(cats, Exception) or not cats:

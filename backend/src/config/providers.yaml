@@ -793,8 +793,10 @@ providers:
       - handball
       - esports
       - mma
-      - tennis            # Retry: 133 Pinnacle events, was 0 months ago
-      - volleyball        # Retry: 16 Pinnacle events
+      - tennis            # 143 matches on site
+      - volleyball        # 49 matches on site
+      - boxing            # 29 matches on site
+      - baseball          # 23 matches on site
     bonus:
       type: bonusdeposit
       amount: 1000
