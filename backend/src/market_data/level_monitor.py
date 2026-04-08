@@ -252,16 +252,23 @@ class LevelMonitor:
             self._emit_orderflow_update(price)
             self._last_orderflow_emit = now
 
-        # Zone entry detection for DQN inference
+        # Zone entry detection for DQN inference (with 60s cooldown per zone)
         newly_entered_zones = []
         still_in_zones: set[int] = set()
+        _ZONE_COOLDOWN_S = 60.0
         for zone in self._zones:
             if zone.lower_bound <= price <= zone.upper_bound:
                 zid = id(zone)
                 still_in_zones.add(zid)
                 if zid not in self._zone_debounce:
-                    self._zone_debounce.add(zid)
-                    newly_entered_zones.append(zone)
+                    # Check time cooldown
+                    last_fire = getattr(self, '_zone_last_fire', {}).get(zid, 0)
+                    if (now - last_fire) >= _ZONE_COOLDOWN_S:
+                        self._zone_debounce.add(zid)
+                        if not hasattr(self, '_zone_last_fire'):
+                            self._zone_last_fire = {}
+                        self._zone_last_fire[zid] = now
+                        newly_entered_zones.append(zone)
         self._zone_debounce &= still_in_zones
 
         for zone in newly_entered_zones:
