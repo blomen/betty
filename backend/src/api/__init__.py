@@ -647,13 +647,33 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.get("/debug/zones")
+async def debug_zones(request: Request):
+    """Debug endpoint: show active zones vs current price."""
+    lm = getattr(request.app.state, "level_monitor", None)
+    if lm is None:
+        return {"error": "LevelMonitor not initialized"}
+    zones = [{
+        "center": round(z.center_price, 2),
+        "lower": round(z.lower_bound, 2),
+        "upper": round(z.upper_bound, 2),
+        "members": z.member_count,
+    } for z in sorted(lm._zones, key=lambda z: z.center_price)]
+    return {
+        "last_price": round(lm._last_price, 2),
+        "zone_count": len(zones),
+        "level_count": len(lm._levels),
+        "zones": zones,
+    }
+
 # GZip compression for responses > 1KB
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # App-level API key auth — defense-in-depth behind nginx basic auth
 _api_key = os.environ.get("FIREV_API_KEY")
-_auth_exempt = {"/health", "/health/live", "/health/ready"}
+_auth_exempt = {"/health", "/health/live", "/health/ready", "/debug/zones"}
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
