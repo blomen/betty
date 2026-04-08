@@ -791,7 +791,7 @@ class LevelMonitor:
             except Exception:
                 pass  # Never block inference for collection
         except Exception:
-            logger.debug("DQN zone inference failed", exc_info=True)
+            logger.warning("DQN zone inference failed", exc_info=True)
 
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time

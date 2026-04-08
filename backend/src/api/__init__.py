@@ -286,7 +286,7 @@ async def lifespan(app: FastAPI):
                                         "session_context": session_data.get("session_context"),
                                         "macro": session_data.get("macro"),
                                         "swing_structure": expanded.get("swing_structure") if expanded else None,
-                                        "atr": session_data.get("atr", 40.0),
+                                        "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                                     }
                                     level_monitor.set_session_context(rl_context)
                                     logger.info("Auto-compute: session context set (ATR=%.1f)",
@@ -359,7 +359,7 @@ async def lifespan(app: FastAPI):
                                             "session_context": session_data.get("session_context"),
                                             "macro": session_data.get("macro"),
                                             "swing_structure": expanded.get("swing_structure") if expanded else None,
-                                            "atr": session_data.get("atr", 40.0),
+                                            "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                                         }
                                         level_monitor.set_session_context(rl_context)
                                     logger.info("Periodic recompute: zones rebuilt")
