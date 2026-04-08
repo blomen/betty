@@ -62,3 +62,20 @@ def test_save_intel_roundtrip(intel_dir, sample_intel):
     result = load_intel("testprovider", intel_dir)
     assert result["provider_id"] == "testprovider"
     assert result["balance"]["api"]["path"] == "data.balance"
+
+
+def test_load_strategy_missing_returns_none():
+    from src.mirror.workflows.strategies import load_strategy
+    result = load_strategy("nonexistent_provider_xyz")
+    assert result is None
+
+
+def test_strategy_dataclass_fields():
+    from src.mirror.workflows.strategies import Strategy
+    s = Strategy(sync_balance=lambda page, intel: 42.0)
+    assert s.sync_balance is not None
+    assert s.check_login is None
+    assert s.sync_history is None
+    assert s.navigate_to_event is None
+    assert s.place_bet is None
+    assert s.check_live_price is None
