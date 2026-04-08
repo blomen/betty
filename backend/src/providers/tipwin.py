@@ -105,6 +105,7 @@ class TipwinRetriever(BrowserRetriever):
         run_id = kwargs.get("run_id")
         if run_id and run_id != self._last_run_id:
             self._all_events = None
+            self._session_ready = False  # Force fresh session — SPA caches API responses
             self._last_run_id = run_id
 
         # Extract all sports on first call
@@ -246,7 +247,7 @@ class TipwinRetriever(BrowserRetriever):
             for pg in range(2, max_pages + 1):
                 try:
                     await page.goto(f"{full_url}?page={pg}", wait_until='domcontentloaded', timeout=10000)
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.5)  # Give route handler time to fetch+fulfill
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
                     break
