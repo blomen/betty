@@ -354,3 +354,21 @@ class GenericWorkflow(ProviderWorkflow):
         if self.strategy and self.strategy.check_live_price:
             return await self.strategy.check_live_price(page, bet, self.intel)
         return None
+
+    # ------------------------------------------------------------------
+    # Auto-discovery
+    # ------------------------------------------------------------------
+
+    async def auto_discover(self, page: "Page") -> bool:
+        """Run discovery if no intel exists. Called on first provider detection."""
+        if self.intel is not None:
+            return True
+
+        from .discovery import discover
+        try:
+            self.intel = await discover(page, self.provider_id)
+            logger.info(f"[{self.provider_id}] Auto-discovery complete: {self.intel.get('capabilities', {})}")
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Auto-discovery failed: {e}")
+            return False

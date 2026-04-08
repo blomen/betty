@@ -88,6 +88,26 @@ class MirrorService:
             info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
             if info["pending_bets"] > 0:
                 asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+        # Auto-discover for generic (unwired) providers with no intel
+        from .workflows import get_workflow
+        from .workflows.generic import GenericWorkflow
+        wf = get_workflow(provider_id)
+        if isinstance(wf, GenericWorkflow) and wf.intel is None:
+            context = self.interceptor.context
+            if context:
+                page = await wf.find_tab(context)
+                if page:
+                    asyncio.ensure_future(self._run_auto_discovery(wf, page, provider_id))
+
+    async def _run_auto_discovery(self, wf, page, provider_id: str):
+        """Run auto-discovery in background, notify frontend when done."""
+        await asyncio.sleep(3)  # Wait for page to settle
+        success = await wf.auto_discover(page)
+        if success:
+            self._notify("discovery_complete", {
+                "provider": provider_id,
+                "capabilities": wf.intel.get("capabilities", {}),
+            })
 
     async def _scrape_polymarket_balance(self):
         """Scrape USDC cash balance from Polymarket DOM.
@@ -137,48 +157,135 @@ class MirrorService:
                     "pending_bets": info["pending_bets"],
                     "pending_stake": info["pending_stake"],
                 })
-                # Auto-settle once if pending bets exist (don't re-trigger)
-                if info["pending_bets"] > 0 and not getattr(self, '_poly_settle_triggered', False):
-                    self._poly_settle_triggered = True
-                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — auto-triggering settle scrape (once)")
-                    asyncio.ensure_future(self._auto_settle_polymarket())
+                # Start periodic settle loop if pending bets exist
+                if info["pending_bets"] > 0 and not getattr(self, '_poly_settle_task', None):
+                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — starting periodic settle loop")
+                    self._poly_settle_task = asyncio.ensure_future(self._poly_settle_loop())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
         except Exception as e:
             logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
 
-    async def _auto_settle_polymarket(self):
-        """Auto-scrape portfolio history IF any pending bets have finished."""
+    async def _poly_settle_loop(self, interval: int = 300):
+        """Periodic Polymarket settlement: positions page → claim → redeem → DB settle.
+
+        Runs every 5 minutes while pending bets exist with passed start_time.
+        Uses the PolymarketWorkflow.settle_all() which navigates to the Positions
+        tab (not History), clicks Claim banner, clicks Redeem buttons, and settles
+        matched bets in the database.
+        """
         from datetime import datetime, timezone
-        await asyncio.sleep(5)
+        from .workflows.polymarket import PolymarketWorkflow
 
-        # Check if any pending poly bets have passed start_time
-        pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
-        now = datetime.now(timezone.utc)
-        has_finished = False
-        for pb in pending:
-            st = pb.get("start_time")
-            if st:
-                from datetime import datetime as dt
-                try:
-                    if isinstance(st, str):
-                        st = dt.fromisoformat(st.replace("Z", "+00:00"))
-                    if st.tzinfo is None:
-                        st = st.replace(tzinfo=timezone.utc)
-                    if st < now:
-                        has_finished = True
+        await asyncio.sleep(10)  # Initial delay — let page fully load
+
+        while True:
+            try:
+                # Check if any pending poly bets have passed start_time
+                pending = await asyncio.to_thread(self._get_pending_poly_bets_sync)
+                if not pending:
+                    logger.info("[mirror:poly-settle] No pending Polymarket bets — stopping loop")
+                    break
+
+                now = datetime.now(timezone.utc)
+                has_finished = False
+                for pb in pending:
+                    st = pb.get("start_time")
+                    if st:
+                        try:
+                            if isinstance(st, str):
+                                st = datetime.fromisoformat(st.replace("Z", "+00:00"))
+                            if st.tzinfo is None:
+                                st = st.replace(tzinfo=timezone.utc)
+                            if st < now:
+                                has_finished = True
+                                break
+                        except Exception:
+                            pass
+
+                if not has_finished:
+                    logger.debug("[mirror:poly-settle] No finished pending bets yet — waiting")
+                    await asyncio.sleep(interval)
+                    continue
+
+                # Find Polymarket page
+                context = self.interceptor.context
+                if not context or not context.pages:
+                    logger.debug("[mirror:poly-settle] No browser context — waiting")
+                    await asyncio.sleep(interval)
+                    continue
+
+                page = None
+                for p in context.pages:
+                    if 'polymarket.com' in (p.url or ''):
+                        page = p
                         break
-                except Exception:
-                    pass
 
-        if not has_finished:
-            logger.info("[mirror] Polymarket: no finished pending bets — skipping settle scrape")
-            return
+                if not page:
+                    logger.debug("[mirror:poly-settle] No Polymarket tab open — waiting")
+                    await asyncio.sleep(interval)
+                    continue
 
-        try:
-            await self.scrape_polymarket_settlements()
-        except Exception as e:
-            logger.warning(f"[mirror] Auto polymarket settle failed: {e}")
+                # Scan positions (no clicks) and notify frontend for user confirmation
+                logger.info(f"[mirror:poly-settle] Scanning portfolio ({len(pending)} pending bets)")
+                workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+                scan = await workflow.scan_portfolio_settlements(page)
+
+                matches = scan.get("matches", [])
+                has_claim = scan.get("has_claim")
+                redeem_count = scan.get("redeem_count", 0)
+
+                if not matches and not has_claim and redeem_count == 0:
+                    # Nothing in positions — try history tab for full reconciliation
+                    try:
+                        history_entries = await workflow.sync_history(page)
+                        if history_entries:
+                            logger.info(
+                                f"[mirror:poly-settle] History sync settled "
+                                f"{len(history_entries)} bets"
+                            )
+                    except Exception as he:
+                        logger.debug(f"[mirror:poly-settle] History sync: {he}")
+                    await asyncio.sleep(interval)
+                    continue
+
+                summary = scan.get("summary", {})
+                logger.info(
+                    f"[mirror:poly-settle] Found: {len(matches)} matches, "
+                    f"claim={has_claim}, redeemable={redeem_count}"
+                )
+
+                # Send as settlements_pending with source field so frontend
+                # shows the confirm/reject banner and routes confirm to settle-all
+                self._notify("settlements_pending", {
+                    "source": "polymarket_portfolio",
+                    "provider": "polymarket",
+                    "count": len(matches),
+                    "wins": summary.get("wins", 0),
+                    "losses": summary.get("losses", 0),
+                    "total_staked": summary.get("total_staked", 0),
+                    "total_payout": summary.get("total_payout", 0),
+                    "net": summary.get("net_pl", 0),
+                    "has_claim": has_claim,
+                    "redeem_count": redeem_count,
+                    "settlements": matches,
+                })
+
+                if "error" in scan:
+                    logger.warning(f"[mirror:poly-settle] Scan error: {scan['error']}")
+
+            except asyncio.CancelledError:
+                logger.info("[mirror:poly-settle] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[mirror:poly-settle] Unexpected error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
+        self._poly_settle_task = None
 
     async def _auto_settle_via_history(self, provider_id: str):
         """Generic settle-first: navigate provider's tab to bet history page.
@@ -189,7 +296,6 @@ class MirrorService:
         """
         if not hasattr(self, '_settle_checked'):
             self._settle_checked = set()
-        self._settle_checked.add(provider_id)
 
         await asyncio.sleep(4)  # Wait for page to fully load
 
@@ -205,10 +311,12 @@ class MirrorService:
                 logger.debug(f"[mirror] No tab found for {provider_id} — skipping auto-settle")
                 return
 
-            logger.info(f"[mirror] Auto-settle: navigating {provider_id} to bet history")
+            logger.info(f"[mirror] Auto-sync: navigating {provider_id} to bet history")
             await workflow.sync_history(page)
+            self._settle_checked.add(provider_id)
+            logger.info(f"[mirror] Auto-sync complete for {provider_id}")
         except Exception as e:
-            logger.warning(f"[mirror] Auto-settle failed for {provider_id}: {e}")
+            logger.warning(f"[mirror] Auto-sync failed for {provider_id}: {e}")
 
     async def _handle_page_navigated(self, provider_id: str, url: str):
         """Fires on every page navigation to a known provider.
@@ -218,16 +326,26 @@ class MirrorService:
         - Kambi: /betting/sports/bethistory
         - Altenar/Gecko: bet history API responses handled by _handle_bet_history
         """
-        # Polymarket history tab
-        if provider_id == "polymarket" and "tab=history" in url:
+        # Polymarket portfolio — trigger settle via positions page
+        if provider_id == "polymarket" and "/portfolio" in url:
             info = await asyncio.to_thread(self._get_provider_sync_info, "polymarket")
             if info["pending_bets"] > 0:
-                logger.info(f"[mirror] Polymarket history tab detected — scraping {info['pending_bets']} pending bets")
+                logger.info(f"[mirror] Polymarket portfolio detected — running settle_all for {info['pending_bets']} pending bets")
                 await asyncio.sleep(4)  # Wait for DOM render
                 try:
-                    await self.scrape_polymarket_settlements()
+                    from .workflows.polymarket import PolymarketWorkflow
+                    context = self.interceptor.context
+                    page = None
+                    for p in context.pages:
+                        if 'polymarket.com' in (p.url or ''):
+                            page = p
+                            break
+                    if page:
+                        workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+                        result = await workflow.settle_all(page)
+                        logger.info(f"[mirror] Polymarket settle_all: settled={result.get('settled', 0)}")
                 except Exception as e:
-                    logger.warning(f"[mirror] Polymarket history scrape failed: {e}")
+                    logger.warning(f"[mirror] Polymarket settle failed: {e}")
             return
 
         # Pinnacle bet history page — use API sync
@@ -955,8 +1073,11 @@ class MirrorService:
         })
         # Reset provider detection so balance re-syncs on next page visit
         self.interceptor.reset_detected_providers()
-        # Allow auto-settle to re-trigger in future
-        self._poly_settle_triggered = False
+        # Allow poly settle loop to re-trigger on next provider detection
+        task = getattr(self, '_poly_settle_task', None)
+        if task and not task.done():
+            task.cancel()
+        self._poly_settle_task = None
 
         return {"settled": settled, "provider": provider_id, "settlements": summary}
 
@@ -1362,9 +1483,10 @@ class MirrorService:
                     "pending_stake": info["pending_stake"],
                 })
                 # Auto-navigate to bet history on first login if pending bets exist
+                # Always sync bet history on first login (catch unknown bets + settle)
                 if not hasattr(self, '_settle_checked'):
                     self._settle_checked = set()
-                if provider_id not in self._settle_checked and info["pending_bets"] > 0:
+                if provider_id not in self._settle_checked:
                     asyncio.ensure_future(self._auto_settle_via_history(provider_id))
 
         # Polymarket: store deposit trace from Swapped widget

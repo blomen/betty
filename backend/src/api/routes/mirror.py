@@ -151,6 +151,31 @@ async def open_settle_tabs():
     return {"opened": opened, "count": len(opened)}
 
 
+@router.post("/discover/{provider_id}")
+async def discover_provider(provider_id: str, force: bool = False):
+    """Run DOM/API discovery for a provider and save intel JSON."""
+    from ...mirror.workflows.generic import load_intel
+    from ...mirror.workflows.discovery import discover
+
+    existing = load_intel(provider_id)
+    if existing and not force:
+        return {"status": "exists", "provider_id": provider_id, "capabilities": existing["capabilities"]}
+
+    mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor or mirror.interceptor.status != "listening":
+        return {"status": "error", "message": "Mirror browser not running"}
+
+    from ...mirror.workflows import get_workflow
+    wf = get_workflow(provider_id)
+    page = await wf.find_tab(mirror.interceptor.context) if mirror.interceptor.context else None
+
+    if not page:
+        return {"status": "error", "message": f"No tab open for {provider_id}"}
+
+    intel = await discover(page, provider_id)
+    return {"status": "discovered", "provider_id": provider_id, "capabilities": intel["capabilities"]}
+
+
 @router.post("/scrape-poly-portfolio")
 async def scrape_poly_portfolio():
     """Scrape Polymarket portfolio page and stage settlements for pending bets.
