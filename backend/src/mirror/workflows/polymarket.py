@@ -61,8 +61,172 @@ class PolymarketWorkflow(ProviderWorkflow):
             return -1
 
     async def sync_history(self, page: "Page") -> list[HistoryEntry]:
-        """No-op — Gamma API handles settlement separately."""
-        return []
+        """Sync full Polymarket bet history to DB.
+
+        Navigates to History tab → scrapes all entries → reconciles with DB:
+        1. "Bought" entries → create missing bets (ones not already in DB)
+        2. "Lost"/"Claimed" entries → settle matching pending bets
+        3. Returns HistoryEntry list for settled bets
+
+        This is the generic settle-first workflow: sync ALL history before playing.
+        """
+        from ...db.models import Bet, Event, get_session
+        from ...repositories.profile_repo import ProfileRepo
+        from ...services.bet_service import BetService
+        from rapidfuzz import fuzz
+
+        # Navigate to History tab
+        if '/portfolio' not in (page.url or '') or 'tab=history' not in (page.url or ''):
+            await page.goto(
+                "https://polymarket.com/portfolio?tab=history",
+                wait_until="domcontentloaded", timeout=15000,
+            )
+            await asyncio.sleep(4)
+        elif 'tab=history' not in (page.url or ''):
+            # On portfolio but wrong tab — click History
+            await page.evaluate("""() => {
+                const tabs = document.querySelectorAll('a, button, div[role="tab"]');
+                for (const t of tabs) {
+                    if ((t.textContent || '').trim() === 'History') { t.click(); return true; }
+                }
+                return false;
+            }""")
+            await asyncio.sleep(3)
+
+        # Scrape history entries
+        entries = await self.scrape_history(page)
+        if not entries:
+            logger.info("[polymarket] No history entries found")
+            return []
+
+        logger.info(f"[polymarket] sync_history: {len(entries)} entries scraped")
+
+        db = get_session()
+        history_results: list[HistoryEntry] = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            if not profile:
+                logger.warning("[polymarket] sync_history: no active profile")
+                return []
+
+            # Get ALL polymarket bets (pending + settled) for dedup
+            all_bets = (
+                db.query(Bet, Event)
+                .join(Event, Bet.event_id == Event.id, isouter=True)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                )
+                .all()
+            )
+
+            pending = [(b, e) for b, e in all_bets if b.result == "pending"]
+            settled_ids = {b.id for b, _ in all_bets if b.result != "pending"}
+
+            bet_service = BetService(db)
+            new_bets = 0
+            settled_bets = 0
+
+            for entry in entries:
+                activity = entry.get("activity", "")
+                market = entry.get("market", "")
+                value = entry.get("value", 0)
+                shares = entry.get("shares", 0)
+
+                if not market:
+                    continue
+
+                if activity == "Bought":
+                    # Check if this buy is already in DB (by fuzzy matching market name + shares/stake)
+                    # Stake ≈ shares * avg_price_cents / 100
+                    already_exists = False
+                    for bet, event in all_bets:
+                        event_name = ""
+                        if event:
+                            h = event.display_home or event.home_team or ""
+                            a = event.display_away or event.away_team or ""
+                            event_name = f"{h} vs {a}" if h and a else h or a
+                        score = fuzz.token_set_ratio(market.lower(), event_name.lower())
+                        if score >= 70:
+                            already_exists = True
+                            break
+                    if not already_exists and value > 0:
+                        # Record as unknown bet — we only know market name, stake, shares
+                        # Can't match to an event_id since we only have the display name
+                        logger.info(
+                            f"[polymarket] sync_history: new bet from history — "
+                            f"{market[:60]} stake=${value} shares={shares}"
+                        )
+                        # Create a minimal bet record
+                        result = bet_service.create_bet(
+                            event_id=None,
+                            provider_id="polymarket",
+                            market="1x2",  # Default — history doesn't tell us
+                            outcome=entry.get("outcomeTag", "unknown"),
+                            odds=round(1.0 / (value / shares), 4) if shares > 0 and value > 0 else 2.0,
+                            stake=round(value, 2),
+                            bet_type="polymarket",
+                        )
+                        if "error" not in result:
+                            new_bets += 1
+
+                elif activity in ("Lost", "Claimed"):
+                    # Find matching pending bet and settle it
+                    result_str = "lost" if activity == "Lost" else "won"
+                    payout = abs(value) if activity == "Claimed" else 0.0
+
+                    best_match = None
+                    best_score = 0
+                    for bet, event in pending:
+                        if bet.id in settled_ids:
+                            continue
+                        event_name = ""
+                        if event:
+                            h = event.display_home or event.home_team or ""
+                            a = event.display_away or event.away_team or ""
+                            event_name = f"{h} vs {a}" if h and a else h or a
+                        s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
+                        s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
+                        score = max(s1, s2)
+                        if score > best_score and score >= 60:
+                            best_score = score
+                            best_match = bet
+
+                    if best_match:
+                        try:
+                            bet_service.settle_bet(best_match.id, result_str, round(payout, 2))
+                            settled_ids.add(best_match.id)
+                            settled_bets += 1
+                            logger.info(
+                                f"[polymarket] sync_history: settled bet #{best_match.id} "
+                                f"→ {result_str} (payout=${payout:.2f}) via {market[:50]}"
+                            )
+                            history_results.append(HistoryEntry(
+                                provider_bet_id=str(best_match.id),
+                                event_name=market[:80],
+                                market=best_match.market or "1x2",
+                                outcome=best_match.outcome or "",
+                                odds=best_match.odds,
+                                stake=best_match.stake,
+                                status=result_str,
+                                payout=round(payout, 2),
+                            ))
+                        except Exception as e:
+                            logger.warning(f"[polymarket] sync_history settle failed: {e}")
+
+            db.commit()
+            logger.info(
+                f"[polymarket] sync_history complete: "
+                f"{new_bets} new bets recorded, {settled_bets} bets settled"
+            )
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[polymarket] sync_history error: {e}", exc_info=True)
+        finally:
+            db.close()
+
+        return history_results
 
     # ------------------------------------------------------------------
     # Navigation
@@ -203,6 +367,79 @@ class PolymarketWorkflow(ProviderWorkflow):
             return None
 
     # ------------------------------------------------------------------
+    # Modal dismissal
+    # ------------------------------------------------------------------
+
+    async def _dismiss_modal(self, page: "Page", max_attempts: int = 3) -> bool:
+        """Dismiss Share/overlay modals that appear after Claim/Redeem.
+
+        Polymarket shows a "Share your winnings" modal with an X close button.
+        Tries multiple strategies: X button, click outside, Escape key.
+        """
+        for attempt in range(max_attempts):
+            dismissed = await page.evaluate("""() => {
+                // Strategy 1: X/close button (SVG inside button, aria-label, class)
+                const closeSelectors = [
+                    'button[aria-label="Close"]',
+                    'button[aria-label="close"]',
+                    '[class*="close" i]:not(a)',
+                    '[class*="dismiss" i]',
+                ];
+                for (const sel of closeSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.offsetParent !== null) {
+                        el.click();
+                        return 'close_button';
+                    }
+                }
+                // Strategy 2: Find any small clickable element near top-right of a modal
+                const modals = document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [class*="dialog" i], [role="dialog"]');
+                for (const modal of modals) {
+                    if (!modal.offsetParent) continue;
+                    // Look for X/close inside the modal
+                    const btns = modal.querySelectorAll('button, [role="button"], svg');
+                    for (const btn of btns) {
+                        const rect = btn.getBoundingClientRect();
+                        const modalRect = modal.getBoundingClientRect();
+                        // Top-right corner = close button
+                        if (rect.right > modalRect.right - 80 && rect.top < modalRect.top + 80 && rect.width < 60) {
+                            btn.click();
+                            return 'modal_x';
+                        }
+                    }
+                }
+                return null;
+            }""")
+
+            if dismissed:
+                logger.info(f"[polymarket] Dismissed modal via {dismissed}")
+                await asyncio.sleep(1)
+                return True
+
+            # Strategy 3: Escape key
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                # Check if modal is gone
+                still_open = await page.evaluate("""() => {
+                    const modals = document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [role="dialog"]');
+                    for (const m of modals) {
+                        if (m.offsetParent !== null && m.offsetWidth > 200) return true;
+                    }
+                    return false;
+                }""")
+                if not still_open:
+                    logger.info("[polymarket] Dismissed modal via Escape")
+                    return True
+            except Exception:
+                pass
+
+            await asyncio.sleep(1)
+
+        logger.warning("[polymarket] Could not dismiss modal after all attempts")
+        return False
+
+    # ------------------------------------------------------------------
     # Portfolio scraping + settlement
     # ------------------------------------------------------------------
 
@@ -324,10 +561,10 @@ class PolymarketWorkflow(ProviderWorkflow):
         Navigates to polymarket.com/portfolio and scrapes all position rows.
         Returns list of {market, outcome_tag, avg_price, now_price, values, status, has_redeem, has_sell}.
         """
-        # Navigate to portfolio
+        # Navigate to portfolio positions tab
         current_url = page.url or ''
-        if '/portfolio' not in current_url:
-            await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+        if '/portfolio' not in current_url or 'tab=history' in current_url:
+            await page.goto("https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(4)  # Wait for client-side render
 
         # First, let's just dump what we can see to understand the DOM structure
@@ -420,8 +657,8 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         Returns {redeemed: count, skipped_open: count, errors: count}.
         """
-        if '/portfolio' not in (page.url or ''):
-            await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
+        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
+            await page.goto("https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(3)
 
         redeemed = 0
@@ -497,23 +734,417 @@ class PolymarketWorkflow(ProviderWorkflow):
                 }""")
                 if confirmed:
                     await asyncio.sleep(3)  # Wait for blockchain transaction
+                    # Dismiss "Share your winnings" modal that appears after redeem
+                    await self._dismiss_modal(page)
                     redeemed += 1
                     logger.info(f"[polymarket] Redeemed {i + 1}/{count}: {confirmed}")
                 else:
-                    # Modal might not have appeared — try closing any overlay
                     logger.warning(f"[polymarket] No confirm button found for redeem {i + 1}")
-                    # Try to close the modal
-                    await page.evaluate("""() => {
-                        const close = document.querySelector('[class*="close"], [aria-label="Close"]');
-                        if (close) close.click();
-                    }""")
-                    await asyncio.sleep(1)
+                    await self._dismiss_modal(page)
                     errors += 1
             except Exception as e:
                 logger.warning(f"[polymarket] Redeem {i + 1} failed: {e}")
                 errors += 1
 
         return {"redeemed": redeemed, "skipped_open": skipped_open, "errors": errors, "total": count}
+
+    # ------------------------------------------------------------------
+    # Claim banner
+    # ------------------------------------------------------------------
+
+    async def claim_banner(self, page: "Page") -> dict:
+        """Click the top-level Claim banner if present (green 'Claim' button).
+
+        This is the banner that appears when you have uncollected winnings,
+        separate from per-row Redeem buttons.
+
+        Returns {claimed: bool, amount: str | None}.
+        """
+        try:
+            result = await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                    const t = (btn.textContent || '').trim();
+                    // Match "Claim" button (not "Claimed" or other variants)
+                    if (t === 'Claim' || t.startsWith('Claim')) {
+                        // Verify it's in a banner/header area (not deep in a table row)
+                        const rect = btn.getBoundingClientRect();
+                        // Banner buttons are typically near the top of the page
+                        if (rect.top < 400) {
+                            btn.click();
+                            return {found: true, text: t};
+                        }
+                    }
+                }
+                return {found: false};
+            }""")
+
+            if not result.get("found"):
+                logger.info("[polymarket] No Claim banner found")
+                return {"claimed": False, "amount": None}
+
+            logger.info(f"[polymarket] Clicked Claim banner: {result.get('text')}")
+            await asyncio.sleep(3)  # Wait for blockchain transaction
+
+            # Check for a confirmation modal button (e.g. "Claim $47.33")
+            confirmed = await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                    const t = (btn.textContent || '').trim();
+                    if (t.startsWith('Claim $') || t.startsWith('Claim $')) {
+                        btn.click();
+                        return t;
+                    }
+                }
+                return null;
+            }""")
+
+            if confirmed:
+                await asyncio.sleep(3)  # Wait for blockchain tx
+                logger.info(f"[polymarket] Claim confirmed: {confirmed}")
+                # Dismiss "Share your winnings" modal
+                await self._dismiss_modal(page)
+                return {"claimed": True, "amount": confirmed}
+
+            # Banner click may have been sufficient (no modal)
+            # Still try to dismiss any modal that appeared
+            await self._dismiss_modal(page)
+            return {"claimed": True, "amount": result.get("text")}
+
+        except Exception as e:
+            logger.warning(f"[polymarket] claim_banner failed: {e}")
+            return {"claimed": False, "amount": None, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Scan (preview only — no clicks)
+    # ------------------------------------------------------------------
+
+    async def scan_portfolio_settlements(self, page: "Page") -> dict:
+        """Scrape positions and match against pending bets — NO clicking.
+
+        Returns a preview of what settle_all would do:
+        - positions scraped
+        - matched settlements (bet_id, event, result, payout, pl)
+        - claim banner detected
+        - redeemable count
+
+        The user reviews this before confirming execution.
+        """
+        from ...db.models import Bet, Event, get_session
+        from ...repositories.profile_repo import ProfileRepo
+
+        # Navigate to portfolio positions
+        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
+            await page.goto(
+                "https://polymarket.com/portfolio?tab=positions",
+                wait_until="domcontentloaded", timeout=15000,
+            )
+            await asyncio.sleep(4)
+
+        # Check for Claim banner (don't click)
+        has_claim = await page.evaluate("""() => {
+            const btns = document.querySelectorAll('button');
+            for (const btn of btns) {
+                const t = (btn.textContent || '').trim();
+                if ((t === 'Claim' || t.startsWith('Claim')) && btn.getBoundingClientRect().top < 400) {
+                    return t;
+                }
+            }
+            return null;
+        }""")
+
+        # Count redeemable positions (don't click)
+        redeem_count = await page.evaluate("""() => {
+            const btns = document.querySelectorAll('button');
+            let n = 0;
+            for (const btn of btns) {
+                if (btn.textContent.trim() !== 'Redeem') continue;
+                let parent = btn.parentElement;
+                for (let i = 0; i < 8 && parent; i++) {
+                    const text = parent.textContent || '';
+                    if (text.includes('Won') || text.includes('Lost') ||
+                        text.includes('WON') || text.includes('LOST')) {
+                        n++;
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
+            }
+            return n;
+        }""")
+
+        # Scrape positions
+        positions = await self.scrape_portfolio(page)
+
+        # Match against pending bets
+        db = get_session()
+        try:
+            profile = ProfileRepo(db).get_active()
+            if not profile:
+                return {"error": "no active profile"}
+
+            pending = (
+                db.query(Bet, Event)
+                .join(Event, Bet.event_id == Event.id, isouter=True)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                )
+                .all()
+            )
+
+            from ...services.fire_window import _match_polymarket_position
+
+            matches = []
+            for bet, event in pending:
+                pos = _match_polymarket_position(bet, event, positions)
+                if not pos:
+                    continue
+                status = pos.get("status", "open")
+                if status not in ("won", "lost"):
+                    continue
+
+                payout = 0.0
+                if status == "won":
+                    vals = pos.get("values", [])
+                    if vals:
+                        payout = max(vals)
+
+                event_name = ""
+                if event:
+                    h = event.display_home or event.home_team or ""
+                    a = event.display_away or event.away_team or ""
+                    event_name = f"{h} vs {a}" if h and a else h or a
+
+                matches.append({
+                    "bet_id": bet.id,
+                    "event": event_name,
+                    "market": bet.market,
+                    "outcome": bet.outcome,
+                    "odds": bet.odds,
+                    "stake": bet.stake,
+                    "result": status,
+                    "payout": round(payout, 2),
+                    "pl": round(payout - bet.stake, 2),
+                })
+
+            total_staked = sum(m["stake"] for m in matches)
+            total_payout = sum(m["payout"] for m in matches)
+            wins = [m for m in matches if m["result"] == "won"]
+            losses = [m for m in matches if m["result"] == "lost"]
+
+            return {
+                "positions_scraped": len(positions),
+                "positions": positions,
+                "has_claim": has_claim,
+                "redeem_count": redeem_count,
+                "pending_bets": len(pending),
+                "matches": matches,
+                "summary": {
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "total_staked": round(total_staked, 2),
+                    "total_payout": round(total_payout, 2),
+                    "net_pl": round(total_payout - total_staked, 2),
+                },
+            }
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # Full settle flow (execute after scan)
+    # ------------------------------------------------------------------
+
+    async def settle_all(self, page: "Page") -> dict:
+        """Full settlement: navigate → claim → redeem → settle DB → void ghosts.
+
+        1. Navigate to portfolio positions page
+        2. Click Claim banner if present (dismiss share modal)
+        3. Scrape all positions
+        4. Match against pending bets in DB
+        5. Detect ghost bets (pending in DB, no position on Polymarket) → void
+        6. Click Redeem buttons for WON/LOST positions (dismiss share modals)
+        7. Settle matched bets + void ghosts in DB
+        8. Re-scrape balance
+
+        Returns full summary with P&L breakdown.
+        """
+        from ...db.models import Bet, Event, get_session
+        from ...repositories.profile_repo import ProfileRepo
+        from ...services.bet_service import BetService
+
+        # 1. Navigate to portfolio positions
+        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
+            await page.goto(
+                "https://polymarket.com/portfolio?tab=positions",
+                wait_until="domcontentloaded", timeout=15000,
+            )
+            await asyncio.sleep(4)
+
+        # 2. Click Claim banner (handles modal dismissal)
+        claim_result = await self.claim_banner(page)
+
+        # 3. Wait for page to settle after claim, then scrape
+        if claim_result.get("claimed"):
+            await asyncio.sleep(2)
+
+        positions = await self.scrape_portfolio(page)
+
+        # 4. Match against pending bets in DB
+        db = get_session()
+        settled = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            if not profile:
+                return {"error": "no active profile", "claim": claim_result}
+
+            pending = (
+                db.query(Bet, Event)
+                .join(Event, Bet.event_id == Event.id, isouter=True)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                )
+                .all()
+            )
+
+            if not pending:
+                return {
+                    "claim": claim_result,
+                    "positions": len(positions),
+                    "settled": 0,
+                    "note": "no pending polymarket bets",
+                }
+
+            from ...services.fire_window import _match_polymarket_position
+
+            matches = []
+            for bet, event in pending:
+                pos = _match_polymarket_position(bet, event, positions)
+                if not pos:
+                    continue
+                status = pos.get("status", "open")
+                if status not in ("won", "lost"):
+                    continue
+
+                payout = 0.0
+                if status == "won":
+                    vals = pos.get("values", [])
+                    if vals:
+                        payout = max(vals)
+
+                event_name = ""
+                if event:
+                    h = event.display_home or event.home_team or ""
+                    a = event.display_away or event.away_team or ""
+                    event_name = f"{h} vs {a}" if h and a else h or a
+
+                matches.append({
+                    "bet_id": bet.id,
+                    "event": event_name,
+                    "market": bet.market,
+                    "outcome": bet.outcome,
+                    "odds": bet.odds,
+                    "stake": bet.stake,
+                    "result": status,
+                    "payout": round(payout, 2),
+                    "pl": round(payout - bet.stake, 2),
+                })
+
+            # 5. Detect ghost bets — pending in DB but no position on Polymarket
+            matched_ids = {m["bet_id"] for m in matches}
+            # Bets with a position still open (not won/lost) are live, not ghosts
+            open_ids = set()
+            for bet, event in pending:
+                if bet.id in matched_ids:
+                    continue
+                pos = _match_polymarket_position(bet, event, positions)
+                if pos and pos.get("status") == "open":
+                    open_ids.add(bet.id)
+
+            ghost_bets = []
+            for bet, event in pending:
+                if bet.id in matched_ids or bet.id in open_ids:
+                    continue
+                # No position at all → ghost bet (never placed or already redeemed)
+                event_name = ""
+                if event:
+                    h = event.display_home or event.home_team or ""
+                    a = event.display_away or event.away_team or ""
+                    event_name = f"{h} vs {a}" if h and a else h or a
+                ghost_bets.append({
+                    "bet_id": bet.id,
+                    "event": event_name,
+                    "market": bet.market,
+                    "outcome": bet.outcome,
+                    "odds": bet.odds,
+                    "stake": bet.stake,
+                    "result": "void",
+                    "payout": 0.0,
+                    "pl": round(-bet.stake, 2),
+                })
+                logger.info(
+                    f"[polymarket] Ghost bet #{bet.id} {event_name} — "
+                    f"no position found, voiding (stake=${bet.stake})"
+                )
+
+            # 6. Click Redeem buttons (handles modal dismissal per redeem)
+            redeem_result = await self.redeem_all(page)
+
+            # 7. Settle in DB (matched + ghosts)
+            bet_service = BetService(db)
+            for m in matches:
+                try:
+                    bet_service.settle_bet(m["bet_id"], m["result"], m["payout"])
+                    settled.append(m)
+                    logger.info(
+                        f"[polymarket] Settled bet #{m['bet_id']} {m['event']} "
+                        f"→ {m['result']} (payout=${m['payout']})"
+                    )
+                except Exception as e:
+                    logger.warning(f"[polymarket] Failed to settle bet #{m['bet_id']}: {e}")
+            for g in ghost_bets:
+                try:
+                    bet_service.settle_bet(g["bet_id"], "void", 0.0)
+                    settled.append(g)
+                except Exception as e:
+                    logger.warning(f"[polymarket] Failed to void ghost bet #{g['bet_id']}: {e}")
+            db.commit()
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[polymarket] settle_all DB error: {e}", exc_info=True)
+            return {"error": str(e), "claim": claim_result}
+        finally:
+            db.close()
+
+        # 8. Re-scrape balance
+        new_balance = await self.sync_balance(page)
+
+        total_staked = sum(s["stake"] for s in settled if s["result"] != "void")
+        total_payout = sum(s["payout"] for s in settled if s["result"] != "void")
+        wins = [s for s in settled if s["result"] == "won"]
+        losses = [s for s in settled if s["result"] == "lost"]
+        voids = [s for s in settled if s["result"] == "void"]
+
+        return {
+            "claim": claim_result,
+            "redeem": redeem_result,
+            "settled": len(settled),
+            "settlements": settled,
+            "summary": {
+                "wins": len(wins),
+                "losses": len(losses),
+                "voids": len(voids),
+                "total_staked": round(total_staked, 2),
+                "total_payout": round(total_payout, 2),
+                "net_pl": round(total_payout - total_staked, 2),
+            },
+            "new_balance": new_balance,
+            "positions_scraped": len(positions),
+        }
 
     # ------------------------------------------------------------------
     # Cleanup
