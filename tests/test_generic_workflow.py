@@ -183,3 +183,55 @@ def test_place_bet_no_betslip_intel(intel_dir, sample_intel):
     result = asyncio.get_event_loop().run_until_complete(wf.place_bet(page, bet, 50.0))
     assert result.status == "manual"
     assert result.reason == "no_betslip_intel"
+
+
+# --- Discovery engine tests ---
+
+
+def test_analyze_recordings_finds_api_endpoints(tmp_path):
+    from src.mirror.workflows.discovery import analyze_recordings
+
+    rec_dir = tmp_path / "mirror_recordings" / "testprovider"
+    rec_dir.mkdir(parents=True)
+    entries = [
+        {"ts": "2026-04-08T10:00:00Z", "method": "GET", "url": "https://test.com/api/wallet/balance", "status": 200, "response_body": '{"balance": 500}', "resource_type": "xhr"},
+        {"ts": "2026-04-08T10:00:01Z", "method": "GET", "url": "https://test.com/api/bets/history", "status": 200, "response_body": '{"bets": []}', "resource_type": "xhr"},
+        {"ts": "2026-04-08T10:00:02Z", "method": "POST", "url": "https://test.com/api/bets/place", "status": 200, "response_body": '{"id": 1}', "resource_type": "xhr", "request_body": '{"stake": 10}'},
+        {"ts": "2026-04-08T10:00:03Z", "method": "GET", "url": "https://test.com/static/logo.png", "status": 200, "response_body": None, "resource_type": "image"},
+        {"ts": "2026-04-08T10:00:04Z", "method": "GET", "url": "https://cdn.google.com/tracking", "status": 200, "response_body": None, "resource_type": "xhr"},
+    ]
+    with open(rec_dir / "2026-04-08_10-00-00.jsonl", "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    result = analyze_recordings("testprovider", tmp_path / "mirror_recordings")
+    assert "balance" in result
+    assert any("/wallet/balance" in ep for ep in result["balance"])
+    assert "history" in result
+    assert any("/bets/history" in ep for ep in result["history"])
+    assert "placement" in result
+    assert any("/bets/place" in ep for ep in result["placement"])
+
+
+def test_analyze_recordings_no_recordings(tmp_path):
+    from src.mirror.workflows.discovery import analyze_recordings
+    result = analyze_recordings("nonexistent", tmp_path / "mirror_recordings")
+    assert result == {"balance": [], "history": [], "placement": [], "other_api": []}
+
+
+def test_infer_balance_path_nested():
+    from src.mirror.workflows.discovery import _infer_balance_path
+    data = {"data": {"wallet": {"balance": 123.45}}}
+    assert _infer_balance_path(data) == "data.wallet.balance"
+
+
+def test_infer_balance_path_flat():
+    from src.mirror.workflows.discovery import _infer_balance_path
+    data = {"balance": 500.0}
+    assert _infer_balance_path(data) == "balance"
+
+
+def test_infer_balance_path_no_match():
+    from src.mirror.workflows.discovery import _infer_balance_path
+    data = {"name": "test", "items": [1, 2]}
+    assert _infer_balance_path(data) is None
