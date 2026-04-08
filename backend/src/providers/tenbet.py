@@ -433,11 +433,10 @@ class TenBetRetriever(BrowserRetriever):
                         }
                     }
 
-                    // Live indicator
+                    // Live indicator — only match explicit LIVE text, not timing patterns
                     const isLive = !!(
-                        item.querySelector('[class*="live"]') ||
-                        item.querySelector('[class*="Live"]') ||
-                        /LIVE|\\d+'/.test(timing)
+                        item.querySelector('[class*="live-icon"], [class*="LiveIcon"], [class*="ta-inPlay"]') ||
+                        /^LIVE$/i.test(timing.trim())
                     );
 
                     // Markets (by ta-MarketType-* class)

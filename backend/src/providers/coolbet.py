@@ -315,6 +315,9 @@ class CoolbetRetriever(BrowserRetriever):
             if market_ids:
                 odds_data = await self._fetch_odds_api(page, market_ids)
 
+            logger.info(
+                f"[{self.provider_id}] {sport}: {len(market_ids)} market IDs, "
+                f"{len(odds_data)} odds entries ({len(odds_data)*100//max(len(market_ids),1)}% coverage)")
             logger.debug(
                 f"[{self.provider_id}] {sport}: {len(category_data)} categories, "
                 f"{len(market_ids)} markets, {len(odds_data)} odds entries"

@@ -252,30 +252,54 @@ class TipwinRetriever(BrowserRetriever):
                     provider_id=self.provider_id,
                 )
 
-            # Now paginate — the SPA sends page data via SignalR WebSocket
+            # Paginate by clicking "next page" button in the DOM
+            # URL-based pagination (?page=N) doesn't trigger new API calls.
+            # The SPA only fetches new data when the user clicks pagination buttons.
             total_items = api_responses[0].get('totalNumberOfItems', 0)
             page_size = api_responses[0].get('pageSize', 5)
             max_pages = min((total_items + page_size - 1) // page_size if total_items else 30, 120)
 
             logger.info(
-                f"[{self.provider_id}] Paginating {max_pages} pages "
-                f"({total_items} items, capturing via SignalR WebSocket)"
+                f"[{self.provider_id}] Paginating {max_pages} pages via DOM clicks "
+                f"({total_items} items)"
             )
 
-            # Navigate through pages — SPA pushes data via WebSocket
             for pg in range(2, max_pages + 1):
                 try:
                     prev_ws = len(ws_responses)
                     prev_http = len(api_responses)
-                    await page.goto(f"{full_url}?page={pg}", wait_until='domcontentloaded', timeout=10000)
-                    # Wait for either WS or HTTP response (up to 3s)
+
+                    # Click the next page button in the pagination tabs
+                    clicked = await page.evaluate(f"""() => {{
+                        // Try numbered page button first
+                        const btns = document.querySelectorAll('.pagination__tabs button, [class*="pagination"] button');
+                        for (const btn of btns) {{
+                            if (btn.textContent.trim() === '{pg}') {{
+                                btn.click();
+                                return 'page_' + {pg};
+                            }}
+                        }}
+                        // Fallback: click "next" arrow/chevron button
+                        const next = document.querySelector('[class*="pagination"] [class*="next"], [class*="pagination"] [class*="chevron-right"], .pagination__arrow--right');
+                        if (next) {{
+                            next.click();
+                            return 'next';
+                        }}
+                        return null;
+                    }}""")
+
+                    if not clicked:
+                        logger.debug(f"[{self.provider_id}] No pagination button found at page {pg}")
+                        break
+
+                    # Wait for WS or HTTP response (up to 3s)
                     for _ in range(6):
                         if len(ws_responses) > prev_ws or len(api_responses) > prev_http:
                             break
                         await asyncio.sleep(0.5)
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
-                    continue
+                    logger.debug(f"[{self.provider_id}] Page {pg} click error: {e}")
+                    break
 
             page.remove_listener("response", on_response)
 
