@@ -288,7 +288,8 @@ class GenericWorkflow(ProviderWorkflow):
             return True
 
         event_id = getattr(bet, "provider_event_id", "") or getattr(bet, "event_id", "")
-        url = template.replace("{event_id}", str(event_id))
+        matchup_id = getattr(bet, "matchup_id", "") or ""
+        url = template.replace("{event_id}", str(event_id)).replace("{matchup_id}", str(matchup_id))
         if not url.startswith("http"):
             url = f"https://{self.domain}{url}"
 
@@ -354,6 +355,35 @@ class GenericWorkflow(ProviderWorkflow):
         if self.strategy and self.strategy.check_live_price:
             return await self.strategy.check_live_price(page, bet, self.intel)
         return None
+
+    # ------------------------------------------------------------------
+    # Scan — read-only account state preview
+    # ------------------------------------------------------------------
+
+    async def scan(self, page: "Page") -> dict:
+        """Read-only preview: balance, pending bets, settled bets, DB diff."""
+        if self.strategy and self.strategy.scan:
+            return await self.strategy.scan(page, self.intel)
+        return {"error": f"No scan implementation for {self.provider_id}"}
+
+    # ------------------------------------------------------------------
+    # Settle all — scrape pending + auto-settle + sync balance
+    # ------------------------------------------------------------------
+
+    async def settle_all(self, page: "Page") -> dict:
+        """Full settlement: record missing bets, auto-settle, sync balance."""
+        if self.strategy and self.strategy.settle_all:
+            return await self.strategy.settle_all(page, self.intel)
+
+        # Fallback: use sync_history + _settle_from_history
+        history = await self.sync_history(page)
+        if not history:
+            return {"settled": 0, "note": "no history entries found"}
+
+        from ...services.fire_window import _settle_from_history
+        count = _settle_from_history(self.provider_id, history)
+        balance = await self.sync_balance(page)
+        return {"settled": count, "new_balance": balance}
 
     # ------------------------------------------------------------------
     # Auto-discovery
