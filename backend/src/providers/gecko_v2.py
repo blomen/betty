@@ -308,20 +308,36 @@ class GeckoV2Retriever(BrowserRetriever):
                 provider_id=self.provider_id,
             )
 
-        try:
-            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
-        except asyncio.TimeoutError:
-            logger.error(f"[{self.provider_id}] Session init timed out after 120s")
-            self._api_headers = None
-            self._api_base = None
-            self._session_ready = False
-            self._session_init_failed = True  # Prevent retries for remaining sports
-            raise RetryableError(
-                "Session init timed out after 120s",
-                provider_id=self.provider_id,
-            )
-        if not session_ok:
-            self._session_init_failed = True  # Prevent retries for remaining sports
+        # Retry session init up to 2 times (header capture is timing-sensitive)
+        for attempt in range(2):
+            try:
+                session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
+                if session_ok:
+                    break
+                # First attempt failed — close browser and retry with fresh page
+                logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} failed, retrying...")
+                self._api_headers = None
+                self._api_base = None
+                self._session_ready = False
+                await self.transport.close()
+                await self.transport._ensure_browser()
+            except asyncio.TimeoutError:
+                logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} timed out")
+                self._api_headers = None
+                self._api_base = None
+                self._session_ready = False
+                if attempt == 0:
+                    await self.transport.close()
+                    await self.transport._ensure_browser()
+                    continue
+                self._session_init_failed = True
+                raise RetryableError(
+                    "Session init timed out after 2 attempts",
+                    provider_id=self.provider_id,
+                )
+
+        if not self._api_headers:
+            self._session_init_failed = True
             raise RetryableError(
                 "Session init failed — no API headers captured",
                 provider_id=self.provider_id,
