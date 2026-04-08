@@ -258,7 +258,7 @@ async def lifespan(app: FastAPI):
                                 expanded = None
                                 # Try yesterday first (today may have no RTH data yet pre-market)
                                 from datetime import date, timedelta
-                                for attempt_date in ["yesterday", None]:
+                                for attempt_date in [None, "yesterday"]:
                                     try:
                                         if attempt_date == "yesterday":
                                             yesterday = (date.today() - timedelta(days=1)).isoformat()
@@ -338,7 +338,7 @@ async def lifespan(app: FastAPI):
                                 session_data = None
                                 expanded = None
                                 from datetime import date, timedelta
-                                for attempt_date in ["yesterday", None]:
+                                for attempt_date in [None, "yesterday"]:
                                     try:
                                         if attempt_date == "yesterday":
                                             yesterday = (date.today() - timedelta(days=1)).isoformat()
