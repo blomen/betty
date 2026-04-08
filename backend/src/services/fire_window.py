@@ -43,6 +43,12 @@ class FireWindowBet:
     poly_outcome: str | None = None
     original_outcome: str | None = None
     matchup_id: str | None = None  # Pinnacle event ID for URL navigation
+    available_providers: list[str] | None = None  # Cluster: all providers with this bet
+
+
+# Altenar providers share identical odds — treat as one cluster
+ALTENAR_CLUSTER = frozenset({"betinia", "campobet", "quickcasino", "swiper", "lodur", "dbet"})
+ALTENAR_CLUSTER_ID = "altenar"
 
 
 @dataclass
@@ -76,6 +82,51 @@ def _round_stake(pid: str, stake: float) -> float:
 
 def _min_bet(pid: str) -> float:
     return 1.0 if pid == "polymarket" else 10.0
+
+
+def _merge_altenar_cluster(provider_bets: dict[str, list[FireWindowBet]]) -> None:
+    """Merge all Altenar providers into one cluster with deduplicated bets.
+
+    Since all Altenar providers share identical odds, we keep one copy per
+    event+market+outcome (highest edge) and track which providers have it.
+    """
+    altenar_pids = [pid for pid in list(provider_bets.keys()) if pid in ALTENAR_CLUSTER]
+    if len(altenar_pids) < 2:
+        # Single or no Altenar provider — no merging needed
+        if len(altenar_pids) == 1:
+            pid = altenar_pids[0]
+            for bet in provider_bets[pid]:
+                bet.available_providers = [pid]
+        return
+
+    # Collect all bets, deduplicate by event+market+outcome+point
+    merged: dict[str, FireWindowBet] = {}  # key → best bet
+    for pid in altenar_pids:
+        for bet in provider_bets[pid]:
+            point_key = f"{bet.point}" if bet.point is not None else ""
+            key = f"{bet.event_id}:{bet.market}:{bet.outcome}:{point_key}"
+            if key not in merged:
+                bet.available_providers = [pid]
+                bet.provider_id = ALTENAR_CLUSTER_ID
+                merged[key] = bet
+            else:
+                existing = merged[key]
+                if pid not in existing.available_providers:
+                    existing.available_providers.append(pid)
+                # Keep the one with higher edge (should be identical, but just in case)
+                if bet.edge_pct > existing.edge_pct:
+                    bet.available_providers = existing.available_providers
+                    bet.provider_id = ALTENAR_CLUSTER_ID
+                    merged[key] = bet
+
+    # Remove individual Altenar providers, add cluster
+    for pid in altenar_pids:
+        del provider_bets[pid]
+    provider_bets[ALTENAR_CLUSTER_ID] = list(merged.values())
+    logger.info(
+        f"[FireWindow] Merged {len(altenar_pids)} Altenar providers → "
+        f"{len(merged)} unique bets (providers: {', '.join(altenar_pids)})"
+    )
 
 
 def _resolve_provider_meta(provider_bets: dict[str, list[FireWindowBet]]) -> None:
@@ -162,6 +213,9 @@ def open_window(
             original_outcome=b.get("original_outcome"),
         )
         provider_bets.setdefault(pid, []).append(bet)
+
+    # Merge Altenar cluster: deduplicate bets, track available providers
+    _merge_altenar_cluster(provider_bets)
 
     # Resolve provider-specific metadata (slugs, matchup IDs)
     _resolve_provider_meta(provider_bets)
@@ -340,7 +394,14 @@ async def open_needed_tabs(mirror_service) -> dict:
     # 2. Has expired pending bets (need settlement)
     # 3. Has ANY pending bets (need settlement check — FIRST PRIORITY)
     queue_pids = set(_window.provider_queue) if _window else set()
-    providers_with_balance = {pid for pid, bal in balances.items() if bal >= 10 and pid in queue_pids}
+    # Expand cluster ID to individual members for tab opening
+    expanded_queue = set()
+    for qpid in queue_pids:
+        if qpid == ALTENAR_CLUSTER_ID:
+            expanded_queue.update(ALTENAR_CLUSTER)
+        else:
+            expanded_queue.add(qpid)
+    providers_with_balance = {pid for pid, bal in balances.items() if bal >= 10 and pid in expanded_queue}
     all_needing_tab = providers_with_balance | providers_needing_settle | providers_with_pending
 
     logger.info(
@@ -401,19 +462,13 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     1. Finds the existing tab
     2. Settles expired bets across ALL providers
     3. Reads balance from DB
+
+    For Altenar cluster: syncs history + balance for all member providers with tabs.
     """
     result = {"provider_id": provider_id, "steps": {}}
 
-    workflow = get_workflow(provider_id)
-
-    # Find existing tab (opened by open_needed_tabs)
     context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
     context = getattr(context, 'context', None) if context else None
-    if context:
-        page = await workflow.find_tab(context)
-        result["steps"]["tab"] = "found" if page else "not_found"
-    else:
-        result["steps"]["tab"] = "no_browser_context"
 
     # Settle expired bets across ALL providers
     try:
@@ -422,10 +477,55 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     except Exception as e:
         result["steps"]["settle_expired"] = f"error:{e}"
 
+    # Altenar cluster: sync history+balance for all members with open tabs
+    if provider_id == ALTENAR_CLUSTER_ID:
+        if context:
+            synced = {}
+            for cpid in ALTENAR_CLUSTER:
+                wf = get_workflow(cpid)
+                page = await wf.find_tab(context)
+                if not page:
+                    continue
+                try:
+                    await wf.sync_history(page)
+                    synced[cpid] = "scanned"
+                except Exception as e:
+                    synced[cpid] = f"error:{e}"
+            result["steps"]["cluster_sync"] = synced
+        # Read cluster balances
+        try:
+            from ..repositories.profile_repo import ProfileRepo
+            db = get_session()
+            try:
+                repo = ProfileRepo(db)
+                profile = repo.get_active()
+                if profile:
+                    cluster_bal = {}
+                    for cpid in ALTENAR_CLUSTER:
+                        bal = repo.get_balance(profile.id, cpid)
+                        if bal > 0:
+                            cluster_bal[cpid] = round(bal, 2)
+                    result["steps"]["balance"] = round(sum(cluster_bal.values()), 2)
+                    result["steps"]["cluster_balances"] = cluster_bal
+            finally:
+                db.close()
+        except Exception as e:
+            result["steps"]["balance"] = f"error:{e}"
+        return result
+
+    workflow = get_workflow(provider_id)
+
+    # Find existing tab (opened by open_needed_tabs)
+    if context:
+        page = await workflow.find_tab(context)
+        result["steps"]["tab"] = "found" if page else "not_found"
+    else:
+        page = None
+        result["steps"]["tab"] = "no_browser_context"
+
     # Provider-specific settlement
     if context and page:
         if provider_id == "polymarket":
-            # Polymarket: full DOM settle — navigate to portfolio, claim/redeem, settle DB
             try:
                 from ..mirror.workflows.polymarket import PolymarketWorkflow
                 poly_wf = workflow if isinstance(workflow, PolymarketWorkflow) else PolymarketWorkflow(
@@ -439,17 +539,20 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
                     "net_pl": settle_result.get("summary", {}).get("net_pl", 0),
                 }
                 result["steps"]["balance"] = settle_result.get("new_balance", -1)
+                try:
+                    history_entries = await poly_wf.sync_history(page)
+                    result["steps"]["history_sync"] = {
+                        "settled_from_history": len(history_entries),
+                    }
+                except Exception as he:
+                    logger.warning(f"[FireWindow] Polymarket sync_history failed: {he}")
+                    result["steps"]["history_sync"] = f"error:{he}"
             except Exception as e:
                 logger.warning(f"[FireWindow] Polymarket settle_all failed: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
         elif provider_id == "pinnacle":
-            # Pinnacle: full API settle — scrape pending bets + auto-settle + sync balance
             try:
-                from ..mirror.workflows.pinnacle import PinnacleWorkflow
-                pin_wf = workflow if isinstance(workflow, PinnacleWorkflow) else PinnacleWorkflow(
-                    provider_id="pinnacle", domain="pinnacle.se",
-                )
-                settle_result = await pin_wf.settle_all(page)
+                settle_result = await workflow.settle_all(page)
                 result["steps"]["settle"] = {
                     "recorded_new": settle_result.get("recorded_new", 0),
                     "settled": settle_result.get("settled", 0),
@@ -461,7 +564,6 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
                 logger.warning(f"[FireWindow] Pinnacle settle_all failed: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
         else:
-            # Other providers: navigate to bet history to catch settlements via interceptor
             try:
                 await workflow.sync_history(page)
                 result["steps"]["settle_history"] = "scanned"
@@ -526,19 +628,24 @@ def _settle_from_history(provider_id: str, history: list) -> int:
 
 
 def _settle_expired_bets() -> dict:
-    """Check ALL pending bets across all providers where event start_time has passed.
+    """Void pending bets where event start_time has passed.
 
-    For events that have started, mark them as needing settlement check.
-    Returns {provider_id: count} of bets flagged for settlement.
+    These are ghost bets — recorded in DB but never actually placed,
+    or already settled outside our system. Safe to void since the event
+    has already started/ended.
+
+    Returns {provider_id: {"expired": N, "voided": N}}.
     """
     from ..db.models import Bet, Event
+    from .bet_service import BetService
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
     result = {}
     db = get_session()
     try:
-        # Find pending bets where the event has started
+        svc = BetService(db)
+
         pending = (
             db.query(Bet)
             .filter(Bet.result == "pending")
@@ -547,10 +654,8 @@ def _settle_expired_bets() -> dict:
 
         expired_by_provider: dict[str, list] = {}
         for bet in pending:
-            # Check start_time on the bet itself or the linked event
             start = bet.start_time if hasattr(bet, 'start_time') and bet.start_time else None
             if not start:
-                # Try to get from event table
                 event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                 start = event.start_time if event and hasattr(event, 'start_time') else None
 
@@ -561,14 +666,23 @@ def _settle_expired_bets() -> dict:
                     expired_by_provider.setdefault(bet.provider_id, []).append(bet)
 
         for pid, bets in expired_by_provider.items():
-            result[pid] = len(bets)
-            logger.info(f"[FireWindow] {pid}: {len(bets)} pending bets with expired events")
+            voided = 0
+            for bet in bets:
+                try:
+                    svc.settle_bet(bet.id, "void", 0.0)
+                    voided += 1
+                    logger.info(
+                        f"[FireWindow] Voided expired ghost bet #{bet.id} "
+                        f"{pid} (stake={bet.stake})"
+                    )
+                except Exception as e:
+                    logger.warning(f"[FireWindow] Failed to void bet #{bet.id}: {e}")
+            result[pid] = {"expired": len(bets), "voided": voided}
 
-        if result:
-            total = sum(result.values())
-            logger.info(f"[FireWindow] Total expired pending bets: {total} across {len(result)} providers")
+        db.commit()
 
     except Exception as e:
+        db.rollback()
         logger.warning(f"[FireWindow] _settle_expired_bets failed: {e}")
     finally:
         db.close()
@@ -630,10 +744,13 @@ def get_live_state() -> dict:
             "poly_outcome": bet.poly_outcome,
             "original_outcome": bet.original_outcome,
             "start_time": bet.start_time,
+            "available_providers": bet.available_providers,
         })
 
-    # Fetch current balance for this provider
+    # Fetch current balance — for clusters, sum all member balances
+    is_cluster = pid == ALTENAR_CLUSTER_ID
     balance = None
+    cluster_balances = None
     try:
         from ..repositories.profile_repo import ProfileRepo
         db = get_session()
@@ -641,7 +758,15 @@ def get_live_state() -> dict:
             profile_repo = ProfileRepo(db)
             profile = profile_repo.get_active()
             if profile:
-                balance = profile_repo.get_balance(profile.id, pid)
+                if is_cluster:
+                    cluster_balances = {}
+                    for cpid in ALTENAR_CLUSTER:
+                        bal = profile_repo.get_balance(profile.id, cpid)
+                        if bal > 0:
+                            cluster_balances[cpid] = round(bal, 2)
+                    balance = sum(cluster_balances.values())
+                else:
+                    balance = profile_repo.get_balance(profile.id, pid)
         finally:
             db.close()
     except Exception:
@@ -655,6 +780,7 @@ def get_live_state() -> dict:
         "status": _window.status,
         "bets": bet_dicts,
         "balance": round(balance, 2) if balance is not None else None,
+        **({"cluster_balances": cluster_balances} if cluster_balances else {}),
         "summary": {
             "total_bets": len(bets),
             "active_bets": active_count,
@@ -669,9 +795,52 @@ def get_live_state() -> dict:
 # Single-bet flow: check → confirm → next
 # ---------------------------------------------------------------------------
 
+def _get_cluster_balances(cluster_providers: list[str]) -> dict[str, float]:
+    """Get balances for all providers in a cluster. Returns {pid: balance}."""
+    from ..repositories.profile_repo import ProfileRepo
+    balances = {}
+    db = get_session()
+    try:
+        repo = ProfileRepo(db)
+        profile = repo.get_active()
+        if profile:
+            for cpid in cluster_providers:
+                balances[cpid] = repo.get_balance(profile.id, cpid)
+    finally:
+        db.close()
+    return balances
+
+
+def _get_already_placed(provider_ids: list[str]) -> set[str]:
+    """Get event:market:outcome keys for already-placed bets across providers."""
+    from ..db.models import Bet
+    already_placed: set[str] = set()
+    db = get_session()
+    try:
+        rows = db.query(Bet.event_id, Bet.market, Bet.outcome).filter(
+            Bet.provider_id.in_(provider_ids),
+            Bet.result == "pending",
+        ).all()
+        for row in rows:
+            already_placed.add(f"{row[0]}:{row[1]}:{row[2]}")
+    finally:
+        db.close()
+    return already_placed
+
+
+def _pick_best_provider(available: list[str], balances: dict[str, float], stake: float) -> tuple[str, float] | None:
+    """Pick the provider with highest balance that can cover the stake."""
+    candidates = [(p, balances.get(p, 0)) for p in available if balances.get(p, 0) >= _min_bet(p)]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: -x[1])
+    return candidates[0]
+
+
 def get_next_bet() -> dict:
     """Get the next unfired bet for the current provider, sorted by edge desc.
 
+    For cluster providers (Altenar), picks the provider with highest balance.
     Returns bet details + position info, or {"done": True} if no more bets.
     """
     if _window is None:
@@ -683,26 +852,28 @@ def get_next_bet() -> dict:
     bets = _window.provider_bets.get(pid, [])
     fired_ids = _window.fired_results.get(f"{pid}_bet_ids", set())
 
-    # Also check DB for already-placed bets (survives restart)
-    already_placed: set[str] = set()
+    is_cluster = pid == ALTENAR_CLUSTER_ID
+    # For clusters, check already-placed across all member providers
+    if is_cluster:
+        cluster_providers = list(ALTENAR_CLUSTER)
+    else:
+        cluster_providers = [pid]
+
     try:
-        import os
-        from sqlalchemy import create_engine, text
-        db_url = os.environ.get("DATABASE_URL", "")
-        sync_url = db_url.replace("+asyncpg", "+psycopg2")
-        if sync_url:
-            eng = create_engine(sync_url, pool_pre_ping=True)
-            with eng.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT event_id, market, outcome FROM bets "
-                    "WHERE provider_id = :pid AND result = 'pending'"
-                ), {"pid": pid}).fetchall()
-                for row in rows:
-                    already_placed.add(f"{row[0]}:{row[1]}:{row[2]}")
-            eng.dispose()
+        already_placed = _get_already_placed(cluster_providers)
         print(f"[FireWindow] Already placed: {len(already_placed)} bets for {pid}")
     except Exception as e:
         print(f"[FireWindow] DB check failed: {e}")
+        already_placed = set()
+
+    # For clusters, get all balances upfront
+    if is_cluster:
+        try:
+            balances = _get_cluster_balances(cluster_providers)
+        except Exception:
+            balances = {}
+    else:
+        balances = {}
 
     # Sort by edge desc, find first unfired
     for bet in sorted(bets, key=lambda b: -b.edge_pct):
@@ -710,31 +881,36 @@ def get_next_bet() -> dict:
             continue
         if bet.edge_pct <= 0:
             continue
-        # Skip if already placed in DB
         bet_key = f"{bet.event_id}:{bet.market}:{bet.outcome}"
         if bet_key in already_placed:
             continue
 
-        # Check balance — adjust stake if needed, skip if too low
-        balance = 0
-        try:
-            from ..repositories.profile_repo import ProfileRepo
-            _db = get_session()
+        # Pick provider and balance
+        if is_cluster and bet.available_providers:
+            pick = _pick_best_provider(bet.available_providers, balances, bet.stake)
+            if not pick:
+                continue
+            actual_pid, balance = pick
+        else:
+            actual_pid = pid
+            balance = 0
             try:
-                _repo = ProfileRepo(_db)
-                _profile = _repo.get_active()
-                if _profile:
-                    balance = _repo.get_balance(_profile.id, pid)
-            finally:
-                _db.close()
-        except Exception:
-            pass
+                from ..repositories.profile_repo import ProfileRepo
+                _db = get_session()
+                try:
+                    _repo = ProfileRepo(_db)
+                    _profile = _repo.get_active()
+                    if _profile:
+                        balance = _repo.get_balance(_profile.id, pid)
+                finally:
+                    _db.close()
+            except Exception:
+                pass
 
-        if balance < _min_bet(pid):
-            continue  # Balance too low — skip to next or done
+        if balance < _min_bet(actual_pid):
+            continue
 
-        # Adjust stake to remaining balance, round down to avoid exceeding
-        actual_stake = _round_stake(pid, min(bet.stake, balance))
+        actual_stake = _round_stake(actual_pid, min(bet.stake, balance))
         actual_profit = actual_stake * (bet.edge_pct / 100)
 
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
@@ -745,7 +921,9 @@ def get_next_bet() -> dict:
 
         return {
             "bet_id": bet.bet_id,
-            "provider_id": pid,
+            "provider_id": actual_pid,
+            "cluster_id": pid if is_cluster else None,
+            "available_providers": bet.available_providers,
             "event_id": bet.event_id,
             "display_home": bet.display_home,
             "display_away": bet.display_away,
@@ -786,7 +964,11 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     live_cents = None
 
     if mirror_service is not None:
-        workflow = get_workflow(pid)
+        # For clusters, use any member provider's workflow (same odds engine)
+        check_pid = pid
+        if pid == ALTENAR_CLUSTER_ID and bet.available_providers:
+            check_pid = bet.available_providers[0]
+        workflow = get_workflow(check_pid)
         context = getattr(mirror_service, 'interceptor', None)
         context = getattr(context, 'context', None) if context else None
         if context:
@@ -813,8 +995,12 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
     }
 
 
-async def place_bet(bet_id: int, mirror_service) -> dict:
-    """Place a single confirmed bet, record to DB, sync balance."""
+async def place_bet(bet_id: int, mirror_service, target_provider: str | None = None) -> dict:
+    """Place a single confirmed bet, record to DB, sync balance.
+
+    For cluster bets, target_provider specifies which provider to use.
+    Falls back to picking the provider with highest balance.
+    """
     if _window is None:
         return {"error": "no fire window open"}
 
@@ -830,6 +1016,20 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         _window.fired_results[fired_key] = set()
     _window.fired_results[fired_key].add(bet_id)
 
+    # Resolve actual provider for clusters
+    is_cluster = pid == ALTENAR_CLUSTER_ID
+    if is_cluster:
+        if target_provider and target_provider in (bet.available_providers or []):
+            actual_pid = target_provider
+        else:
+            balances = _get_cluster_balances(bet.available_providers or list(ALTENAR_CLUSTER))
+            pick = _pick_best_provider(bet.available_providers or [], balances, bet.stake)
+            if not pick:
+                return {"status": "skipped", "bet_id": bet_id, "reason": "no_cluster_balance"}
+            actual_pid = pick[0]
+    else:
+        actual_pid = pid
+
     # Adjust stake to available balance
     balance = float('inf')
     try:
@@ -839,19 +1039,19 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
             _repo = ProfileRepo(_db)
             _profile = _repo.get_active()
             if _profile:
-                balance = _repo.get_balance(_profile.id, pid)
+                balance = _repo.get_balance(_profile.id, actual_pid)
         finally:
             _db.close()
     except Exception:
         pass
 
-    actual_stake = _round_stake(pid, min(bet.stake, balance))
-    if actual_stake < _min_bet(pid):
+    actual_stake = _round_stake(actual_pid, min(bet.stake, balance))
+    if actual_stake < _min_bet(actual_pid):
         return {"status": "skipped", "bet_id": bet_id, "reason": "insufficient_balance"}
 
     label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
 
-    workflow = get_workflow(pid)
+    workflow = get_workflow(actual_pid)
     context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
     context = getattr(context, 'context', None) if context else None
     page = await workflow.find_tab(context) if context else None
@@ -867,18 +1067,19 @@ async def place_bet(bet_id: int, mirror_service) -> dict:
         result = PlacementResult(status="manual", bet_id=bet_id, actual_stake=actual_stake)
 
     if result.status == "placed":
-        _record_bet(bet, pid, result.raw_response or {}, actual_stake)
-        _sync_balance_after_bet(bet, pid)
-        print(f"  {label}PLACED*")
+        _record_bet(bet, actual_pid, result.raw_response or {}, actual_stake)
+        _sync_balance_after_bet(bet, actual_pid)
+        print(f"  {label}PLACED @ {actual_pid}*")
     elif result.status == "manual":
-        print(f"  {label}MANUAL — place in mirror, interceptor records*")
+        print(f"  {label}MANUAL @ {actual_pid}*")
     else:
         print(f"  {label}{result.status.upper()} {result.reason or ''}*")
 
     return {
         "status": result.status,
         "bet_id": bet_id,
-        "provider_id": pid,
+        "provider_id": actual_pid,
+        "cluster_id": pid if is_cluster else None,
         "stake": actual_stake,
         "reason": result.reason,
         **({"actual_odds": result.actual_odds} if result.actual_odds else {}),

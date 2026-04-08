@@ -92,19 +92,19 @@ async def get_next_bet():
     result = fw.get_next_bet()
 
     # Auto-navigate the provider's tab to this event
+    # For clusters, provider_id is the actual provider (not cluster ID)
     if not result.get("done") and result.get("bet_id"):
         mirror = _get_active_mirror()
         if mirror:
-            pid = window.current_provider
+            nav_pid = result.get("provider_id") or window.current_provider
             try:
                 from ...mirror.workflows import get_workflow
-                workflow = get_workflow(pid)
+                workflow = get_workflow(nav_pid)
                 context = getattr(mirror, 'interceptor', None)
                 context = getattr(context, 'context', None) if context else None
                 if context:
                     page = await workflow.find_tab(context)
                     if page:
-                        # Build a minimal bet object for navigate_to_event
                         class BetNav:
                             pass
                         bet = BetNav()
@@ -114,7 +114,12 @@ async def get_next_bet():
                         bet.display_home = result.get("display_home", "")
                         bet.display_away = result.get("display_away", "")
                         bet.outcome = result.get("outcome", "")
+                        bet.original_outcome = result.get("original_outcome", "")
+                        bet.poly_outcome = result.get("poly_outcome", "")
                         bet.market = result.get("market", "")
+                        bet.odds = result.get("odds", 0)
+                        bet.stake = result.get("stake", 0)
+                        bet.point = result.get("point")
                         await workflow.navigate_to_event(page, bet)
                         result["navigated"] = True
             except Exception as e:
@@ -133,14 +138,19 @@ async def check_bet(bet_id: int):
     return await fw.check_bet(bet_id, mirror)
 
 
+class PlaceBetRequest(BaseModel):
+    target_provider: str | None = None
+
+
 @router.post("/place-bet/{bet_id}")
-async def place_bet(bet_id: int):
-    """Place a single confirmed bet."""
+async def place_bet(bet_id: int, request: PlaceBetRequest | None = None):
+    """Place a single confirmed bet. For clusters, optionally specify target_provider."""
     window = fw.get_window()
     if not window:
         raise HTTPException(400, "No fire window open")
     mirror = _get_active_mirror()
-    return await fw.place_bet(bet_id, mirror)
+    target = request.target_provider if request else None
+    return await fw.place_bet(bet_id, mirror, target_provider=target)
 
 
 @router.post("/skip-bet/{bet_id}")
@@ -197,9 +207,9 @@ async def settle_confirm():
     return fw.apply_settlements()
 
 
-@router.post("/pinnacle/explore-history")
-async def pinnacle_explore_history():
-    """Debug: navigate Pinnacle tab to bet history page and dump DOM structure."""
+@router.post("/pinnacle/scan")
+async def pinnacle_scan():
+    """Read-only preview of Pinnacle account: balance, pending bets, settled bets, DB diff."""
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
@@ -208,85 +218,18 @@ async def pinnacle_explore_history():
     if not context:
         raise HTTPException(400, "No browser context")
 
-    from ...mirror.workflows.pinnacle import PinnacleWorkflow
-    workflow = PinnacleWorkflow(provider_id="pinnacle", domain="pinnacle.se")
+    from ...mirror.workflows import get_workflow
+    workflow = get_workflow("pinnacle")
     page = await workflow.find_tab(context)
     if not page:
         raise HTTPException(400, "No Pinnacle tab open")
 
-    import asyncio
-
-    # Navigate to bet history
-    history_url = "https://www.pinnacle.se/sv/spelhistorik"
-    await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
-    await asyncio.sleep(3)
-
-    # Get full DOM text
-    body_text = await page.evaluate("() => document.body.innerText")
-
-    # Get structured snapshot of bet cards
-    structure = await page.evaluate("""() => {
-        const result = {url: location.href, title: document.title, sections: []};
-
-        // Get all major containers
-        const main = document.querySelector('main') || document.body;
-        const children = main.querySelectorAll('div[class], section, article');
-
-        // Collect unique class patterns and text snippets
-        const seen = new Set();
-        for (const el of children) {
-            const cls = el.className || '';
-            const text = (el.textContent || '').trim().slice(0, 200);
-            // Only capture elements with bet-related content
-            if (text.includes('Stake') || text.includes('Insats') ||
-                text.includes('Settled') || text.includes('Payout') ||
-                text.includes('Unsettled') || text.includes('@') ||
-                text.includes('Won') || text.includes('Lost') ||
-                text.includes('Pending') || text.includes('vs') ||
-                text.includes('LOSS') || text.includes('WIN')) {
-                const key = cls.slice(0, 50) + '|' + text.slice(0, 50);
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    result.sections.push({
-                        tag: el.tagName,
-                        class: cls.slice(0, 100),
-                        text: text.slice(0, 300),
-                        childCount: el.children.length,
-                    });
-                }
-            }
-        }
-
-        // Also get tab/filter buttons
-        const buttons = document.querySelectorAll('button, [role="tab"]');
-        result.tabs = [];
-        for (const btn of buttons) {
-            const t = (btn.textContent || '').trim();
-            if (t.length > 0 && t.length < 50) {
-                result.tabs.push(t);
-            }
-        }
-
-        return result;
-    }""")
-
-    # Get first 5000 chars of body text for analysis
-    return {
-        "page_url": page.url,
-        "structure": structure,
-        "body_text_preview": body_text[:5000] if body_text else "",
-        "body_text_length": len(body_text) if body_text else 0,
-    }
+    return await workflow.scan(page)
 
 
 @router.post("/pinnacle/settle-all")
 async def pinnacle_settle_all():
-    """Full automated Pinnacle settlement: scrape pending bets + auto-settle + sync balance.
-
-    1. Fetch unsettled bets from API → record any missing in DB
-    2. Fetch settled bets from API → match against pending DB bets → auto-settle
-    3. Sync balance
-    """
+    """Full automated Pinnacle settlement: scrape pending bets + auto-settle + sync balance."""
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
@@ -295,9 +238,8 @@ async def pinnacle_settle_all():
     if not context:
         raise HTTPException(400, "No browser context")
 
-    from ...mirror.workflows.pinnacle import PinnacleWorkflow
-    workflow = PinnacleWorkflow(provider_id="pinnacle", domain="pinnacle.se")
-
+    from ...mirror.workflows import get_workflow
+    workflow = get_workflow("pinnacle")
     page = await workflow.find_tab(context)
     if not page:
         raise HTTPException(400, "No Pinnacle tab open")
