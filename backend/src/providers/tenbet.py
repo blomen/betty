@@ -197,8 +197,8 @@ class TenBetRetriever(BrowserRetriever):
         # Scrape competitions in batches to allow early exit
         all_events = []
         unique_ids = set()
-        sem = asyncio.Semaphore(8)  # 8 parallel tabs — direct gost proxy has no tunnel bottleneck
-        batch_size = 20
+        sem = asyncio.Semaphore(6)  # 6 parallel tabs — balance speed vs browser pressure
+        batch_size = 15
         sport_timeout = self.config.get("sport_timeout", 600)
 
         async def process_competition(comp):
@@ -378,12 +378,12 @@ class TenBetRetriever(BrowserRetriever):
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
-            await page.goto(url, wait_until="domcontentloaded", timeout=8000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
             # Wait for event items to render
             events_loaded = False
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=8000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=12000)
                 events_loaded = True
             except Exception:
                 # Check for empty state
