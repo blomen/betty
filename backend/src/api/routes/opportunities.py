@@ -208,6 +208,7 @@ def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
 class BuildBatchRequest(BaseModel):
     exclude: list[str] | None = None
     skip_siblings: list[str] | None = None
+    priority_provider: str | None = None
 
 
 @router.post("/play/batch")
@@ -220,7 +221,8 @@ def build_batch(
     profile = profile_repo.get_active()
     builder = BatchBuilder(db)
     exclude = body.exclude if body else None
-    return builder.build(profile.id, exclude=exclude)
+    priority = body.priority_provider if body else None
+    return builder.build(profile.id, exclude=exclude, priority_provider=priority)
 
 
 # ---------------------------------------------------------------------------

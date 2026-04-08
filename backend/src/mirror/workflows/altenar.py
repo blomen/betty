@@ -94,26 +94,24 @@ class AltenarWorkflow(ProviderWorkflow):
                 await asyncio.sleep(2)
 
             # Click RÄTTATS tab to load settled bets (shadow DOM)
-            sr = await page.evaluate_handle("""
+            clicked = await page.evaluate("""
                 () => {
                     const stb = document.querySelector('STB-SPORTSBOOK');
-                    return stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
+                    if (!stb || !stb.firstElementChild) return false;
+                    const sr = stb.firstElementChild.shadowRoot;
+                    if (!sr) return false;
+                    const tabs = sr.querySelectorAll('button[class*="BetHistoryTab"]');
+                    for (const tab of tabs) {
+                        const text = (tab.textContent || '').trim().toLowerCase();
+                        if (text === 'rättats' || text === 'settled') {
+                            tab.click();
+                            return true;
+                        }
+                    }
+                    return false;
                 }
             """)
-            if sr:
-                await page.evaluate("""
-                    (sr) => {
-                        const tabs = sr.querySelectorAll('button, div[role="tab"], [class*="Tab"]');
-                        for (const tab of tabs) {
-                            const text = (tab.textContent || '').trim().toLowerCase();
-                            if (text.includes('rättat') || text.includes('settled')) {
-                                tab.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                """, sr)
+            if clicked:
                 await asyncio.sleep(2)  # Wait for settled bets API response
 
             logger.info(f"[{self.provider_id}] Scanned bet history for settlements")
@@ -267,7 +265,7 @@ class AltenarWorkflow(ProviderWorkflow):
     async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
         """Auto-select outcome and fill stake in the Altenar betslip.
 
-        1. Find the matching odds button by team/selection name + price
+        1. Find the matching odds button by price in shadow DOM
         2. Click it to add to betslip
         3. Clear and fill the stake input
         4. Return 'manual' — user confirms by clicking 'Placera spel'
@@ -275,63 +273,89 @@ class AltenarWorkflow(ProviderWorkflow):
         import asyncio
 
         target_odds = getattr(bet, "odds", 0)
+        stake_str = f"{stake:.2f}"
+
         target_outcome = getattr(bet, "outcome", "")
-        display_home = getattr(bet, "display_home", "")
-        display_away = getattr(bet, "display_away", "")
+        display_home = (getattr(bet, "display_home", "") or "").lower()
+        display_away = (getattr(bet, "display_away", "") or "").lower()
+        target_market = getattr(bet, "market", "")
+        target_point = getattr(bet, "point", None)
 
-        # Access shadow DOM (forced open via addInitScript)
-        shadow_root = await page.evaluate_handle("""
-            () => {
+        # Step 1: Click the matching odds button by outcome position
+        # Altenar layout: first market group has home/away buttons in order
+        # For totals: "Över X.5" / "Under X.5"
+        clicked = await page.evaluate("""
+            (args) => {
                 const stb = document.querySelector('STB-SPORTSBOOK');
-                return stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
-            }
-        """)
+                if (!stb || !stb.firstElementChild) return { error: 'no_stb' };
+                const sr = stb.firstElementChild.shadowRoot;
+                if (!sr) return { error: 'no_shadow' };
 
-        if not shadow_root:
-            logger.warning(f"[{self.provider_id}] No shadow root — cannot auto-select")
-            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="no_shadow_root")
+                // Find all clickable odd containers (parent of OddValue divs)
+                const oddValues = sr.querySelectorAll('div[class*="OddValue"]');
+                const outcome = args.outcome;
+                const market = args.market;
+                const home = args.home;
+                const away = args.away;
 
-        # Find and click the matching odds button
-        clicked = await page.evaluate(f"""
-            (sr) => {{
-                const odds = sr.querySelectorAll('div[class*="OddValue"]');
-                const targetPrice = {target_odds};
-                for (const odd of odds) {{
+                for (const odd of oddValues) {
+                    const container = odd.parentElement;
+                    const text = (container.textContent || '').toLowerCase();
                     const price = parseFloat(odd.textContent.trim());
-                    if (Math.abs(price - targetPrice) < 0.02) {{
-                        // Check the parent container text for team/selection name
-                        const container = odd.parentElement;
-                        const text = (container.textContent || '').toLowerCase();
-                        // Click the container (the clickable odd button)
-                        container.click();
-                        return {{ clicked: true, text: text.substring(0, 50), price: price }};
-                    }}
-                }}
-                return {{ clicked: false }};
-            }}
-        """, shadow_root)
+                    if (!price || price <= 1) continue;
 
-        if not clicked or not clicked.get("clicked"):
-            logger.warning(f"[{self.provider_id}] Could not find odds button for {target_odds}")
+                    let match = false;
+
+                    if (market === 'total' || market === 'totals') {
+                        // Match "över X.5" or "under X.5"
+                        if (outcome === 'over' && text.includes('över')) match = true;
+                        if (outcome === 'under' && text.includes('under')) match = true;
+                    } else {
+                        // moneyline/1x2: match by team name
+                        if (outcome === 'home' && home && text.includes(home.substring(0, 6))) match = true;
+                        if (outcome === 'away' && away && text.includes(away.substring(0, 6))) match = true;
+                        if (outcome === 'draw' && (text.includes('oavgjort') || text.includes('draw'))) match = true;
+                    }
+
+                    if (match) {
+                        container.click();
+                        return { clicked: true, text: text.substring(0, 50), price };
+                    }
+                }
+                return { clicked: false, count: oddValues.length };
+            }
+        """, {"outcome": target_outcome, "market": target_market,
+              "home": display_home, "away": display_away})
+
+        if not clicked or clicked.get("error"):
+            reason = clicked.get("error", "unknown") if clicked else "eval_failed"
+            logger.warning(f"[{self.provider_id}] Cannot auto-select: {reason}")
+            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason=reason)
+
+        if not clicked.get("clicked"):
+            logger.warning(f"[{self.provider_id}] Odds {target_odds} not found ({clicked.get('count', 0)} odds on page)")
             return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="odds_not_found")
 
-        logger.info(f"[{self.provider_id}] Clicked odds: {clicked.get('text', '?')} @ {clicked.get('price')}")
-        await asyncio.sleep(1)  # Wait for betslip to update
+        logger.info(f"[{self.provider_id}] Clicked: {clicked.get('text', '?')} @ {clicked.get('price')}")
+        await asyncio.sleep(1.5)  # Wait for betslip to appear
 
-        # Fill stake
-        stake_filled = await page.evaluate(f"""
-            (sr) => {{
-                const inputs = sr.querySelectorAll('input[class*="StakeInput"]');
+        # Step 2: Fill stake input
+        filled = await page.evaluate(f"""
+            () => {{
+                const stb = document.querySelector('STB-SPORTSBOOK');
+                const sr = stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
+                if (!sr) return false;
+                const inputs = sr.querySelectorAll('input[type="tel"]');
                 for (const input of inputs) {{
-                    if (input.placeholder === 'Set stake' || input.type === 'tel') {{
+                    if (input.offsetHeight > 0) {{
                         input.focus();
-                        input.value = '';
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        // Set the new stake value
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
+                        // Use native setter to trigger React/Preact state update
+                        const setter = Object.getOwnPropertyDescriptor(
+                            HTMLInputElement.prototype, 'value'
                         ).set;
-                        nativeInputValueSetter.call(input, '{stake:.2f}');
+                        setter.call(input, '');
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        setter.call(input, '{stake_str}');
                         input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return true;
@@ -339,10 +363,10 @@ class AltenarWorkflow(ProviderWorkflow):
                 }}
                 return false;
             }}
-        """, shadow_root)
+        """)
 
-        if stake_filled:
-            logger.info(f"[{self.provider_id}] Stake filled: {stake:.2f} — waiting for user to confirm")
+        if filled:
+            logger.info(f"[{self.provider_id}] Stake set to {stake_str} — user confirms")
         else:
             logger.warning(f"[{self.provider_id}] Could not fill stake input")
 

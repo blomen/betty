@@ -187,7 +187,11 @@ class MirrorService:
         The interceptor catches bet history API responses (widgetBetHistory,
         coupon-history, etc.) and stages settlements automatically.
         """
-        await asyncio.sleep(2)  # Wait for page to stabilize
+        if not hasattr(self, '_settle_checked'):
+            self._settle_checked = set()
+        self._settle_checked.add(provider_id)
+
+        await asyncio.sleep(4)  # Wait for page to fully load
 
         context = self.interceptor.context
         if not context or not context.pages:
@@ -751,16 +755,29 @@ class MirrorService:
                 if not confirmation_id:
                     continue
 
-                # Skip if already tracked
-                existing = db.query(Bet).filter(
-                    Bet.confirmation_id == confirmation_id,
-                    Bet.provider_id == provider_id,
-                ).first()
-                if existing:
-                    continue
-
                 stake = float(hb.get("totalStake", 0))
                 odds = float(hb.get("totalOdds", 0))
+
+                # Skip if already tracked (by confirmation_id OR by provider+odds+stake)
+                if confirmation_id:
+                    existing = db.query(Bet).filter(
+                        Bet.confirmation_id == confirmation_id,
+                        Bet.provider_id == provider_id,
+                    ).first()
+                    if existing:
+                        continue
+                from sqlalchemy import func as sa_func
+                existing = db.query(Bet).filter(
+                    Bet.provider_id == provider_id,
+                    sa_func.abs(Bet.odds - odds) < 0.02,
+                    sa_func.abs(Bet.stake - stake) < 0.02,
+                ).first()
+                if existing:
+                    # Update confirmation_id if missing
+                    if confirmation_id and not existing.confirmation_id:
+                        existing.confirmation_id = confirmation_id
+                        db.commit()
+                    continue
                 event_name = hb.get("eventName", "")
                 if not stake or not odds:
                     continue
@@ -1345,7 +1362,9 @@ class MirrorService:
                     "pending_stake": info["pending_stake"],
                 })
                 # Auto-navigate to bet history on first login if pending bets exist
-                if first_login and info["pending_bets"] > 0:
+                if not hasattr(self, '_settle_checked'):
+                    self._settle_checked = set()
+                if provider_id not in self._settle_checked and info["pending_bets"] > 0:
                     asyncio.ensure_future(self._auto_settle_via_history(provider_id))
 
         # Polymarket: store deposit trace from Swapped widget

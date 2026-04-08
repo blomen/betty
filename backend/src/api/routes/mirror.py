@@ -479,6 +479,15 @@ async def navigate_to_bet(req: NavigateBetRequest):
     except Exception:
         pass
 
+    # Auto-select outcome + fill stake (Altenar: clicks odds button, fills betslip)
+    placement = None
+    if navigated:
+        try:
+            result = await workflow.place_bet(page, bet, bet.stake)
+            placement = result.reason
+        except Exception:
+            pass
+
     return {
         "navigated": navigated,
         "provider_id": req.provider_id,
@@ -487,6 +496,7 @@ async def navigate_to_bet(req: NavigateBetRequest):
         "live_edge": round(live_edge, 1) if live_edge is not None else None,
         "db_edge": round(req.odds / req.fair_odds * 100 - 100, 1) if req.fair_odds > 0 else None,
         "page_url": page.url[:100] if page else None,
+        "placement": placement,
     }
 
 

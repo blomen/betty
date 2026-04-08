@@ -422,6 +422,34 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     except Exception as e:
         result["steps"]["settle_expired"] = f"error:{e}"
 
+    # Provider-specific settlement
+    if context and page:
+        if provider_id == "polymarket":
+            # Polymarket: full DOM settle — navigate to portfolio, claim/redeem, settle DB
+            try:
+                from ..mirror.workflows.polymarket import PolymarketWorkflow
+                poly_wf = workflow if isinstance(workflow, PolymarketWorkflow) else PolymarketWorkflow(
+                    provider_id="polymarket", domain="polymarket.com",
+                )
+                settle_result = await poly_wf.settle_all(page)
+                result["steps"]["settle"] = {
+                    "settled": settle_result.get("settled", 0),
+                    "claimed": settle_result.get("claim", {}).get("claimed", False),
+                    "redeemed": settle_result.get("redeem", {}).get("redeemed", 0),
+                    "net_pl": settle_result.get("summary", {}).get("net_pl", 0),
+                }
+                result["steps"]["balance"] = settle_result.get("new_balance", -1)
+            except Exception as e:
+                logger.warning(f"[FireWindow] Polymarket settle_all failed: {e}", exc_info=True)
+                result["steps"]["settle"] = f"error:{e}"
+        else:
+            # Other providers: navigate to bet history to catch settlements via interceptor
+            try:
+                await workflow.sync_history(page)
+                result["steps"]["settle_history"] = "scanned"
+            except Exception as e:
+                result["steps"]["settle_history"] = f"error:{e}"
+
     # Read balance from DB (interceptor syncs it on page load)
     try:
         from ..repositories.profile_repo import ProfileRepo

@@ -200,13 +200,14 @@ class BatchBuilder:
         self.opp_repo = OpportunityRepo(db)
         self.profile_repo = ProfileRepo(db)
 
-    def build(self, profile_id: int, exclude: list[str] | None = None) -> dict:
+    def build(self, profile_id: int, exclude: list[str] | None = None, priority_provider: str | None = None) -> dict:
         """
         Main entry point — two-phase pipeline:
 
         Phase 1 (collect): balance-blind, all +EV opportunities with Kelly stakes.
         Phase 2 (allocate): assign providers, enforce balance/cap/bonus constraints.
         """
+        self._priority_provider = priority_provider
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_total_bankroll(profile_id)
 
@@ -595,6 +596,14 @@ class BatchBuilder:
             sibs.sort(key=lambda pid: -(provider_balances.get(pid, ProviderBalance(pid, group_name, 0)).initial_balance))
             siblings[group_name] = sibs
 
+        # If a priority provider is set, move it to the front of its cluster
+        if hasattr(self, '_priority_provider') and self._priority_provider:
+            for group_name, sibs in siblings.items():
+                if self._priority_provider in sibs:
+                    sibs.remove(self._priority_provider)
+                    sibs.insert(0, self._priority_provider)
+                    break
+
         # Standalone providers (not in any platform group)
         registered = registered_providers or set(provider_balances.keys())
         for pid in registered:
@@ -619,7 +628,7 @@ class BatchBuilder:
                 batch.append(placed)
                 continue
 
-            # Soft: find first sibling under cap
+            # Soft: fill-then-spill — first sibling up to cap, then next
             sibs = siblings.get(cluster, [bet.provider_id])
             assigned = False
             for pid in sibs:
