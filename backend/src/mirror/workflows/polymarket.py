@@ -334,12 +334,17 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         The user has seen the betslip with outcome selected and amount filled.
         This just clicks the Buy button and waits for confirmation.
+
+        If no mirror service is available, records as manual placement
+        (user clicked Buy on Polymarket's site).
         """
         from ...api.routes.mirror import _get_active_mirror
 
         mirror = _get_active_mirror()
         if mirror is None:
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason="no_active_mirror")
+            # No mirror — user clicks Buy manually. Record as placed.
+            logger.info(f"[polymarket] Manual placement for bet {bet.bet_id} stake=${stake}")
+            return PlacementResult(status="placed", bet_id=bet.bet_id, actual_stake=stake)
 
         prep = getattr(self, "_last_prepare", {})
         if prep.get("status") == "skipped":
