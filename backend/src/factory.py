@@ -189,9 +189,10 @@ class ExtractorFactory:
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
             # Headless works fine (tested: 1,221 events vs 1,077 headed)
-            # Uses dedicated Bahnhof tunnel (port 1081) to avoid SSH tunnel contention
+            # NO PROXY — tipwin worked fine without it (762 events Mar 28).
+            # Adding proxy on Apr 2 broke page.route() timing → 0 events.
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_residential_proxy=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations

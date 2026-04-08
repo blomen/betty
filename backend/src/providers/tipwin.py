@@ -185,129 +185,78 @@ class TipwinRetriever(BrowserRetriever):
             import json as _json
             api_responses: List[Dict] = []
 
-            # Capture initial offer/data via HTTP response listener
-            async def on_response(response):
-                if 'offer/data' not in response.url or response.status != 200:
-                    return
+            async def intercept_offer_api(route):
+                """Intercept offer/data API calls, capture body inline before navigation disposes it."""
                 try:
-                    data = await response.json()
-                    if isinstance(data, dict) and (data.get('items') or data.get('offer')):
-                        api_responses.append(data)
-                except Exception:
-                    pass
+                    response = await route.fetch()
+                    body = await response.text()
+                    data = _json.loads(body)
+                    if isinstance(data, dict):
+                        has_items = 'items' in data and isinstance(data.get('items'), list)
+                        has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
+                        if has_items or has_offer:
+                            api_responses.append(data)
+                    await route.fulfill(response=response, body=body)
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] Route intercept error: {e}")
+                    await route.continue_()
 
-            # Capture pagination data via SignalR WebSocket
-            ws_responses: List[Dict] = []
+            # Intercept offer/data API calls via page.route() — captures body inline
+            # This approach worked reliably in March (762 events on Mar 28) WITHOUT proxy.
+            await page.route("**/offer/data*", intercept_offer_api)
 
-            def on_websocket(ws):
-                if 'signalr' not in ws.url:
-                    return
-                logger.debug(f"[{self.provider_id}] SignalR WebSocket opened")
-
-                def on_frame(event):
-                    payload = event.payload if hasattr(event, 'payload') else str(event)
-                    for msg in payload.split('\x1e'):
-                        if not msg:
-                            continue
-                        try:
-                            parsed = _json.loads(msg)
-                            # type 1 = Invocation (server pushing data to client)
-                            if parsed.get('type') == 1:
-                                target = parsed.get('target', '')
-                                args = parsed.get('arguments', [])
-                                for arg in args:
-                                    if isinstance(arg, dict) and (arg.get('items') or arg.get('offer')):
-                                        ws_responses.append(arg)
-                            # type 3 = Completion (response to client invocation)
-                            elif parsed.get('type') == 3:
-                                result = parsed.get('result')
-                                if isinstance(result, dict) and (result.get('items') or result.get('offer')):
-                                    ws_responses.append(result)
-                        except Exception:
-                            pass
-
-                ws.on('framereceived', on_frame)
-
-            page.on("response", on_response)
-            page.on("websocket", on_websocket)
-
-            # Navigate to full sports listing
-            full_url = f"{self.site_url}/sv/sports/full/"
-            await page.goto(full_url, wait_until='load', timeout=30000)
-
+            # Handle cookie consent on initial load (must happen before sports page)
             if not self._session_ready:
+                await page.goto(self.site_url, wait_until='load', timeout=30000)
                 await self._handle_cookie_consent(page)
+                await asyncio.sleep(2)
                 self._session_ready = True
 
-            # Wait for initial HTTP API response
-            for _ in range(15):
-                if api_responses:
-                    break
-                await asyncio.sleep(1)
+            # Navigate to full sports listing (page 1)
+            full_url = f"{self.site_url}/sv/sports/full/"
+            await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
+            await asyncio.sleep(1)
 
             if not api_responses:
-                page.remove_listener("response", on_response)
-                raise RetryableError(
-                    "No API responses captured after page load",
-                    provider_id=self.provider_id,
-                )
+                await asyncio.sleep(3)
+                if not api_responses:
+                    await page.unroute("**/offer/data*", intercept_offer_api)
+                    raise RetryableError(
+                        "No API responses captured after initial page load",
+                        provider_id=self.provider_id,
+                    )
 
-            # Paginate by clicking "next page" button in the DOM
-            # URL-based pagination (?page=N) doesn't trigger new API calls.
-            # The SPA only fetches new data when the user clicks pagination buttons.
-            total_items = api_responses[0].get('totalNumberOfItems', 0)
-            page_size = api_responses[0].get('pageSize', 5)
-            max_pages = min((total_items + page_size - 1) // page_size if total_items else 30, 120)
+            # Calculate total pages
+            total_pages = 0
+            for resp in api_responses:
+                if 'items' in resp and isinstance(resp.get('items'), list):
+                    total = resp.get('totalNumberOfItems', 0)
+                    ps = resp.get('pageSize', 5)
+                    if total and ps:
+                        total_pages = (total + ps - 1) // ps
+                        break
+            max_pages = min(total_pages or 30, 120)
 
             logger.info(
-                f"[{self.provider_id}] Paginating {max_pages} pages via DOM clicks "
-                f"({total_items} items)"
+                f"[{self.provider_id}] Paginating {max_pages} pages "
+                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
             )
 
+            # Paginate via ?page=N — route handler captures response inline
             for pg in range(2, max_pages + 1):
                 try:
-                    prev_ws = len(ws_responses)
-                    prev_http = len(api_responses)
-
-                    # Click the next page button in the pagination tabs
-                    clicked = await page.evaluate(f"""() => {{
-                        // Try numbered page button first
-                        const btns = document.querySelectorAll('.pagination__tabs button, [class*="pagination"] button');
-                        for (const btn of btns) {{
-                            if (btn.textContent.trim() === '{pg}') {{
-                                btn.click();
-                                return 'page_' + {pg};
-                            }}
-                        }}
-                        // Fallback: click "next" arrow/chevron button
-                        const next = document.querySelector('[class*="pagination"] [class*="next"], [class*="pagination"] [class*="chevron-right"], .pagination__arrow--right');
-                        if (next) {{
-                            next.click();
-                            return 'next';
-                        }}
-                        return null;
-                    }}""")
-
-                    if not clicked:
-                        logger.debug(f"[{self.provider_id}] No pagination button found at page {pg}")
-                        break
-
-                    # Wait for WS or HTTP response (up to 3s)
-                    for _ in range(6):
-                        if len(ws_responses) > prev_ws or len(api_responses) > prev_http:
-                            break
-                        await asyncio.sleep(0.5)
+                    await page.goto(f"{full_url}?page={pg}", wait_until='domcontentloaded', timeout=10000)
+                    await asyncio.sleep(0.3)
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Page {pg} click error: {e}")
+                    logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
                     break
 
-            page.remove_listener("response", on_response)
+            await page.unroute("**/offer/data*", intercept_offer_api)
 
-            # Merge HTTP + WebSocket responses
-            all_responses = api_responses + ws_responses
+            all_responses = api_responses
             logger.info(
-                f"[{self.provider_id}] Captured {len(api_responses)} HTTP + "
-                f"{len(ws_responses)} WebSocket = {len(all_responses)} total responses"
+                f"[{self.provider_id}] Captured {len(api_responses)} API responses "
+                f"across {max_pages} pages"
             )
 
             # Parse all responses into events grouped by sport
