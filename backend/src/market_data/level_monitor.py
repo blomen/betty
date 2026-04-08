@@ -271,11 +271,13 @@ class LevelMonitor:
                         newly_entered_zones.append(zone)
         self._zone_debounce &= still_in_zones
 
-        for zone in newly_entered_zones:
+        # Only fire inference for the BEST zone (highest confluence) per tick
+        if newly_entered_zones:
+            best_zone = max(newly_entered_zones, key=lambda z: (z.member_count, z.hierarchy_score))
             logger.info("Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
-                        price, zone.center_price, zone.lower_bound, zone.upper_bound,
-                        zone.member_count)
-            self._emit_zone_dqn_inference(zone, price)
+                        price, best_zone.center_price, best_zone.lower_bound, best_zone.upper_bound,
+                        best_zone.member_count)
+            self._emit_zone_dqn_inference(best_zone, price)
 
         self._check_positions(price)
 
