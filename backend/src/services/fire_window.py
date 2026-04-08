@@ -1080,12 +1080,10 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
         from ..mirror.workflows.base import PlacementResult
         result = PlacementResult(status="manual", bet_id=bet_id, actual_stake=actual_stake)
 
-    if result.status == "placed":
+    if result.status in ("placed", "manual"):
         _record_bet(bet, actual_pid, result.raw_response or {}, actual_stake)
         _sync_balance_after_bet(bet, actual_pid)
-        print(f"  {label}PLACED @ {actual_pid}*")
-    elif result.status == "manual":
-        print(f"  {label}MANUAL @ {actual_pid}*")
+        print(f"  {label}{result.status.upper()} @ {actual_pid}*")
     else:
         print(f"  {label}{result.status.upper()} {result.reason or ''}*")
 
