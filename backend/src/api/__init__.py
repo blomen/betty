@@ -256,20 +256,22 @@ async def lifespan(app: FastAPI):
                                 # Try today first, fall back to yesterday if no data yet
                                 session_data = None
                                 expanded = None
-                                for attempt_date in [None, "yesterday"]:
+                                # Try yesterday first (today may have no RTH data yet pre-market)
+                                from datetime import date, timedelta
+                                for attempt_date in ["yesterday", None]:
                                     try:
                                         if attempt_date == "yesterday":
-                                            from datetime import date, timedelta
                                             yesterday = (date.today() - timedelta(days=1)).isoformat()
                                             session_data = await svc.compute_session(yesterday)
-                                            expanded = await svc.build_expanded_session()
-                                            logger.info("Using yesterday's session data (today not available yet)")
                                         else:
                                             session_data = await svc.compute_session()
-                                            expanded = await svc.build_expanded_session()
+                                        expanded = await svc.build_expanded_session()
                                         if expanded:
+                                            if attempt_date == "yesterday":
+                                                logger.info("Using yesterday's session data")
                                             break
-                                    except Exception:
+                                    except Exception as exc:
+                                        logger.debug("compute attempt %s failed: %s", attempt_date, exc)
                                         continue
 
                                 if expanded:
@@ -335,10 +337,10 @@ async def lifespan(app: FastAPI):
                             try:
                                 session_data = None
                                 expanded = None
-                                for attempt_date in [None, "yesterday"]:
+                                from datetime import date, timedelta
+                                for attempt_date in ["yesterday", None]:
                                     try:
                                         if attempt_date == "yesterday":
-                                            from datetime import date, timedelta
                                             yesterday = (date.today() - timedelta(days=1)).isoformat()
                                             session_data = await svc.compute_session(yesterday)
                                         else:
