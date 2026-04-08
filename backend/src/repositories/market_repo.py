@@ -195,6 +195,8 @@ class MarketRepo:
 
     def upsert_candle(self, symbol: str, interval: str, ts: datetime, o: float, h: float, l: float, c: float, v: int):
         """Insert or replace a single candle (used for live closed-candle writes)."""
+        # Convert numpy types to native Python (PostgreSQL rejects np.float64)
+        o, h, l, c, v = float(o), float(h), float(l), float(c), int(v)
         row = self.market_db.query(MarketCandle).filter_by(symbol=symbol, interval=interval, ts=ts).first()
         if row:
             row.o = o
@@ -227,7 +229,9 @@ class MarketRepo:
             ).all()
         }
         new_rows = [
-            MarketCandle(symbol=symbol, interval=interval, ts=b.timestamp, o=b.open, h=b.high, l=b.low, c=b.close, v=b.volume)
+            MarketCandle(symbol=symbol, interval=interval, ts=b.timestamp,
+                         o=float(b.open), h=float(b.high), l=float(b.low),
+                         c=float(b.close), v=int(b.volume))
             for b in bars
             if (b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp) not in existing
         ]
