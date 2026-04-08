@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 MARKET_TYPE_MAP: Dict[str, str] = {
     # 1x2 / Moneyline (winner market)
     "MRES": "1x2",       # Match Result -- football, handball (3-way)
+    "MREP": "1x2",       # Match Result (boxing/MMA) -- 3-way with draw
     "H2HT": "moneyline", # Head-to-Head -- basketball, ice hockey, american football (2-way)
     "HTOH": "moneyline", # Head-to-Head -- tennis, MMA (2-way)
     # Total (over/under)
@@ -50,11 +51,13 @@ MARKET_TYPE_MAP: Dict[str, str] = {
     "TPOT": "total",     # Total Points -- basketball
     "OUTG": "total",     # Over/Under Total Goals -- ice hockey
     "FTPO": "total",     # Full-game Total Points -- american football
+    "TROU": "total",     # Total Rounds Over/Under -- boxing/MMA
     # Spread (handicap)
     "HCMR": "spread",   # Handicap Match Result -- football (3-way)
     "HCOT": "spread",   # Handicap -- basketball, ice hockey (2-way)
     "FHOT": "spread",   # Full-game Handicap -- american football
     "TGHC": "spread",   # Total Games Handicap -- tennis
+    "MAHCP": "spread",  # Match Handicap -- volleyball
 }
 
 
