@@ -253,9 +253,25 @@ async def lifespan(app: FastAPI):
                         try:
                             svc = MarketService(_get_db_session())
                             try:
-                                # Compute session + load levels
-                                session_data = await svc.compute_session()
-                                expanded = await svc.build_expanded_session()
+                                # Try today first, fall back to yesterday if no data yet
+                                session_data = None
+                                expanded = None
+                                for attempt_date in [None, "yesterday"]:
+                                    try:
+                                        if attempt_date == "yesterday":
+                                            from datetime import date, timedelta
+                                            yesterday = (date.today() - timedelta(days=1)).isoformat()
+                                            session_data = await svc.compute_session(yesterday)
+                                            expanded = await svc.build_expanded_session()
+                                            logger.info("Using yesterday's session data (today not available yet)")
+                                        else:
+                                            session_data = await svc.compute_session()
+                                            expanded = await svc.build_expanded_session()
+                                        if expanded:
+                                            break
+                                    except Exception:
+                                        continue
+
                                 if expanded:
                                     level_monitor.load_levels(expanded)
                                     logger.info("Initial levels loaded")
@@ -273,6 +289,8 @@ async def lifespan(app: FastAPI):
                                     level_monitor.set_session_context(rl_context)
                                     logger.info("Auto-compute: session context set (ATR=%.1f)",
                                                 rl_context.get("atr", 0))
+                                else:
+                                    logger.warning("No session data available — zones may be empty until first recompute")
                             finally:
                                 svc.db.close()
                         except Exception as e:
