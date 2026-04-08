@@ -330,46 +330,13 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
-        """Phase 2 only: click Buy button. Betslip was already prepared by navigate_to_event.
+        """Record bet as placed. User clicks Buy manually on Polymarket.
 
-        The user has seen the betslip with outcome selected and amount filled.
-        This just clicks the Buy button and waits for confirmation.
-
-        If no mirror service is available, records as manual placement
-        (user clicked Buy on Polymarket's site).
+        navigate_to_event already prepared the betslip (outcome + amount).
+        This just records the placement — never auto-clicks Buy.
         """
-        from ...api.routes.mirror import _get_active_mirror
-
-        mirror = _get_active_mirror()
-        if mirror is None:
-            # No mirror — user clicks Buy manually. Record as placed.
-            logger.info(f"[polymarket] Manual placement for bet {bet.bet_id} stake=${stake}")
-            return PlacementResult(status="placed", bet_id=bet.bet_id, actual_stake=stake)
-
-        prep = getattr(self, "_last_prepare", {})
-        if prep.get("status") == "skipped":
-            return PlacementResult(
-                status="skipped", bet_id=bet.bet_id,
-                reason=prep.get("reason", "slippage"),
-                raw_response=prep,
-            )
-
-        try:
-            confirm = await mirror._confirm_polymarket_bet(page, bet.bet_id)
-            logger.info(f"[polymarket] confirm result: {confirm}")
-
-            status = confirm.get("status", "failed")
-            return PlacementResult(
-                status="placed" if status == "placed" else "failed",
-                bet_id=bet.bet_id,
-                actual_stake=stake,
-                actual_odds=prep.get("live_odds"),
-                reason=confirm.get("reason"),
-                raw_response=confirm,
-            )
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] place_bet failed: {e}", exc_info=True)
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason=str(e))
+        logger.info(f"[polymarket] Recording manual placement: bet {bet.bet_id} stake=${stake}")
+        return PlacementResult(status="placed", bet_id=bet.bet_id, actual_stake=stake)
 
     # ------------------------------------------------------------------
     # Live price
