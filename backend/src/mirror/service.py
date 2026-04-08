@@ -3093,60 +3093,35 @@ class MirrorService:
         except Exception as e:
             logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
 
-        # 4. Enter amount — try multiple selectors for the amount input
+        # 4. Enter amount — use quick-add buttons (+$1, +$5, +$10, +$100)
+        # React controls the input so evaluate-based value setting doesn't stick.
+        # Quick-add buttons are real clicks that React handles natively.
         try:
-            filled = await page.evaluate(
-                "(amount) => {"
-                "  // Try common input selectors for amount field"
-                "  const selectors = ["
-                "    'input[placeholder=\"$0\"]',"
-                "    'input[placeholder=\"0\"]',"
-                "    'input[type=\"number\"]',"
-                "    'input[inputmode=\"decimal\"]',"
-                "    'input[inputmode=\"numeric\"]',"
-                "  ];"
-                "  for (const sel of selectors) {"
-                "    const input = document.querySelector(sel);"
-                "    if (input) {"
-                "      input.focus();"
-                "      input.value = '';"
-                "      input.dispatchEvent(new Event('input', {bubbles: true}));"
-                "      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
-                "      nativeSet.call(input, String(amount));"
-                "      input.dispatchEvent(new Event('input', {bubbles: true}));"
-                "      input.dispatchEvent(new Event('change', {bubbles: true}));"
-                "      return sel;"
-                "    }"
-                "  }"
-                "  return null;"
-                "}",
-                round(amount, 2),
-            )
-            if filled:
-                logger.info(f"[mirror] Filled amount ${round(amount, 2)} via {filled}")
-                await asyncio.sleep(0.5)
+            target_amount = int(amount)
+            remaining = target_amount
+            for btn_val in [100, 10, 5, 1]:
+                while remaining >= btn_val:
+                    clicked = await page.evaluate(
+                        f"() => {{"
+                        f"  const btns = document.querySelectorAll('button');"
+                        f"  for (const btn of btns) {{"
+                        f"    if (btn.textContent.trim() === '+${btn_val}') {{"
+                        f"      btn.click(); return true;"
+                        f"    }}"
+                        f"  }}"
+                        f"  return false;"
+                        f"}}"
+                    )
+                    if clicked:
+                        remaining -= btn_val
+                        await asyncio.sleep(0.15)
+                    else:
+                        break
+            if remaining > 0:
+                logger.warning(f"[mirror] Could not fill full amount: ${target_amount - remaining}/${target_amount}")
             else:
-                # Fallback: click quick-add buttons
-                logger.warning(f"[mirror] No amount input found, trying quick-add buttons")
-                remaining = int(amount)
-                for btn_val in [100, 10, 5, 1]:
-                    while remaining >= btn_val:
-                        clicked = await page.evaluate(
-                            f"() => {{"
-                            f"  const btns = document.querySelectorAll('button');"
-                            f"  for (const btn of btns) {{"
-                            f"    if (btn.textContent.trim() === '+${btn_val}') {{"
-                            f"      btn.click(); return true;"
-                            f"    }}"
-                            f"  }}"
-                            f"  return false;"
-                            f"}}"
-                        )
-                        if clicked:
-                            remaining -= btn_val
-                            await asyncio.sleep(0.3)
-                        else:
-                            break
+                logger.info(f"[mirror] Filled amount ${target_amount} via quick-add buttons")
+            await asyncio.sleep(0.5)
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
 
