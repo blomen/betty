@@ -221,7 +221,7 @@ class SpecialistEnsemble:
     4. Skip if both EVs are below threshold
     """
 
-    MIN_CONFIDENCE = 0.55   # minimum p_success to consider a trade
+    MIN_CONFIDENCE = 0.50   # minimum p_success to consider a trade
     MIN_EV = 0.1            # minimum expected R to take the trade
 
     def __init__(
