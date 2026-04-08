@@ -144,4 +144,16 @@ export const fireWindowApi = {
   skipBet(betId: number) {
     return fetchJson<any>(`/fire-window/skip-bet/${betId}`, { method: 'POST' });
   },
+
+  pinnacleSettleAll() {
+    return fetchJson<any>('/fire-window/pinnacle/settle-all', { method: 'POST' }, 120_000);
+  },
+
+  polymarketScan() {
+    return fetchJson<any>('/fire-window/polymarket/scan', { method: 'POST' }, 60_000);
+  },
+
+  polymarketSettleAll() {
+    return fetchJson<any>('/fire-window/polymarket/settle-all', { method: 'POST' }, 120_000);
+  },
 };

@@ -197,6 +197,114 @@ async def settle_confirm():
     return fw.apply_settlements()
 
 
+@router.post("/pinnacle/explore-history")
+async def pinnacle_explore_history():
+    """Debug: navigate Pinnacle tab to bet history page and dump DOM structure."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.pinnacle import PinnacleWorkflow
+    workflow = PinnacleWorkflow(provider_id="pinnacle", domain="pinnacle.se")
+    page = await workflow.find_tab(context)
+    if not page:
+        raise HTTPException(400, "No Pinnacle tab open")
+
+    import asyncio
+
+    # Navigate to bet history
+    history_url = "https://www.pinnacle.se/sv/spelhistorik"
+    await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
+    await asyncio.sleep(3)
+
+    # Get full DOM text
+    body_text = await page.evaluate("() => document.body.innerText")
+
+    # Get structured snapshot of bet cards
+    structure = await page.evaluate("""() => {
+        const result = {url: location.href, title: document.title, sections: []};
+
+        // Get all major containers
+        const main = document.querySelector('main') || document.body;
+        const children = main.querySelectorAll('div[class], section, article');
+
+        // Collect unique class patterns and text snippets
+        const seen = new Set();
+        for (const el of children) {
+            const cls = el.className || '';
+            const text = (el.textContent || '').trim().slice(0, 200);
+            // Only capture elements with bet-related content
+            if (text.includes('Stake') || text.includes('Insats') ||
+                text.includes('Settled') || text.includes('Payout') ||
+                text.includes('Unsettled') || text.includes('@') ||
+                text.includes('Won') || text.includes('Lost') ||
+                text.includes('Pending') || text.includes('vs') ||
+                text.includes('LOSS') || text.includes('WIN')) {
+                const key = cls.slice(0, 50) + '|' + text.slice(0, 50);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    result.sections.push({
+                        tag: el.tagName,
+                        class: cls.slice(0, 100),
+                        text: text.slice(0, 300),
+                        childCount: el.children.length,
+                    });
+                }
+            }
+        }
+
+        // Also get tab/filter buttons
+        const buttons = document.querySelectorAll('button, [role="tab"]');
+        result.tabs = [];
+        for (const btn of buttons) {
+            const t = (btn.textContent || '').trim();
+            if (t.length > 0 && t.length < 50) {
+                result.tabs.push(t);
+            }
+        }
+
+        return result;
+    }""")
+
+    # Get first 5000 chars of body text for analysis
+    return {
+        "page_url": page.url,
+        "structure": structure,
+        "body_text_preview": body_text[:5000] if body_text else "",
+        "body_text_length": len(body_text) if body_text else 0,
+    }
+
+
+@router.post("/pinnacle/settle-all")
+async def pinnacle_settle_all():
+    """Full automated Pinnacle settlement: scrape pending bets + auto-settle + sync balance.
+
+    1. Fetch unsettled bets from API → record any missing in DB
+    2. Fetch settled bets from API → match against pending DB bets → auto-settle
+    3. Sync balance
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.pinnacle import PinnacleWorkflow
+    workflow = PinnacleWorkflow(provider_id="pinnacle", domain="pinnacle.se")
+
+    page = await workflow.find_tab(context)
+    if not page:
+        raise HTTPException(400, "No Pinnacle tab open")
+
+    return await workflow.settle_all(page)
+
+
 @router.post("/polymarket/portfolio")
 async def polymarket_portfolio():
     """Scrape Polymarket portfolio positions from DOM."""
@@ -270,3 +378,60 @@ async def polymarket_redeem():
         raise HTTPException(400, "No Polymarket tab open")
 
     return await workflow.redeem_all(page)
+
+
+@router.post("/polymarket/scan")
+async def polymarket_scan():
+    """Scan Polymarket portfolio — preview what will be claimed/redeemed/settled.
+
+    Returns a breakdown WITHOUT clicking anything. User reviews this
+    before confirming via /polymarket/settle-all.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.polymarket import PolymarketWorkflow
+    workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+
+    page = await workflow.find_tab(context)
+    if not page:
+        page = await context.new_page()
+        await page.goto(
+            "https://polymarket.com/portfolio?tab=positions",
+            wait_until="domcontentloaded", timeout=15000,
+        )
+
+    return await workflow.scan_portfolio_settlements(page)
+
+
+@router.post("/polymarket/settle-all")
+async def polymarket_settle_all():
+    """Execute Polymarket settlement: claim → redeem → settle DB.
+
+    Call /polymarket/scan first to preview, then this to execute.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = getattr(mirror, 'interceptor', None)
+    context = getattr(context, 'context', None) if context else None
+    if not context:
+        raise HTTPException(400, "No browser context")
+
+    from ...mirror.workflows.polymarket import PolymarketWorkflow
+    workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+
+    page = await workflow.find_tab(context)
+    if not page:
+        page = await context.new_page()
+        await page.goto(
+            "https://polymarket.com/portfolio?tab=positions",
+            wait_until="domcontentloaded", timeout=15000,
+        )
+
+    return await workflow.settle_all(page)

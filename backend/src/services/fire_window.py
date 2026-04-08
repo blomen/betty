@@ -442,6 +442,24 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
             except Exception as e:
                 logger.warning(f"[FireWindow] Polymarket settle_all failed: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
+        elif provider_id == "pinnacle":
+            # Pinnacle: full API settle — scrape pending bets + auto-settle + sync balance
+            try:
+                from ..mirror.workflows.pinnacle import PinnacleWorkflow
+                pin_wf = workflow if isinstance(workflow, PinnacleWorkflow) else PinnacleWorkflow(
+                    provider_id="pinnacle", domain="pinnacle.se",
+                )
+                settle_result = await pin_wf.settle_all(page)
+                result["steps"]["settle"] = {
+                    "recorded_new": settle_result.get("recorded_new", 0),
+                    "settled": settle_result.get("settled", 0),
+                    "net_pl": settle_result.get("summary", {}).get("net_pl", 0),
+                }
+                if settle_result.get("new_balance", -1) >= 0:
+                    result["steps"]["balance"] = settle_result["new_balance"]
+            except Exception as e:
+                logger.warning(f"[FireWindow] Pinnacle settle_all failed: {e}", exc_info=True)
+                result["steps"]["settle"] = f"error:{e}"
         else:
             # Other providers: navigate to bet history to catch settlements via interceptor
             try:

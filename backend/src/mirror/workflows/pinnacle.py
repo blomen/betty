@@ -328,6 +328,217 @@ class PinnacleWorkflow(ProviderWorkflow):
             raw_response=result,
         )
 
+    async def settle_all(self, page: "Page") -> dict:
+        """Full automated Pinnacle settlement via API.
+
+        1. Fetch unsettled bets → record any missing in DB
+        2. Fetch settled bets → match against pending DB bets → auto-settle
+        3. Sync balance
+
+        Returns summary with P&L breakdown.
+        """
+        from ...db.models import Bet, Event, get_session
+        from ...repositories.profile_repo import ProfileRepo
+        from ...services.bet_service import BetService
+
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        # ---- Step 1: Scrape pending (unsettled) bets from Pinnacle API ----
+        recorded_new = 0
+        url_unsettled = f"{_API}/bets?status=unsettled&startDate={start}&endDate={end}"
+        unsettled_data = await self._evaluate_api(page, url_unsettled)
+
+        db = get_session()
+        settled = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            if not profile:
+                return {"error": "no active profile"}
+
+            svc = BetService(db)
+
+            if unsettled_data and "__error" not in (unsettled_data if isinstance(unsettled_data, dict) else {}):
+                api_bets = unsettled_data if isinstance(unsettled_data, list) else unsettled_data.get("bets", [])
+                for b in api_bets:
+                    risk = float(b.get("stake", b.get("riskAmount", 0)))
+                    price = float(b.get("price", 0))
+                    pin_id = str(b.get("id", ""))
+                    if risk <= 0 or price <= 0:
+                        continue
+
+                    # Check if we already have this bet in DB (by odds + stake + provider)
+                    existing = (
+                        db.query(Bet)
+                        .filter(
+                            Bet.profile_id == profile.id,
+                            Bet.provider_id == "pinnacle",
+                            Bet.result == "pending",
+                            Bet.odds == round(price, 3),
+                            Bet.stake == round(risk, 2),
+                        )
+                        .first()
+                    )
+                    if existing:
+                        continue
+
+                    # Parse event info from selections
+                    sels = b.get("selections", [])
+                    sel = sels[0] if sels else {}
+                    matchup = sel.get("matchup", {})
+                    parts = matchup.get("participants", [])
+                    home = next((p["name"] for p in parts if p.get("alignment") == "home"), "")
+                    away = next((p["name"] for p in parts if p.get("alignment") == "away"), "")
+                    designation = sel.get("designation", "")
+                    market_type = sel.get("market", {}).get("type", "moneyline")
+                    matchup_id = matchup.get("id") or sel.get("matchupId")
+
+                    # Try to find matching event in DB
+                    event_id = None
+                    if home and away:
+                        from ...db.models import Event as EventModel
+                        from sqlalchemy import or_
+                        event = (
+                            db.query(EventModel)
+                            .filter(
+                                or_(
+                                    EventModel.home_team.ilike(f"%{home}%"),
+                                    EventModel.display_home.ilike(f"%{home}%"),
+                                ),
+                                or_(
+                                    EventModel.away_team.ilike(f"%{away}%"),
+                                    EventModel.display_away.ilike(f"%{away}%"),
+                                ),
+                            )
+                            .first()
+                        )
+                        if event:
+                            event_id = event.id
+
+                    svc.create_bet(
+                        event_id=event_id,
+                        provider_id="pinnacle",
+                        market=market_type,
+                        outcome=designation,
+                        odds=round(price, 3),
+                        stake=round(risk, 2),
+                        bet_type="mirror",
+                    )
+                    recorded_new += 1
+                    logger.info(
+                        f"[pinnacle] Recorded missing bet: {home} vs {away} "
+                        f"{designation} @ {price} stake={risk} (pin_id={pin_id})"
+                    )
+                db.commit()
+
+            logger.info(f"[pinnacle] Scrape pending: {recorded_new} new bet(s) recorded")
+
+            # ---- Step 2: Fetch settled bets → auto-settle matched DB bets ----
+            url_settled = f"{_API}/bets?status=settled&startDate={start}&endDate={end}"
+            settled_data = await self._evaluate_api(page, url_settled)
+
+            if settled_data and "__error" not in (settled_data if isinstance(settled_data, dict) else {}):
+                api_settled = settled_data if isinstance(settled_data, list) else settled_data.get("bets", [])
+
+                # Load all pending Pinnacle bets for matching
+                pending = (
+                    db.query(Bet, Event)
+                    .join(Event, Bet.event_id == Event.id, isouter=True)
+                    .filter(
+                        Bet.profile_id == profile.id,
+                        Bet.provider_id == "pinnacle",
+                        Bet.result == "pending",
+                    )
+                    .all()
+                )
+
+                for b in api_settled:
+                    risk = float(b.get("stake", b.get("riskAmount", 0)))
+                    price = float(b.get("price", 0))
+                    outcome_str = b.get("outcome", "none")
+                    if outcome_str == "none" or risk <= 0:
+                        continue
+
+                    if outcome_str == "win":
+                        status, payout = "won", risk * price
+                    elif outcome_str == "loss":
+                        status, payout = "lost", 0.0
+                    else:
+                        status, payout = "void", risk
+
+                    # Match by odds + stake against pending bets
+                    matched_bet = None
+                    matched_event = None
+                    for bet, event in pending:
+                        if (abs(bet.odds - price) < 0.01
+                                and abs(bet.stake - risk) < 0.01
+                                and bet.result == "pending"):
+                            matched_bet = bet
+                            matched_event = event
+                            break
+
+                    if not matched_bet:
+                        continue
+
+                    event_name = ""
+                    if matched_event:
+                        h = matched_event.display_home or matched_event.home_team or ""
+                        a = matched_event.display_away or matched_event.away_team or ""
+                        event_name = f"{h} vs {a}" if h and a else h or a
+
+                    svc.settle_bet(matched_bet.id, status, round(payout, 2))
+                    settled.append({
+                        "bet_id": matched_bet.id,
+                        "event": event_name,
+                        "market": matched_bet.market,
+                        "outcome": matched_bet.outcome,
+                        "odds": matched_bet.odds,
+                        "stake": matched_bet.stake,
+                        "result": status,
+                        "payout": round(payout, 2),
+                        "pl": round(payout - matched_bet.stake, 2),
+                    })
+                    # Remove from pending list so we don't double-match
+                    pending = [(b, e) for b, e in pending if b.id != matched_bet.id]
+
+                    logger.info(
+                        f"[pinnacle] Settled bet #{matched_bet.id} {event_name} "
+                        f"→ {status} (payout={payout:.2f})"
+                    )
+
+                db.commit()
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[pinnacle] settle_all failed: {e}", exc_info=True)
+            return {"error": str(e)}
+        finally:
+            db.close()
+
+        # ---- Step 3: Sync balance ----
+        new_balance = await self.sync_balance(page)
+
+        # Summary
+        total_staked = sum(s["stake"] for s in settled)
+        total_payout = sum(s["payout"] for s in settled)
+        wins = [s for s in settled if s["result"] == "won"]
+        losses = [s for s in settled if s["result"] == "lost"]
+
+        return {
+            "recorded_new": recorded_new,
+            "settled": len(settled),
+            "settlements": settled,
+            "summary": {
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": round(total_staked, 2),
+                "total_payout": round(total_payout, 2),
+                "net_pl": round(total_payout - total_staked, 2),
+            },
+            "new_balance": new_balance,
+        }
+
     async def check_live_price(self, page: "Page", bet) -> float | None:
         """Read live odds from Pinnacle markets API and compute edge."""
         from ...analysis.value import compute_edge
