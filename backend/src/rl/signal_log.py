@@ -50,10 +50,12 @@ def log_signal(
     same_action = action == _last_action
     recent = (now_epoch - _last_signal_epoch) < _MIN_SIGNAL_GAP_S
 
-    # Filter: skip if same action within 2 min (regardless of zone)
-    # Only log when direction changes or enough time has passed
+    # Filter: minimum 30s between ANY signal, 2 min for same action
+    any_recent = (now_epoch - _last_signal_epoch) < 30.0
+    if any_recent:
+        return  # too soon after last signal, regardless of action
     if same_action and recent:
-        return
+        return  # same direction within 2 min
 
     _last_action = action
     _last_zone = zone_center
