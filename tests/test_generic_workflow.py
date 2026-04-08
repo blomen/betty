@@ -235,3 +235,17 @@ def test_infer_balance_path_no_match():
     from src.mirror.workflows.discovery import _infer_balance_path
     data = {"name": "test", "items": [1, 2]}
     assert _infer_balance_path(data) is None
+
+
+def test_get_workflow_returns_generic_for_unwired(monkeypatch):
+    """Unwired platforms should get GenericWorkflow instead of ManualWorkflow."""
+    from src.mirror.workflows import get_workflow, _WORKFLOW_CACHE
+    from src.mirror.workflows.generic import GenericWorkflow
+
+    _WORKFLOW_CACHE.clear()
+
+    wf = get_workflow("coolbet")
+    assert isinstance(wf, GenericWorkflow)
+    assert wf.provider_id == "coolbet"
+
+    _WORKFLOW_CACHE.clear()

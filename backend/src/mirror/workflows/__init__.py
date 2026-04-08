@@ -22,21 +22,21 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .kambi import KambiWorkflow
-    from .manual import ManualWorkflow
+    from .generic import GenericWorkflow
     return {
         "polymarket": PolymarketWorkflow,
         "pinnacle": PinnacleWorkflow,
         "altenar": AltenarWorkflow,
         "gecko_v2": GeckoWorkflow,
         "kambi": KambiWorkflow,
-        "spectate": ManualWorkflow,
-        "tenbet": ManualWorkflow,
-        "snabbare": ManualWorkflow,
-        "custom": ManualWorkflow,
-        "betconstruct": ManualWorkflow,
-        "interwetten": ManualWorkflow,
-        "coolbet": ManualWorkflow,
-        "tipwin": ManualWorkflow,
+        "spectate": GenericWorkflow,
+        "tenbet": GenericWorkflow,
+        "snabbare": GenericWorkflow,
+        "custom": GenericWorkflow,
+        "betconstruct": GenericWorkflow,
+        "interwetten": GenericWorkflow,
+        "coolbet": GenericWorkflow,
+        "tipwin": GenericWorkflow,
     }
 
 
@@ -76,16 +76,16 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
             instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
-        from .manual import ManualWorkflow
-        instance = ManualWorkflow(provider_id=provider_id, domain="")
+        from .generic import GenericWorkflow
+        instance = GenericWorkflow(provider_id=provider_id, domain="")
         _WORKFLOW_CACHE[provider_id] = instance
         return instance
 
     platform = _RETRIEVER_TO_PLATFORM.get(provider.retriever_type, provider.retriever_type)
     cls = _PLATFORM_MAP.get(platform)
     if cls is None:
-        from .manual import ManualWorkflow
-        cls = ManualWorkflow
+        from .generic import GenericWorkflow
+        cls = GenericWorkflow
 
     domain = provider.domain or ""
     # Fallback domains for providers without explicit domain in config
