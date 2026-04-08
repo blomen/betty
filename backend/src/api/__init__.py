@@ -333,8 +333,21 @@ async def lifespan(app: FastAPI):
                         try:
                             svc = MarketService(_get_db_session())
                             try:
-                                session_data = await svc.compute_session()
-                                expanded = await svc.build_expanded_session()
+                                session_data = None
+                                expanded = None
+                                for attempt_date in [None, "yesterday"]:
+                                    try:
+                                        if attempt_date == "yesterday":
+                                            from datetime import date, timedelta
+                                            yesterday = (date.today() - timedelta(days=1)).isoformat()
+                                            session_data = await svc.compute_session(yesterday)
+                                        else:
+                                            session_data = await svc.compute_session()
+                                        expanded = await svc.build_expanded_session()
+                                        if expanded:
+                                            break
+                                    except Exception:
+                                        continue
                                 if expanded and level_monitor:
                                     level_monitor.load_levels(expanded)
                                     if session_data and isinstance(session_data, dict):
@@ -347,11 +360,11 @@ async def lifespan(app: FastAPI):
                                             "atr": session_data.get("atr", 40.0),
                                         }
                                         level_monitor.set_session_context(rl_context)
-                                    logger.debug("Periodic recompute: zones rebuilt")
+                                    logger.info("Periodic recompute: zones rebuilt")
                             finally:
                                 svc.db.close()
                         except Exception:
-                            logger.debug("Periodic recompute failed", exc_info=True)
+                            logger.info("Periodic recompute failed", exc_info=True)
                         await asyncio.sleep(300)  # every 5 min
 
                 _recompute_task = asyncio.create_task(_periodic_recompute())
