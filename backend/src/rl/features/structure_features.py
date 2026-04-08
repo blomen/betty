@@ -42,7 +42,7 @@ def _extract_swing_features(
       [39]    trend_alignment: -1.0 (all down) to +1.0 (all up)
     """
     feats = np.zeros(40, dtype=np.float32)
-    if swing is None:
+    if swing is None or not hasattr(swing, 'daily'):
         return feats
 
     trend_map = {
