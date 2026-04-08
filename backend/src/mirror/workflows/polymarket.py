@@ -238,52 +238,92 @@ class PolymarketWorkflow(ProviderWorkflow):
         After this returns, the Polymarket tab shows the event with the
         correct outcome selected and amount filled. User can visually verify
         before clicking Confirm, which calls place_bet → just clicks Buy.
-        """
-        from ...api.routes.mirror import _get_active_mirror
 
+        Works standalone — no mirror service dependency.
+        """
         slug = getattr(bet, "market_slug", None)
         if not slug:
             logger.warning(f"[{self.provider_id}] No market_slug on bet {bet.bet_id}")
             return False
 
-        mirror = _get_active_mirror()
-        if not mirror:
-            # Fallback: just navigate without preparing
-            try:
-                url = f"https://polymarket.com/event/{slug}"
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                return True
-            except Exception as e:
-                logger.warning(f"[{self.provider_id}] navigate failed: {e}")
-                return False
-
-        # Use prepare which navigates + clicks outcome + fills amount
         outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
         original_outcome = getattr(bet, "original_outcome", outcome)
-        market_type = getattr(bet, "market", "1x2")
-        expected_price = 1.0 / bet.odds if getattr(bet, "odds", 0) > 0 else 0.5
-        stake = getattr(bet, "stake", 0)
+        stake = int(getattr(bet, "stake", 0))
+        home_name = getattr(bet, "display_home", "") or ""
+        away_name = getattr(bet, "display_away", "") or ""
+
+        # 1. Navigate to market page
+        url = f"https://polymarket.com/event/{slug}"
+        logger.info(f"[polymarket] navigate_to_event: {url} outcome={outcome} stake=${stake}")
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] navigate failed: {e}")
+            return False
+
+        # Wait for trading buttons
+        try:
+            await page.wait_for_selector('button', timeout=10000)
+        except Exception:
+            await asyncio.sleep(5)
+
+        # 2. Click the correct outcome button
+        outcome_lower = (original_outcome or outcome).lower()
+        if outcome_lower in ("home", "over"):
+            target = home_name.lower()[:3] if home_name else ""
+        elif outcome_lower in ("away", "under"):
+            target = away_name.lower()[:3] if away_name else ""
+        elif outcome_lower == "draw":
+            target = "draw"
+        else:
+            target = outcome.lower()[:3]
 
         try:
-            prep = await mirror._prepare_polymarket_bet(
-                page=page,
-                bet_id=bet.bet_id,
-                slug=slug,
-                outcome=outcome,
-                amount=stake,
-                expected_price=expected_price,
-                max_slippage=0.10,  # 10% for prepare — just warning, not blocking
-                original_outcome=original_outcome,
-                market_type=market_type,
-                home_name=getattr(bet, "display_home", ""),
-                away_name=getattr(bet, "display_away", ""),
-            )
-            self._last_prepare = prep
-            logger.info(f"[polymarket] Betslip prepared: {prep.get('status')} live_price={prep.get('live_price')}")
-            return prep.get("status") in ("ready", "skipped")  # Even skipped means we navigated
+            clicked = await page.evaluate("""(target) => {
+                const btns = [...document.querySelectorAll('button')];
+                for (const btn of btns) {
+                    const text = (btn.textContent || '').toLowerCase();
+                    if (target && text.includes(target) && text.includes('¢')) {
+                        btn.scrollIntoView({block: 'center'});
+                        btn.click();
+                        return btn.textContent.trim().slice(0, 40);
+                    }
+                }
+                return null;
+            }""", target)
+            if clicked:
+                logger.info(f"[polymarket] Clicked outcome: '{clicked}' (target='{target}')")
+                await asyncio.sleep(1)
+            else:
+                logger.warning(f"[polymarket] No outcome button matching '{target}'")
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] prepare failed: {e}")
-            return False
+            logger.warning(f"[polymarket] Could not click outcome: {e}")
+
+        # 3. Fill amount via quick-add buttons (+$1, +$5, +$10, +$100)
+        if stake > 0:
+            remaining = stake
+            for btn_val in [100, 10, 5, 1]:
+                while remaining >= btn_val:
+                    ok = await page.evaluate(f"""() => {{
+                        const btns = document.querySelectorAll('button');
+                        for (const btn of btns) {{
+                            if (btn.textContent.trim() === '+${btn_val}') {{
+                                btn.click(); return true;
+                            }}
+                        }}
+                        return false;
+                    }}""")
+                    if ok:
+                        remaining -= btn_val
+                        await asyncio.sleep(0.15)
+                    else:
+                        break
+            if remaining > 0:
+                logger.warning(f"[polymarket] Partial fill: ${stake - remaining}/${stake}")
+            else:
+                logger.info(f"[polymarket] Filled ${stake} via quick-add buttons")
+
+        return True
 
     # ------------------------------------------------------------------
     # Bet placement
