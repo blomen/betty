@@ -249,3 +249,82 @@ def test_get_workflow_returns_generic_for_unwired(monkeypatch):
     assert wf.provider_id == "coolbet"
 
     _WORKFLOW_CACHE.clear()
+
+
+def test_full_workflow_lifecycle(intel_dir):
+    """Test complete lifecycle: load intel → check_login → sync_balance → navigate → place_bet."""
+    from src.mirror.workflows.generic import GenericWorkflow, save_intel
+
+    intel = {
+        "provider_id": "lifecycle_test",
+        "platform": "custom",
+        "discovered_at": "2026-04-08T14:30:00Z",
+        "updated_at": "2026-04-08T14:30:00Z",
+        "capabilities": {"login": "discovered", "balance": "discovered", "history": "none", "placement": "discovered"},
+        "login": {"method": "balance_api", "indicator": None},
+        "balance": {
+            "method": "api",
+            "api": {"url": "/api/balance", "path": "wallet.amount", "currency": "SEK"},
+            "dom": None,
+        },
+        "history": None,
+        "betslip": {
+            "odds_buttons": ".odds-btn",
+            "stake_input": "#stake",
+            "confirm_button": ".confirm",
+            "confirmation_selector": ".success",
+        },
+        "navigation": {"history_path": "/bets", "event_url_template": "/event/{event_id}"},
+        "api_endpoints": {},
+        "notes": "",
+    }
+    save_intel("lifecycle_test", intel, intel_dir)
+
+    wf = GenericWorkflow("lifecycle_test", "test.com", intel_dir=intel_dir)
+    assert wf.intel is not None
+    assert wf.mode.value == "guided"
+
+    page = AsyncMock()
+    wf._evaluate_api = AsyncMock(return_value={"wallet": {"amount": 999.50}})
+
+    # check_login via balance_api method
+    result = asyncio.get_event_loop().run_until_complete(wf.check_login(page))
+    assert result is True
+
+    # sync_balance
+    wf._evaluate_api = AsyncMock(return_value={"wallet": {"amount": 999.50}})
+    balance = asyncio.get_event_loop().run_until_complete(wf.sync_balance(page))
+    assert balance == 999.50
+
+    # navigate_to_event
+    page.goto = AsyncMock()
+    page.url = "https://test.com/home"
+    bet = MagicMock()
+    bet.provider_event_id = "12345"
+    nav_ok = asyncio.get_event_loop().run_until_complete(wf.navigate_to_event(page, bet))
+    assert nav_ok is True
+    page.goto.assert_called_once()
+    assert "12345" in page.goto.call_args[0][0]
+
+    # place_bet (guided — fills stake, returns manual)
+    bet.bet_id = 1
+    page.query_selector = AsyncMock(return_value=AsyncMock())
+    page.evaluate = AsyncMock()
+    result = asyncio.get_event_loop().run_until_complete(wf.place_bet(page, bet, 50.0))
+    assert result.status == "manual"
+    assert result.reason == "generic_guided_user_confirms"
+    assert result.actual_stake == 50.0
+
+
+def test_auto_discover_skips_if_intel_exists(intel_dir, sample_intel):
+    """auto_discover should return True immediately if intel already loaded."""
+    from src.mirror.workflows.generic import GenericWorkflow, save_intel
+    save_intel("testprovider", sample_intel, intel_dir)
+    wf = GenericWorkflow("testprovider", "test.com", intel_dir=intel_dir)
+    assert wf.intel is not None
+
+    page = AsyncMock()
+    result = asyncio.get_event_loop().run_until_complete(wf.auto_discover(page))
+    assert result is True
+    # No fetch calls made (page never touched)
+    page.evaluate.assert_not_called()
