@@ -665,12 +665,14 @@ def _settle_expired_bets() -> dict:
                 if start < now:
                     expired_by_provider.setdefault(bet.provider_id, []).append(bet)
 
+        voided_ids: set[int] = set()
         for pid, bets in expired_by_provider.items():
             voided = 0
             for bet in bets:
                 try:
                     svc.settle_bet(bet.id, "void", 0.0)
                     voided += 1
+                    voided_ids.add(bet.id)
                     logger.info(
                         f"[FireWindow] Voided expired ghost bet #{bet.id} "
                         f"{pid} (stake={bet.stake})"
@@ -680,6 +682,18 @@ def _settle_expired_bets() -> dict:
             result[pid] = {"expired": len(bets), "voided": voided}
 
         db.commit()
+
+        # Remove voided bets from in-memory fire window
+        if voided_ids and _window is not None:
+            for pid in list(_window.provider_bets.keys()):
+                before = len(_window.provider_bets[pid])
+                _window.provider_bets[pid] = [
+                    b for b in _window.provider_bets[pid]
+                    if b.bet_id not in voided_ids
+                ]
+                removed = before - len(_window.provider_bets[pid])
+                if removed:
+                    logger.info(f"[FireWindow] Removed {removed} voided bets from {pid} queue")
 
     except Exception as e:
         db.rollback()
