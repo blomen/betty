@@ -691,26 +691,15 @@ class MirrorService:
 
     async def _handle_event_data(self, url: str, response_body: str):
         """Cache event data from events-table or GetEventDetails responses."""
-        # Altenar GetEventDetails — forward to workflow for live price reading
+        # Altenar GetEventDetails — cache for live price reading
         if "GetEventDetails" in url:
             try:
                 data = json.loads(response_body)
                 eid = str(data.get("id", ""))
                 if eid:
-                    from .workflows import get_workflow
-                    from .workflows.altenar import AltenarWorkflow
-                    provider_id = self._detect_provider_from_request(None) or self._detect_provider(url)
-                    # Find any Altenar workflow and cache the data
-                    for pid in (provider_id, *self._logged_in_providers):
-                        if pid:
-                            try:
-                                wf = get_workflow(pid)
-                                if isinstance(wf, AltenarWorkflow):
-                                    wf.cache_event_details(eid, data)
-                                    logger.debug(f"[mirror] Cached GetEventDetails for event {eid} ({pid})")
-                                    break
-                            except Exception:
-                                pass
+                    from .workflows.strategies.altenar import cache_event_details
+                    cache_event_details(eid, data)
+                    logger.debug(f"[mirror] Cached GetEventDetails for event {eid}")
             except (json.JSONDecodeError, Exception) as e:
                 logger.debug(f"[mirror] Could not parse GetEventDetails: {e}")
             return
@@ -984,7 +973,13 @@ class MirrorService:
         return recorded
 
     def _stage_settlements_sync(self, history_bets: list[dict], provider_id: str) -> list[dict]:
-        """Match bet history against pending bets — stage for confirmation, don't commit."""
+        """Match bet history against pending bets — stage for confirmation, don't commit.
+
+        Matching priority:
+        1. confirmation_id (Altenar bet id) — exact match, no ambiguity
+        2. odds + stake — fallback when confirmation_id unavailable
+        3. Skip history bets whose id already matches a settled bet (prevent cross-match)
+        """
         STATUS_MAP = {1: "won", 2: "lost", 3: "void", 4: "cashout"}
 
         db = get_session()
@@ -1006,17 +1001,41 @@ class MirrorService:
                 odds = float(hb.get("totalOdds", 0))
                 payout = float(hb.get("totalWin", 0))
                 event_name = hb.get("eventName", "")
+                history_id = str(hb.get("id", "")) or hb.get("confirmation_id", "")
+
+                # Skip if this history bet's id matches an already-settled bet
+                if history_id:
+                    already_settled = db.query(Bet).filter(
+                        Bet.confirmation_id == history_id,
+                        Bet.provider_id == provider_id,
+                        Bet.result != "pending",
+                    ).first()
+                    if already_settled:
+                        continue
 
                 matched_bet = None
-                for bet in pending:
-                    if bet.result != "pending":
-                        continue
-                    if abs(bet.stake - stake) > 0.01:
-                        continue
-                    if abs(bet.odds - odds) > 0.01:
-                        continue
-                    matched_bet = bet
-                    break
+
+                # Priority 1: match by confirmation_id
+                if history_id:
+                    for bet in pending:
+                        if bet.confirmation_id == history_id:
+                            matched_bet = bet
+                            break
+
+                # Priority 2: match by odds + stake (only if no confirmation_id match)
+                if not matched_bet:
+                    for bet in pending:
+                        if bet.result != "pending":
+                            continue
+                        if abs(bet.stake - stake) > 0.01:
+                            continue
+                        if abs(bet.odds - odds) > 0.01:
+                            continue
+                        # If bet has a confirmation_id, it must match the history id
+                        if bet.confirmation_id and history_id and bet.confirmation_id != history_id:
+                            continue
+                        matched_bet = bet
+                        break
 
                 if not matched_bet:
                     continue
