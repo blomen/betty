@@ -1041,6 +1041,9 @@ class MirrorService:
                     continue
 
                 pending.remove(matched_bet)
+                fair = matched_bet.fair_odds_at_placement
+                edge = round((odds / fair - 1) * 100, 1) if fair and fair > 0 else None
+                pl = (payout - stake) if result == "won" else (-stake if result == "lost" else 0)
                 staged.append({
                     "bet_id": matched_bet.id,
                     "provider": provider_id,
@@ -1049,6 +1052,8 @@ class MirrorService:
                     "stake": stake,
                     "result": result,
                     "payout": payout,
+                    "edge": edge,
+                    "pl": round(pl, 2),
                 })
 
         except Exception as e:

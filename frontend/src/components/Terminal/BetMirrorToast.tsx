@@ -108,7 +108,8 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
 
   if (!pendingSettlements) return null;
 
-  const { provider, wins, losses, total_staked, total_payout, net, settlements } = pendingSettlements;
+  const { provider, wins, losses, total_staked, total_payout, net, settlements, has_claim, redeem_count, source } = pendingSettlements;
+  const isPoly = source === 'polymarket_portfolio';
 
   const handleConfirm = async () => {
     setConfirming(true);
@@ -125,18 +126,20 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
           <span className="text-text">
             <span className="text-tabValue font-semibold">{provider}</span>
             {' — '}
+            {isPoly && has_claim && <><span className="text-success">Claim: {has_claim}</span>{' · '}</>}
+            {isPoly && (redeem_count ?? 0) > 0 && <><span className="text-muted">{redeem_count} to redeem</span>{' · '}</>}
             {settlements.length} bet{settlements.length !== 1 ? 's' : ''} to settle:
             {' '}
             <span className="text-success">{wins}W</span>
             {' '}
             <span className="text-error">{losses}L</span>
             {' — '}
-            staked {provider === 'polymarket' ? `$${total_staked.toFixed(0)}` : `${total_staked.toFixed(0)} kr`}
+            staked {provider === 'polymarket' ? `$${total_staked.toFixed(2)}` : `${total_staked.toFixed(0)} kr`}
             {' → '}
-            payout {provider === 'polymarket' ? `$${total_payout.toFixed(0)}` : `${total_payout.toFixed(0)} kr`}
+            payout {provider === 'polymarket' ? `$${total_payout.toFixed(2)}` : `${total_payout.toFixed(0)} kr`}
             {' = '}
             <span className={net >= 0 ? 'text-success' : 'text-error'}>
-              {net >= 0 ? '+' : ''}{provider === 'polymarket' ? `$${net.toFixed(0)}` : `${net.toFixed(0)} kr`}
+              {net >= 0 ? '+' : ''}{provider === 'polymarket' ? `$${net.toFixed(2)}` : `${net.toFixed(0)} kr`}
             </span>
           </span>
         </div>
@@ -158,20 +161,29 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
       </div>
       {/* Breakdown rows */}
       <div className="border-t border-muted/10 px-3 py-1.5 max-h-40 overflow-y-auto">
-        {settlements.map((s: any) => (
-          <div key={s.bet_id} className="flex items-center gap-2 py-0.5">
-            <span className={`w-4 text-center font-bold ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
-              {s.result === 'won' ? 'W' : 'L'}
-            </span>
-            <span className="text-muted w-8 text-right">#{s.bet_id}</span>
-            <span className="flex-1 text-text truncate">{s.event}</span>
-            <span className="text-muted w-10 text-right">@{s.odds}</span>
-            <span className="text-text w-10 text-right">{provider === 'polymarket' ? `$${s.stake}` : `${s.stake}kr`}</span>
-            <span className={`w-14 text-right ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
-              {s.result === 'won' ? `+${provider === 'polymarket' ? '$' : ''}${s.payout}` : `-${provider === 'polymarket' ? '$' : ''}${s.stake}`}
-            </span>
-          </div>
-        ))}
+        {settlements.map((s: any) => {
+          const isCurrency = provider === 'polymarket';
+          const unit = isCurrency ? '$' : '';
+          const suffix = isCurrency ? '' : 'kr';
+          const pl = s.pl ?? (s.result === 'won' ? s.payout - s.stake : -s.stake);
+          return (
+            <div key={s.bet_id} className="flex items-center gap-2 py-0.5">
+              <span className={`w-4 text-center font-bold ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
+                {s.result === 'won' ? 'W' : 'L'}
+              </span>
+              <span className="text-muted w-8 text-right">#{s.bet_id}</span>
+              <span className="flex-1 text-text truncate">{s.event}</span>
+              {s.edge != null && (
+                <span className="text-tabValue w-12 text-right">+{s.edge}%</span>
+              )}
+              <span className="text-muted w-10 text-right">@{s.odds}</span>
+              <span className="text-text w-14 text-right">{unit}{s.stake}{suffix}</span>
+              <span className={`w-16 text-right font-medium ${pl >= 0 ? 'text-success' : 'text-error'}`}>
+                {pl >= 0 ? '+' : ''}{unit}{Math.round(pl)}{suffix}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
