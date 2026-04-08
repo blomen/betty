@@ -88,6 +88,12 @@ class MirrorService:
             info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
             if info["pending_bets"] > 0:
                 asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+        # Pinnacle: auto-settle via API on detection (doesn't need interception)
+        if provider_id == "pinnacle":
+            info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
+            if info["pending_bets"] > 0:
+                logger.info(f"[mirror] Pinnacle detected with {info['pending_bets']} pending — auto-settling via API")
+                asyncio.ensure_future(self._settle_via_workflow("pinnacle"))
         # Auto-discover for generic (unwired) providers with no intel
         from .workflows import get_workflow
         from .workflows.generic import GenericWorkflow
