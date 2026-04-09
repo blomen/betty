@@ -151,7 +151,7 @@ def main(open_browser: bool = True):
 
     try:
         uvicorn.run(
-            "firevsports.server:app",
+            "server:app",
             host="127.0.0.1",
             port=LOCAL_PORT,
             timeout_keep_alive=120,
