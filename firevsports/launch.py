@@ -60,24 +60,33 @@ def _start_tunnel() -> bool:
             time.sleep(1)
 
     print(f"[firevsports] Opening SSH tunnel to {SERVER}:{TUNNEL_REMOTE_PORT}...")
-    subprocess.Popen(
-        ["ssh", "-N", "-L", f"{TUNNEL_LOCAL_PORT}:localhost:{TUNNEL_REMOTE_PORT}", f"root@{SERVER}"],
+    proc = subprocess.Popen(
+        ["ssh", "-N", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30",
+         "-L", f"{TUNNEL_LOCAL_PORT}:localhost:{TUNNEL_REMOTE_PORT}", f"root@{SERVER}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
 
-    for _ in range(30):
+    for i in range(30):
         time.sleep(0.5)
         if _port_in_use(TUNNEL_LOCAL_PORT):
+            # Port is open — tunnel is established. Verify API responds.
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health", timeout=2)
                 print(f"[firevsports] SSH tunnel ready on localhost:{TUNNEL_LOCAL_PORT}")
                 return True
             except Exception:
-                # Port open but health not yet responding — keep waiting
-                pass
+                if i > 10:
+                    # Port open for 5+ seconds but health not responding — accept anyway
+                    print(f"[firevsports] SSH tunnel open on localhost:{TUNNEL_LOCAL_PORT} (health check skipped)")
+                    return True
 
-    print("[firevsports] ERROR: Tunnel failed to start or API not responding")
+    # Check if SSH process died
+    if proc.poll() is not None:
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        print(f"[firevsports] ERROR: SSH tunnel exited: {stderr.strip()}")
+    else:
+        print("[firevsports] ERROR: Tunnel failed to start (port not open after 15s)")
     return False
 
 
@@ -107,8 +116,8 @@ def main(open_browser: bool = True):
         print(f"[firevsports] Checking server {SERVER}...")
         try:
             result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}", "echo ok"],
-                capture_output=True, text=True, timeout=10,
+                ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", f"root@{SERVER}", "echo ok"],
+                capture_output=True, text=True, timeout=15,
             )
             if result.returncode != 0:
                 print(f"[firevsports] WARNING: Cannot SSH to {SERVER} — will retry tunnel")
