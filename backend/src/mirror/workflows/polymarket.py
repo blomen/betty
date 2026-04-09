@@ -630,11 +630,11 @@ class PolymarketWorkflow(ProviderWorkflow):
             elif 'LOST' in text:
                 status = 'lost'
 
-            # Extract price movement: "50.3¢ → 100¢" or "12¢ → 0¢"
             import re
-            price_match = re.search(r'([\d.]+)¢\s*→\s*([\d.]+)¢', text)
-            avg_price = float(price_match.group(1)) if price_match else None
-            now_price = float(price_match.group(2)) if price_match else None
+            # Extract cent prices — handle both ¢ and encoded variants (Â¢)
+            cent_prices = [float(m) for m in re.findall(r'([\d.]+)\s*(?:¢|\xc2\xa2|\u00a2)', text)]
+            avg_price = cent_prices[0] if len(cent_prices) >= 1 else None
+            now_price = cent_prices[1] if len(cent_prices) >= 2 else None
 
             # Extract dollar values
             dollar_values = [float(m.replace(',', '')) for m in re.findall(r'\$([\d,.]+)', text)]
@@ -645,8 +645,7 @@ class PolymarketWorkflow(ProviderWorkflow):
 
             # Market name: text before the first price/number section
             market = text[:60].split('\n')[0] if text else ''
-            # Clean up: remove trailing numbers/symbols
-            market = re.sub(r'[\d¢$→].+', '', market).strip()
+            market = re.sub(r'[\d¢$→\xc2\xa2].+', '', market).strip()
 
             positions.append({
                 'market': market[:80],
@@ -1211,17 +1210,22 @@ class PolymarketWorkflow(ProviderWorkflow):
             market = pos.get("market", "")
             avg_price = pos.get("avg_price")
             shares = pos.get("shares")
-            full_text = pos.get("full_text", "")
+            values = pos.get("values", [])
 
-            # Extract slug from full_text or market name
+            # Extract slug from market name
             slug = re.sub(r'[^a-z0-9]+', '-', market.lower()).strip('-')
 
             # Skip if already tracked
             if slug.lower() in existing_markets:
                 continue
 
-            # Calculate stake and odds from position data
-            stake = round(shares * avg_price / 100, 2) if shares and avg_price else 0
+            # Calculate stake: prefer avg_price * shares, fallback to first dollar value
+            if shares and avg_price:
+                stake = round(shares * avg_price / 100, 2)
+            elif values:
+                stake = round(values[0], 2)  # First $ value is typically cost basis
+            else:
+                stake = 0
             odds = round(100 / avg_price, 4) if avg_price and avg_price > 0 else 2.0
 
             if stake <= 0:
