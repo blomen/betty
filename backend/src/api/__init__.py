@@ -595,51 +595,152 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
-    # ── Stocks mode: LevelMonitor + Specialists without Databento stream ──
+    # ── Stocks mode: LevelMonitor + full data pipeline without Databento stream ──
+    # Ticks arrive from local firevstocks client via /ws/signals WebSocket.
+    # We wire up everything the Databento path does: tick buffer, candle flow,
+    # session context, macro, AMT dynamics, orderflow — so the specialist
+    # ensemble gets a full 276-dim observation vector, not zeros.
     if _stocks_mode and not _mirror_only:
         from ..market_data.level_monitor import LevelMonitor
+        from ..market_data.stream import TickBuffer, CandleFlow
         from ..db.models import get_market_session as _get_market_session
         from ..db.models import get_session as _get_db_session
+        from ..services.market_service import MarketService
+        from ..repositories.market_repo import MarketRepo
+        import threading
 
         def _stocks_publish(event: dict) -> None:
-            pass  # SSE handled later if needed
+            pass  # SSE not needed for stocks mode (no browser UI on server)
 
+        # 1. Create tick buffer + candle flows (same as Databento path)
+        _stocks_tick_buffer = TickBuffer()
+        _stocks_candle_flow_5m = CandleFlow(bucket_seconds=300, emit_interval=5.0)
+        _stocks_candle_flow_1m = CandleFlow(bucket_seconds=60, emit_interval=1.0)
+
+        # 2. Create LevelMonitor with full wiring
         level_monitor = LevelMonitor(publish_fn=_stocks_publish)
+        level_monitor.set_tick_buffer(_stocks_tick_buffer)
+
+        def _stocks_get_recent_candles():
+            """Build candles from tick buffer for orderflow computation."""
+            from ..market_data.orderflow import build_candle_flow
+            ticks = list(_stocks_tick_buffer.ticks)
+            if len(ticks) < 10:
+                return []
+            return build_candle_flow(ticks, period_seconds=300)
+
+        level_monitor.set_candle_flow_source(_stocks_get_recent_candles)
+
+        # 3. Set async context for ML/macro fetches during level touches
+        _stocks_loop = asyncio.get_event_loop()
+        level_monitor.set_async_context(_stocks_loop, _get_db_session)
+
         app.state.level_monitor = level_monitor
-        logger.info("[Startup] Stocks mode: LevelMonitor initialized (ticks via /ws/signals)")
+        # Store tick buffer + candle flows so /ws/signals can feed them
+        app.state.stocks_tick_buffer = _stocks_tick_buffer
+        app.state.stocks_candle_flow_5m = _stocks_candle_flow_5m
+        app.state.stocks_candle_flow_1m = _stocks_candle_flow_1m
+        logger.info("[Stocks] LevelMonitor initialized with tick buffer + candle flows")
 
-        # Load initial levels in background thread
-        import threading
-        from ..services.market_service import MarketService
+        # 4. Seed CandleFlow from last DB candle (prevents fake wicks)
+        try:
+            _seed_db = _get_market_session()
+            for _flow, _interval in [
+                (_stocks_candle_flow_5m, "5m"),
+                (_stocks_candle_flow_1m, "1m"),
+            ]:
+                _last = MarketRepo(_seed_db).get_latest_candle("NQ", _interval)
+                if _last:
+                    _ts = _last.ts.replace(tzinfo=timezone.utc) if not _last.ts.tzinfo else _last.ts
+                    _flow.seed(int(_ts.timestamp()), _last.o, _last.h, _last.l, _last.c, _last.v)
+                    logger.info("[Stocks] Seeded %s CandleFlow from DB: %s", _interval, _ts)
+            _seed_db.close()
+        except Exception:
+            logger.warning("[Stocks] CandleFlow seed failed (will start fresh)")
 
+        # 5. Load initial levels + session context in background thread
         def _load_initial_data_stocks():
-            loop = asyncio.new_event_loop()
+            _init_loop = asyncio.new_event_loop()
             async def _run():
                 try:
                     svc = MarketService(_get_db_session())
                     try:
                         from datetime import date, timedelta
+                        session_data = None
+                        expanded = None
                         for attempt_date in [None, "yesterday"]:
                             try:
                                 if attempt_date == "yesterday":
                                     yesterday = (date.today() - timedelta(days=1)).isoformat()
-                                    await svc.compute_session(yesterday)
+                                    session_data = await svc.compute_session(yesterday)
                                 else:
-                                    await svc.compute_session()
+                                    session_data = await svc.compute_session()
                                 expanded = await svc.build_expanded_session()
                                 if expanded:
                                     level_monitor.load_levels(expanded)
-                                    logger.info("[Stocks] Initial levels loaded")
+                                    if attempt_date == "yesterday":
+                                        logger.info("[Stocks] Using yesterday's session data")
                                     break
                             except Exception as exc:
-                                logger.debug("compute attempt %s failed: %s", attempt_date, exc)
+                                logger.debug("[Stocks] compute attempt %s failed: %s", attempt_date, exc)
+
+                        # Set full session context (VWAP, VP, IB, macro, swings, ATR)
+                        if expanded and session_data and isinstance(session_data, dict):
+                            rl_context = {
+                                "volume_profile": session_data.get("volume_profile"),
+                                "session_levels": session_data.get("session_levels"),
+                                "session_context": session_data.get("session_context"),
+                                "macro": session_data.get("macro"),
+                                "swing_structure": expanded.get("swing_structure") if expanded else None,
+                                "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
+                            }
+                            level_monitor.set_session_context(rl_context)
+                            logger.info("[Stocks] Session context set: %d keys, ATR=%.1f",
+                                       len(rl_context), rl_context.get("atr", 0))
+                        elif expanded:
+                            logger.info("[Stocks] Levels loaded (%d) but no session context",
+                                       len(level_monitor._levels))
                     finally:
                         svc.db.close()
                 except Exception:
                     logger.exception("[Stocks] Initial data load failed")
-            loop.run_until_complete(_run())
-            loop.close()
+            _init_loop.run_until_complete(_run())
+            _init_loop.close()
         threading.Thread(target=_load_initial_data_stocks, daemon=True, name="stocks-init").start()
+
+        # 6. Periodic session recompute (every 5 minutes, same as Databento path)
+        async def _stocks_periodic_recompute():
+            await asyncio.sleep(300)  # initial settle time
+            while True:
+                try:
+                    svc = MarketService(_get_db_session())
+                    try:
+                        session_data = await svc.compute_session()
+                        expanded = await svc.build_expanded_session()
+                        if expanded:
+                            level_monitor.load_levels(expanded)
+                            if session_data and isinstance(session_data, dict):
+                                rl_context = {
+                                    "volume_profile": session_data.get("volume_profile"),
+                                    "session_levels": session_data.get("session_levels"),
+                                    "session_context": session_data.get("session_context"),
+                                    "macro": session_data.get("macro"),
+                                    "swing_structure": expanded.get("swing_structure"),
+                                    "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
+                                }
+                                level_monitor.set_session_context(rl_context)
+                            logger.info("[Stocks] Session recomputed: %d levels, %d zones",
+                                       len(level_monitor._levels), len(level_monitor._zones))
+                    finally:
+                        svc.db.close()
+                except Exception:
+                    logger.warning("[Stocks] Periodic recompute failed", exc_info=True)
+                await asyncio.sleep(300)
+
+        _recompute_task = asyncio.create_task(_stocks_periodic_recompute())
+        _recompute_task.set_name("stocks-recompute")
+        _background_tasks.add(_recompute_task)
+        _recompute_task.add_done_callback(_background_tasks.discard)
 
     # Auto-start all mirror browsers (always-on recording)
     from .routes.mirror import _mirrors, _load_all_providers

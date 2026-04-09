@@ -74,12 +74,12 @@ class SignalRelayClient:
                 pass
             self._ws = None
 
-    async def forward_tick(self, price: float, size: int, ts: float) -> None:
+    async def forward_tick(self, price: float, size: int, ts: float, side: str = "B") -> None:
         """Send a tick message to the server."""
         if not self._connected or self._ws is None:
             return
         try:
-            await self._ws.send(json.dumps(self._tick_msg(price, size, ts)))
+            await self._ws.send(json.dumps(self._tick_msg(price, size, ts, side)))
         except Exception as exc:
             log.warning("SignalRelay: failed to forward tick: %s", exc)
             self._connected = False
@@ -152,8 +152,8 @@ class SignalRelayClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _tick_msg(price: float, size: int, ts: float) -> dict:
-        return {"type": "tick", "price": price, "size": size, "ts": ts}
+    def _tick_msg(price: float, size: int, ts: float, side: str = "B") -> dict:
+        return {"type": "tick", "price": price, "size": size, "ts": ts, "side": side}
 
     @staticmethod
     def _fill_msg(side: str, price: float, size: int, stop_price: float) -> dict:

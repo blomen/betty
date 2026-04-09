@@ -214,7 +214,9 @@ class TopstepXStream:
                 price = float(trade["price"])
                 size = int(trade.get("volume", 1))
                 ts = _parse_ts(trade.get("timestamp", ""))
-                self.on_tick(price, size, ts)
+                # type: 0=bid hit (sell aggressor), 1=ask lift (buy aggressor)
+                side = "A" if trade.get("type") == 0 else "B"
+                self.on_tick(price, size, ts, side)
             except Exception:
                 log.debug("TopstepXStream: bad trade: %r", trade)
 

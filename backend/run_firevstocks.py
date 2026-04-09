@@ -153,8 +153,8 @@ async def _run(config, topstepx_client, relay, stream):
 
     # Wire: TopstepX tick -> relay.forward_tick
     # Stream now uses async websockets -- callbacks run in the event loop directly
-    def on_tick(price: float, size: int, ts: float) -> None:
-        asyncio.create_task(relay.forward_tick(price, size, ts))
+    def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
+        asyncio.create_task(relay.forward_tick(price, size, ts, side))
         recorder.record_tick(price, size, ts)
 
     def _on_fill(fill: dict) -> None:

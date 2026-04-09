@@ -11,6 +11,29 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 log = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _persist_candle(app, candle: dict, interval: str) -> None:
+    """Persist a closed candle to DB (background, non-blocking)."""
+    try:
+        db_factory = getattr(app.state, "_market_db_factory", None)
+        if not db_factory:
+            from ...db.models import get_market_session
+            db_factory = get_market_session
+            app.state._market_db_factory = db_factory
+        db = db_factory()
+        try:
+            from ...repositories.market_repo import MarketRepo
+            MarketRepo(db).upsert_candle(
+                "NQ", interval,
+                candle["t"], candle["o"], candle["h"],
+                candle["l"], candle["c"], candle["v"],
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        log.debug("Failed to persist %s candle", interval)
+
 @router.websocket("/ws/signals")
 async def signal_relay(ws: WebSocket):
     """Accept ticks from local client, feed to LevelMonitor, send signals back."""
@@ -39,7 +62,32 @@ async def signal_relay(ws: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "tick":
-                level_monitor.on_tick(msg["price"], msg["size"], msg["ts"])
+                price = msg["price"]
+                size = msg["size"]
+                ts = msg["ts"]
+
+                # Feed tick buffer for micro/orderflow features
+                tick_buffer = getattr(ws.app.state, "stocks_tick_buffer", None)
+                if tick_buffer:
+                    from datetime import datetime, timezone
+                    tick_ts = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    side = msg.get("side", "B")  # A=sell aggressor, B=buy aggressor
+                    tick_buffer.add(tick_ts, price, size, side)
+
+                # Feed candle flows for candle features + DB persistence
+                candle_5m = getattr(ws.app.state, "stocks_candle_flow_5m", None)
+                candle_1m = getattr(ws.app.state, "stocks_candle_flow_1m", None)
+                if candle_5m:
+                    _, closed = candle_5m.update(price, size, ts)
+                    if closed:
+                        _persist_candle(ws.app, closed, "5m")
+                if candle_1m:
+                    _, closed = candle_1m.update(price, size, ts)
+                    if closed:
+                        _persist_candle(ws.app, closed, "1m")
+
+                # Feed level monitor (triggers zone detection + inference)
+                level_monitor.on_tick(price, size, ts)
             elif msg_type == "fill":
                 adapter = getattr(ws.app.state, "broker_adapter", None)
                 if adapter:
