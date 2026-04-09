@@ -1,4 +1,9 @@
 import { useState } from 'react'
+import PlayPage from './pages/PlayPage'
+import PendingPage from './pages/PendingPage'
+import { DutchPage } from './pages/DutchPage'
+import { BankrollPage } from './pages/BankrollPage'
+import { StatsPage } from './pages/StatsPage'
 
 type Tab = 'play' | 'pending' | 'dutch' | 'bankroll' | 'stats'
 
@@ -32,11 +37,11 @@ export default function App() {
         ))}
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
-        {activeTab === 'play' && <div className="p-4 text-zinc-500">Play page — coming next</div>}
-        {activeTab === 'pending' && <div className="p-4 text-zinc-500">Pending page — coming next</div>}
-        {activeTab === 'dutch' && <div className="p-4 text-zinc-500">Dutch page — coming next</div>}
-        {activeTab === 'bankroll' && <div className="p-4 text-zinc-500">Bankroll page — coming next</div>}
-        {activeTab === 'stats' && <div className="p-4 text-zinc-500">Stats page — coming next</div>}
+        {activeTab === 'play' && <PlayPage />}
+        {activeTab === 'pending' && <PendingPage />}
+        {activeTab === 'dutch' && <DutchPage />}
+        {activeTab === 'bankroll' && <BankrollPage />}
+        {activeTab === 'stats' && <StatsPage />}
       </div>
     </div>
   )
