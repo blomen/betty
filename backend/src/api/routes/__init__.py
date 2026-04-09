@@ -19,6 +19,7 @@ from .settings import router as settings_router
 from .limits import router as limits_router
 from .postmortem import router as postmortem_router
 from .mirror import router as mirror_router
+from .mirror_stream import router as mirror_stream_router
 from .fire_window import router as fire_window_router
 
 __all__ = [
@@ -41,5 +42,6 @@ __all__ = [
     'limits_router',
     'postmortem_router',
     'mirror_router',
+    'mirror_stream_router',
     'fire_window_router',
 ]

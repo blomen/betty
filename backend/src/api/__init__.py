@@ -46,6 +46,7 @@ from .routes import (
     limits_router,
     postmortem_router,
     mirror_router,
+    mirror_stream_router,
     fire_window_router,
 )
 
@@ -889,6 +890,7 @@ app.include_router(settings_router)
 app.include_router(limits_router)
 app.include_router(postmortem_router)
 app.include_router(mirror_router)
+app.include_router(mirror_stream_router)
 app.include_router(fire_window_router)
 
 
