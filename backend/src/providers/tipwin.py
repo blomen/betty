@@ -226,20 +226,23 @@ class TipwinRetriever(BrowserRetriever):
                         provider_id=self.provider_id,
                     )
 
-            # Calculate total pages
-            total_pages = 0
+            # Calculate total pages — use the response with MOST items
+            # (homepage captures a small offer, /sv/sports/full/ has the full listing)
+            best_total = 0
+            best_ps = 5
             for resp in api_responses:
                 if 'items' in resp and isinstance(resp.get('items'), list):
                     total = resp.get('totalNumberOfItems', 0)
                     ps = resp.get('pageSize', 5)
-                    if total and ps:
-                        total_pages = (total + ps - 1) // ps
-                        break
+                    if total > best_total:
+                        best_total = total
+                        best_ps = ps
+            total_pages = (best_total + best_ps - 1) // best_ps if best_total else 0
             max_pages = min(total_pages or 30, 120)
 
             logger.info(
                 f"[{self.provider_id}] Paginating {max_pages} pages "
-                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
+                f"({best_total} total items, pageSize={best_ps})"
             )
 
             # Paginate via ?page=N — route handler captures response inline
