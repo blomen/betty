@@ -220,6 +220,20 @@ def open_window(
     # Resolve provider-specific metadata (slugs, matchup IDs)
     _resolve_provider_meta(provider_bets)
 
+    # Filter out bets already pending in DB
+    all_pids = list(provider_bets.keys())
+    already = _get_already_placed(all_pids)
+    for pid in list(provider_bets.keys()):
+        before = len(provider_bets[pid])
+        provider_bets[pid] = [
+            b for b in provider_bets[pid]
+            if f"{b.event_id}:{b.market}:{b.outcome}" not in already
+            and not (b.market_slug and f"slug:{b.market_slug}" in already)
+        ]
+        removed = before - len(provider_bets[pid])
+        if removed:
+            logger.info(f"[FireWindow] Filtered {removed} already-placed bets from {pid}")
+
     # Build provider order
     if provider_order is None:
         provider_order = _default_provider_order(provider_bets)
