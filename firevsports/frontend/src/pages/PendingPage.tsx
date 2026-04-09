@@ -7,6 +7,7 @@ export function PendingPage() {
   const queryClient = useQueryClient()
   const mirror = useMirrorStream()
   const [syncing, setSyncing] = useState(false)
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<string, any[]>>({})
 
   const { data, isLoading } = useQuery({
@@ -32,7 +33,11 @@ export function PendingPage() {
     if (type === 'pending_stopped') setSyncing(false)
   }, [mirror.lastEvent])
 
-  const handleSyncAll = async () => { setSyncing(true); await api.startPendingLoop() }
+  const handleSync = async () => {
+    if (!selectedProvider) return
+    setSyncing(true)
+    await api.startPendingLoop()
+  }
   const handleStopSync = () => { api.stopPendingLoop(); setSyncing(false) }
   const handleConfirm = (pid: string) => api.confirmSettlement(pid)
 
@@ -49,10 +54,13 @@ export function PendingPage() {
         <span>{totalBets} pending bets across {providers.length} providers</span>
         <div className="ml-auto flex items-center gap-2">
           {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {selectedProvider && !syncing && (
+            <span className="text-[10px] text-amber-400 uppercase">{selectedProvider}</span>
+          )}
           {!syncing ? (
-            <button onClick={handleSyncAll}
-              className="px-2 py-0.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded">
-              Sync All
+            <button onClick={handleSync} disabled={!selectedProvider}
+              className="px-2 py-0.5 text-xs bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded">
+              Sync
             </button>
           ) : (
             <button onClick={handleStopSync}
@@ -64,8 +72,15 @@ export function PendingPage() {
       </div>
       {providers.map((p: any) => (
         <div key={p.provider_id}>
-          <div className="flex items-center gap-3 px-3 py-2 bg-zinc-900/50 border-b border-zinc-800">
-            <span className="text-xs font-medium text-zinc-300 uppercase">{p.provider_id}</span>
+          <div
+            onClick={() => setSelectedProvider(selectedProvider === p.provider_id ? null : p.provider_id)}
+            className={`flex items-center gap-3 px-3 py-2 border-b cursor-pointer transition-colors ${
+              selectedProvider === p.provider_id
+                ? 'bg-amber-900/30 border-amber-700/50 border-l-2 border-l-amber-500'
+                : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/60'
+            }`}
+          >
+            <span className={`text-xs font-medium uppercase ${selectedProvider === p.provider_id ? 'text-amber-400' : 'text-zinc-300'}`}>{p.provider_id}</span>
             <span className="text-xs text-zinc-500">{p.bet_count} bets</span>
             <span className="text-xs text-zinc-500">{(p.total_stake ?? 0).toFixed(0)} {p.currency ?? 'SEK'}</span>
           </div>
