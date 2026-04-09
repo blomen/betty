@@ -614,6 +614,8 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         logger.info(f"[polymarket] Portfolio page: {debug_info.get('url')}, "
                      f"buttons found: {len(debug_info.get('buttons', []))}")
+        for i, btn in enumerate(debug_info.get('buttons', [])):
+            logger.info(f"[polymarket] Button {i}: type={btn.get('type')} text={btn.get('row_text', '')[:120]}")
 
         # Now build positions from the button contexts
         positions = []
@@ -1198,6 +1200,9 @@ class PolymarketWorkflow(ProviderWorkflow):
         svc = BetService(db)
         imported = []
         for pos in unique_positions:
+            logger.info(f"[polymarket] Position: market={pos.get('market')} sell={pos.get('has_sell')} "
+                        f"redeem={pos.get('has_redeem')} status={pos.get('status')} "
+                        f"avg={pos.get('avg_price')} shares={pos.get('shares')}")
             if not pos.get("has_sell"):
                 continue  # Only open positions
             if pos.get("status") in ("won", "lost"):

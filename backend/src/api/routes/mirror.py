@@ -629,6 +629,28 @@ async def settle_provider(provider_id: str):
     return {"staged": len(mirror._pending_settlements), "settlements": mirror._pending_settlements}
 
 
+@router.get("/poly-positions")
+async def poly_positions():
+    """Scrape and return raw Polymarket positions."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    context = mirror.interceptor.context
+    if not context:
+        raise HTTPException(400, "No browser context")
+    page = None
+    for p in context.pages:
+        if 'polymarket.com' in (p.url or ''):
+            page = p
+            break
+    if not page:
+        raise HTTPException(400, "No polymarket tab open")
+    from ...mirror.workflows.polymarket import PolymarketWorkflow
+    wf = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+    positions = await wf.scrape_portfolio(page)
+    return {"positions": positions, "count": len(positions), "page_url": page.url}
+
+
 @router.get("/debug-history/{provider_id}")
 async def debug_history(provider_id: str):
     """Debug: fetch raw history entries from a provider workflow."""
