@@ -23,8 +23,11 @@ const STOCKS_TABS: Tab[] = [
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
 
+const isLocalhost = typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
 export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
-  sports: SPORTS_TABS,
+  sports: isLocalhost ? SPORTS_TABS : SPORTS_TABS.filter(t => t.name !== 'play'),
   stocks: STOCKS_TABS,
 };
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef, Fragment } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { ClusterBatchResult, ClusterBet, PendingBetsResponse } from '@/types';
@@ -6,6 +6,8 @@ import { NetworkError, TimeoutError } from '@/services/api/client';
 import { resolveOutcome } from '@/utils/betting';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { SyncLane } from './play/SyncLane';
+import { BettingLane } from './play/BettingLane';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -140,24 +142,19 @@ export function PlayPage() {
       try {
         const data = JSON.parse(e.data);
         if (!activeBet || !activeProviderBets.length) return;
-        if (!data.provider || !data.matched) return; // Only act on confirmed matches
+        if (!data.provider || !data.matched) return;
 
         const currentIdx = activeProviderBets.findIndex(b => betKey(b) === activeBet);
         if (currentIdx < 0) return;
         const current = activeProviderBets[currentIdx];
 
-        // Must be same provider
         if (data.provider !== current.provider_id) return;
-
-        // Must have odds AND stake that roughly match
         if (!data.odds || !data.stake) return;
         const oddsMatch = Math.abs(data.odds - current.odds) / current.odds < 0.10;
         const stakeMatch = Math.abs(data.stake - current.stake) / current.stake < 0.30;
         if (!oddsMatch && !stakeMatch) return;
 
-        // Mark as placed
         setPlacedBets(prev => new Set(prev).add(activeBet));
-        // Advance to next unplaced bet
         for (let i = currentIdx + 1; i < activeProviderBets.length; i++) {
           const next = activeProviderBets[i];
           if (!placedBets.has(betKey(next))) {
@@ -210,7 +207,6 @@ export function PlayPage() {
         );
         if (res.live_edge != null) {
           setLiveEdge(res.live_edge);
-          // Auto-skip if live edge is negative — move to next positive bet
           if (res.live_edge <= 0 && activeBetObj) {
             const positives = [...batch].filter(b => b.edge_pct > 0 && !placedBets.has(betKey(b)));
             positives.sort((a, b) => b.edge_pct - a.edge_pct);
@@ -225,7 +221,7 @@ export function PlayPage() {
         if (res.live_cents != null) setLiveCents(res.live_cents);
       } catch { /* */ }
     };
-    poll(); // Immediate first check
+    poll();
     const iv = setInterval(poll, 5000);
     return () => clearInterval(iv);
   }, [activeBetObj, navigating]);
@@ -241,14 +237,42 @@ export function PlayPage() {
   const summary = batchData?.summary;
   const balances: Record<string, number> = (batchData as any)?.provider_balances ?? {};
 
+  // Flat provider list (sorted by balance desc, then pending count)
+  const providerList = useMemo(() => {
+    const byProvider: Record<string, ClusterBet[]> = {};
+    for (const b of batch) {
+      const pid = b.provider_id ?? 'unknown';
+      if (!byProvider[pid]) byProvider[pid] = [];
+      byProvider[pid].push(b);
+    }
+    return Object.entries(byProvider)
+      .map(([pid, bets]) => {
+        bets.sort((a, b) => b.edge_pct - a.edge_pct);
+        return {
+          provider: pid,
+          bets,
+          tier: bets[0]?.tier || 'soft',
+          totalEv: bets.reduce((s, b) => s + b.expected_profit, 0),
+          totalStake: bets.reduce((s, b) => s + b.stake, 0),
+          balance: balances[pid] ?? 0,
+        };
+      })
+      .sort((a, b) => {
+        if (a.balance !== b.balance) return b.balance - a.balance;
+        const pendA = settleMap[a.provider] ?? 0;
+        const pendB = settleMap[b.provider] ?? 0;
+        return pendB - pendA;
+      });
+  }, [batch, balances, settleMap]);
+
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+
   // Auto-navigate to top edge bet when no active bet
   const lastAutoNav = useRef(0);
   useEffect(() => {
     if (activeBet || navigating || !batch.length || batchLoading) return;
-    // Debounce: don't re-trigger within 3s
     if (Date.now() - lastAutoNav.current < 3000) return;
     lastAutoNav.current = Date.now();
-    // Only auto-navigate to providers confirmed logged in via SSE AND with balance >= $1
     const loggedIn = new Set([...providerStatus.entries()].filter(([_, s]) => s === 'logged_in').map(([p]) => p));
     const hasBalance = new Set(Object.entries(balances).filter(([_, b]) => b >= 1).map(([p]) => p));
     const playable = new Set([...loggedIn].filter(p => hasBalance.has(p)));
@@ -257,49 +281,13 @@ export function PlayPage() {
     const sorted = [...batch].filter(b => b.edge_pct > 0).sort((a, b) => b.edge_pct - a.edge_pct);
     const top = sorted.find(b => !placedBets.has(betKey(b)) && playable.has(b.provider_id));
     if (top) {
-      setExpandedProvider(top.provider_id);
+      setActiveProvider(top.provider_id);
       const providerBets = batch.filter(b => b.provider_id === top.provider_id);
       setActiveProviderBets(providerBets);
       handlePlayBet(top);
     }
   }, [batch, activeBet, navigating, batchLoading, placedBets]);
 
-  const clusterGroups = useMemo(() => {
-    const groups: Record<string, { provider: string; bets: ClusterBet[]; tier: string; totalEv: number; totalStake: number; balance: number }[]> = {};
-    const byProvider: Record<string, ClusterBet[]> = {};
-    for (const b of batch) {
-      const pid = b.provider_id ?? 'unknown';
-      if (!byProvider[pid]) byProvider[pid] = [];
-      byProvider[pid].push(b);
-    }
-    for (const [pid, bets] of Object.entries(byProvider)) {
-      // Sort bets within each provider by edge descending
-      bets.sort((a, b) => b.edge_pct - a.edge_pct);
-      const cluster = bets[0]?.cluster ?? pid;
-      if (!groups[cluster]) groups[cluster] = [];
-      groups[cluster].push({
-        provider: pid, bets,
-        tier: bets[0]?.tier || 'soft',
-        totalEv: bets.reduce((s, b) => s + b.expected_profit, 0),
-        totalStake: bets.reduce((s, b) => s + b.stake, 0),
-        balance: balances[pid] ?? 0,
-      });
-    }
-    // Sort providers within cluster by balance desc
-    for (const list of Object.values(groups)) list.sort((a, b) => b.balance - a.balance);
-    // Sort clusters: highest total balance first, then by pending count
-    return Object.entries(groups).sort((a, b) => {
-      const balA = a[1].reduce((s, p) => s + p.balance, 0);
-      const balB = b[1].reduce((s, p) => s + p.balance, 0);
-      if (balA !== balB) return balB - balA;
-      // Same balance (0) — sort by pending count
-      const pendA = a[1].reduce((s, p) => s + (settleMap[p.provider] ?? 0), 0);
-      const pendB = b[1].reduce((s, p) => s + (settleMap[p.provider] ?? 0), 0);
-      return pendB - pendA;
-    });
-  }, [batch, balances]);
-
-  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const sekStake = batch.filter(b => b.tier !== 'polymarket').reduce((s, b) => s + b.stake, 0);
   const usdcStake = batch.filter(b => b.tier === 'polymarket').reduce((s, b) => s + b.stake, 0);
   const totalEV = summary?.total_expected_profit ?? 0;
@@ -308,161 +296,188 @@ export function PlayPage() {
     if (!batchError) return 'No batch data available.';
     if (batchError instanceof NetworkError) return 'Backend is not reachable.';
     if (batchError instanceof TimeoutError) return 'Batch request timed out.';
-    return batchError.message || 'Failed to load batch data.';
+    return (batchError as Error).message || 'Failed to load batch data.';
   }
 
+  const activeBets = useMemo(() => {
+    if (!activeProvider) return [];
+    return providerList.find(p => p.provider === activeProvider)?.bets ?? [];
+  }, [activeProvider, providerList]);
+
+  const activeTier = providerList.find(p => p.provider === activeProvider)?.tier ?? 'soft';
+
+  const handleSelectProvider = (pid: string) => {
+    if (activeProvider === pid) return;
+    setActiveProvider(pid);
+    const provBets = batch.filter(b => b.provider_id === pid);
+    setActiveProviderBets(provBets);
+    setActiveBet(null);
+    setLiveEdge(null);
+    // Auto-navigate to first positive bet
+    const first = provBets.find(b => b.edge_pct > 0 && !placedBets.has(betKey(b)));
+    if (first) handlePlayBet(first);
+  };
+
+  const handleConfirmSettlements = useCallback(() => {
+    // Trigger settle confirmation — invalidate pending bets
+    queryClient.invalidateQueries({ queryKey: ['pending-bets'] });
+  }, [queryClient]);
+
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <TabIcon name="play" color={TAB_COLORS.play} size={16} />
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border bg-panel flex-shrink-0">
+        <h2 className="text-sm font-semibold text-text flex items-center gap-2">
+          <TabIcon name="play" color={TAB_COLORS.play} size={14} />
           Play
         </h2>
-      </div>
-
-      {/* Batch */}
-      {batchLoading ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Building batch...</div>
-      ) : !batchData ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">{batchErrorMessage()}</div>
-      ) : batch.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets in batch.</div>
-      ) : (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
-            <span className="text-text font-medium">{batch.length} bets</span>
+        {batchLoading ? (
+          <span className="text-muted text-xs">Loading...</span>
+        ) : batchData ? (
+          <>
+            <span className="text-text text-xs font-medium">{batch.length} bets</span>
             <span className="text-muted text-[10px]">
               {sekStake > 0 && `${sekStake.toFixed(0)} kr`}
               {sekStake > 0 && usdcStake > 0 && ' + '}
               {usdcStake > 0 && `${usdcStake.toFixed(2)} USDC`}
             </span>
-            <span className="text-success text-sm">+{totalEV.toFixed(0)} kr EV</span>
-          </div>
+            <span className="text-success text-xs">+{totalEV.toFixed(0)} kr EV</span>
+          </>
+        ) : (
+          <span className="text-muted text-xs">{batchErrorMessage()}</span>
+        )}
+      </div>
 
-          <div className="border border-border border-t-0 bg-panel flex-1 min-h-0 relative">
-            <div className="absolute inset-0 overflow-y-auto">
-              {clusterGroups.map(([cluster, clusterProviders]) => {
-                const clusterBets = clusterProviders.reduce((s, p) => s + p.bets.length, 0);
-                const clusterEv = clusterProviders.reduce((s, p) => s + p.totalEv, 0);
-                const clusterTier = clusterProviders[0]?.tier || 'soft';
+      {/* Body */}
+      {batchLoading ? (
+        <div className="text-muted text-sm py-8 text-center flex-1">Building batch...</div>
+      ) : !batchData ? (
+        <div className="text-muted text-sm py-8 text-center flex-1">{batchErrorMessage()}</div>
+      ) : batch.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center flex-1">No bets in batch.</div>
+      ) : (
+        <div className="flex flex-1 min-h-0">
 
+          {/* ── Left lane: provider list + sync ────────────────────────── */}
+          <div className="w-72 border-r border-zinc-800 flex flex-col min-h-0">
+            {/* Provider list */}
+            <div className="flex-shrink-0 overflow-y-auto" style={{ maxHeight: '40%' }}>
+              {providerList.map(({ provider, bets, tier, totalEv, balance }) => {
+                const isActive = activeProvider === provider;
+                const settleCount = settleMap[provider] ?? 0;
+                const status = providerStatus.get(provider);
+                const dotColor = status === 'logged_in' ? 'text-success' : status === 'opened' ? 'text-amber-400' : 'text-muted/30';
                 return (
-                  <Fragment key={cluster}>
-                    <div className="flex items-center gap-3 px-3 py-1 bg-panel2/30 border-b border-border">
-                      <span className="text-[10px] text-muted font-medium uppercase tracking-wider">{cluster}</span>
-                      <span className="text-[10px] text-muted">{clusterBets} bets · {clusterProviders.length} providers</span>
-                      <span className="text-[10px] text-success ml-auto">+{fmt(clusterEv, clusterTier)} EV</span>
-                    </div>
-
-                    {clusterProviders.map(({ provider, bets, tier, totalStake, totalEv, balance }) => {
-                      const isExpanded = expandedProvider === provider;
-                      const handleExpand = () => {
-                        if (isExpanded) {
-                          setExpandedProvider(null);
-                          setActiveBet(null);
-                          setLiveEdge(null);
-                          setActiveProviderBets([]);
-                        } else {
-                          setExpandedProvider(provider);
-                          setActiveProviderBets(bets);
-                          // Auto-navigate to first unplaced bet
-                          const first = bets.find(b => b.edge_pct > 0 && !placedBets.has(betKey(b)));
-                          if (first) handlePlayBet(first);
-                        }
-                      };
-                      const settleCount = settleMap[provider] ?? 0;
-                      const status = providerStatus.get(provider);
-                      const dotColor = status === 'logged_in' ? 'text-success' : status === 'opened' ? 'text-amber-400' : 'text-muted/30';
-                      return (
-                        <Fragment key={provider}>
-                          <div
-                            className="flex items-center gap-3 px-3 pl-6 py-2 border-b border-border hover:bg-panel2/50 cursor-pointer transition-colors"
-                            onClick={handleExpand}
-                          >
-                            <span className={`text-[10px] ${dotColor}`}>●</span>
-                            <span className="text-sm font-medium text-text w-28 truncate uppercase">{provider}</span>
-                            <span className="text-xs text-muted">{bets.length} bets</span>
-                            <span className="text-xs text-muted">{fmt(totalStake, tier)}</span>
-                            {balance > 0 && <span className="text-xs text-success">bal {fmt(balance, tier)}</span>}
-                            {settleCount > 0 && <span className="text-[10px] text-amber-400 font-medium">{settleCount} pending</span>}
-                            <span className="text-xs text-success ml-auto">+{fmt(totalEv, tier)} EV</span>
-                            <span className="text-muted text-xs w-3">{isExpanded ? '▾' : '▸'}</span>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="border-b border-border bg-panel2/20">
-                              <table className="sq w-full">
-                                <thead>
-                                  <tr className="text-muted text-[10px]">
-                                    <th className="text-left pl-8">Event</th>
-                                    <th className="text-left">Outcome</th>
-                                    <th className="text-right">Odds</th>
-                                    <th className="text-right">Fair</th>
-                                    <th className="text-right">Edge</th>
-                                    <th className="text-right">Stake</th>
-                                    <th className="text-right">TTK</th>
-                                    <th className="text-right">Upd</th>
-                                    <th className="w-6"></th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {bets.filter(b => {
-                                    // Hide if DB edge is negative
-                                    if (b.edge_pct <= 0) return false;
-                                    // Hide if this is the active bet and live edge is negative
-                                    if (activeBet === betKey(b) && liveEdge != null && liveEdge <= 0) return false;
-                                    return true;
-                                  }).map(b => {
-                                    const ttk = getTTKFromNow(b.start_time);
-                                    return (
-                                      <tr
-                                        key={betKey(b)}
-                                        className={`hover:bg-panel2/40 cursor-pointer ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
-                                        onClick={() => handlePlayBet(b)}
-                                      >
-                                        <td className="pl-8 text-sm text-text truncate max-w-[200px]" title={eventLabel(b)}>
-                                          {activeBet === betKey(b) && navigating && <span className="text-amber-400 text-[10px] mr-1">⟳</span>}
-                                          {activeBet === betKey(b) && !navigating && <span className="text-success text-[10px] mr-1">▸</span>}
-                                          {eventLabel(b)}
-                                        </td>
-                                        <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
-                                        <td className="text-right text-sm text-text">
-                                          {b.odds.toFixed(2)}
-                                          {tier === 'polymarket' && (
-                                            activeBet === betKey(b) && liveCents != null
-                                              ? <span className="text-amber-400 text-[10px] ml-0.5">{liveCents.toFixed(1)}¢</span>
-                                              : <span className="text-muted text-[10px] ml-0.5">{(100 / b.odds).toFixed(1)}¢</span>
-                                          )}
-                                        </td>
-                                        <td className="text-right text-sm text-muted">
-                                          {b.fair_odds.toFixed(2)}
-                                          {tier === 'polymarket' && <span className="text-[10px] ml-0.5">{(100 / b.fair_odds).toFixed(1)}¢</span>}
-                                        </td>
-                                        <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
-                                          {activeBet === betKey(b) && liveEdge != null
-                                            ? <span className={liveEdge > 0 ? 'text-success' : 'text-danger'}>{liveEdge > 0 ? '+' : ''}{liveEdge.toFixed(1)}%</span>
-                                            : `+${b.edge_pct.toFixed(1)}%`
-                                          }
-                                        </td>
-                                        <td className="text-right text-sm text-text">{fmt(b.stake, tier)}</td>
-                                        <td className="text-right text-sm"><span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span></td>
-                                        <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>{formatOddsAge(b.odds_age_minutes)}</td>
-                                        <td className="text-right pr-2"><button onClick={(e) => { e.stopPropagation(); handleRemoveBet(b); }} className="text-muted hover:text-error text-sm px-1">✕</button></td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </Fragment>
+                  <div
+                    key={provider}
+                    className={`flex items-center gap-2 px-3 py-2 border-b border-border cursor-pointer transition-colors ${isActive ? 'bg-panel2/60' : 'hover:bg-panel2/40'}`}
+                    onClick={() => handleSelectProvider(provider)}
+                  >
+                    <span className={`text-[10px] flex-shrink-0 ${dotColor}`}>●</span>
+                    <span className="text-xs font-medium text-text truncate uppercase w-24">{provider}</span>
+                    <span className="text-[10px] text-muted">{bets.length}</span>
+                    {balance > 0 && <span className="text-[10px] text-success">{fmt(balance, tier)}</span>}
+                    {settleCount > 0 && <span className="text-[10px] text-amber-400">{settleCount}p</span>}
+                    <span className="text-[10px] text-success ml-auto">+{fmt(totalEv, tier)}</span>
+                  </div>
                 );
               })}
             </div>
+
+            {/* SyncLane for active provider */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <SyncLane
+                providerId={activeProvider}
+                onConfirmSettlements={handleConfirmSettlements}
+              />
+            </div>
           </div>
+
+          {/* ── Right lane: bet table + betting lane ───────────────────── */}
+          <div className="flex-1 flex flex-col min-h-0">
+            {activeProvider ? (
+              <>
+                {/* Bet table */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <table className="sq w-full">
+                    <thead>
+                      <tr className="text-muted text-[10px]">
+                        <th className="text-left pl-3">Event</th>
+                        <th className="text-left">Outcome</th>
+                        <th className="text-right">Odds</th>
+                        <th className="text-right">Fair</th>
+                        <th className="text-right">Edge</th>
+                        <th className="text-right">Stake</th>
+                        <th className="text-right">TTK</th>
+                        <th className="text-right">Upd</th>
+                        <th className="w-6"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeBets.filter(b => {
+                        if (b.edge_pct <= 0) return false;
+                        if (activeBet === betKey(b) && liveEdge != null && liveEdge <= 0) return false;
+                        return true;
+                      }).map(b => {
+                        const ttk = getTTKFromNow(b.start_time);
+                        return (
+                          <tr
+                            key={betKey(b)}
+                            className={`hover:bg-panel2/40 cursor-pointer ${activeBet === betKey(b) ? 'bg-panel2/60' : ''}`}
+                            onClick={() => handlePlayBet(b)}
+                          >
+                            <td className="pl-3 text-sm text-text truncate max-w-[180px]" title={eventLabel(b)}>
+                              {activeBet === betKey(b) && navigating && <span className="text-amber-400 text-[10px] mr-1">⟳</span>}
+                              {activeBet === betKey(b) && !navigating && <span className="text-success text-[10px] mr-1">▸</span>}
+                              {eventLabel(b)}
+                            </td>
+                            <td className="text-sm text-text truncate max-w-[100px]">{outcomeLabel(b)}</td>
+                            <td className="text-right text-sm text-text">
+                              {b.odds.toFixed(2)}
+                              {activeTier === 'polymarket' && (
+                                activeBet === betKey(b) && liveCents != null
+                                  ? <span className="text-amber-400 text-[10px] ml-0.5">{liveCents.toFixed(1)}¢</span>
+                                  : <span className="text-muted text-[10px] ml-0.5">{(100 / b.odds).toFixed(1)}¢</span>
+                              )}
+                            </td>
+                            <td className="text-right text-sm text-muted">
+                              {b.fair_odds.toFixed(2)}
+                              {activeTier === 'polymarket' && <span className="text-[10px] ml-0.5">{(100 / b.fair_odds).toFixed(1)}¢</span>}
+                            </td>
+                            <td className={`text-right text-sm font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
+                              {activeBet === betKey(b) && liveEdge != null
+                                ? <span className={liveEdge > 0 ? 'text-success' : 'text-danger'}>{liveEdge > 0 ? '+' : ''}{liveEdge.toFixed(1)}%</span>
+                                : `+${b.edge_pct.toFixed(1)}%`
+                              }
+                            </td>
+                            <td className="text-right text-sm text-text">{fmt(b.stake, activeTier)}</td>
+                            <td className="text-right text-sm"><span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span></td>
+                            <td className={`text-right text-sm ${getOddsAgeColor(b.odds_age_minutes)}`}>{formatOddsAge(b.odds_age_minutes)}</td>
+                            <td className="text-right pr-2">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleRemoveBet(b); }}
+                                className="text-muted hover:text-error text-sm px-1"
+                              >✕</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* BettingLane */}
+                <div className="flex-shrink-0 border-t border-zinc-800">
+                  <BettingLane providerId={activeProvider} />
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted text-sm">
+                Select a provider
+              </div>
+            )}
+          </div>
+
         </div>
       )}
     </div>
