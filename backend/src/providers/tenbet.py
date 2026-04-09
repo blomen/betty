@@ -197,10 +197,12 @@ class TenBetRetriever(BrowserRetriever):
 
         logger.info(f"[{self.provider_id}] Found {len(competitions)} competitions for {sport}")
 
-        # Scrape competitions in batches to allow early exit
+        # Scrape competitions in batches
         all_events = []
         unique_ids = set()
-        sem = asyncio.Semaphore(6)  # 6 parallel tabs — balance speed vs browser pressure
+        # Large sports (football 40+ comps) need fewer concurrent tabs to avoid timeouts
+        concurrency = 3 if len(competitions) > 20 else 6
+        sem = asyncio.Semaphore(concurrency)
         batch_size = 15
         sport_timeout = self.config.get("sport_timeout", 600)
 
@@ -381,7 +383,7 @@ class TenBetRetriever(BrowserRetriever):
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
 
             # Wait for event items to render
             events_loaded = False

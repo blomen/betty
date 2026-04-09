@@ -249,9 +249,9 @@ class CoolbetRetriever(BrowserRetriever):
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
                 # Imperva sets session cookies asynchronously after page load.
-                # The API returns 403 if called too early (cookies not yet valid).
-                # 2s is sufficient for Imperva Reese84 challenge to complete with Camoufox.
-                await asyncio.sleep(2)
+                # The Reese84 challenge runs JS that sets __cf_bm and other cookies.
+                # 5s gives Imperva time to complete — 2s was too aggressive, caused 403 on first API call.
+                await asyncio.sleep(5)
                 body_text = await page.evaluate(
                     'document.body ? document.body.innerText.substring(0, 500) : ""'
                 )
@@ -274,10 +274,15 @@ class CoolbetRetriever(BrowserRetriever):
                 category_data = []
                 seen_cat_ids = set()
                 sem = asyncio.Semaphore(self.CONCURRENT_CATEGORY_FETCHES)
+                failures = 0
 
                 async def fetch_league(lid):
+                    nonlocal failures
                     async with sem:
-                        return await self._fetch_category_page(page, lid)
+                        result = await self._fetch_category_page(page, lid)
+                        if result is None:
+                            failures += 1
+                        return result
 
                 tasks = [fetch_league(lid) for lid in league_ids]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -289,6 +294,14 @@ class CoolbetRetriever(BrowserRetriever):
                         if cid not in seen_cat_ids:
                             seen_cat_ids.add(cid)
                             category_data.append(cat)
+
+                # If >50% of league fetches failed, session is stale — force re-auth next sport
+                if failures > len(league_ids) * 0.5:
+                    logger.warning(
+                        f"[{self.provider_id}] {sport}: {failures}/{len(league_ids)} league fetches failed "
+                        f"(Imperva session stale) — forcing re-auth"
+                    )
+                    self._session_ready = False
             else:
                 # Fallback to sport-level pagination
                 category_data = await self._fetch_all_categories(
