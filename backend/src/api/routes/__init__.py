@@ -21,6 +21,7 @@ from .postmortem import router as postmortem_router
 from .mirror import router as mirror_router
 from .mirror_stream import router as mirror_stream_router
 from .fire_window import router as fire_window_router
+from .signals_ws import router as signals_ws_router
 
 __all__ = [
     'providers_router',
@@ -44,4 +45,5 @@ __all__ = [
     'mirror_router',
     'mirror_stream_router',
     'fire_window_router',
+    'signals_ws_router',
 ]

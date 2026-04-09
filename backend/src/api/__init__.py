@@ -48,6 +48,7 @@ from .routes import (
     mirror_router,
     mirror_stream_router,
     fire_window_router,
+    signals_ws_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -892,6 +893,7 @@ app.include_router(postmortem_router)
 app.include_router(mirror_router)
 app.include_router(mirror_stream_router)
 app.include_router(fire_window_router)
+app.include_router(signals_ws_router)
 
 
 # Version endpoint

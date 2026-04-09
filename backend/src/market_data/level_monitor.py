@@ -817,12 +817,40 @@ class LevelMonitor:
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:
                         logger.warning("Broker execution failed", exc_info=True)
+
+            # Send signal via relay callback (for firevstocks local client)
+            callback = getattr(self, '_signal_callback', None)
+            if callback is not None and result is not None:
+                action = result.get("action", "SKIP")
+                if action not in ("SKIP", "skip"):
+                    signal_msg = {
+                        "action": "enter_long" if action == "CONTINUATION" else "enter_short",
+                        "price": price,
+                        "stop_price": price - result.get("stop_ticks", 15) * 0.25
+                                     if action == "CONTINUATION"
+                                     else price + result.get("stop_ticks", 15) * 0.25,
+                        "size": result.get("sizing_signal", 1.0),
+                        "confidence": result.get("confidence", 0.0),
+                        "zone": zone.center_price,
+                        "zone_members": zone.member_count,
+                    }
+                    try:
+                        if asyncio.iscoroutinefunction(callback):
+                            asyncio.create_task(callback(signal_msg))
+                        else:
+                            callback(signal_msg)
+                    except Exception:
+                        logger.warning("Signal callback failed", exc_info=True)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
 
     def set_broker_adapter(self, adapter) -> None:
         """Set broker adapter for automated execution."""
         self._broker_adapter = adapter
+
+    def set_signal_callback(self, fn) -> None:
+        """Set callback for zone signals. Used by /ws/signals relay."""
+        self._signal_callback = fn
 
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time
