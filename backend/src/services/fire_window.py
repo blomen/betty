@@ -551,8 +551,10 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
                 logger.warning(f"[FireWindow] Polymarket settle_all failed: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
         elif provider_id == "pinnacle":
+            logger.info(f"[FireWindow] >>> Pinnacle settle: page={'found' if page else 'NONE'}, workflow={type(workflow).__name__}, has_strategy={hasattr(workflow, 'strategy') and workflow.strategy is not None}")
             try:
                 settle_result = await workflow.settle_all(page)
+                logger.info(f"[FireWindow] >>> Pinnacle settle_all done: {settle_result}")
                 result["steps"]["settle"] = {
                     "recorded_new": settle_result.get("recorded_new", 0),
                     "settled": settle_result.get("settled", 0),
@@ -561,7 +563,7 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
                 if settle_result.get("new_balance", -1) >= 0:
                     result["steps"]["balance"] = settle_result["new_balance"]
             except Exception as e:
-                logger.warning(f"[FireWindow] Pinnacle settle_all failed: {e}", exc_info=True)
+                logger.warning(f"[FireWindow] >>> Pinnacle settle_all FAILED: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
         else:
             try:
@@ -826,17 +828,23 @@ def _get_cluster_balances(cluster_providers: list[str]) -> dict[str, float]:
 
 
 def _get_already_placed(provider_ids: list[str]) -> set[str]:
-    """Get event:market:outcome keys for already-placed bets across providers."""
+    """Get dedup keys for already-placed pending bets.
+
+    Returns both event:market:outcome keys AND slug: keys so that
+    imported positions (event_id=None) match fire window bets by slug.
+    """
     from ..db.models import Bet
     already_placed: set[str] = set()
     db = get_session()
     try:
-        rows = db.query(Bet.event_id, Bet.market, Bet.outcome).filter(
+        rows = db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.confirmation_id).filter(
             Bet.provider_id.in_(provider_ids),
             Bet.result == "pending",
         ).all()
         for row in rows:
             already_placed.add(f"{row[0]}:{row[1]}:{row[2]}")
+            if row[3]:
+                already_placed.add(f"slug:{row[3]}")
     finally:
         db.close()
     return already_placed
@@ -897,6 +905,9 @@ def get_next_bet() -> dict:
             continue
         bet_key = f"{bet.event_id}:{bet.market}:{bet.outcome}"
         if bet_key in already_placed:
+            continue
+        # Also check by slug (imported positions have event_id=None)
+        if bet.market_slug and f"slug:{bet.market_slug}" in already_placed:
             continue
 
         # Pick provider and balance
