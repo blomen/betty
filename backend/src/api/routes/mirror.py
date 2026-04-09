@@ -600,10 +600,31 @@ async def debug_buttons():
 
 @router.post("/settle/{provider_id}")
 async def settle_provider(provider_id: str):
-    """Trigger settlement sync for a provider using its workflow API."""
+    """Trigger settlement sync for a provider.
+
+    Polymarket: navigates to positions tab, scrapes positions, settles + voids ghosts.
+    Others: uses workflow sync_history API.
+    """
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
+
+    if provider_id == "polymarket":
+        from ...mirror.workflows.polymarket import PolymarketWorkflow
+        context = mirror.interceptor.context
+        if not context:
+            raise HTTPException(400, "No browser context")
+        page = None
+        for p in context.pages:
+            if 'polymarket.com' in (p.url or ''):
+                page = p
+                break
+        if not page:
+            raise HTTPException(400, "No polymarket tab open")
+        wf = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
+        result = await wf.settle_all(page)
+        return result
+
     await mirror._settle_via_workflow(provider_id)
     return {"staged": len(mirror._pending_settlements), "settlements": mirror._pending_settlements}
 
