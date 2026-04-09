@@ -24,9 +24,27 @@ class ConnectionManager {
   private _pollTimer: ReturnType<typeof setTimeout> | null = null;
   private _waitResolvers = new Set<() => void>();
   private _lastBootId: string | null = null;
+  private _tabHidden = false;
 
   constructor() {
     this._poll();
+
+    // When tab becomes visible again, immediately re-poll and forgive
+    // background failures (Chrome throttles fetch in hidden tabs)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this._tabHidden = true;
+      } else {
+        this._tabHidden = false;
+        // Forgive failures that happened while hidden — they're unreliable
+        if (this._consecutiveFails > 0) {
+          this._consecutiveFails = 0;
+        }
+        // Immediately re-probe instead of waiting for next scheduled poll
+        if (this._pollTimer) clearTimeout(this._pollTimer);
+        this._poll();
+      }
+    });
   }
 
   // --- Public API ---
@@ -136,6 +154,11 @@ class ConnectionManager {
   }
 
   private _onSlow(latency: number) {
+    if (this._tabHidden) {
+      this._schedulePoll(POLL_DOWN_MS);
+      return;
+    }
+
     this._consecutiveFails += 1;
     const inGrace = !this._everConnected && Date.now() - this._startTime < STARTUP_GRACE_MS;
 
@@ -150,6 +173,13 @@ class ConnectionManager {
   }
 
   private _onFail(latency: number, reason: string) {
+    // Don't count failures while tab is hidden — Chrome throttles network
+    // requests in background tabs, causing false positives
+    if (this._tabHidden) {
+      this._schedulePoll(POLL_DOWN_MS);
+      return;
+    }
+
     this._consecutiveFails += 1;
     const inGrace = !this._everConnected && Date.now() - this._startTime < STARTUP_GRACE_MS;
 
