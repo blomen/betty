@@ -596,7 +596,6 @@ async def lifespan(app: FastAPI):
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
     # ── Stocks mode: LevelMonitor + Specialists without Databento stream ──
-    print(f"[Startup] stocks_mode={_stocks_mode} mirror_only={_mirror_only}", flush=True)
     if _stocks_mode and not _mirror_only:
         from ..market_data.level_monitor import LevelMonitor
         from ..db.models import get_market_session as _get_market_session
@@ -607,7 +606,7 @@ async def lifespan(app: FastAPI):
 
         level_monitor = LevelMonitor(publish_fn=_stocks_publish)
         app.state.level_monitor = level_monitor
-        print("[Startup] Stocks mode: LevelMonitor SET on app.state", flush=True)
+        logger.info("[Startup] Stocks mode: LevelMonitor initialized (ticks via /ws/signals)")
 
         # Load initial levels in background thread
         import threading
