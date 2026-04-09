@@ -143,43 +143,38 @@ async def _run(config, topstepx_client, relay, stream):
     recorder = MarketRecorder(get_market_session)
     recorder.start()
 
-    # Wire: TopstepX tick → relay.forward_tick (thread-safe bridge)
-    loop = asyncio.get_event_loop()
-
+    # Wire: TopstepX tick → relay.forward_tick
+    # Stream now uses async websockets — callbacks run in the event loop directly
     def on_tick(price: float, size: int, ts: float) -> None:
-        asyncio.run_coroutine_threadsafe(relay.forward_tick(price, size, ts), loop)
+        asyncio.create_task(relay.forward_tick(price, size, ts))
         recorder.record_tick(price, size, ts)
 
     def _on_fill(fill: dict) -> None:
-        side = "Buy" if fill.get("side", 0) == 0 else "Sell"
+        side = "long" if fill.get("side", 0) == 0 else "short"
         price = float(fill.get("price", 0))
         size = int(fill.get("size", 1))
-        stop_price = 0.0
-        asyncio.run_coroutine_threadsafe(
-            relay.forward_fill(side, price, size, stop_price), loop
-        )
+        asyncio.create_task(relay.forward_fill(side, price, size, 0.0))
 
     stream.on_tick = on_tick
     stream.on_fill = _on_fill
     stream.on_depth = recorder.record_depth
 
-    # Start SignalR stream (runs in its own threads)
+    # Start stream (async websockets)
     log.info("Starting TopstepX stream...")
-    stream.start()
+    await stream.start()
 
     # Keep-alive loop
     try:
         while True:
             await asyncio.sleep(30)
-            log.info("Relay connected=%s | stream market=%s user=%s",
+            log.info("Relay connected=%s | stream running=%s",
                      relay.is_connected,
-                     stream._market_conn is not None,
-                     stream._user_conn is not None)
+                     stream._running)
     except asyncio.CancelledError:
         pass
     finally:
         log.info("Shutting down...")
-        stream.stop()
+        await stream.stop()
         recorder.stop()
         relay_task.cancel()
         try:
