@@ -1101,6 +1101,7 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
 def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake: float | None = None) -> None:
     """Record placed bet to the database."""
     from .bet_service import BetService
+    from ..db.models import Bet
     stake = actual_stake if actual_stake is not None else bet.stake
     db = get_session()
     try:
@@ -1115,11 +1116,18 @@ def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake
             point=bet.point,
             fair_odds_at_placement=bet.fair_odds,
             bet_type="value",
+            start_time_str=bet.start_time,
         )
         if "error" in resp:
             logger.warning("[FireWindow] Bet recording failed: %s", resp["error"])
         else:
-            logger.info("[FireWindow] Bet recorded: id=%s", resp.get("id"))
+            bet_id = resp.get("id")
+            logger.info("[FireWindow] Bet recorded: id=%s", bet_id)
+            # Save market_slug as confirmation_id for Polymarket settlement
+            if bet.market_slug and bet_id:
+                db_bet = db.query(Bet).filter(Bet.id == bet_id).first()
+                if db_bet:
+                    db_bet.confirmation_id = bet.market_slug
         db.commit()
     except Exception as exc:
         logger.exception("[FireWindow] Failed to record bet: %s", exc)
