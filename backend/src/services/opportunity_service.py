@@ -357,20 +357,27 @@ class OpportunityService:
                 kelly_amount = 0
                 max_amount = total_bankroll * 0.05 if total_bankroll > 0 else 0
 
+            # Polymarket: integer dollar stakes, 2dp odds
+            is_poly = o.anchor_provider == "polymarket"
+            if is_poly:
+                suggested = float(int(suggested))
+                kelly_amount = float(int(kelly_amount))
+                max_amount = float(int(max_amount))
+
             results.append({
                 "event_id": o.event_id,
                 "market": o.market,
                 "outcome": o.outcome,
                 "anchor_provider": o.anchor_provider,
-                "anchor_odds": o.anchor_odds,
-                "fair_odds": o.fair_odds,
-                "edge_pct": o.edge_pct,
+                "anchor_odds": round(o.anchor_odds, 2),
+                "fair_odds": round(o.fair_odds, 2),
+                "edge_pct": round(o.edge_pct, 1),
                 "home_team": o.home_team,
                 "away_team": o.away_team,
                 "sport": o.sport,
-                "suggested_stake": round(suggested, 2),
-                "kelly_stake": round(kelly_amount, 2),
-                "max_stake": round(max_amount, 2),
+                "suggested_stake": round(suggested, 2) if not is_poly else int(suggested),
+                "kelly_stake": round(kelly_amount, 2) if not is_poly else int(kelly_amount),
+                "max_stake": round(max_amount, 2) if not is_poly else int(max_amount),
             })
 
         return {
