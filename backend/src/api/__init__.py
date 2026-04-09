@@ -149,6 +149,10 @@ async def lifespan(app: FastAPI):
     if _mirror_only:
         logger.info("[Startup] Mirror-only mode — skipping scheduler, trading, RL")
 
+    _stocks_mode = bool(os.environ.get("FIREV_STOCKS_MODE"))
+    if _stocks_mode:
+        logger.info("[Startup] Stocks mode — LevelMonitor + Specialists active, no Databento, no local broker")
+
     # Auto-start continuous extraction (server only — skip for local mirror)
     if not _mirror_only:
         from ..pipeline.scheduler import get_scheduler
@@ -195,7 +199,7 @@ async def lifespan(app: FastAPI):
     # A lightweight watcher sleeps until market opens, then boots everything.
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
-    if databento_key and not _mirror_only:
+    if databento_key and not _mirror_only and not _stocks_mode:
         from ..db.models import get_session as _get_db_session, get_market_session as _get_market_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
         from ..services.market_service import MarketService as _MS
@@ -590,6 +594,52 @@ async def lifespan(app: FastAPI):
         _trading_gate_task = asyncio.create_task(_trading_gate())
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
+
+    # ── Stocks mode: LevelMonitor + Specialists without Databento stream ──
+    if _stocks_mode and not _mirror_only:
+        from ..market_data.level_monitor import LevelMonitor
+        from ..db.models import get_market_session as _get_market_session
+        from ..db.models import get_session as _get_db_session
+
+        def _stocks_publish(event: dict) -> None:
+            pass  # SSE handled later if needed
+
+        level_monitor = LevelMonitor(publish_fn=_stocks_publish)
+        app.state.level_monitor = level_monitor
+        logger.info("[Startup] Stocks mode: LevelMonitor initialized (ticks via /ws/signals)")
+
+        # Load initial levels in background thread
+        import threading
+        from ..services.market_service import MarketService
+
+        def _load_initial_data_stocks():
+            loop = asyncio.new_event_loop()
+            async def _run():
+                try:
+                    svc = MarketService(_get_db_session())
+                    try:
+                        from datetime import date, timedelta
+                        for attempt_date in [None, "yesterday"]:
+                            try:
+                                if attempt_date == "yesterday":
+                                    yesterday = (date.today() - timedelta(days=1)).isoformat()
+                                    await svc.compute_session(yesterday)
+                                else:
+                                    await svc.compute_session()
+                                expanded = await svc.build_expanded_session()
+                                if expanded:
+                                    level_monitor.load_levels(expanded)
+                                    logger.info("[Stocks] Initial levels loaded")
+                                    break
+                            except Exception as exc:
+                                logger.debug("compute attempt %s failed: %s", attempt_date, exc)
+                    finally:
+                        svc.db.close()
+                except Exception:
+                    logger.exception("[Stocks] Initial data load failed")
+            loop.run_until_complete(_run())
+            loop.close()
+        threading.Thread(target=_load_initial_data_stocks, daemon=True, name="stocks-init").start()
 
     # Auto-start all mirror browsers (always-on recording)
     from .routes.mirror import _mirrors, _load_all_providers
