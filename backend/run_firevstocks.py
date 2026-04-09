@@ -6,13 +6,13 @@ Double-click firevstocks.bat or run `python run_firevstocks.py` to start.
 What it does:
   1. Kills previous instance on port 8001
   2. Opens SSH tunnels:
-       localhost:15432  →  postgres:5432      (DB reads)
-       localhost:18000  →  localhost:8000     (server /ws/signals)
+       localhost:15432  ->  postgres:5432      (DB reads)
+       localhost:18000  ->  localhost:8000     (server /ws/signals)
   3. Authenticates with TopstepX
   4. Connects SignalRelayClient to server via tunnel
   5. Starts TopstepXStream (ticks + fills)
-  6. Wires: TopstepX tick → relay.forward_tick()
-           server signal → execute on TopstepX
+  6. Wires: TopstepX tick -> relay.forward_tick()
+           server signal -> execute on TopstepX
   7. Runs keep-alive loop with health checks
 
 Security:
@@ -27,6 +27,14 @@ import subprocess
 import time
 import socket
 import logging
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# Point DB at production via SSH tunnel (local SQLite doesn't have recording tables)
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "Skf8vRY3L26lAL4IhCge2V0tZBe7mnZn")
+os.environ.setdefault("DATABASE_URL", f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:15432/firev")
+os.environ.setdefault("MARKET_DATABASE_URL", f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:15432/market")
 
 SERVER = "148.251.40.251"
 LOCAL_PG_PORT = 15432
@@ -67,7 +75,7 @@ def _kill_port(port: int, label: str) -> bool:
 
 def _cleanup_old_instance():
     _kill_port(LOCAL_BACKEND_PORT, "firevstocks")
-    # Do NOT kill the PG or WS tunnel ports — mirror may be using them
+    # Do NOT kill the PG or WS tunnel ports -- mirror may be using them
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +104,7 @@ def _start_tunnels() -> bool:
     except Exception:
         pg_ip = "172.18.0.2"
 
-    log.info("Tunneling: pg=%s:5432 → localhost:%d, ws=127.0.0.1:8000 → localhost:%d",
+    log.info("Tunneling: pg=%s:5432 -> localhost:%d, ws=127.0.0.1:8000 -> localhost:%d",
              pg_ip, LOCAL_PG_PORT, LOCAL_WS_PORT)
 
     subprocess.Popen(
@@ -128,7 +136,7 @@ def _start_tunnels() -> bool:
 async def _run(config, topstepx_client, relay, stream):
     """Wire everything together and run until interrupted."""
 
-    # Start relay in background — it will keep reconnecting
+    # Start relay in background -- it will keep reconnecting
     relay_task = asyncio.create_task(relay.connect(), name="relay-connect")
 
     # Give relay a moment to connect before starting stream
@@ -143,8 +151,8 @@ async def _run(config, topstepx_client, relay, stream):
     recorder = MarketRecorder(get_market_session)
     recorder.start()
 
-    # Wire: TopstepX tick → relay.forward_tick
-    # Stream now uses async websockets — callbacks run in the event loop directly
+    # Wire: TopstepX tick -> relay.forward_tick
+    # Stream now uses async websockets -- callbacks run in the event loop directly
     def on_tick(price: float, size: int, ts: float) -> None:
         asyncio.create_task(relay.forward_tick(price, size, ts))
         recorder.record_tick(price, size, ts)
@@ -194,7 +202,7 @@ async def main():
     config = TopstepXConfig.from_env()
 
     if not config.is_configured:
-        print("[firevstocks] TopstepX not configured — set TOPSTEPX_USERNAME and TOPSTEPX_API_KEY")
+        print("[firevstocks] TopstepX not configured -- set TOPSTEPX_USERNAME and TOPSTEPX_API_KEY")
         return
 
     _cleanup_old_instance()
@@ -215,11 +223,11 @@ async def main():
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode != 0:
-            log.warning("Cannot SSH to %s — proceeding anyway", SERVER)
+            log.warning("Cannot SSH to %s -- proceeding anyway", SERVER)
         else:
             log.info("Server reachable")
     except subprocess.TimeoutExpired:
-        log.warning("SSH timed out — proceeding anyway")
+        log.warning("SSH timed out -- proceeding anyway")
 
     if not _start_tunnels():
         print("[firevstocks] Cannot open SSH tunnels. Check SSH key and server.")
@@ -231,7 +239,7 @@ async def main():
     client = TopstepXClient(config)
     ok = await client.connect()
     if not ok:
-        print("[firevstocks] TopstepX authentication failed — check credentials")
+        print("[firevstocks] TopstepX authentication failed -- check credentials")
         await client.close()
         input("Press Enter to exit...")
         return
@@ -248,7 +256,7 @@ async def main():
         user_hub=config.user_hub_url,
     )
 
-    print(f"[firevstocks] Running — relay → {config.server_ws_url}")
+    print(f"[firevstocks] Running -- relay -> {config.server_ws_url}")
     print("[firevstocks] Press Ctrl+C to stop\n")
 
     await _run(config, client, relay, stream)

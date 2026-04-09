@@ -47,20 +47,23 @@ class MarketRecorder:
 
     def record_tick(self, price: float, size: int, ts: float) -> None:
         """Buffer a tick for batch insert."""
+        from datetime import datetime, timezone
         with self._lock:
             self._tick_buffer.append({
-                "price": price, "size": size, "ts": ts,
+                "price": price, "size": size,
+                "ts": datetime.fromtimestamp(ts, tz=timezone.utc),
             })
 
     def record_depth(self, depth: dict) -> None:
         """Buffer an L2 depth update for batch insert."""
+        from datetime import datetime, timezone
         with self._lock:
             self._depth_buffer.append({
                 "price": float(depth.get("price", 0)),
                 "volume": int(depth.get("volume", 0)),
                 "current_volume": int(depth.get("currentVolume", 0)),
                 "side": "bid" if depth.get("type") == 0 else "ask",
-                "ts": time.time(),
+                "ts": datetime.now(timezone.utc),
             })
 
     def _flush_loop(self) -> None:
@@ -99,7 +102,7 @@ class MarketRecorder:
         db.execute(
             text("""
                 INSERT INTO recorded_ticks (symbol, price, size, ts)
-                VALUES (:symbol, :price, :size, to_timestamp(:ts))
+                VALUES (:symbol, :price, :size, :ts)
             """),
             [{"symbol": "NQ", "price": t["price"], "size": t["size"], "ts": t["ts"]} for t in ticks],
         )
@@ -111,7 +114,7 @@ class MarketRecorder:
         db.execute(
             text("""
                 INSERT INTO recorded_depth (symbol, price, volume, current_volume, side, ts)
-                VALUES (:symbol, :price, :volume, :current_volume, :side, to_timestamp(:ts))
+                VALUES (:symbol, :price, :volume, :current_volume, :side, :ts)
             """),
             [{"symbol": "NQ", **d} for d in depths],
         )
