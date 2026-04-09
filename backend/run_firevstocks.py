@@ -134,11 +134,21 @@ async def _run(config, topstepx_client, relay, stream):
     # Give relay a moment to connect before starting stream
     await asyncio.sleep(2)
 
+    # 2.5. Start market data recorder
+    from src.stocks.schema import ensure_recording_tables
+    from src.stocks.recorder import MarketRecorder
+    from src.db.models import get_market_session
+
+    ensure_recording_tables(get_market_session)
+    recorder = MarketRecorder(get_market_session)
+    recorder.start()
+
     # Wire: TopstepX tick → relay.forward_tick (thread-safe bridge)
     loop = asyncio.get_event_loop()
 
-    def _on_tick(price: float, size: int, ts: float) -> None:
+    def on_tick(price: float, size: int, ts: float) -> None:
         asyncio.run_coroutine_threadsafe(relay.forward_tick(price, size, ts), loop)
+        recorder.record_tick(price, size, ts)
 
     def _on_fill(fill: dict) -> None:
         side = "Buy" if fill.get("side", 0) == 0 else "Sell"
@@ -149,8 +159,9 @@ async def _run(config, topstepx_client, relay, stream):
             relay.forward_fill(side, price, size, stop_price), loop
         )
 
-    stream.on_tick = _on_tick
+    stream.on_tick = on_tick
     stream.on_fill = _on_fill
+    stream.on_depth = recorder.record_depth
 
     # Start SignalR stream (runs in its own threads)
     log.info("Starting TopstepX stream...")
@@ -169,6 +180,7 @@ async def _run(config, topstepx_client, relay, stream):
     finally:
         log.info("Shutting down...")
         stream.stop()
+        recorder.stop()
         relay_task.cancel()
         try:
             await relay_task
