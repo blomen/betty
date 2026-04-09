@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from proxy import create_proxy_router
 from mirror.browser import MirrorBrowser
 from mirror.router import create_mirror_router
+from mirror.sse import mirror_broadcaster
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ app = FastAPI(title="FirevSports", docs_url=None, redoc_url=None)
 browser = MirrorBrowser()
 
 # Mount mirror control endpoints (must be before proxy to avoid /mirror/* being caught by /api/*)
-app.include_router(create_mirror_router(browser))
+app.include_router(create_mirror_router(browser, mirror_broadcaster, TUNNEL_URL))
 
 # Mount API proxy
 app.include_router(create_proxy_router(TUNNEL_URL))
