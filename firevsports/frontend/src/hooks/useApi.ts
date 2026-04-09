@@ -8,8 +8,8 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 }
 
 export const api = {
-  getPlayBatch: () => apiFetch<any>('/api/play/batch'),
-  getPendingBets: () => apiFetch<any>('/api/pending/bets'),
+  getPlayBatch: () => apiFetch<any>('/api/opportunities/play/batch', { method: 'POST' }),
+  getPendingBets: () => apiFetch<any>('/api/opportunities/play/pending-bets'),
   navigateBet: (body: any) => apiFetch<any>('/mirror/navigate', { method: 'POST', body: JSON.stringify(body) }),
   placeBet: (body: any) => apiFetch<any>('/mirror/place', { method: 'POST', body: JSON.stringify(body) }),
   getMirrorStatus: () => apiFetch<any>('/mirror/status'),

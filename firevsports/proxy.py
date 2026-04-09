@@ -7,7 +7,8 @@ from starlette.responses import StreamingResponse
 logger = logging.getLogger(__name__)
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "te", "trailers",
-                "upgrade", "proxy-authorization", "proxy-authenticate"}
+                "upgrade", "proxy-authorization", "proxy-authenticate", "content-length",
+                "content-encoding"}
 
 
 def create_proxy_router(tunnel_url: str) -> APIRouter:
@@ -19,6 +20,8 @@ def create_proxy_router(tunnel_url: str) -> APIRouter:
             url += f"?{request.query_params}"
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in _HOP_HEADERS and k.lower() != "host"}
+        # Authenticate with server — mimic nginx auth header
+        headers["X-Nginx-Authenticated"] = "firevsports"
         body = await request.body()
         is_sse = "text/event-stream" in request.headers.get("accept", "")
 
