@@ -238,7 +238,8 @@ class TipwinRetriever(BrowserRetriever):
                         best_total = total
                         best_ps = ps
             total_pages = (best_total + best_ps - 1) // best_ps if best_total else 0
-            max_pages = min(total_pages or 30, 120)
+            # Default to 100 pages if we can't determine total — tipwin has ~98 pages
+            max_pages = min(total_pages or 100, 120)
 
             logger.info(
                 f"[{self.provider_id}] Paginating {max_pages} pages "
