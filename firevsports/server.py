@@ -5,9 +5,9 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .proxy import create_proxy_router
-from .mirror.browser import MirrorBrowser
-from .mirror.router import create_mirror_router
+from proxy import create_proxy_router
+from mirror.browser import MirrorBrowser
+from mirror.router import create_mirror_router
 
 logger = logging.getLogger(__name__)
 
