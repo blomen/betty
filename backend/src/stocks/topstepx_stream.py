@@ -228,13 +228,19 @@ class TopstepXStream:
             log.debug("TopstepXStream: bad quote: %r", args)
 
     def _handle_depth(self, args: list) -> None:
-        """Parse GatewayDepth — args = [contractId, depthDict]."""
+        """Parse GatewayDepth — args = [contractId, [level, level, ...]]."""
         if not args or len(args) < 2 or not self.on_depth:
             return
-        try:
-            self.on_depth(args[1])
-        except Exception:
-            log.debug("TopstepXStream: bad depth: %r", args)
+        levels = args[1]
+        if not isinstance(levels, list):
+            return
+        for level in levels:
+            try:
+                if level.get("price", 0) == 0:
+                    continue  # skip heartbeat/reset messages
+                self.on_depth(level)
+            except Exception:
+                log.debug("TopstepXStream: bad depth level: %r", level)
 
     def _handle_user_trade(self, args: list) -> None:
         """Parse GatewayUserTrade fill."""
