@@ -230,45 +230,87 @@ async def lifespan(app: FastAPI):
                 finally:
                     _seed_db.close()
 
-                await _databento_stream.start()
+                # --- Check if Rithmic is configured (takes priority over Databento) ---
+                from ..rithmic.config import RithmicConfig
+                rithmic_config = RithmicConfig.from_env()
 
-                # Initialize Level Monitor for proximity-based level alerts
-                from ..market_data.level_monitor import LevelMonitor
-                from ..services.market_service import MarketService
+                if rithmic_config.is_configured:
+                    from ..rithmic.stream import RithmicStream
+                    from ..rithmic.broker_client import RithmicBrokerClient
+                    from ..market_data.level_monitor import LevelMonitor
+                    from ..services.market_service import MarketService
 
-                level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
-                _databento_stream.set_level_monitor(level_monitor)
-                app.state.level_monitor = level_monitor
-                # Use the stream thread's event loop for level context fetching —
-                # keeps ML/macro async work off the main event loop entirely.
-                level_monitor.set_async_context(_databento_stream._stream_thread_loop, _get_db_session)
+                    rithmic_stream = RithmicStream(rithmic_config, db_session_factory=_get_market_session)
+                    level_monitor = LevelMonitor(publish_fn=rithmic_stream._publish)
+                    rithmic_stream.set_level_monitor(level_monitor)
+                    app.state.rithmic_stream = rithmic_stream
+                    app.state.level_monitor = level_monitor
 
-                logger.info("Trading features started: Databento stream + level monitor")
+                    await rithmic_stream.start()
+                    logger.info("Rithmic stream started (replaces Databento for live data)")
 
-                # --- Broker (automated execution) ---
-                from ..broker.config import BrokerConfig
-                broker_config = BrokerConfig.from_env()
-                if broker_config.enabled:
-                    from ..broker.tradovate_client import TradovateClient
-                    from ..broker.adapter import BrokerAdapter
-                    from ..broker.flatten_scheduler import FlattenScheduler
-
-                    tv_client = TradovateClient(broker_config)
-                    connected = await tv_client.connect()
-                    if connected:
-                        _broker_adapter = BrokerAdapter(tv_client, broker_config)
-                        app.state.broker_adapter = _broker_adapter
-                        level_monitor.set_broker_adapter(_broker_adapter)
-
-                        flatten_sched = FlattenScheduler(_broker_adapter, broker_config.flatten_et)
-                        flatten_sched.start()
-                        logger.info("Broker enabled: %s %s (max_pos=%d, max_loss=$%.0f)",
-                                     broker_config.env, broker_config.symbol,
-                                     broker_config.max_position, broker_config.max_daily_loss)
+                    # Setup broker via Rithmic
+                    from ..broker.config import BrokerConfig
+                    broker_config = BrokerConfig.from_env()
+                    if broker_config.enabled:
+                        rithmic_broker = RithmicBrokerClient(rithmic_stream._client, rithmic_config)
+                        connected = await rithmic_broker.connect()
+                        if connected:
+                            from ..broker.adapter import BrokerAdapter
+                            from ..broker.flatten_scheduler import FlattenScheduler
+                            _broker_adapter = BrokerAdapter(rithmic_broker, broker_config)
+                            app.state.broker_adapter = _broker_adapter
+                            level_monitor.set_broker_adapter(_broker_adapter)
+                            flatten_sched = FlattenScheduler(_broker_adapter, broker_config.flatten_et)
+                            flatten_sched.start()
+                            logger.info("Broker enabled via Rithmic: %s", rithmic_config.symbol)
+                        else:
+                            logger.error("Broker: Rithmic connection failed — trading disabled")
                     else:
-                        logger.error("Broker: Tradovate connection failed — trading disabled")
+                        logger.info("Broker disabled (BROKER_ENABLED != true)")
+
+                    logger.info("Trading features started: Rithmic stream + level monitor")
                 else:
-                    logger.info("Broker disabled (BROKER_ENABLED != true)")
+                    # Databento fallback (used when Rithmic is not configured)
+                    await _databento_stream.start()
+
+                    # Initialize Level Monitor for proximity-based level alerts
+                    from ..market_data.level_monitor import LevelMonitor
+                    from ..services.market_service import MarketService
+
+                    level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
+                    _databento_stream.set_level_monitor(level_monitor)
+                    app.state.level_monitor = level_monitor
+                    # Use the stream thread's event loop for level context fetching —
+                    # keeps ML/macro async work off the main event loop entirely.
+                    level_monitor.set_async_context(_databento_stream._stream_thread_loop, _get_db_session)
+
+                    logger.info("Trading features started: Databento stream + level monitor")
+
+                    # --- Broker (automated execution) ---
+                    from ..broker.config import BrokerConfig
+                    broker_config = BrokerConfig.from_env()
+                    if broker_config.enabled:
+                        from ..broker.tradovate_client import TradovateClient
+                        from ..broker.adapter import BrokerAdapter
+                        from ..broker.flatten_scheduler import FlattenScheduler
+
+                        tv_client = TradovateClient(broker_config)
+                        connected = await tv_client.connect()
+                        if connected:
+                            _broker_adapter = BrokerAdapter(tv_client, broker_config)
+                            app.state.broker_adapter = _broker_adapter
+                            level_monitor.set_broker_adapter(_broker_adapter)
+
+                            flatten_sched = FlattenScheduler(_broker_adapter, broker_config.flatten_et)
+                            flatten_sched.start()
+                            logger.info("Broker enabled: %s %s (max_pos=%d, max_loss=$%.0f)",
+                                         broker_config.env, broker_config.symbol,
+                                         broker_config.max_position, broker_config.max_daily_loss)
+                        else:
+                            logger.error("Broker: Tradovate connection failed — trading disabled")
+                    else:
+                        logger.info("Broker disabled (BROKER_ENABLED != true)")
 
                 # Load initial levels + COT in background thread (DB-heavy, would stall event loop)
                 import threading
