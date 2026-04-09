@@ -25,4 +25,17 @@ export const api = {
   placeBet: (body: any) => apiFetch<any>('/mirror/place', { method: 'POST', body: JSON.stringify(body) }),
   getMirrorStatus: () => apiFetch<any>('/mirror/status'),
   startMirror: () => apiFetch<any>('/mirror/start', { method: 'POST' }),
+  // Play loop control
+  startPlayLoop: (batch: any[], balances: Record<string, number>) =>
+    apiFetch<any>('/mirror/play/start', { method: 'POST', body: JSON.stringify({ batch, balances }) }),
+  placeCurrent: () => apiFetch<any>('/mirror/play/place', { method: 'POST' }),
+  skipCurrent: () => apiFetch<any>('/mirror/play/skip', { method: 'POST' }),
+  stopPlayLoop: () => apiFetch<any>('/mirror/play/stop', { method: 'POST' }),
+  getPlayStatus: () => apiFetch<any>('/mirror/play/status'),
+  // Pending loop control
+  startPendingLoop: () => apiFetch<any>('/mirror/pending/start', { method: 'POST' }),
+  confirmSettlement: (pid: string) =>
+    apiFetch<any>('/mirror/pending/confirm', { method: 'POST', body: JSON.stringify({ provider_id: pid }) }),
+  stopPendingLoop: () => apiFetch<any>('/mirror/pending/stop', { method: 'POST' }),
+  getPendingStatus: () => apiFetch<any>('/mirror/pending/status'),
 };
