@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
-import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB, TAB_COLORS } from './TabBar';
+import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB, TAB_COLORS, isLocalMirror } from './TabBar';
 import { usePersistedState } from '@/hooks/usePersistedState';
 // All pages lazy-loaded for fast startup
 const ValuePage = lazy(() => import('./pages/ValuePage').then(m => ({ default: m.ValuePage })));
@@ -23,7 +23,7 @@ import { BetMirrorToast } from './BetMirrorToast';
 /** Pages that stay mounted once visited — hidden via CSS on tab switch for instant switching. */
 const KEEP_ALIVE_PAGES: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   value: ValuePage,
-  play: PlayPage,
+  ...(isLocalMirror ? { play: PlayPage } : {}),
   dutch: DutchPage,
   reverse: ReversePage,
   polymarket: PolymarketPage,
