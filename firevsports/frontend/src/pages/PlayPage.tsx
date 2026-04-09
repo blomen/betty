@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../hooks/useApi'
+import { useMirrorStream } from '../hooks/useMirrorStream'
 
 interface BatchBet {
   rank: number
@@ -32,6 +33,9 @@ export default function PlayPage() {
   const [capitalPlan, setCapitalPlan] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [navigating, setNavigating] = useState<string | null>(null)
+  const mirror = useMirrorStream()
+  const [loopRunning, setLoopRunning] = useState(false)
+  const [currentBetReady, setCurrentBetReady] = useState<any>(null)
 
   const load = useCallback(async () => {
     try {
@@ -51,6 +55,25 @@ export default function PlayPage() {
     const id = setInterval(load, 10_000)
     return () => clearInterval(id)
   }, [load])
+
+  useEffect(() => {
+    if (!mirror.lastEvent) return
+    const { type, data } = mirror.lastEvent
+    if (type === 'bet_ready') setCurrentBetReady(data)
+    if (type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed') setCurrentBetReady(null)
+    if (type === 'play_complete' || type === 'play_stopped') {
+      setLoopRunning(false)
+      setCurrentBetReady(null)
+    }
+  }, [mirror.lastEvent])
+
+  const handleStartLoop = async () => {
+    setLoopRunning(true)
+    await api.startPlayLoop(batch, providerBalances)
+  }
+  const handleStopLoop = () => { api.stopPlayLoop(); setLoopRunning(false) }
+  const handlePlace = () => api.placeCurrent()
+  const handleSkip = () => api.skipCurrent()
 
   const handleNavigate = async (b: BatchBet) => {
     const key = `${b.event_id}:${b.market}:${b.outcome}`
@@ -135,9 +158,42 @@ export default function PlayPage() {
         <span className="text-zinc-200 font-mono">{bets.length}</span>
         <span className="text-zinc-400">bets</span>
         <span className="text-green-400 font-mono">+{totalEv.toFixed(0)} kr EV</span>
-        {error && <span className="text-red-400 ml-auto">{error}</span>}
-        {!error && batch.length === 0 && <span className="text-zinc-500 ml-auto">Loading...</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {!loopRunning ? (
+            <button onClick={handleStartLoop} disabled={bets.length === 0}
+              className="px-2 py-0.5 text-xs bg-green-700 hover:bg-green-600 disabled:bg-zinc-800 text-white rounded">
+              Start
+            </button>
+          ) : (
+            <button onClick={handleStopLoop}
+              className="px-2 py-0.5 text-xs bg-red-700 hover:bg-red-600 text-white rounded">
+              Stop
+            </button>
+          )}
+        </div>
+        {error && <span className="text-red-400">{error}</span>}
+        {!error && batch.length === 0 && <span className="text-zinc-500">Loading...</span>}
       </div>
+
+      {currentBetReady && (
+        <div className="flex items-center gap-3 px-3 py-2 bg-amber-900/30 border-b border-amber-700/50">
+          <span className="text-xs text-amber-400 font-medium">
+            Ready: {currentBetReady.display_home} v {currentBetReady.display_away} — {currentBetReady.outcome} @ {currentBetReady.odds}
+          </span>
+          <span className="text-xs text-green-400">+{currentBetReady.edge_pct?.toFixed(1)}%</span>
+          <div className="ml-auto flex gap-2">
+            <button onClick={handlePlace}
+              className="px-3 py-1 text-xs bg-green-700 hover:bg-green-600 text-white rounded font-semibold">
+              Place
+            </button>
+            <button onClick={handleSkip}
+              className="px-3 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded">
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto">
         {clusterIds.length === 0 && batch.length > 0 && (
@@ -201,7 +257,7 @@ export default function PlayPage() {
                               onClick={() => handleNavigate(b)}
                               className={`border-b border-zinc-800/50 cursor-pointer hover:bg-zinc-800/60 transition-colors ${
                                 navigating === key ? 'opacity-50' : ''
-                              }`}
+                              } ${currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome ? 'bg-amber-900/20 border-l-2 border-amber-500' : ''}`}
                             >
                               <td className="px-3 py-1.5 text-zinc-200 max-w-[200px] truncate">
                                 {b.display_home} v {b.display_away}
