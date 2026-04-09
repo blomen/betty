@@ -172,16 +172,29 @@ class CoolbetRetriever(BrowserRetriever):
         logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
         t0 = time.time()
         try:
+            import random
             proxy = get_proxy_dict()
+
+            # Rotate fingerprint per launch to avoid Imperva flagging
+            try:
+                from browserforge.fingerprints import FingerprintGenerator
+                fg = FingerprintGenerator(browser='firefox', os=('windows', 'macos'))
+                fingerprint = fg.generate()
+                logger.debug(f"[{self.provider_id}] Generated fresh BrowserForge fingerprint")
+            except ImportError:
+                fingerprint = None
+
             self._camoufox_browser = await AsyncCamoufox(
                 headless=True,
                 geoip=True,
-                humanize=0.2,
-                os="windows",
+                humanize=True,
+                os=random.choice(["windows", "macos"]),
+                block_images=True,
                 proxy=proxy,
+                **({"fingerprint": fingerprint, "i_know_what_im_doing": True} if fingerprint else {}),
             ).__aenter__()
             if proxy:
-                logger.info(f"[{self.provider_id}] Camoufox launched with residential proxy")
+                logger.info(f"[{self.provider_id}] Camoufox launched with proxy + fresh fingerprint")
 
             self._camoufox_page = await self._camoufox_browser.new_page()
             logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")
@@ -248,10 +261,14 @@ class CoolbetRetriever(BrowserRetriever):
 
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
-                # Imperva sets session cookies asynchronously after page load.
-                # The Reese84 challenge runs JS that sets __cf_bm and other cookies.
-                # 5s gives Imperva time to complete — 2s was too aggressive, caused 403 on first API call.
-                await asyncio.sleep(5)
+                # Human-like behavior: scroll + wait for Imperva Reese84 challenge
+                # Imperva tracks mouse/scroll to distinguish bots from humans
+                await asyncio.sleep(2)
+                await page.evaluate("window.scrollTo(0, 300)")
+                await asyncio.sleep(1)
+                await page.evaluate("window.scrollTo(0, 600)")
+                await asyncio.sleep(2)
+                await page.evaluate("window.scrollTo(0, 0)")
                 body_text = await page.evaluate(
                     'document.body ? document.body.innerText.substring(0, 500) : ""'
                 )
@@ -353,7 +370,7 @@ class CoolbetRetriever(BrowserRetriever):
                 await self._cleanup_camoufox()
             return []
 
-    CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (restored from 4 — I/O-bound, Camoufox handles fine)
+    CONCURRENT_CATEGORY_FETCHES = 4  # Reduced from 8 — Imperva flags burst patterns
 
     async def _discover_league_ids(self, page, sport_category_id: int) -> List[int]:
         """Discover all leaf-level league IDs from the fo-tree endpoint.
