@@ -249,9 +249,11 @@ class CloudbetRetriever(Retriever):
 
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
+            import os
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
+                proxy=os.environ.get("PROXY_URL"),
             )
         super().__init__(config, transport)
         self._api_key = config.get("api_key", "")
