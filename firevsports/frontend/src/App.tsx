@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import PlayPage from './pages/PlayPage'
-import PendingPage from './pages/PendingPage'
+import { PendingPage } from './pages/PendingPage'
 import { DutchPage } from './pages/DutchPage'
 import { BankrollPage } from './pages/BankrollPage'
 import { StatsPage } from './pages/StatsPage'

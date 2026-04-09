@@ -59,10 +59,21 @@ def _start_tunnel() -> bool:
             _kill_port(TUNNEL_LOCAL_PORT, "stale tunnel")
             time.sleep(1)
 
-    print(f"[firevsports] Opening SSH tunnel to {SERVER}:{TUNNEL_REMOTE_PORT}...")
+    # Backend runs inside Docker — resolve container IP
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
+             "docker inspect firev-backend-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"],
+            capture_output=True, text=True, timeout=10,
+        )
+        backend_ip = result.stdout.strip().strip("'") or "172.18.0.3"
+    except Exception:
+        backend_ip = "172.18.0.3"
+    print(f"[firevsports] Opening SSH tunnel to {SERVER} → {backend_ip}:{TUNNEL_REMOTE_PORT}...")
+
     proc = subprocess.Popen(
         ["ssh", "-N", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30",
-         "-L", f"{TUNNEL_LOCAL_PORT}:localhost:{TUNNEL_REMOTE_PORT}", f"root@{SERVER}"],
+         "-L", f"{TUNNEL_LOCAL_PORT}:{backend_ip}:{TUNNEL_REMOTE_PORT}", f"root@{SERVER}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
