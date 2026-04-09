@@ -1,36 +1,37 @@
-"""TopstepX SignalR streaming client.
+"""TopstepX SignalR streaming client (raw websockets).
 
-Connects to two hubs:
-  - Market hub: live trade ticks (GatewayTrade)
+Connects to two hubs via SignalR JSON protocol over websockets:
+  - Market hub: live trade ticks (GatewayTrade), quotes (GatewayQuote), depth (GatewayDepth)
   - User hub:   fills, positions, orders (GatewayUserTrade/Position/Order)
+
+Uses raw websockets because signalrcore drops connections on Windows/TopstepX.
 
 Usage::
 
-    stream = TopstepXStream(token=token, contract_id="CON.F.US.NQ.M25", account_id=12345)
+    stream = TopstepXStream(token=token, contract_id="CON.F.US.ENQ.M26", account_id=12345)
     stream.on_tick = lambda price, size, ts: print(price, size, ts)
     stream.on_fill = lambda fill: print(fill)
-    stream.start()
+    await stream.start()
     ...
-    stream.stop()
+    await stream.stop()
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime
 from typing import Callable
 
-from signalrcore.hub_connection_builder import HubConnectionBuilder
+import websockets
 
 log = logging.getLogger(__name__)
 
 _MARKET_HUB = "wss://rtc.topstepx.com/hubs/market"
 _USER_HUB = "wss://rtc.topstepx.com/hubs/user"
-
-_RECONNECT_POLICY = {
-    "type": "interval",
-    "keep_alive_interval": 10,
-    "intervals": [0, 2, 5, 10, 30],
-}
+_SEPARATOR = "\x1e"  # SignalR message separator
+_RECONNECT_DELAYS = [0, 2, 5, 10, 30]
 
 
 def _parse_ts(ts_str: str) -> float:
@@ -39,8 +40,7 @@ def _parse_ts(ts_str: str) -> float:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         return dt.timestamp()
     except Exception:
-        log.warning("TopstepXStream: bad timestamp %r", ts_str)
-        return 0.0
+        return time.time()
 
 
 class TopstepXStream:
@@ -60,147 +60,198 @@ class TopstepXStream:
         self._market_hub_url = market_hub or _MARKET_HUB
         self._user_hub_url = user_hub or _USER_HUB
 
+        # Callbacks — set by the launcher
         self.on_tick: Callable[[float, int, float], None] | None = None
         self.on_fill: Callable[[dict], None] | None = None
         self.on_depth: Callable[[dict], None] | None = None
+        self.on_quote: Callable[[dict], None] | None = None
 
-        self._market_conn = None
-        self._user_conn = None
+        self._market_ws = None
+        self._user_ws = None
+        self._tasks: list[asyncio.Task] = []
+        self._running = False
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Connect both hubs and subscribe to relevant channels."""
-        self._market_conn = self._build_conn(self._market_hub_url)
-        self._market_conn.on("GatewayTrade", self._handle_trade)
-        self._market_conn.on("GatewayDepth", self._handle_depth)
-        self._market_conn.on_open(lambda: self._on_market_open())
-        self._market_conn.on_close(lambda: log.warning("TopstepXStream: market hub disconnected"))
-        self._market_conn.start()
+        self._running = True
+        self._tasks.append(asyncio.create_task(
+            self._run_hub("market", self._market_hub_url, self._on_market_msg, self._market_subs),
+        ))
+        self._tasks.append(asyncio.create_task(
+            self._run_hub("user", self._user_hub_url, self._on_user_msg, self._user_subs),
+        ))
+        log.info("TopstepXStream started (contract=%s, account=%d)", self._contract_id, self._account_id)
 
-        self._user_conn = self._build_conn(self._user_hub_url)
-        self._user_conn.on("GatewayUserTrade", self._handle_user_trade)
-        self._user_conn.on("GatewayUserPosition", self._handle_position)
-        self._user_conn.on("GatewayUserOrder", self._handle_order)
-        self._user_conn.on_open(lambda: self._on_user_open())
-        self._user_conn.on_close(lambda: log.warning("TopstepXStream: user hub disconnected"))
-        self._user_conn.start()
-
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Disconnect both hubs."""
-        if self._market_conn:
+        self._running = False
+        for task in self._tasks:
+            task.cancel()
+        for ws in (self._market_ws, self._user_ws):
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+        self._tasks.clear()
+        log.info("TopstepXStream stopped")
+
+    # ------------------------------------------------------------------
+    # Internal: hub connection + reconnect loop
+    # ------------------------------------------------------------------
+
+    async def _run_hub(self, name: str, hub_url: str, msg_handler, subscribe_fn) -> None:
+        """Connect to a hub with auto-reconnect."""
+        attempt = 0
+        while self._running:
             try:
-                self._market_conn.stop()
-            except Exception:
-                log.exception("TopstepXStream: error stopping market hub")
-            self._market_conn = None
+                url = f"{hub_url}?access_token={self._token}"
+                async with websockets.connect(url, ping_interval=20) as ws:
+                    # SignalR handshake
+                    await ws.send(json.dumps({"protocol": "json", "version": 1}) + _SEPARATOR)
+                    handshake = await ws.recv()
+                    if "{}" not in handshake:
+                        log.error("TopstepXStream [%s]: bad handshake: %r", name, handshake)
+                        continue
 
-        if self._user_conn:
-            try:
-                self._user_conn.stop()
-            except Exception:
-                log.exception("TopstepXStream: error stopping user hub")
-            self._user_conn = None
+                    log.info("TopstepXStream [%s]: connected", name)
+                    attempt = 0  # reset on success
+
+                    # Store reference
+                    if name == "market":
+                        self._market_ws = ws
+                    else:
+                        self._user_ws = ws
+
+                    # Subscribe
+                    await subscribe_fn(ws)
+
+                    # Listen
+                    async for raw in ws:
+                        for part in raw.split(_SEPARATOR):
+                            part = part.strip()
+                            if not part:
+                                continue
+                            try:
+                                msg = json.loads(part)
+                            except json.JSONDecodeError:
+                                continue
+                            msg_type = msg.get("type")
+                            if msg_type == 1:  # Invocation
+                                msg_handler(msg.get("target", ""), msg.get("arguments", []))
+                            elif msg_type == 6:  # Ping
+                                await ws.send(json.dumps({"type": 6}) + _SEPARATOR)
+
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                if not self._running:
+                    return
+                delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+                log.warning("TopstepXStream [%s]: disconnected (%s), reconnecting in %ds", name, e, delay)
+                attempt += 1
+                await asyncio.sleep(delay)
+
+    async def _market_subs(self, ws) -> None:
+        """Subscribe to market data channels."""
+        for target in ("SubscribeContractQuotes", "SubscribeContractTrades", "SubscribeContractDepth"):
+            await ws.send(json.dumps({
+                "type": 1,
+                "target": target,
+                "arguments": [self._contract_id],
+            }) + _SEPARATOR)
+        log.info("TopstepXStream [market]: subscribed to quotes+trades+depth for %s", self._contract_id)
+
+    async def _user_subs(self, ws) -> None:
+        """Subscribe to user event channels."""
+        for target in ("SubscribeToPositions", "SubscribeToOrders", "SubscribeToUserTrades"):
+            await ws.send(json.dumps({
+                "type": 1,
+                "target": target,
+                "arguments": [self._account_id],
+            }) + _SEPARATOR)
+        log.info("TopstepXStream [user]: subscribed to positions+orders+trades for account %d", self._account_id)
 
     # ------------------------------------------------------------------
-    # Internal: connection factory
+    # Internal: message dispatch
     # ------------------------------------------------------------------
 
-    def _build_conn(self, hub_url: str):
-        return (
-            HubConnectionBuilder()
-            .with_url(
-                f"{hub_url}?access_token={self._token}",
-                options={"skip_negotiation": True, "verify_ssl": True},
-            )
-            .with_automatic_reconnect(_RECONNECT_POLICY)
-            .build()
-        )
+    def _on_market_msg(self, target: str, args: list) -> None:
+        """Dispatch market hub events."""
+        if target == "GatewayTrade":
+            self._handle_trades(args)
+        elif target == "GatewayQuote":
+            self._handle_quote(args)
+        elif target == "GatewayDepth":
+            self._handle_depth(args)
 
-    # ------------------------------------------------------------------
-    # Internal: on_open callbacks (subscribe after connection)
-    # ------------------------------------------------------------------
-
-    def _on_market_open(self) -> None:
-        log.info("TopstepXStream: market hub connected")
-        try:
-            self._market_conn.send("SubscribeContractTrades", [self._contract_id])
-            log.info("TopstepXStream: subscribed to contract trades for %s", self._contract_id)
-            self._market_conn.send("SubscribeContractDepth", [self._contract_id])
-            log.info("TopstepXStream: subscribed to contract depth for %s", self._contract_id)
-        except Exception:
-            log.exception("TopstepXStream: failed to subscribe to contract trades")
-
-    def _on_user_open(self) -> None:
-        log.info("TopstepXStream: user hub connected")
-        try:
-            self._user_conn.send("SubscribeToPositions", [self._account_id])
-            self._user_conn.send("SubscribeToOrders", [self._account_id])
-            self._user_conn.send("SubscribeToUserTrades", [self._account_id])
-            log.info("TopstepXStream: subscribed to user events for account %d", self._account_id)
-        except Exception:
-            log.exception("TopstepXStream: failed to subscribe to user events")
+    def _on_user_msg(self, target: str, args: list) -> None:
+        """Dispatch user hub events."""
+        if target == "GatewayUserTrade":
+            self._handle_user_trade(args)
+        elif target == "GatewayUserPosition":
+            self._handle_position(args)
+        elif target == "GatewayUserOrder":
+            self._handle_order(args)
 
     # ------------------------------------------------------------------
     # Internal: event handlers
     # ------------------------------------------------------------------
 
-    def _handle_trade(self, args: list) -> None:
-        """Parse GatewayTrade tick and call on_tick(price, size, ts)."""
-        if not args:
+    def _handle_trades(self, args: list) -> None:
+        """Parse GatewayTrade — args = [contractId, [trade, trade, ...]]."""
+        if not args or len(args) < 2 or not self.on_tick:
+            return
+        trades = args[1]
+        if not isinstance(trades, list):
+            return
+        for trade in trades:
+            try:
+                price = float(trade["price"])
+                size = int(trade.get("volume", 1))
+                ts = _parse_ts(trade.get("timestamp", ""))
+                self.on_tick(price, size, ts)
+            except Exception:
+                log.debug("TopstepXStream: bad trade: %r", trade)
+
+    def _handle_quote(self, args: list) -> None:
+        """Parse GatewayQuote — args = [contractId, quoteDict]."""
+        if not args or len(args) < 2 or not self.on_quote:
             return
         try:
-            tick = args[0]
-            if not isinstance(tick, dict):
-                return
-            price = float(tick["price"])
-            size = int(tick["size"])
-            ts = _parse_ts(tick["timestamp"])
-            if self.on_tick is not None:
-                self.on_tick(price, size, ts)
+            self.on_quote(args[1])
         except Exception:
-            log.exception("TopstepXStream: error handling trade tick: %r", args)
+            log.debug("TopstepXStream: bad quote: %r", args)
 
     def _handle_depth(self, args: list) -> None:
-        """Parse GatewayDepth L2 update and call on_depth(depth_dict)."""
-        if not args:
+        """Parse GatewayDepth — args = [contractId, depthDict]."""
+        if not args or len(args) < 2 or not self.on_depth:
             return
         try:
-            depth = args[0]
-            if not isinstance(depth, dict):
-                return
-            if self.on_depth is not None:
-                self.on_depth(depth)
+            self.on_depth(args[1])
         except Exception:
-            log.exception("TopstepXStream: error handling depth: %r", args)
+            log.debug("TopstepXStream: bad depth: %r", args)
 
     def _handle_user_trade(self, args: list) -> None:
-        """Parse GatewayUserTrade fill and call on_fill(fill_dict)."""
-        if not args:
+        """Parse GatewayUserTrade fill."""
+        if not args or not self.on_fill:
             return
         try:
-            fill = args[0]
-            if not isinstance(fill, dict):
-                return
-            if self.on_fill is not None:
-                self.on_fill(fill)
+            fill = args[0] if isinstance(args[0], dict) else args[0]
+            self.on_fill(fill)
         except Exception:
-            log.exception("TopstepXStream: error handling user trade: %r", args)
+            log.debug("TopstepXStream: bad fill: %r", args)
 
     def _handle_position(self, args: list) -> None:
         """Log GatewayUserPosition updates."""
-        try:
-            pos = args[0] if args else {}
-            log.info("TopstepXStream: position update: %s", pos)
-        except Exception:
-            log.exception("TopstepXStream: error handling position: %r", args)
+        pos = args[0] if args else {}
+        log.info("TopstepXStream: position update: %s", pos)
 
     def _handle_order(self, args: list) -> None:
         """Log GatewayUserOrder updates."""
-        try:
-            order = args[0] if args else {}
-            log.info("TopstepXStream: order update: %s", order)
-        except Exception:
-            log.exception("TopstepXStream: error handling order: %r", args)
+        order = args[0] if args else {}
+        log.debug("TopstepXStream: order update: %s", order)

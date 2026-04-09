@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 class TopstepXConfig:
     username: str = ""
     api_key: str = ""
-    contract_id: str = "CON.F.US.NQ.M25"
+    contract_id: str = "CON.F.US.ENQ.M26"
     base_url: str = "https://api.topstepx.com"
     market_hub_url: str = "wss://rtc.topstepx.com/hubs/market"
     user_hub_url: str = "wss://rtc.topstepx.com/hubs/user"
@@ -29,7 +29,7 @@ class TopstepXConfig:
         return cls(
             username=os.getenv("TOPSTEPX_USERNAME", ""),
             api_key=os.getenv("TOPSTEPX_API_KEY", ""),
-            contract_id=os.getenv("TOPSTEPX_CONTRACT", "CON.F.US.NQ.M25"),
+            contract_id=os.getenv("TOPSTEPX_CONTRACT", "CON.F.US.ENQ.M26"),
             base_url=os.getenv("TOPSTEPX_BASE_URL", "https://api.topstepx.com"),
             market_hub_url=os.getenv("TOPSTEPX_MARKET_HUB_URL", "wss://rtc.topstepx.com/hubs/market"),
             user_hub_url=os.getenv("TOPSTEPX_USER_HUB_URL", "wss://rtc.topstepx.com/hubs/user"),
