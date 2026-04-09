@@ -1023,11 +1023,13 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
 
             if not pending:
+                # Import open positions as pending bets
+                imported = self._import_open_positions(db, profile, positions)
                 return {
                     "claim": claim_result,
                     "positions": len(positions),
+                    "imported": imported,
                     "settled": 0,
-                    "note": "no pending polymarket bets",
                 }
 
             from ...services.fire_window import _match_polymarket_position
@@ -1157,6 +1159,102 @@ class PolymarketWorkflow(ProviderWorkflow):
             "new_balance": new_balance,
             "positions_scraped": len(positions),
         }
+
+    # ------------------------------------------------------------------
+    # Import untracked positions
+    # ------------------------------------------------------------------
+
+    def _import_open_positions(self, db, profile, positions: list[dict]) -> list[dict]:
+        """Import open Polymarket positions that aren't in our DB as pending bets.
+
+        Deduplicates by market name, only imports positions with has_sell=True (open).
+        """
+        from ...services.bet_service import BetService
+        from ...db.models import Bet
+        import re
+
+        # Get existing pending polymarket bets to avoid duplicates
+        existing = (
+            db.query(Bet)
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == "polymarket",
+                Bet.result == "pending",
+            )
+            .all()
+        )
+        existing_markets = {(b.confirmation_id or "").lower() for b in existing}
+
+        # Deduplicate positions (scraper returns collapsed + expanded)
+        seen_markets: set[str] = set()
+        unique_positions = []
+        for pos in positions:
+            market = pos.get("market", "").strip()
+            if not market or market in seen_markets:
+                continue
+            seen_markets.add(market)
+            unique_positions.append(pos)
+
+        svc = BetService(db)
+        imported = []
+        for pos in unique_positions:
+            if not pos.get("has_sell"):
+                continue  # Only open positions
+            if pos.get("status") in ("won", "lost"):
+                continue
+
+            market = pos.get("market", "")
+            avg_price = pos.get("avg_price")
+            shares = pos.get("shares")
+            full_text = pos.get("full_text", "")
+
+            # Extract slug from full_text or market name
+            slug = re.sub(r'[^a-z0-9]+', '-', market.lower()).strip('-')
+
+            # Skip if already tracked
+            if slug.lower() in existing_markets:
+                continue
+
+            # Calculate stake and odds from position data
+            stake = round(shares * avg_price / 100, 2) if shares and avg_price else 0
+            odds = round(100 / avg_price, 4) if avg_price and avg_price > 0 else 2.0
+
+            if stake <= 0:
+                continue
+
+            resp = svc.create_bet(
+                event_id=None,
+                provider_id="polymarket",
+                market="1x2",
+                outcome="home",
+                odds=odds,
+                stake=stake,
+                bet_type="value",
+            )
+            if "error" not in resp:
+                # Save slug as confirmation_id
+                bet_id = resp.get("id")
+                if bet_id:
+                    db_bet = db.query(Bet).filter(Bet.id == bet_id).first()
+                    if db_bet:
+                        db_bet.confirmation_id = slug
+                imported.append({
+                    "bet_id": bet_id,
+                    "market": market,
+                    "stake": stake,
+                    "odds": odds,
+                    "avg_price": avg_price,
+                    "shares": shares,
+                })
+                logger.info(f"[polymarket] Imported position: {market} stake=${stake} odds={odds}")
+            else:
+                logger.warning(f"[polymarket] Failed to import position: {resp['error']}")
+
+        if imported:
+            db.commit()
+            logger.info(f"[polymarket] Imported {len(imported)} open positions as pending bets")
+
+        return imported
 
     # ------------------------------------------------------------------
     # Cleanup
