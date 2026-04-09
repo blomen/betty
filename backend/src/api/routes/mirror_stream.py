@@ -106,21 +106,31 @@ def get_provider_state(provider_id: str, db=Depends(get_db)):
     balance = latest_balance.amount if latest_balance else None
 
     # Pending bets
-    pending_bets = (
+    pending_bet_rows = (
         db.query(Bet)
         .filter(Bet.provider_id == provider_id, Bet.result == "pending")
-        .count()
+        .all()
     )
+    pending_bets = [
+        {"id": b.id, "event_id": b.event_id, "market": b.market,
+         "outcome": b.outcome, "odds": b.odds, "stake": b.stake}
+        for b in pending_bet_rows
+    ]
 
     # Pending settlements
-    pending_settlements = (
+    settle_rows = (
         db.query(SettlementQueue)
         .filter(
             SettlementQueue.provider_id == provider_id,
             SettlementQueue.status == "pending",
         )
-        .count()
+        .all()
     )
+    pending_settlements = [
+        {"id": s.id, "bet_id": s.bet_id, "result": s.result,
+         "payout": s.payout, "detected_at": s.detected_at.isoformat() if s.detected_at else None}
+        for s in settle_rows
+    ]
 
     return {
         "provider_id": provider_id,
