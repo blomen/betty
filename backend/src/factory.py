@@ -19,6 +19,8 @@ from .providers.vbet import VbetRetriever
 from .providers.interwetten import InterwettenRetriever
 from .providers.coolbet import CoolbetRetriever
 from .providers.tipwin import TipwinRetriever
+from .providers.stake import StakeRetriever
+from .providers.cloudbet import CloudbetRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -193,6 +195,18 @@ class ExtractorFactory:
             from .core import BrowserTransport
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True, disable_resource_blocking=True)
             retriever = TipwinRetriever(config, transport=transport)
+        elif retriever_type == "stake":
+            retriever = StakeRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
+        elif retriever_type == "cloudbet":
+            retriever = CloudbetRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         elif retriever_type == "custom":
             # Custom provider implementations
             from .core import BrowserTransport

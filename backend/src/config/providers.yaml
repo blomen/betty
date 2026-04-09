@@ -68,6 +68,11 @@ orchestrator:
       max_concurrent: 2                # Bare metal: 2 concurrent tipwin
       shared_resource: browser
 
+    - name: signal_api
+      retriever_types: [stake, cloudbet]
+      max_concurrent: 2                # Both are lightweight REST/GraphQL APIs
+      shared_resource: none
+
   # Timeouts — no provider_timeout, direct gost has no connection limit
   sport_timeout: 1800                  # 30 min safety net — let sports run to completion
 
@@ -835,6 +840,43 @@ providers:
       min_odds: 1.80
       trigger_mode: cumulative
 
+  # --- International signal-only providers ---
+
+  stake:
+    id: stake
+    name: Stake.com
+    domain: stake.com
+    retriever_type: stake
+    api_base: https://stake.com/_api/graphql
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+      - esports
+
+  cloudbet:
+    id: cloudbet
+    name: Cloudbet
+    domain: cloudbet.com
+    retriever_type: cloudbet
+    api_base: https://sports-api.cloudbet.com/pub/v2/odds
+    api_key: ${CLOUDBET_API_KEY}
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+      - esports
+
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)
 # ============================================================================
@@ -891,6 +933,15 @@ extraction_scheduling:
       - coolbet
       - comeon
     interval_minutes: 10
+    grouped: false
+
+  signal_international:
+    # International signal-only providers — read odds for consensus, no bet placement
+    # Stake.com: public GraphQL, no auth. Cloudbet: REST feed, affiliate API key.
+    providers:
+      - stake
+      - cloudbet
+    interval_minutes: 5
     grouped: false
 
 # ============================================================================
