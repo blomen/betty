@@ -29,6 +29,7 @@ export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [providerBalances, setProviderBalances] = useState<Record<string, number>>({})
+  const [capitalPlan, setCapitalPlan] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [navigating, setNavigating] = useState<string | null>(null)
 
@@ -38,6 +39,7 @@ export default function PlayPage() {
       setBatch(result.batch ?? [])
       setSummary(result.summary ?? null)
       setProviderBalances(result.provider_balances ?? {})
+      setCapitalPlan(result.capital_plan ?? null)
       setError(null)
     } catch (e: any) {
       setError(e.message)
@@ -85,12 +87,27 @@ export default function PlayPage() {
   for (const cluster of Object.values(byCluster))
     for (const pid in cluster) cluster[pid].sort((a, b) => b.edge_pct - a.edge_pct)
 
-  // Sort clusters by total EV desc
+  // Sort clusters: funded first (by EV desc), then unfunded (by EV desc)
   const clusterIds = Object.keys(byCluster).sort((a, b) => {
+    const provA = Object.keys(byCluster[a])
+    const provB = Object.keys(byCluster[b])
+    const hasFundsA = provA.some(p => (balances[p] ?? 0) > 0)
+    const hasFundsB = provB.some(p => (balances[p] ?? 0) > 0)
+    if (hasFundsA !== hasFundsB) return hasFundsA ? -1 : 1
     const evA = Object.values(byCluster[a]).flat().reduce((s, x) => s + x.expected_profit, 0)
     const evB = Object.values(byCluster[b]).flat().reduce((s, x) => s + x.expected_profit, 0)
     return evB - evA
   })
+
+  // Build deposit recommendation map from capital_plan
+  const depositRecs: Record<string, { amount: number; unlocks: number; ev: number }> = {}
+  if (capitalPlan?.actions) {
+    for (const a of capitalPlan.actions) {
+      if (a.type === 'deposit' && a.provider_id) {
+        depositRecs[a.provider_id] = { amount: Math.round(a.amount), unlocks: a.unlocks, ev: a.expected_ev }
+      }
+    }
+  }
   const totalEv = summary?.total_expected_profit ?? bets.reduce((s, b) => s + b.expected_profit, 0)
 
   const fmtStake = (b: BatchBet) => b.tier === 'polymarket' ? `$${b.stake.toFixed(1)}` : `${Math.round(b.stake)} kr`
@@ -151,7 +168,15 @@ export default function PlayPage() {
                     <div className="flex items-center gap-2 px-3 pl-6 py-1 bg-zinc-900/50 border-b border-zinc-800">
                       <span className="text-xs font-semibold text-zinc-300 uppercase">{pid}</span>
                       <span className="text-xs text-zinc-500">{provBets.length} bets</span>
-                      {bal && <span className="text-xs text-success">bal {bal}</span>}
+                      {(balances[pid] ?? 0) > 0 ? (
+                        <span className="text-xs text-success">bal {bal}</span>
+                      ) : depositRecs[pid] ? (
+                        <span className="text-xs text-amber-400">
+                          deposit {depositRecs[pid].amount} kr → unlocks {depositRecs[pid].unlocks} bets (+{depositRecs[pid].ev.toFixed(0)} kr EV)
+                        </span>
+                      ) : (
+                        <span className="text-xs text-zinc-600">no balance</span>
+                      )}
                       <span className="text-xs text-green-400 ml-auto">+{provEv.toFixed(0)} kr</span>
                     </div>
 
