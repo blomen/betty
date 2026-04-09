@@ -61,6 +61,9 @@ class ProviderConfig(BaseModel):
     # Per-provider sport timeout override (seconds). None = use global sport_timeout.
     sport_timeout: Optional[int] = None
 
+    # API key for providers that need auth (e.g., Cloudbet affiliate key)
+    api_key: Optional[str] = None
+
     # ComeOn-specific depth extraction configuration
     extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
     concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads
