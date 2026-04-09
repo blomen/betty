@@ -28,8 +28,9 @@ def _make_browser(running: bool = False, pages: list | None = None):
 
 
 def _make_app(browser) -> FastAPI:
+    from mirror.sse import MirrorBroadcaster
     app = FastAPI()
-    app.include_router(create_mirror_router(browser))
+    app.include_router(create_mirror_router(browser, MirrorBroadcaster(), "http://localhost:18000"))
     return app
 
 
