@@ -169,3 +169,30 @@ def test_handle_order_no_crash():
 def test_handle_order_empty_no_crash():
     stream = _make_stream()
     stream._handle_order([])
+
+
+# ---------------------------------------------------------------------------
+# _handle_depth
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def stream():
+    return _make_stream()
+
+
+def test_handle_depth_calls_on_depth(stream):
+    depths = []
+    stream.on_depth = lambda d: depths.append(d)
+    stream._handle_depth([{"price": 21450.0, "volume": 100, "currentVolume": 50, "type": 0, "timestamp": "2026-04-09T14:30:00Z"}])
+    assert len(depths) == 1
+    assert depths[0]["price"] == 21450.0
+
+
+def test_handle_depth_ignores_empty(stream):
+    stream.on_depth = lambda d: None
+    stream._handle_depth([])  # no crash
+
+
+def test_handle_depth_no_callback_no_crash(stream):
+    stream.on_depth = None
+    stream._handle_depth([{"price": 21450.0, "volume": 100, "type": 0}])

@@ -62,6 +62,7 @@ class TopstepXStream:
 
         self.on_tick: Callable[[float, int, float], None] | None = None
         self.on_fill: Callable[[dict], None] | None = None
+        self.on_depth: Callable[[dict], None] | None = None
 
         self._market_conn = None
         self._user_conn = None
@@ -74,6 +75,7 @@ class TopstepXStream:
         """Connect both hubs and subscribe to relevant channels."""
         self._market_conn = self._build_conn(self._market_hub_url)
         self._market_conn.on("GatewayTrade", self._handle_trade)
+        self._market_conn.on("GatewayDepth", self._handle_depth)
         self._market_conn.on_open(lambda: self._on_market_open())
         self._market_conn.on_close(lambda: log.warning("TopstepXStream: market hub disconnected"))
         self._market_conn.start()
@@ -126,6 +128,8 @@ class TopstepXStream:
         try:
             self._market_conn.send("SubscribeContractTrades", [self._contract_id])
             log.info("TopstepXStream: subscribed to contract trades for %s", self._contract_id)
+            self._market_conn.send("SubscribeContractDepth", [self._contract_id])
+            log.info("TopstepXStream: subscribed to contract depth for %s", self._contract_id)
         except Exception:
             log.exception("TopstepXStream: failed to subscribe to contract trades")
 
@@ -158,6 +162,19 @@ class TopstepXStream:
                 self.on_tick(price, size, ts)
         except Exception:
             log.exception("TopstepXStream: error handling trade tick: %r", args)
+
+    def _handle_depth(self, args: list) -> None:
+        """Parse GatewayDepth L2 update and call on_depth(depth_dict)."""
+        if not args:
+            return
+        try:
+            depth = args[0]
+            if not isinstance(depth, dict):
+                return
+            if self.on_depth is not None:
+                self.on_depth(depth)
+        except Exception:
+            log.exception("TopstepXStream: error handling depth: %r", args)
 
     def _handle_user_trade(self, args: list) -> None:
         """Parse GatewayUserTrade fill and call on_fill(fill_dict)."""
