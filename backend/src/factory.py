@@ -188,11 +188,11 @@ class ExtractorFactory:
             retriever = CoolbetRetriever(config, transport=None)
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
-            # Headless works fine (tested: 1,221 events vs 1,077 headed)
             # NO PROXY — tipwin worked fine without it (762 events Mar 28).
-            # Adding proxy on Apr 2 broke page.route() timing → 0 events.
+            # NO RESOURCE BLOCKING — context-level route handler conflicts with
+            # page.route('**/offer/data*') needed for API interception.
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, disable_resource_blocking=True)
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations

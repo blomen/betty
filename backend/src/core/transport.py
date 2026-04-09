@@ -300,12 +300,14 @@ class BrowserTransport(Transport):
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
                  channel: Optional[str] = None, cdp_url: Optional[str] = None,
                  circuit_breaker: Any = None, use_proxy: bool = False,
-                 use_residential_proxy: bool = False):
+                 use_residential_proxy: bool = False,
+                 disable_resource_blocking: bool = False):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
         self.cdp_url = cdp_url
         self.circuit_breaker = circuit_breaker
+        self._disable_resource_blocking = disable_resource_blocking
         if use_residential_proxy:
             self._proxy_dict = get_proxy_dict(residential=True)
         elif use_proxy:
@@ -337,7 +339,7 @@ class BrowserTransport(Transport):
 
     async def _setup_resource_blocking(self):
         """Block images, fonts, and tracking scripts on all pages in this context."""
-        if not self.context:
+        if not self.context or self._disable_resource_blocking:
             return
 
         blocked_types = set(self._BLOCKED_RESOURCE_TYPES)
