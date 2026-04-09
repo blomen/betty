@@ -347,9 +347,9 @@ class BrowserTransport(Transport):
         async def _block_unnecessary(route):
             try:
                 # Let API requests fall through to page-level route handlers
-                # (gecko_v2 uses page.route('**/api/sb/**') to capture headers)
+                # (gecko_v2 uses page.route('**/api/sb/**'), tipwin uses '**/offer/data*')
                 url = route.request.url.lower()
-                if '/api/sb/' in url or '/api/' in url and route.request.resource_type == "xhr":
+                if '/api/sb/' in url or 'offer/data' in url or '/api/' in url and route.request.resource_type == "xhr":
                     await route.fallback()
                     return
                 if route.request.resource_type in blocked_types:
