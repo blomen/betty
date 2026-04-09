@@ -36,7 +36,7 @@ export default function App() {
           </button>
         ))}
       </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0">
         {activeTab === 'play' && <PlayPage />}
         {activeTab === 'pending' && <PendingPage />}
         {activeTab === 'dutch' && <DutchPage />}

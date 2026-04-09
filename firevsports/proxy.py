@@ -30,8 +30,10 @@ def create_proxy_router(tunnel_url: str) -> APIRouter:
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.request(method=request.method, url=url, content=body, headers=headers)
-            resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_HEADERS}
-            return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
+            # Only forward content-type — let uvicorn handle the rest
+            ct = resp.headers.get("content-type", "application/json")
+            return Response(content=resp.content, status_code=resp.status_code,
+                          headers={"content-type": ct})
 
     async def _proxy_sse(method: str, url: str, headers: dict, body: bytes) -> StreamingResponse:
         client = httpx.AsyncClient(timeout=None)
