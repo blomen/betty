@@ -165,9 +165,12 @@ def parse_fixture(
 class StakeRetriever(Retriever):
     """Retriever for Stake.com pre-match odds via GraphQL API."""
 
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
-            transport = HttpTransport()
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         super().__init__(config, transport)
 
     def _get_sport_url(self, sport: str) -> str:

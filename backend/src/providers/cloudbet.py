@@ -247,9 +247,12 @@ class CloudbetRetriever(Retriever):
     Requires an affiliate API key in config['api_key'] (or CLOUDBET_API_KEY env var).
     """
 
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
-            transport = HttpTransport()
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         super().__init__(config, transport)
         self._api_key = config.get("api_key", "")
 
