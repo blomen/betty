@@ -295,12 +295,13 @@ class CoolbetRetriever(BrowserRetriever):
                             seen_cat_ids.add(cid)
                             category_data.append(cat)
 
-                # If >50% of league fetches failed, session is stale — force re-auth next sport
+                # If >50% of league fetches failed, session is stale — full browser restart
                 if failures > len(league_ids) * 0.5:
                     logger.warning(
                         f"[{self.provider_id}] {sport}: {failures}/{len(league_ids)} league fetches failed "
-                        f"(Imperva session stale) — forcing re-auth"
+                        f"(Imperva session stale) — restarting Camoufox browser"
                     )
+                    await self._cleanup_camoufox()
                     self._session_ready = False
             else:
                 # Fallback to sport-level pagination
