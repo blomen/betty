@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/hooks/useapi.ts","./src/pages/bankrollpage.tsx","./src/pages/dutchpage.tsx","./src/pages/pendingpage.tsx","./src/pages/playpage.tsx","./src/pages/statspage.tsx"],"version":"5.9.3"}

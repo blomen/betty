@@ -7,7 +7,6 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
-  { name: 'play',       label: 'Play',      color: '#22c55e' },
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
   { name: 'reverse',    label: 'Pinnacle',  color: '#EF5350' },
@@ -23,11 +22,8 @@ const STOCKS_TABS: Tab[] = [
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
 
-export const isLocalMirror = typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-
 export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
-  sports: isLocalMirror ? SPORTS_TABS : SPORTS_TABS.filter(t => t.name !== 'play'),
+  sports: SPORTS_TABS,
   stocks: STOCKS_TABS,
 };
 
