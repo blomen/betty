@@ -1,12 +1,40 @@
-import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from '../hooks/useApi'
+import { useState, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { apiFetch, api } from '../hooks/useApi'
+import { useMirrorStream } from '../hooks/useMirrorStream'
 
 export function PendingPage() {
+  const queryClient = useQueryClient()
+  const mirror = useMirrorStream()
+  const [syncing, setSyncing] = useState(false)
+  const [detectedSettlements, setDetectedSettlements] = useState<Record<string, any[]>>({})
+
   const { data, isLoading } = useQuery({
     queryKey: ['pending-bets'],
     queryFn: () => apiFetch<any>('/api/opportunities/play/pending-bets'),
     refetchInterval: 15_000,
   })
+
+  useEffect(() => {
+    if (!mirror.lastEvent) return
+    const { type, data } = mirror.lastEvent
+    if (type === 'settlements_detected') {
+      setDetectedSettlements(prev => ({ ...prev, [data.provider_id]: data.settlements }))
+    }
+    if (type === 'settlements_confirmed') {
+      setDetectedSettlements(prev => {
+        const next = { ...prev }
+        delete next[data.provider_id]
+        return next
+      })
+      queryClient.invalidateQueries({ queryKey: ['pending-bets'] })
+    }
+    if (type === 'pending_stopped') setSyncing(false)
+  }, [mirror.lastEvent])
+
+  const handleSyncAll = async () => { setSyncing(true); await api.startPendingLoop() }
+  const handleStopSync = () => { api.stopPendingLoop(); setSyncing(false) }
+  const handleConfirm = (pid: string) => api.confirmSettlement(pid)
 
   if (isLoading) return <div className="p-4 text-zinc-500">Loading...</div>
 
@@ -17,8 +45,22 @@ export function PendingPage() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-3 py-2 text-xs text-zinc-400 border-b border-zinc-800">
-        {totalBets} pending bets across {providers.length} providers
+      <div className="flex items-center gap-3 px-3 py-2 text-xs text-zinc-400 border-b border-zinc-800">
+        <span>{totalBets} pending bets across {providers.length} providers</span>
+        <div className="ml-auto flex items-center gap-2">
+          {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {!syncing ? (
+            <button onClick={handleSyncAll}
+              className="px-2 py-0.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded">
+              Sync All
+            </button>
+          ) : (
+            <button onClick={handleStopSync}
+              className="px-2 py-0.5 text-xs bg-red-700 hover:bg-red-600 text-white rounded">
+              Stop
+            </button>
+          )}
+        </div>
       </div>
       {providers.map((p: any) => (
         <div key={p.provider_id}>
@@ -54,6 +96,28 @@ export function PendingPage() {
                 ))}
               </tbody>
             </table>
+          )}
+          {detectedSettlements[p.provider_id] && (
+            <div className="px-6 py-2 bg-amber-900/20 border-b border-amber-700/30">
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-amber-400 font-medium">
+                  {detectedSettlements[p.provider_id].length} settlements detected
+                </span>
+                <button onClick={() => handleConfirm(p.provider_id)}
+                  className="px-2 py-0.5 text-xs bg-green-700 hover:bg-green-600 text-white rounded">
+                  Confirm
+                </button>
+              </div>
+              {detectedSettlements[p.provider_id].map((s: any, i: number) => (
+                <div key={i} className="flex gap-3 text-xs mt-1">
+                  <span className="text-zinc-400">Bet #{s.bet_id}</span>
+                  <span className={s.result === 'won' ? 'text-green-400' : s.result === 'lost' ? 'text-red-400' : 'text-zinc-400'}>
+                    {s.result}
+                  </span>
+                  <span className="text-zinc-300">{s.payout > 0 ? `+${s.payout.toFixed(0)} kr` : ''}</span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       ))}
