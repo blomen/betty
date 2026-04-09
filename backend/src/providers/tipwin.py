@@ -105,7 +105,6 @@ class TipwinRetriever(BrowserRetriever):
         run_id = kwargs.get("run_id")
         if run_id and run_id != self._last_run_id:
             self._all_events = None
-            self._session_ready = False  # Force fresh session — SPA caches API responses
             self._last_run_id = run_id
 
         # Extract all sports on first call
