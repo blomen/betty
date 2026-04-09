@@ -334,6 +334,61 @@ class BetPostmortem(Base):
     )
 
 
+# ============ Mirror Infrastructure ============
+
+class BalanceLog(Base):
+    """Append-only balance log from intercepted provider API responses."""
+    __tablename__ = "balance_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False, default="SEK")
+    source = Column(String, nullable=False)  # 'intercepted' | 'api_fetch'
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index('ix_balance_log_provider_created', 'provider_id', 'created_at'),
+    )
+
+
+class SettlementQueue(Base):
+    """Persistent settlement queue — survives restarts, user confirms before bankroll update."""
+    __tablename__ = "settlement_queue"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    bet_id = Column(Integer, ForeignKey("bets.id"), nullable=True)
+    result = Column(String, nullable=False)  # 'won' | 'lost' | 'void'
+    payout = Column(Float, nullable=False, default=0.0)
+    status = Column(String, nullable=False, default="pending")  # 'pending' | 'confirmed'
+    detected_at = Column(DateTime, default=_utcnow)
+    confirmed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ix_settlement_queue_provider_status', 'provider_id', 'status'),
+    )
+
+
+class PriceCache(Base):
+    """Live price ticks from intercepted odds responses."""
+    __tablename__ = "price_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    market = Column(String, nullable=False)
+    outcome = Column(String, nullable=False)
+    odds = Column(Float, nullable=False)
+    source = Column(String, nullable=False)  # 'intercepted' | 'dom' | 'api'
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('provider_id', 'event_id', 'market', 'outcome', name='uq_price_cache_key'),
+        Index('ix_price_cache_provider_event', 'provider_id', 'event_id'),
+    )
+
+
 # ============ User Settings ============
 
 class Profile(Base):
