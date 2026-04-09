@@ -2170,6 +2170,34 @@ def get_market_session():
 BONUS_MIN_ODDS = 1.80
 
 
+class BrokerTrade(Base):
+    """Automated trade execution log."""
+    __tablename__ = "broker_trades"
+
+    id = Column(Integer, primary_key=True)
+    ts = Column(DateTime, nullable=False, default=_utcnow)
+    session_date = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    side = Column(String, nullable=False)
+    size = Column(Integer, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    stop_price = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    pnl_dollars = Column(Float, nullable=True)
+    pnl_r = Column(Float, nullable=True)
+    fill_latency_ms = Column(Float, nullable=True)
+    slippage_ticks = Column(Float, nullable=True)
+    signal_action = Column(String, nullable=True)
+    signal_confidence = Column(Float, nullable=True)
+    signal_zone = Column(Float, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_broker_trades_session", "session_date"),
+        Index("ix_broker_trades_ts", "ts"),
+    )
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at: {DB_PATH}")

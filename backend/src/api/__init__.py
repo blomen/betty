@@ -245,6 +245,31 @@ async def lifespan(app: FastAPI):
 
                 logger.info("Trading features started: Databento stream + level monitor")
 
+                # --- Broker (automated execution) ---
+                from ..broker.config import BrokerConfig
+                broker_config = BrokerConfig.from_env()
+                if broker_config.enabled:
+                    from ..broker.tradovate_client import TradovateClient
+                    from ..broker.adapter import BrokerAdapter
+                    from ..broker.flatten_scheduler import FlattenScheduler
+
+                    tv_client = TradovateClient(broker_config)
+                    connected = await tv_client.connect()
+                    if connected:
+                        _broker_adapter = BrokerAdapter(tv_client, broker_config)
+                        app.state.broker_adapter = _broker_adapter
+                        level_monitor.set_broker_adapter(_broker_adapter)
+
+                        flatten_sched = FlattenScheduler(_broker_adapter, broker_config.flatten_et)
+                        flatten_sched.start()
+                        logger.info("Broker enabled: %s %s (max_pos=%d, max_loss=$%.0f)",
+                                     broker_config.env, broker_config.symbol,
+                                     broker_config.max_position, broker_config.max_daily_loss)
+                    else:
+                        logger.error("Broker: Tradovate connection failed — trading disabled")
+                else:
+                    logger.info("Broker disabled (BROKER_ENABLED != true)")
+
                 # Load initial levels + COT in background thread (DB-heavy, would stall event loop)
                 import threading
                 def _load_initial_data():

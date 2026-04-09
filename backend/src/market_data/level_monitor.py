@@ -799,8 +799,30 @@ class LevelMonitor:
                 )
             except Exception:
                 pass  # Never block inference for collection
+
+            # Execute via broker if enabled
+            broker = getattr(self, '_broker_adapter', None)
+            if broker is not None and result is not None:
+                action = result.get("action", "SKIP")
+                if action not in ("SKIP", "skip"):
+                    import asyncio
+                    try:
+                        broker_signal = {
+                            "action": "enter_long" if action == "CONTINUATION" else "enter_short",
+                            "price": price,
+                            "stop_price": price - result.get("stop_ticks", 15) * 0.25 if action == "CONTINUATION"
+                                         else price + result.get("stop_ticks", 15) * 0.25,
+                            "size": result.get("sizing_signal", 1.0),
+                        }
+                        asyncio.create_task(broker.on_signal(broker_signal))
+                    except Exception:
+                        logger.warning("Broker execution failed", exc_info=True)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
+
+    def set_broker_adapter(self, adapter) -> None:
+        """Set broker adapter for automated execution."""
+        self._broker_adapter = adapter
 
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time

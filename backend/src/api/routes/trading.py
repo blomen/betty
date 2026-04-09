@@ -1,6 +1,6 @@
 """Trading API routes — thin handlers delegating to TradingService."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from ..deps import get_db
@@ -298,3 +298,32 @@ def get_signals(date: str = Query(None, description="Date YYYY-MM-DD, defaults t
                 signals.append(json.loads(line))
 
     return {"date": date, "signals": signals, "count": len(signals)}
+
+
+@router.get("/broker/status")
+def broker_status(request: Request):
+    """Get current broker state — position, P&L, risk status."""
+    adapter = getattr(request.app.state, "broker_adapter", None)
+    if adapter is None:
+        return {"enabled": False, "message": "Broker not enabled"}
+
+    t = adapter.tracker
+    return {
+        "enabled": True,
+        "halted": adapter._halted,
+        "halt_reason": adapter._halt_reason,
+        "position": {
+            "side": t.side,
+            "size": t.size,
+            "entry_price": t.entry_price,
+            "stop_price": t.stop_price,
+        },
+        "session": {
+            "pnl_dollars": round(t.session_pnl, 2),
+            "peak_equity": round(t.peak_equity, 2),
+            "trailing_dd": round(t.trailing_dd, 2),
+            "trade_count": t.trade_count,
+            "consecutive_stops": t.consecutive_stops,
+            "avg_slippage_ticks": round(t.slippage_ticks(), 2),
+        },
+    }
