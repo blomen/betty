@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..db.models import get_session, BetTrace, Bet
 from ..services.bet_service import BetService
+from .event_router import EventRouter
 from .interceptor import BetInterceptor
 from .parsers.gecko import GeckoBetParser
 from .parsers.polymarket import PolymarketParser
@@ -42,6 +43,7 @@ class MirrorService:
         self._poly_tabs: dict[str, any] = {}
         # Providers confirmed logged in (balance API returned 200)
         self._logged_in_providers: set[str] = set()
+        self.event_router = EventRouter()
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
@@ -92,8 +94,8 @@ class MirrorService:
         if provider_id == "pinnacle":
             info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
             if info["pending_bets"] > 0:
-                logger.info(f"[mirror] Pinnacle detected with {info['pending_bets']} pending — auto-settling via API")
-                asyncio.ensure_future(self._settle_via_workflow("pinnacle"))
+                logger.info(f"[mirror] Pinnacle detected with {info['pending_bets']} pending — auto-settling via DOM")
+                asyncio.ensure_future(self._auto_settle_pinnacle())
         # Auto-discover for generic (unwired) providers with no intel
         from .workflows import get_workflow
         from .workflows.generic import GenericWorkflow
@@ -380,6 +382,28 @@ class MirrorService:
                             if provider_id in (page.url or '').lower() or any(p in (page.url or '') for p in bet_history_paths):
                                 await self._scrape_ssr_bet_history(provider_id, page)
                                 return
+
+    async def _auto_settle_pinnacle(self):
+        """Auto-settle Pinnacle: navigate to history page, scrape DOM, settle matched bets."""
+        import asyncio
+        await asyncio.sleep(5)  # Wait for page to fully load
+
+        context = self.interceptor.context
+        if not context:
+            return
+
+        from .workflows import get_workflow
+        workflow = get_workflow("pinnacle")
+        page = await workflow.find_tab(context)
+        if not page:
+            logger.warning("[mirror] Pinnacle auto-settle: no tab found")
+            return
+
+        try:
+            result = await workflow.settle_all(page)
+            logger.info(f"[mirror] Pinnacle auto-settle: settled={result.get('settled', 0)}")
+        except Exception as e:
+            logger.warning(f"[mirror] Pinnacle auto-settle failed: {e}")
 
     async def _settle_via_workflow(self, provider_id: str):
         """Use a provider workflow's sync_history API to settle pending bets.
@@ -831,7 +855,7 @@ class MirrorService:
                 f"[mirror] Staged {len(staged)} settlement(s) from {provider_id}: "
                 f"{len(wins)}W {len(losses)}L, net={net:+.0f} SEK — confirm via API"
             )
-            self._notify("settlements_pending", {
+            _pending_payload = {
                 "provider": provider_id,
                 "count": len(staged),
                 "wins": len(wins),
@@ -840,7 +864,9 @@ class MirrorService:
                 "total_payout": total_payout,
                 "net": net,
                 "settlements": staged,
-            })
+            }
+            self._notify("settlements_pending", _pending_payload)
+            asyncio.ensure_future(self.event_router.broadcast_sync("settlement_pending", _pending_payload))
 
         # Record any untracked open bets (status 0) as pending
         open_bets = [b for b in bets if b.get("status") == 0]
@@ -1097,10 +1123,16 @@ class MirrorService:
         self._pending_settlements.clear()
 
         # Notify frontend to refresh bankroll
-        self._notify("settlements_confirmed", {
+        _confirmed_payload = {
             "provider": provider_id,
             "settled": settled,
-        })
+        }
+        self._notify("settlements_confirmed", _confirmed_payload)
+        asyncio.get_event_loop().call_soon_threadsafe(
+            lambda d=_confirmed_payload: asyncio.ensure_future(
+                self.event_router.broadcast_sync("settlement_confirmed", d)
+            )
+        )
         # Reset provider detection so balance re-syncs on next page visit
         self.interceptor.reset_detected_providers()
         # Allow poly settle loop to re-trigger on next provider detection
@@ -1634,6 +1666,11 @@ class MirrorService:
                     "delta": round(delta, 2),
                 }
                 self._notify("balance_synced", event_data)
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda d=event_data: asyncio.ensure_future(
+                        self.event_router.broadcast_sync("balance_update", d)
+                    )
+                )
                 # Positive delta = deposit detected
                 if delta > 0.01:
                     self._notify("deposit_detected", event_data)
@@ -1701,6 +1738,8 @@ class MirrorService:
             f"{toast['event']} @ {toast['odds']} × {toast['stake']}"
         )
         self._notify("bet_mirrored", toast)
+        if recorded:
+            asyncio.ensure_future(self.event_router.broadcast_action("bet_placed", toast))
 
     def _extract_bet_info(self, url: str, body: dict, request_body: str | None) -> dict:
         """Best-effort extraction of bet info from any platform response.

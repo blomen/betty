@@ -17,6 +17,7 @@ import sys
 from typing import Callable, Awaitable
 
 from .recorder import NetworkRecorder
+from .event_router import EventRouter
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class BetInterceptor:
         self._playwright = None
         self._started_at = None
         self.recorder = NetworkRecorder("mirror")
+        self.event_router = EventRouter()
 
         from ..paths import get_data_dir
         self.user_data_dir = get_data_dir() / "mirror_profiles" / "default"
@@ -259,6 +261,19 @@ class BetInterceptor:
         url_lower = url.lower()
         return any(kw in url_lower for kw in self._NOTIFICATION_KEYWORDS)
 
+    def _detect_provider_from_url(self, url: str) -> str | None:
+        """Derive provider_id from a request URL using the known domain map."""
+        try:
+            from urllib.parse import urlparse
+            hostname = urlparse(url).hostname or ""
+            clean = hostname.removeprefix("www.")
+            for domain, provider_id in self._PROVIDER_DOMAINS.items():
+                if clean == domain or clean.endswith("." + domain):
+                    return provider_id
+        except Exception:
+            pass
+        return None
+
     async def _on_response(self, response):
         """Response listener — records everything + filters for bet placements and event data."""
         try:
@@ -266,9 +281,22 @@ class BetInterceptor:
             await self.recorder.record_response(response)
 
             url = response.url
+
+            # Route through EventRouter for SSE streaming
+            category = self.event_router.classify(url, None)
+            if category:
+                try:
+                    body = await response.text()
+                except Exception:
+                    body = ""
+                asyncio.ensure_future(self.event_router.route(
+                    provider_id=self._detect_provider_from_url(url) or "unknown",
+                    category=category,
+                    url=url,
+                    response_body=body,
+                ))
+
             method = response.request.method
-
-
 
             # Cache event data from events-table API responses (Gecko V2)
             if self.on_event_data and "events-table" in url and method == "GET":
