@@ -36,7 +36,7 @@ export default function PlayPage() {
   const mirror = useMirrorStream()
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
-  const [selectedCluster, setSelectedCluster] = useState<string | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -69,11 +69,11 @@ export default function PlayPage() {
   }, [mirror.lastEvent])
 
   const handleStartLoop = async () => {
-    if (!selectedCluster) return
-    const clusterBets = bets.filter(b => (b.cluster || b.provider_id) === selectedCluster)
-    if (clusterBets.length === 0) return
+    if (!selectedProvider) return
+    const provBets = bets.filter(b => b.provider_id === selectedProvider)
+    if (provBets.length === 0) return
     setLoopRunning(true)
-    await api.startPlayLoop(clusterBets, providerBalances)
+    await api.startPlayLoop(provBets, providerBalances)
   }
   const handleStopLoop = () => { api.stopPlayLoop(); setLoopRunning(false) }
   const handlePlace = () => api.placeCurrent()
@@ -164,11 +164,11 @@ export default function PlayPage() {
         <span className="text-green-400 font-mono">+{totalEv.toFixed(0)} kr EV</span>
         <div className="ml-auto flex items-center gap-2">
           {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
-          {selectedCluster && !loopRunning && (
-            <span className="text-[10px] text-amber-400 uppercase">{selectedCluster}</span>
+          {selectedProvider && !loopRunning && (
+            <span className="text-[10px] text-amber-400 uppercase">{selectedProvider}</span>
           )}
           {!loopRunning ? (
-            <button onClick={handleStartLoop} disabled={!selectedCluster}
+            <button onClick={handleStartLoop} disabled={!selectedProvider}
               className="px-2 py-0.5 text-xs bg-green-700 hover:bg-green-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded">
               Start
             </button>
@@ -215,18 +215,9 @@ export default function PlayPage() {
 
           return (
             <div key={clusterId}>
-              {/* Cluster header — click to select */}
-              <div
-                onClick={() => setSelectedCluster(selectedCluster === clusterId ? null : clusterId)}
-                className={`flex items-center gap-3 px-3 py-1 border-b cursor-pointer transition-colors ${
-                  selectedCluster === clusterId
-                    ? 'bg-green-900/30 border-green-700/50 border-l-2 border-l-green-500'
-                    : 'bg-panel2/30 border-zinc-800 hover:bg-panel2/50'
-                }`}
-              >
-                <span className={`text-[10px] font-medium uppercase tracking-wider ${
-                  selectedCluster === clusterId ? 'text-green-400' : 'text-zinc-500'
-                }`}>{clusterId}</span>
+              {/* Cluster header */}
+              <div className="flex items-center gap-3 px-3 py-1 bg-panel2/30 border-b border-zinc-800">
+                <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 <span className="text-[10px] text-zinc-600">{allClusterBets.length} bets · {providerIds.length} providers</span>
                 <span className="text-[10px] text-green-400 ml-auto">+{clusterEv.toFixed(0)} kr EV</span>
               </div>
@@ -237,8 +228,15 @@ export default function PlayPage() {
                 const bal = fmtBal(pid, provBets[0]?.tier || 'soft')
                 return (
                   <div key={pid} className="border-b border-zinc-800">
-                    <div className="flex items-center gap-2 px-3 pl-6 py-1 bg-zinc-900/50 border-b border-zinc-800">
-                      <span className="text-xs font-semibold text-zinc-300 uppercase">{pid}</span>
+                    <div
+                      onClick={() => setSelectedProvider(selectedProvider === pid ? null : pid)}
+                      className={`flex items-center gap-2 px-3 pl-6 py-1 border-b cursor-pointer transition-colors ${
+                        selectedProvider === pid
+                          ? 'bg-green-900/30 border-green-700/50 border-l-2 border-l-green-500'
+                          : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/60'
+                      }`}
+                    >
+                      <span className={`text-xs font-semibold uppercase ${selectedProvider === pid ? 'text-green-400' : 'text-zinc-300'}`}>{pid}</span>
                       <span className="text-xs text-zinc-500">{provBets.length} bets</span>
                       {(balances[pid] ?? 0) > 0 ? (
                         <span className="text-xs text-success">bal {bal}</span>
