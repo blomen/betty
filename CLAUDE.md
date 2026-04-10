@@ -6,36 +6,67 @@ Firev compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to f
 
 **Tech stack:** Python 3.10+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
+## Three Programs
+
+The repo contains three independent programs sharing one codebase:
+
+| Program | Where it runs | What it does | How to start |
+|---------|--------------|--------------|--------------|
+| **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
+| **FirevSports** | Your PC | Local betting client: Play, Pending, Dutch, Bankroll, Stats + Playwright mirror | `firevsports/firevsports.bat` |
+| **FirevStocks** | Your PC | Local trading client: Chart, DQN, Bankroll, Stats + TopstepX | `firevstocks/firevstocks.bat` |
+
+**Server** is a pure compute/data engine — no UI for betting or trading. It runs extraction, analysis, and serves the API.
+
+**FirevSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend with 5 tabs.
+
+**FirevStocks** is the local trading app (managed by a separate agent).
+
 ## Architecture
+
+```
+Hetzner Server (24/7, headless)              Your PC
+├── backend/src/                             ├── firevsports/        # Local betting client
+│   ├── providers/    # 16 extractors        │   ├── server.py       # Thin FastAPI proxy + mirror
+│   ├── pipeline/     # orchestrator         │   ├── mirror/         # Playwright browser + interceptor
+│   ├── analysis/     # scanner, devig       │   │   ├── browser.py  # Browser lifecycle + network interception
+│   ├── matching/     # Fuzzy matching       │   │   ├── play_loop.py    # Automated betting loop
+│   ├── bankroll/     # Kelly sizing         │   │   ├── pending_loop.py # Settlement sync loop
+│   ├── api/          # FastAPI endpoints    │   │   └── workflows/  # Provider DOM automation
+│   └── db/           # PostgreSQL ORM       │   └── frontend/      # React: Play, Pending, Dutch, Bankroll, Stats
+├── frontend/src/     # Server dashboard     │
+│   └── pages/        # Poly, Soft, Pinnacle,├── firevstocks/        # Local trading client (separate agent)
+│                     # Dutch, Bankroll, Stats│   ├── server.py
+└── docker-compose.yml                       │   └── frontend/
+                                             │
+                                             └── SSH tunnel → server API (port 18000)
+```
+
+### Frontends
+
+| Frontend | Location | Purpose | Served by |
+|----------|----------|---------|-----------|
+| **Server dashboard** | `frontend/` | Read-only: Poly, Soft, Pinnacle, Dutch, Bankroll, Stats | Nginx on server |
+| **FirevSports** | `firevsports/frontend/` | Betting: Play, Pending, Dutch, Bankroll, Stats + mirror control | Local FastAPI |
+| **FirevStocks** | `firevstocks/frontend/` | Trading: Chart, DQN, Bankroll, Stats | Local FastAPI |
+
+**The server `frontend/` has NO Play tab.** All betting happens through FirevSports locally.
+
+### Server Backend
 
 ```
 backend/src/
 ├── providers/        # 16 extractors (Kambi, Altenar, Gecko V2, Spectate, Pinnacle, Polymarket, etc.)
-│   ├── mixins/       # RSocket decoding
-│   └── shared/       # Shared provider utilities
-├── pipeline/         # orchestrator, storage, scheduler, pool_manager, circuit_breaker, cache, health, metrics, extraction_report
+├── pipeline/         # orchestrator, storage, scheduler, pool_manager, circuit_breaker, cache, health, metrics
 ├── analysis/         # scanner, value, bonus, devig, ev_enrichment
 ├── matching/         # Event normalization + fuzzy matching
 ├── bankroll/         # Kelly criterion + stake sizing
-├── risk/             # Risk management
-├── repositories/     # Data access abstraction (ProfileRepo, EventRepo, OddsRepo, OpportunityRepo, BetRepo)
-├── services/         # Business logic coordination (OpportunityService, BankrollService, BetService)
-├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile) — ORM only, no business logic
-├── api/              # FastAPI application
-│   └── routes/       # Thin HTTP handlers — delegate to services/repositories
-├── core/             # Transport, exceptions (FirevError hierarchy)
+├── repositories/     # Data access abstraction
+├── services/         # Business logic coordination
+├── db/               # SQLAlchemy models — ORM only
+├── api/              # FastAPI application + routes
 ├── constants.py      # ALLOWED_MARKETS, SHARP_PROVIDERS
-├── paths.py          # Centralized path resolution (env vars for Docker, defaults for dev)
 └── app.py            # Typer CLI
-
-frontend/src/
-├── components/
-│   ├── Terminal/     # TerminalWindow, Sidebar, TabBar, FilterBar, StreamingText, WorkflowPanel, ExtractionProgressBar
-│   │   └── pages/   # ValuePage, SpecialsPage, DutchPage, ReversePage, BetsPage, BankrollPage, StatsPage, ProfilePage, PolymarketPage
-│   └── ErrorBoundary.tsx
-├── contexts/         # WorkflowContext
-├── hooks/            # useBettingContext, useChat, useExtractionStatus, useBankroll, useProfiles, useRisk, useMultiSort, useTableSort
-└── services/         # api.ts
 ```
 
 ## Production Deployment (IMPORTANT — READ FIRST)
@@ -119,8 +150,48 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 The server runs 24/7 without intervention:
 - Extraction scheduler (sharp every 60s, soft every 15min, browser every 8min)
 - Opportunity scanner (after each extraction)
-- Databento market data stream (NQ futures ticks + candles)
 - Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
+
+## FirevSports — Local Betting Client
+
+**Run `firevsports/firevsports.bat` to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
+
+### How It Works
+1. SSH tunnel to server API (port 18000 → Docker backend:8000)
+2. Thin local FastAPI (port 8000): proxies `/api/*` to tunnel, serves frontend, controls Playwright browser
+3. React frontend: Play, Pending, Dutch, Bankroll, Stats tabs
+4. Playwright browser: headed Chromium for bet placement on provider sites
+
+### Play Workflow
+1. Select a funded provider (amber highlight)
+2. Click Start → opens provider site in Playwright browser
+3. Log in on the Playwright browser → detected via DOM balance scrape → green highlight
+4. PlayLoop auto-navigates to bets, auto-fills stakes
+5. User confirms Place/Skip for each bet
+6. Bets recorded to server DB via API proxy
+
+### Key Files
+```
+firevsports/
+├── firevsports.bat       # Windows launcher
+├── launch.py             # SSH tunnel + uvicorn + browser open
+├── server.py             # Thin FastAPI: proxy + mirror router + static
+├── proxy.py              # Reverse proxy to server tunnel
+├── mirror/
+│   ├── browser.py        # Playwright lifecycle + network interception
+│   ├── play_loop.py      # Automated betting state machine
+│   ├── pending_loop.py   # Settlement sync loop
+│   ├── router.py         # /mirror/* endpoints
+│   ├── sse.py            # Local SSE broadcaster
+│   └── workflows/        # Provider DOM automation (copied from backend)
+└── frontend/             # Dedicated React app (NOT the server frontend)
+```
+
+### Frontends (IMPORTANT — read carefully)
+- **`frontend/`** — SERVER dashboard only (Poly, Soft, Pinnacle, Dutch, Bankroll, Stats). Deployed to Hetzner. NO Play tab.
+- **`firevsports/frontend/`** — LOCAL betting client (Play, Pending, Dutch, Bankroll, Stats). Runs on your PC only.
+- **`firevstocks/frontend/`** — LOCAL trading client (separate agent manages this).
+- **Do NOT confuse them.** Changes to betting UI go in `firevsports/frontend/`, not `frontend/`.
 
 ## WHY It's Structured This Way
 
