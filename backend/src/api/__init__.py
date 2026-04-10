@@ -893,7 +893,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # App-level API key auth — defense-in-depth behind nginx basic auth
 _api_key = os.environ.get("FIREV_API_KEY")
-_auth_exempt = {"/health", "/health/live", "/health/ready", "/debug/zones"}
+_auth_exempt = {"/health", "/health/live", "/health/ready", "/debug/zones", "/ws/signals"}
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
