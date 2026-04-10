@@ -1171,11 +1171,18 @@ class OddsBatchProcessor:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.02 * (2 ** attempt)  # 20ms, 40ms = 60ms max total block
+                err_str = str(e).lower()
+                is_retryable = (
+                    "database is locked" in err_str
+                    or "deadlock detected" in err_str
+                )
+                if is_retryable and attempt < max_retries - 1:
+                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms
                     logger.warning(
-                        "OddsBatchProcessor: DB locked on flush (attempt %d/%d), "
-                        "retrying in %.0fms...", attempt + 1, max_retries, wait * 1000
+                        "OddsBatchProcessor: %s on flush (attempt %d/%d), "
+                        "retrying in %.0fms...",
+                        "deadlock" if "deadlock" in err_str else "DB locked",
+                        attempt + 1, max_retries, wait * 1000
                     )
                     self.session.rollback()
                     time.sleep(wait)
