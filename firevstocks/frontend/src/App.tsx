@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useDashboardWS } from './hooks/useDashboardWS'
 import { api } from './hooks/useApi'
 import type { ExpandedSession } from './types'
+import { ChartPage } from './pages/ChartPage'
 
 type Tab = 'chart' | 'dqn' | 'bankroll' | 'stats'
 
@@ -58,7 +59,16 @@ export default function App() {
         )}
       </div>
       <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden p-2">
-        {activeTab === 'chart' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Chart tab — {lastTick ? `Last: ${lastTick.price}` : 'waiting for ticks...'}{session ? ` | VWAP: ${session.session?.vwap?.toFixed(2) ?? '—'}` : ''}</div>}
+        {activeTab === 'chart' && (
+          <ChartPage
+            lastTick={lastTick}
+            session={session}
+            zones={ws.zones}
+            signals={ws.signals}
+            fills={ws.fills}
+            exits={ws.exits}
+          />
+        )}
         {activeTab === 'dqn' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">DQN — {ws.signals.length} signals</div>}
         {activeTab === 'bankroll' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Bankroll — {ws.positions.length} positions</div>}
         {activeTab === 'stats' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Stats tab</div>}
