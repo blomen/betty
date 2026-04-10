@@ -249,11 +249,18 @@ class PlayLoop:
         while elapsed < LOGIN_TIMEOUT:
             try:
                 if await workflow.check_login(page):
+                    self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id})
+                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id}")
                     return True
             except Exception:
                 logger.debug(f"[PlayLoop] check_login() raised for {workflow.provider_id}", exc_info=True)
             await asyncio.sleep(LOGIN_POLL_INTERVAL)
             elapsed += LOGIN_POLL_INTERVAL
+            self._broadcaster.publish("login_waiting", {
+                "provider_id": workflow.provider_id,
+                "elapsed": elapsed,
+                "timeout": LOGIN_TIMEOUT,
+            })
         return False
 
     def _skip_provider(self, provider_id: str) -> None:

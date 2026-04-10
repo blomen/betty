@@ -37,6 +37,7 @@ export default function PlayPage() {
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
+  const [loopStatus, setLoopStatus] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -60,11 +61,18 @@ export default function PlayPage() {
   useEffect(() => {
     if (!mirror.lastEvent) return
     const { type, data } = mirror.lastEvent
-    if (type === 'bet_ready') setCurrentBetReady(data)
-    if (type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed') setCurrentBetReady(null)
+    if (type === 'login_waiting') setLoopStatus(`Waiting for login on ${data.provider_id}... (${Math.round(data.elapsed)}/${data.timeout}s)`)
+    if (type === 'login_detected') setLoopStatus(`Logged in to ${data.provider_id}`)
+    if (type === 'provider_skipped') setLoopStatus(`Skipped ${data.provider_id}: ${data.reason}`)
+    if (type === 'bet_navigated') setLoopStatus(`Navigating to bet...`)
+    if (type === 'bet_ready') { setCurrentBetReady(data); setLoopStatus(null) }
+    if (type === 'bet_placed') { setCurrentBetReady(null); setLoopStatus(`Bet placed`) }
+    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null) }
+    if (type === 'provider_complete') setLoopStatus(`${data.provider_id} done`)
     if (type === 'play_complete' || type === 'play_stopped') {
       setLoopRunning(false)
       setCurrentBetReady(null)
+      setLoopStatus(null)
     }
   }, [mirror.lastEvent])
 
@@ -179,6 +187,7 @@ export default function PlayPage() {
             </button>
           )}
         </div>
+        {loopStatus && <span className="text-xs text-amber-400">{loopStatus}</span>}
         {error && <span className="text-red-400">{error}</span>}
         {!error && batch.length === 0 && <span className="text-zinc-500">Loading...</span>}
       </div>
