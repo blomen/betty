@@ -155,6 +155,8 @@ async def _run(config, topstepx_client, relay, stream):
         record_tick as dash_tick,
         record_quote as dash_quote,
         record_signal as dash_signal,
+        record_fill as dash_fill,
+        record_exit as dash_exit,
         update_zones,
         update_status,
         _state as dash_state,
@@ -163,6 +165,7 @@ async def _run(config, topstepx_client, relay, stream):
     import uvicorn
 
     dash_state["stats"]["session_start"] = time.time()
+    dash_state["topstepx_client"] = topstepx_client
     dash_app = create_dashboard_app()
 
     def _run_dashboard():
@@ -216,6 +219,7 @@ async def _run(config, topstepx_client, relay, stream):
         price = float(fill.get("price", 0))
         size = int(fill.get("size", 1))
         asyncio.create_task(relay.forward_fill(side, price, size, 0.0))
+        dash_fill({"side": side, "price": price, "size": size, "ts": time.time()})
 
     stream.on_tick  = on_tick
     stream.on_fill  = _on_fill

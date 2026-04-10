@@ -8,10 +8,15 @@ import time
 from collections import deque
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 log = logging.getLogger(__name__)
+
+SERVER_URL = "http://127.0.0.1:18000"
+_http = httpx.AsyncClient(timeout=10.0)
 
 # Shared state — populated by the pipeline
 _state = {
@@ -37,10 +42,18 @@ _dashboard_clients: list[WebSocket] = []
 def create_dashboard_app() -> FastAPI:
     app = FastAPI(title="firevstocks Dashboard")
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index():
-        html_path = Path(__file__).parent / "dashboard.html"
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    dist_path = Path(__file__).parent.parent.parent.parent / "firevstocks" / "frontend" / "dist"
+    if dist_path.exists() and (dist_path / "index.html").exists():
+        app.mount("/assets", StaticFiles(directory=dist_path / "assets"), name="assets")
+
+        @app.get("/", response_class=HTMLResponse)
+        async def index():
+            return HTMLResponse((dist_path / "index.html").read_text(encoding="utf-8"))
+    else:
+        @app.get("/", response_class=HTMLResponse)
+        async def index():
+            html_path = Path(__file__).parent / "dashboard.html"
+            return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
     @app.get("/api/state")
     async def get_state():
@@ -53,6 +66,62 @@ def create_dashboard_app() -> FastAPI:
             "positions": _state["positions"],
             "stats": _state["stats"],
         }
+
+    @app.get("/api/candles")
+    async def proxy_candles(interval: str = "5m", days: int = 3, date: str | None = None):
+        params = {"symbol": "NQ", "interval": interval, "days": str(days)}
+        if date:
+            params["date"] = date
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/candles", params=params)
+        return r.json()
+
+    @app.get("/api/session")
+    async def proxy_session():
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/session")
+        return r.json()
+
+    @app.get("/api/session-levels")
+    async def proxy_session_levels(days: int = 5):
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/session-levels",
+                            params={"symbol": "NQ", "days": str(days)})
+        return r.json()
+
+    @app.get("/api/vp/{tf}")
+    async def proxy_vp(tf: str):
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/volume-profile",
+                            params={"symbol": "NQ", "timeframe": tf})
+        return r.json()
+
+    @app.get("/api/vwap")
+    async def proxy_vwap():
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/vwap",
+                            params={"symbol": "NQ", "interval": "1m"})
+        return r.json()
+
+    @app.get("/api/session-tpo")
+    async def proxy_session_tpo():
+        r = await _http.get(f"{SERVER_URL}/api/trading/market/tpo/sessions",
+                            params={"symbol": "NQ"})
+        return r.json()
+
+    @app.get("/api/trades")
+    async def get_trades():
+        client = _state.get("topstepx_client")
+        if not client:
+            return {"trades": []}
+        return await client._post("/api/Trade/search", {
+            "accountId": client._account_id,
+        })
+
+    @app.get("/api/account-info")
+    async def get_account_info():
+        client = _state.get("topstepx_client")
+        if not client:
+            return {}
+        accounts = await client._post("/api/Account/search", {
+            "onlyActiveAccounts": True,
+        })
+        return accounts[0] if accounts else {}
 
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(ws: WebSocket):
@@ -112,6 +181,17 @@ def record_signal(signal: dict) -> None:
     _state["signals"].append(signal)
     _state["stats"]["signal_count"] += 1
     asyncio.create_task(broadcast({"type": "signal", **signal}))
+
+
+def record_fill(fill: dict) -> None:
+    """Called from pipeline when a trade fill occurs."""
+    _state["stats"]["trade_count"] += 1
+    asyncio.create_task(broadcast({"type": "fill", **fill}))
+
+
+def record_exit(exit_info: dict) -> None:
+    """Called from pipeline when a trade exit occurs."""
+    asyncio.create_task(broadcast({"type": "exit", **exit_info}))
 
 
 def update_zones(zones: list) -> None:
