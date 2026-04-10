@@ -4,6 +4,8 @@ import { api } from './hooks/useApi'
 import type { ExpandedSession } from './types'
 import { ChartPage } from './pages/ChartPage'
 import { DQNPage } from './pages/DQNPage'
+import { BankrollPage } from './pages/BankrollPage'
+import { StatsPage } from './pages/StatsPage'
 
 type Tab = 'chart' | 'dqn' | 'bankroll' | 'stats'
 
@@ -73,8 +75,10 @@ export default function App() {
         {activeTab === 'dqn' && (
           <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} />
         )}
-        {activeTab === 'bankroll' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Bankroll — {ws.positions.length} positions</div>}
-        {activeTab === 'stats' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Stats tab</div>}
+        {activeTab === 'bankroll' && (
+          <BankrollPage positions={ws.positions} fills={ws.fills} exits={ws.exits} lastPrice={ws.lastPrice} />
+        )}
+        {activeTab === 'stats' && <StatsPage />}
       </div>
     </div>
   )
