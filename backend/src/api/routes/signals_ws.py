@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -80,11 +81,11 @@ async def signal_relay(ws: WebSocket):
                 if candle_5m:
                     _, closed = candle_5m.update(price, size, ts)
                     if closed:
-                        _persist_candle(ws.app, closed, "5m")
+                        threading.Thread(target=_persist_candle, args=(ws.app, closed, "5m"), daemon=True).start()
                 if candle_1m:
                     _, closed = candle_1m.update(price, size, ts)
                     if closed:
-                        _persist_candle(ws.app, closed, "1m")
+                        threading.Thread(target=_persist_candle, args=(ws.app, closed, "1m"), daemon=True).start()
 
                 # Feed level monitor (triggers zone detection + inference)
                 level_monitor.on_tick(price, size, ts)

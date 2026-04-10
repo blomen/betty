@@ -12,7 +12,7 @@ from src.broker.config import BrokerConfig
 
 @pytest.fixture
 def topstepx_client():
-    cfg = TopstepXConfig(username="test", api_key="key", contract_id="CON.F.US.NQ.M25")
+    cfg = TopstepXConfig(username="test", api_key="key", contract_id="CON.F.US.ENQ.M26")
     client = TopstepXClient(cfg)
     client._token = "test_token"
     client._account_id = 42

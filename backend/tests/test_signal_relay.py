@@ -25,18 +25,19 @@ def _make_relay(topstepx=None):
 
 class TestTickMsg:
     def test_format(self):
-        msg = SignalRelayClient._tick_msg(21345.5, 3, 1712500000.0)
-        assert msg == {"type": "tick", "price": 21345.5, "size": 3, "ts": 1712500000.0}
+        msg = SignalRelayClient._tick_msg(21345.5, 3, 1712500000.0, "B")
+        assert msg == {"type": "tick", "price": 21345.5, "size": 3, "ts": 1712500000.0, "side": "B"}
 
     def test_type_field(self):
-        msg = SignalRelayClient._tick_msg(0.0, 0, 0.0)
+        msg = SignalRelayClient._tick_msg(0.0, 0, 0.0, "B")
         assert msg["type"] == "tick"
 
     def test_values_preserved(self):
-        msg = SignalRelayClient._tick_msg(99999.99, 100, 1.23)
+        msg = SignalRelayClient._tick_msg(99999.99, 100, 1.23, "A")
         assert msg["price"] == 99999.99
         assert msg["size"] == 100
         assert msg["ts"] == 1.23
+        assert msg["side"] == "A"
 
 
 class TestFillMsg:

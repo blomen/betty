@@ -18,14 +18,14 @@ def _make_stream() -> TopstepXStream:
     """Return a stream instance with no real connections."""
     return TopstepXStream(
         token="test-token",
-        contract_id="CON.F.US.NQ.M25",
+        contract_id="CON.F.US.ENQ.M26",
         account_id=99999,
     )
 
 
 TICK_DATA = {
     "price": 21500.25,
-    "size": 3,
+    "volume": 3,
     "timestamp": "2026-04-09T14:30:00Z",
 }
 
@@ -54,12 +54,12 @@ def test_parse_ts_bad_string():
 def test_handle_trade_calls_on_tick():
     stream = _make_stream()
     received = []
-    stream.on_tick = lambda price, size, ts: received.append((price, size, ts))
+    stream.on_tick = lambda price, size, ts, side: received.append((price, size, ts, side))
 
-    stream._handle_trade([TICK_DATA])
+    stream._handle_trades(["CON.F.US.ENQ.M26", [TICK_DATA]])
 
     assert len(received) == 1
-    price, size, ts = received[0]
+    price, size, ts, side = received[0]
     assert price == 21500.25
     assert size == 3
     assert abs(ts - EXPECTED_TS) < 1.0
@@ -71,7 +71,7 @@ def test_handle_trade_ignores_empty():
     stream.on_tick = lambda *a: called.append(a)
 
     # Should not raise and should not call on_tick
-    stream._handle_trade([])
+    stream._handle_trades(["CON.F.US.ENQ.M26", []])
     assert called == []
 
 
@@ -81,7 +81,7 @@ def test_handle_trade_bad_data():
     stream.on_tick = lambda *a: called.append(a)
 
     # Missing required keys — should not raise
-    stream._handle_trade([{"foo": "bar"}])
+    stream._handle_trades(["CON.F.US.ENQ.M26", [{"foo": "bar"}]])
     assert called == []
 
 
@@ -90,8 +90,8 @@ def test_handle_trade_non_dict_arg():
     called = []
     stream.on_tick = lambda *a: called.append(a)
 
-    # First arg is not a dict
-    stream._handle_trade(["not-a-dict"])
+    # First arg is not a dict — trades list contains non-dict
+    stream._handle_trades(["CON.F.US.ENQ.M26", ["not-a-dict"]])
     assert called == []
 
 
@@ -101,7 +101,7 @@ def test_handle_trade_non_dict_arg():
 
 FILL_DATA = {
     "orderId": 42,
-    "contractId": "CON.F.US.NQ.M25",
+    "contractId": "CON.F.US.ENQ.M26",
     "price": 21498.75,
     "size": 1,
     "side": 0,
@@ -137,7 +137,7 @@ def test_no_callback_no_crash_tick():
     stream = _make_stream()
     assert stream.on_tick is None
     # Should not raise
-    stream._handle_trade([TICK_DATA])
+    stream._handle_trades(["CON.F.US.ENQ.M26", [TICK_DATA]])
 
 
 def test_no_callback_no_crash_fill():
@@ -153,7 +153,7 @@ def test_no_callback_no_crash_fill():
 
 def test_handle_position_no_crash():
     stream = _make_stream()
-    stream._handle_position([{"contractId": "CON.F.US.NQ.M25", "netSize": 1}])
+    stream._handle_position([{"contractId": "CON.F.US.ENQ.M26", "netSize": 1}])
 
 
 def test_handle_position_empty_no_crash():
@@ -183,16 +183,16 @@ def stream():
 def test_handle_depth_calls_on_depth(stream):
     depths = []
     stream.on_depth = lambda d: depths.append(d)
-    stream._handle_depth([{"price": 21450.0, "volume": 100, "currentVolume": 50, "type": 0, "timestamp": "2026-04-09T14:30:00Z"}])
+    stream._handle_depth(["CON.F.US.ENQ.M26", [{"price": 21450.0, "volume": 100, "currentVolume": 50, "type": 0, "timestamp": "2026-04-09T14:30:00Z"}]])
     assert len(depths) == 1
     assert depths[0]["price"] == 21450.0
 
 
 def test_handle_depth_ignores_empty(stream):
     stream.on_depth = lambda d: None
-    stream._handle_depth([])  # no crash
+    stream._handle_depth(["CON.F.US.ENQ.M26", []])  # no crash
 
 
 def test_handle_depth_no_callback_no_crash(stream):
     stream.on_depth = None
-    stream._handle_depth([{"price": 21450.0, "volume": 100, "type": 0}])
+    stream._handle_depth(["CON.F.US.ENQ.M26", [{"price": 21450.0, "volume": 100, "type": 0}]])

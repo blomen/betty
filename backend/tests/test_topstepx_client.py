@@ -21,7 +21,7 @@ class TestTopstepXConfig:
         cfg = TopstepXConfig()
         assert cfg.username == ""
         assert cfg.api_key == ""
-        assert cfg.contract_id == "CON.F.US.NQ.M25"
+        assert cfg.contract_id == "CON.F.US.ENQ.M26"
         assert cfg.base_url == "https://api.topstepx.com"
         assert cfg.market_hub_url == "wss://rtc.topstepx.com/hubs/market"
         assert cfg.user_hub_url == "wss://rtc.topstepx.com/hubs/user"
@@ -60,7 +60,7 @@ class TestTopstepXConfig:
             cfg = TopstepXConfig.from_env()
         assert cfg.username == ""
         assert cfg.api_key == ""
-        assert cfg.contract_id == "CON.F.US.NQ.M25"
+        assert cfg.contract_id == "CON.F.US.ENQ.M26"
         assert cfg.max_position == 2
         assert cfg.max_daily_loss == 1000.0
         assert cfg.flatten_et == "15:55"
@@ -185,7 +185,7 @@ class TestTopstepXClientOrders:
         assert sent["side"] == SIDE_BUY
         assert sent["type"] == 2
         assert sent["size"] == 1
-        assert sent["contractId"] == "CON.F.US.NQ.M25"
+        assert sent["contractId"] == "CON.F.US.ENQ.M26"
         await client.close()
 
     @pytest.mark.asyncio
@@ -253,7 +253,7 @@ class TestTopstepXClientOrders:
         url = client._http.post.call_args.args[0]
         assert "/api/Position/closeContract" in url
         sent = client._http.post.call_args.kwargs["json"]
-        assert sent["contractId"] == "CON.F.US.NQ.M25"
+        assert sent["contractId"] == "CON.F.US.ENQ.M26"
         assert sent["accountId"] == 42
         await client.close()
 
@@ -262,7 +262,7 @@ class TestTopstepXClientQueries:
     @pytest.mark.asyncio
     async def test_get_positions_list_response(self):
         client = _make_client()
-        positions = [{"contractId": "CON.F.US.NQ.M25", "netPos": 1}]
+        positions = [{"contractId": "CON.F.US.ENQ.M26", "netPos": 1}]
         resp = _mock_response(positions)
         client._http.post = AsyncMock(return_value=resp)
 
@@ -273,7 +273,7 @@ class TestTopstepXClientQueries:
     @pytest.mark.asyncio
     async def test_get_positions_dict_response(self):
         client = _make_client()
-        positions = [{"contractId": "CON.F.US.NQ.M25", "netPos": -1}]
+        positions = [{"contractId": "CON.F.US.ENQ.M26", "netPos": -1}]
         resp = _mock_response({"positions": positions})
         client._http.post = AsyncMock(return_value=resp)
 

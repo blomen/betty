@@ -142,10 +142,11 @@ class SignalRelayClient:
 
             if stop_price > 0:
                 await self._client.place_stop_order(stop_action, size, stop_price)
-
-            await self.forward_fill(order_action, fill_price, size, stop_price)
         except Exception:
             log.exception("SignalRelay: order execution failed for signal %r", signal)
+            return
+
+        await self.forward_fill(order_action, fill_price, size, stop_price)
 
     # ------------------------------------------------------------------
     # Message factories (static — easy to unit-test)

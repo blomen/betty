@@ -40,7 +40,7 @@ def _parse_ts(ts_str: str) -> float:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         return dt.timestamp()
     except Exception:
-        return time.time()
+        return 0.0
 
 
 class TopstepXStream:

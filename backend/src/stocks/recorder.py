@@ -57,13 +57,21 @@ class MarketRecorder:
     def record_depth(self, depth: dict) -> None:
         """Buffer an L2 depth update for batch insert."""
         from datetime import datetime, timezone
+        ts_raw = depth.get("timestamp")
+        if ts_raw:
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except Exception:
+                ts = datetime.now(timezone.utc)
+        else:
+            ts = datetime.now(timezone.utc)
         with self._lock:
             self._depth_buffer.append({
                 "price": float(depth.get("price", 0)),
                 "volume": int(depth.get("volume", 0)),
                 "current_volume": int(depth.get("currentVolume", 0)),
                 "side": "bid" if depth.get("type") == 0 else "ask",
-                "ts": datetime.now(timezone.utc),
+                "ts": ts,
             })
 
     def _flush_loop(self) -> None:
