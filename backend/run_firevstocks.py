@@ -142,20 +142,24 @@ async def _run(config, topstepx_client, relay, stream):
     # Give relay a moment to connect before starting stream
     await asyncio.sleep(2)
 
-    # 2.5. Start market data recorder
-    from src.stocks.schema import ensure_recording_tables
-    from src.stocks.recorder import MarketRecorder
-    from src.db.models import get_market_session
-
-    ensure_recording_tables(get_market_session)
-    recorder = MarketRecorder(get_market_session)
-    recorder.start()
+    # 2.5. Start market data recorder (optional — pipeline works without DB)
+    recorder = None
+    try:
+        from src.stocks.schema import ensure_recording_tables
+        from src.stocks.recorder import MarketRecorder
+        from src.db.models import get_market_session
+        ensure_recording_tables(get_market_session)
+        recorder = MarketRecorder(get_market_session)
+        recorder.start()
+    except Exception as exc:
+        log.warning("MarketRecorder failed to start (DB not reachable?): %s", exc)
+        log.warning("Continuing without tick recording — signals still work")
 
     # Wire: TopstepX tick -> relay.forward_tick
-    # Stream now uses async websockets -- callbacks run in the event loop directly
     def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
         asyncio.create_task(relay.forward_tick(price, size, ts, side))
-        recorder.record_tick(price, size, ts)
+        if recorder:
+            recorder.record_tick(price, size, ts)
 
     def _on_fill(fill: dict) -> None:
         side = "long" if fill.get("side", 0) == 0 else "short"
@@ -165,7 +169,8 @@ async def _run(config, topstepx_client, relay, stream):
 
     stream.on_tick = on_tick
     stream.on_fill = _on_fill
-    stream.on_depth = recorder.record_depth
+    if recorder:
+        stream.on_depth = recorder.record_depth
 
     # Start stream (async websockets)
     log.info("Starting TopstepX stream...")
@@ -183,7 +188,8 @@ async def _run(config, topstepx_client, relay, stream):
     finally:
         log.info("Shutting down...")
         await stream.stop()
-        recorder.stop()
+        if recorder:
+            recorder.stop()
         relay_task.cancel()
         try:
             await relay_task
