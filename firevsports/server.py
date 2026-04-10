@@ -35,10 +35,7 @@ if os.path.isdir(FRONTEND_DIR):
 @app.on_event("startup")
 async def startup():
     logger.info(f"FirevSports starting — tunnel: {TUNNEL_URL}")
-    try:
-        await browser.start()
-    except Exception:
-        logger.warning("Mirror browser auto-start failed — start manually via /mirror/start")
+    # Browser starts empty — tabs open only when user selects a provider and clicks Start
 
 
 @app.on_event("shutdown")

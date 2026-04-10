@@ -66,6 +66,29 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
     pending_loop = PendingLoop(browser, broadcaster, proxy_url)
 
+    @router.post("/open-provider-tab")
+    async def open_provider_tab(request: Request):
+        """Open a provider's site in a new tab (starts browser if needed)."""
+        body = await request.json()
+        pid = body.get("provider_id", "")
+        if not pid:
+            raise HTTPException(400, "provider_id required")
+        # Start browser if not running
+        if not browser.running:
+            await browser.start()
+        # Check if tab already open
+        workflow = get_workflow(pid)
+        if browser.context:
+            for page in browser.context.pages:
+                if workflow.domain and workflow.domain in page.url:
+                    return {"status": "already_open", "url": page.url, "provider_id": pid}
+        # Open new tab
+        domain = workflow.domain
+        if not domain:
+            raise HTTPException(400, f"No domain for provider {pid}")
+        page = await browser.open_tab(f"https://{domain}")
+        return {"status": "opened", "url": page.url, "provider_id": pid}
+
     @router.get("/browser/tabs")
     async def browser_tabs():
         """Live browser state — which tabs are open, URLs, provider detection."""
@@ -84,14 +107,19 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.get("/browser/provider/{provider_id}")
     async def browser_provider_state(provider_id: str):
-        """Live state of a provider — from intercepted network data."""
+        """Live state of a provider — from intercepted/cached data only. Never opens tabs."""
         if not browser.running or not browser.context:
-            return {"found": False, "reason": "browser_not_running"}
+            return {"found": False, "logged_in": False, "balance": None, "reason": "browser_not_started"}
+        # Check if we have a tab for this provider
         workflow = get_workflow(provider_id)
-        page = await workflow.find_tab(browser.context)
-        if not page:
-            return {"found": False, "reason": "no_tab", "domain": workflow.domain}
-        # Use intercepted data first, fallback to DOM scrape
+        tab_url = None
+        for page in browser.context.pages:
+            if workflow.domain and workflow.domain in page.url:
+                tab_url = page.url
+                break
+        if not tab_url:
+            return {"found": False, "logged_in": False, "balance": None, "domain": workflow.domain}
+        # Use intercepted data, fallback to DOM scrape (no new tabs opened)
         intercepted = browser.provider_data.get(provider_id, {})
         logged_in = intercepted.get("logged_in", False)
         balance = intercepted.get("balance")
@@ -102,7 +130,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         return {
             "found": True,
             "provider_id": provider_id,
-            "url": page.url,
+            "url": tab_url,
             "logged_in": logged_in,
             "balance": balance,
             "domain": workflow.domain,

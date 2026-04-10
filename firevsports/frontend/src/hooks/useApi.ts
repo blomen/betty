@@ -27,6 +27,7 @@ export const api = {
   placeBet: (body: any) => apiFetch<any>('/mirror/place', { method: 'POST', body: JSON.stringify(body) }),
   getMirrorStatus: () => apiFetch<any>('/mirror/status'),
   startMirror: () => apiFetch<any>('/mirror/start', { method: 'POST' }),
+  openTab: (providerId: string) => apiFetch<any>('/mirror/open-provider-tab', { method: 'POST', body: JSON.stringify({ provider_id: providerId }) }),
   // Play loop control
   startPlayLoop: (batch: any[], balances: Record<string, number>) =>
     apiFetch<any>('/mirror/play/start', { method: 'POST', body: JSON.stringify({ batch, balances }) }),

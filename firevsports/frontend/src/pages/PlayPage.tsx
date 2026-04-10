@@ -40,10 +40,18 @@ export default function PlayPage() {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(
     () => localStorage.getItem('firevsports_selected_provider')
   )
-  const selectProvider = (pid: string | null) => {
+  const selectProvider = async (pid: string | null) => {
     setSelectedProvider(pid)
-    if (pid) localStorage.setItem('firevsports_selected_provider', pid)
-    else localStorage.removeItem('firevsports_selected_provider')
+    if (pid) {
+      localStorage.setItem('firevsports_selected_provider', pid)
+      // Start browser if needed and open provider tab
+      try {
+        await api.startMirror()
+        await api.openTab(pid)
+      } catch { /* browser may already be running or tab already open */ }
+    } else {
+      localStorage.removeItem('firevsports_selected_provider')
+    }
   }
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [providerLive, setProviderLive] = useState<any>(null)
