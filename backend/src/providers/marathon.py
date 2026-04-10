@@ -62,8 +62,11 @@ _FULL_BLOCK_RE = re.compile(
 # Regex: extract data-sel JSON blobs from within an event block
 _DATA_SEL_RE = re.compile(r'data-sel=\'({[^\']+})\'')
 
-# Regex: extract data-event-start-time if present
-_START_TIME_RE = re.compile(r'data-event-start-time="([^"]+)"')
+# Regex: extract start time from "score-and-time" div (e.g. "14 Apr 20:00")
+_PREMATCH_TIME_RE = re.compile(
+    r'data-mutable-id="prematch-time"[^>]*>\s*<span>\s*(\d{1,2}\s+\w{3}\s+\d{2}:\d{2})\s*</span>',
+    re.DOTALL,
+)
 
 # Regex: extract league/tree path from data-event-treeName or similar
 _TREE_NAME_RE = re.compile(r'data-event-treeName="([^"]+)"')
@@ -206,9 +209,24 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
     home_team = normalize_team_name(home_raw)
     away_team = normalize_team_name(away_raw) if away_raw else ""
 
-    # Extract start time if present
-    start_match = _START_TIME_RE.search(html_block)
-    start_time = start_match.group(1) if start_match else ""
+    # Extract start time from "score-and-time" div (e.g. "14 Apr 20:00")
+    start_match = _PREMATCH_TIME_RE.search(html_block)
+    start_time = ""
+    if start_match:
+        raw_time = start_match.group(1)  # "14 Apr 20:00"
+        try:
+            from datetime import datetime as _dt
+            # Parse "14 Apr 20:00" → ISO format with current year
+            parsed = _dt.strptime(raw_time, "%d %b %H:%M")
+            now = _dt.utcnow()
+            year = now.year
+            # If month is in the past, assume next year
+            parsed = parsed.replace(year=year)
+            if parsed.month < now.month - 1:
+                parsed = parsed.replace(year=year + 1)
+            start_time = parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, TypeError):
+            start_time = ""
 
     # Extract league from data-event-treeName if present
     tree_match = _TREE_NAME_RE.search(html_block)

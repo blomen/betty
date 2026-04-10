@@ -215,7 +215,7 @@ def parse_event(
         return None
 
     event_id = event.get("id", "")
-    start_time = event.get("startTime", "")
+    start_time = event.get("startTime") or event.get("cutoffTime") or ""
     home_team = normalize_team_name(home_raw)
     away_team = normalize_team_name(away_raw)
     event_name = f"{home_raw} vs {away_raw}"
@@ -320,10 +320,12 @@ class CloudbetRetriever(Retriever):
             if not comp_data:
                 continue
 
+            comp_name = comp_data.get("name", "")
             raw_events = comp_data.get("events") or []
             for raw_event in raw_events:
                 event = parse_event(raw_event, sport, self.provider_id)
                 if event:
+                    event.league = comp_name
                     events.append(event)
                     if limit and len(events) >= limit:
                         break
