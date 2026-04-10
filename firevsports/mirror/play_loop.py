@@ -145,9 +145,18 @@ class PlayLoop:
                     current_provider = provider_id
                     workflow = get_workflow(provider_id)
 
-                    # Find or open the provider tab
+                    # Find existing tab (may have been opened by frontend)
                     self.state = STATE_PROVIDER_OPENING
+                    await asyncio.sleep(1)  # Give time for tab to load
                     page = await workflow.find_tab(self._browser.context) if self._browser.context else None
+
+                    if page is None and self._browser.context:
+                        # Also check by domain directly
+                        domain = workflow.domain
+                        for p in self._browser.context.pages:
+                            if domain and domain in p.url:
+                                page = p
+                                break
 
                     if page is None:
                         domain = workflow.domain
