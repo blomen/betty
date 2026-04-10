@@ -36,7 +36,15 @@ export default function PlayPage() {
   const mirror = useMirrorStream()
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
+  // Persist selection across tab switches
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(
+    () => localStorage.getItem('firevsports_selected_provider')
+  )
+  const selectProvider = (pid: string | null) => {
+    setSelectedProvider(pid)
+    if (pid) localStorage.setItem('firevsports_selected_provider', pid)
+    else localStorage.removeItem('firevsports_selected_provider')
+  }
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [providerLive, setProviderLive] = useState<any>(null)
 
@@ -209,9 +217,11 @@ export default function PlayPage() {
       </div>
 
       {selectedProvider && providerLive && (
-        <div className="flex items-center gap-3 px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/70 text-xs">
+        <div className={`flex items-center gap-3 px-3 py-1.5 border-b text-xs ${
+          providerLive.logged_in ? 'bg-green-900/20 border-green-800/50' : 'bg-amber-900/20 border-amber-800/50'
+        }`}>
           <span className={`w-2 h-2 rounded-full ${providerLive.logged_in ? 'bg-green-500' : providerLive.found ? 'bg-amber-500 animate-pulse' : 'bg-zinc-600'}`} />
-          <span className="text-zinc-300 uppercase font-medium">{selectedProvider}</span>
+          <span className={`uppercase font-medium ${providerLive.logged_in ? 'text-green-400' : 'text-amber-400'}`}>{selectedProvider}</span>
           {providerLive.found ? (
             <>
               <span className="text-zinc-500 truncate max-w-[200px]">{providerLive.url}</span>
@@ -273,14 +283,20 @@ export default function PlayPage() {
                 return (
                   <div key={pid} className="border-b border-zinc-800">
                     <div
-                      onClick={() => setSelectedProvider(selectedProvider === pid ? null : pid)}
+                      onClick={() => selectProvider(selectedProvider === pid ? null : pid)}
                       className={`flex items-center gap-2 px-3 pl-6 py-1 border-b cursor-pointer transition-colors ${
                         selectedProvider === pid
-                          ? 'bg-green-900/30 border-green-700/50 border-l-2 border-l-green-500'
+                          ? providerLive?.logged_in && providerLive?.provider_id === pid
+                            ? 'bg-green-900/30 border-green-700/50 border-l-2 border-l-green-500'
+                            : 'bg-amber-900/30 border-amber-700/50 border-l-2 border-l-amber-500'
                           : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/60'
                       }`}
                     >
-                      <span className={`text-xs font-semibold uppercase ${selectedProvider === pid ? 'text-green-400' : 'text-zinc-300'}`}>{pid}</span>
+                      <span className={`text-xs font-semibold uppercase ${
+                        selectedProvider === pid
+                          ? providerLive?.logged_in && providerLive?.provider_id === pid ? 'text-green-400' : 'text-amber-400'
+                          : 'text-zinc-300'
+                      }`}>{pid}</span>
                       <span className="text-xs text-zinc-500">{provBets.length} bets</span>
                       {(balances[pid] ?? 0) > 0 ? (
                         <span className="text-xs text-success">bal {bal}</span>
