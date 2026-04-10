@@ -1,6 +1,18 @@
-FROM python:3.10-slim AS base
+# ---- Stage 1: Frontend build (Node.js doesn't end up in final image) ----
+FROM node:20-alpine AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+ARG VITE_FIREV_API_KEY=""
+ENV VITE_FIREV_API_KEY=${VITE_FIREV_API_KEY}
+RUN npm run build
 
-# System deps for Playwright headless Chromium
+
+# ---- Stage 2: Backend runtime ----
+FROM python:3.10-slim
+
+# System deps for Playwright/Camoufox headless browsers
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
@@ -8,44 +20,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libasound2 fonts-liberation \
     curl && rm -rf /var/lib/apt/lists/*
 
-# Node.js for frontend build
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Python deps (cached layer — only rebuilds when pyproject.toml changes)
+# Python deps — cached layer, only rebuilds when pyproject.toml changes
+# IMPORTANT: Do NOT copy source code before this — it busts the cache
 COPY pyproject.toml ./
-COPY backend/src/ backend/src/
-RUN pip install --no-cache-dir -e ".[scrape]" && \
-    pip install --no-cache-dir uvloop && \
-    pip install --no-cache-dir scikit-learn joblib lightgbm && \
+RUN mkdir -p backend/src && touch backend/src/__init__.py && \
+    pip install --no-cache-dir -e ".[scrape]" && \
+    pip install --no-cache-dir uvloop scikit-learn joblib lightgbm && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir "camoufox[geoip]" && python -m camoufox fetch
 
-# Playwright browser — install to shared path accessible by non-root user
+# Playwright browser
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 RUN playwright install chromium && playwright install-deps
 
-# Frontend build
-COPY frontend/package.json frontend/package-lock.json frontend/
-RUN cd frontend && npm ci --ignore-scripts
+# Frontend build artifacts (from stage 1 — no node_modules, no Node.js)
+COPY --from=frontend /app/frontend/dist frontend/dist
 
-COPY frontend/ frontend/
-ARG VITE_FIREV_API_KEY=""
-ENV VITE_FIREV_API_KEY=${VITE_FIREV_API_KEY}
-RUN cd frontend && npm run build
-
-# Backend source (refresh — earlier COPY was just for dep install caching)
+# Backend source — this is the LAST layer, so code changes only rebuild this
 COPY backend/ backend/
 
-# Non-root user for runtime security
-RUN useradd -m -u 1000 -s /bin/bash firev
+# Re-install in editable mode now that source exists (fast — deps already cached)
+RUN pip install --no-cache-dir --no-deps -e ".[scrape]"
 
-# Data directories + symlink for RL (CLI resolves from backend/data/rl/)
-RUN mkdir -p /app/data /app/logs /app/models /app/data/rl && \
-    mkdir -p /app/backend/data && \
+# Non-root user
+RUN useradd -m -u 1000 -s /bin/bash firev && \
+    mkdir -p /app/data /app/logs /app/models /app/data/rl /app/backend/data && \
     ln -s /app/data/rl /app/backend/data/rl && \
     chown -R firev:firev /app/data /app/logs /app/models /app/backend/data /app/.playwright && \
     cp -r /root/.cache /home/firev/.cache 2>/dev/null; chown -R firev:firev /home/firev/.cache 2>/dev/null; true

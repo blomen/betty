@@ -115,7 +115,7 @@ backend/src/
 # After pushing to main (full rebuild):
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh rebuild backend"
 
-# For Python-only changes (no rebuild needed):
+# For config/env-only changes (code is baked into Docker image, so Python changes need rebuild too):
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh restart backend"
 
 # Check logs (no lock needed):
