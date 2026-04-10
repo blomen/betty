@@ -563,12 +563,18 @@ def _resolve_event_id(
 
     default_id = generate_canonical_id(event.sport, event.home_team, event.away_team, event.start_time)
 
+    from ..matching.matcher import get_team_match_score
+
     # 1. Exact match on canonical ID — check memory cache first, DB fallback
     sport_events = event_cache.get(event.sport, {})
     if default_id in sport_events:
         return default_id, False
-    if session.query(Event.id).filter(Event.id == default_id).first():
-        return default_id, False
+    # no_autoflush: prevent premature flush during read queries — pending Event
+    # inserts from prior events can conflict with concurrent providers and
+    # poison the session if autoflush triggers here.
+    with session.no_autoflush:
+        if session.query(Event.id).filter(Event.id == default_id).first():
+            return default_id, False
 
     # 2. Fuzzy match against memory cache
     event_date = _extract_date_str(event.start_time)
@@ -813,8 +819,9 @@ def store_provider_event(
 
     final_id = matched_id
 
-    # Create event if doesn't exist
-    db_event = session.query(Event).filter(Event.id == final_id).first()
+    # Create event if doesn't exist (no_autoflush to prevent premature flush)
+    with session.no_autoflush:
+        db_event = session.query(Event).filter(Event.id == final_id).first()
     is_new_event = False
 
     if not db_event:
