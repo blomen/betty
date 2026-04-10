@@ -1121,7 +1121,7 @@ async def health_extraction():
     Returns last 3 extraction runs with per-provider status,
     designed for remote monitoring agents and dashboards.
     """
-    from ..db.extraction import ExtractionRun, ProviderRunMetrics
+    from ..db.models import ExtractionRun, ProviderRunMetrics
     from .deps import get_db
 
     def _query():
