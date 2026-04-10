@@ -21,6 +21,8 @@ export const api = {
   // Bets / Stats
   getOpportunities: () => apiFetch<any>('/api/opportunities'),
   // Mirror (local)
+  getBrowserTabs: () => apiFetch<any>('/mirror/browser/tabs'),
+  getProviderState: (pid: string) => apiFetch<any>(`/mirror/browser/provider/${pid}`),
   navigateBet: (body: any) => apiFetch<any>('/mirror/navigate', { method: 'POST', body: JSON.stringify(body) }),
   placeBet: (body: any) => apiFetch<any>('/mirror/place', { method: 'POST', body: JSON.stringify(body) }),
   getMirrorStatus: () => apiFetch<any>('/mirror/status'),

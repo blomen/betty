@@ -38,6 +38,22 @@ export default function PlayPage() {
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
+  const [providerLive, setProviderLive] = useState<any>(null)
+
+  // Poll live provider state when selected
+  useEffect(() => {
+    if (!selectedProvider) { setProviderLive(null); return }
+    let active = true
+    const poll = async () => {
+      try {
+        const state = await api.getProviderState(selectedProvider)
+        if (active) setProviderLive(state)
+      } catch { /* */ }
+    }
+    poll()
+    const iv = setInterval(poll, 3000)
+    return () => { active = false; clearInterval(iv) }
+  }, [selectedProvider])
 
   const load = useCallback(async () => {
     try {
@@ -191,6 +207,25 @@ export default function PlayPage() {
         {error && <span className="text-red-400">{error}</span>}
         {!error && batch.length === 0 && <span className="text-zinc-500">Loading...</span>}
       </div>
+
+      {selectedProvider && providerLive && (
+        <div className="flex items-center gap-3 px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/70 text-xs">
+          <span className={`w-2 h-2 rounded-full ${providerLive.logged_in ? 'bg-green-500' : providerLive.found ? 'bg-amber-500 animate-pulse' : 'bg-zinc-600'}`} />
+          <span className="text-zinc-300 uppercase font-medium">{selectedProvider}</span>
+          {providerLive.found ? (
+            <>
+              <span className="text-zinc-500 truncate max-w-[200px]">{providerLive.url}</span>
+              {providerLive.logged_in ? (
+                <span className="text-green-400">logged in{providerLive.balance != null ? ` · bal ${Math.round(providerLive.balance)} kr` : ''}</span>
+              ) : (
+                <span className="text-amber-400">waiting for login...</span>
+              )}
+            </>
+          ) : (
+            <span className="text-zinc-600">no tab open{providerLive.domain ? ` (${providerLive.domain})` : ''}</span>
+          )}
+        </div>
+      )}
 
       {currentBetReady && (
         <div className="flex items-center gap-3 px-3 py-2 bg-amber-900/30 border-b border-amber-700/50">

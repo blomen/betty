@@ -66,6 +66,51 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
     pending_loop = PendingLoop(browser, broadcaster, proxy_url)
 
+    @router.get("/browser/tabs")
+    async def browser_tabs():
+        """Live browser state — which tabs are open, URLs, provider detection."""
+        if not browser.running or not browser.context:
+            return {"tabs": []}
+        tabs = []
+        for page in browser.context.pages:
+            url = page.url
+            title = ""
+            try:
+                title = await page.title()
+            except Exception:
+                pass
+            tabs.append({"url": url, "title": title})
+        return {"tabs": tabs}
+
+    @router.get("/browser/provider/{provider_id}")
+    async def browser_provider_state(provider_id: str):
+        """Check live state of a provider tab — URL, logged in, balance."""
+        if not browser.running or not browser.context:
+            return {"found": False, "reason": "browser_not_running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"found": False, "reason": "no_tab", "domain": workflow.domain}
+        logged_in = False
+        balance = None
+        try:
+            logged_in = await workflow.check_login(page)
+        except Exception:
+            pass
+        if logged_in:
+            try:
+                balance = await workflow.sync_balance(page)
+            except Exception:
+                pass
+        return {
+            "found": True,
+            "provider_id": provider_id,
+            "url": page.url,
+            "logged_in": logged_in,
+            "balance": balance,
+            "domain": workflow.domain,
+        }
+
     @router.get("/status")
     async def get_status():
         """Return current browser status: running flag, tab count, open pages."""
