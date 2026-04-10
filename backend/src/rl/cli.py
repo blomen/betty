@@ -1605,7 +1605,7 @@ def backtest(
         typer.echo(f"Loaded GBT model: {gbt_path}")
     elif dqn_path.exists():
         ckpt = torch.load(dqn_path, weights_only=False, map_location="cpu")
-        obs_dim = ckpt["q_network"]["feature_net.0.weight"].shape[1]
+        obs_dim = ckpt["q_network"]["encoder.0.weight"].shape[1]
         network = DQNetwork(input_dim=obs_dim)
         network.load_state_dict(ckpt["q_network"])
         network.eval()

@@ -106,8 +106,8 @@ class LiveInference:
     def _load_dqn(self, path: Path) -> bool:
         try:
             checkpoint = torch.load(path, weights_only=False, map_location="cpu")
-            # Infer input dim from saved weights (handles both 276 base and 292 augmented)
-            first_weight = checkpoint["q_network"]["feature_net.0.weight"]
+            # Infer input dim from saved weights (handles both 276 base and 292+ augmented)
+            first_weight = checkpoint["q_network"]["encoder.0.weight"]
             obs_dim = first_weight.shape[1]
             self._dqn = DQNetwork(input_dim=obs_dim)
             self._dqn.load_state_dict(checkpoint["q_network"])
