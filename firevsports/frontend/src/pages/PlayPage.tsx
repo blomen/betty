@@ -65,7 +65,7 @@ export default function PlayPage() {
     if (type === 'login_detected') setLoopStatus(`Logged in to ${data.provider_id}`)
     if (type === 'provider_skipped') setLoopStatus(`Skipped ${data.provider_id}: ${data.reason}`)
     if (type === 'bet_navigated') setLoopStatus(`Navigating to bet...`)
-    if (type === 'bet_ready') { setCurrentBetReady(data); setLoopStatus(null) }
+    if (type === 'bet_ready') { setCurrentBetReady(data.bet ?? data); setLoopStatus(null) }
     if (type === 'bet_placed') { setCurrentBetReady(null); setLoopStatus(`Bet placed`) }
     if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null) }
     if (type === 'provider_complete') setLoopStatus(`${data.provider_id} done`)

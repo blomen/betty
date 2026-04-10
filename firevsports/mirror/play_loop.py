@@ -245,7 +245,9 @@ class PlayLoop:
 
     async def _wait_for_login(self, workflow, page) -> bool:
         """Poll check_login every LOGIN_POLL_INTERVAL up to LOGIN_TIMEOUT. Returns True if logged in."""
-        elapsed = 0.0
+        # Give page time to load before first check
+        await asyncio.sleep(3)
+        elapsed = 3.0
         while elapsed < LOGIN_TIMEOUT:
             try:
                 if await workflow.check_login(page):
