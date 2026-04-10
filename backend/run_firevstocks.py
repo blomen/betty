@@ -92,7 +92,7 @@ def _start_tunnels() -> bool:
         log.info("SSH tunnels already up (pg=%d, ws=%d)", LOCAL_PG_PORT, LOCAL_WS_PORT)
         return True
 
-    # Discover postgres container IP on server
+    # Discover container IPs on server (port 8000 is only inside Docker, not on host)
     log.info("Opening SSH tunnels to %s...", SERVER)
     try:
         result = subprocess.run(
@@ -104,14 +104,25 @@ def _start_tunnels() -> bool:
     except Exception:
         pg_ip = "172.18.0.2"
 
-    log.info("Tunneling: pg=%s:5432 -> localhost:%d, ws=127.0.0.1:8000 -> localhost:%d",
-             pg_ip, LOCAL_PG_PORT, LOCAL_WS_PORT)
+    # Backend container IP (name may have prefix from Docker conflicts)
+    try:
+        result = subprocess.run(
+            ["ssh", f"root@{SERVER}",
+             "docker compose -f /opt/firev/docker-compose.yml exec -T backend hostname -i"],
+            capture_output=True, text=True, timeout=10,
+        )
+        backend_ip = result.stdout.strip() or "172.18.0.4"
+    except Exception:
+        backend_ip = "172.18.0.4"
+
+    log.info("Tunneling: pg=%s:5432 -> localhost:%d, backend=%s:8000 -> localhost:%d",
+             pg_ip, LOCAL_PG_PORT, backend_ip, LOCAL_WS_PORT)
 
     subprocess.Popen(
         [
             "ssh", "-N",
             "-L", f"{LOCAL_PG_PORT}:{pg_ip}:5432",
-            "-L", f"{LOCAL_WS_PORT}:127.0.0.1:8000",
+            "-L", f"{LOCAL_WS_PORT}:{backend_ip}:8000",
             f"root@{SERVER}",
         ],
         stdout=subprocess.DEVNULL,
