@@ -10,39 +10,44 @@ Priority stack:
 """
 
 import logging
-from dataclasses import dataclass, asdict
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from dataclasses import dataclass
 
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from ..config import get_exchange_rate, get_provider_currency, load_config
 from ..db.models import (
-    Profile, Provider, ProfileProviderBalance, ProfileProviderBonus, Opportunity,
+    Opportunity,
+    Profile,
+    ProfileProviderBalance,
+    ProfileProviderBonus,
+    Provider,
 )
-from ..config import load_config, get_exchange_rate, get_provider_currency
 from ..repositories import ProfileRepo
 
 logger = logging.getLogger(__name__)
 
 # EV retention estimates (conservative)
-FREEBET_EV_RATE = 0.65       # 65% of freebet face value is expected profit
+FREEBET_EV_RATE = 0.65  # 65% of freebet face value is expected profit
 BONUSDEPOSIT_EV_RATE = 0.40  # 40% of bonusdeposit after wagering costs
 
 # Allocation defaults
 DEFAULT_ALLOCATION_CAP_PCT = 0.20  # 20% of total bankroll per provider
-DEFAULT_MIN_DEPOSIT = 100.0        # Minimum deposit amount (SEK)
-LOW_BALANCE_THRESHOLD = 200.0      # Below this = needs top-up for wagering
-WAGERING_TOPUP_AMOUNT = 500.0      # Default top-up amount for wagering
+DEFAULT_MIN_DEPOSIT = 100.0  # Minimum deposit amount (SEK)
+LOW_BALANCE_THRESHOLD = 200.0  # Below this = needs top-up for wagering
+WAGERING_TOPUP_AMOUNT = 500.0  # Default top-up amount for wagering
 
 
 @dataclass
 class AllocationRecommendation:
     provider_id: str
     provider_name: str
-    action: str           # "deposit" | "withdraw"
-    amount: float         # Native currency
-    amount_sek: float     # Normalized to SEK
-    reason: str           # Human-readable explanation
-    priority: int         # 0=withdraw, 1=bonus, 2=wagering, 3=value, 4=spread
-    expected_ev: float    # Expected value in SEK
+    action: str  # "deposit" | "withdraw"
+    amount: float  # Native currency
+    amount_sek: float  # Normalized to SEK
+    reason: str  # Human-readable explanation
+    priority: int  # 0=withdraw, 1=bonus, 2=wagering, 3=value, 4=spread
+    expected_ev: float  # Expected value in SEK
     bonus_type: str | None
     current_balance: float
     current_balance_sek: float
@@ -51,21 +56,22 @@ class AllocationRecommendation:
 @dataclass
 class _ProviderContext:
     """Internal: aggregated provider state for allocation decisions."""
+
     provider_id: str
     provider_name: str
     balance: float
     balance_sek: float
     exchange_rate: float
     currency: str
-    bonus_status: str | None       # "available", "in_progress", "trigger_needed", etc.
-    bonus_type: str | None         # "freebet" or "bonusdeposit"
-    bonus_amount: float            # Face value of bonus
-    bonus_config: dict | None      # From providers.yaml
-    wagering_remaining: float      # wagering_requirement - wagered_amount
-    opp_count: int                 # Active opportunities at this provider
-    opp_avg_edge: float            # Average edge_pct of active opportunities
-    opp_total_edge: float          # Sum of edge_pct (for ranking)
-    allocation_cap: float          # Max SEK to hold at this provider
+    bonus_status: str | None  # "available", "in_progress", "trigger_needed", etc.
+    bonus_type: str | None  # "freebet" or "bonusdeposit"
+    bonus_amount: float  # Face value of bonus
+    bonus_config: dict | None  # From providers.yaml
+    wagering_remaining: float  # wagering_requirement - wagered_amount
+    opp_count: int  # Active opportunities at this provider
+    opp_avg_edge: float  # Average edge_pct of active opportunities
+    opp_total_edge: float  # Sum of edge_pct (for ranking)
+    allocation_cap: float  # Max SEK to hold at this provider
 
 
 class AllocationEngine:
@@ -113,29 +119,34 @@ class AllocationEngine:
             if deposit_sek < DEFAULT_MIN_DEPOSIT:
                 continue
             ev = self._bonus_ev(ctx)
-            recommendations.append(AllocationRecommendation(
-                provider_id=ctx.provider_id,
-                provider_name=ctx.provider_name,
-                action="deposit",
-                amount=round(deposit, 2),
-                amount_sek=round(deposit_sek, 2),
-                reason=self._bonus_reason(ctx),
-                priority=1,
-                expected_ev=round(ev, 2),
-                bonus_type=ctx.bonus_type or (ctx.bonus_config or {}).get("type"),
-                current_balance=ctx.balance,
-                current_balance_sek=ctx.balance_sek,
-            ))
+            recommendations.append(
+                AllocationRecommendation(
+                    provider_id=ctx.provider_id,
+                    provider_name=ctx.provider_name,
+                    action="deposit",
+                    amount=round(deposit, 2),
+                    amount_sek=round(deposit_sek, 2),
+                    reason=self._bonus_reason(ctx),
+                    priority=1,
+                    expected_ev=round(ev, 2),
+                    bonus_type=ctx.bonus_type or (ctx.bonus_config or {}).get("type"),
+                    current_balance=ctx.balance,
+                    current_balance_sek=ctx.balance_sek,
+                )
+            )
             liquid_remaining -= deposit_sek
             ctx.balance += deposit
             ctx.balance_sek += deposit_sek
 
         # Priority 2: Active wagering with low balance
         wagering_providers = sorted(
-            [c for c in contexts
-             if c.bonus_status in ("in_progress", "trigger_needed")
-             and c.balance_sek < LOW_BALANCE_THRESHOLD
-             and c.wagering_remaining > 0],
+            [
+                c
+                for c in contexts
+                if c.bonus_status in ("in_progress", "trigger_needed")
+                and c.balance_sek < LOW_BALANCE_THRESHOLD
+                and c.wagering_remaining > 0
+            ],
             key=lambda c: c.bonus_amount,  # Prioritize larger bonuses
             reverse=True,
         )
@@ -148,28 +159,32 @@ class AllocationEngine:
             if deposit_sek < DEFAULT_MIN_DEPOSIT:
                 continue
             ev = ctx.bonus_amount * BONUSDEPOSIT_EV_RATE * (deposit_sek / max(ctx.wagering_remaining, 1))
-            recommendations.append(AllocationRecommendation(
-                provider_id=ctx.provider_id,
-                provider_name=ctx.provider_name,
-                action="deposit",
-                amount=round(deposit, 2),
-                amount_sek=round(deposit_sek, 2),
-                reason=f"Low balance, {ctx.wagering_remaining:.0f}kr wagering left",
-                priority=2,
-                expected_ev=round(ev, 2),
-                bonus_type=ctx.bonus_type,
-                current_balance=ctx.balance,
-                current_balance_sek=ctx.balance_sek,
-            ))
+            recommendations.append(
+                AllocationRecommendation(
+                    provider_id=ctx.provider_id,
+                    provider_name=ctx.provider_name,
+                    action="deposit",
+                    amount=round(deposit, 2),
+                    amount_sek=round(deposit_sek, 2),
+                    reason=f"Low balance, {ctx.wagering_remaining:.0f}kr wagering left",
+                    priority=2,
+                    expected_ev=round(ev, 2),
+                    bonus_type=ctx.bonus_type,
+                    current_balance=ctx.balance,
+                    current_balance_sek=ctx.balance_sek,
+                )
+            )
             liquid_remaining -= deposit_sek
             ctx.balance += deposit
             ctx.balance_sek += deposit_sek
 
         # Priority 3: Value bet coverage
         value_providers = sorted(
-            [c for c in contexts
-             if c.opp_count > 0
-             and c.bonus_status not in ("available", "in_progress", "trigger_needed")],
+            [
+                c
+                for c in contexts
+                if c.opp_count > 0 and c.bonus_status not in ("available", "in_progress", "trigger_needed")
+            ],
             key=lambda c: c.opp_total_edge,
             reverse=True,
         )
@@ -184,19 +199,21 @@ class AllocationEngine:
                 continue
             deposit = deposit_sek / ctx.exchange_rate
             ev = ctx.opp_avg_edge / 100 * deposit_sek * 0.5  # Conservative: half deployed
-            recommendations.append(AllocationRecommendation(
-                provider_id=ctx.provider_id,
-                provider_name=ctx.provider_name,
-                action="deposit",
-                amount=round(deposit, 2),
-                amount_sek=round(deposit_sek, 2),
-                reason=f"{ctx.opp_count} bets avg {ctx.opp_avg_edge:.1f}% edge",
-                priority=3,
-                expected_ev=round(ev, 2),
-                bonus_type=None,
-                current_balance=ctx.balance,
-                current_balance_sek=ctx.balance_sek,
-            ))
+            recommendations.append(
+                AllocationRecommendation(
+                    provider_id=ctx.provider_id,
+                    provider_name=ctx.provider_name,
+                    action="deposit",
+                    amount=round(deposit, 2),
+                    amount_sek=round(deposit_sek, 2),
+                    reason=f"{ctx.opp_count} bets avg {ctx.opp_avg_edge:.1f}% edge",
+                    priority=3,
+                    expected_ev=round(ev, 2),
+                    bonus_type=None,
+                    current_balance=ctx.balance,
+                    current_balance_sek=ctx.balance_sek,
+                )
+            )
             liquid_remaining -= deposit_sek
             ctx.balance += deposit
             ctx.balance_sek += deposit_sek
@@ -204,7 +221,8 @@ class AllocationEngine:
         # Priority 4: Spread remaining across providers with opportunities
         if liquid_remaining > DEFAULT_MIN_DEPOSIT * 2:
             spread_providers = [
-                c for c in contexts
+                c
+                for c in contexts
                 if c.opp_count > 0
                 and c.balance_sek < c.allocation_cap
                 and not any(r.provider_id == c.provider_id for r in recommendations)
@@ -217,40 +235,46 @@ class AllocationEngine:
                     if deposit_sek < DEFAULT_MIN_DEPOSIT:
                         continue
                     deposit = deposit_sek / ctx.exchange_rate
-                    recommendations.append(AllocationRecommendation(
-                        provider_id=ctx.provider_id,
-                        provider_name=ctx.provider_name,
-                        action="deposit",
-                        amount=round(deposit, 2),
-                        amount_sek=round(deposit_sek, 2),
-                        reason=f"Spread allocation ({ctx.opp_count} opportunities)",
-                        priority=4,
-                        expected_ev=round(ctx.opp_avg_edge / 100 * deposit_sek * 0.3, 2),
-                        bonus_type=None,
-                        current_balance=ctx.balance,
-                        current_balance_sek=ctx.balance_sek,
-                    ))
+                    recommendations.append(
+                        AllocationRecommendation(
+                            provider_id=ctx.provider_id,
+                            provider_name=ctx.provider_name,
+                            action="deposit",
+                            amount=round(deposit, 2),
+                            amount_sek=round(deposit_sek, 2),
+                            reason=f"Spread allocation ({ctx.opp_count} opportunities)",
+                            priority=4,
+                            expected_ev=round(ctx.opp_avg_edge / 100 * deposit_sek * 0.3, 2),
+                            bonus_type=None,
+                            current_balance=ctx.balance,
+                            current_balance_sek=ctx.balance_sek,
+                        )
+                    )
                     liquid_remaining -= deposit_sek
 
         # Priority 0: Withdraw suggestions (idle providers)
         for ctx in contexts:
-            if (ctx.balance_sek > 10
-                    and ctx.opp_count == 0
-                    and ctx.bonus_status not in ("available", "in_progress", "trigger_needed")
-                    and not any(r.provider_id == ctx.provider_id for r in recommendations)):
-                recommendations.append(AllocationRecommendation(
-                    provider_id=ctx.provider_id,
-                    provider_name=ctx.provider_name,
-                    action="withdraw",
-                    amount=round(ctx.balance, 2),
-                    amount_sek=round(ctx.balance_sek, 2),
-                    reason="No active bets or bonus",
-                    priority=0,
-                    expected_ev=0,
-                    bonus_type=None,
-                    current_balance=ctx.balance,
-                    current_balance_sek=ctx.balance_sek,
-                ))
+            if (
+                ctx.balance_sek > 10
+                and ctx.opp_count == 0
+                and ctx.bonus_status not in ("available", "in_progress", "trigger_needed")
+                and not any(r.provider_id == ctx.provider_id for r in recommendations)
+            ):
+                recommendations.append(
+                    AllocationRecommendation(
+                        provider_id=ctx.provider_id,
+                        provider_name=ctx.provider_name,
+                        action="withdraw",
+                        amount=round(ctx.balance, 2),
+                        amount_sek=round(ctx.balance_sek, 2),
+                        reason="No active bets or bonus",
+                        priority=0,
+                        expected_ev=0,
+                        bonus_type=None,
+                        current_balance=ctx.balance,
+                        current_balance_sek=ctx.balance_sek,
+                    )
+                )
 
         # Sort: deposits by priority ASC then EV DESC, withdrawals last
         deposits = [r for r in recommendations if r.action == "deposit"]
@@ -282,26 +306,9 @@ class AllocationEngine:
         }
 
         # Batch query: active opportunities per provider
-        opp_stats = dict(
-            self.db.query(
-                Opportunity.provider1_id,
-                func.count(Opportunity.id),
-                func.avg(Opportunity.edge_pct),
-                func.sum(Opportunity.edge_pct),
-            )
-            .filter(Opportunity.is_active == True, Opportunity.type == "value")
-            .group_by(Opportunity.provider1_id)
-            .all()
-            if self.db.query(
-                Opportunity.provider1_id,
-                func.count(Opportunity.id),
-            ).filter(Opportunity.is_active == True).first()
-            else []
-        )
-
-        # Rebuild as proper dict
+        # Active value opportunities per provider
         opp_data = {}
-        rows = (
+        for pid, count, avg_edge, total_edge in (
             self.db.query(
                 Opportunity.provider1_id,
                 func.count(Opportunity.id),
@@ -311,8 +318,7 @@ class AllocationEngine:
             .filter(Opportunity.is_active == True, Opportunity.type == "value")
             .group_by(Opportunity.provider1_id)
             .all()
-        )
-        for pid, count, avg_edge, total_edge in rows:
+        ):
             opp_data[pid] = (count, avg_edge or 0, total_edge or 0)
 
         contexts = []
@@ -336,23 +342,25 @@ class AllocationEngine:
             # Allocation cap from config or default
             cap = 0  # Will be set to default after total_bankroll is known
 
-            contexts.append(_ProviderContext(
-                provider_id=p.id,
-                provider_name=p.name or p.id,
-                balance=balance,
-                balance_sek=balance * rate,
-                exchange_rate=rate,
-                currency=currency,
-                bonus_status=bonus.bonus_status if bonus else ("available" if bonus_cfg else None),
-                bonus_type=bonus.bonus_type if bonus else None,
-                bonus_amount=bonus.bonus_amount if bonus else (bonus_cfg.get("amount", 0) if bonus_cfg else 0),
-                bonus_config=bonus_cfg,
-                wagering_remaining=wagering_remaining,
-                opp_count=opp_count,
-                opp_avg_edge=opp_avg,
-                opp_total_edge=opp_total,
-                allocation_cap=cap,
-            ))
+            contexts.append(
+                _ProviderContext(
+                    provider_id=p.id,
+                    provider_name=p.name or p.id,
+                    balance=balance,
+                    balance_sek=balance * rate,
+                    exchange_rate=rate,
+                    currency=currency,
+                    bonus_status=bonus.bonus_status if bonus else ("available" if bonus_cfg else None),
+                    bonus_type=bonus.bonus_type if bonus else None,
+                    bonus_amount=bonus.bonus_amount if bonus else (bonus_cfg.get("amount", 0) if bonus_cfg else 0),
+                    bonus_config=bonus_cfg,
+                    wagering_remaining=wagering_remaining,
+                    opp_count=opp_count,
+                    opp_avg_edge=opp_avg,
+                    opp_total_edge=opp_total,
+                    allocation_cap=cap,
+                )
+            )
 
         return contexts
 

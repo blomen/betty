@@ -260,6 +260,21 @@ export interface ProfileUpdate {
   color?: string;
 }
 
+// Fund Allocation
+export interface AllocationRecommendation {
+  provider_id: string;
+  provider_name: string;
+  action: 'deposit' | 'withdraw';
+  amount: number;
+  amount_sek: number;
+  reason: string;
+  priority: number;
+  expected_ev: number;
+  bonus_type: string | null;
+  current_balance: number;
+  current_balance_sek: number;
+}
+
 // Bankroll Exposure
 export interface BankrollExposure {
   total_balance: number;

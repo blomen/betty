@@ -6,11 +6,15 @@ Usage:
     python run_dev.py --reload # with hot reload (mirror disabled on Windows)
 """
 
-import sys
 import asyncio
+import os
+import sys
+
 import uvicorn
 
 if __name__ == "__main__":
+    # Local dev: no extraction scheduler, no trading, no RL — server handles all of that
+    os.environ.setdefault("FIREV_MIRROR_ONLY", "1")
     use_reload = "--reload" in sys.argv
 
     # Windows: ProactorEventLoop supports subprocesses (Playwright mirror).

@@ -59,25 +59,18 @@ export function useBankrollQuery() {
   };
 
   // ─── Mutations ───
-  const adjustBalanceMutation = useMutation({
-    mutationFn: ({ providerId, amount }: { providerId: string; amount: number }) =>
-      api.adjustBalance(providerId, amount),
+  const allocateMutation = useMutation({
+    mutationFn: (liquidAmount: number) => api.allocate(liquidAmount),
     retry: false,
-    onMutate: async ({ providerId, amount }) => {
-      await queryClient.cancelQueries({ queryKey: ['bankroll'] });
-      const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
-      const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
-      optimisticBalanceUpdate(providerId, (b) => b + amount);
-      return { prevInfo, prevExposure };
-    },
-    onError: (_err, _vars, context) => {
-      if (context?.prevInfo) queryClient.setQueryData(['bankroll', 'info'], context.prevInfo);
-      if (context?.prevExposure) queryClient.setQueryData(['bankroll', 'exposure'], context.prevExposure);
-    },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
     },
+  });
+
+  const { data: liquidData } = useQuery({
+    queryKey: ['bankroll', 'liquid'],
+    queryFn: () => api.getLiquidBalance(),
+    staleTime: 60_000,
   });
 
   const setBalanceMutation = useMutation({
@@ -89,35 +82,6 @@ export function useBankrollQuery() {
       const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
       const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
       optimisticBalanceUpdate(providerId, () => balance);
-      return { prevInfo, prevExposure };
-    },
-    onError: (_err, _vars, context) => {
-      if (context?.prevInfo) queryClient.setQueryData(['bankroll', 'info'], context.prevInfo);
-      if (context?.prevExposure) queryClient.setQueryData(['bankroll', 'exposure'], context.prevExposure);
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-    },
-  });
-
-  const transferFundsMutation = useMutation({
-    mutationFn: ({ fromProviderId, toProviderId, amount, withBonus }: {
-      fromProviderId: string; toProviderId: string; amount: number; withBonus?: boolean;
-    }) => api.transferFunds(fromProviderId, toProviderId, amount, withBonus),
-    retry: false,
-    onMutate: async ({ fromProviderId, toProviderId, amount }) => {
-      await queryClient.cancelQueries({ queryKey: ['bankroll'] });
-      const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
-      const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
-      const exp = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
-      const fromProv = exp?.providers.find((p) => p.provider_id === fromProviderId);
-      const toProv = exp?.providers.find((p) => p.provider_id === toProviderId);
-      const sameCurrency = fromProv?.currency && toProv?.currency && fromProv.currency === toProv.currency;
-      if (sameCurrency) {
-        optimisticBalanceUpdate(fromProviderId, (b) => b - amount);
-        optimisticBalanceUpdate(toProviderId, (b) => b + amount);
-      }
       return { prevInfo, prevExposure };
     },
     onError: (_err, _vars, context) => {
@@ -211,9 +175,9 @@ export function useBankrollQuery() {
     } as BankrollExposure,
     isLoading: infoLoading || statsLoading || exposureLoading,
     error: infoError ? (infoError instanceof Error ? infoError.message : 'Failed to load bankroll data') : null,
-    adjustBalance: adjustBalanceMutation,
+    allocate: allocateMutation,
+    liquidBalance: liquidData?.liquid_balance ?? 0,
     setBalance: setBalanceMutation,
-    transferFunds: transferFundsMutation,
     setAllBalances: setAllBalancesMutation,
     resetAllBalances: resetAllBalancesMutation,
     depositWithBonus: depositWithBonusMutation,

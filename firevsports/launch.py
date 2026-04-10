@@ -6,14 +6,13 @@ Kills any previous instance, opens SSH tunnel to production API,
 starts local server, and auto-opens browser.
 """
 
-import sys
-import os
-import subprocess
-import time
 import socket
+import subprocess
+import sys
 import threading
-import webbrowser
+import time
 import urllib.request
+import webbrowser
 
 SERVER = "148.251.40.251"
 TUNNEL_LOCAL_PORT = 18000
@@ -32,14 +31,15 @@ def _kill_port(port: int, label: str):
     try:
         result = subprocess.run(
             ["netstat", "-ano"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.splitlines():
             if f"127.0.0.1:{port}" in line and "LISTENING" in line:
                 pid = line.strip().split()[-1]
                 print(f"[firevsports] Killing old {label} (PID {pid}) on port {port}")
-                subprocess.run(["taskkill", "/PID", pid, "/F"],
-                               capture_output=True, timeout=5)
+                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
                 time.sleep(0.5)
                 return True
     except Exception:
@@ -62,18 +62,34 @@ def _start_tunnel() -> bool:
     # Backend runs inside Docker — resolve container IP
     try:
         result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}",
-             "docker inspect firev-backend-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "ssh",
+                "-o",
+                "ConnectTimeout=5",
+                f"root@{SERVER}",
+                "docker inspect firev-backend-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         backend_ip = result.stdout.strip().strip("'") or "172.18.0.3"
     except Exception:
         backend_ip = "172.18.0.3"
-    print(f"[firevsports] Opening SSH tunnel to {SERVER} → {backend_ip}:{TUNNEL_REMOTE_PORT}...")
+    print(f"[firevsports] Opening SSH tunnel to {SERVER} -> {backend_ip}:{TUNNEL_REMOTE_PORT}...")
 
     proc = subprocess.Popen(
-        ["ssh", "-N", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30",
-         "-L", f"{TUNNEL_LOCAL_PORT}:{backend_ip}:{TUNNEL_REMOTE_PORT}", f"root@{SERVER}"],
+        [
+            "ssh",
+            "-N",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-L",
+            f"{TUNNEL_LOCAL_PORT}:{backend_ip}:{TUNNEL_REMOTE_PORT}",
+            f"root@{SERVER}",
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -128,14 +144,16 @@ def main(open_browser: bool = True):
         try:
             result = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", f"root@{SERVER}", "echo ok"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if result.returncode != 0:
                 print(f"[firevsports] WARNING: Cannot SSH to {SERVER} — will retry tunnel")
             else:
-                print(f"[firevsports] Server reachable")
+                print("[firevsports] Server reachable")
         except subprocess.TimeoutExpired:
-            print(f"[firevsports] WARNING: SSH timed out — will retry tunnel")
+            print("[firevsports] WARNING: SSH timed out — will retry tunnel")
         except FileNotFoundError:
             print("[firevsports] FAILED: ssh not found. Install OpenSSH.")
             input("Press Enter to exit...")
@@ -149,6 +167,7 @@ def main(open_browser: bool = True):
 
     if sys.platform == "win32":
         import asyncio
+
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     # Open browser once server is ready
