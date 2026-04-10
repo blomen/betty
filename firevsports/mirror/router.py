@@ -161,7 +161,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def play_start(req: PlayStartRequest):
         """Load a batch of bets and start the play loop."""
         play_loop.load_batch(req.batch, req.balances)
-        await play_loop.start()
+        play_loop.start()
         return play_loop.get_status()
 
     @router.post("/play/place")

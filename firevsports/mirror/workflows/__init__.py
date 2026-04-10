@@ -57,6 +57,40 @@ _RETRIEVER_TO_PLATFORM = {
 }
 
 
+_FALLBACK_DOMAINS: dict[str, str] = {
+    "polymarket": "polymarket.com",
+    "pinnacle": "pinnacle.se",
+    "betinia": "betinia.se",
+    "quickcasino": "quickcasino.com",
+    "campobet": "campobet.se",
+    "comeon": "comeon.com",
+    "swiper": "swiper.bet",
+    "lodur": "lodurbet.com",
+    "dbet": "dbet.com",
+    "unibet": "unibet.se",
+    "leovegas": "leovegas.se",
+    "expekt": "expekt.se",
+    "betmgm": "betmgm.se",
+    "speedybet": "speedybet.com",
+    "x3000": "x3000.se",
+    "goldenbull": "goldenbull.se",
+    "1x2": "1x2.se",
+    "spelklubben": "spelklubben.com",
+    "betsson": "betsson.se",
+    "nordicbet": "nordicbet.com",
+    "betsafe": "betsafe.se",
+    "hajper": "hajper.com",
+    "interwetten": "interwetten.se",
+    "coolbet": "coolbet.com",
+    "vbet": "vbet.com",
+    "10bet": "10bet.com",
+    "tipwin": "tipwin.se",
+    "mrgreen": "mrgreen.com",
+    "888sport": "888sport.com",
+    "snabbare": "snabbare.com",
+}
+
+
 def get_workflow(provider_id: str) -> ProviderWorkflow:
     """Get the workflow instance for a provider. Cached per provider_id."""
     if provider_id in _WORKFLOW_CACHE:
@@ -75,13 +109,13 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         logger.warning(f"[workflows] config.loader not available — using platform map only")
 
     if provider is None:
+        domain = _FALLBACK_DOMAINS.get(provider_id, "")
         if provider_id in _PLATFORM_MAP:
-            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
             instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
         from .generic import GenericWorkflow
-        instance = GenericWorkflow(provider_id=provider_id, domain="")
+        instance = GenericWorkflow(provider_id=provider_id, domain=domain)
         _WORKFLOW_CACHE[provider_id] = instance
         return instance
 
@@ -92,9 +126,8 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         cls = GenericWorkflow
 
     domain = provider.domain or ""
-    # Fallback domains for providers without explicit domain in config
     if not domain:
-        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
+        domain = _FALLBACK_DOMAINS.get(provider_id, "")
     instance = cls(provider_id=provider_id, domain=domain)
     _WORKFLOW_CACHE[provider_id] = instance
     return instance
