@@ -1,0 +1,55 @@
+const API_BASE = '/api'
+
+async function fetchJson<T>(endpoint: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${endpoint}`)
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`)
+  return res.json()
+}
+
+export const api = {
+  getCandles(interval = '5m', days = 3, date?: string) {
+    const params = new URLSearchParams({ interval, days: String(days) })
+    if (date) params.set('date', date)
+    return fetchJson<import('@/types').CandlesResponse>(`/candles?${params}`)
+  },
+
+  getSession() {
+    return fetchJson<import('@/types').ExpandedSession>('/session')
+  },
+
+  getSessionLevels(days = 5) {
+    return fetchJson<import('@/types').SessionLevelsResponse>(`/session-levels?days=${days}`)
+  },
+
+  getVP(tf: string) {
+    return fetchJson<import('@/types').VPData>(`/vp/${tf}`)
+  },
+
+  getVWAP() {
+    return fetchJson<import('@/types').VWAPResponse>('/vwap')
+  },
+
+  getSessionTPO() {
+    return fetchJson<import('@/types').SessionTPOResponse>('/session-tpo')
+  },
+
+  getState() {
+    return fetchJson<{
+      ticks: Array<{ p: number; s: number; t: number; d: string }>
+      signals: import('@/types').Signal[]
+      quote: import('@/types').Quote | null
+      zones: import('@/types').Zone[]
+      account: import('@/types').Account
+      positions: import('@/types').Position[]
+      stats: { tick_count: number; signal_count: number; trade_count: number; session_start: number | null; relay_connected: boolean; stream_running: boolean }
+    }>('/state')
+  },
+
+  getTrades() {
+    return fetchJson<{ trades?: import('@/types').Trade[] }>('/trades')
+  },
+
+  getAccountInfo() {
+    return fetchJson<import('@/types').Account>('/account-info')
+  },
+}
