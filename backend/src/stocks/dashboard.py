@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -16,16 +17,18 @@ from fastapi.staticfiles import StaticFiles
 log = logging.getLogger(__name__)
 
 SERVER_URL = "http://127.0.0.1:18000"
-_http = httpx.AsyncClient(timeout=10.0)
+_SERVER_API_KEY = os.environ.get("FIREV_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI")
 
 
 async def _proxy(path: str, params: dict | None = None):
     """Proxy GET to server via SSH tunnel. Returns {} on connection failure."""
     try:
-        r = await _http.get(f"{SERVER_URL}{path}", params=params)
-        return r.json()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(f"{SERVER_URL}{path}", params=params,
+                                 headers={"X-API-Key": _SERVER_API_KEY})
+            return r.json()
     except Exception as exc:
-        log.debug("Proxy %s failed: %s", path, exc)
+        log.warning("Proxy %s failed: %s: %s", path, type(exc).__name__, exc)
         return {}
 
 # Shared state — populated by the pipeline
