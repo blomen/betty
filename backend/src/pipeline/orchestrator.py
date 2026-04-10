@@ -1658,8 +1658,21 @@ class ExtractionPipeline:
                             try:
                                 sport_session.commit()
                             except Exception as e:
-                                logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
                                 sport_session.rollback()
+                                err_lower = str(e).lower()
+                                if "deadlock detected" in err_lower:
+                                    import time as _time
+                                    logger.info(f"[{provider_id}] {sport} deadlock on commit, retrying flush+commit...")
+                                    _time.sleep(0.2)
+                                    try:
+                                        odds_batch.flush()
+                                        sport_session.commit()
+                                        logger.info(f"[{provider_id}] {sport} deadlock retry succeeded")
+                                    except Exception as e2:
+                                        logger.warning(f"[{provider_id}] {sport} deadlock retry failed: {e2}")
+                                        sport_session.rollback()
+                                else:
+                                    logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
                         finally:
                             sport_session.close()
 
