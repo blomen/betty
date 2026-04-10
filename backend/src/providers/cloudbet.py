@@ -269,7 +269,7 @@ class CloudbetRetriever(Retriever):
     def _headers(self) -> dict:
         return {"X-API-Key": self._api_key}
 
-    async def extract(self, sport: str, limit: int = 200, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 0, **kwargs) -> List[StandardEvent]:
         """Extract pre-match events for a sport from Cloudbet REST API.
 
         Two-step process:
