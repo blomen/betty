@@ -21,6 +21,7 @@ from .providers.coolbet import CoolbetRetriever
 from .providers.tipwin import TipwinRetriever
 from .providers.stake import StakeRetriever
 from .providers.cloudbet import CloudbetRetriever
+from .providers.marathon import MarathonRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,12 @@ class ExtractorFactory:
             )
         elif retriever_type == "cloudbet":
             retriever = CloudbetRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
+        elif retriever_type == "marathon":
+            retriever = MarathonRetriever(
                 config,
                 circuit_breaker=self._circuit_breaker,
                 rate_limit_config=rate_limit_config,

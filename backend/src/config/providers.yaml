@@ -69,8 +69,8 @@ orchestrator:
       shared_resource: browser
 
     - name: signal_api
-      retriever_types: [stake, cloudbet]
-      max_concurrent: 2                # Both are lightweight REST/GraphQL APIs
+      retriever_types: [stake, cloudbet, marathon]
+      max_concurrent: 3                # All lightweight REST/HTML APIs
       shared_resource: none
 
   # Timeouts — no provider_timeout, direct gost has no connection limit
@@ -859,6 +859,22 @@ providers:
       - boxing
       - esports
 
+  marathon:
+    id: marathon
+    name: Marathonbet
+    domain: marathonbet.com
+    retriever_type: marathon
+    api_base: https://www.marathonbet.com/en/betting
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+
   cloudbet:
     id: cloudbet
     name: Cloudbet
@@ -941,6 +957,7 @@ extraction_scheduling:
     providers:
       - stake
       - cloudbet
+      - marathon
     interval_minutes: 5
     grouped: false
 
@@ -995,6 +1012,7 @@ active:
   # International signal-only providers
   - stake
   - cloudbet
+  - marathon
 
 
 # ============================================================================
