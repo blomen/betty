@@ -77,19 +77,36 @@ frontend/src/
 - `CORS_ORIGINS` — comma-separated allowed origins (e.g. `https://148.251.40.251`)
 
 ### How to Deploy Changes
+
+**IMPORTANT: Always use the deploy script to prevent conflicts between concurrent agents.**
+
 ```bash
-# After pushing to main:
-ssh root@148.251.40.251 "cd /opt/firev && git pull && docker compose up -d --build backend"
+# After pushing to main (full rebuild):
+ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh rebuild backend"
 
 # For Python-only changes (no rebuild needed):
-ssh root@148.251.40.251 "cd /opt/firev && git pull && docker compose restart backend"
+ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh restart backend"
 
-# Check logs:
-ssh root@148.251.40.251 "cd /opt/firev && docker compose logs backend --tail 30"
+# Check logs (no lock needed):
+ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh logs backend 30"
+
+# Check deploy status + containers:
+ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh status"
 
 # Check extraction:
 ssh root@148.251.40.251 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
+
+### Multi-Agent Coordination (IMPORTANT)
+
+Multiple Claude Code agents may work on this repo concurrently. **Follow these rules to avoid conflicts:**
+
+1. **Always check server status before deploying**: Run `server-deploy.sh status` first
+2. **Never run raw `docker compose up/restart/build`** — always use `scripts/server-deploy.sh` which acquires an exclusive `flock`
+3. **Read-only operations are safe concurrently**: logs, status, DB queries, extraction logs
+4. **Destructive operations are serialized by the lock**: rebuild, restart, git pull
+5. **If the lock is held**, wait and retry — don't bypass it
+6. **Coordinate git pushes**: If you're about to push + deploy, check `git log` on the server first to ensure no other agent pushed recently
 
 ### Postgres FK Enforcement
 **PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
