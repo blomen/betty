@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/fire-window", tags=["fire-window"])
 class OpenRequest(BaseModel):
     batch: list[dict]
     provider_order: list[str] | None = None
+    liquid_amount: float | None = None  # Triggers deposit phase with allocation
 
 
 @router.post("/open")
@@ -24,10 +25,13 @@ async def open_fire_window(request: OpenRequest):
     Opens tabs for providers with:
     - Balance > 0 (can place bets), OR
     - Pending bets where start_time has passed (can settle → free cash)
+
+    If liquid_amount is provided, runs the allocator and includes deposit
+    recommendations in the response (deposit phase before betting).
     """
     if not request.batch:
         raise HTTPException(400, "Empty batch")
-    result = fw.open_window(request.batch, request.provider_order)
+    result = fw.open_window(request.batch, request.provider_order, request.liquid_amount)
 
     # Auto-open tabs for providers that need action
     mirror = _get_active_mirror()
@@ -41,6 +45,15 @@ async def open_fire_window(request: OpenRequest):
 
     return result
 
+
+@router.post("/deposit-phase/complete")
+def complete_deposit_phase():
+    """Mark deposit phase as done; window is ready for betting."""
+    window = fw.get_window()
+    if not window:
+        raise HTTPException(400, "No fire window open")
+    window.deposit_phase_complete = True
+    return {"status": "ready_for_betting"}
 
 
 @router.post("/activate/{provider_id}")

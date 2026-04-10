@@ -460,6 +460,23 @@ class BankrollService:
                 return f"Deposit up to {amt}kr for matched bonus"
         return ""
 
+    def allocate(self, liquid_amount: float) -> list[dict]:
+        """Run allocation engine and return recommendations. Persists liquid_balance."""
+        from dataclasses import asdict
+        from ..bankroll.allocator import AllocationEngine
+
+        profile = self.profile_repo.get_active()
+        profile.liquid_balance = liquid_amount
+        self.db.commit()
+
+        engine = AllocationEngine(self.db, profile)
+        return [asdict(r) for r in engine.allocate(liquid_amount)]
+
+    def get_liquid_balance(self) -> float:
+        """Return last-known liquid balance from profile."""
+        profile = self.profile_repo.get_active()
+        return profile.liquid_balance or 0.0
+
     @staticmethod
     def reset_calculators(profile_id: int | None = None):
         """Reset stake calculator cache (forces reload from DB on next use)."""

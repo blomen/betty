@@ -401,6 +401,7 @@ class Profile(Base):
     # Bankroll for this profile
     bankroll = Column(Float, default=1000.0)
     currency = Column(String, default="USD")
+    liquid_balance = Column(Float, default=0.0)  # Cash in bank (not at any provider)
 
     # Kelly criterion
     kelly_fraction = Column(Float, default=0.75)    # Dynamic Kelly scales 0.25-0.75 based on edge

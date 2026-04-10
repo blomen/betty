@@ -59,6 +59,8 @@ class FireWindow:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "ready"  # ready | active | firing | complete
     fired_results: dict[str, dict] = field(default_factory=dict)
+    deposit_recommendations: list[dict] = field(default_factory=list)
+    deposit_phase_complete: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -178,12 +180,16 @@ def _resolve_provider_meta(provider_bets: dict[str, list[FireWindowBet]]) -> Non
 def open_window(
     batch: list[dict],
     provider_order: list[str] | None = None,
+    liquid_amount: float | None = None,
 ) -> dict:
     """Create the FireWindow singleton from a list of BatchBet dicts.
 
     Groups bets by provider, resolves Polymarket metadata from the DB,
     and orders providers: polymarket first, pinnacle second, then soft
     providers sorted by total EV descending.
+
+    If liquid_amount is provided, runs the allocation engine and stores
+    deposit recommendations in the window (deposit phase before betting).
 
     Returns the queue response dict.
     """
@@ -242,6 +248,20 @@ def open_window(
         provider_queue=provider_order,
         provider_bets=provider_bets,
     )
+
+    # Run allocator if liquid amount provided (deposit phase before betting)
+    if liquid_amount is not None and liquid_amount > 0:
+        try:
+            from ..db.models import get_session
+            from ..services.bankroll_service import BankrollService
+            db = get_session()
+            try:
+                service = BankrollService(db)
+                _window.deposit_recommendations = service.allocate(liquid_amount)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[FireWindow] Allocator failed: {e}")
 
     return _build_queue_response()
 
@@ -327,11 +347,17 @@ def _build_queue_response() -> dict:
             "fired": fired,
         })
 
-    return {
+    result = {
         "status": _window.status,
         "current_provider": _window.current_provider,
         "queue": queue,
     }
+    if _window.deposit_recommendations:
+        result["deposit_phase"] = {
+            "recommendations": _window.deposit_recommendations,
+            "complete": _window.deposit_phase_complete,
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------

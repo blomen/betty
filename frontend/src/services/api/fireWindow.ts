@@ -64,14 +64,21 @@ export interface FireResult {
 }
 
 export const fireWindowApi = {
-  open(batch: any[], providerOrder?: string[]) {
-    return fetchJson<{ status: string; queue: ProviderQueueItem[]; current_provider: string | null }>(
+  open(batch: any[], providerOrder?: string[], liquidAmount?: number) {
+    return fetchJson<{ status: string; queue: ProviderQueueItem[]; current_provider: string | null; deposit_phase?: { recommendations: any[]; complete: boolean } }>(
       '/fire-window/open',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batch, provider_order: providerOrder }),
+        body: JSON.stringify({ batch, provider_order: providerOrder, liquid_amount: liquidAmount }),
       },
+    );
+  },
+
+  completeDepositPhase() {
+    return fetchJson<{ status: string }>(
+      '/fire-window/deposit-phase/complete',
+      { method: 'POST' },
     );
   },
 

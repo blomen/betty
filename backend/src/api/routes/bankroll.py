@@ -9,7 +9,7 @@ from ...services import BankrollService
 from ...repositories import ProfileRepo
 from ...db.models import Provider, ProfileProviderBonus
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceAdjustment, BalanceSet, DepositRequest, TransferRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
+from ..schemas import BulkBalanceUpdate, BalanceSet, DepositRequest, AllocateRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
 from .providers import load_provider_bonuses
 
 router = APIRouter(prefix="/api/bankroll", tags=["bankroll"])
@@ -95,94 +95,22 @@ def set_balance(
     }
 
 
-@router.post("/adjust/{provider_id}")
-def adjust_balance(
-    provider_id: str,
-    data: BalanceAdjustment,
-    db: Session = Depends(get_db),
+@router.post("/allocate")
+def allocate_funds(
+    data: AllocateRequest,
+    service: BankrollService = Depends(_get_service),
 ):
-    """Add or subtract from provider balance for active profile."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    provider = db.query(Provider).filter(Provider.id == provider_id).first()
-    if not provider:
-        raise HTTPException(404, f"Provider {provider_id} not found")
-
-    old_balance = profile_repo.get_balance(profile.id, provider_id)
-    new_balance = profile_repo.adjust_balance(profile.id, provider_id, data.amount)
-    db.commit()
-
-    return {
-        "success": True,
-        "profile_id": profile.id,
-        "provider_id": provider_id,
-        "old_balance": old_balance,
-        "adjustment": data.amount,
-        "new_balance": new_balance,
-    }
+    """Given liquid amount, return optimal allocation recommendations."""
+    if data.liquid_amount < 0:
+        raise HTTPException(400, "liquid_amount must be non-negative")
+    recommendations = service.allocate(data.liquid_amount)
+    return {"recommendations": recommendations, "liquid_amount": data.liquid_amount}
 
 
-@router.post("/transfer")
-def transfer_funds(data: TransferRequest, db: Session = Depends(get_db)):
-    """Transfer funds between two providers for active profile."""
-    if data.amount <= 0:
-        raise HTTPException(400, "Transfer amount must be positive")
-    if data.from_provider_id == data.to_provider_id:
-        raise HTTPException(400, "Cannot transfer to the same provider")
-
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    # Verify both providers exist
-    from_provider = db.query(Provider).filter(Provider.id == data.from_provider_id).first()
-    if not from_provider:
-        raise HTTPException(404, f"Source provider {data.from_provider_id} not found")
-    to_provider = db.query(Provider).filter(Provider.id == data.to_provider_id).first()
-    if not to_provider:
-        raise HTTPException(404, f"Destination provider {data.to_provider_id} not found")
-
-    # Check sufficient balance
-    from_balance = profile_repo.get_balance(profile.id, data.from_provider_id)
-    if from_balance < data.amount:
-        raise HTTPException(
-            400,
-            f"Insufficient balance: {from_balance:.2f} available, {data.amount:.2f} required",
-        )
-
-    # Deduct from source
-    from_new = profile_repo.adjust_balance(profile.id, data.from_provider_id, -data.amount)
-
-    # Add to destination — with or without bonus
-    bonus_claimed = 0.0
-    bonus_status = None
-    bonus_type = None
-    if data.with_bonus:
-        service = BankrollService(db)
-        deposit_result = service.deposit_with_bonus(data.to_provider_id, data.amount)
-        if deposit_result:
-            to_new = deposit_result["new_balance"]
-            bonus_claimed = deposit_result.get("bonus_claimed", 0.0)
-            bonus_status = deposit_result.get("bonus_status")
-            bonus_type = deposit_result.get("bonus_type")
-        else:
-            to_new = profile_repo.adjust_balance(profile.id, data.to_provider_id, data.amount)
-    else:
-        to_new = profile_repo.adjust_balance(profile.id, data.to_provider_id, data.amount)
-
-    db.commit()
-
-    return {
-        "success": True,
-        "from_provider_id": data.from_provider_id,
-        "to_provider_id": data.to_provider_id,
-        "amount": data.amount,
-        "from_new_balance": from_new,
-        "to_new_balance": to_new,
-        "bonus_claimed": bonus_claimed,
-        "bonus_status": bonus_status,
-        "bonus_type": bonus_type,
-    }
+@router.get("/liquid")
+def get_liquid_balance(service: BankrollService = Depends(_get_service)):
+    """Get last-stored liquid balance for the active profile."""
+    return {"liquid_balance": service.get_liquid_balance()}
 
 
 @router.post("/deposit/{provider_id}")

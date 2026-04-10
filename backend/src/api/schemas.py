@@ -28,10 +28,6 @@ class BulkBalanceUpdate(BaseModel):
     provider_ids: Optional[list[str]] = None  # If None, updates all enabled providers
 
 
-class BalanceAdjustment(BaseModel):
-    amount: float  # Can be positive (add) or negative (subtract)
-
-
 class BalanceSet(BaseModel):
     balance: float  # Absolute balance to set
 
@@ -40,11 +36,8 @@ class DepositRequest(BaseModel):
     amount: float  # Deposit amount (positive)
 
 
-class TransferRequest(BaseModel):
-    from_provider_id: str
-    to_provider_id: str
-    amount: float  # Transfer amount (positive)
-    with_bonus: bool = False  # Claim bonus on destination provider
+class AllocateRequest(BaseModel):
+    liquid_amount: float  # Cash in bank to allocate across providers
 
 
 class BonusTransitionRequest(BaseModel):

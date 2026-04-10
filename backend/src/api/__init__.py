@@ -66,6 +66,21 @@ async def lifespan(app: FastAPI):
     _startup_time = time.time()
     await asyncio.to_thread(init_db)
 
+    # Add new columns to existing Postgres tables (create_all only makes new tables)
+    def _pg_migrations():
+        from ..db.models import get_engine
+        from sqlalchemy import text, inspect
+        engine = get_engine()
+        insp = inspect(engine)
+        cols = {c["name"] for c in insp.get_columns("profiles")}
+        if "liquid_balance" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE profiles ADD COLUMN liquid_balance FLOAT DEFAULT 0.0"))
+    try:
+        await asyncio.to_thread(_pg_migrations)
+    except Exception:
+        pass  # Column already exists or SQLite (handled by _run_migrations)
+
     # Clear any stale fire window from previous session
     from ..services.fire_window import close_window
     close_window()

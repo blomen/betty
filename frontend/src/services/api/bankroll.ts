@@ -1,4 +1,4 @@
-import type { BankrollInfo, BankrollStats, BankrollExposure } from '@/types';
+import type { BankrollInfo, BankrollStats, BankrollExposure, AllocationRecommendation } from '@/types';
 import { fetchJson } from './client';
 
 export const bankrollApi = {
@@ -38,21 +38,19 @@ export const bankrollApi = {
     });
   },
 
-  async adjustBalance(
-    providerId: string,
-    amount: number
-  ): Promise<{
-    success: boolean;
-    provider_id: string;
-    old_balance: number;
-    adjustment: number;
-    new_balance: number;
+  async allocate(liquidAmount: number): Promise<{
+    recommendations: AllocationRecommendation[];
+    liquid_amount: number;
   }> {
-    return fetchJson(`/bankroll/adjust/${providerId}`, {
+    return fetchJson('/bankroll/allocate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount }),
+      body: JSON.stringify({ liquid_amount: liquidAmount }),
     });
+  },
+
+  async getLiquidBalance(): Promise<{ liquid_balance: number }> {
+    return fetchJson('/bankroll/liquid');
   },
 
   async setBalance(
@@ -68,34 +66,6 @@ export const bankrollApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ balance }),
-    });
-  },
-
-  async transferFunds(
-    fromProviderId: string,
-    toProviderId: string,
-    amount: number,
-    withBonus = false
-  ): Promise<{
-    success: boolean;
-    from_provider_id: string;
-    to_provider_id: string;
-    amount: number;
-    from_new_balance: number;
-    to_new_balance: number;
-    bonus_claimed: number;
-    bonus_status: string | null;
-    bonus_type: string | null;
-  }> {
-    return fetchJson('/bankroll/transfer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from_provider_id: fromProviderId,
-        to_provider_id: toProviderId,
-        amount,
-        with_bonus: withBonus,
-      }),
     });
   },
 
