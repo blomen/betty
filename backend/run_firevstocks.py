@@ -20,21 +20,21 @@ Security:
   - Uses existing SSH key for auth
 """
 
-import sys
-import os
 import asyncio
-import subprocess
-import time
-import socket
 import logging
+import os
+import socket
+import subprocess
+import sys
+import time
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Point DB at production via SSH tunnel (local SQLite doesn't have recording tables)
+# DB URLs are set AFTER SSH tunnel is confirmed up (see _start_tunnels)
+# Setting them here would cause import-time DB connections to fail if tunnel isn't ready
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "Skf8vRY3L26lAL4IhCge2V0tZBe7mnZn")
-os.environ.setdefault("DATABASE_URL", f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:15432/firev")
-os.environ.setdefault("MARKET_DATABASE_URL", f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:15432/market")
 
 SERVER = "148.251.40.251"
 LOCAL_PG_PORT = 15432
@@ -48,6 +48,7 @@ log = logging.getLogger("firevstocks")
 # Port / process helpers
 # ---------------------------------------------------------------------------
 
+
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
@@ -58,14 +59,15 @@ def _kill_port(port: int, label: str) -> bool:
     try:
         result = subprocess.run(
             ["netstat", "-ano"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.splitlines():
             if f"127.0.0.1:{port}" in line and "LISTENING" in line:
                 pid = line.strip().split()[-1]
                 log.info("Killing old %s (PID %s) on port %d", label, pid, port)
-                subprocess.run(["taskkill", "/PID", pid, "/F"],
-                               capture_output=True, timeout=5)
+                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
                 time.sleep(0.5)
                 return True
     except Exception:
@@ -82,6 +84,7 @@ def _cleanup_old_instance():
 # SSH tunnel
 # ---------------------------------------------------------------------------
 
+
 def _start_tunnels() -> bool:
     """Open SSH tunnels for postgres and the server backend WS. Returns True if ready."""
     # Check if PG tunnel already healthy
@@ -96,9 +99,14 @@ def _start_tunnels() -> bool:
     log.info("Opening SSH tunnels to %s...", SERVER)
     try:
         result = subprocess.run(
-            ["ssh", f"root@{SERVER}",
-             "docker inspect firev-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "ssh",
+                f"root@{SERVER}",
+                "docker inspect firev-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         pg_ip = result.stdout.strip().strip("'") or "172.18.0.2"
     except Exception:
@@ -107,22 +115,31 @@ def _start_tunnels() -> bool:
     # Backend container IP (name may have prefix from Docker conflicts)
     try:
         result = subprocess.run(
-            ["ssh", f"root@{SERVER}",
-             "docker compose -f /opt/firev/docker-compose.yml exec -T backend hostname -i"],
-            capture_output=True, text=True, timeout=10,
+            ["ssh", f"root@{SERVER}", "docker compose -f /opt/firev/docker-compose.yml exec -T backend hostname -i"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         backend_ip = result.stdout.strip() or "172.18.0.4"
     except Exception:
         backend_ip = "172.18.0.4"
 
-    log.info("Tunneling: pg=%s:5432 -> localhost:%d, backend=%s:8000 -> localhost:%d",
-             pg_ip, LOCAL_PG_PORT, backend_ip, LOCAL_WS_PORT)
+    log.info(
+        "Tunneling: pg=%s:5432 -> localhost:%d, backend=%s:8000 -> localhost:%d",
+        pg_ip,
+        LOCAL_PG_PORT,
+        backend_ip,
+        LOCAL_WS_PORT,
+    )
 
     subprocess.Popen(
         [
-            "ssh", "-N",
-            "-L", f"{LOCAL_PG_PORT}:{pg_ip}:5432",
-            "-L", f"{LOCAL_WS_PORT}:{backend_ip}:8000",
+            "ssh",
+            "-N",
+            "-L",
+            f"{LOCAL_PG_PORT}:{pg_ip}:5432",
+            "-L",
+            f"{LOCAL_WS_PORT}:{backend_ip}:8000",
             f"root@{SERVER}",
         ],
         stdout=subprocess.DEVNULL,
@@ -134,6 +151,9 @@ def _start_tunnels() -> bool:
         time.sleep(0.5)
         if _port_in_use(LOCAL_PG_PORT) and _port_in_use(LOCAL_WS_PORT):
             log.info("SSH tunnels ready (pg=%d, ws=%d)", LOCAL_PG_PORT, LOCAL_WS_PORT)
+            # Now safe to set DB URLs — tunnel is up
+            os.environ["DATABASE_URL"] = f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/firev"
+            os.environ["MARKET_DATABASE_URL"] = f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/market"
             return True
 
     log.error("SSH tunnels failed to start within 15s")
@@ -144,25 +164,37 @@ def _start_tunnels() -> bool:
 # Main async loop
 # ---------------------------------------------------------------------------
 
-async def _run(config, topstepx_client, relay, stream):
+
+async def _run(config, topstepx_client, relay, stream, adapter):
     """Wire everything together and run until interrupted."""
 
     # ------------------------------------------------------------------
     # Start local dashboard server (port 8001)
     # ------------------------------------------------------------------
+    import threading
+
+    import uvicorn
+
     from src.stocks.dashboard import (
-        create_dashboard_app,
-        record_tick as dash_tick,
-        record_quote as dash_quote,
-        record_signal as dash_signal,
-        record_fill as dash_fill,
-        record_exit as dash_exit,
-        update_zones,
-        update_status,
         _state as dash_state,
     )
-    import threading
-    import uvicorn
+    from src.stocks.dashboard import (
+        create_dashboard_app,
+        update_status,
+        update_zones,
+    )
+    from src.stocks.dashboard import (
+        record_fill as dash_fill,
+    )
+    from src.stocks.dashboard import (
+        record_quote as dash_quote,
+    )
+    from src.stocks.dashboard import (
+        record_signal as dash_signal,
+    )
+    from src.stocks.dashboard import (
+        record_tick as dash_tick,
+    )
 
     dash_state["stats"]["session_start"] = time.time()
     dash_state["topstepx_client"] = topstepx_client
@@ -181,6 +213,7 @@ async def _run(config, topstepx_client, relay, stream):
 
     def _open_browser():
         import webbrowser
+
         time.sleep(3)
         webbrowser.open(f"http://127.0.0.1:{LOCAL_DASHBOARD_PORT}")
 
@@ -197,9 +230,10 @@ async def _run(config, topstepx_client, relay, stream):
     # 2.5. Start market data recorder (optional — pipeline works without DB)
     recorder = None
     try:
-        from src.stocks.schema import ensure_recording_tables
-        from src.stocks.recorder import MarketRecorder
         from src.db.models import get_market_session
+        from src.stocks.recorder import MarketRecorder
+        from src.stocks.schema import ensure_recording_tables
+
         ensure_recording_tables(get_market_session)
         recorder = MarketRecorder(get_market_session)
         recorder.start()
@@ -218,35 +252,44 @@ async def _run(config, topstepx_client, relay, stream):
         side = "long" if fill.get("side", 0) == 0 else "short"
         price = float(fill.get("price", 0))
         size = int(fill.get("size", 1))
+        # Update adapter tracker with real fill price
+        adapter.on_stream_fill(fill)
+        # Forward to server and dashboard
         asyncio.create_task(relay.forward_fill(side, price, size, 0.0))
         dash_fill({"side": side, "price": price, "size": size, "ts": time.time()})
 
-    stream.on_tick  = on_tick
-    stream.on_fill  = _on_fill
+    stream.on_tick = on_tick
+    stream.on_fill = _on_fill
     stream.on_quote = dash_quote  # forward quotes to dashboard
     if recorder:
         stream.on_depth = recorder.record_depth
 
     # Wire relay callbacks -> dashboard
-    relay.on_signal      = dash_signal
+    relay.on_signal = dash_signal
     relay.on_zone_update = lambda msg: update_zones(msg.get("zones", []))
 
     # Start stream (async websockets)
     log.info("Starting TopstepX stream...")
     await stream.start()
 
+    # Start EOD flatten scheduler (15:55 ET by default)
+    from src.broker.flatten_scheduler import FlattenScheduler
+
+    flatten_scheduler = FlattenScheduler(adapter, config.flatten_et)
+    flatten_scheduler.start()
+    log.info("FlattenScheduler started (flatten at %s ET)", config.flatten_et)
+
     # Keep-alive loop
     try:
         while True:
             await asyncio.sleep(30)
             update_status(relay.is_connected, stream._running)
-            log.info("Relay connected=%s | stream running=%s",
-                     relay.is_connected,
-                     stream._running)
+            log.info("Relay connected=%s | stream running=%s", relay.is_connected, stream._running)
     except asyncio.CancelledError:
         pass
     finally:
         log.info("Shutting down...")
+        flatten_scheduler.stop()
         await stream.stop()
         if recorder:
             recorder.stop()
@@ -261,9 +304,9 @@ async def _run(config, topstepx_client, relay, stream):
 
 async def main():
     from src.stocks.config import TopstepXConfig
+    from src.stocks.signal_relay import SignalRelayClient
     from src.stocks.topstepx_client import TopstepXClient
     from src.stocks.topstepx_stream import TopstepXStream
-    from src.stocks.signal_relay import SignalRelayClient
 
     config = TopstepXConfig.from_env()
 
@@ -286,7 +329,9 @@ async def main():
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", f"root@{SERVER}", "echo ok"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode != 0:
             log.warning("Cannot SSH to %s -- proceeding anyway", SERVER)
@@ -312,8 +357,12 @@ async def main():
 
     log.info("TopstepX authenticated")
 
-    # Build relay and stream
-    relay = SignalRelayClient(config.server_ws_url, client)
+    # Build adapter with risk checks, then relay with adapter
+    from src.stocks.broker_adapter import TopstepXBrokerAdapter
+
+    adapter = TopstepXBrokerAdapter(client, config)
+
+    relay = SignalRelayClient(config.server_ws_url, client, adapter=adapter)
     stream = TopstepXStream(
         token=client._token,
         contract_id=config.contract_id,
@@ -325,7 +374,7 @@ async def main():
     print(f"[firevstocks] Running -- relay -> {config.server_ws_url}")
     print("[firevstocks] Press Ctrl+C to stop\n")
 
-    await _run(config, client, relay, stream)
+    await _run(config, client, relay, stream, adapter)
 
 
 if __name__ == "__main__":
