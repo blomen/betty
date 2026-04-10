@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as _dt_mod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 import torch
@@ -28,6 +27,7 @@ def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
     if cot_df is not None and not cot_df.empty:
         # Reindex COT to daily frequency, forward-fill
         import pandas as pd
+
         daily_idx = pd.date_range(cot_df.index.min(), cot_df.index.max(), freq="D")
         cot_daily = cot_df.reindex(daily_idx, method="ffill")
         for date_idx, row in cot_daily.iterrows():
@@ -40,6 +40,7 @@ def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
     stats_lookup: dict = {}
     if stats_df is not None and not stats_df.empty:
         import pandas as pd
+
         daily_idx = pd.date_range(stats_df.index.min(), stats_df.index.max(), freq="D")
         stats_daily = stats_df.reindex(daily_idx, method="ffill")
         for date_idx, row in stats_daily.iterrows():
@@ -131,6 +132,7 @@ def _assign_session_date(ts_et):
         return None
     return d
 
+
 # Paths
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "rl"
 _TICKS_DIR = _DATA_DIR / "ticks"
@@ -142,18 +144,18 @@ _MODELS_DIR = _DATA_DIR / "models"
 # fetch
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command()
 def fetch(
     months: int = typer.Option(6, help="Number of months of history to fetch"),
     symbol: str = typer.Option("NQ", help="Symbol to fetch (default: NQ)"),
-    only: Optional[str] = typer.Option(None, help="Comma-separated YYYY-MM months to fetch (overrides --months)"),
+    only: str | None = typer.Option(None, help="Comma-separated YYYY-MM months to fetch (overrides --months)"),
 ) -> None:
     """Fetch historical tick data and macro history from Databento / yfinance."""
-    from src.rl.data.fetcher import fetch_ticks, fetch_macro_history
+    from src.rl.data.fetcher import fetch_macro_history, fetch_ticks
 
     if only:
         # Parse explicit month list and build date ranges
-        from src.rl.data.fetcher import _to_utc, _month_ranges
         import calendar
 
         month_labels = [m.strip() for m in only.split(",")]
@@ -173,6 +175,7 @@ def fetch(
 
         # Temporarily filter _month_ranges to only requested months
         import src.rl.data.fetcher as _fetcher_mod
+
         _orig_month_ranges = _fetcher_mod._month_ranges
 
         def _filtered_month_ranges(s, e):
@@ -204,6 +207,7 @@ def fetch(
 
     typer.echo("Fetching COT history (CFTC NQ positioning) ...")
     from src.rl.data.fetcher import fetch_cot_history
+
     cot_path = fetch_cot_history(start, end)
     if cot_path:
         typer.echo(f"  COT file: {cot_path}")
@@ -212,6 +216,7 @@ def fetch(
 
     # Fetch exchange statistics
     from src.rl.data.fetcher import fetch_statistics_history
+
     typer.echo("Fetching exchange statistics from Databento...")
     stats_path = fetch_statistics_history(start, end)
     if stats_path:
@@ -224,6 +229,7 @@ def fetch(
 # verify-levels
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command("verify-levels")
 def verify_levels(
     date: str = typer.Argument(help="Session date YYYY-MM-DD to verify"),
@@ -234,6 +240,7 @@ def verify_levels(
     FVGs, OBs, swing points) are correct before training the RL agent.
     """
     import json
+
     import pandas as pd
 
     from src.rl.data.fetcher import TICKS_DIR
@@ -246,7 +253,7 @@ def verify_levels(
 
     if not pfile.exists():
         typer.echo(f"Tick file not found: {pfile}", err=True)
-        typer.echo(f"Run 'rl fetch' first to download historical data.", err=True)
+        typer.echo("Run 'rl fetch' first to download historical data.", err=True)
         raise typer.Exit(1)
 
     df = pd.read_parquet(pfile)
@@ -258,9 +265,7 @@ def verify_levels(
     df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
     df = df.dropna(subset=["_session_date"])
     target_date = target.date()
-    day_df = df[df["_session_date"] == target_date].drop(
-        columns=["_session_date", "_ts_et"], errors="ignore"
-    )
+    day_df = df[df["_session_date"] == target_date].drop(columns=["_session_date", "_ts_et"], errors="ignore")
 
     if day_df.empty:
         typer.echo(f"No ticks found for {date} in {pfile.name}", err=True)
@@ -274,7 +279,7 @@ def verify_levels(
     engine = ReplayEngine()
 
     # Load precomputed levels if available
-    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
+    from src.rl.data.session_store import compute_precomputed_levels, load_summaries
 
     summaries_path = _DATA_DIR / "session_summaries.json"
     summaries = load_summaries(summaries_path)
@@ -286,45 +291,45 @@ def verify_levels(
     episodes = engine.replay_session(ticks, session_dt, precomputed_levels=precomputed)
     snapshot = engine.get_level_snapshot()
 
-    typer.echo(f"\n{'='*60}")
+    typer.echo(f"\n{'=' * 60}")
     typer.echo(f"SESSION LEVELS — {date}")
-    typer.echo(f"{'='*60}")
+    typer.echo(f"{'=' * 60}")
 
     sl = snapshot["session_levels"]
     for name, val in sl.items():
         if val is not None:
             typer.echo(f"  {name:20s}  {val:>12.2f}")
 
-    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"\n{'─' * 60}")
     typer.echo("VWAP BANDS")
     for name, val in snapshot["vwap"].items():
         if val is not None:
             typer.echo(f"  {name:20s}  {val:>12.2f}")
 
-    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"\n{'─' * 60}")
     typer.echo("VOLUME PROFILE")
     for name, val in snapshot["volume_profile"].items():
         if val is not None:
             typer.echo(f"  {name:20s}  {val:>12.2f}")
 
-    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"\n{'─' * 60}")
     typer.echo(f"ACTIVE LEVELS ({len(snapshot['active_levels'])} total)")
     # Sort by price for easy visual checking
     sorted_levels = sorted(snapshot["active_levels"], key=lambda x: x["price"], reverse=True)
     for lv in sorted_levels:
         typer.echo(f"  {lv['price']:>12.2f}  {lv['type']:20s}  {lv['name']}")
 
-    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"\n{'─' * 60}")
     typer.echo(f"FVGs: {len(snapshot['fvgs'])}  |  Order Blocks: {len(snapshot['order_blocks'])}")
     for fvg in snapshot["fvgs"][:5]:
         typer.echo(f"  FVG  {fvg['direction']:8s}  {fvg['low']:.2f} – {fvg['high']:.2f}")
     for ob in snapshot["order_blocks"][:5]:
         typer.echo(f"  OB   {ob['direction']:8s}  {ob['low']:.2f} – {ob['high']:.2f}")
 
-    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"\n{'─' * 60}")
     typer.echo(f"EPISODES: {len(episodes)} level touches detected")
     for i, ep in enumerate(episodes[:10]):
-        typer.echo(f"  {i+1}. {ep.level_type:20s}  @ {ep.touch_ts}  best={ep.best_action}")
+        typer.echo(f"  {i + 1}. {ep.level_type:20s}  @ {ep.touch_ts}  best={ep.best_action}")
 
     # Also write JSON for frontend consumption
     out_path = _DATA_DIR / f"levels_{date}.json"
@@ -338,15 +343,17 @@ def verify_levels(
 # precompute
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command()
 def precompute(
     all_months: bool = typer.Option(False, "--all", help="Process all Parquet files"),
-    month: Optional[str] = typer.Option(None, help="Process a specific month YYYY-MM"),
+    month: str | None = typer.Option(None, help="Process a specific month YYYY-MM"),
 ) -> None:
     """Build session summaries from tick data for cross-session level computation."""
     import pandas as pd
+
     from src.rl.data.fetcher import TICKS_DIR
-    from src.rl.data.session_store import build_session_summary, save_summaries, load_summaries
+    from src.rl.data.session_store import build_session_summary, load_summaries, save_summaries
 
     ticks_dir = TICKS_DIR
     summaries_path = _DATA_DIR / "session_summaries.json"
@@ -416,6 +423,7 @@ def precompute(
 # replay (parallel-capable)
 # ---------------------------------------------------------------------------
 
+
 def _replay_single_file(
     pfile_path: str,
     chunk_dir: str,
@@ -428,10 +436,11 @@ def _replay_single_file(
 
     Returns (n_episodes, n_sessions).
     """
+    from datetime import datetime
+    from pathlib import Path
+
     import numpy as np
     import pandas as pd
-    from pathlib import Path
-    from datetime import datetime
 
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.session_store import compute_precomputed_levels
@@ -446,11 +455,13 @@ def _replay_single_file(
     narrative_gbt = None
     if gbt_path:
         import joblib as _jl
+
         _gbt_data = _jl.load(Path(gbt_path))
         if isinstance(_gbt_data, dict) and _gbt_data.get("version", "").startswith("v5_trigger"):
             # v5 trigger GBT: needs narrative features + trigger feature assembly
-            from src.rl.agent.trigger_gbt import TriggerGBT
             from src.rl.agent.narrative_gbt import NarrativeGBT
+            from src.rl.agent.trigger_gbt import TriggerGBT
+
             gbt_model = TriggerGBT.load(Path(gbt_path))
             gbt_is_trigger = True
             # Try to load narrative GBT for setup probs
@@ -460,6 +471,7 @@ def _replay_single_file(
         else:
             # v4 or earlier: standard GBTModel on 276-dim observations
             from src.rl.agent.gbt_model import GBTModel
+
             gbt_model = GBTModel.load(Path(gbt_path))
 
     engine = ReplayEngine(macro_data=macro_data)
@@ -483,7 +495,9 @@ def _replay_single_file(
                 columns=["_session_date", "_ts_et"], errors="ignore"
             )
         del df, df_renamed  # release ~600MB
-        import gc; gc.collect()
+        import gc
+
+        gc.collect()
 
     month_obs, month_rc, month_rr = [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
@@ -504,8 +518,13 @@ def _replay_single_file(
             continue
 
         session_dt = datetime(
-            session_date.year, session_date.month, session_date.day,
-            12, 0, 0, tzinfo=_ET,
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            12,
+            0,
+            0,
+            tzinfo=_ET,
         )
 
         precomputed = None
@@ -514,12 +533,14 @@ def _replay_single_file(
 
         try:
             episodes = engine.replay_session(
-                ticks, session_dt,
+                ticks,
+                session_dt,
                 prior_session_levels=prior_levels,
                 precomputed_levels=precomputed,
             )
         except Exception as _replay_exc:
             import sys
+
             print(f"  replay_session FAILED for {session_date}: {_replay_exc}", file=sys.stderr)
             continue
 
@@ -541,23 +562,35 @@ def _replay_single_file(
             if gbt_model is not None:
                 if gbt_is_trigger:
                     # v5: extract narrative features from base obs, build trigger input
-                    from src.rl.features.narrative_features import extract_narrative_features
                     from src.rl.features.passthrough_features import extract_passthrough
+
                     # Approximate narrative from observation indices
                     # (we don't have state dict, so extract from obs vector)
-                    narr_feats = np.concatenate([
-                        obs[52:116], obs[116:154], obs[178:189],
-                        obs[208:228], obs[228:248],
-                    ])  # 153 dims for narrative GBT input
+                    narr_feats = np.concatenate(
+                        [
+                            obs[52:116],
+                            obs[116:154],
+                            obs[178:189],
+                            obs[208:228],
+                            obs[228:248],
+                        ]
+                    )  # 153 dims for narrative GBT input
                     setup_probs = np.zeros(8, dtype=np.float32)
                     if narrative_gbt is not None:
                         setup_probs = narrative_gbt.predict_setup_probs(narr_feats)
                     passthrough = extract_passthrough(obs)
                     # Build trigger-like input for trigger GBT
-                    trigger_raw = np.concatenate([
-                        obs[0:31], obs[31:52], obs[154:169],
-                        obs[169:173], obs[173:178], obs[248:268], obs[268:269],
-                    ])  # 97 dims
+                    trigger_raw = np.concatenate(
+                        [
+                            obs[0:31],
+                            obs[31:52],
+                            obs[154:169],
+                            obs[169:173],
+                            obs[173:178],
+                            obs[248:268],
+                            obs[268:269],
+                        ]
+                    )  # 97 dims
                     trigger_input = np.concatenate([trigger_raw, passthrough, setup_probs])
                     gbt_forecast = gbt_model.predict_full(trigger_input)
                 else:
@@ -590,8 +623,8 @@ def _replay_single_file(
 @rl_app.command()
 def replay(
     all_months: bool = typer.Option(False, "--all", help="Replay all Parquet files in TICKS_DIR"),
-    month: Optional[str] = typer.Option(None, help="Replay a specific month YYYY-MM"),
-    gbt: Optional[str] = typer.Option(None, help="GBT model for augmented observations (hybrid GBT+DQN)"),
+    month: str | None = typer.Option(None, help="Replay a specific month YYYY-MM"),
+    gbt: str | None = typer.Option(None, help="GBT model for augmented observations (hybrid GBT+DQN)"),
     workers: int = typer.Option(0, help="Parallel workers (0 = auto, 1 = sequential)"),
     clean: bool = typer.Option(False, help="Delete existing chunks before replaying (fresh start)"),
 ) -> None:
@@ -601,15 +634,17 @@ def replay(
     Without --gbt: produces base episodes (market features only).
     Uses parallel workers for multi-core replay (default: auto = CPU count / 2).
     """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     import numpy as np
     import pandas as pd
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    import multiprocessing
 
-    from src.rl.data.fetcher import TICKS_DIR, MACRO_DIR
+    from src.rl.data.fetcher import MACRO_DIR, TICKS_DIR
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.features.observation import (
-        OBSERVATION_DIM, AUGMENTED_OBSERVATION_DIM,
+        AUGMENTED_OBSERVATION_DIM,
+        OBSERVATION_DIM,
     )
 
     ticks_dir = TICKS_DIR
@@ -658,8 +693,11 @@ def replay(
             else:
                 typer.echo("No statistics_daily.parquet found — exchange stats features will be zeroed.")
             macro_data = _prepare_macro_data(macro_df, cot_df=cot_df, stats_df=stats_df)
-            typer.echo(f"Loaded macro data: {len(macro_data)} days" +
-                       (f" (COT: {len(cot_df)} weeks)" if cot_df is not None else " (no COT)") + ".")
+            typer.echo(
+                f"Loaded macro data: {len(macro_data)} days"
+                + (f" (COT: {len(cot_df)} weeks)" if cot_df is not None else " (no COT)")
+                + "."
+            )
         except Exception as exc:
             typer.echo(f"Warning: could not load macro data: {exc}")
     else:
@@ -678,7 +716,6 @@ def replay(
     # GBT model path for augmentation
     gbt_path_str = None
     if gbt:
-        from src.rl.agent.gbt_model import GBTModel
         gbt_path = Path(gbt) if Path(gbt).exists() else _MODELS_DIR / gbt
         if gbt_path.exists():
             gbt_path_str = str(gbt_path)
@@ -732,9 +769,12 @@ def replay(
                     for idx, pfile in small_todo:
                         future = executor.submit(
                             _replay_single_file,
-                            pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                            chunk_idx=idx, macro_data=macro_data,
-                            summaries=summaries, gbt_path=gbt_path_str,
+                            pfile_path=str(pfile),
+                            chunk_dir=str(chunk_dir),
+                            chunk_idx=idx,
+                            macro_data=macro_data,
+                            summaries=summaries,
+                            gbt_path=gbt_path_str,
                         )
                         futures[future] = pfile.name
                     for future in as_completed(futures):
@@ -752,9 +792,12 @@ def replay(
             for idx, pfile in small_todo:
                 try:
                     n_eps, n_sessions = _replay_single_file(
-                        pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                        chunk_idx=idx, macro_data=macro_data,
-                        summaries=summaries, gbt_path=gbt_path_str,
+                        pfile_path=str(pfile),
+                        chunk_dir=str(chunk_dir),
+                        chunk_idx=idx,
+                        macro_data=macro_data,
+                        summaries=summaries,
+                        gbt_path=gbt_path_str,
                     )
                     typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
                 except Exception as exc:
@@ -768,9 +811,12 @@ def replay(
                     with ProcessPoolExecutor(max_workers=1) as single:
                         future = single.submit(
                             _replay_single_file,
-                            pfile_path=str(pfile), chunk_dir=str(chunk_dir),
-                            chunk_idx=idx, macro_data=macro_data,
-                            summaries=summaries, gbt_path=gbt_path_str,
+                            pfile_path=str(pfile),
+                            chunk_dir=str(chunk_dir),
+                            chunk_idx=idx,
+                            macro_data=macro_data,
+                            summaries=summaries,
+                            gbt_path=gbt_path_str,
                         )
                         n_eps, n_sessions = future.result(timeout=7200)
                     typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
@@ -778,9 +824,7 @@ def replay(
                     typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
     # Concatenate all chunks from disk (including previously completed + new)
-    chunk_indices = sorted(
-        int(f.stem.split("_")[1]) for f in chunk_dir.glob("obs_*.npy")
-    )
+    chunk_indices = sorted(int(f.stem.split("_")[1]) for f in chunk_dir.glob("obs_*.npy"))
     if not chunk_indices:
         typer.echo("No episodes generated. Check tick data and replay engine.")
         raise typer.Exit(1)
@@ -792,18 +836,30 @@ def replay(
     obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
     np.save(episodes_dir / "observations.npy", obs_array)
 
-    np.save(episodes_dir / "rewards_cont.npy",
-            np.concatenate([np.load(chunk_dir / f"rc_{i:04d}.npy") for i in chunk_indices]))
-    np.save(episodes_dir / "rewards_rev.npy",
-            np.concatenate([np.load(chunk_dir / f"rr_{i:04d}.npy") for i in chunk_indices]))
-    np.save(episodes_dir / "level_types.npy",
-            np.concatenate([np.load(chunk_dir / f"lt_{i:04d}.npy", allow_pickle=True) for i in chunk_indices]))
-    np.save(episodes_dir / "stop_targets.npy",
-            np.concatenate([np.load(chunk_dir / f"st_{i:04d}.npy") for i in chunk_indices]))
-    np.save(episodes_dir / "breakeven_reached.npy",
-            np.concatenate([np.load(chunk_dir / f"be_{i:04d}.npy") for i in chunk_indices]))
-    np.save(episodes_dir / "levels_captured.npy",
-            np.concatenate([np.load(chunk_dir / f"lc_{i:04d}.npy") for i in chunk_indices]))
+    np.save(
+        episodes_dir / "rewards_cont.npy",
+        np.concatenate([np.load(chunk_dir / f"rc_{i:04d}.npy") for i in chunk_indices]),
+    )
+    np.save(
+        episodes_dir / "rewards_rev.npy",
+        np.concatenate([np.load(chunk_dir / f"rr_{i:04d}.npy") for i in chunk_indices]),
+    )
+    np.save(
+        episodes_dir / "level_types.npy",
+        np.concatenate([np.load(chunk_dir / f"lt_{i:04d}.npy", allow_pickle=True) for i in chunk_indices]),
+    )
+    np.save(
+        episodes_dir / "stop_targets.npy",
+        np.concatenate([np.load(chunk_dir / f"st_{i:04d}.npy") for i in chunk_indices]),
+    )
+    np.save(
+        episodes_dir / "breakeven_reached.npy",
+        np.concatenate([np.load(chunk_dir / f"be_{i:04d}.npy") for i in chunk_indices]),
+    )
+    np.save(
+        episodes_dir / "levels_captured.npy",
+        np.concatenate([np.load(chunk_dir / f"lc_{i:04d}.npy") for i in chunk_indices]),
+    )
 
     # Clean up chunks
     for old in chunk_dir.glob("*.npy"):
@@ -824,6 +880,7 @@ def replay(
 # ---------------------------------------------------------------------------
 # merge-live — merge live episodes into the main episode pool
 # ---------------------------------------------------------------------------
+
 
 @rl_app.command("merge-live")
 def merge_live() -> None:
@@ -848,7 +905,9 @@ def merge_live() -> None:
     live_obs = np.concatenate([np.load(f) for f in live_chunks])
     live_rc = np.concatenate([np.load(live_dir / f"rc_{f.stem.split('_')[1]}.npy") for f in live_chunks])
     live_rr = np.concatenate([np.load(live_dir / f"rr_{f.stem.split('_')[1]}.npy") for f in live_chunks])
-    live_lt = np.concatenate([np.load(live_dir / f"lt_{f.stem.split('_')[1]}.npy", allow_pickle=True) for f in live_chunks])
+    live_lt = np.concatenate(
+        [np.load(live_dir / f"lt_{f.stem.split('_')[1]}.npy", allow_pickle=True) for f in live_chunks]
+    )
     live_st = np.concatenate([np.load(live_dir / f"st_{f.stem.split('_')[1]}.npy") for f in live_chunks])
 
     typer.echo(f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim)")
@@ -865,7 +924,9 @@ def merge_live() -> None:
 
         # Check dim compatibility
         if live_obs.shape[1] != main_obs.shape[1]:
-            typer.echo(f"Dimension mismatch: live={live_obs.shape[1]} vs main={main_obs.shape[1]}. Cannot merge.", err=True)
+            typer.echo(
+                f"Dimension mismatch: live={live_obs.shape[1]} vs main={main_obs.shape[1]}. Cannot merge.", err=True
+            )
             raise typer.Exit(1)
 
         # Concatenate
@@ -890,12 +951,15 @@ def merge_live() -> None:
 
     # Update normalizer
     from src.rl.data.normalization import RunningNormalizer
+
     normalizer = RunningNormalizer(dim=merged_obs.shape[1])
     for obs in merged_obs:
         normalizer.update(obs)
     normalizer.save(episodes_dir / "normalizer.json")
 
-    typer.echo(f"Merged: {len(merged_obs)} total episodes ({len(live_obs)} live + {len(merged_obs) - len(live_obs)} historical)")
+    typer.echo(
+        f"Merged: {len(merged_obs)} total episodes ({len(live_obs)} live + {len(merged_obs) - len(live_obs)} historical)"
+    )
 
     # Clean up live chunks (already merged)
     for f in live_dir.glob("*.npy"):
@@ -907,6 +971,7 @@ def merge_live() -> None:
 # train
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command()
 def train(
     epochs: int = typer.Option(100, help="Number of training epochs"),
@@ -917,8 +982,9 @@ def train(
     import numpy as np
 
     from src.rl.agent.dqn import DQNAgent
+    from src.rl.config import BATCH_SIZE, REWARD_CLIP_MAX, REWARD_CLIP_MIN, REWARD_NORMALIZE, Action
     from src.rl.data.normalization import RunningNormalizer
-    from src.rl.config import Action, BATCH_SIZE, REWARD_CLIP_MIN, REWARD_CLIP_MAX, REWARD_NORMALIZE
+
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -987,11 +1053,14 @@ def train(
     model_path = models_dir / f"dqn_{checkpoint}.pt"
     if resume and model_path.exists():
         import torch as _torch
+
         ckpt = _torch.load(model_path, weights_only=False, map_location="cpu")
         agent.load(model_path)
         start_epoch = ckpt.get("epoch", 0) + 1
-        typer.echo(f"Resumed from {model_path} (epoch {start_epoch - 1}, "
-                    f"epsilon={agent.epsilon:.3f}, steps={agent.train_steps})")
+        typer.echo(
+            f"Resumed from {model_path} (epoch {start_epoch - 1}, "
+            f"epsilon={agent.epsilon:.3f}, steps={agent.train_steps})"
+        )
     elif resume:
         typer.echo(f"No checkpoint found at {model_path} — starting fresh.")
 
@@ -1016,6 +1085,7 @@ def train(
 
     # Set up cosine annealing LR scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR
+
     scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=3e-5)
     # Fast-forward scheduler if resuming
     if start_epoch > 1:
@@ -1067,6 +1137,7 @@ def train(
 # train-specialists
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command("train-specialists")
 def train_specialists(
     checkpoint: str = typer.Option("v5", help="Checkpoint name"),
@@ -1078,7 +1149,10 @@ def train_specialists(
     import numpy as np
 
     from src.rl.agent.specialists import (
-        ContinuationSpecialist, ReversalSpecialist, StopSpecialist, SpecialistEnsemble,
+        ContinuationSpecialist,
+        ReversalSpecialist,
+        SpecialistEnsemble,
+        StopSpecialist,
     )
 
     episodes_dir = _EPISODES_DIR
@@ -1115,35 +1189,34 @@ def train_specialists(
     rr_train = rewards_rev[:train_end]
 
     # --- Continuation Specialist ---
-    typer.echo(f"\n=== Training Continuation Specialist ===")
+    typer.echo("\n=== Training Continuation Specialist ===")
     cont_success = (rc_train > 0).astype(np.int32)
-    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {cont_success.mean()*100:.1f}%")
+    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {cont_success.mean() * 100:.1f}%")
 
     cont_spec = ContinuationSpecialist()
-    cont_metrics = cont_spec.train(X_train, cont_success, rc_train,
-                                    n_estimators=trees, max_depth=depth, learning_rate=lr)
+    cont_metrics = cont_spec.train(
+        X_train, cont_success, rc_train, n_estimators=trees, max_depth=depth, learning_rate=lr
+    )
     typer.echo(f"  Results: {cont_metrics}")
 
     # --- Reversal Specialist ---
-    typer.echo(f"\n=== Training Reversal Specialist ===")
+    typer.echo("\n=== Training Reversal Specialist ===")
     rev_success = (rr_train > 0).astype(np.int32)
-    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {rev_success.mean()*100:.1f}%")
+    typer.echo(f"  Samples: {len(X_train):,}, win_rate: {rev_success.mean() * 100:.1f}%")
 
     rev_spec = ReversalSpecialist()
-    rev_metrics = rev_spec.train(X_train, rev_success, rr_train,
-                                  n_estimators=trees, max_depth=depth, learning_rate=lr)
+    rev_metrics = rev_spec.train(X_train, rev_success, rr_train, n_estimators=trees, max_depth=depth, learning_rate=lr)
     typer.echo(f"  Results: {rev_metrics}")
 
     # --- Stop Specialist ---
     stop_spec = None
     if stop_targets is not None and len(stop_targets) >= train_end:
-        typer.echo(f"\n=== Training Stop Specialist ===")
+        typer.echo("\n=== Training Stop Specialist ===")
         st_train = stop_targets[:train_end]
         typer.echo(f"  Samples: {len(X_train):,}, mean_stop: {st_train.mean():.1f} ticks")
 
         stop_spec = StopSpecialist()
-        stop_metrics = stop_spec.train(X_train, st_train,
-                                        n_estimators=trees, max_depth=depth, learning_rate=lr)
+        stop_metrics = stop_spec.train(X_train, st_train, n_estimators=trees, max_depth=depth, learning_rate=lr)
         typer.echo(f"  Results: {stop_metrics}")
 
     # --- Ensemble Evaluation ---
@@ -1161,10 +1234,11 @@ def train_specialists(
 
     typer.echo(f"\n=== Ensemble Validation ({val_n:,} episodes) ===")
     from collections import Counter
+
     ac = Counter(actions.tolist())
-    typer.echo(f"  CONT: {ac.get(0,0)} ({ac.get(0,0)/val_n*100:.1f}%)")
-    typer.echo(f"  REV:  {ac.get(1,0)} ({ac.get(1,0)/val_n*100:.1f}%)")
-    typer.echo(f"  SKIP: {ac.get(2,0)} ({ac.get(2,0)/val_n*100:.1f}%)")
+    typer.echo(f"  CONT: {ac.get(0, 0)} ({ac.get(0, 0) / val_n * 100:.1f}%)")
+    typer.echo(f"  REV:  {ac.get(1, 0)} ({ac.get(1, 0) / val_n * 100:.1f}%)")
+    typer.echo(f"  SKIP: {ac.get(2, 0)} ({ac.get(2, 0) / val_n * 100:.1f}%)")
 
     # Performance
     trade_mask = actions != 2
@@ -1172,10 +1246,10 @@ def train_specialists(
     if len(traded_r) > 0:
         wins = (traded_r > 0).sum()
         typer.echo(f"\n  Trades: {trade_mask.sum():,}")
-        typer.echo(f"  Win rate: {wins/len(traded_r)*100:.1f}%")
+        typer.echo(f"  Win rate: {wins / len(traded_r) * 100:.1f}%")
         typer.echo(f"  Avg R: {traded_r.mean():.3f}")
         typer.echo(f"  Total R: {traded_r.sum():.1f}")
-        pf = traded_r[traded_r > 0].sum() / abs(traded_r[traded_r < 0].sum()) if (traded_r < 0).any() else float('inf')
+        pf = traded_r[traded_r > 0].sum() / abs(traded_r[traded_r < 0].sum()) if (traded_r < 0).any() else float("inf")
         typer.echo(f"  Profit factor: {pf:.2f}")
 
         # CONT vs REV breakdown
@@ -1183,17 +1257,23 @@ def train_specialists(
         rev_mask = actions[trade_mask] == 1
         if cont_mask.sum() > 0:
             cr = rc_val[trade_mask][cont_mask]
-            typer.echo(f"\n  CONT trades: n={cont_mask.sum()}, win={((cr>0).sum()/len(cr))*100:.1f}%, avg_R={cr.mean():.3f}")
+            typer.echo(
+                f"\n  CONT trades: n={cont_mask.sum()}, win={((cr > 0).sum() / len(cr)) * 100:.1f}%, avg_R={cr.mean():.3f}"
+            )
         if rev_mask.sum() > 0:
             rr2 = rr_val[trade_mask][rev_mask]
-            typer.echo(f"  REV trades:  n={rev_mask.sum()}, win={((rr2>0).sum()/len(rr2))*100:.1f}%, avg_R={rr2.mean():.3f}")
+            typer.echo(
+                f"  REV trades:  n={rev_mask.sum()}, win={((rr2 > 0).sum() / len(rr2)) * 100:.1f}%, avg_R={rr2.mean():.3f}"
+            )
 
         # Direction accuracy
         trade_idx = np.where(trade_mask)[0]
-        correct = sum(1 for i in trade_idx
-                      if (actions[i] == 0 and rc_val[i] >= rr_val[i])
-                      or (actions[i] == 1 and rr_val[i] > rc_val[i]))
-        typer.echo(f"\n  Direction accuracy: {correct}/{len(trade_idx)} ({correct/len(trade_idx)*100:.1f}%)")
+        correct = sum(
+            1
+            for i in trade_idx
+            if (actions[i] == 0 and rc_val[i] >= rr_val[i]) or (actions[i] == 1 and rr_val[i] > rc_val[i])
+        )
+        typer.echo(f"\n  Direction accuracy: {correct}/{len(trade_idx)} ({correct / len(trade_idx) * 100:.1f}%)")
 
     # Save
     path = models_dir / f"specialists_{checkpoint}.joblib"
@@ -1204,6 +1284,7 @@ def train_specialists(
 # ---------------------------------------------------------------------------
 # train-gbt
 # ---------------------------------------------------------------------------
+
 
 @rl_app.command("train-gbt")
 def train_gbt(
@@ -1216,9 +1297,8 @@ def train_gbt(
     import numpy as np
 
     from src.rl.agent.gbt_model import GBTModel
+    from src.rl.config import REWARD_CLIP_MAX, REWARD_CLIP_MIN
     from src.rl.data.normalization import RunningNormalizer
-    from src.rl.config import REWARD_CLIP_MIN, REWARD_CLIP_MAX
-    from src.rl.features.observation import OBSERVATION_DIM
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -1341,19 +1421,28 @@ def train_gbt(
         typer.echo(f"  >={thresh:.2f}  {mask.sum():>7,}  {acc:5.1f}  {wr:5.1f}  {chosen.mean():+7.3f}  {pf:5.2f}")
 
     # Baselines
-    typer.echo(f"\n  Baselines:")
+    typer.echo("\n  Baselines:")
     typer.echo(f"    always-REV:  avg_R={test_rr.mean():+.3f}")
     typer.echo(f"    always-CONT: avg_R={test_rc.mean():+.3f}")
     typer.echo(f"    oracle:      avg_R={np.maximum(test_rc, test_rr).mean():+.3f}")
 
     # Feature importance
-    typer.echo(f"\n  Top 15 features:")
+    typer.echo("\n  Top 15 features:")
     segments = [
-        (0, 31, "Zone composition"), (31, 52, "Orderflow"), (52, 116, "Dow/Session"),
-        (116, 154, "TPO"), (154, 169, "Candle window"), (169, 173, "Zone features"),
-        (173, 178, "Confluence"), (178, 189, "Macro"), (189, 194, "Exchange stats"),
-        (194, 208, "Setup detection"), (208, 221, "AMT"), (221, 241, "Micro"),
-        (241, 242, "Approach dir"), (242, 249, "Execution ctx"),
+        (0, 31, "Zone composition"),
+        (31, 52, "Orderflow"),
+        (52, 116, "Dow/Session"),
+        (116, 154, "TPO"),
+        (154, 169, "Candle window"),
+        (169, 173, "Zone features"),
+        (173, 178, "Confluence"),
+        (178, 189, "Macro"),
+        (189, 194, "Exchange stats"),
+        (194, 208, "Setup detection"),
+        (208, 221, "AMT"),
+        (221, 241, "Micro"),
+        (241, 242, "Approach dir"),
+        (242, 249, "Execution ctx"),
     ]
     for orig_idx, imp in model.feature_importance(top_n=15):
         seg_name = "unknown"
@@ -1379,6 +1468,7 @@ def train_gbt(
 # eval
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command()
 def eval(
     checkpoint: str = typer.Option("v1", help="Checkpoint name to load"),
@@ -1393,8 +1483,9 @@ def eval(
 
     from src.rl.agent.dqn import DQNAgent
     from src.rl.agent.evaluate import compute_metrics, print_evaluation_report
+    from src.rl.config import Action
     from src.rl.data.normalization import RunningNormalizer
-    from src.rl.config import Action, EPSILON_END
+
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
     model_path = models_dir / f"dqn_{checkpoint}.pt"
@@ -1406,7 +1497,7 @@ def eval(
     # Load episodes
     obs_path = episodes_dir / "observations.npy"
     if not obs_path.exists():
-        typer.echo(f"No observations.npy found. Run 'rl replay' first.", err=True)
+        typer.echo("No observations.npy found. Run 'rl replay' first.", err=True)
         raise typer.Exit(1)
 
     observations = np.load(episodes_dir / "observations.npy")
@@ -1464,11 +1555,13 @@ def eval(
             action = Action.REVERSAL.value
             reward = rr
 
-        episode_dicts.append({
-            "action": action,
-            "reward": reward,
-            "level_type": str(test_lt[i]),
-        })
+        episode_dicts.append(
+            {
+                "action": action,
+                "reward": reward,
+                "level_type": str(test_lt[i]),
+            }
+        )
 
     metrics = compute_metrics(episode_dicts)
     print_evaluation_report(metrics)
@@ -1477,6 +1570,7 @@ def eval(
 # ---------------------------------------------------------------------------
 # backtest (SessionManager with position flipping, trailing, compounding)
 # ---------------------------------------------------------------------------
+
 
 @rl_app.command()
 def backtest(
@@ -1493,13 +1587,12 @@ def backtest(
 
     from src.rl.agent.gbt_model import GBTModel
     from src.rl.agent.network import DQNetwork
+    from src.rl.data.fetcher import MACRO_DIR, TICKS_DIR
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.data.replay_engine import ReplayEngine
-    from src.rl.data.fetcher import TICKS_DIR, MACRO_DIR
-    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
-    from src.rl.session_manager import SessionManager, PositionSide
+    from src.rl.data.session_store import compute_precomputed_levels, load_summaries
     from src.rl.features.observation import OBSERVATION_DIM
-    from src.rl.config import TICK_SIZE
+    from src.rl.session_manager import SessionManager
 
     models_dir = _MODELS_DIR
 
@@ -1511,17 +1604,19 @@ def backtest(
         network = GBTModel.load(gbt_path)
         typer.echo(f"Loaded GBT model: {gbt_path}")
     elif dqn_path.exists():
-        network = DQNetwork(input_dim=OBSERVATION_DIM)
         ckpt = torch.load(dqn_path, weights_only=False, map_location="cpu")
+        obs_dim = ckpt["q_network"]["feature_net.0.weight"].shape[1]
+        network = DQNetwork(input_dim=obs_dim)
         network.load_state_dict(ckpt["q_network"])
         network.eval()
-        typer.echo(f"Loaded DQN model: {dqn_path}")
+        typer.echo(f"Loaded DQN model: {dqn_path} ({obs_dim}-dim)")
     else:
         typer.echo(f"No model found: tried {gbt_path} and {dqn_path}", err=True)
         raise typer.Exit(1)
 
-    # Load normalizer
-    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    # Load normalizer — match dim to loaded model
+    _norm_dim = obs_dim if "obs_dim" in dir() else OBSERVATION_DIM
+    normalizer = RunningNormalizer(dim=_norm_dim)
     norm_path = _EPISODES_DIR / "normalizer.json"
     if norm_path.exists():
         normalizer.load(norm_path)
@@ -1588,8 +1683,13 @@ def backtest(
                 continue
 
             session_dt = datetime(
-                session_date.year, session_date.month, session_date.day,
-                12, 0, 0, tzinfo=_ET,
+                session_date.year,
+                session_date.month,
+                session_date.day,
+                12,
+                0,
+                0,
+                tzinfo=_ET,
             )
 
             precomputed = None
@@ -1598,7 +1698,8 @@ def backtest(
 
             try:
                 episodes = engine.replay_session(
-                    ticks, session_dt,
+                    ticks,
+                    session_dt,
                     prior_session_levels=prior_levels,
                     precomputed_levels=precomputed,
                 )
@@ -1636,9 +1737,9 @@ def backtest(
             all_sessions.append(summary)
 
     # Print aggregate results
-    typer.echo(f"\n{'='*60}")
-    typer.echo(f"  SESSION MANAGER BACKTEST REPORT")
-    typer.echo(f"{'='*60}")
+    typer.echo(f"\n{'=' * 60}")
+    typer.echo("  SESSION MANAGER BACKTEST REPORT")
+    typer.echo(f"{'=' * 60}")
 
     total_trades = sum(s["trades"] for s in all_sessions)
     total_pnl = sum(s["total_pnl_r"] for s in all_sessions)
@@ -1651,7 +1752,7 @@ def backtest(
     avg_session_pnl = total_pnl / max(len(all_sessions), 1)
 
     typer.echo(f"  Sessions         : {len(all_sessions)}")
-    typer.echo(f"  Sessions +       : {sessions_positive} ({sessions_positive/max(len(all_sessions),1)*100:.0f}%)")
+    typer.echo(f"  Sessions +       : {sessions_positive} ({sessions_positive / max(len(all_sessions), 1) * 100:.0f}%)")
     typer.echo(f"  Total trades     : {total_trades}")
     typer.echo(f"  Winners          : {total_winners}")
     typer.echo(f"  Losers           : {total_losers}")
@@ -1659,14 +1760,14 @@ def backtest(
     typer.echo(f"  Win rate         : {wr:.1f}%")
     typer.echo(f"  Total P&L        : {total_pnl:+.1f} R")
     typer.echo(f"  Avg session P&L  : {avg_session_pnl:+.2f} R")
-    typer.echo(f"{'='*60}")
+    typer.echo(f"{'=' * 60}")
 
     # Top 10 best and worst sessions
     sorted_sessions = sorted(all_sessions, key=lambda s: s["total_pnl_r"], reverse=True)
-    typer.echo(f"\n  BEST SESSIONS:")
+    typer.echo("\n  BEST SESSIONS:")
     for s in sorted_sessions[:5]:
         typer.echo(f"    {s['date']}  {s['total_pnl_r']:+6.1f}R  trades={s['trades']}  flips={s['flips']}")
-    typer.echo(f"\n  WORST SESSIONS:")
+    typer.echo("\n  WORST SESSIONS:")
     for s in sorted_sessions[-5:]:
         typer.echo(f"    {s['date']}  {s['total_pnl_r']:+6.1f}R  trades={s['trades']}  flips={s['flips']}")
 
@@ -1675,11 +1776,13 @@ def backtest(
 # label-setups
 # ---------------------------------------------------------------------------
 
+
 @rl_app.command("label-setups")
 def label_setups() -> None:
     """Label all episodes with setup types (rule-based + clustering)."""
-    import numpy as np
     from collections import Counter
+
+    import numpy as np
 
     from src.rl.config import LevelType
     from src.rl.labeling.setup_labeler import label_episode
@@ -1738,7 +1841,7 @@ def label_setups() -> None:
 
     # Print distribution
     counts = Counter(labels)
-    typer.echo(f"\n  Setup Label Distribution:")
+    typer.echo("\n  Setup Label Distribution:")
     for setup_type in SetupType:
         c = counts.get(setup_type.value, 0)
         pct = c / n * 100 if n > 0 else 0
@@ -1757,8 +1860,7 @@ def label_setups() -> None:
         # Structure + TPO portion of observations (indices 52:154)
         unknown_obs = observations[unknown_idx, 52:154]
         unknown_zone_types = [
-            [all_level_types[j].value for j in range(31) if zone_comp[idx][j] > 0.5]
-            for idx in unknown_idx
+            [all_level_types[j].value for j in range(31) if zone_comp[idx][j] > 0.5] for idx in unknown_idx
         ]
         unknown_rc = rewards_cont[unknown_idx]
         unknown_rr = rewards_rev[unknown_idx]
@@ -1783,7 +1885,7 @@ def label_setups() -> None:
 
         # Print updated distribution
         counts = Counter(labels)
-        typer.echo(f"\n  Updated Distribution (after clustering):")
+        typer.echo("\n  Updated Distribution (after clustering):")
         for setup_type in SetupType:
             c = counts.get(setup_type.value, 0)
             pct = c / n * 100 if n > 0 else 0
@@ -1798,6 +1900,7 @@ def label_setups() -> None:
 # ---------------------------------------------------------------------------
 # train-narrative-gbt
 # ---------------------------------------------------------------------------
+
 
 @rl_app.command("train-narrative-gbt")
 def train_narrative_gbt(
@@ -1823,7 +1926,7 @@ def train_narrative_gbt(
 
     labels_path = episodes_dir / "setup_labels.npy"
     if not labels_path.exists():
-        typer.echo(f"No setup_labels.npy. Run 'rl label-setups' first.", err=True)
+        typer.echo("No setup_labels.npy. Run 'rl label-setups' first.", err=True)
         raise typer.Exit(1)
 
     observations = np.load(obs_path)
@@ -1850,13 +1953,16 @@ def train_narrative_gbt(
     #   AMT       208:228  (20)
     #   AMT_dyn   228:248  (20)
     #   Total: 153 dims
-    X = np.concatenate([
-        observations[:, 52:116],    # structure (64)
-        observations[:, 116:154],   # TPO (38)
-        observations[:, 178:189],   # macro (11)
-        observations[:, 208:228],   # AMT (20)
-        observations[:, 228:248],   # AMT dynamics (20)
-    ], axis=1)
+    X = np.concatenate(
+        [
+            observations[:, 52:116],  # structure (64)
+            observations[:, 116:154],  # TPO (38)
+            observations[:, 178:189],  # macro (11)
+            observations[:, 208:228],  # AMT (20)
+            observations[:, 228:248],  # AMT dynamics (20)
+        ],
+        axis=1,
+    )
     typer.echo(f"Narrative features: {X.shape[1]} dims")
 
     # Day type labels: AMT day type one-hot at AMT indices 0-5 → obs indices 208:214
@@ -1891,7 +1997,7 @@ def train_narrative_gbt(
     )
 
     # Print metrics
-    typer.echo(f"\n  Results:")
+    typer.echo("\n  Results:")
     typer.echo(f"    Engine           : {metrics['engine']}")
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
     typer.echo(f"    Day type acc     : {metrics['day_type_accuracy']}%")
@@ -1900,7 +2006,7 @@ def train_narrative_gbt(
 
     # Feature importance
     top_features = model.feature_importance(top_n=10)
-    typer.echo(f"\n  Top 10 feature importances (day type head):")
+    typer.echo("\n  Top 10 feature importances (day type head):")
     for idx, imp in top_features:
         typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
 
@@ -1913,6 +2019,7 @@ def train_narrative_gbt(
 # ---------------------------------------------------------------------------
 # train-trigger-gbt
 # ---------------------------------------------------------------------------
+
 
 @rl_app.command("train-trigger-gbt")
 def train_trigger_gbt(
@@ -1952,15 +2059,15 @@ def train_trigger_gbt(
     for name, arr in [("stop_targets", stop_targets)]:
         if len(arr) != n:
             padded = np.full(n, 10.0, dtype=np.float32)
-            padded[:len(arr)] = arr
+            padded[: len(arr)] = arr
             stop_targets = padded
     if breakeven_reached is not None and len(breakeven_reached) != n:
         padded = np.zeros(n, dtype=breakeven_reached.dtype)
-        padded[:len(breakeven_reached)] = breakeven_reached
+        padded[: len(breakeven_reached)] = breakeven_reached
         breakeven_reached = padded
     if levels_captured is not None and len(levels_captured) != n:
         padded = np.zeros(n, dtype=levels_captured.dtype)
-        padded[:len(levels_captured)] = levels_captured
+        padded[: len(levels_captured)] = levels_captured
         levels_captured = padded
 
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
@@ -1989,13 +2096,16 @@ def train_trigger_gbt(
         typer.echo(f"Loading NarrativeGBT from {narrative_path}...")
         narrative_model = NarrativeGBT.load(narrative_path)
         # Extract the same narrative features used during training
-        narrative_feats = np.concatenate([
-            observations[:, 52:116],    # structure (64)
-            observations[:, 116:154],   # TPO (38)
-            observations[:, 178:189],   # macro (11)
-            observations[:, 208:228],   # AMT (20)
-            observations[:, 228:248],   # AMT dynamics (20)
-        ], axis=1)
+        narrative_feats = np.concatenate(
+            [
+                observations[:, 52:116],  # structure (64)
+                observations[:, 116:154],  # TPO (38)
+                observations[:, 178:189],  # macro (11)
+                observations[:, 208:228],  # AMT (20)
+                observations[:, 228:248],  # AMT dynamics (20)
+            ],
+            axis=1,
+        )
         setup_probs = narrative_model.predict_setup_probs_batch(narrative_feats)  # (N, 8)
         typer.echo(f"  Setup probs shape: {setup_probs.shape}")
     else:
@@ -2011,15 +2121,18 @@ def train_trigger_gbt(
     #   micro       248:268  (20)
     #   approach    268:269  (1)
     # Total raw: 97 dims
-    raw_trigger = np.concatenate([
-        observations[:, 0:31],      # zone_comp (31)
-        observations[:, 31:52],     # orderflow (21)
-        observations[:, 154:169],   # candles (15)
-        observations[:, 169:173],   # zone_feat (4)
-        observations[:, 173:178],   # zone_conf (5)
-        observations[:, 248:268],   # micro (20)
-        observations[:, 268:269],   # approach (1)
-    ], axis=1)
+    raw_trigger = np.concatenate(
+        [
+            observations[:, 0:31],  # zone_comp (31)
+            observations[:, 31:52],  # orderflow (21)
+            observations[:, 154:169],  # candles (15)
+            observations[:, 169:173],  # zone_feat (4)
+            observations[:, 173:178],  # zone_conf (5)
+            observations[:, 248:268],  # micro (20)
+            observations[:, 268:269],  # approach (1)
+        ],
+        axis=1,
+    )
 
     # Passthrough features (10 high-importance raw features)
     passthrough = np.stack([extract_passthrough(obs) for obs in observations])
@@ -2029,8 +2142,11 @@ def train_trigger_gbt(
     if setup_probs is not None:
         parts.append(setup_probs)
     X = np.concatenate(parts, axis=1)
-    typer.echo(f"Trigger features: {X.shape[1]} dims (raw={raw_trigger.shape[1]} + passthrough={passthrough.shape[1]}"
-               + (f" + narrative={setup_probs.shape[1]}" if setup_probs is not None else "") + ")")
+    typer.echo(
+        f"Trigger features: {X.shape[1]} dims (raw={raw_trigger.shape[1]} + passthrough={passthrough.shape[1]}"
+        + (f" + narrative={setup_probs.shape[1]}" if setup_probs is not None else "")
+        + ")"
+    )
 
     # --- Labels ---
     y_direction = (rewards_cont > rewards_rev).astype(np.int32)
@@ -2057,7 +2173,7 @@ def train_trigger_gbt(
     )
 
     # Print metrics
-    typer.echo(f"\n  Results:")
+    typer.echo("\n  Results:")
     typer.echo(f"    Engine           : {metrics['engine']}")
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
     typer.echo(f"    Direction acc    : {metrics['direction_accuracy']}%")
@@ -2066,7 +2182,7 @@ def train_trigger_gbt(
 
     # Feature importance
     top_features = model.feature_importance(top_n=10)
-    typer.echo(f"\n  Top 10 feature importances (direction head):")
+    typer.echo("\n  Top 10 feature importances (direction head):")
     for idx, imp in top_features:
         typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
 

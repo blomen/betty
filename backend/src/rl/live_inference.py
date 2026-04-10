@@ -2,6 +2,7 @@
 
 Supports both GBT (preferred) and DQN models. GBT is loaded first if available.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,7 +15,7 @@ from .agent.gbt_model import GBTModel
 from .agent.network import DQNetwork
 from .config import Action, LevelType
 from .data.normalization import RunningNormalizer
-from .features.observation import build_observation, OBSERVATION_DIM
+from .features.observation import OBSERVATION_DIM, build_observation
 
 log = logging.getLogger(__name__)
 
@@ -104,8 +105,11 @@ class LiveInference:
 
     def _load_dqn(self, path: Path) -> bool:
         try:
-            self._dqn = DQNetwork(input_dim=OBSERVATION_DIM)
             checkpoint = torch.load(path, weights_only=False, map_location="cpu")
+            # Infer input dim from saved weights (handles both 276 base and 292 augmented)
+            first_weight = checkpoint["q_network"]["feature_net.0.weight"]
+            obs_dim = first_weight.shape[1]
+            self._dqn = DQNetwork(input_dim=obs_dim)
             self._dqn.load_state_dict(checkpoint["q_network"])
             self._dqn.eval()
             self._load_normalizer(path)
@@ -238,7 +242,8 @@ class LiveInferenceV5:
                     self._normalizer.load(norm_path)
                     log.info(
                         "Normalizer loaded from %s (count=%d)",
-                        norm_path, self._normalizer.count,
+                        norm_path,
+                        self._normalizer.count,
                     )
 
         if narrative_loaded and trigger_loaded:
@@ -246,13 +251,15 @@ class LiveInferenceV5:
         else:
             log.info(
                 "LiveInferenceV5: narrative=%s trigger=%s",
-                narrative_loaded, trigger_loaded,
+                narrative_loaded,
+                trigger_loaded,
             )
         return narrative_loaded and trigger_loaded
 
     def update_narrative(self, state: dict) -> None:
         """Update narrative signals. Call every 30min or on structural events."""
         from .features.narrative_features import extract_narrative_features
+
         self._narrative_cache = extract_narrative_features(state)
 
     def infer(self, state: dict) -> dict | None:
@@ -284,6 +291,7 @@ class LiveInferenceV5:
 
         # 5. Build trigger observation without GBT forecast
         from .features.trigger_features import build_trigger_observation
+
         trigger_obs_no_gbt = build_trigger_observation(
             narrative=narrative,
             setup_probs=setup_probs_arr,
@@ -305,25 +313,19 @@ class LiveInferenceV5:
         )
 
         # 8. Final direction prediction from trigger GBT
-        action_idx, confidence, prob_cont, prob_rev = self._trigger_gbt.predict_direction(
-            trigger_obs
-        )
+        action_idx, confidence, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
         stop_ticks = self._trigger_gbt.predict_stop(trigger_obs)
 
         # Build setup_probs dict
         from .labeling.setup_types import SetupType
+
         setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
-        setup_probs_dict = {
-            name: float(setup_probs_arr[i])
-            for i, name in enumerate(setup_names)
-        }
+        setup_probs_dict = {name: float(setup_probs_arr[i]) for i, name in enumerate(setup_names)}
 
         # Build narrative dict
         from .features.narrative_features import NARRATIVE_NAMES
-        narrative_dict = {
-            name: float(narrative[i])
-            for i, name in enumerate(NARRATIVE_NAMES)
-        }
+
+        narrative_dict = {name: float(narrative[i]) for i, name in enumerate(NARRATIVE_NAMES)}
 
         # Composite confidence scoring
         from .confidence import compute_composite_confidence, size_multiplier
