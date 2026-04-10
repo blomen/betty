@@ -13,10 +13,8 @@ import {
 import { api } from '@/hooks/useApi';
 import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } from '@/types';
 
-const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
-const CANDLE_CACHE_KEY = 'firevstocks_candles_1m';
 
 // VP overlay config: which timeframes to show, with colors
 const VP_OVERLAYS = [
@@ -83,6 +81,7 @@ interface Props {
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
   zones?: Array<{ price: number; members: number }>;
+  interval?: '1m' | '5m' | '15m';
 }
 
 function toCandle(c: CandleData): CandlestickData<Time> {
@@ -166,7 +165,8 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval = '1m' }: Props) {
+  const CACHE_KEY = `firevstocks_candles_${interval}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -744,7 +744,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
     // Phase 1: Instant render from cache (if available)
     let hadCache = false;
     try {
-      const cached = sessionStorage.getItem(CANDLE_CACHE_KEY);
+      const cached = sessionStorage.getItem(CACHE_KEY);
       if (cached) {
         const parsed: CandleData[] = JSON.parse(cached);
         if (parsed.length > 0) {
@@ -758,13 +758,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
     (async () => {
       try {
         if (!hadCache) setLoading(true);
-        const res = await api.getCandles(INTERVAL, INITIAL_DAYS);
+        const res = await api.getCandles(interval, INITIAL_DAYS);
         if (res.candles?.length) {
           const cleaned = res.candles.map(c => ({ ...c, t: Number(c.t) })).filter(c => !isNaN(c.t) && c.t > 0);
           const sorted = dedupeAndSort(cleaned);
           applyCandles(sorted);
           // Persist to cache for next page load
-          try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(sorted)); } catch { /* quota */ }
+          try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(sorted)); } catch { /* quota */ }
         } else if (!hadCache) {
           setNoData(true);
         }
@@ -792,7 +792,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
       volumeSeriesRef.current = null;
       anchorSeriesRef.current = null;
     };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval]);
 
   // Subscribe VP overlay redraws to chart events (throttled to ~60fps)
   useEffect(() => {
@@ -884,7 +885,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
 
       fetchingRef.current = true;
 
-      api.getCandles(INTERVAL, SCROLL_DAYS, endDate)
+      api.getCandles(interval, SCROLL_DAYS, endDate)
         .then(res => {
           if (!res.candles?.length) { exhaustedRef.current = true; return; }
           const existing = new Set(candlesRef.current.map(c => c.t));
@@ -935,7 +936,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
 
     // Periodically persist candles to cache so next page load is instant
     if (existing.length > 0 && existing.length % 10 === 0) {
-      try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(existing)); } catch { /* quota */ }
+      try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(existing)); } catch { /* quota */ }
     }
   }, [lastCandle, loading, drawOverlays]);
 

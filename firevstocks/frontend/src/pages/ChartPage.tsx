@@ -12,8 +12,72 @@ interface Props {
   exits: ExitEvent[]
 }
 
+// Level groups: toggling a group toggles all its children
+const LEVEL_GROUPS: Record<string, string[]> = {
+  vwap: ['vwap'],
+  ib: ['ibh', 'ibl'],
+  pdh_pdl: ['pdh', 'pdl'],
+  tokyo: ['tokyo_h', 'tokyo_l'],
+  london: ['london_h', 'london_l'],
+  daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
+  weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
+  monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
+  tpo_tokyo: ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val'],
+  tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val'],
+  tpo_ny: ['tpo_ny_letters', 'tpo_ny_poc', 'tpo_ny_vah', 'tpo_ny_val'],
+  daily_swing: ['daily_swing_high', 'daily_swing_low'],
+  weekly_swing: ['weekly_swing_high', 'weekly_swing_low'],
+  monthly_swing: ['monthly_swing_high', 'monthly_swing_low'],
+  zones: ['zones'],
+}
+
+// Display config for sidebar
+const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label: string; color: string }> }> = [
+  {
+    label: 'Overlays',
+    groups: [
+      { key: 'vwap', label: 'VWAP', color: '#EAB308' },
+      { key: 'zones', label: 'Zones', color: '#A78BFA' },
+    ],
+  },
+  {
+    label: 'Volume Profile',
+    groups: [
+      { key: 'daily_vp', label: 'Daily VP', color: '#A855F7' },
+      { key: 'weekly_vp', label: 'Weekly VP', color: '#EC4899' },
+      { key: 'monthly_vp', label: 'Monthly VP', color: '#F59E0B' },
+    ],
+  },
+  {
+    label: 'Session Levels',
+    groups: [
+      { key: 'pdh_pdl', label: 'PDH/PDL', color: '#FB923C' },
+      { key: 'ib', label: 'IB H/L', color: '#F59E0B' },
+      { key: 'tokyo', label: 'Tokyo H/L', color: '#22D3EE' },
+      { key: 'london', label: 'London H/L', color: '#34D399' },
+    ],
+  },
+  {
+    label: 'TPO',
+    groups: [
+      { key: 'tpo_tokyo', label: 'Tokyo TPO', color: '#0891B2' },
+      { key: 'tpo_london', label: 'London TPO', color: '#059669' },
+      { key: 'tpo_ny', label: 'NY TPO', color: '#DC2626' },
+    ],
+  },
+  {
+    label: 'Swing Levels',
+    groups: [
+      { key: 'daily_swing', label: 'Daily', color: '#E2E8F0' },
+      { key: 'weekly_swing', label: 'Weekly', color: '#3B82F6' },
+      { key: 'monthly_swing', label: 'Monthly', color: '#A855F7' },
+    ],
+  },
+]
+
 export function ChartPage({ lastTick, session, zones, signals: _signals, fills: _fills, exits: _exits }: Props) {
   const [interval, setInterval_] = useState<'1m' | '5m' | '15m'>('5m')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [hiddenLevels, setHiddenLevels] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem('firevstocks-hidden-levels')
@@ -25,18 +89,37 @@ export function ChartPage({ lastTick, session, zones, signals: _signals, fills: 
     localStorage.setItem('firevstocks-hidden-levels', JSON.stringify([...hiddenLevels]))
   }, [hiddenLevels])
 
-  const toggleLevel = useCallback((key: string) => {
+  const toggleGroup = useCallback((group: string) => {
+    const keys = LEVEL_GROUPS[group]
+    if (!keys) return
     setHiddenLevels(prev => {
       const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      const allHidden = keys.every(k => next.has(k))
+      keys.forEach(k => allHidden ? next.delete(k) : next.add(k))
       return next
     })
   }, [])
-  void toggleLevel // available for future use
+
+  const toggleAll = useCallback(() => {
+    setHiddenLevels(prev => {
+      const allKeys = Object.values(LEVEL_GROUPS).flat()
+      const allHidden = allKeys.every(k => prev.has(k))
+      return new Set(allHidden ? [] : allKeys)
+    })
+  }, [])
+
+  const isGroupHidden = (group: string) => {
+    const keys = LEVEL_GROUPS[group]
+    return keys ? keys.every(k => hiddenLevels.has(k)) : false
+  }
 
   const [lastCandle, setLastCandle] = useState<CandleData | null>(null)
   const candleIntervalSec = interval === '1m' ? 60 : interval === '5m' ? 300 : 900
+
+  // Reset live candle when interval changes
+  useEffect(() => {
+    setLastCandle(null)
+  }, [interval])
 
   useEffect(() => {
     if (!lastTick) return
@@ -61,6 +144,7 @@ export function ChartPage({ lastTick, session, zones, signals: _signals, fills: 
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-1">
+      {/* Status bar */}
       <div className="flex items-center gap-3 px-1">
         {price && (
           <span className="text-sm font-mono font-bold text-zinc-200">
@@ -87,14 +171,70 @@ export function ChartPage({ lastTick, session, zones, signals: _signals, fills: 
             {lastTick.tick_count.toLocaleString()} ticks
           </span>
         )}
+        <div className="flex-1" />
+        <button
+          onClick={() => setSidebarOpen(v => !v)}
+          className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 px-1"
+        >
+          {sidebarOpen ? '▶ Hide' : '◀ Show'} Indicators
+        </button>
       </div>
-      <div className="flex-1 border border-zinc-800 bg-zinc-950 min-h-0 overflow-hidden">
-        <CandleChart
-          lastCandle={lastCandle}
-          session={session}
-          hiddenLevels={hiddenLevels}
-          zones={zones}
-        />
+
+      {/* Chart + sidebar */}
+      <div className="flex flex-1 min-h-0 gap-1">
+        {/* Chart */}
+        <div className="flex-1 border border-zinc-800 bg-zinc-950 min-h-0 overflow-hidden">
+          <CandleChart
+            lastCandle={lastCandle}
+            session={session}
+            hiddenLevels={hiddenLevels}
+            zones={zones}
+            interval={interval}
+          />
+        </div>
+
+        {/* Sidebar — level toggles */}
+        {sidebarOpen && (
+          <div className="w-[160px] border border-zinc-800 bg-zinc-900 overflow-y-auto flex-shrink-0">
+            {/* Master toggle */}
+            <div className="px-2 py-1 border-b border-zinc-800">
+              <button
+                onClick={toggleAll}
+                className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider hover:text-zinc-300"
+              >
+                Toggle All
+              </button>
+            </div>
+
+            {TOGGLE_SECTIONS.map(section => (
+              <div key={section.label} className="border-b border-zinc-800">
+                <div className="px-2 py-1 text-[9px] font-mono text-zinc-600 uppercase tracking-wider">
+                  {section.label}
+                </div>
+                {section.groups.map(g => {
+                  const hidden = isGroupHidden(g.key)
+                  return (
+                    <button
+                      key={g.key}
+                      onClick={() => toggleGroup(g.key)}
+                      className={`flex items-center gap-1.5 w-full px-2 py-0.5 text-left text-[10px] font-mono hover:bg-zinc-800 transition-colors ${
+                        hidden ? 'opacity-30 line-through' : ''
+                      }`}
+                    >
+                      <span
+                        className="w-2 h-2 flex-shrink-0"
+                        style={{ backgroundColor: hidden ? '#3f3f46' : g.color }}
+                      />
+                      <span className={hidden ? 'text-zinc-600' : 'text-zinc-400'}>
+                        {g.label}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
