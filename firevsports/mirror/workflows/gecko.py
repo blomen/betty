@@ -30,11 +30,15 @@ class GeckoWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: "Page") -> bool:
-        """Check login via Gecko wallets API."""
+        """Check login via Gecko wallets API — must have actual balance data."""
         result = await self._evaluate_api(page, self._wallets_url())
         if result is None or "__error" in (result or {}):
             return False
-        return True
+        try:
+            float(result["Balances"]["SEK"]["Real"]["Balance"])
+            return True
+        except (KeyError, TypeError, ValueError):
+            return False
 
     async def sync_balance(self, page: "Page") -> float:
         """Read balance from Gecko wallets API — Balances.SEK.Real.Balance."""

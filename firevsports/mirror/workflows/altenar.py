@@ -67,7 +67,12 @@ class AltenarWorkflow(ProviderWorkflow):
         result = await self._evaluate_api(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
-        return True
+        # Must have actual balance data — not just a non-error response
+        try:
+            float(result["cash"]["total"])
+            return True
+        except (KeyError, TypeError, ValueError):
+            return False
 
     async def sync_balance(self, page: "Page") -> float:
         result = await self._evaluate_api(page, self._balance_url())

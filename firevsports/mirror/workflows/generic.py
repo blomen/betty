@@ -90,7 +90,12 @@ class GenericWorkflow(ProviderWorkflow):
             return await self.strategy.check_login(page, self.intel)
 
         if not self.intel or not self.intel.get("login"):
-            return True  # Assume logged in if no intel
+            # No intel — try balance check as fallback
+            try:
+                bal = await self.sync_balance(page)
+                return bal > 0
+            except Exception:
+                return False
 
         login = self.intel["login"]
         if login["method"] == "balance_api":

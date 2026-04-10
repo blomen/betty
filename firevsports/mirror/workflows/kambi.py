@@ -38,15 +38,30 @@ class KambiWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: "Page") -> bool:
-        """Try known balance endpoint if available, otherwise assume logged in."""
+        """Try known balance endpoint — must return parseable balance data."""
         url = self._balance_url()
         if url is None:
-            return True  # No known endpoint — assume logged in if tab is open
+            # No known endpoint — check for logged-in DOM indicator
+            try:
+                has_balance = await page.evaluate("() => !!document.querySelector('[data-test-id=\"balance\"], .balance, .user-balance')")
+                return bool(has_balance)
+            except Exception:
+                return False
 
         result = await self._evaluate_api(page, url)
         if result is None or "__error" in (result or {}):
             return False
-        return True
+        # Must have actual balance data
+        try:
+            if "mainBalance" in result:
+                float(result["mainBalance"]["amount"])
+                return True
+            for key in ("balance", "amount", "cash"):
+                if key in result:
+                    return True
+        except (KeyError, TypeError, ValueError):
+            pass
+        return False
 
     async def sync_balance(self, page: "Page") -> float:
         """Try known balance endpoint, otherwise return -1 (unknown)."""
