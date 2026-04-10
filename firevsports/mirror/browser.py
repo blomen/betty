@@ -169,12 +169,20 @@ class MirrorBrowser:
             return {"logged_in": False, "reason": "no_tab"}
         try:
             balance_text = await page.evaluate(r"""() => {
-                const text = document.body.innerText;
-                const m = text.match(/(\d+[,.\s]\d+)\s*KR/i);
-                if (m) return m[1].replace(/\s/g, '').replace(',', '.');
-                // Also check for $ balance (Polymarket etc)
-                const m2 = text.match(/\$\s*(\d+[,.]\d+)/);
-                if (m2) return m2[1].replace(',', '.');
+                // Look for balance in header/nav/toolbar area only — not promo banners
+                const navEls = document.querySelectorAll('header, nav, [class*="header"], [class*="toolbar"], [class*="balance"], [class*="user"], [class*="account"], [class*="wallet"]');
+                for (const el of navEls) {
+                    const text = el.innerText || '';
+                    const m = text.match(/(\d+[,.\s]\d{2})\s*KR/i);
+                    if (m) return m[1].replace(/\s/g, '').replace(',', '.');
+                }
+                // Polymarket: look for Cash $XX.XX in nav
+                const allNav = document.querySelectorAll('nav, nav *');
+                for (const el of allNav) {
+                    const text = el.textContent || '';
+                    const m2 = text.match(/Cash\s*\$\s*(\d+[,.]\d+)/);
+                    if (m2) return m2[1].replace(',', '.');
+                }
                 return null;
             }""")
             if balance_text:
