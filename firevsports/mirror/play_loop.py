@@ -257,11 +257,15 @@ class PlayLoop:
                 })
                 logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (balance: {bal})")
                 return True
-            # Fallback: try workflow check_login
+            # Fallback: check DOM for balance text
             try:
-                if await workflow.check_login(page):
-                    self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id})
-                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (via workflow)")
+                dom_result = await self._browser.check_login_dom(workflow.provider_id)
+                if dom_result.get("logged_in"):
+                    self._broadcaster.publish("login_detected", {
+                        "provider_id": workflow.provider_id,
+                        "balance": dom_result.get("balance"),
+                    })
+                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (via DOM: {dom_result.get('balance')})")
                     return True
             except Exception:
                 pass

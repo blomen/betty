@@ -154,6 +154,45 @@ class MirrorBrowser:
         """Get last known balance for a provider."""
         return self.provider_data.get(provider_id, {}).get("balance")
 
+    async def check_login_dom(self, provider_id: str) -> dict:
+        """Check login by scraping balance from DOM — fallback when interception misses."""
+        if not self._context:
+            return {"logged_in": False}
+        from .workflows import get_workflow
+        workflow = get_workflow(provider_id)
+        page = None
+        for p in self._context.pages:
+            if workflow.domain in p.url:
+                page = p
+                break
+        if not page:
+            return {"logged_in": False, "reason": "no_tab"}
+        try:
+            balance_text = await page.evaluate(r"""() => {
+                const text = document.body.innerText;
+                const m = text.match(/(\d+[,.\s]\d+)\s*KR/i);
+                if (m) return m[1].replace(/\s/g, '').replace(',', '.');
+                // Also check for $ balance (Polymarket etc)
+                const m2 = text.match(/\$\s*(\d+[,.]\d+)/);
+                if (m2) return m2[1].replace(',', '.');
+                return null;
+            }""")
+            if balance_text:
+                balance = float(balance_text)
+                if provider_id not in self.provider_data:
+                    self.provider_data[provider_id] = {}
+                self.provider_data[provider_id]["logged_in"] = True
+                self.provider_data[provider_id]["balance"] = balance
+                self.provider_data[provider_id]["source"] = "dom"
+                if self._on_event:
+                    self._on_event("balance_intercepted", {
+                        "provider_id": provider_id, "balance": balance, "source": "dom",
+                    })
+                return {"logged_in": True, "balance": balance}
+        except Exception:
+            pass
+        return {"logged_in": False}
+
     # ------------------------------------------------------------------
     # Interception
     # ------------------------------------------------------------------

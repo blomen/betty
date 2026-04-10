@@ -91,16 +91,40 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         page = await workflow.find_tab(browser.context)
         if not page:
             return {"found": False, "reason": "no_tab", "domain": workflow.domain}
-        # Use intercepted data (fast, no API calls)
+        # Use intercepted data first, fallback to DOM scrape
         intercepted = browser.provider_data.get(provider_id, {})
+        logged_in = intercepted.get("logged_in", False)
+        balance = intercepted.get("balance")
+        if not logged_in:
+            dom = await browser.check_login_dom(provider_id)
+            logged_in = dom.get("logged_in", False)
+            balance = dom.get("balance") or balance
         return {
             "found": True,
             "provider_id": provider_id,
             "url": page.url,
-            "logged_in": intercepted.get("logged_in", False),
-            "balance": intercepted.get("balance"),
+            "logged_in": logged_in,
+            "balance": balance,
             "domain": workflow.domain,
         }
+
+    @router.get("/browser/screenshot/{provider_id}")
+    async def browser_screenshot(provider_id: str):
+        """Take screenshot of provider tab and check for balance text."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab found"}
+        # Check page content for balance
+        balance_text = await page.evaluate("""() => {
+            const text = document.body.innerText;
+            const m = text.match(/(\\d+[,.]\\d+)\\s*KR/i);
+            return m ? m[0] : null;
+        }""")
+        await page.screenshot(path="debug_screenshot.png")
+        return {"url": page.url, "balance_text": balance_text, "screenshot": "debug_screenshot.png"}
 
     @router.get("/status")
     async def get_status():
