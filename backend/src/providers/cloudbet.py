@@ -256,7 +256,7 @@ class CloudbetRetriever(Retriever):
                 proxy=os.environ.get("PROXY_URL"),
             )
         super().__init__(config, transport)
-        self._api_key = config.get("api_key", "")
+        self._api_key = os.environ.get("CLOUDBET_API_KEY", config.get("api_key", ""))
 
     def _get_sport_url(self, sport: str) -> str:
         """Not used — extraction uses a two-step fetch inside extract()."""
