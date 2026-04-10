@@ -3,6 +3,7 @@ import { useDashboardWS } from './hooks/useDashboardWS'
 import { api } from './hooks/useApi'
 import type { ExpandedSession } from './types'
 import { ChartPage } from './pages/ChartPage'
+import { DQNPage } from './pages/DQNPage'
 
 type Tab = 'chart' | 'dqn' | 'bankroll' | 'stats'
 
@@ -69,7 +70,9 @@ export default function App() {
             exits={ws.exits}
           />
         )}
-        {activeTab === 'dqn' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">DQN — {ws.signals.length} signals</div>}
+        {activeTab === 'dqn' && (
+          <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} />
+        )}
         {activeTab === 'bankroll' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Bankroll — {ws.positions.length} positions</div>}
         {activeTab === 'stats' && <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm font-mono">Stats tab</div>}
       </div>
