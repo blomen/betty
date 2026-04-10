@@ -93,7 +93,7 @@ backend/src/
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
 - **Security headers**: CSP, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, `server_tokens off`
 - **CORS lockdown** — origins from `CORS_ORIGINS` env var (not hardcoded), explicit methods/headers only
-- `/health` endpoint is exempted from auth (needed for Docker healthcheck)
+- `/health/*` endpoints are exempted from auth (nginx `location /health` block with `auth_basic off`)
 - To update the password: `ssh root@148.251.40.251 "openssl passwd -apr1 NEW_PASSWORD | xargs -I{} echo 'firev:{}' > /opt/firev/nginx/.htpasswd && cd /opt/firev && docker compose restart nginx"`
 
 ### Database
@@ -112,32 +112,50 @@ backend/src/
 **IMPORTANT: Always use the deploy script to prevent conflicts between concurrent agents.**
 
 ```bash
-# After pushing to main (full rebuild):
+# After pushing to main (full rebuild — needed for ANY code/Dockerfile change):
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh rebuild backend"
 
-# For config/env-only changes (code is baked into Docker image, so Python changes need rebuild too):
+# For config/env-only changes (restart is NOT enough for code changes — code is baked into Docker image):
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh restart backend"
 
 # Check logs (no lock needed):
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh logs backend 30"
 
-# Check deploy status + containers:
+# Check deploy status + containers + disk:
 ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh status"
+
+# Clean up old Docker images and build cache:
+ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh cleanup"
 
 # Check extraction:
 ssh root@148.251.40.251 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
+
+### Docker Build (Multi-Stage)
+The `Dockerfile` uses a 2-stage build for fast rebuilds:
+- **Stage 1** (Node.js): Builds frontend → only `dist/` carried to final image (no Node.js runtime)
+- **Stage 2** (Python): pip install cached by `pyproject.toml` layer → code-only changes skip pip/torch rebuild
+- **Auto-cleanup**: `docker image prune` runs after each rebuild to prevent disk bloat
+- Code-only rebuilds take ~30s (cached deps). Full rebuilds (pyproject.toml change) take ~5min.
+
+### Health Endpoints (Public, No Auth)
+- `GET /health` — basic status, boot_id, uptime
+- `GET /health/live` — liveness probe
+- `GET /health/ready` — readiness probe (DB connectivity, provider count)
+- `GET /health/extraction` — extraction pipeline health: last 3 runs, failed providers, match rates, issues
 
 ### Multi-Agent Coordination (IMPORTANT)
 
 Multiple Claude Code agents may work on this repo concurrently. **Follow these rules to avoid conflicts:**
 
 1. **Always check server status before deploying**: Run `server-deploy.sh status` first
-2. **Never run raw `docker compose up/restart/build`** — always use `scripts/server-deploy.sh` which acquires an exclusive `flock`
+2. **Never run raw `docker compose up/restart/build`** — always use `scripts/server-deploy.sh` which acquires an exclusive `flock`. A PreToolUse hook blocks raw docker compose commands.
 3. **Read-only operations are safe concurrently**: logs, status, DB queries, extraction logs
 4. **Destructive operations are serialized by the lock**: rebuild, restart, git pull
 5. **If the lock is held**, wait and retry — don't bypass it
 6. **Coordinate git pushes**: If you're about to push + deploy, check `git log` on the server first to ensure no other agent pushed recently
+7. **Use `/deploy` skill** for guided deployment with health verification
+8. **Use `/server-health` skill** for quick production status checks
 
 ### Postgres FK Enforcement
 **PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
@@ -357,7 +375,12 @@ EV logic (`src/analysis/ev_enrichment.py`):
 - **Debugging extraction**: `systematic-debugging` triggers automatically for root cause investigation
 - **Shipping**: `/commit-push-pr` (commit-commands) → `/code-review` (posts review comment on PR)
 - **Code review** runs 5 parallel agents checking: CLAUDE.md compliance, bugs, git history, previous PRs, code comments. Only issues scoring 80+ confidence are posted.
+- **Deploying**: `/deploy` — guided deploy with lock coordination + health verification
+- **Server monitoring**: `/server-health` — quick production status (containers, extraction, DB, disk)
+- **Extraction monitoring**: Scheduled remote agent checks `/health/extraction` every 3h, commits alert on WARNING/CRITICAL
 - **Frontend changes**: Use Claude Preview (`preview_start`, `preview_screenshot`) to verify UI
 - **DB queries**: Use postgres MCP directly — no Python scripts needed
 - **Multi-file sweeps**: `/ralph-loop` for repetitive changes across many files
 - **Docs lookup**: context7 MCP for FastAPI, SQLAlchemy, Playwright, rapidfuzz docs
+- **Auto-formatting**: PostToolUse hooks auto-run `ruff` on `.py` files and `eslint --fix` on `.ts/.tsx` files after every Edit/Write
+- **CI linting**: GitHub Actions runs `ruff check` + `ruff format --check` + `npm run lint` on every push/PR
