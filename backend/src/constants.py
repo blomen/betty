@@ -1,21 +1,36 @@
 """Shared constants for Firev."""
 
 # Market types to extract (all others skipped)
-ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})
+ALLOWED_MARKETS = frozenset({"1x2", "moneyline", "spread", "total"})
 
 # Esports map-level markets — used for map winner value scanning
 # (Pinnacle period 1-5 + Polymarket child_moneyline/map_handicap)
-MAP_MARKETS = frozenset({
-    'moneyline_m1', 'moneyline_m2', 'moneyline_m3', 'moneyline_m4', 'moneyline_m5',
-    'total_m1', 'total_m2', 'total_m3', 'total_m4', 'total_m5',
-})
+MAP_MARKETS = frozenset(
+    {
+        "moneyline_m1",
+        "moneyline_m2",
+        "moneyline_m3",
+        "moneyline_m4",
+        "moneyline_m5",
+        "total_m1",
+        "total_m2",
+        "total_m3",
+        "total_m4",
+        "total_m5",
+    }
+)
 
 # Extended markets stored for Pinnacle/Polymarket — includes esports map markets
 # for map-level value scanning. team_total/1h markets removed (never used by analysis).
 ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS
 
 # Sharp/reference providers for fair odds
-SHARP_PROVIDERS = frozenset({'pinnacle'})
+SHARP_PROVIDERS = frozenset({"pinnacle"})
+
+# Signal-only providers — odds used for consensus/fair-odds but NOT for opportunity
+# generation (can't place bets on these). Their odds strengthen the model but they
+# should never appear as "bet on marathon" in the frontend.
+SIGNAL_ONLY_PROVIDERS = frozenset({"marathon", "stake"})
 
 # Polymarket fee: 2% on net profit (winnings minus cost).
 # Effective odds after fee = (1 - fee) * odds + fee
@@ -24,31 +39,55 @@ POLYMARKET_FEE_RATE = 0.02
 # Providers that store the extended market set (enrichment + map markets).
 # Pinnacle: sharp baseline for all markets.
 # Polymarket: needs map markets for value comparison vs Pinnacle.
-EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({'polymarket'})
+EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({"polymarket"})
 
 # Platform map: provider_id -> platform name
 # Providers on the same platform share the same odds engine (not independent).
 # Used for consensus calculations where we need independent pricing sources.
 PLATFORM_MAP: dict[str, str] = {
     # Kambi — 100% identical odds across all brands
-    'unibet': 'kambi', 'leovegas': 'kambi', 'expekt': 'kambi', 'betmgm': 'kambi',
-    'speedybet': 'kambi', 'x3000': 'kambi', 'goldenbull': 'kambi', '1x2': 'kambi',
+    "unibet": "kambi",
+    "leovegas": "kambi",
+    "expekt": "kambi",
+    "betmgm": "kambi",
+    "speedybet": "kambi",
+    "x3000": "kambi",
+    "goldenbull": "kambi",
+    "1x2": "kambi",
     # Altenar — main group ~99.7% identical; dbet ~70% identical (separate extraction)
-    'dbet': 'altenar', 'betinia': 'altenar', 'lodur': 'altenar',
-    'campobet': 'altenar', 'swiper': 'altenar', 'quickcasino': 'altenar',
+    "dbet": "altenar",
+    "betinia": "altenar",
+    "lodur": "altenar",
+    "campobet": "altenar",
+    "swiper": "altenar",
+    "quickcasino": "altenar",
     # Gecko V2 — ~40% identical (some variance between brands)
-    'betsson': 'gecko', 'nordicbet': 'gecko', 'bethard': 'gecko', 'spelklubben': 'gecko',
+    "betsson": "gecko",
+    "nordicbet": "gecko",
+    "bethard": "gecko",
+    "spelklubben": "gecko",
     # Spectate — 100% identical
-    'mrgreen': 'spectate', '888sport': 'spectate',
+    "mrgreen": "spectate",
+    "888sport": "spectate",
     # ComeOn Group — same odds engine, identical odds confirmed 2026-03-14
-    'comeon': 'comeon', 'hajper': 'comeon', 'lyllo': 'comeon', 'snabbare': 'comeon',
+    "comeon": "comeon",
+    "hajper": "comeon",
+    "lyllo": "comeon",
+    "snabbare": "comeon",
     # Standalone platforms (each is its own independent source)
-    'vbet': 'vbet', 'interwetten': 'interwetten', '10bet': '10bet',
-    'tipwin': 'tipwin', 'coolbet': 'coolbet',
+    "vbet": "vbet",
+    "interwetten": "interwetten",
+    "10bet": "10bet",
+    "tipwin": "tipwin",
+    "coolbet": "coolbet",
     # Sharp
-    'pinnacle': 'pinnacle',
+    "pinnacle": "pinnacle",
     # Prediction markets
-    'polymarket': 'polymarket',
+    "polymarket": "polymarket",
+    # International signal providers (independent odds, used for consensus)
+    "marathon": "marathon",
+    "cloudbet": "cloudbet",
+    "stake": "stake",
 }
 
 # Platform groups for consolidation: extract once per platform, store under canonical
@@ -90,8 +129,7 @@ for _group in PLATFORM_GROUPS.values():
 # Reverse lookup: canonical provider → all member providers
 # e.g. {"unibet": ["unibet", "leovegas", ...], "888sport": ["888sport", "mrgreen"]}
 CANONICAL_MEMBERS: dict[str, list[str]] = {
-    _group["canonical"]: _group["members"]
-    for _group in PLATFORM_GROUPS.values()
+    _group["canonical"]: _group["members"] for _group in PLATFORM_GROUPS.values()
 }
 
 # Sports to extract - these have pinnacle_id in sports.yaml
@@ -102,11 +140,18 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
 # When limited at a provider, only play major leagues where limits are higher
 MAJOR_LEAGUES: dict[str, list[str]] = {
     "football": [
-        "England - Premier League", "Spain - La Liga", "Germany - Bundesliga",
-        "Italy - Serie A", "France - Ligue 1", "England - Championship",
-        "USA - Major League Soccer", "Brazil - Serie A",
-        "FIFA - World Cup", "FIFA - World Cup Qualifiers Europe",
-        "UEFA Champions League", "UEFA Europa League",
+        "England - Premier League",
+        "Spain - La Liga",
+        "Germany - Bundesliga",
+        "Italy - Serie A",
+        "France - Ligue 1",
+        "England - Championship",
+        "USA - Major League Soccer",
+        "Brazil - Serie A",
+        "FIFA - World Cup",
+        "FIFA - World Cup Qualifiers Europe",
+        "UEFA Champions League",
+        "UEFA Europa League",
     ],
     "basketball": ["NBA", "NCAA"],
     "ice_hockey": ["NHL"],
@@ -115,28 +160,28 @@ MAJOR_LEAGUES: dict[str, list[str]] = {
     "boxing": ["Boxing Matches"],
 }
 
-MAJOR_LEAGUES_FLAT: frozenset[str] = frozenset(
-    league for leagues in MAJOR_LEAGUES.values() for league in leagues
-)
+MAJOR_LEAGUES_FLAT: frozenset[str] = frozenset(league for leagues in MAJOR_LEAGUES.values() for league in leagues)
 
-ALLOWED_SPORTS = frozenset({
-    'football',
-    'basketball',
-    'tennis',
-    'ice_hockey',
-    'american_football',
-    'baseball',
-    'mma',
-    'esports',
-    'boxing',
-    'cricket',
-    'rugby',
-    'volleyball',
-    'handball',
-    'darts',
-    'table_tennis',
-    'curling',
-})
+ALLOWED_SPORTS = frozenset(
+    {
+        "football",
+        "basketball",
+        "tennis",
+        "ice_hockey",
+        "american_football",
+        "baseball",
+        "mma",
+        "esports",
+        "boxing",
+        "cricket",
+        "rugby",
+        "volleyball",
+        "handball",
+        "darts",
+        "table_tennis",
+        "curling",
+    }
+)
 
 
 # ============ Trading Constants ============

@@ -9,24 +9,23 @@ This module queries the database and returns opportunity dataclasses.
 Storage/persistence is handled by the caller (analyzer.py).
 """
 
-from dataclasses import dataclass
-from typing import Optional
-from collections import defaultdict
-from datetime import datetime, timezone, timedelta
 import logging
 import math
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from ..db.models import Event, Odds
-from ..repositories import EventRepo
-from .value import find_value, ValueBet
 from ..bankroll.stake_calculator import StakeCalculator
+from ..constants import PLATFORM_MAP, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS
+from ..db.models import Event
+from ..repositories import EventRepo
 from .devig import (
-    get_fair_odds_for_outcome,
     compute_consensus_fair_odds,
+    get_fair_odds_for_outcome,
 )
-from ..constants import SHARP_PROVIDERS, PLATFORM_MAP
+from .value import ValueBet, find_value
 
 logger = logging.getLogger(__name__)
 
@@ -76,19 +75,19 @@ class DutchOpportunity:
     legs: list[dict]
 
     # Combined metrics
-    combined_edge_pct: float       # Weighted average edge across legs
-    guaranteed_profit_pct: float   # >0 = guaranteed profit regardless of outcome
+    combined_edge_pct: float  # Weighted average edge across legs
+    guaranteed_profit_pct: float  # >0 = guaranteed profit regardless of outcome
 
     # Arb detection: true arb using only real bettable soft odds
-    arb_profit_pct: Optional[float] = None  # >0 = true executable arb (all soft legs)
-    arb_legs: Optional[list[dict]] = None   # All-soft version of legs (when arb_profit_pct > 0)
+    arb_profit_pct: float | None = None  # >0 = true executable arb (all soft legs)
+    arb_legs: list[dict] | None = None  # All-soft version of legs (when arb_profit_pct > 0)
 
     # Event context
-    home_team: Optional[str] = None
-    away_team: Optional[str] = None
-    sport: Optional[str] = None
-    league: Optional[str] = None
-    start_time: Optional[str] = None
+    home_team: str | None = None
+    away_team: str | None = None
+    sport: str | None = None
+    league: str | None = None
+    start_time: str | None = None
 
 
 @dataclass
@@ -111,13 +110,13 @@ class BonusOpportunity:
     edge_pct: float
 
     # Point/line value (for spread/total markets)
-    point: Optional[float] = None
+    point: float | None = None
 
     # Event context
-    home_team: Optional[str] = None
-    away_team: Optional[str] = None
-    sport: Optional[str] = None
-    league: Optional[str] = None
+    home_team: str | None = None
+    away_team: str | None = None
+    sport: str | None = None
+    league: str | None = None
 
 
 class OpportunityScanner:
@@ -265,8 +264,9 @@ class OpportunityScanner:
             )
             # Log ML features (best-effort, never blocks scanning)
             try:
-                from src.ml.features.betting_features import extract_betting_features
                 from src.ml.feature_store import log_features
+                from src.ml.features.betting_features import extract_betting_features
+
                 outcome_odds = {vb.outcome: vb.odds_snapshot or []}
                 ml_features = extract_betting_features(
                     edge_pct=vb.edge_pct,
@@ -302,9 +302,7 @@ class OpportunityScanner:
 
         # Count actionable bets
         actionable = sum(1 for b in enriched_bets if b.recommended_stake and b.recommended_stake > 0)
-        logger.info(
-            f"[Scanner] {actionable}/{len(enriched_bets)} value bets have stake recommendations"
-        )
+        logger.info(f"[Scanner] {actionable}/{len(enriched_bets)} value bets have stake recommendations")
 
         return enriched_bets
 
@@ -317,8 +315,8 @@ class OpportunityScanner:
         only acts as a tiebreaker — never overrides meaningful edge differences.
         """
         try:
-            from ..services.planner_service import BankrollPlannerService
             from ..repositories import ProfileRepo
+            from ..services.planner_service import BankrollPlannerService
 
             profile = ProfileRepo(self.session).get_active()
             if not profile:
@@ -412,9 +410,7 @@ class OpportunityScanner:
         # Sort by edge (highest first)
         opportunities.sort(key=lambda x: x.edge_pct, reverse=True)
 
-        logger.info(
-            f"[Scanner] Found {len(opportunities)} bonus opportunities for {anchor_provider}"
-        )
+        logger.info(f"[Scanner] Found {len(opportunities)} bonus opportunities for {anchor_provider}")
         return opportunities
 
     def scan_dutch(self, min_edge_pct: float = 0.0, events: list = None) -> list[DutchOpportunity]:
@@ -556,9 +552,7 @@ class OpportunityScanner:
 
         opportunities.sort(key=lambda x: x.combined_edge_pct, reverse=True)
 
-        logger.info(
-            f"[Scanner] Found {len(opportunities)} dutch-workflow opportunities for {provider_id}"
-        )
+        logger.info(f"[Scanner] Found {len(opportunities)} dutch-workflow opportunities for {provider_id}")
         return opportunities
 
     def scan_reverse_value(self, min_edge_pct: float = 2.0, events: list = None) -> list[ValueBet]:
@@ -607,8 +601,7 @@ class OpportunityScanner:
         opportunities.sort(key=lambda x: x.edge_pct, reverse=True)
 
         logger.info(
-            f"[Scanner] Found {len(opportunities)} reverse value bets "
-            f"(>={min_edge_pct}% edge, Pinnacle vs consensus)"
+            f"[Scanner] Found {len(opportunities)} reverse value bets (>={min_edge_pct}% edge, Pinnacle vs consensus)"
         )
         return opportunities
 
@@ -683,7 +676,7 @@ class OpportunityScanner:
         all_markets: dict[str, dict[str, list[dict]]] = None,
         anchor_provider: str | None = None,
         counterpart_providers: list[str] | None = None,
-    ) -> Optional[DutchOpportunity]:
+    ) -> DutchOpportunity | None:
         """
         Find a dutch opportunity in a single market.
 
@@ -720,7 +713,7 @@ class OpportunityScanner:
         soft_per_outcome = {}  # {outcome: {provider, odds, fair_odds}} — best soft for arb check
         # All valid soft candidates per outcome (ranked by odds desc) for conflict resolution
         soft_candidates = {}  # {outcome: [(odds, provider), ...]}
-        fair_odds_map = {}    # {outcome: fair_odds}
+        fair_odds_map = {}  # {outcome: fair_odds}
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             fair_result = self._get_fair_odds(
@@ -824,9 +817,7 @@ class OpportunityScanner:
         # Placing multiple outcomes on the same bookmaker flags the account.
         # Resolve conflicts: keep the higher-edge leg, demote the other to
         # its next-best provider from a different platform (or Pinnacle).
-        self._resolve_platform_conflicts(
-            best_per_outcome, soft_candidates, fair_odds_map, anchor_provider
-        )
+        self._resolve_platform_conflicts(best_per_outcome, soft_candidates, fair_odds_map, anchor_provider)
 
         # Check again after conflict resolution (a demotion may have assigned Pinnacle)
         if counterpart_providers and any(d["is_sharp"] for d in best_per_outcome.values()):
@@ -839,8 +830,7 @@ class OpportunityScanner:
 
         # Require at least one soft +EV leg (unless anchor mode)
         if not anchor_provider and not any(
-            data["edge_pct"] > 0 and not data["is_sharp"]
-            for data in best_per_outcome.values()
+            data["edge_pct"] > 0 and not data["is_sharp"] for data in best_per_outcome.values()
         ):
             return None
 
@@ -859,25 +849,26 @@ class OpportunityScanner:
         for out in all_outcomes:
             data = best_per_outcome[out]
             stake_pct = round((1.0 / data["odds"]) / dutch_sum * 100, 2)
-            legs.append({
-                "outcome": out,
-                "provider": data["provider"],
-                "odds": data["odds"],
-                "edge_pct": data["edge_pct"],
-                "fair_odds": data["fair_odds"],
-                "stake_pct": stake_pct,
-                "is_sharp": data["is_sharp"],
-            })
+            legs.append(
+                {
+                    "outcome": out,
+                    "provider": data["provider"],
+                    "odds": data["odds"],
+                    "edge_pct": data["edge_pct"],
+                    "fair_odds": data["fair_odds"],
+                    "stake_pct": stake_pct,
+                    "is_sharp": data["is_sharp"],
+                }
+            )
 
         # Sort legs: highest edge first
         legs.sort(key=lambda x: x["edge_pct"], reverse=True)
 
         # Combined edge = weighted average of individual edges (weighted by stake)
         total_stake_pct = sum(leg["stake_pct"] for leg in legs)
-        combined_edge = sum(
-            leg["edge_pct"] * leg["stake_pct"] / total_stake_pct
-            for leg in legs
-        ) if total_stake_pct > 0 else 0
+        combined_edge = (
+            sum(leg["edge_pct"] * leg["stake_pct"] / total_stake_pct for leg in legs) if total_stake_pct > 0 else 0
+        )
 
         # Arb check: can we cover all outcomes using only real bettable soft odds?
         # Also enforces platform uniqueness — no 2 arb legs on same canonical provider.
@@ -902,15 +893,17 @@ class OpportunityScanner:
                                 sdata = arb_soft[out]
                                 arb_edge = round((sdata["odds"] / sdata["fair_odds"] - 1) * 100, 2)
                                 arb_stake_pct = round((1.0 / sdata["odds"]) / arb_sum * 100, 2)
-                                arb_legs.append({
-                                    "outcome": out,
-                                    "provider": sdata["provider"],
-                                    "odds": sdata["odds"],
-                                    "edge_pct": arb_edge,
-                                    "fair_odds": sdata["fair_odds"],
-                                    "stake_pct": arb_stake_pct,
-                                    "is_sharp": False,
-                                })
+                                arb_legs.append(
+                                    {
+                                        "outcome": out,
+                                        "provider": sdata["provider"],
+                                        "odds": sdata["odds"],
+                                        "edge_pct": arb_edge,
+                                        "fair_odds": sdata["fair_odds"],
+                                        "stake_pct": arb_stake_pct,
+                                        "is_sharp": False,
+                                    }
+                                )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
 
         return DutchOpportunity(
@@ -977,11 +970,7 @@ class OpportunityScanner:
             # Sort by edge descending — keep the best leg, demote the rest
             outcomes.sort(key=lambda o: best_per_outcome[o]["edge_pct"], reverse=True)
             # Canonical platforms already claimed by kept legs
-            used_canonicals = {
-                self._canonical(d["provider"])
-                for d in best_per_outcome.values()
-                if not d["is_sharp"]
-            }
+            used_canonicals = {self._canonical(d["provider"]) for d in best_per_outcome.values() if not d["is_sharp"]}
             for loser_outcome in outcomes[1:]:
                 fair_odds = fair_odds_map[loser_outcome]
                 replaced = False
@@ -1100,8 +1089,7 @@ class OpportunityScanner:
                     updated = updated.replace(tzinfo=timezone.utc)
                 if updated < staleness_cutoff:
                     logger.debug(
-                        f"Skipping stale odds for {event.id}/{odds.provider_id}: "
-                        f"updated {updated.isoformat()}"
+                        f"Skipping stale odds for {event.id}/{odds.provider_id}: updated {updated.isoformat()}"
                     )
                     continue
 
@@ -1126,14 +1114,16 @@ class OpportunityScanner:
             elif outcome_lower.startswith("under"):
                 outcome = "under"
 
-            grouped[market_key][outcome].append({
-                "provider": odds.provider_id,
-                "odds": odds.odds,
-                "point": odds.point,
-                "updated_at": odds.updated_at,
-                "bid": odds.bid,
-                "ask": odds.ask,
-            })
+            grouped[market_key][outcome].append(
+                {
+                    "provider": odds.provider_id,
+                    "odds": odds.odds,
+                    "point": odds.point,
+                    "updated_at": odds.updated_at,
+                    "bid": odds.bid,
+                    "ask": odds.ask,
+                }
+            )
 
         # Fix Asian-style spread providers that store 2 outcomes at the same point.
         # Pinnacle convention: home at spread_-X, away at spread_+X (1 outcome per key).
@@ -1144,9 +1134,7 @@ class OpportunityScanner:
 
         return dict(grouped)
 
-    def _fix_asian_spread_grouping(
-        self, grouped: dict[str, dict[str, list[dict]]]
-    ) -> None:
+    def _fix_asian_spread_grouping(self, grouped: dict[str, dict[str, list[dict]]]) -> None:
         """
         Normalize spread outcome labels to match Pinnacle's convention.
 
@@ -1172,20 +1160,14 @@ class OpportunityScanner:
         for market_key in spread_keys:
             odds_by_outcome = grouped[market_key]
             if "draw" in odds_by_outcome:
-                european_providers = {
-                    e["provider"] for e in odds_by_outcome["draw"]
-                }
+                european_providers = {e["provider"] for e in odds_by_outcome["draw"]}
                 for outcome_type in list(odds_by_outcome.keys()):
                     odds_by_outcome[outcome_type] = [
-                        e for e in odds_by_outcome[outcome_type]
-                        if e["provider"] not in european_providers
+                        e for e in odds_by_outcome[outcome_type] if e["provider"] not in european_providers
                     ]
                     if not odds_by_outcome[outcome_type]:
                         del odds_by_outcome[outcome_type]
-                logger.debug(
-                    f"Removed 3-way European handicap providers {european_providers} "
-                    f"from {market_key}"
-                )
+                logger.debug(f"Removed 3-way European handicap providers {european_providers} from {market_key}")
 
         # Second pass: at each spread point where Pinnacle has an outcome,
         # keep only the closest soft entry per provider (by odds proximity).
@@ -1292,14 +1274,8 @@ class OpportunityScanner:
                 keep_entries.append(best_entry)
 
             # Rebuild: sharp entries + correctly matched soft entries
-            sharp_at_pin = [
-                e for e in odds_by_outcome.get(pin_outcome, [])
-                if e["provider"] in SHARP_PROVIDERS
-            ]
-            sharp_at_other = [
-                e for e in odds_by_outcome.get(other_outcome, [])
-                if e["provider"] in SHARP_PROVIDERS
-            ]
+            sharp_at_pin = [e for e in odds_by_outcome.get(pin_outcome, []) if e["provider"] in SHARP_PROVIDERS]
+            sharp_at_other = [e for e in odds_by_outcome.get(other_outcome, []) if e["provider"] in SHARP_PROVIDERS]
 
             odds_by_outcome.clear()
             if sharp_at_pin or keep_entries:
@@ -1307,9 +1283,7 @@ class OpportunityScanner:
             if sharp_at_other:
                 odds_by_outcome[other_outcome] = sharp_at_other
 
-    def _count_outcomes_per_provider(
-        self, odds_by_outcome: dict[str, list[dict]]
-    ) -> dict[str, int]:
+    def _count_outcomes_per_provider(self, odds_by_outcome: dict[str, list[dict]]) -> dict[str, int]:
         """
         Count how many outcomes each provider has in this market.
 
@@ -1356,9 +1330,7 @@ class OpportunityScanner:
             sharp_outcome_count = len(pinnacle_market)
 
         # Compute Pinnacle overround for ML features
-        pinnacle_overround = (
-            sum(1.0 / o for o in pinnacle_market.values() if o > 1) - 1.0
-        ) if pinnacle_market else 0
+        pinnacle_overround = (sum(1.0 / o for o in pinnacle_market.values() if o > 1) - 1.0) if pinnacle_market else 0
 
         # Pre-compute probability sums per soft provider (used in completeness check)
         soft_prob_sums = defaultdict(float)
@@ -1394,6 +1366,9 @@ class OpportunityScanner:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue  # Don't compare sharp vs sharp
 
+                if po["provider"] in SIGNAL_ONLY_PROVIDERS:
+                    continue  # Signal-only — used for consensus, can't place bets
+
                 # Skip Polymarket for per-map markets — prediction markets only
                 # meaningfully price overall match outcomes, not individual maps
                 if po["provider"] == "polymarket" and "_m" in market:
@@ -1409,14 +1384,9 @@ class OpportunityScanner:
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and sharp_outcome_count > 0:
                     is_spread_asymmetry = (
-                        market.startswith("spread")
-                        and sharp_outcome_count in (1, 2)
-                        and soft_count in (1, 2)
+                        market.startswith("spread") and sharp_outcome_count in (1, 2) and soft_count in (1, 2)
                     )
-                    is_polymarket_mismatch = (
-                        po["provider"] == "polymarket"
-                        and soft_count <= sharp_outcome_count
-                    )
+                    is_polymarket_mismatch = po["provider"] == "polymarket" and soft_count <= sharp_outcome_count
                     if soft_count != sharp_outcome_count and not is_spread_asymmetry and not is_polymarket_mismatch:
                         continue  # Don't compare 3-way vs 2-way markets
 
@@ -1475,9 +1445,11 @@ class OpportunityScanner:
                     # ML edge quality check (M1) — best-effort additional filter
                     try:
                         from src.ml.serving.predictor import get_predictor
+
                         predictor = get_predictor()
                         if predictor.is_loaded("edge_quality"):
                             from src.ml.features.betting_features import extract_betting_features
+
                             _ml_features = extract_betting_features(
                                 edge_pct=vb.edge_pct,
                                 provider_odds=vb.provider_odds,
@@ -1535,9 +1507,7 @@ class OpportunityScanner:
         # Exception: spread markets where Pinnacle stores 1 outcome per point
         if anchor_outcome_count > 0 and sharp_outcome_count > 0:
             is_spread_asymmetry = (
-                market.startswith("spread")
-                and sharp_outcome_count == 1
-                and anchor_outcome_count in (2, 3)
+                market.startswith("spread") and sharp_outcome_count == 1 and anchor_outcome_count in (2, 3)
             )
             if anchor_outcome_count != sharp_outcome_count and not is_spread_asymmetry:
                 return []  # Don't compare 3-way vs 2-way markets
@@ -1694,10 +1664,7 @@ class OpportunityScanner:
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             if exclude_providers:
-                odds_values = [
-                    po["odds"] for po in provider_odds_list
-                    if po["provider"] not in exclude_providers
-                ]
+                odds_values = [po["odds"] for po in provider_odds_list if po["provider"] not in exclude_providers]
             else:
                 odds_values = [po["odds"] for po in provider_odds_list]
             if len(odds_values) >= 3:
@@ -1724,7 +1691,7 @@ class OpportunityScanner:
         odds_by_outcome: dict[str, list[dict]],
         devig: bool = True,
         pinnacle_market: dict[str, float] = None,
-    ) -> Optional[tuple[float, str]]:
+    ) -> tuple[float, str] | None:
         """
         Get fair odds for an outcome from Pinnacle (sole sharp source).
 
@@ -1754,14 +1721,10 @@ class OpportunityScanner:
                 prob_sum = sum(1.0 / o for o in pinnacle_market.values())
                 if prob_sum < MIN_VALID_PROB_SUM:
                     # Incomplete market data - skip to avoid false signals
-                    logger.debug(
-                        f"Skipping incomplete market: {outcome} prob_sum={prob_sum:.2f}"
-                    )
+                    logger.debug(f"Skipping incomplete market: {outcome} prob_sum={prob_sum:.2f}")
                     return None
 
-                fair_odds = get_fair_odds_for_outcome(
-                    outcome, pinnacle_market, method="multiplicative"
-                )
+                fair_odds = get_fair_odds_for_outcome(outcome, pinnacle_market, method="multiplicative")
                 return (fair_odds, "pinnacle")
             else:
                 # Single outcome — can't de-vig with multiplicative method.
