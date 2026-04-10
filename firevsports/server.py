@@ -17,8 +17,9 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 
 app = FastAPI(title="FirevSports", docs_url=None, redoc_url=None)
 
-# Mirror browser (singleton)
+# Mirror browser (singleton) — with event interception wired to SSE
 browser = MirrorBrowser()
+browser.set_event_callback(mirror_broadcaster.publish)
 
 # Mount mirror control endpoints (must be before proxy to avoid /mirror/* being caught by /api/*)
 app.include_router(create_mirror_router(browser, mirror_broadcaster, TUNNEL_URL))

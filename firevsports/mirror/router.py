@@ -84,30 +84,21 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.get("/browser/provider/{provider_id}")
     async def browser_provider_state(provider_id: str):
-        """Check live state of a provider tab — URL, logged in, balance."""
+        """Live state of a provider — from intercepted network data."""
         if not browser.running or not browser.context:
             return {"found": False, "reason": "browser_not_running"}
         workflow = get_workflow(provider_id)
         page = await workflow.find_tab(browser.context)
         if not page:
             return {"found": False, "reason": "no_tab", "domain": workflow.domain}
-        logged_in = False
-        balance = None
-        try:
-            logged_in = await workflow.check_login(page)
-        except Exception:
-            pass
-        if logged_in:
-            try:
-                balance = await workflow.sync_balance(page)
-            except Exception:
-                pass
+        # Use intercepted data (fast, no API calls)
+        intercepted = browser.provider_data.get(provider_id, {})
         return {
             "found": True,
             "provider_id": provider_id,
             "url": page.url,
-            "logged_in": logged_in,
-            "balance": balance,
+            "logged_in": intercepted.get("logged_in", False),
+            "balance": intercepted.get("balance"),
             "domain": workflow.domain,
         }
 

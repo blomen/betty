@@ -244,23 +244,32 @@ class PlayLoop:
             self.current_bet = None
 
     async def _wait_for_login(self, workflow, page) -> bool:
-        """Poll check_login every LOGIN_POLL_INTERVAL up to LOGIN_TIMEOUT. Returns True if logged in."""
-        # Give page time to load before first check
-        await asyncio.sleep(3)
-        elapsed = 3.0
+        """Wait for login by checking intercepted balance data from browser."""
+        await asyncio.sleep(2)
+        elapsed = 2.0
         while elapsed < LOGIN_TIMEOUT:
+            # Check intercepted data first (set by browser's response listener)
+            if self._browser.is_logged_in(workflow.provider_id):
+                bal = self._browser.get_balance(workflow.provider_id)
+                self._broadcaster.publish("login_detected", {
+                    "provider_id": workflow.provider_id,
+                    "balance": bal,
+                })
+                logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (balance: {bal})")
+                return True
+            # Fallback: try workflow check_login
             try:
                 if await workflow.check_login(page):
                     self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id})
-                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id}")
+                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (via workflow)")
                     return True
             except Exception:
-                logger.debug(f"[PlayLoop] check_login() raised for {workflow.provider_id}", exc_info=True)
+                pass
             await asyncio.sleep(LOGIN_POLL_INTERVAL)
             elapsed += LOGIN_POLL_INTERVAL
             self._broadcaster.publish("login_waiting", {
                 "provider_id": workflow.provider_id,
-                "elapsed": elapsed,
+                "elapsed": round(elapsed),
                 "timeout": LOGIN_TIMEOUT,
             })
         return False

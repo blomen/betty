@@ -20,7 +20,8 @@ export function useMirrorStream() {
       'bet_navigated', 'bet_ready', 'bet_placed', 'bet_skipped', 'bet_failed',
       'play_complete', 'play_stopped',
       'pending_started', 'history_synced', 'settlements_detected', 'settlements_confirmed',
-      'balance_updated', 'pending_stopped',
+      'balance_updated', 'balance_intercepted', 'history_intercepted', 'bet_intercepted',
+      'pending_stopped',
     ];
 
     for (const type of eventTypes) {
