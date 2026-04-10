@@ -39,7 +39,7 @@ os.environ.setdefault("MARKET_DATABASE_URL", f"postgresql://firev:{DB_PASSWORD}@
 SERVER = "148.251.40.251"
 LOCAL_PG_PORT = 15432
 LOCAL_WS_PORT = 18000
-LOCAL_BACKEND_PORT = 8001  # unused directly, reserved for future local API
+LOCAL_DASHBOARD_PORT = 8001  # local dashboard web UI
 
 log = logging.getLogger("firevstocks")
 
@@ -74,7 +74,7 @@ def _kill_port(port: int, label: str) -> bool:
 
 
 def _cleanup_old_instance():
-    _kill_port(LOCAL_BACKEND_PORT, "firevstocks")
+    _kill_port(LOCAL_DASHBOARD_PORT, "firevstocks-dashboard")
     # Do NOT kill the PG or WS tunnel ports -- mirror may be using them
 
 
@@ -147,7 +147,45 @@ def _start_tunnels() -> bool:
 async def _run(config, topstepx_client, relay, stream):
     """Wire everything together and run until interrupted."""
 
+    # ------------------------------------------------------------------
+    # Start local dashboard server (port 8001)
+    # ------------------------------------------------------------------
+    from src.stocks.dashboard import (
+        create_dashboard_app,
+        record_tick as dash_tick,
+        record_quote as dash_quote,
+        record_signal as dash_signal,
+        update_zones,
+        update_status,
+        _state as dash_state,
+    )
+    import threading
+    import uvicorn
+
+    dash_state["stats"]["session_start"] = time.time()
+    dash_app = create_dashboard_app()
+
+    def _run_dashboard():
+        uvicorn.run(
+            dash_app,
+            host="127.0.0.1",
+            port=LOCAL_DASHBOARD_PORT,
+            log_level="warning",
+        )
+
+    threading.Thread(target=_run_dashboard, daemon=True, name="dashboard").start()
+    log.info("Dashboard starting at http://127.0.0.1:%d", LOCAL_DASHBOARD_PORT)
+
+    def _open_browser():
+        import webbrowser
+        time.sleep(3)
+        webbrowser.open(f"http://127.0.0.1:{LOCAL_DASHBOARD_PORT}")
+
+    threading.Thread(target=_open_browser, daemon=True, name="browser-open").start()
+
+    # ------------------------------------------------------------------
     # Start relay in background -- it will keep reconnecting
+    # ------------------------------------------------------------------
     relay_task = asyncio.create_task(relay.connect(), name="relay-connect")
 
     # Give relay a moment to connect before starting stream
@@ -166,11 +204,12 @@ async def _run(config, topstepx_client, relay, stream):
         log.warning("MarketRecorder failed to start (DB not reachable?): %s", exc)
         log.warning("Continuing without tick recording — signals still work")
 
-    # Wire: TopstepX tick -> relay.forward_tick
+    # Wire: TopstepX tick -> relay.forward_tick + dashboard
     def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
         asyncio.create_task(relay.forward_tick(price, size, ts, side))
         if recorder:
             recorder.record_tick(price, size, ts)
+        dash_tick(price, size, ts, side)
 
     def _on_fill(fill: dict) -> None:
         side = "long" if fill.get("side", 0) == 0 else "short"
@@ -178,10 +217,15 @@ async def _run(config, topstepx_client, relay, stream):
         size = int(fill.get("size", 1))
         asyncio.create_task(relay.forward_fill(side, price, size, 0.0))
 
-    stream.on_tick = on_tick
-    stream.on_fill = _on_fill
+    stream.on_tick  = on_tick
+    stream.on_fill  = _on_fill
+    stream.on_quote = dash_quote  # forward quotes to dashboard
     if recorder:
         stream.on_depth = recorder.record_depth
+
+    # Wire relay callbacks -> dashboard
+    relay.on_signal      = dash_signal
+    relay.on_zone_update = lambda msg: update_zones(msg.get("zones", []))
 
     # Start stream (async websockets)
     log.info("Starting TopstepX stream...")
@@ -191,6 +235,7 @@ async def _run(config, topstepx_client, relay, stream):
     try:
         while True:
             await asyncio.sleep(30)
+            update_status(relay.is_connected, stream._running)
             log.info("Relay connected=%s | stream running=%s",
                      relay.is_connected,
                      stream._running)
