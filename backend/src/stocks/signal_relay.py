@@ -3,12 +3,13 @@
 Connects to the server's /ws/signals endpoint, forwards ticks from TopstepX,
 and executes orders on TopstepX when the server emits a signal.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import websockets
 
@@ -20,13 +21,14 @@ _RECONNECT_DELAY = 5  # seconds between reconnect attempts
 class SignalRelayClient:
     """WebSocket client that relays ticks to the server and executes signals from it."""
 
-    def __init__(self, server_ws_url: str, topstepx_client) -> None:
+    def __init__(self, server_ws_url: str, topstepx_client, adapter=None) -> None:
         self._url = server_ws_url
         self._client = topstepx_client  # TopstepXClient instance
+        self._adapter = adapter
         self._ws = None
         self._connected = False
         self._listen_task: asyncio.Task | None = None
-        self.on_signal: Callable[[dict], None] | None = None   # UI callback
+        self.on_signal: Callable[[dict], None] | None = None  # UI callback
         self.on_zone_update: Callable[[dict], None] | None = None
 
     # ------------------------------------------------------------------
@@ -126,7 +128,21 @@ class SignalRelayClient:
                 log.debug("SignalRelay: unknown message type %r", msg_type)
 
     async def _execute_signal(self, signal: dict) -> None:
-        """Parse signal and place market + stop orders on TopstepX."""
+        """Parse signal and execute via adapter (if set) or directly on TopstepX."""
+        if self._adapter:
+            try:
+                result = await self._adapter.on_signal(signal)
+                if result and not result.get("rejected"):
+                    side = result.get("side", "long")
+                    price = 0.0  # real price comes via stream fill
+                    size = result.get("size", 1)
+                    stop_price = result.get("stop_price", 0)
+                    await self.forward_fill(side, price, size, stop_price)
+            except Exception:
+                log.exception("SignalRelay: adapter execution failed for signal %r", signal)
+            return
+
+        # Legacy direct path (no adapter)
         action = signal.get("action", "")
         is_long = "long" in action.lower()
         order_action = "Buy" if is_long else "Sell"
