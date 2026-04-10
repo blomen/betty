@@ -70,18 +70,32 @@ class MirrorBrowser:
         if self._running:
             return self._context
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
+
+        # Use persistent context so cookies/sessions survive restarts
+        import os
+        from pathlib import Path
+        user_data_dir = Path(os.environ.get("FIREV_DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))) / "browser_profile"
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=str(user_data_dir),
             headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
+            locale="sv-SE",
+            timezone_id="Europe/Stockholm",
+            no_viewport=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--start-maximized",
+            ],
         )
-        self._context = await self._browser.new_context(
-            viewport=None,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
-        # Attach interception to all new pages
-        self._context.on("page", self._on_new_page)
+
+        # Attach interception to ALL existing + future pages
+        for page in self._context.pages:
+            self._attach_page(page)
+        self._context.on("page", self._attach_page)
+
         self._running = True
-        logger.info("Mirror browser started")
+        logger.info(f"Mirror browser started (profile: {user_data_dir})")
         return self._context
 
     async def stop(self):
@@ -90,8 +104,6 @@ class MirrorBrowser:
         try:
             if self._context:
                 await self._context.close()
-            if self._browser:
-                await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
         except Exception:
@@ -99,7 +111,6 @@ class MirrorBrowser:
         finally:
             self._running = False
             self._context = None
-            self._browser = None
             self._playwright = None
             self.provider_data.clear()
             logger.info("Mirror browser stopped")
@@ -135,23 +146,28 @@ class MirrorBrowser:
     # Interception
     # ------------------------------------------------------------------
 
-    def _on_new_page(self, page: Page):
-        """Attach response listener to every new tab."""
-        page.on("response", lambda resp: asyncio.ensure_future(self._on_response(resp)))
-        logger.info(f"[browser] Attached interceptor to new page")
+    def _attach_page(self, page: Page):
+        """Attach response listener to a page."""
+        page.on("response", lambda resp: asyncio.ensure_future(self._safe_on_response(resp)))
+        logger.info(f"[browser] Interceptor attached to page: {page.url[:80]}")
+
+    async def _safe_on_response(self, response: Response):
+        """Wrapper to catch all errors in response handler."""
+        try:
+            await self._on_response(response)
+        except Exception:
+            pass  # Never let interceptor errors break browsing
 
     async def _on_response(self, response: Response):
-        """Classify and process every HTTP response."""
+        """Classify and process HTTP responses."""
         url = response.url
         status = response.status
 
-        # Only process successful responses
         if status < 200 or status >= 400:
             return
 
-        # Detect provider from page URL
-        page = response.frame.page
-        provider_id = self._detect_provider(page.url)
+        # Detect provider from BOTH request URL and page URL
+        provider_id = self._detect_provider(url) or self._detect_provider(response.frame.page.url)
         if not provider_id:
             return
 
@@ -160,19 +176,41 @@ class MirrorBrowser:
         # Balance / financial
         if any(kw in url_lower for kw in _BALANCE_KEYWORDS):
             try:
-                body = await response.json()
-                balance = self._extract_balance(body)
-                if balance is not None and balance >= 0:
-                    if provider_id not in self.provider_data:
-                        self.provider_data[provider_id] = {}
-                    self.provider_data[provider_id]["logged_in"] = True
-                    self.provider_data[provider_id]["balance"] = balance
-                    self.provider_data[provider_id]["last_balance_url"] = url
-                    logger.info(f"[browser] {provider_id} balance: {balance}")
-                    if self._on_event:
-                        self._on_event("balance_intercepted", {
-                            "provider_id": provider_id, "balance": balance, "url": url,
-                        })
+                body_text = await response.text()
+                body = json.loads(body_text)
+            except Exception:
+                return
+            balance = self._extract_balance(body)
+            if balance is not None and balance >= 0:
+                if provider_id not in self.provider_data:
+                    self.provider_data[provider_id] = {}
+                self.provider_data[provider_id]["logged_in"] = True
+                self.provider_data[provider_id]["balance"] = balance
+                self.provider_data[provider_id]["last_balance_url"] = url
+                logger.info(f"[browser] {provider_id} BALANCE: {balance} (from {url[:80]})")
+                if self._on_event:
+                    self._on_event("balance_intercepted", {
+                        "provider_id": provider_id, "balance": balance, "url": url,
+                    })
+            return
+
+        # GraphQL relay (LeoVegas etc.) — check body for balance data
+        if "relay" in url_lower or "graphql" in url_lower:
+            try:
+                body_text = await response.text()
+                if '"balance"' in body_text and ('"totalAmount"' in body_text or '"amount"' in body_text):
+                    body = json.loads(body_text)
+                    balance = self._extract_balance(body)
+                    if balance is not None and balance >= 0:
+                        if provider_id not in self.provider_data:
+                            self.provider_data[provider_id] = {}
+                        self.provider_data[provider_id]["logged_in"] = True
+                        self.provider_data[provider_id]["balance"] = balance
+                        logger.info(f"[browser] {provider_id} BALANCE (relay): {balance}")
+                        if self._on_event:
+                            self._on_event("balance_intercepted", {
+                                "provider_id": provider_id, "balance": balance, "url": url,
+                            })
             except Exception:
                 pass
             return
@@ -181,7 +219,7 @@ class MirrorBrowser:
         if any(kw in url_lower for kw in _HISTORY_KEYWORDS):
             try:
                 body = await response.text()
-                logger.info(f"[browser] {provider_id} history response: {url} ({len(body)} bytes)")
+                logger.info(f"[browser] {provider_id} history: {url[:80]} ({len(body)}b)")
                 if self._on_event:
                     self._on_event("history_intercepted", {
                         "provider_id": provider_id, "url": url, "size": len(body),
@@ -193,11 +231,12 @@ class MirrorBrowser:
         # Bet placement
         if any(kw in url_lower for kw in _BET_PLACEMENT_KEYWORDS):
             try:
-                body = await response.json()
-                logger.info(f"[browser] {provider_id} bet placement: {url}")
+                body_text = await response.text()
+                logger.info(f"[browser] {provider_id} BET PLACED: {url[:80]}")
                 if self._on_event:
                     self._on_event("bet_intercepted", {
-                        "provider_id": provider_id, "url": url, "body": body,
+                        "provider_id": provider_id, "url": url,
+                        "body": json.loads(body_text),
                     })
             except Exception:
                 pass
