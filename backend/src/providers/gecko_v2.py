@@ -30,11 +30,12 @@ Selection template IDs:
 - HANDICAPHOME, HANDICAPDRAW, HANDICAPAWAY
 """
 
-from typing import List, Any, Optional, Dict, Set
-import logging
 import asyncio
+import logging
 from datetime import datetime
-from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from typing import Any
+
+from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..core.exceptions import RetryableError
 from ..matching.normalizer import normalize_team_name
 
@@ -50,7 +51,7 @@ class GeckoV2Retriever(BrowserRetriever):
     """
 
     # Sport slug for URL navigation (used for session init)
-    SPORT_SLUGS: Dict[str, str] = {
+    SPORT_SLUGS: dict[str, str] = {
         "football": "fotboll",
         "ice_hockey": "ishockey",
         "handball": "handboll",
@@ -72,12 +73,12 @@ class GeckoV2Retriever(BrowserRetriever):
 
     # OBG category IDs for each sport
     # Verified 2026-02-09 via events-table/v2 category scan (gecko_category_scan.py)
-    SPORT_CATEGORY_IDS: Dict[str, int] = {
+    SPORT_CATEGORY_IDS: dict[str, int] = {
         "football": 1,
         "ice_hockey": 2,
         "handball": 3,
         "basketball": 4,
-        "rugby": 7,            # Rugby League (ID 8 = Rugby Union)
+        "rugby": 7,  # Rugby League (ID 8 = Rugby Union)
         "volleyball": 9,
         "american_football": 10,
         "tennis": 11,
@@ -89,27 +90,27 @@ class GeckoV2Retriever(BrowserRetriever):
     }
 
     # Market template ID → our standard market type
-    MARKET_TEMPLATE_MAP: Dict[str, str] = {
+    MARKET_TEMPLATE_MAP: dict[str, str] = {
         # 1x2 (3-way)
         "MW3W": "1x2",
         "ESNRTWINNER3W": "1x2",
         # Moneyline (2-way)
         "MW2W": "moneyline",
         "ESNMOWINNER2W": "moneyline",
-        "ESMW2W": "moneyline",          # Esports moneyline
+        "ESMW2W": "moneyline",  # Esports moneyline
         # Total (over/under)
         "MTG2W": "total",
         "MTG2W25": "total",
         "TGOU": "total",
-        "TGOUOT": "total",              # Ice hockey total (incl. overtime)
+        "TGOUOT": "total",  # Ice hockey total (incl. overtime)
         "MWOU": "total",
         "MROU": "total",
         "ESNMOTOTAL": "total",
         "OUALT": "total",
         "PTSOUROLMID": "total",
         "MTG2WIO": "total",
-        "MTG2WP": "total",              # Tennis total (games/sets)
-        "MTP": "total",                 # Volleyball total (points)
+        "MTG2WP": "total",  # Tennis total (games/sets)
+        "MTP": "total",  # Volleyball total (points)
         # Spread (handicap)
         # M3WHCP is 3-way European handicap (home/draw/away on integer lines).
         # Excluded: draw absorbs probability, inflating home/away odds vs
@@ -119,16 +120,16 @@ class GeckoV2Retriever(BrowserRetriever):
         "M2WHCPIO": "spread",
         "2WHCPROLMID": "spread",
         "MWHCPALT": "spread",
-        "MHCPNOT": "spread",            # Ice hockey handicap (not overtime)
+        "MHCPNOT": "spread",  # Ice hockey handicap (not overtime)
         "MAHCP": "spread",
         "AHC": "spread",
         "ESNMOHANDICAP": "spread",
-        "MSH": "spread",                # Volleyball set handicap
-        "ESHMTHANDICAP": "spread",      # Esports handicap (maps)
+        "MSH": "spread",  # Volleyball set handicap
+        "ESHMTHANDICAP": "spread",  # Esports handicap (maps)
     }
 
     # Selection template ID → our standard outcome name
-    SELECTION_TEMPLATE_MAP: Dict[str, str] = {
+    SELECTION_TEMPLATE_MAP: dict[str, str] = {
         "HOME": "home",
         "AWAY": "away",
         "DRAW": "draw",
@@ -142,14 +143,24 @@ class GeckoV2Retriever(BrowserRetriever):
     # Keywords in market name that indicate half-time / period-specific markets
     # These should be skipped — we only want full-match markets.
     _PERIOD_KEYWORDS = (
-        'halvtid', 'half time', 'half-time', 'halvlek',
-        '1st half', '2nd half', 'first half', 'second half',
-        'halvtid/fulltid', 'ht/ft',
-        'quarter', 'period',
-        '1st set', '2nd set', '3rd set',
+        "halvtid",
+        "half time",
+        "half-time",
+        "halvlek",
+        "1st half",
+        "2nd half",
+        "first half",
+        "second half",
+        "halvtid/fulltid",
+        "ht/ft",
+        "quarter",
+        "period",
+        "1st set",
+        "2nd set",
+        "3rd set",
     )
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
 
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain', 'betsson.com')}")
@@ -158,10 +169,10 @@ class GeckoV2Retriever(BrowserRetriever):
         self._init_path: str = config.get("init_path") or "/sv/odds"
 
         # Cached custom headers from browser session
-        self._api_headers: Optional[Dict[str, str]] = None
+        self._api_headers: dict[str, str] | None = None
         # API base URL (may differ from site_url, e.g., bethard uses d-cf.bethardplayground.net)
-        self._api_base: Optional[str] = None
-        self._last_run_id: Optional[str] = None
+        self._api_base: str | None = None
+        self._last_run_id: str | None = None
         # Fail-fast: if session init fails once per run, skip remaining sports
         self._session_init_failed: bool = False
 
@@ -183,36 +194,37 @@ class GeckoV2Retriever(BrowserRetriever):
 
             # Capture headers and API base URL from the first API request
             captured = {}
-            api_base_holder: List[str] = []
+            api_base_holder: list[str] = []
 
             async def capture_route(route, request):
                 url = request.url
-                if '/api/sb/' in url and not captured:
+                if "/api/sb/" in url and not captured:
                     captured.update(dict(request.headers))
-                    idx = url.find('/api/sb/')
+                    idx = url.find("/api/sb/")
                     api_base_holder.append(url[:idx])
                 try:
                     await route.continue_()
                 except Exception:
                     pass
 
-            await page.route('**/api/sb/**', capture_route)
+            await page.route("**/api/sb/**", capture_route)
 
             # Navigate to site
             url = f"{self.site_url}{self._init_path}"
             logger.debug(f"[{self.provider_id}] Loading {url} for session init")
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             # Handle cookie consent
             await self._handle_cookie_consent(page)
 
-            # Wait for API headers to be captured (up to 15s after page load)
-            for _ in range(30):
+            # Wait for API headers to be captured (up to 30s after page load)
+            # Increased from 15s — under concurrent browser load the SPA can be slow
+            for _ in range(60):
                 if captured:
                     break
                 await asyncio.sleep(0.5)
 
-            await page.unroute('**/api/sb/**')
+            await page.unroute("**/api/sb/**")
 
             if not captured:
                 logger.error(f"[{self.provider_id}] No API headers captured after page load")
@@ -222,19 +234,21 @@ class GeckoV2Retriever(BrowserRetriever):
             headers = {}
             for k, v in captured.items():
                 kl = k.lower()
-                if kl.startswith(('x-sb-', 'x-obg-')) or kl in (
-                    'brandid', 'sessiontoken', 'marketcode', 'correlationid'
+                if kl.startswith(("x-sb-", "x-obg-")) or kl in (
+                    "brandid",
+                    "sessiontoken",
+                    "marketcode",
+                    "correlationid",
                 ):
                     headers[k] = v
-            headers['accept'] = 'application/json'
-            headers['content-type'] = 'application/json'
+            headers["accept"] = "application/json"
+            headers["content-type"] = "application/json"
 
             self._api_headers = headers
             self._api_base = api_base_holder[0] if api_base_holder else self.site_url
             self._session_ready = True
             logger.debug(
-                f"[{self.provider_id}] Session established with {len(headers)} headers, "
-                f"API base: {self._api_base}"
+                f"[{self.provider_id}] Session established with {len(headers)} headers, API base: {self._api_base}"
             )
             return True
 
@@ -247,7 +261,7 @@ class GeckoV2Retriever(BrowserRetriever):
         for selector in [
             'button:has-text("Acceptera")',
             'button:has-text("Accept")',
-            '#accept-cookies',
+            "#accept-cookies",
         ]:
             try:
                 await page.click(selector, timeout=3000)
@@ -257,7 +271,7 @@ class GeckoV2Retriever(BrowserRetriever):
             except Exception:
                 continue
 
-    async def _lookup_category_id(self, sport: str) -> Optional[int]:
+    async def _lookup_category_id(self, sport: str) -> int | None:
         """
         Dynamically look up category ID via category-by-slug API.
         Falls back to slug lookup when a sport isn't in the hardcoded map.
@@ -287,7 +301,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
         return None
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """
         Extract events by calling events-table/v2 API with pagination.
         """
@@ -374,7 +388,7 @@ class GeckoV2Retriever(BrowserRetriever):
             )
 
             all_events = []
-            seen_ids: Set[str] = set()
+            seen_ids: set[str] = set()
 
             # Fetch page 1 to discover total pages
             url_p1 = f"{base_url}?{base_params}&pageNumber=1"
@@ -417,28 +431,23 @@ class GeckoV2Retriever(BrowserRetriever):
                     logger.error(f"[{self.provider_id}] API returned {resp.status}")
                     return []
 
-            data = (await resp.json()).get('data', {})
-            total_pages = data.get('totalPages', 1)
-            total_items = data.get('totalItemCount', 0)
-            logger.debug(
-                f"[{self.provider_id}] {sport}: {total_items} events, "
-                f"{total_pages} pages"
-            )
+            data = (await resp.json()).get("data", {})
+            total_pages = data.get("totalPages", 1)
+            total_items = data.get("totalItemCount", 0)
+            logger.debug(f"[{self.provider_id}] {sport}: {total_items} events, {total_pages} pages")
 
             # Parse page 1
-            events_raw = data.get('events', [])
-            markets_raw = data.get('markets', [])
-            selections_raw = data.get('selections', [])
+            events_raw = data.get("events", [])
+            markets_raw = data.get("markets", [])
+            selections_raw = data.get("selections", [])
             if events_raw:
-                all_events.extend(
-                    self._parse_page(events_raw, markets_raw, selections_raw, sport, seen_ids)
-                )
+                all_events.extend(self._parse_page(events_raw, markets_raw, selections_raw, sport, seen_ids))
 
             # Fetch remaining pages in parallel (cap at limit)
             if total_pages > 1 and len(all_events) < limit:
                 max_page = min(total_pages, 1 + (limit // max(len(events_raw), 1)))
 
-                async def _fetch_page(pg: int) -> Optional[Dict]:
+                async def _fetch_page(pg: int) -> dict | None:
                     url = f"{base_url}?{base_params}&pageNumber={pg}"
                     try:
                         r = await asyncio.wait_for(
@@ -446,7 +455,7 @@ class GeckoV2Retriever(BrowserRetriever):
                             timeout=30,
                         )
                         if r.ok:
-                            return (await r.json()).get('data', {})
+                            return (await r.json()).get("data", {})
                     except asyncio.TimeoutError:
                         logger.debug(f"[{self.provider_id}] Page {pg} timed out after 30s")
                     except Exception as exc:
@@ -461,13 +470,11 @@ class GeckoV2Retriever(BrowserRetriever):
                 for page_data in page_results:
                     if page_data is None or isinstance(page_data, Exception):
                         continue
-                    ev = page_data.get('events', [])
-                    mk = page_data.get('markets', [])
-                    sl = page_data.get('selections', [])
+                    ev = page_data.get("events", [])
+                    mk = page_data.get("markets", [])
+                    sl = page_data.get("selections", [])
                     if ev:
-                        all_events.extend(
-                            self._parse_page(ev, mk, sl, sport, seen_ids)
-                        )
+                        all_events.extend(self._parse_page(ev, mk, sl, sport, seen_ids))
 
             logger.debug(f"[{self.provider_id}] {sport}: {len(all_events)} events parsed")
             return all_events[:limit]
@@ -478,32 +485,30 @@ class GeckoV2Retriever(BrowserRetriever):
 
     def _parse_page(
         self,
-        events_raw: List[Dict],
-        markets_raw: List[Dict],
-        selections_raw: List[Dict],
+        events_raw: list[dict],
+        markets_raw: list[dict],
+        selections_raw: list[dict],
         sport: str,
-        seen_ids: Set[str],
-    ) -> List[StandardEvent]:
+        seen_ids: set[str],
+    ) -> list[StandardEvent]:
         """Parse a page of events-table API data."""
         # Build lookup maps
         # markets by eventId
-        markets_by_event: Dict[str, List[Dict]] = {}
+        markets_by_event: dict[str, list[dict]] = {}
         for m in markets_raw:
-            eid = m.get('eventId', '')
+            eid = m.get("eventId", "")
             markets_by_event.setdefault(eid, []).append(m)
 
         # selections by marketId
-        selections_by_market: Dict[str, List[Dict]] = {}
+        selections_by_market: dict[str, list[dict]] = {}
         for s in selections_raw:
-            mid = s.get('marketId', '')
+            mid = s.get("marketId", "")
             selections_by_market.setdefault(mid, []).append(s)
 
         events = []
         for event_raw in events_raw:
             try:
-                event = self._parse_event(
-                    event_raw, markets_by_event, selections_by_market, sport
-                )
+                event = self._parse_event(event_raw, markets_by_event, selections_by_market, sport)
                 if event and event.id not in seen_ids:
                     seen_ids.add(event.id)
                     events.append(event)
@@ -514,35 +519,35 @@ class GeckoV2Retriever(BrowserRetriever):
 
     def _parse_event(
         self,
-        event_raw: Dict,
-        markets_by_event: Dict[str, List[Dict]],
-        selections_by_market: Dict[str, List[Dict]],
+        event_raw: dict,
+        markets_by_event: dict[str, list[dict]],
+        selections_by_market: dict[str, list[dict]],
         sport: str,
-    ) -> Optional[StandardEvent]:
+    ) -> StandardEvent | None:
         """Parse a single event from events-table API."""
-        event_id = event_raw.get('id', '')
+        event_id = event_raw.get("id", "")
         if not event_id:
             return None
 
         # Skip non-fixture events (outrights, etc.)
-        event_type = event_raw.get('eventType', '')
-        if event_type == 'Outright':
+        event_type = event_raw.get("eventType", "")
+        if event_type == "Outright":
             return None
 
         # Skip live events
-        phase = event_raw.get('phase', '')
-        if phase != 'Prematch':
+        phase = event_raw.get("phase", "")
+        if phase != "Prematch":
             return None
 
         # Extract participants (home/away)
-        participants = event_raw.get('participants', [])
+        participants = event_raw.get("participants", [])
         if len(participants) < 2:
             return None
 
         # Sort by side (1=home, 2=away)
-        participants.sort(key=lambda p: p.get('side', 0))
-        home_raw = participants[0].get('label', '')
-        away_raw = participants[1].get('label', '')
+        participants.sort(key=lambda p: p.get("side", 0))
+        home_raw = participants[0].get("label", "")
+        away_raw = participants[1].get("label", "")
 
         if not home_raw or not away_raw:
             return None
@@ -552,15 +557,15 @@ class GeckoV2Retriever(BrowserRetriever):
 
         # Parse start time
         start_time = None
-        start_date_str = event_raw.get('startDate')
+        start_date_str = event_raw.get("startDate")
         if start_date_str:
             try:
-                start_time = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                start_time = datetime.fromisoformat(start_date_str.replace("Z", "+00:00"))
             except Exception:
                 pass
 
         # League/competition
-        league = event_raw.get('competitionName', 'Unknown')
+        league = event_raw.get("competitionName", "Unknown")
 
         # Parse markets
         event_markets = markets_by_event.get(event_id, [])
@@ -587,16 +592,16 @@ class GeckoV2Retriever(BrowserRetriever):
 
     def _parse_markets(
         self,
-        markets_raw: List[Dict],
-        selections_by_market: Dict[str, List[Dict]],
+        markets_raw: list[dict],
+        selections_by_market: dict[str, list[dict]],
         sport: str = "",
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Parse markets and their selections."""
         markets = []
-        seen_types: Set[str] = set()
+        seen_types: set[str] = set()
 
         for market in markets_raw:
-            template_id = market.get('marketTemplateId', '')
+            template_id = market.get("marketTemplateId", "")
             market_type = self.MARKET_TEMPLATE_MAP.get(template_id)
             if not market_type:
                 continue
@@ -607,7 +612,7 @@ class GeckoV2Retriever(BrowserRetriever):
                 continue
 
             # Skip half-time / period-specific markets by label
-            market_label = (market.get('label') or '').lower()
+            market_label = (market.get("label") or "").lower()
             if any(kw in market_label for kw in self._PERIOD_KEYWORDS):
                 continue
 
@@ -616,26 +621,26 @@ class GeckoV2Retriever(BrowserRetriever):
                 continue
 
             # Skip suspended markets
-            if market.get('status') != 'Open':
+            if market.get("status") != "Open":
                 continue
 
-            market_id = market.get('id', '')
+            market_id = market.get("id", "")
             selections = selections_by_market.get(market_id, [])
 
             # Extract point value for spread/total
             point = None
-            if market_type in ('spread', 'total'):
-                line_raw = market.get('lineValueRaw')
+            if market_type in ("spread", "total"):
+                line_raw = market.get("lineValueRaw")
                 if line_raw is not None and line_raw != 0.0:
                     point = float(line_raw)
                 else:
                     # Try lineValue string
-                    line_str = market.get('lineValue', '').strip()
+                    line_str = market.get("lineValue", "").strip()
                     if line_str:
                         try:
                             # Handle "0 - 1" format → -1.0
-                            if ' - ' in line_str:
-                                parts = line_str.split(' - ')
+                            if " - " in line_str:
+                                parts = line_str.split(" - ")
                                 point = float(parts[0]) - float(parts[1])
                             else:
                                 point = float(line_str)
@@ -644,20 +649,20 @@ class GeckoV2Retriever(BrowserRetriever):
 
             outcomes = []
             for sel in selections:
-                if sel.get('status') != 'Open':
+                if sel.get("status") != "Open":
                     continue
 
-                odds = sel.get('odds')
+                odds = sel.get("odds")
                 if not odds or odds <= 1.0:
                     continue
 
                 # Map selection template to outcome name
-                sel_template = sel.get('selectionTemplateId', '')
+                sel_template = sel.get("selectionTemplateId", "")
                 outcome_name = self.SELECTION_TEMPLATE_MAP.get(sel_template)
                 if not outcome_name:
                     continue
 
-                outcome_dict: Dict[str, Any] = {
+                outcome_dict: dict[str, Any] = {
                     "name": outcome_name,
                     "odds": round(float(odds), 3),
                 }
@@ -676,6 +681,6 @@ class GeckoV2Retriever(BrowserRetriever):
 
         return markets
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used - extract() is overridden."""
         return []
