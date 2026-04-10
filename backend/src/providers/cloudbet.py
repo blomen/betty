@@ -297,8 +297,7 @@ class CloudbetRetriever(Retriever):
         if not competitions:
             logger.debug(f"[{self.provider_id}] No competitions found for sport '{sport}'")
             return []
-        # Limit to top 30 competitions to avoid excessive API calls
-        competitions = competitions[:30]
+        logger.info(f"[{self.provider_id}] {sport}: {len(competitions)} active competitions")
 
         market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
         events: List[StandardEvent] = []
