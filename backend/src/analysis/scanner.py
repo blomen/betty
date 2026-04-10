@@ -739,6 +739,8 @@ class OpportunityScanner:
             for po in provider_odds_list:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue
+                if po["provider"] in SIGNAL_ONLY_PROVIDERS:
+                    continue  # Signal-only — can't place bets
                 # Counterpart filter: non-anchor providers must be in counterpart list
                 if counterpart_providers and po["provider"] != anchor_provider:
                     if po["provider"] not in counterpart_providers:
