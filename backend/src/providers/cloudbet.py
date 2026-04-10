@@ -27,13 +27,18 @@ _SKIP_STATUSES = {"TRADING_LIVE", "RESULTED", "CANCELLED", "SUSPENDED"}
 _MARKET_TYPE_MAP = {
     "match_odds": "1x2",
     "matchOdds": "1x2",
+    "1x2": "1x2",
     "moneyline": "moneyline",
+    "winner": "moneyline",
     "asian_handicap": "spread",
     "asianHandicap": "spread",
     "handicap": "spread",
+    "set_handicap": "spread",
+    "game_handicap": "spread",
     "total_goals": "total",
     "totalGoals": "total",
     "totals": "total",
+    "total_sets": "total",
 }
 
 # Sport key mapping: internal → Cloudbet
@@ -55,10 +60,10 @@ _SPORT_MARKETS = {
     "basketball": "basketball.moneyline,basketball.handicap,basketball.totals",
     "ice-hockey": "ice_hockey.moneyline,ice_hockey.handicap,ice_hockey.totals",
     "american-football": "american_football.moneyline,american_football.handicap,american_football.totals",
-    "tennis": "tennis.moneyline",
+    "tennis": "tennis.winner,tennis.set_handicap,tennis.total_sets",
     "baseball": "baseball.moneyline,baseball.handicap,baseball.totals",
-    "mma": "mma.moneyline",
-    "boxing": "boxing.moneyline",
+    "mma": "mma.winner,mma.totals",
+    "boxing": "boxing.winner,boxing.totals",
     "esports": "esports.moneyline",
 }
 
