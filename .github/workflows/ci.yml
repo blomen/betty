@@ -36,6 +36,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev]"
+          pip install ruff
+
+      - name: Ruff lint
+        working-directory: backend
+        run: |
+          ruff check src/
+          ruff format --check src/
 
       - name: Run tests
         working-directory: backend
@@ -76,6 +83,10 @@ jobs:
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: ESLint
+        working-directory: frontend
+        run: npm run lint
 
       - name: TypeScript check
         working-directory: frontend

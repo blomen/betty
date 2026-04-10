@@ -17,38 +17,39 @@ from dotenv import load_dotenv
 
 # Load .env from user data directory (AppData in bundled mode, backend/ in dev)
 from ..paths import get_env_path
+
 load_dotenv(get_env_path(), override=True)
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from ..db.models import init_db
 from .routes import (
-    providers_router,
     bankroll_router,
-    events_router,
-    opportunities_router,
     bets_router,
-    profiles_router,
-    extraction_router,
-    metrics_router,
-    monitoring_router,
     chat_router,
-    polymarket_router,
-    risk_router,
-    specials_router,
-    trading_router,
-    settings_router,
-    market_router,
+    events_router,
+    extraction_router,
+    fire_window_router,
     limits_router,
-    postmortem_router,
+    market_router,
+    metrics_router,
     mirror_router,
     mirror_stream_router,
-    fire_window_router,
+    monitoring_router,
+    opportunities_router,
+    polymarket_router,
+    postmortem_router,
+    profiles_router,
+    providers_router,
+    risk_router,
+    settings_router,
     signals_ws_router,
+    specials_router,
+    trading_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,14 +69,17 @@ async def lifespan(app: FastAPI):
 
     # Add new columns to existing Postgres tables (create_all only makes new tables)
     def _pg_migrations():
+        from sqlalchemy import inspect, text
+
         from ..db.models import get_engine
-        from sqlalchemy import text, inspect
+
         engine = get_engine()
         insp = inspect(engine)
         cols = {c["name"] for c in insp.get_columns("profiles")}
         if "liquid_balance" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE profiles ADD COLUMN liquid_balance FLOAT DEFAULT 0.0"))
+
     try:
         await asyncio.to_thread(_pg_migrations)
     except Exception:
@@ -83,15 +87,17 @@ async def lifespan(app: FastAPI):
 
     # Clear any stale fire window from previous session
     from ..services.fire_window import close_window
-    close_window()
 
+    close_window()
 
     # Kill orphaned browser processes from previous mirror session
     import subprocess
+
     try:
         subprocess.run(
             ["taskkill", "/F", "/IM", "firefox.exe", "/T"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
     except Exception:
         pass
@@ -100,18 +106,22 @@ async def lifespan(app: FastAPI):
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
     # which blocks the event loop with synchronous disk I/O.
     import logging.handlers
+
     from ..paths import get_logs_dir
+
     extraction_handler = logging.handlers.RotatingFileHandler(
         get_logs_dir() / "extraction.log",
-        maxBytes=10*1024*1024,  # 10MB
+        maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=5,
         encoding="utf-8",
     )
     extraction_handler.setLevel(logging.INFO)
-    extraction_handler.setFormatter(logging.Formatter(
-        '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    ))
+    extraction_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     root_logger = logging.getLogger()
     root_logger.addHandler(extraction_handler)
     # Set root to INFO — DEBUG causes Databento SDK to flood event loop with
@@ -128,11 +138,13 @@ async def lifespan(app: FastAPI):
 
     def _warmup_imports():
         from ..config.loader import load_config
+
         load_config()
         try:
             import numpy  # noqa: F401
         except ImportError:
             pass
+
     threading.Thread(target=_warmup_imports, daemon=True, name="startup-imports").start()
 
     # Warm up opportunity cache in background thread so first page load is fast
@@ -141,15 +153,18 @@ async def lifespan(app: FastAPI):
         try:
             from ..db.models import get_session as _warmup_session
             from ..services import OpportunityService
-            from .routes.opportunities import _opp_cache, _OPP_CACHE_TTL
+            from .routes.opportunities import _OPP_CACHE_TTL, _opp_cache
+
             _wdb = _warmup_session()
             try:
                 _wsvc = OpportunityService(_wdb)
-                result = _wsvc.list_opportunities(type='value', limit=500)
+                result = _wsvc.list_opportunities(type="value", limit=500)
                 # Also prime the route-level response cache
                 import json
+
                 from fastapi.encoders import jsonable_encoder
-                cache_key = ('value', None, None, None, None, None, None, 500)
+
+                cache_key = ("value", None, None, None, None, None, None, 500)
                 serialized = json.dumps(jsonable_encoder(result), ensure_ascii=False, separators=(",", ":"))
                 _opp_cache[cache_key] = (serialized, time.time() + _OPP_CACHE_TTL)
                 logger.info("[Startup] Opportunity cache warmed (%d opps)", result.get("count", 0))
@@ -157,6 +172,7 @@ async def lifespan(app: FastAPI):
                 _wdb.close()
         except Exception as e:
             logger.warning("[Startup] Opportunity warmup failed: %s", e)
+
     threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
     # Mirror-only mode: skip scheduler, trading features, RL collector
@@ -171,6 +187,7 @@ async def lifespan(app: FastAPI):
     # Auto-start continuous extraction (server only — skip for local mirror)
     if not _mirror_only:
         from ..pipeline.scheduler import get_scheduler
+
         scheduler = get_scheduler()
 
         async def _start_scheduler():
@@ -188,6 +205,7 @@ async def lifespan(app: FastAPI):
         # Auto-start RL training daemon (server only, runs at nice 19)
         def _start_rl_daemon():
             import subprocess as _sp
+
             daemon_script = "/app/backend/scripts/rl_train_daemon.sh"
             pid_file = "/app/data/rl/daemon.pid"
             try:
@@ -204,6 +222,7 @@ async def lifespan(app: FastAPI):
                 logger.info("[Startup] RL training daemon started")
             except Exception as e:
                 logger.warning("[Startup] RL daemon start failed: %s", e)
+
         threading.Thread(target=_start_rl_daemon, daemon=True, name="startup-rl-daemon").start()
     else:
         logger.info("[Startup] Scheduler disabled (FIREV_NO_SCHEDULER set)")
@@ -215,7 +234,8 @@ async def lifespan(app: FastAPI):
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
     if databento_key and not _mirror_only and not _stocks_mode:
-        from ..db.models import get_session as _get_db_session, get_market_session as _get_market_session
+        from ..db.models import get_market_session as _get_market_session
+        from ..db.models import get_session as _get_db_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
         from ..services.market_service import MarketService as _MS
 
@@ -237,6 +257,7 @@ async def lifespan(app: FastAPI):
                 # Seed CandleFlow from last DB candle so live updates continue
                 # rather than starting fresh (which causes fake wicks on chart).
                 from ..repositories.market_repo import MarketRepo as _MR
+
                 _seed_db = _get_market_session()
                 try:
                     for _flow, _interval in [
@@ -253,12 +274,13 @@ async def lifespan(app: FastAPI):
 
                 # --- Check if Rithmic is configured (takes priority over Databento) ---
                 from ..rithmic.config import RithmicConfig
+
                 rithmic_config = RithmicConfig.from_env()
 
                 if rithmic_config.is_configured:
-                    from ..rithmic.stream import RithmicStream
-                    from ..rithmic.broker_client import RithmicBrokerClient
                     from ..market_data.level_monitor import LevelMonitor
+                    from ..rithmic.broker_client import RithmicBrokerClient
+                    from ..rithmic.stream import RithmicStream
                     from ..services.market_service import MarketService
 
                     rithmic_stream = RithmicStream(rithmic_config, db_session_factory=_get_market_session)
@@ -272,6 +294,7 @@ async def lifespan(app: FastAPI):
 
                     # Setup broker via Rithmic
                     from ..broker.config import BrokerConfig
+
                     broker_config = BrokerConfig.from_env()
                     if broker_config.enabled:
                         rithmic_broker = RithmicBrokerClient(rithmic_stream._client, rithmic_config)
@@ -279,6 +302,7 @@ async def lifespan(app: FastAPI):
                         if connected:
                             from ..broker.adapter import BrokerAdapter
                             from ..broker.flatten_scheduler import FlattenScheduler
+
                             _broker_adapter = BrokerAdapter(rithmic_broker, broker_config)
                             app.state.broker_adapter = _broker_adapter
                             level_monitor.set_broker_adapter(_broker_adapter)
@@ -310,11 +334,12 @@ async def lifespan(app: FastAPI):
 
                     # --- Broker (automated execution) ---
                     from ..broker.config import BrokerConfig
+
                     broker_config = BrokerConfig.from_env()
                     if broker_config.enabled:
-                        from ..broker.tradovate_client import TradovateClient
                         from ..broker.adapter import BrokerAdapter
                         from ..broker.flatten_scheduler import FlattenScheduler
+                        from ..broker.tradovate_client import TradovateClient
 
                         tv_client = TradovateClient(broker_config)
                         connected = await tv_client.connect()
@@ -325,9 +350,13 @@ async def lifespan(app: FastAPI):
 
                             flatten_sched = FlattenScheduler(_broker_adapter, broker_config.flatten_et)
                             flatten_sched.start()
-                            logger.info("Broker enabled: %s %s (max_pos=%d, max_loss=$%.0f)",
-                                         broker_config.env, broker_config.symbol,
-                                         broker_config.max_position, broker_config.max_daily_loss)
+                            logger.info(
+                                "Broker enabled: %s %s (max_pos=%d, max_loss=$%.0f)",
+                                broker_config.env,
+                                broker_config.symbol,
+                                broker_config.max_position,
+                                broker_config.max_daily_loss,
+                            )
                         else:
                             logger.error("Broker: Tradovate connection failed — trading disabled")
                     else:
@@ -335,8 +364,10 @@ async def lifespan(app: FastAPI):
 
                 # Load initial levels + COT in background thread (DB-heavy, would stall event loop)
                 import threading
+
                 def _load_initial_data():
                     loop = asyncio.new_event_loop()
+
                     async def _run():
                         try:
                             svc = MarketService(_get_db_session())
@@ -346,6 +377,7 @@ async def lifespan(app: FastAPI):
                                 expanded = None
                                 # Try yesterday first (today may have no RTH data yet pre-market)
                                 from datetime import date, timedelta
+
                                 for attempt_date in [None, "yesterday"]:
                                     try:
                                         if attempt_date == "yesterday":
@@ -377,10 +409,13 @@ async def lifespan(app: FastAPI):
                                         "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                                     }
                                     level_monitor.set_session_context(rl_context)
-                                    logger.info("Auto-compute: session context set (ATR=%.1f)",
-                                                rl_context.get("atr", 0))
+                                    logger.info(
+                                        "Auto-compute: session context set (ATR=%.1f)", rl_context.get("atr", 0)
+                                    )
                                 else:
-                                    logger.warning("No session data available — zones may be empty until first recompute")
+                                    logger.warning(
+                                        "No session data available — zones may be empty until first recompute"
+                                    )
                             finally:
                                 svc.db.close()
                         except Exception as e:
@@ -388,6 +423,7 @@ async def lifespan(app: FastAPI):
 
                         try:
                             from ..market_data.cot import fetch_cot, store_cot_data
+
                             reports = await fetch_cot()
                             if reports:
                                 db = _get_db_session()
@@ -403,6 +439,7 @@ async def lifespan(app: FastAPI):
                         # Refresh economic calendar from ForexFactory
                         try:
                             from ..data.economic_calendar import fetch_and_store_calendar
+
                             db = _get_db_session()
                             try:
                                 count = await fetch_and_store_calendar(db)
@@ -412,8 +449,10 @@ async def lifespan(app: FastAPI):
                                 db.close()
                         except Exception as e:
                             logger.warning("Economic calendar refresh failed: %s", e)
+
                     loop.run_until_complete(_run())
                     loop.close()
+
                 threading.Thread(target=_load_initial_data, daemon=True, name="startup-levels").start()
 
                 # Periodic session recompute — rebuild zones every 5 min as candle data accumulates
@@ -426,6 +465,7 @@ async def lifespan(app: FastAPI):
                                 session_data = None
                                 expanded = None
                                 from datetime import date, timedelta
+
                                 for attempt_date in [None, "yesterday"]:
                                     try:
                                         if attempt_date == "yesterday":
@@ -464,6 +504,7 @@ async def lifespan(app: FastAPI):
 
                 # Start news impact recorder (measures NQ price after economic events)
                 from ..ml.macro.news_impact_recorder import news_impact_loop
+
                 asyncio.create_task(news_impact_loop(_get_db_session, _databento_stream))
 
             except Exception as e:
@@ -471,6 +512,7 @@ async def lifespan(app: FastAPI):
 
             # Backfill market_candles in a background thread (lowest priority).
             import threading
+
             def _run_backfill():
                 loop = asyncio.new_event_loop()
                 try:
@@ -479,13 +521,15 @@ async def lifespan(app: FastAPI):
                     logger.warning("Candle backfill failed: %s", e)
                 finally:
                     loop.close()
+
             threading.Thread(target=_run_backfill, daemon=True, name="startup-backfill").start()
 
         async def _backfill_candles():
+            from datetime import timedelta
+
+            from ..config.trading_loader import get_market_data_config
             from ..market_data.databento_provider import DabentoProvider
             from ..repositories.market_repo import MarketRepo
-            from ..config.trading_loader import get_market_data_config
-            from datetime import timedelta
 
             config = get_market_data_config()
             symbol = "NQ"
@@ -494,7 +538,7 @@ async def lifespan(app: FastAPI):
             fetch_end = now - timedelta(minutes=15)  # Databento ~15 min delay
 
             interval_targets = {
-                "5m": now - timedelta(days=30),   # 1 month of 5m bars (monthly VP)
+                "5m": now - timedelta(days=30),  # 1 month of 5m bars (monthly VP)
                 "1m": now - timedelta(days=36),
             }
 
@@ -530,8 +574,14 @@ async def lifespan(app: FastAPI):
                                 repo = MarketRepo(db)
                                 for b in bars:
                                     repo.upsert_candle(
-                                        symbol, interval, b.timestamp,
-                                        b.open, b.high, b.low, b.close, b.volume,
+                                        symbol,
+                                        interval,
+                                        b.timestamp,
+                                        b.open,
+                                        b.high,
+                                        b.low,
+                                        b.close,
+                                        b.volume,
                                     )
                                 logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
                             finally:
@@ -579,7 +629,13 @@ async def lifespan(app: FastAPI):
                                 try:
                                     repo = MarketRepo(db)
                                     count = repo.bulk_insert_candles(symbol, interval, bars)
-                                    logger.info("Candle gap backfill %s: filled %s → %s (%d bars)", interval, start_dt, end_dt, count)
+                                    logger.info(
+                                        "Candle gap backfill %s: filled %s → %s (%d bars)",
+                                        interval,
+                                        start_dt,
+                                        end_dt,
+                                        count,
+                                    )
                                 finally:
                                     db.close()
                         except Exception as e:
@@ -594,8 +650,7 @@ async def lifespan(app: FastAPI):
             # Market is closed — sleep until Globex opens, then boot everything
             sleep_s = DatabentoLiveStream._seconds_until_globex_open()
             logger.info(
-                "Trading features halted — Globex closed. "
-                "Sleeping %.1f hours until market opens (zero resources used)",
+                "Trading features halted — Globex closed. Sleeping %.1f hours until market opens (zero resources used)",
                 sleep_s / 3600,
             )
             # Sleep in 60s chunks so we can be cancelled cleanly on shutdown
@@ -616,13 +671,14 @@ async def lifespan(app: FastAPI):
     # session context, macro, AMT dynamics, orderflow — so the specialist
     # ensemble gets a full 276-dim observation vector, not zeros.
     if _stocks_mode and not _mirror_only:
-        from ..market_data.level_monitor import LevelMonitor
-        from ..market_data.stream import TickBuffer, CandleFlow
+        import threading
+
         from ..db.models import get_market_session as _get_market_session
         from ..db.models import get_session as _get_db_session
-        from ..services.market_service import MarketService
+        from ..market_data.level_monitor import LevelMonitor
+        from ..market_data.stream import CandleFlow, TickBuffer
         from ..repositories.market_repo import MarketRepo
-        import threading
+        from ..services.market_service import MarketService
 
         def _stocks_publish(event: dict) -> None:
             pass  # SSE not needed for stocks mode (no browser UI on server)
@@ -639,6 +695,7 @@ async def lifespan(app: FastAPI):
         def _stocks_get_recent_candles():
             """Build candles from tick buffer for orderflow computation."""
             from ..market_data.orderflow import build_candle_flow
+
             ticks = list(_stocks_tick_buffer.ticks)
             if len(ticks) < 10:
                 return []
@@ -676,11 +733,13 @@ async def lifespan(app: FastAPI):
         # 5. Load initial levels + session context in background thread
         def _load_initial_data_stocks():
             _init_loop = asyncio.new_event_loop()
+
             async def _run():
                 try:
                     svc = MarketService(_get_db_session())
                     try:
                         from datetime import date, timedelta
+
                         session_data = None
                         expanded = None
                         for attempt_date in [None, "yesterday"]:
@@ -710,17 +769,23 @@ async def lifespan(app: FastAPI):
                                 "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                             }
                             level_monitor.set_session_context(rl_context)
-                            logger.info("[Stocks] Session context set: %d keys, ATR=%.1f",
-                                       len(rl_context), rl_context.get("atr", 0))
+                            logger.info(
+                                "[Stocks] Session context set: %d keys, ATR=%.1f",
+                                len(rl_context),
+                                rl_context.get("atr", 0),
+                            )
                         elif expanded:
-                            logger.info("[Stocks] Levels loaded (%d) but no session context",
-                                       len(level_monitor._levels))
+                            logger.info(
+                                "[Stocks] Levels loaded (%d) but no session context", len(level_monitor._levels)
+                            )
                     finally:
                         svc.db.close()
                 except Exception:
                     logger.exception("[Stocks] Initial data load failed")
+
             _init_loop.run_until_complete(_run())
             _init_loop.close()
+
         threading.Thread(target=_load_initial_data_stocks, daemon=True, name="stocks-init").start()
 
         # 6. Periodic session recompute (every 5 minutes, same as Databento path)
@@ -744,8 +809,11 @@ async def lifespan(app: FastAPI):
                                     "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                                 }
                                 level_monitor.set_session_context(rl_context)
-                            logger.info("[Stocks] Session recomputed: %d levels, %d zones",
-                                       len(level_monitor._levels), len(level_monitor._zones))
+                            logger.info(
+                                "[Stocks] Session recomputed: %d levels, %d zones",
+                                len(level_monitor._levels),
+                                len(level_monitor._zones),
+                            )
                     finally:
                         svc.db.close()
                 except Exception:
@@ -758,9 +826,9 @@ async def lifespan(app: FastAPI):
         _recompute_task.add_done_callback(_background_tasks.discard)
 
     # Auto-start all mirror browsers (always-on recording)
-    from .routes.mirror import _mirrors, _load_all_providers
     from ..mirror.service import MirrorService
     from ..pipeline.broadcast import odds_broadcaster as _mirror_broadcaster
+    from .routes.mirror import _load_all_providers, _mirrors
 
     async def _start_all_mirrors():
         """Auto-start mirrors for providers that have saved browser profiles.
@@ -775,6 +843,7 @@ async def lifespan(app: FastAPI):
         await asyncio.sleep(30)  # Let API stabilize before launching browsers
         try:
             from ..paths import get_data_dir
+
             profiles_dir = get_data_dir() / "mirror_profiles"
             if not profiles_dir.exists():
                 logger.info("No mirror profiles found — skipping auto-start")
@@ -816,23 +885,24 @@ async def lifespan(app: FastAPI):
 
             async def _get_recent_trades(since, until):
                 """Query market_trades for outcome measurement."""
-                from sqlalchemy import text, create_engine
+                from sqlalchemy import create_engine, text
+
                 market_url = os.environ.get(
                     "MARKET_DATABASE_URL",
                     "postgresql://firev:firev2026secure@postgres:5432/market",
                 ).replace("+asyncpg", "")  # Use sync driver for thread safety
                 engine = create_engine(market_url, pool_size=20, max_overflow=10, pool_pre_ping=True)
                 with engine.connect() as conn:
-                    rows = conn.execute(text(
-                        "SELECT ts, price, size FROM market_trades "
-                        "WHERE ts >= :since AND ts <= :until ORDER BY ts"
-                    ), {"since": since, "until": until}).fetchall()
+                    rows = conn.execute(
+                        text(
+                            "SELECT ts, price, size FROM market_trades WHERE ts >= :since AND ts <= :until ORDER BY ts"
+                        ),
+                        {"since": since, "until": until},
+                    ).fetchall()
                 return [{"ts": r[0], "price": r[1], "size": r[2]} for r in rows]
 
             collector = get_live_collector()
-            _live_collector_task = asyncio.create_task(
-                collector.measure_outcomes_loop(_get_recent_trades)
-            )
+            _live_collector_task = asyncio.create_task(collector.measure_outcomes_loop(_get_recent_trades))
             logger.info("Live RL episode collector started")
         except Exception:
             logger.debug("Live RL episode collector not available", exc_info=True)
@@ -849,7 +919,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
 
     # Cancel the trading gate sleep loop (can block for hours when market closed)
-    if '_trading_gate_task' in dir() and not _trading_gate_task.done():
+    if "_trading_gate_task" in dir() and not _trading_gate_task.done():
         _trading_gate_task.cancel()
         try:
             await _trading_gate_task
@@ -869,6 +939,7 @@ async def lifespan(app: FastAPI):
     if not _mirror_only:
         try:
             from ..pipeline.scheduler import get_scheduler
+
             get_scheduler().stop_all()
         except Exception:
             pass
@@ -889,12 +960,15 @@ async def debug_zones(request: Request):
     lm = getattr(request.app.state, "level_monitor", None)
     if lm is None:
         return {"error": "LevelMonitor not initialized"}
-    zones = [{
-        "center": round(z.center_price, 2),
-        "lower": round(z.lower_bound, 2),
-        "upper": round(z.upper_bound, 2),
-        "members": z.member_count,
-    } for z in sorted(lm._zones, key=lambda z: z.center_price)]
+    zones = [
+        {
+            "center": round(z.center_price, 2),
+            "lower": round(z.lower_bound, 2),
+            "upper": round(z.upper_bound, 2),
+            "members": z.member_count,
+        }
+        for z in sorted(lm._zones, key=lambda z: z.center_price)
+    ]
     return {
         "last_price": round(lm._last_price, 2),
         "zone_count": len(zones),
@@ -902,13 +976,15 @@ async def debug_zones(request: Request):
         "zones": zones,
     }
 
+
 # GZip compression for responses > 1KB
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # App-level API key auth — defense-in-depth behind nginx basic auth
 _api_key = os.environ.get("FIREV_API_KEY")
-_auth_exempt = {"/health", "/health/live", "/health/ready", "/debug/zones", "/ws/signals"}
+_auth_exempt = {"/health", "/health/live", "/health/ready", "/health/extraction", "/debug/zones", "/ws/signals"}
+
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
@@ -931,6 +1007,7 @@ async def cache_control_middleware(request: Request, call_next):
         # Short private cache — browser can reuse within window, must revalidate after
         response.headers.setdefault("Cache-Control", "private, max-age=5")
     return response
+
 
 # Allow CORS for frontend
 _default_origins = "http://localhost:5173,http://localhost:5174,http://localhost:3000,tauri://localhost"
@@ -988,8 +1065,8 @@ async def health_ready():
     Checks database connectivity and provider availability.
     Used by Kubernetes/Docker for readiness probes.
     """
-    from .deps import get_db
     from ..db.models import Provider
+    from .deps import get_db
 
     status = "ready"
     database_ok = False
@@ -1037,6 +1114,112 @@ async def health_ready():
     }
 
 
+@app.get("/health/extraction")
+async def health_extraction():
+    """Public extraction health endpoint — no auth required.
+
+    Returns last 3 extraction runs with per-provider status,
+    designed for remote monitoring agents and dashboards.
+    """
+    from ..db.extraction import ExtractionRun, ProviderRunMetrics
+    from .deps import get_db
+
+    def _query():
+        db = None
+        try:
+            db = next(get_db())
+            runs = db.query(ExtractionRun).order_by(ExtractionRun.start_time.desc()).limit(3).all()
+            result = []
+            for run in runs:
+                providers = db.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == run.id).all()
+                failed = [
+                    {"provider": p.provider_id, "error": (p.error_message or "")[:200], "status": p.status}
+                    for p in providers
+                    if p.status in ("failed", "timeout")
+                ]
+                low_match = [
+                    {
+                        "provider": p.provider_id,
+                        "matched": p.events_matched or 0,
+                        "unmatched": p.events_unmatched or 0,
+                        "match_rate": round(
+                            (p.events_matched or 0) / max((p.events_matched or 0) + (p.events_unmatched or 0), 1) * 100
+                        ),
+                    }
+                    for p in providers
+                    if (p.events_matched or 0) + (p.events_unmatched or 0) > 0
+                    and (p.events_matched or 0) / max((p.events_matched or 0) + (p.events_unmatched or 0), 1) < 0.3
+                ]
+                result.append(
+                    {
+                        "id": run.id,
+                        "start_time": run.start_time.isoformat() if run.start_time else None,
+                        "duration_seconds": run.duration_seconds,
+                        "trigger": run.trigger,
+                        "providers_attempted": run.providers_attempted,
+                        "providers_succeeded": run.providers_succeeded,
+                        "providers_failed": run.providers_failed,
+                        "total_events": run.total_events,
+                        "total_odds": run.total_odds,
+                        "failed_providers": failed,
+                        "low_match_rate": low_match,
+                    }
+                )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            if db:
+                db.close()
+
+    try:
+        data = await asyncio.wait_for(asyncio.to_thread(_query), timeout=10.0)
+    except asyncio.TimeoutError:
+        return {"status": "error", "message": "Database query timed out"}
+
+    if isinstance(data, dict) and "error" in data:
+        return {"status": "error", "message": data["error"]}
+
+    # Determine overall status
+    status = "ok"
+    issues = []
+    if not data:
+        status = "unknown"
+        issues.append("No extraction runs found")
+    else:
+        latest = data[0]
+        if latest.get("providers_failed", 0) > 0:
+            status = "warning"
+            issues.append(f"{latest['providers_failed']} provider(s) failed")
+        if latest.get("failed_providers"):
+            for fp in latest["failed_providers"]:
+                issues.append(f"{fp['provider']}: {fp['error'][:100]}")
+        if latest.get("low_match_rate"):
+            status = "warning"
+            for lm in latest["low_match_rate"]:
+                issues.append(f"{lm['provider']} match rate {lm['match_rate']}%")
+        if latest.get("start_time"):
+            from datetime import datetime as dt
+
+            try:
+                last_run = dt.fromisoformat(latest["start_time"])
+                age_minutes = (datetime.now(timezone.utc) - last_run.replace(tzinfo=timezone.utc)).total_seconds() / 60
+                if age_minutes > 30:
+                    status = "warning"
+                    issues.append(f"Last extraction was {int(age_minutes)}m ago")
+                if age_minutes > 120:
+                    status = "critical"
+            except (ValueError, TypeError):
+                pass
+
+    return {
+        "status": status,
+        "issues": issues,
+        "runs": data,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # Include routers
 app.include_router(providers_router)
 app.include_router(bankroll_router)
@@ -1067,6 +1250,7 @@ app.include_router(signals_ws_router)
 async def get_version():
     """Return app version and runtime info."""
     from ..paths import get_data_dir
+
     return {
         "version": app.version,
         "data_dir": str(get_data_dir()),
@@ -1104,4 +1288,5 @@ if _frontend_dir.exists():
 # ProactorEventLoop correctly. Use run_dev.py if you need hot-reload.
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("src.api:app", host="127.0.0.1", port=8000)

@@ -1010,7 +1010,6 @@ active:
   # - lyllo     # TESTED 2026-03-18: 93 events, 900s timeout — worst of all
   # - snabbare  # TESTED 2026-03-18: 96 events, 544s — consolidated via PLATFORM_GROUPS
   # International signal-only providers
-  - stake
   - cloudbet
   - marathon
 
