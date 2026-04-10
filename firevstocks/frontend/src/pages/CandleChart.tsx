@@ -941,7 +941,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones }: Props)
 
   // Anchor series for no-data state
   useEffect(() => {
-    if (!noData || !session || !anchorSeriesRef.current) return;
+    if (!noData || !session?.session || !anchorSeriesRef.current) return;
     const s = session.session;
     const anchor = s.vwap ?? session.price_position?.last_price;
     if (!anchor) return;

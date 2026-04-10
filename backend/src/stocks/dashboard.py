@@ -18,6 +18,16 @@ log = logging.getLogger(__name__)
 SERVER_URL = "http://127.0.0.1:18000"
 _http = httpx.AsyncClient(timeout=10.0)
 
+
+async def _proxy(path: str, params: dict | None = None):
+    """Proxy GET to server via SSH tunnel. Returns {} on connection failure."""
+    try:
+        r = await _http.get(f"{SERVER_URL}{path}", params=params)
+        return r.json()
+    except Exception as exc:
+        log.debug("Proxy %s failed: %s", path, exc)
+        return {}
+
 # Shared state — populated by the pipeline
 _state = {
     "ticks": deque(maxlen=2000),        # last 2000 ticks for chart
@@ -72,56 +82,56 @@ def create_dashboard_app() -> FastAPI:
         params = {"symbol": "NQ", "interval": interval, "days": str(days)}
         if date:
             params["date"] = date
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/candles", params=params)
-        return r.json()
+        return await _proxy("/api/trading/market/candles", params)
 
     @app.get("/api/session")
     async def proxy_session():
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/session")
-        return r.json()
+        return await _proxy("/api/trading/market/session")
 
     @app.get("/api/session-levels")
     async def proxy_session_levels(days: int = 5):
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/session-levels",
-                            params={"symbol": "NQ", "days": str(days)})
-        return r.json()
+        return await _proxy("/api/trading/market/session-levels",
+                            {"symbol": "NQ", "days": str(days)})
 
     @app.get("/api/vp/{tf}")
     async def proxy_vp(tf: str):
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/volume-profile",
-                            params={"symbol": "NQ", "timeframe": tf})
-        return r.json()
+        return await _proxy("/api/trading/market/volume-profile",
+                            {"symbol": "NQ", "timeframe": tf})
 
     @app.get("/api/vwap")
     async def proxy_vwap():
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/vwap",
-                            params={"symbol": "NQ", "interval": "1m"})
-        return r.json()
+        return await _proxy("/api/trading/market/vwap",
+                            {"symbol": "NQ", "interval": "1m"})
 
     @app.get("/api/session-tpo")
     async def proxy_session_tpo():
-        r = await _http.get(f"{SERVER_URL}/api/trading/market/tpo/sessions",
-                            params={"symbol": "NQ"})
-        return r.json()
+        return await _proxy("/api/trading/market/tpo/sessions",
+                            {"symbol": "NQ"})
 
     @app.get("/api/trades")
     async def get_trades():
         client = _state.get("topstepx_client")
         if not client:
             return {"trades": []}
-        return await client._post("/api/Trade/search", {
-            "accountId": client._account_id,
-        })
+        try:
+            return await client._post("/api/Trade/search", {
+                "accountId": client._account_id,
+            })
+        except Exception:
+            return {"trades": []}
 
     @app.get("/api/account-info")
     async def get_account_info():
         client = _state.get("topstepx_client")
         if not client:
             return {}
-        accounts = await client._post("/api/Account/search", {
-            "onlyActiveAccounts": True,
-        })
-        return accounts[0] if accounts else {}
+        try:
+            accounts = await client._post("/api/Account/search", {
+                "onlyActiveAccounts": True,
+            })
+            return accounts[0] if accounts else {}
+        except Exception:
+            return {}
 
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(ws: WebSocket):
