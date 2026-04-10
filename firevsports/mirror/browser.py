@@ -40,6 +40,16 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "speedybet.com": "speedybet", "goldenbull.se": "goldenbull",
 }
 
+# Altenar/Gecko/Kambi API domains use integration= param to identify the provider
+# We detect provider from the page URL (which tab made the request), not the API domain
+# But we also need to recognize these API domains as "belonging to a provider"
+_API_DOMAINS = {
+    "biahosted.com", "bfrndz.com",  # Altenar API
+    "sbapi.sbtech.com", "sportsbook-api",  # SBTech
+    "kambi.com", "push.aws",  # Kambi
+    "clob.polymarket.com",  # Polymarket
+}
+
 
 class MirrorBrowser:
     """Manages a headed Chromium browser with network interception."""
@@ -71,31 +81,27 @@ class MirrorBrowser:
             return self._context
         self._playwright = await async_playwright().start()
 
-        # Use persistent context so cookies/sessions survive restarts
-        import os
-        from pathlib import Path
-        user_data_dir = Path(os.environ.get("FIREV_DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))) / "browser_profile"
-        user_data_dir.mkdir(parents=True, exist_ok=True)
-
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(user_data_dir),
+        self._browser = await self._playwright.chromium.launch(
             headless=False,
-            locale="sv-SE",
-            timezone_id="Europe/Stockholm",
-            no_viewport=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--start-maximized",
             ],
         )
+        self._context = await self._browser.new_context(
+            no_viewport=True,
+            locale="sv-SE",
+            timezone_id="Europe/Stockholm",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
 
         # Attach interception to ALL existing + future pages
         for page in self._context.pages:
             self._attach_page(page)
-        self._context.on("page", self._attach_page)
+        self._context.on("page", lambda p: self._attach_page(p))
 
         self._running = True
-        logger.info(f"Mirror browser started (profile: {user_data_dir})")
+        print("[browser] Mirror browser started", flush=True)
         return self._context
 
     async def stop(self):
@@ -104,6 +110,8 @@ class MirrorBrowser:
         try:
             if self._context:
                 await self._context.close()
+            if self._browser:
+                await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
         except Exception:
@@ -111,6 +119,7 @@ class MirrorBrowser:
         finally:
             self._running = False
             self._context = None
+            self._browser = None
             self._playwright = None
             self.provider_data.clear()
             logger.info("Mirror browser stopped")
@@ -119,6 +128,9 @@ class MirrorBrowser:
         if not self._context:
             raise RuntimeError("Browser not started")
         page = await self._context.new_page()
+        # Attach interceptor BEFORE navigating so we catch all responses
+        self._attach_page(page)
+        print(f"[browser] Opening tab: {url}", flush=True)
         await page.goto(url, wait_until="domcontentloaded")
         return page
 
@@ -148,8 +160,12 @@ class MirrorBrowser:
 
     def _attach_page(self, page: Page):
         """Attach response listener to a page."""
-        page.on("response", lambda resp: asyncio.ensure_future(self._safe_on_response(resp)))
-        logger.info(f"[browser] Interceptor attached to page: {page.url[:80]}")
+        print(f"[browser] ATTACHING interceptor to page: {page.url[:80]}", flush=True)
+
+        async def handle_response(resp):
+            await self._safe_on_response(resp)
+
+        page.on("response", lambda resp: asyncio.ensure_future(handle_response(resp)))
 
     async def _safe_on_response(self, response: Response):
         """Wrapper to catch all errors in response handler."""
@@ -166,8 +182,20 @@ class MirrorBrowser:
         if status < 200 or status >= 400:
             return
 
-        # Detect provider from BOTH request URL and page URL
-        provider_id = self._detect_provider(url) or self._detect_provider(response.frame.page.url)
+        # Detect provider from PAGE URL (which tab made the request)
+        # API requests go to third-party domains (biahosted.com, kambi.com)
+        # but the page URL tells us which provider we're on
+        try:
+            page_url = response.frame.page.url
+        except Exception:
+            page_url = ""
+        provider_id = self._detect_provider(page_url) or self._detect_provider(url)
+
+        # Log API calls for debugging (skip static assets)
+        if provider_id and not any(ext in url for ext in ('.js', '.css', '.png', '.jpg', '.svg', '.woff', '.ico')):
+            if any(kw in url.lower() for kw in ('api', 'balance', 'wallet', 'account', 'relay', 'graphql', 'login', 'auth', 'session')):
+                print(f"[intercept] {provider_id} API: {url[:120]}", flush=True)
+
         if not provider_id:
             return
 
