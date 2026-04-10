@@ -40,8 +40,8 @@ _MARKET_TYPE_MAP = {
 _SPORT_MAP = {
     "football": "soccer",
     "basketball": "basketball",
-    "ice-hockey": "ice-hockey",
-    "american-football": "american-football",
+    "ice_hockey": "ice-hockey",
+    "american_football": "american-football",
     "tennis": "tennis",
     "baseball": "baseball",
     "mma": "mma",
@@ -288,12 +288,19 @@ class CloudbetRetriever(Retriever):
             logger.warning(f"[{self.provider_id}] No sport data for '{sport}'")
             return []
 
-        competitions = sport_data.get("competitions") or []
+        # Competitions are nested under categories
+        competitions = []
+        for category in sport_data.get("categories") or []:
+            for comp in category.get("competitions") or []:
+                if comp.get("eventCount", 0) > 0:
+                    competitions.append(comp)
         if not competitions:
             logger.debug(f"[{self.provider_id}] No competitions found for sport '{sport}'")
             return []
+        # Limit to top 30 competitions to avoid excessive API calls
+        competitions = competitions[:30]
 
-        market_keys = _SPORT_MARKETS.get(sport_key, "")
+        market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
         events: List[StandardEvent] = []
 
         # Step 2: fetch each competition
@@ -302,9 +309,10 @@ class CloudbetRetriever(Retriever):
             if not comp_key:
                 continue
 
-            comp_url = f"{BASE_URL}/competitions/{comp_key}"
-            params = {"markets": market_keys} if market_keys else {}
-            comp_data = await self.transport.get(comp_url, headers=self._headers(), params=params)
+            # Build URL with multiple markets params
+            market_params = "&".join(f"markets={mk}" for mk in market_keys if mk)
+            comp_url = f"{BASE_URL}/competitions/{comp_key}?{market_params}"
+            comp_data = await self.transport.get(comp_url, headers=self._headers())
             if not comp_data:
                 continue
 
