@@ -643,10 +643,12 @@ class BatchBuilder:
                 batch.append(placed)
                 continue
 
-            # Soft: assign to first sibling with room, spill to next
+            # Soft: fill-then-spill — first sibling up to cap, then next
             sibs = siblings.get(cluster, [bet.provider_id])
             assigned = False
             for pid in sibs:
+                if bets_assigned.get(pid, 0) >= cap:
+                    continue
                 pb = provider_balances.get(pid)
                 if pb is None:
                     pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
@@ -664,6 +666,8 @@ class BatchBuilder:
                 batch.append(placed)
                 assigned = True
                 break
+
+            # All siblings at cap — bet dropped
 
         funded = [b for b in batch if b.funded]
         missed = [b for b in batch if not b.funded]
