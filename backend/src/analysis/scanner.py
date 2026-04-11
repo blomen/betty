@@ -55,10 +55,10 @@ SET_SPREAD_SPORTS = frozenset({"tennis"})
 MAX_ODDS_AGE_HOURS = 2
 
 # Reverse value: minimum independent platforms for consensus
-MIN_CONSENSUS_PLATFORMS = 2
+MIN_CONSENSUS_PLATFORMS = 3
 
-# Reverse value: minimum odds (mid-range underdogs and up)
-MIN_REVERSE_ODDS = 2.50
+# Reverse value: minimum odds (include favorites — consensus works at all odds levels)
+MIN_REVERSE_ODDS = 1.20
 
 # Reverse value: maximum odds to avoid extreme longshot noise
 MAX_REVERSE_ODDS = 15.0
@@ -664,6 +664,7 @@ class OpportunityScanner:
             )
 
             if vb and vb.edge_pct <= MAX_EDGE_PCT:
+                vb.prob_sum = float(n_platforms)  # Store platform count
                 values.append(vb)
 
         return values

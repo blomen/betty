@@ -20,14 +20,14 @@ Architecture:
 """
 
 import logging
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
-from ..db.models import Profile, Opportunity
+from ..analysis.scanner import SET_SPREAD_SPORTS, OpportunityScanner
+from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
+from ..db.models import Opportunity, Profile
 from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
-from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity, SET_SPREAD_SPORTS
-from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,8 @@ class OpportunityAnalyzer:
         except Exception as e:
             logger.debug(f"[Analyzer] Could not load profile: {e}")
 
-        self.min_edge_pct = min_edge_pct if min_edge_pct is not None else (
-            getattr(profile, 'min_edge_pct', 5.0) if profile else 5.0
+        self.min_edge_pct = (
+            min_edge_pct if min_edge_pct is not None else (getattr(profile, "min_edge_pct", 5.0) if profile else 5.0)
         )
 
     def run(self, changed_event_ids: set[str] | None = None) -> dict:
@@ -123,9 +123,8 @@ class OpportunityAnalyzer:
         pre_scan_ids: set[int] = set()
         if changed_event_ids is not None and events:
             pre_scan_ids = set(
-                row[0] for row in self.session.query(Opportunity.id).filter(
-                    Opportunity.event_id.in_(changed_event_ids)
-                ).all()
+                row[0]
+                for row in self.session.query(Opportunity.id).filter(Opportunity.event_id.in_(changed_event_ids)).all()
             )
 
         results = {
@@ -194,9 +193,9 @@ class OpportunityAnalyzer:
             # Opportunities that were deactivated but never re-created
             removed_ids = pre_scan_ids - upserted_ids
             if removed_ids:
-                removed_rows = self.session.query(
-                    Opportunity.id, Opportunity.type
-                ).filter(Opportunity.id.in_(removed_ids)).all()
+                removed_rows = (
+                    self.session.query(Opportunity.id, Opportunity.type).filter(Opportunity.id.in_(removed_ids)).all()
+                )
                 results["removed_opportunities"] = [(row[0], row[1]) for row in removed_rows]
 
         logger.info(
@@ -246,8 +245,7 @@ class OpportunityAnalyzer:
         query_provider = PROVIDER_CANONICAL.get(anchor_provider, anchor_provider)
         if query_provider != anchor_provider:
             logger.info(
-                f"[Analyzer] Running bonus scan: anchor={anchor_provider} "
-                f"(querying as {query_provider}, same platform)"
+                f"[Analyzer] Running bonus scan: anchor={anchor_provider} (querying as {query_provider}, same platform)"
             )
         else:
             logger.info(f"[Analyzer] Running bonus scan: anchor={anchor_provider}")
@@ -335,18 +333,8 @@ class OpportunityAnalyzer:
             for fan_provider in fan_providers:
                 # Build outcomes JSON per fan provider
                 outcomes_json = [
-                    {
-                        "provider": fan_provider,
-                        "outcome": outcome,
-                        "odds": vb.provider_odds,
-                        "edge_pct": vb.edge_pct
-                    },
-                    {
-                        "provider": "pinnacle",
-                        "outcome": outcome,
-                        "odds": vb.fair_odds,
-                        "is_fair_odds": True
-                    }
+                    {"provider": fan_provider, "outcome": outcome, "odds": vb.provider_odds, "edge_pct": vb.edge_pct},
+                    {"provider": "pinnacle", "outcome": outcome, "odds": vb.fair_odds, "is_fair_odds": True},
                 ]
 
                 # Upsert to Opportunity table via repo
@@ -417,7 +405,8 @@ class OpportunityAnalyzer:
                     "outcome": vb.outcome,
                     "odds": vb.fair_odds,
                     "is_fair_odds": True,
-                }
+                    "platforms": int(vb.prob_sum) if vb.prob_sum else 0,
+                },
             ]
 
             is_new, opp = self.opp_repo.upsert_reverse_value(
@@ -473,8 +462,7 @@ class OpportunityAnalyzer:
 
         providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in opp.legs)
         logger.debug(
-            f"[Analyzer] Dutch found: {event.id} {market} "
-            f"GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
+            f"[Analyzer] Dutch found: {event.id} {market} GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
         )
 
         result["dutch_found"] = 1
