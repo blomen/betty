@@ -168,7 +168,16 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 The server runs 24/7 without intervention:
 - Extraction scheduler (sharp every 60s, soft every 15min, browser every 8min)
 - Opportunity scanner (after each extraction)
+- RL training daemon (replays ticks → trains GBT/DQN models, checks for new episodes every 4h)
 - Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
+
+### CPU Isolation (RL vs Extraction)
+RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To prevent contention:
+- **Cores 0-1 (threads 0,1,4,5)** → RL training daemon (2 workers, nice 19, via `taskset`)
+- **Cores 2-3 (threads 2,3,6,7)** → Extraction browsers + API + everything else
+- Set in `rl_train_daemon.sh`, `rl_train_pipeline.sh`, and the auto-start in `api/__init__.py`
+- Disable daemon: `touch /app/data/rl/daemon_disabled` inside the container
+- Manual pipeline run: `taskset -c 0,1,4,5 nice -n 19 bash /app/backend/scripts/rl_train_pipeline.sh`
 
 ## FirevSports — Local Betting Client
 
