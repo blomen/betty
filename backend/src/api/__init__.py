@@ -209,20 +209,23 @@ async def lifespan(app: FastAPI):
             daemon_script = "/app/backend/scripts/rl_train_daemon.sh"
             pid_file = "/app/data/rl/daemon.pid"
             try:
-                # Check if daemon already running
+                # Check if daemon already running (stale PIDs from old containers are common)
                 try:
                     with open(pid_file) as f:
                         old_pid = int(f.read().strip())
-                    os.kill(old_pid, 0)  # signal 0 = check if alive
-                    logger.info("[Startup] RL daemon already running (PID %d)", old_pid)
-                    return
+                    # Verify it's actually the daemon, not a recycled PID
+                    with open(f"/proc/{old_pid}/cmdline") as cf:
+                        cmdline = cf.read()
+                    if "rl_train_daemon" in cmdline:
+                        logger.info("[Startup] RL daemon already running (PID %d)", old_pid)
+                        return
                 except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
-                    pass  # not running
+                    pass  # not running or stale PID
                 _sp.Popen(
                     ["taskset", "-c", "0,1,4,5", "bash", daemon_script],
                     start_new_session=True,
                 )
-                logger.info("[Startup] RL training daemon started")
+                logger.info("[Startup] RL training daemon started (pinned to cores 0-1)")
             except Exception as e:
                 logger.warning("[Startup] RL daemon start failed: %s", e)
 
