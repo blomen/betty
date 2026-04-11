@@ -61,11 +61,11 @@ PLATFORM_MAP: dict[str, str] = {
     "campobet": "altenar",
     "swiper": "altenar",
     "quickcasino": "altenar",
-    # Gecko V2 — ~40% identical (some variance between brands)
-    "betsson": "gecko",
-    "nordicbet": "gecko",
-    "bethard": "gecko",
-    "spelklubben": "gecko",
+    # Gecko V2 — betsson+nordicbet share odds, bethard+spelklubben are independent
+    "betsson": "gecko_betsson",
+    "nordicbet": "gecko_betsson",
+    "bethard": "gecko_bethard",
+    "spelklubben": "gecko_spelklubben",
     # Spectate — 100% identical
     "mrgreen": "spectate",
     "888sport": "spectate",
@@ -106,9 +106,9 @@ PLATFORM_GROUPS: dict[str, dict] = {
         "canonical": "betinia",
         "members": ["betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"],
     },
-    "gecko_v2": {
+    "gecko_betsson": {
         "canonical": "betsson",
-        "members": ["betsson", "nordicbet", "bethard", "spelklubben", "betsafe"],
+        "members": ["betsson", "nordicbet", "betsafe"],
     },
     "comeon_group": {
         "canonical": "comeon",

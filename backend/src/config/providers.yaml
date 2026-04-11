@@ -924,8 +924,10 @@ extraction_scheduling:
       - unibet
       # Altenar — canonical only (represents 6: betinia, campobet, lodur, quickcasino, swiper, dbet)
       - betinia
-      # Gecko V2 — canonical only (represents 5: betsson, nordicbet, bethard, spelklubben, betsafe)
+      # Gecko V2 — split into independent extractors (45% odds differ between brands)
       - betsson
+      - bethard
+      - spelklubben
       # BetConstruct (1) — WebSocket API
       - vbet
     interval_minutes: 2
@@ -998,12 +1000,13 @@ active:
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
-  # Gecko V2 (5) - events-table/v2 API (OBG platform)
+  # Gecko V2 — betsson group (shared odds: betsson, nordicbet, betsafe)
   - betsson
-  - betsafe   # Same OBG platform as betsson — fanned out via gecko_v2 group
+  - betsafe
   - nordicbet
-  - spelklubben  # OBG platform — re-enabled 2026-02-10
+  # Gecko V2 — independent brands (45% different odds from betsson)
   - bethard
+  - spelklubben
   # ComeOn Group (4: comeon, lyllo, hajper, snabbare) — comeon is best extractor (275ev/589s vs hajper 152/738s, snabbare 96/544s, lyllo 93/900s)
   - comeon
   # - hajper    # TESTED 2026-03-18: 152 events, 738s — worse than comeon
