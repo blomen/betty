@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 TIER_PRIORITY = {"polymarket": 2, "pinnacle": 1, "soft": 0}
 SHARP_PROVIDERS = frozenset({"pinnacle", "polymarket"})
 
-MAX_TTK_HOURS = 24.0
+MAX_TTK_HOURS = 168.0  # 1 week — frontend TTK filter handles the rest
 
 
 @dataclass
