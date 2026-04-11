@@ -218,7 +218,10 @@ async def lifespan(app: FastAPI):
                     return
                 except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
                     pass  # not running
-                _sp.Popen(["bash", daemon_script], start_new_session=True)
+                _sp.Popen(
+                    ["taskset", "-c", "0,1,4,5", "bash", daemon_script],
+                    start_new_session=True,
+                )
                 logger.info("[Startup] RL training daemon started")
             except Exception as e:
                 logger.warning("[Startup] RL daemon start failed: %s", e)

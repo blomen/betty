@@ -26,6 +26,10 @@ PID_FILE=/app/data/rl/daemon.pid
 
 renice -n 19 $$ >/dev/null 2>&1 || true
 
+# Pin to physical cores 0-1 (threads 0,1,4,5 on i7-7700 HT) — leaves cores 2-3
+# for extraction browsers. All child processes (pipeline, python workers) inherit.
+taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
+
 # Write PID for external monitoring
 # Check for disable flag (touch /app/data/rl/daemon_disabled to prevent auto-start)
 DISABLE_FLAG=/app/data/rl/daemon_disabled
