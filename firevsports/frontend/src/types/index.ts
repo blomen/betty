@@ -862,6 +862,7 @@ export interface BatchResult {
   };
   capital_plan: CapitalPlan;
   wagering_projections: WageringProjection[];
+  provider_balances: Record<string, number>;
 }
 
 export interface PendingBet {

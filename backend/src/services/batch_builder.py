@@ -13,29 +13,31 @@ after assignment (funded=True/False) but never gates inclusion.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..constants import PLATFORM_GROUPS
 from ..bankroll.stake_calculator import (
-    calculate_stake, dynamic_min_stake,
-    OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP,
+    OPTIMAL_MAX_KELLY,
+    OPTIMAL_SINGLE_BET_CAP,
+    calculate_stake,
+    dynamic_min_stake,
 )
+from ..constants import PLATFORM_GROUPS
 from ..repositories.opportunity_repo import OpportunityRepo
 from ..repositories.profile_repo import ProfileRepo
 from ..services.play_service import derive_lifecycle
 
 
-def _utc_iso(dt: Optional[datetime]) -> Optional[str]:
+def _utc_iso(dt: datetime | None) -> str | None:
     """Serialize datetime as UTC ISO string (ensures JS parses as UTC, not local)."""
     if dt is None:
         return None
     if not dt.tzinfo:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +54,17 @@ class BatchBet:
 
     # Ranking / tier
     rank: int
-    tier: str                       # "sharp" or "soft"
+    tier: str  # "sharp" or "soft"
 
     # Bet identity
     provider_id: str
     event_id: str
     market: str
     outcome: str
-    point: Optional[float]
+    point: float | None
     odds: float
     fair_odds: float
-    edge_pct: float                 # percentage (e.g. 3.5 for 3.5%)
+    edge_pct: float  # percentage (e.g. 3.5 for 3.5%)
 
     # Stake & EV
     stake: float
@@ -70,25 +72,24 @@ class BatchBet:
 
     # Bonus context
     is_bonus: bool
-    bonus_type: Optional[str]
+    bonus_type: str | None
 
     # Display
     display_home: str
     display_away: str
     sport: str
-    league: Optional[str]
-    start_time: Optional[object]
-    detected_at: Optional[object]     # when opportunity was last refreshed
-    odds_age_minutes: Optional[float] # staleness of the odds
+    league: str | None
+    start_time: object | None
+    detected_at: object | None  # when opportunity was last refreshed
+    odds_age_minutes: float | None  # staleness of the odds
 
     # Lifecycle / cluster
     lifecycle: str
-    cluster: str                    # cluster / group name (e.g. "kambi", "vbet")
+    cluster: str  # cluster / group name (e.g. "kambi", "vbet")
 
     # Funding status
-    funded: bool = True               # False = needs deposit to play
-    skip_reason: Optional[str] = None
-
+    funded: bool = True  # False = needs deposit to play
+    skip_reason: str | None = None
 
 
 @dataclass
@@ -107,7 +108,7 @@ class ProviderBalance:
     min_odds: float = 0.0
     trigger_mode: str = "cumulative"
     bonus_amount: float = 0.0
-    is_bonus_phase: bool = False    # True when in freebet_available phase
+    is_bonus_phase: bool = False  # True when in freebet_available phase
 
     # Wagering info
     wagering_total: float = 0.0
@@ -173,9 +174,7 @@ def _get_unclaimed_bonuses(profile_repo, profile_id: int) -> dict[str, dict]:
         return {}
 
     # Check which ones are already claimed/in-progress
-    statuses = profile_repo.get_bonus_statuses_batch(
-        profile_id, list(providers_with_bonus.keys())
-    )
+    statuses = profile_repo.get_bonus_statuses_batch(profile_id, list(providers_with_bonus.keys()))
     unclaimed = {}
     for pid, bonus_cfg in providers_with_bonus.items():
         st = statuses.get(pid, {})
@@ -215,12 +214,11 @@ class BatchBuilder:
         candidates = self._collect_candidates(total_bankroll, profile)
 
         # Filter out blacklisted bets (persisted across sessions)
-        from ..db.models import BetBlacklist, Bet
+        from ..db.models import Bet, BetBlacklist
+
         blacklisted = {
             (bl.event_id, bl.provider_id)
-            for bl in self.db.query(BetBlacklist).filter(
-                BetBlacklist.profile_id == profile_id
-            ).all()
+            for bl in self.db.query(BetBlacklist).filter(BetBlacklist.profile_id == profile_id).all()
         }
         if blacklisted:
             candidates = [c for c in candidates if (c.event_id, c.provider_id) not in blacklisted]
@@ -229,18 +227,26 @@ class BatchBuilder:
         placed_events = set()
         for cluster_name, group_info in PLATFORM_GROUPS.items():
             members = set(group_info["members"])
-            pending_bets = self.db.query(Bet.event_id).filter(
-                Bet.profile_id == profile_id,
-                Bet.result == "pending",
-                Bet.provider_id.in_(members),
-            ).all()
+            pending_bets = (
+                self.db.query(Bet.event_id)
+                .filter(
+                    Bet.profile_id == profile_id,
+                    Bet.result == "pending",
+                    Bet.provider_id.in_(members),
+                )
+                .all()
+            )
             for (eid,) in pending_bets:
                 placed_events.add((eid, cluster_name))
         # Also check standalone providers
-        standalone_pending = self.db.query(Bet.event_id, Bet.provider_id).filter(
-            Bet.profile_id == profile_id,
-            Bet.result == "pending",
-        ).all()
+        standalone_pending = (
+            self.db.query(Bet.event_id, Bet.provider_id)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.result == "pending",
+            )
+            .all()
+        )
         for eid, pid in standalone_pending:
             placed_events.add((eid, _provider_to_cluster(pid)))
         if placed_events:
@@ -254,8 +260,7 @@ class BatchBuilder:
         if exclude:
             exclude_set = set(exclude)
             candidates = [
-                c for c in candidates
-                if f"{c.cluster}:{c.event_id}:{c.market}:{c.outcome}:{c.point}" not in exclude_set
+                c for c in candidates if f"{c.cluster}:{c.event_id}:{c.market}:{c.outcome}:{c.point}" not in exclude_set
             ]
 
         # Rank: sharp first, then by edge descending
@@ -301,13 +306,11 @@ class BatchBuilder:
 
         # Get exchange rate for USDC → SEK conversion
         from ..config import get_exchange_rate
+
         usdc_rate = get_exchange_rate("polymarket")
 
         # Build provider balance map for frontend
-        bal_map = {
-            pid: round(pb.initial_balance, 2)
-            for pid, pb in provider_balances.items()
-        }
+        bal_map = {pid: round(pb.initial_balance, 2) for pid, pb in provider_balances.items()}
 
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
@@ -349,7 +352,9 @@ class BatchBuilder:
                 bonus_amount=bonus_info.get("bonus_amount", 0.0),
                 is_bonus_phase=is_bonus_phase,
                 wagering_total=(bonus_info.get("wagering_requirement", 0) or 0),
-                wagering_remaining=max(0, (bonus_info.get("wagering_requirement", 0) or 0) - (bonus_info.get("wagered_amount", 0) or 0)),
+                wagering_remaining=max(
+                    0, (bonus_info.get("wagering_requirement", 0) or 0) - (bonus_info.get("wagered_amount", 0) or 0)
+                ),
                 days_remaining=bonus_info.get("days_remaining"),
             )
 
@@ -378,9 +383,13 @@ class BatchBuilder:
         for opp_type in ("value", "reverse_value"):
             for opp, event in self.opp_repo.find_active(type=opp_type):
                 bet = self._make_candidate(
-                    opp, event, opp_type,
+                    opp,
+                    event,
+                    opp_type,
                     total_bankroll,
-                    single_bet_cap_pct, min_edge, min_stake,
+                    single_bet_cap_pct,
+                    min_edge,
+                    min_stake,
                 )
                 if bet is not None:
                     raw.append(bet)
@@ -410,7 +419,7 @@ class BatchBuilder:
         single_bet_cap_pct: float,
         min_edge: float,
         min_stake: float,
-    ) -> Optional[BatchBet]:
+    ) -> BatchBet | None:
         """
         Convert an Opportunity+Event into a BatchBet candidate, or None to skip.
 
@@ -435,7 +444,6 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
-
         # Kelly stake from total bankroll — no balance check
         result = calculate_stake(
             bankroll_total=total_bankroll,
@@ -456,6 +464,7 @@ class BatchBuilder:
         # Convert SEK stake to USDC for Polymarket
         if provider_id == "polymarket":
             from ..config import get_exchange_rate
+
             exchange_rate = get_exchange_rate("polymarket")
             if exchange_rate > 0:
                 stake = stake / exchange_rate
@@ -505,6 +514,7 @@ class BatchBuilder:
         keys = [(b.event_id, b.provider_id, b.market, b.outcome, b.point) for b in batch]
         # Single query for all odds timestamps
         from ..db.models import Odds
+
         rows = (
             self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.point, Odds.updated_at)
             .filter(
@@ -593,11 +603,13 @@ class BatchBuilder:
         siblings: dict[str, list[str]] = {}
         for group_name, group_info in PLATFORM_GROUPS.items():
             sibs = list(group_info["members"])
-            sibs.sort(key=lambda pid: -(provider_balances.get(pid, ProviderBalance(pid, group_name, 0)).initial_balance))
+            sibs.sort(
+                key=lambda pid: -(provider_balances.get(pid, ProviderBalance(pid, group_name, 0)).initial_balance)
+            )
             siblings[group_name] = sibs
 
         # If a priority provider is set, move it to the front of its cluster
-        if hasattr(self, '_priority_provider') and self._priority_provider:
+        if hasattr(self, "_priority_provider") and self._priority_provider:
             for group_name, sibs in siblings.items():
                 if self._priority_provider in sibs:
                     sibs.remove(self._priority_provider)
@@ -614,8 +626,8 @@ class BatchBuilder:
         for bet in candidates:
             cluster = bet.cluster
 
-            if bet.tier in ("polymarket", "pinnacle"):
-                # Sharp: no cap, stays on own provider
+            if bet.tier in ("polymarket", "pinnacle") or bet.provider_id == "cloudbet":
+                # Sharp/signal: no cap, stays on own provider
                 pid = bet.provider_id
                 pb = provider_balances.get(pid)
                 if pb is None:
@@ -703,15 +715,17 @@ class BatchBuilder:
             if batch_stake <= 0:
                 continue
             projected_remaining = max(0, pb.wagering_remaining - batch_stake)
-            projections.append({
-                "provider_id": pid,
-                "cluster": pb.cluster,
-                "wagering_total": round(pb.wagering_total, 2),
-                "wagering_remaining": round(pb.wagering_remaining, 2),
-                "batch_stake": round(batch_stake, 2),
-                "projected_remaining": round(projected_remaining, 2),
-                "days_remaining": pb.days_remaining,
-            })
+            projections.append(
+                {
+                    "provider_id": pid,
+                    "cluster": pb.cluster,
+                    "wagering_total": round(pb.wagering_total, 2),
+                    "wagering_remaining": round(pb.wagering_remaining, 2),
+                    "batch_stake": round(batch_stake, 2),
+                    "projected_remaining": round(projected_remaining, 2),
+                    "days_remaining": pb.days_remaining,
+                }
+            )
         return projections
 
     def _compute_wagering_projections_from_dicts(
@@ -733,15 +747,17 @@ class BatchBuilder:
             if batch_stake <= 0:
                 continue
             projected_remaining = max(0, pb.wagering_remaining - batch_stake)
-            projections.append({
-                "provider_id": pid,
-                "cluster": pb.cluster,
-                "wagering_total": round(pb.wagering_total, 2),
-                "wagering_remaining": round(pb.wagering_remaining, 2),
-                "batch_stake": round(batch_stake, 2),
-                "projected_remaining": round(projected_remaining, 2),
-                "days_remaining": pb.days_remaining,
-            })
+            projections.append(
+                {
+                    "provider_id": pid,
+                    "cluster": pb.cluster,
+                    "wagering_total": round(pb.wagering_total, 2),
+                    "wagering_remaining": round(pb.wagering_remaining, 2),
+                    "batch_stake": round(batch_stake, 2),
+                    "projected_remaining": round(projected_remaining, 2),
+                    "days_remaining": pb.days_remaining,
+                }
+            )
         return projections
 
     def _build_balance_status(
@@ -872,19 +888,21 @@ class BatchBuilder:
 
             current_bal = pb.initial_balance if pb else 0
             deposit_amount = round(max(missed_stake, 0), 2)
-            actions.append({
-                "type": "deposit",
-                "provider_id": pid,
-                "cluster": cluster,
-                "amount": deposit_amount,
-                "target_balance": round(current_bal + deposit_amount, 2),
-                "unlocks": missed_count,
-                "avg_edge": stats.get("avg_edge", 0),
-                "expected_ev": round(missed_ev, 2),
-                "currency": currency,
-                "priority": 1,
-                "priority_label": "sharp_deposit",
-            })
+            actions.append(
+                {
+                    "type": "deposit",
+                    "provider_id": pid,
+                    "cluster": cluster,
+                    "amount": deposit_amount,
+                    "target_balance": round(current_bal + deposit_amount, 2),
+                    "unlocks": missed_count,
+                    "avg_edge": stats.get("avg_edge", 0),
+                    "expected_ev": round(missed_ev, 2),
+                    "currency": currency,
+                    "priority": 1,
+                    "priority_label": "sharp_deposit",
+                }
+            )
             sharp_already_handled.add(pid)
 
         # --- Priority 2/3: Soft deposits ---
@@ -961,19 +979,21 @@ class BatchBuilder:
                 priority = 3
                 label = "soft_deposit"
 
-            actions.append({
-                "type": "deposit",
-                "provider_id": best_pid,
-                "cluster": cluster,
-                "amount": round(missed_stake, 2),
-                "target_balance": round(current_bal + missed_stake, 2),
-                "unlocks": missed_count,
-                "avg_edge": stats.get("avg_edge", 0),
-                "expected_ev": round(missed_ev, 2),
-                "currency": "SEK",
-                "priority": priority,
-                "priority_label": label,
-            })
+            actions.append(
+                {
+                    "type": "deposit",
+                    "provider_id": best_pid,
+                    "cluster": cluster,
+                    "amount": round(missed_stake, 2),
+                    "target_balance": round(current_bal + missed_stake, 2),
+                    "unlocks": missed_count,
+                    "avg_edge": stats.get("avg_edge", 0),
+                    "expected_ev": round(missed_ev, 2),
+                    "currency": "SEK",
+                    "priority": priority,
+                    "priority_label": label,
+                }
+            )
 
         # --- Priority 2 (continued): wagering providers with low balance ---
         already_recommended = {a["provider_id"] for a in actions if a["type"] == "deposit"}
@@ -999,19 +1019,21 @@ class BatchBuilder:
             if pb.remaining > effective_wager:
                 continue
             amount = round(max(effective_wager - pb.remaining, 100), -2)
-            actions.append({
-                "type": "deposit",
-                "provider_id": pid,
-                "cluster": cluster,
-                "amount": amount,
-                "target_balance": round(pb.initial_balance + amount, 2),
-                "unlocks": 0,
-                "avg_edge": 0,
-                "expected_ev": 0,
-                "currency": "SEK",
-                "priority": 2,
-                "priority_label": "bonus_deposit",
-            })
+            actions.append(
+                {
+                    "type": "deposit",
+                    "provider_id": pid,
+                    "cluster": cluster,
+                    "amount": amount,
+                    "target_balance": round(pb.initial_balance + amount, 2),
+                    "unlocks": 0,
+                    "avg_edge": 0,
+                    "expected_ev": 0,
+                    "currency": "SEK",
+                    "priority": 2,
+                    "priority_label": "bonus_deposit",
+                }
+            )
             already_recommended_clusters.add(cluster)
 
         # --- Priority 4: Withdraw idle balance ---
@@ -1027,19 +1049,21 @@ class BatchBuilder:
             if pb.remaining <= 0:
                 continue
 
-            actions.append({
-                "type": "withdraw",
-                "provider_id": pid,
-                "cluster": pb.cluster or pid,
-                "amount": round(pb.remaining, 2),
-                "target_balance": 0,
-                "unlocks": 0,
-                "avg_edge": 0,
-                "expected_ev": 0,
-                "currency": "SEK",
-                "priority": 4,
-                "priority_label": "withdraw_excess",
-            })
+            actions.append(
+                {
+                    "type": "withdraw",
+                    "provider_id": pid,
+                    "cluster": pb.cluster or pid,
+                    "amount": round(pb.remaining, 2),
+                    "target_balance": 0,
+                    "unlocks": 0,
+                    "avg_edge": 0,
+                    "expected_ev": 0,
+                    "currency": "SEK",
+                    "priority": 4,
+                    "priority_label": "withdraw_excess",
+                }
+            )
 
         # --- Priority 1.5: Transfer for bonus cycling ---
         # If a sibling finished wagering, suggest transferring to an unclaimed
@@ -1070,22 +1094,24 @@ class BatchBuilder:
                     transfer_amt = min(provider_balances[donor].remaining, bonus_amt)
                     if transfer_amt <= 0:
                         continue
-                    actions.append({
-                        "type": "transfer",
-                        "provider_id": target_pid,
-                        "from_provider": donor,
-                        "cluster": group_name,
-                        "amount": round(transfer_amt, 2),
-                        "target_balance": round(transfer_amt, 2),
-                        "unlocks": 0,
-                        "avg_edge": 0,
-                        "expected_ev": round(bonus_amt * retention, 2),
-                        "currency": "SEK",
-                        "priority": 2,
-                        "priority_label": "bonus_cycle_transfer",
-                        "bonus_amount": bonus_amt,
-                        "wagering_multiplier": wager_mult,
-                    })
+                    actions.append(
+                        {
+                            "type": "transfer",
+                            "provider_id": target_pid,
+                            "from_provider": donor,
+                            "cluster": group_name,
+                            "amount": round(transfer_amt, 2),
+                            "target_balance": round(transfer_amt, 2),
+                            "unlocks": 0,
+                            "avg_edge": 0,
+                            "expected_ev": round(bonus_amt * retention, 2),
+                            "currency": "SEK",
+                            "priority": 2,
+                            "priority_label": "bonus_cycle_transfer",
+                            "bonus_amount": bonus_amt,
+                            "wagering_multiplier": wager_mult,
+                        }
+                    )
 
         # Sort by priority, then by deposit amount ascending (smallest trigger first
         # per MC sims — 0% ruin vs 57% with largest-first), then by EV descending.
@@ -1135,4 +1161,3 @@ class BatchBuilder:
                 "ev_per_session": round(total_ev, 2),  # assumes drain balance = 1 session
             }
         return result
-
