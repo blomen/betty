@@ -156,6 +156,9 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 6. **Coordinate git pushes**: If you're about to push + deploy, check `git log` on the server first to ensure no other agent pushed recently
 7. **Use `/deploy` skill** for guided deployment with health verification
 8. **Use `/server-health` skill** for quick production status checks
+9. **Deploy cooldown enforced**: 5-minute minimum between rebuilds — each rebuild kills extraction for 5-10 min. Batch changes and deploy once, don't rebuild per commit.
+10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
+11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down. Don't rely on manual monitoring.
 
 ### Postgres FK Enforcement
 **PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
@@ -166,9 +169,10 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 
 ### What Runs Autonomously
 The server runs 24/7 without intervention:
-- Extraction scheduler (sharp every 60s, soft every 15min, browser every 8min)
+- Extraction scheduler (see Extraction Tiers below for actual intervals per provider)
 - Opportunity scanner (after each extraction)
 - RL training daemon (replays ticks → trains GBT/DQN models, checks for new episodes every 4h)
+- Container watchdog cron (every 5 min, auto-restarts if backend is down)
 - Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
 
 ### CPU Isolation (RL vs Extraction)
@@ -317,11 +321,16 @@ OpportunityScanner.scan_value() → pre-computed Pinnacle dict + soft prob sums
 
 ### Extraction Tiers
 
-| Trigger | Providers | Typical Duration |
-|---------|-----------|-----------------|
-| `sharp` | Pinnacle + Polymarket | ~15s |
-| `api_soft` | API providers (Kambi, Altenar, Gecko, Spectate, VBet) | ~150s |
-| `browser_soft` | Browser providers (Tipwin, Spectate, ComeOn, etc.) | ~480s |
+Configured in `providers.yaml` under `extraction_scheduling`. Each provider runs independently (`grouped: false` except where noted). The **cycle time = run duration + cooldown interval** — so a provider taking 300s with a 2-min cooldown runs every ~420s, not every 120s.
+
+| Trigger | Cooldown | Providers | Typical Run Duration |
+|---------|----------|-----------|---------------------|
+| `sharp` | 1 min | pinnacle | ~130s |
+| `polymarket` | 5 min | polymarket | ~200s |
+| `api_soft` | 2 min | unibet, betinia, betsson, bethard, spelklubben, vbet | ~300s |
+| `browser_soft` | 8 min | 888sport, interwetten, 10bet, tipwin | ~400-1000s |
+| `browser_antibot` | 10 min | coolbet, comeon | ~700-1700s |
+| `signal_international` | 5 min | stake, cloudbet, marathon | ~16-340s |
 
 ### Pinnacle Match Rate (Key Health Metric)
 

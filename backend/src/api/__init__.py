@@ -949,6 +949,19 @@ async def lifespan(app: FastAPI):
             get_scheduler().stop_all()
         except Exception:
             pass
+
+    # Kill RL daemon subprocess so it doesn't outlive the app
+    try:
+        pid_file = "/app/data/rl/daemon.pid"
+        import signal
+
+        with open(pid_file) as f:
+            rl_pid = int(f.read().strip())
+        os.kill(rl_pid, signal.SIGTERM)
+        logger.info(f"Sent SIGTERM to RL daemon (PID {rl_pid})")
+    except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+        pass  # Not running or already gone
+
     logger.info("Shutdown complete.")
 
 

@@ -71,6 +71,9 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # Playwright browsers need time to close cleanly on SIGTERM.
+    # Default 10s causes force-kill every time. 30s lets graceful shutdown work.
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
