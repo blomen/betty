@@ -1,15 +1,13 @@
 import { useState } from 'react'
 import PlayPage from './pages/PlayPage'
-import { PendingPage } from './pages/PendingPage'
 import { DutchPage } from './pages/DutchPage'
 import { BankrollPage } from './pages/BankrollPage'
 import { StatsPage } from './pages/StatsPage'
 
-type Tab = 'play' | 'pending' | 'dutch' | 'bankroll' | 'stats'
+type Tab = 'play' | 'dutch' | 'bankroll' | 'stats'
 
 const TABS: { name: Tab; label: string; color: string }[] = [
   { name: 'play',     label: 'Play',     color: '#22c55e' },
-  { name: 'pending',  label: 'Pending',  color: '#f59e0b' },
   { name: 'dutch',    label: 'Dutch',    color: '#10b981' },
   { name: 'bankroll', label: 'Bankroll', color: '#ec4899' },
   { name: 'stats',    label: 'Stats',    color: '#3b82f6' },
@@ -38,7 +36,6 @@ export default function App() {
       </div>
       <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden">
         {activeTab === 'play' && <PlayPage />}
-        {activeTab === 'pending' && <PendingPage />}
         {activeTab === 'dutch' && <DutchPage />}
         {activeTab === 'bankroll' && <BankrollPage />}
         {activeTab === 'stats' && <StatsPage />}

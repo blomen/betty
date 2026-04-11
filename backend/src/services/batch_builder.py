@@ -312,6 +312,9 @@ class BatchBuilder:
         # Build provider balance map for frontend
         bal_map = {pid: round(pb.initial_balance, 2) for pid, pb in provider_balances.items()}
 
+        # Count bets placed today per provider
+        placed_today = self._count_placed_today(profile_id)
+
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
             "summary": self._build_summary(batch, usdc_rate),
@@ -322,6 +325,7 @@ class BatchBuilder:
             "capital_plan": {**capital_plan, "usdc_rate": usdc_rate},
             "wagering_projections": self._compute_wagering_projections(batch, provider_balances),
             "provider_balances": bal_map,
+            "placed_today": placed_today,
         }
 
     # ------------------------------------------------------------------ #
@@ -533,9 +537,8 @@ class BatchBuilder:
                     ts = ts.replace(tzinfo=timezone.utc)
                 b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
-    # Max bets per provider — hard cap at 10 to avoid suspicion.
-    # Clusters needing more than 10 × current siblings auto-expand:
-    # ceil(bets/10) copies recommended, bets distributed evenly.
+    # Daily placement cap per provider (enforced in play loop, not here).
+    # Batch returns ALL +EV bets so the UI shows the full picture.
     BETS_PER_PROVIDER = 10
 
     @staticmethod
@@ -640,12 +643,10 @@ class BatchBuilder:
                 batch.append(placed)
                 continue
 
-            # Soft: fill-then-spill — first sibling up to cap, then next
+            # Soft: assign to first sibling with room, spill to next
             sibs = siblings.get(cluster, [bet.provider_id])
             assigned = False
             for pid in sibs:
-                if bets_assigned.get(pid, 0) >= cap:
-                    continue
                 pb = provider_balances.get(pid)
                 if pb is None:
                     pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
@@ -664,11 +665,27 @@ class BatchBuilder:
                 assigned = True
                 break
 
-            # All siblings at cap — bet dropped
-
         funded = [b for b in batch if b.funded]
         missed = [b for b in batch if not b.funded]
         return funded, missed
+
+    def _count_placed_today(self, profile_id: int) -> dict[str, int]:
+        """Count bets placed today per provider."""
+        from ..db.models import Bet
+
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = (
+            self.db.query(Bet.provider_id, Bet.id)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.placed_at >= today_start,
+            )
+            .all()
+        )
+        counts: dict[str, int] = {}
+        for pid, _ in rows:
+            counts[pid] = counts.get(pid, 0) + 1
+        return counts
 
     def _build_summary(self, batch: list[BatchBet], usdc_rate: float = 1.0) -> dict:
         polymarket_bets = [b for b in batch if b.tier == "polymarket"]

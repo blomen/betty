@@ -1,10 +1,11 @@
 """Mirror router — browser control and bet placement endpoints."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -12,7 +13,6 @@ from starlette.requests import Request
 
 from .browser import MirrorBrowser
 from .play_loop import PlayLoop
-from .pending_loop import PendingLoop
 from .sse import MirrorBroadcaster
 from .workflows import get_workflow
 
@@ -23,12 +23,13 @@ logger = logging.getLogger(__name__)
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class NavigateRequest(BaseModel):
     provider_id: str
     event_id: str
     market: str
     outcome: str
-    point: Optional[float] = None
+    point: float | None = None
     odds: float
     fair_odds: float
     stake: float
@@ -46,17 +47,14 @@ class OpenTabRequest(BaseModel):
 
 
 class PlayStartRequest(BaseModel):
-    batch: List[Dict[str, Any]]
-    balances: Dict[str, Any]
-
-
-class PendingConfirmRequest(BaseModel):
-    provider_id: str
+    batch: list[dict[str, Any]]
+    balances: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
+
 
 def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster, proxy_url: str) -> APIRouter:
     """Return an APIRouter with mirror browser control and placement endpoints."""
@@ -64,7 +62,6 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     router = APIRouter(prefix="/mirror", tags=["mirror"])
 
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
-    pending_loop = PendingLoop(browser, broadcaster, proxy_url)
 
     @router.post("/open-provider-tab")
     async def open_provider_tab(request: Request):
@@ -216,10 +213,13 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         # minimal shim so the workflow still receives a typed object.
         try:
             from ...services.bet_service import BetService  # type: ignore
+
             bet = await BetService.get_by_id(req.bet_id)
         except Exception:
+
             class _Bet:
                 pass
+
             bet = _Bet()
             bet.id = req.bet_id
 
@@ -252,55 +252,34 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         play_loop.start()
         return play_loop.get_status()
 
+    @router.post("/play/confirm-settlements")
+    async def play_confirm_settlements():
+        """Confirm the settlement breakdown and proceed to bets."""
+        play_loop.confirm_settlements()
+        return play_loop.get_status()
+
     @router.post("/play/place")
     async def play_place():
         """Confirm placement of the current bet in the play loop."""
-        await play_loop.place()
+        play_loop.place()
         return play_loop.get_status()
 
     @router.post("/play/skip")
     async def play_skip():
         """Skip the current bet in the play loop."""
-        await play_loop.skip()
+        play_loop.skip()
         return play_loop.get_status()
 
     @router.post("/play/stop")
     async def play_stop():
         """Stop the play loop."""
-        await play_loop.stop()
+        play_loop.stop()
         return play_loop.get_status()
 
     @router.get("/play/status")
     async def play_status():
         """Return current play loop status."""
         return play_loop.get_status()
-
-    # -----------------------------------------------------------------------
-    # Pending loop
-    # -----------------------------------------------------------------------
-
-    @router.post("/pending/start")
-    async def pending_start():
-        """Start the pending loop to monitor open bets."""
-        await pending_loop.start()
-        return pending_loop.get_status()
-
-    @router.post("/pending/confirm")
-    async def pending_confirm(req: PendingConfirmRequest):
-        """Confirm a pending bet by provider ID."""
-        await pending_loop.confirm(req.provider_id)
-        return pending_loop.get_status()
-
-    @router.post("/pending/stop")
-    async def pending_stop():
-        """Stop the pending loop."""
-        await pending_loop.stop()
-        return pending_loop.get_status()
-
-    @router.get("/pending/status")
-    async def pending_status():
-        """Return current pending loop status."""
-        return pending_loop.get_status()
 
     # -----------------------------------------------------------------------
     # SSE stream

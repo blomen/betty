@@ -1,7 +1,8 @@
 """PlayLoop — automated betting state machine.
 
 Iterates a sorted queue of bets, handles provider tab management,
-login waiting, navigation, and user-driven place/skip decisions.
+login waiting, pending settlement scan, navigation, and user-driven
+place/skip decisions.
 """
 
 from __future__ import annotations
@@ -13,22 +14,28 @@ from typing import Any
 import httpx
 
 from .browser import MirrorBrowser
+from .pending_loop import _detect_settlements  # noqa: F401
 from .sse import MirrorBroadcaster
 from .workflows import get_workflow
 
 logger = logging.getLogger(__name__)
+
+_AUTH_HEADER = "X-Nginx-Authenticated"
+_AUTH_VALUE = "firevsports"
 
 # State constants
 STATE_IDLE = "idle"
 STATE_RUNNING = "running"
 STATE_PROVIDER_OPENING = "provider_opening"
 STATE_LOGIN_WAITING = "login_waiting"
+STATE_SETTLING = "settling"
 STATE_NAVIGATING = "navigating"
 STATE_READY = "ready"
 STATE_PLACING = "placing"
 
-LOGIN_POLL_INTERVAL = 5.0   # seconds between login checks
-LOGIN_TIMEOUT = 120.0       # seconds to wait for login before skipping provider
+LOGIN_POLL_INTERVAL = 5.0  # seconds between login checks
+LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
+DAILY_BET_CAP = 10  # max bets per provider per day
 
 
 class PlayLoop:
@@ -53,6 +60,7 @@ class PlayLoop:
         self.state: str = STATE_IDLE
         self.current_bet: dict | None = None
         self.provider_stats: dict[str, dict] = {}
+        self._placed_today: dict[str, int] = {}  # provider_id → bets placed today (from server)
 
         # Queue
         self._queue: list[dict] = []
@@ -62,6 +70,7 @@ class PlayLoop:
         self._task: asyncio.Task | None = None
         self._place_event: asyncio.Event = asyncio.Event()
         self._skip_event: asyncio.Event = asyncio.Event()
+        self._settle_confirm_event: asyncio.Event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Public API
@@ -95,8 +104,9 @@ class PlayLoop:
         self._task = None
         self.state = STATE_IDLE
         self.current_bet = None
-        self._place_event.set()   # unblock any waits
+        self._place_event.set()  # unblock any waits
         self._skip_event.set()
+        self._settle_confirm_event.set()
 
     def place(self) -> None:
         """Signal that the user wants to place the current bet."""
@@ -107,6 +117,10 @@ class PlayLoop:
         """Signal that the user wants to skip the current bet."""
         self._place_event.clear()
         self._skip_event.set()
+
+    def confirm_settlements(self) -> None:
+        """Signal that the user has confirmed the settlement breakdown."""
+        self._settle_confirm_event.set()
 
     def get_status(self) -> dict:
         return {
@@ -165,7 +179,9 @@ class PlayLoop:
                             logger.info(f"[PlayLoop] Opening tab for {provider_id}: {url}")
                             page = await self._browser.open_tab(url)
                         else:
-                            logger.warning(f"[PlayLoop] No domain for {provider_id}, cannot open tab — skipping provider")
+                            logger.warning(
+                                f"[PlayLoop] No domain for {provider_id}, cannot open tab — skipping provider"
+                            )
                             self._skip_provider(provider_id)
                             current_provider = None
                             continue
@@ -177,13 +193,50 @@ class PlayLoop:
 
                     if not logged_in:
                         logger.warning(f"[PlayLoop] Login timeout for {provider_id} — skipping provider")
-                        self._broadcaster.publish("provider_skipped", {
-                            "provider_id": provider_id,
-                            "reason": "login_timeout",
-                        })
+                        self._broadcaster.publish(
+                            "provider_skipped",
+                            {
+                                "provider_id": provider_id,
+                                "reason": "login_timeout",
+                            },
+                        )
                         self._skip_provider(provider_id)
                         current_provider = None
                         continue
+
+                    # Scan pending bets for settlements before placing new bets
+                    await self._settle_pending(provider_id, workflow, page)
+
+                    # Fetch placed-today count and check daily cap
+                    await self._fetch_placed_today(provider_id)
+                    placed = self._placed_today.get(provider_id, 0)
+                    if placed >= DAILY_BET_CAP:
+                        logger.info(f"[PlayLoop] {provider_id} at daily cap ({placed}/{DAILY_BET_CAP})")
+                        self._broadcaster.publish(
+                            "provider_skipped",
+                            {
+                                "provider_id": provider_id,
+                                "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
+                            },
+                        )
+                        self._skip_provider(provider_id)
+                        current_provider = None
+                        continue
+
+                # Check daily cap before each bet
+                placed = self._placed_today.get(provider_id, 0)
+                if placed >= DAILY_BET_CAP:
+                    logger.info(f"[PlayLoop] {provider_id} hit daily cap mid-session — skipping remaining")
+                    self._broadcaster.publish(
+                        "provider_skipped",
+                        {
+                            "provider_id": provider_id,
+                            "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
+                        },
+                    )
+                    self._skip_provider(provider_id)
+                    current_provider = None
+                    continue
 
                 # Navigate to event
                 self.state = STATE_NAVIGATING
@@ -222,13 +275,20 @@ class PlayLoop:
                     stake = bet.get("stake", 0.0)
                     try:
                         result = await workflow.place_bet(page, bet, stake)
-                        self._broadcaster.publish("bet_placed", {
-                            "bet": bet,
-                            "status": result.status,
-                            "actual_odds": result.actual_odds,
-                            "actual_stake": result.actual_stake,
-                        })
+                        placed_count = self._placed_today.get(provider_id, 0) + 1
+                        self._broadcaster.publish(
+                            "bet_placed",
+                            {
+                                "bet": bet,
+                                "status": result.status,
+                                "actual_odds": result.actual_odds,
+                                "actual_stake": result.actual_stake,
+                                "placed_today": placed_count,
+                                "daily_cap": DAILY_BET_CAP,
+                            },
+                        )
                         self.provider_stats[provider_id]["placed"] += 1
+                        self._placed_today[provider_id] = self._placed_today.get(provider_id, 0) + 1
                         await self._record_bet(bet, result)
                     except Exception:
                         logger.exception(f"[PlayLoop] place_bet() failed for {provider_id}")
@@ -260,31 +320,42 @@ class PlayLoop:
             # Check intercepted data first (set by browser's response listener)
             if self._browser.is_logged_in(workflow.provider_id):
                 bal = self._browser.get_balance(workflow.provider_id)
-                self._broadcaster.publish("login_detected", {
-                    "provider_id": workflow.provider_id,
-                    "balance": bal,
-                })
+                self._broadcaster.publish(
+                    "login_detected",
+                    {
+                        "provider_id": workflow.provider_id,
+                        "balance": bal,
+                    },
+                )
                 logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (balance: {bal})")
                 return True
             # Fallback: check DOM for balance text
             try:
                 dom_result = await self._browser.check_login_dom(workflow.provider_id)
                 if dom_result.get("logged_in"):
-                    self._broadcaster.publish("login_detected", {
-                        "provider_id": workflow.provider_id,
-                        "balance": dom_result.get("balance"),
-                    })
-                    logger.info(f"[PlayLoop] Login detected for {workflow.provider_id} (via DOM: {dom_result.get('balance')})")
+                    self._broadcaster.publish(
+                        "login_detected",
+                        {
+                            "provider_id": workflow.provider_id,
+                            "balance": dom_result.get("balance"),
+                        },
+                    )
+                    logger.info(
+                        f"[PlayLoop] Login detected for {workflow.provider_id} (via DOM: {dom_result.get('balance')})"
+                    )
                     return True
             except Exception:
                 pass
             await asyncio.sleep(LOGIN_POLL_INTERVAL)
             elapsed += LOGIN_POLL_INTERVAL
-            self._broadcaster.publish("login_waiting", {
-                "provider_id": workflow.provider_id,
-                "elapsed": round(elapsed),
-                "timeout": LOGIN_TIMEOUT,
-            })
+            self._broadcaster.publish(
+                "login_waiting",
+                {
+                    "provider_id": workflow.provider_id,
+                    "elapsed": round(elapsed),
+                    "timeout": LOGIN_TIMEOUT,
+                },
+            )
         return False
 
     def _skip_provider(self, provider_id: str) -> None:
@@ -295,6 +366,136 @@ class PlayLoop:
             self.provider_stats.setdefault(provider_id, {"placed": 0, "skipped": 0, "total": 0})
             self.provider_stats[provider_id]["skipped"] += 1
             self.provider_stats[provider_id]["total"] += 1
+
+    async def _settle_pending(self, provider_id: str, workflow, page) -> None:
+        """Scan pending bets, show breakdown, wait for user confirm, then proceed."""
+        self.state = STATE_SETTLING
+        self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
+
+        # Fetch pending bets for this provider from server
+        pending_bets = await self._fetch_pending(provider_id)
+        if not pending_bets:
+            logger.info(f"[PlayLoop] No pending bets for {provider_id}")
+            self._broadcaster.publish(
+                "settling_done",
+                {
+                    "provider_id": provider_id,
+                    "pending_count": 0,
+                    "settlements": [],
+                },
+            )
+            return
+
+        # Sync history from provider site
+        try:
+            raw_history = await workflow.sync_history(page)
+        except Exception:
+            logger.exception(f"[PlayLoop] sync_history failed for {provider_id}")
+            self._broadcaster.publish(
+                "settling_done",
+                {
+                    "provider_id": provider_id,
+                    "pending_count": len(pending_bets),
+                    "settlements": [],
+                },
+            )
+            return
+
+        history = [{"odds": e.odds, "stake": e.stake, "status": e.status, "payout": e.payout} for e in raw_history]
+
+        # Detect settlements
+        settlements = _detect_settlements(pending_bets, history)
+
+        # Broadcast full breakdown — pending bets + any detected settlements
+        self._broadcaster.publish(
+            "settling_done",
+            {
+                "provider_id": provider_id,
+                "pending_count": len(pending_bets),
+                "pending_bets": pending_bets,
+                "settlements": settlements,
+            },
+        )
+
+        if not settlements:
+            logger.info(f"[PlayLoop] No settlements for {provider_id} — {len(pending_bets)} still open")
+            return
+
+        # Wait for user to confirm the settlement breakdown
+        logger.info(f"[PlayLoop] {len(settlements)} settlements for {provider_id} — waiting for confirm")
+        self._settle_confirm_event.clear()
+        await self._settle_confirm_event.wait()
+
+        # Record confirmed settlements to server
+        await self._record_settlements(provider_id, settlements)
+        self._broadcaster.publish(
+            "settlements_confirmed",
+            {
+                "provider_id": provider_id,
+                "settlements": settlements,
+            },
+        )
+
+        # Sync balance after settlements
+        try:
+            balance = await workflow.sync_balance(page)
+            await self._post_balance(provider_id, balance)
+        except Exception:
+            logger.warning(f"[PlayLoop] balance sync failed for {provider_id}")
+
+    async def _fetch_pending(self, provider_id: str) -> list[dict]:
+        """Fetch pending bets for a specific provider from server."""
+        url = f"{self._proxy_url}/api/opportunities/play/pending-bets"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:
+            logger.exception("[PlayLoop] failed to fetch pending bets")
+            return []
+
+        # API returns {providers: [{provider_id, bets: [...]}, ...]}
+        for prov in data.get("providers", []):
+            if prov.get("provider_id") == provider_id:
+                return prov.get("bets", [])
+        return []
+
+    async def _fetch_placed_today(self, provider_id: str) -> None:
+        """Fetch placed-today count from the batch endpoint."""
+        url = f"{self._proxy_url}/api/opportunities/play/batch"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json={}, headers={_AUTH_HEADER: _AUTH_VALUE})
+                resp.raise_for_status()
+                data = resp.json()
+            placed = data.get("placed_today", {})
+            self._placed_today.update(placed)
+        except Exception:
+            logger.warning(f"[PlayLoop] failed to fetch placed_today for {provider_id}")
+
+    async def _record_settlements(self, provider_id: str, settlements: list[dict]) -> None:
+        """POST confirmed settlements to the server."""
+        url = f"{self._proxy_url}/api/opportunities/play/settle-confirm"
+        payload = {"provider_id": provider_id, "settlements": settlements}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload, headers={_AUTH_HEADER: _AUTH_VALUE})
+                resp.raise_for_status()
+            logger.info(f"[PlayLoop] Settlements recorded for {provider_id}")
+        except Exception:
+            logger.exception(f"[PlayLoop] Failed to record settlements for {provider_id}")
+
+    async def _post_balance(self, provider_id: str, balance: float) -> None:
+        """POST updated balance to the server."""
+        url = f"{self._proxy_url}/api/bankroll/set/{provider_id}"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, json={"balance": balance}, headers={_AUTH_HEADER: _AUTH_VALUE})
+                resp.raise_for_status()
+            logger.info(f"[PlayLoop] Balance posted for {provider_id}: {balance}")
+        except Exception:
+            logger.warning(f"[PlayLoop] Failed to post balance for {provider_id}")
 
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
         """POST placement result to the server DB."""
@@ -311,7 +512,7 @@ class PlayLoop:
                 resp = await client.post(
                     url,
                     json=payload,
-                    headers={"X-Nginx-Authenticated": "firevsports"},
+                    headers={_AUTH_HEADER: _AUTH_VALUE},
                 )
                 resp.raise_for_status()
                 logger.info(f"[PlayLoop] Recorded bet {result.bet_id} — {result.status}")
