@@ -101,7 +101,7 @@ export function useDashboardWS() {
         case 'exit':
           setState(s => ({
             ...s,
-            exits: [...s.exits, msg as ExitEvent],
+            exits: [...s.exits.slice(-(MAX_FILLS - 1)), msg as ExitEvent],
           }))
           break
       }

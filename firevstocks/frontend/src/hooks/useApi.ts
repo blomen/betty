@@ -25,8 +25,8 @@ export const api = {
     return fetchJson<import('@/types').VPData>(`/vp/${tf}`)
   },
 
-  getVWAP() {
-    return fetchJson<import('@/types').VWAPResponse>('/vwap')
+  getVWAP(interval = '5m') {
+    return fetchJson<import('@/types').VWAPResponse>(`/vwap?interval=${interval}`)
   },
 
   getSessionTPO() {
@@ -51,5 +51,15 @@ export const api = {
 
   getAccountInfo() {
     return fetchJson<import('@/types').Account>('/account-info')
+  },
+
+  getLevels(date?: string) {
+    const params = date ? `?date=${date}` : ''
+    return fetchJson<import('@/types').LevelEntry[]>(`/levels${params}`)
+  },
+
+  getLevelsReplay(date?: string) {
+    const params = date ? `?date=${date}` : ''
+    return fetchJson<import('@/types').LevelsReplayResponse>(`/levels/replay${params}`)
   },
 }

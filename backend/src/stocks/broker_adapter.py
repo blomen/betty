@@ -4,6 +4,7 @@ Wraps TopstepXClient with the same interface as the server-side
 BrokerAdapter (Tradovate/Rithmic), adding risk checks, position
 tracking, and EOD flatten support.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +20,7 @@ class TopstepXBrokerAdapter:
 
     def __init__(self, client, config) -> None:
         from ..broker.position_tracker import PositionTracker
+
         self.client = client
         self.config = config
         self.tracker = PositionTracker()
@@ -63,8 +65,9 @@ class TopstepXBrokerAdapter:
             except Exception:
                 log.exception("Failed to liquidate position")
 
-        pnl = self.tracker.on_exit(exit_price=0.0, was_stop=(reason == "stop"))
-        log.info("Flattened (%s): pnl=$%.2f session=$%.2f", reason, pnl, self.tracker.session_pnl)
+        # Don't close tracker here — real exit price arrives via on_stream_fill.
+        # Just log intent; P&L will be calculated when the fill comes through.
+        log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
         return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
 
     async def modify_stop(self, new_stop_price: float) -> dict | None:
@@ -87,13 +90,9 @@ class TopstepXBrokerAdapter:
             return
 
         if not self.tracker.is_flat:
-            is_stop = (
-                abs(price - self.tracker.stop_price) < 1.0
-                if self.tracker.stop_price else False
-            )
+            is_stop = abs(price - self.tracker.stop_price) < 1.0 if self.tracker.stop_price else False
             self.tracker.on_exit(exit_price=price, was_stop=is_stop)
-            log.info("Stream fill (exit): %.2f stop=%s session_pnl=$%.2f",
-                     price, is_stop, self.tracker.session_pnl)
+            log.info("Stream fill (exit): %.2f stop=%s session_pnl=$%.2f", price, is_stop, self.tracker.session_pnl)
         else:
             self.tracker.entry_price = price
             log.info("Stream fill (entry): %.2f", price)
@@ -120,8 +119,11 @@ class TopstepXBrokerAdapter:
             return {"rejected": True, "reason": self._halt_reason}
 
         if time.time() - self.tracker.last_trade_ts < MIN_TRADE_INTERVAL_S:
-            log.info("Signal rejected — too soon (%.0fs < %.0fs)",
-                     time.time() - self.tracker.last_trade_ts, MIN_TRADE_INTERVAL_S)
+            log.info(
+                "Signal rejected — too soon (%.0fs < %.0fs)",
+                time.time() - self.tracker.last_trade_ts,
+                MIN_TRADE_INTERVAL_S,
+            )
             return {"rejected": True, "reason": "min_interval"}
 
         return None
@@ -159,8 +161,11 @@ class TopstepXBrokerAdapter:
         self.tracker.stop_order_id = stop_order_id
 
         return {
-            "action": action, "side": side, "size": size,
-            "stop_price": stop_price, "stop_order_id": stop_order_id,
+            "action": action,
+            "side": side,
+            "size": size,
+            "stop_price": stop_price,
+            "stop_order_id": stop_order_id,
         }
 
     async def _trail_stop(self, signal: dict) -> dict | None:

@@ -3,6 +3,7 @@
 Handles auth token management, order placement, position queries.
 All methods are async. Token auto-refreshes before expiry (~23.5h lifetime).
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,8 +59,18 @@ class TopstepXClient:
                 log.error("TopstepX: no active accounts found")
                 return False
 
-            self._account_id = accounts[0]["id"]
-            self._account_name = accounts[0].get("name", "")
+            # Select account: explicit ID > PRAC account > first
+            target = self._config.account_id
+            if target:
+                acct = next((a for a in accounts if a["id"] == target), None)
+                if not acct:
+                    log.error("TopstepX: account_id %d not found in %s", target, [a["id"] for a in accounts])
+                    return False
+            else:
+                acct = next((a for a in accounts if "PRAC" in a.get("name", "")), accounts[0])
+
+            self._account_id = acct["id"]
+            self._account_name = acct.get("name", "")
             log.info("TopstepX connected: account=%s (id=%d)", self._account_name, self._account_id)
             return True
         except Exception:
@@ -140,8 +151,7 @@ class TopstepXClient:
             "size": quantity,
         }
         result = await self._post("/api/Order/place", payload)
-        log.info("Market order placed: %s %d %s → %s",
-                 action, quantity, self._config.contract_id, result)
+        log.info("Market order placed: %s %d %s → %s", action, quantity, self._config.contract_id, result)
         return result
 
     async def place_stop_order(self, action: str, quantity: int, stop_price: float) -> dict:
@@ -155,8 +165,7 @@ class TopstepXClient:
             "stopPrice": stop_price,
         }
         result = await self._post("/api/Order/place", payload)
-        log.info("Stop order placed: %s %d @ %.2f → %s",
-                 action, quantity, stop_price, result)
+        log.info("Stop order placed: %s %d @ %.2f → %s", action, quantity, stop_price, result)
         return result
 
     async def modify_order(self, order_id: int, new_stop_price: float) -> dict:

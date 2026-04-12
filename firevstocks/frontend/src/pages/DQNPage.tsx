@@ -1,5 +1,6 @@
-import { useRef, useEffect } from 'react'
-import type { Signal, Zone } from '@/types'
+import { useRef, useEffect, useState } from 'react'
+import { api } from '@/hooks/useApi'
+import type { Signal, Zone, LevelsReplayResponse } from '@/types'
 
 interface Props {
   signals: Signal[]
@@ -7,13 +8,46 @@ interface Props {
   lastPrice: number | null
 }
 
-export function DQNPage({ signals, zones, lastPrice }: Props) {
+export function DQNPage({ signals, zones: liveZones, lastPrice }: Props) {
   const latest = signals.length > 0 ? signals[signals.length - 1] : null
   const historyRef = useRef<HTMLDivElement>(null)
+  const [replayData, setReplayData] = useState<LevelsReplayResponse | null>(null)
+  const [replayLoading, setReplayLoading] = useState(false)
 
   useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
   }, [signals.length])
+
+  // Load last session's levels/zones if no live data
+  useEffect(() => {
+    if (liveZones.length > 0) return // live data available, skip
+    setReplayLoading(true)
+    api.getLevelsReplay()
+      .then(d => { if (!d.error) setReplayData(d) })
+      .catch(() => {})
+      .finally(() => setReplayLoading(false))
+  }, [liveZones.length])
+
+  // Use live zones if available, otherwise build from replay active_levels
+  const zones: Zone[] = liveZones.length > 0
+    ? liveZones
+    : (replayData?.active_levels ?? []).map(l => ({
+        price: l.price,
+        members: 1,
+        name: l.name,
+      }))
+
+  const sessionLevels = replayData?.session_levels
+  const vpData = replayData?.volume_profile
+  const vwapData = replayData?.vwap?.vwap != null
+    ? {
+        vwap: replayData.vwap.vwap,
+        sd1_u: replayData.vwap.sd1_upper!,
+        sd1_l: replayData.vwap.sd1_lower!,
+        sd2_u: replayData.vwap.sd2_upper!,
+        sd2_l: replayData.vwap.sd2_lower!,
+      }
+    : null
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-3 overflow-y-auto">
@@ -66,17 +100,47 @@ export function DQNPage({ signals, zones, lastPrice }: Props) {
         )}
       </div>
 
+      {/* Session Reference Levels */}
+      {(sessionLevels || vpData || vwapData) && (
+        <div className="border border-zinc-800 bg-zinc-900 p-3">
+          <h3 className="text-xs font-mono text-zinc-500 uppercase tracking-wider mb-2">
+            Session Levels {replayData?.date && <span className="text-zinc-600 normal-case">({replayData.date})</span>}
+          </h3>
+          <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs font-mono">
+            {vpData?.poc != null && <LevelRow label="dPOC" value={vpData.poc} color="#a855f7" />}
+            {vpData?.vah != null && <LevelRow label="dVAH" value={vpData.vah} color="#a855f7" />}
+            {vpData?.val != null && <LevelRow label="dVAL" value={vpData.val} color="#a855f7" />}
+            {vwapData && (
+              <>
+                <LevelRow label="VWAP" value={vwapData.vwap} color="#eab308" />
+                <LevelRow label="+1σ" value={vwapData.sd1_u} color="#eab308" />
+                <LevelRow label="-1σ" value={vwapData.sd1_l} color="#eab308" />
+              </>
+            )}
+            {sessionLevels && (
+              <>
+                {sessionLevels.pdh != null && <LevelRow label="PDH" value={sessionLevels.pdh} color="#fb923c" />}
+                {sessionLevels.pdl != null && <LevelRow label="PDL" value={sessionLevels.pdl} color="#fb923c" />}
+                {sessionLevels.ib_high != null && <LevelRow label="IBH" value={sessionLevels.ib_high} color="#f59e0b" />}
+                {sessionLevels.ib_low != null && <LevelRow label="IBL" value={sessionLevels.ib_low} color="#f59e0b" />}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Zone Status */}
       <div className="border border-zinc-800 bg-zinc-900 p-3">
         <h3 className="text-xs font-mono text-zinc-500 uppercase tracking-wider mb-2">
-          Active Zones ({zones.length})
+          {liveZones.length > 0 ? 'Active' : 'Last Session'} Zones ({zones.length})
+          {replayLoading && <span className="text-zinc-600 ml-2">loading...</span>}
         </h3>
         {zones.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {zones.map((z, i) => {
               const dist = lastPrice ? Math.abs(lastPrice - z.price) : null
               return (
-                <span key={i} className="text-xs font-mono px-2 py-1 border border-zinc-700 bg-zinc-950">
+                <span key={i} className="text-xs font-mono px-2 py-1 border border-zinc-700 bg-zinc-950" title={z.name}>
                   <span className="text-purple-400">{z.price.toFixed(2)}</span>
                   <span className="text-zinc-600 ml-1">×{z.members}</span>
                   {dist != null && <span className="text-zinc-600 ml-1">({dist.toFixed(2)})</span>}
@@ -85,9 +149,27 @@ export function DQNPage({ signals, zones, lastPrice }: Props) {
             })}
           </div>
         ) : (
-          <div className="text-xs font-mono text-zinc-600">No zones loaded</div>
+          <div className="text-xs font-mono text-zinc-600">
+            {replayLoading ? 'Loading zones...' : 'No zones available'}
+          </div>
         )}
       </div>
+
+      {/* Replay summary */}
+      {replayData && !replayData.error && (
+        <div className="border border-zinc-800 bg-zinc-900 p-3">
+          <h3 className="text-xs font-mono text-zinc-500 uppercase tracking-wider mb-2">
+            Last Session Replay
+          </h3>
+          <div className="grid grid-cols-3 gap-2 text-xs font-mono">
+            <div><span className="text-zinc-500">Date: </span><span className="text-zinc-300">{replayData.date}</span></div>
+            <div><span className="text-zinc-500">Ticks: </span><span className="text-zinc-300">{replayData.ticks_count?.toLocaleString()}</span></div>
+            <div><span className="text-zinc-500">Episodes: </span><span className="text-zinc-300">{replayData.episodes_count}</span></div>
+            <div><span className="text-zinc-500">Levels: </span><span className="text-zinc-300">{replayData.active_levels?.length}</span></div>
+            <div><span className="text-zinc-500">FVGs: </span><span className="text-zinc-300">{replayData.fvgs?.length ?? 0}</span></div>
+          </div>
+        </div>
+      )}
 
       {/* Signal History */}
       <div className="border border-zinc-800 bg-zinc-900 flex-1 min-h-[200px] flex flex-col">
@@ -143,6 +225,15 @@ function SignalCard({ label, value, color, bar }: { label: string; value: string
           <div className="h-full" style={{ width: `${bar * 100}%`, backgroundColor: color }} />
         </div>
       )}
+    </div>
+  )
+}
+
+function LevelRow({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="flex justify-between">
+      <span style={{ color }}>{label}</span>
+      <span className="text-zinc-300">{value.toFixed(2)}</span>
     </div>
   )
 }

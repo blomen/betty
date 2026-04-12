@@ -87,13 +87,28 @@ def _cleanup_old_instance():
 
 def _start_tunnels() -> bool:
     """Open SSH tunnels for postgres and the server backend WS. Returns True if ready."""
-    # Check if PG tunnel already healthy
+    # Check if tunnels are up AND healthy (not just port in use — stale tunnels may point to old container IPs)
     pg_up = _port_in_use(LOCAL_PG_PORT)
     ws_up = _port_in_use(LOCAL_WS_PORT)
 
     if pg_up and ws_up:
-        log.info("SSH tunnels already up (pg=%d, ws=%d)", LOCAL_PG_PORT, LOCAL_WS_PORT)
-        return True
+        # Verify the WS tunnel actually works by hitting /health
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{LOCAL_WS_PORT}/health", timeout=5) as resp:
+                if resp.status == 200:
+                    log.info("SSH tunnels already up and healthy (pg=%d, ws=%d)", LOCAL_PG_PORT, LOCAL_WS_PORT)
+                    os.environ["DATABASE_URL"] = f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/firev"
+                    os.environ["MARKET_DATABASE_URL"] = (
+                        f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/market"
+                    )
+                    return True
+        except Exception:
+            log.warning("SSH tunnels bound but unhealthy — killing and recreating")
+            _kill_port(LOCAL_PG_PORT, "stale-pg-tunnel")
+            _kill_port(LOCAL_WS_PORT, "stale-ws-tunnel")
+            time.sleep(1)
 
     # Discover container IPs on server (port 8000 is only inside Docker, not on host)
     log.info("Opening SSH tunnels to %s...", SERVER)
@@ -201,12 +216,15 @@ async def _run(config, topstepx_client, relay, stream, adapter):
     dash_app = create_dashboard_app()
 
     def _run_dashboard():
-        uvicorn.run(
-            dash_app,
-            host="127.0.0.1",
-            port=LOCAL_DASHBOARD_PORT,
-            log_level="warning",
-        )
+        try:
+            uvicorn.run(
+                dash_app,
+                host="127.0.0.1",
+                port=LOCAL_DASHBOARD_PORT,
+                log_level="warning",
+            )
+        except Exception:
+            log.exception("Dashboard thread crashed")
 
     threading.Thread(target=_run_dashboard, daemon=True, name="dashboard").start()
     log.info("Dashboard starting at http://127.0.0.1:%d", LOCAL_DASHBOARD_PORT)

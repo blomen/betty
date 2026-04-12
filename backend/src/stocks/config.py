@@ -1,8 +1,9 @@
 """TopstepX configuration dataclass."""
+
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -14,6 +15,7 @@ class TopstepXConfig:
     market_hub_url: str = "wss://rtc.topstepx.com/hubs/market"
     user_hub_url: str = "wss://rtc.topstepx.com/hubs/user"
     server_ws_url: str = "ws://127.0.0.1:18000/ws/signals"
+    account_id: int = 0  # 0 = auto-select (prefers PRAC accounts)
     max_position: int = 2
     max_daily_loss: float = 1000.0
     max_trailing_dd: float = 2000.0
@@ -34,6 +36,7 @@ class TopstepXConfig:
             market_hub_url=os.getenv("TOPSTEPX_MARKET_HUB_URL", "wss://rtc.topstepx.com/hubs/market"),
             user_hub_url=os.getenv("TOPSTEPX_USER_HUB_URL", "wss://rtc.topstepx.com/hubs/user"),
             server_ws_url=os.getenv("TOPSTEPX_SERVER_WS_URL", "ws://127.0.0.1:18000/ws/signals"),
+            account_id=int(os.getenv("TOPSTEPX_ACCOUNT_ID", "0")),
             max_position=int(os.getenv("TOPSTEPX_MAX_POSITION", "2")),
             max_daily_loss=float(os.getenv("TOPSTEPX_MAX_DAILY_LOSS", "1000.0")),
             max_trailing_dd=float(os.getenv("TOPSTEPX_MAX_TRAILING_DD", "2000.0")),

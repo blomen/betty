@@ -15,14 +15,14 @@ Usage::
     ...
     await stream.stop()
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
 import websockets
 
@@ -78,12 +78,16 @@ class TopstepXStream:
     async def start(self) -> None:
         """Connect both hubs and subscribe to relevant channels."""
         self._running = True
-        self._tasks.append(asyncio.create_task(
-            self._run_hub("market", self._market_hub_url, self._on_market_msg, self._market_subs),
-        ))
-        self._tasks.append(asyncio.create_task(
-            self._run_hub("user", self._user_hub_url, self._on_user_msg, self._user_subs),
-        ))
+        self._tasks.append(
+            asyncio.create_task(
+                self._run_hub("market", self._market_hub_url, self._on_market_msg, self._market_subs),
+            )
+        )
+        self._tasks.append(
+            asyncio.create_task(
+                self._run_hub("user", self._user_hub_url, self._on_user_msg, self._user_subs),
+            )
+        )
         log.info("TopstepXStream started (contract=%s, account=%d)", self._contract_id, self._account_id)
 
     async def stop(self) -> None:
@@ -159,21 +163,31 @@ class TopstepXStream:
     async def _market_subs(self, ws) -> None:
         """Subscribe to market data channels."""
         for target in ("SubscribeContractQuotes", "SubscribeContractTrades", "SubscribeContractDepth"):
-            await ws.send(json.dumps({
-                "type": 1,
-                "target": target,
-                "arguments": [self._contract_id],
-            }) + _SEPARATOR)
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": 1,
+                        "target": target,
+                        "arguments": [self._contract_id],
+                    }
+                )
+                + _SEPARATOR
+            )
         log.info("TopstepXStream [market]: subscribed to quotes+trades+depth for %s", self._contract_id)
 
     async def _user_subs(self, ws) -> None:
         """Subscribe to user event channels."""
         for target in ("SubscribeToPositions", "SubscribeToOrders", "SubscribeToUserTrades"):
-            await ws.send(json.dumps({
-                "type": 1,
-                "target": target,
-                "arguments": [self._account_id],
-            }) + _SEPARATOR)
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": 1,
+                        "target": target,
+                        "arguments": [self._account_id],
+                    }
+                )
+                + _SEPARATOR
+            )
         log.info("TopstepXStream [user]: subscribed to positions+orders+trades for account %d", self._account_id)
 
     # ------------------------------------------------------------------
@@ -215,7 +229,7 @@ class TopstepXStream:
                 size = int(trade.get("volume", 1))
                 ts = _parse_ts(trade.get("timestamp", ""))
                 # type: 0=bid hit (sell aggressor), 1=ask lift (buy aggressor)
-                side = "A" if trade.get("type") == 0 else "B"
+                side = "B" if trade.get("type") == 0 else "A"
                 self.on_tick(price, size, ts, side)
             except Exception:
                 log.debug("TopstepXStream: bad trade: %r", trade)

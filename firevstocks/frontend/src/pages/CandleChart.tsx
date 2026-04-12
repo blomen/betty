@@ -97,24 +97,15 @@ function epochToDateStr(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
 }
 
-/** Build session boxes from backend-computed SessionLevelDay data (today only).
- *  H/L come from backend 1m bars (with Databento backfill), not from chart candles.
- *  This ensures boxes are accurate even when chart data has gaps.
- *  Only draws boxes for today's CET date — prior days use dashed level lines instead. */
-/** Build session boxes from chart candles + backend time boundaries.
- *  H/L and X bounds are computed from actual candles within each session window,
- *  ensuring boxes align with visible chart data in business-time mode. */
+/** Build session boxes — X from backend time boundaries, Y from chart candles within the window.
+ *  Only draws boxes for the latest day with session data. */
 function buildSessionBoxes(
   slDays: import('@/types').SessionLevelDay[],
   candles: CandleData[],
 ): SessionBox[] {
-  // Pick the most recent day that has actual session data (skip weekends/holidays)
-  const sorted = [...slDays].sort((a, b) => b.date.localeCompare(a.date));
-  const latest = sorted.find(d => d.ny_high != null || d.tokyo_high != null);
-  if (!latest || candles.length === 0) return [];
+  if (candles.length === 0) return [];
 
   const boxes: SessionBox[] = [];
-
   const mapping: Array<{
     name: string;
     startField: keyof import('@/types').SessionLevelDay;
@@ -126,33 +117,32 @@ function buildSessionBoxes(
     { name: 'New York', startField: 'ny_start',     endField: 'ny_end',     def: SESSION_DEFS[2] },
   ];
 
-  for (const m of mapping) {
-    const sessionStart = latest[m.startField] as number;
-    const sessionEnd = latest[m.endField] as number;
+  for (const day of slDays) {
+    if (day.ny_high == null && day.tokyo_high == null) continue;
 
-    // Filter candles that fall within this session's time window
-    const sessionCandles = candles.filter(c => c.t >= sessionStart && c.t < sessionEnd);
-    if (sessionCandles.length === 0) continue;
+    for (const m of mapping) {
+      const sessionStart = day[m.startField] as number;
+      const sessionEnd = day[m.endField] as number;
+      if (!sessionStart || !sessionEnd) continue;
 
-    // Compute H/L from actual chart candles (matches what user sees)
-    const high = Math.max(...sessionCandles.map(c => c.h));
-    const low = Math.min(...sessionCandles.map(c => c.l));
+      const sessionCandles = candles.filter(c => c.t >= sessionStart && c.t < sessionEnd);
+      if (sessionCandles.length === 0) continue;
 
-    // Use first/last candle timestamps as box boundaries (snaps to chart grid)
-    const firstT = sessionCandles[0].t;
-    const lastT = sessionCandles[sessionCandles.length - 1].t;
+      const high = Math.max(...sessionCandles.map(c => c.h));
+      const low = Math.min(...sessionCandles.map(c => c.l));
 
-    boxes.push({
-      name: m.name,
-      high,
-      low,
-      startEpoch: firstT,
-      endEpoch: lastT,
-      color: m.def.color,
-      border: m.def.border,
-      labelColor: m.def.label,
-      cetDate: latest.date,
-    });
+      boxes.push({
+        name: m.name,
+        high,
+        low,
+        startEpoch: sessionStart,
+        endEpoch: sessionEnd,
+        color: m.def.color,
+        border: m.def.border,
+        labelColor: m.def.label,
+        cetDate: day.date,
+      });
+    }
   }
 
   return boxes;
@@ -166,7 +156,7 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
 }
 
 export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval = '1m' }: Props) {
-  const CACHE_KEY = `firevstocks_candles_${interval}`;
+  const CACHE_KEY = `firevstocks_candles_v2_${interval}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -222,10 +212,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
 
     const timeScale = chart.timeScale();
 
-    // --- Session boxes (H/L + time boundaries from backend SessionLevelDay) ---
+    // --- Session boxes (full-height time columns from backend SessionLevelDay) ---
     const slDays = sessionLevelsRef.current;
     const boxes = slDays.length > 0 ? buildSessionBoxes(slDays, candlesRef.current) : [];
-
 
     if (boxes.length > 0) {
       for (const box of boxes) {
@@ -234,9 +223,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
         const rawY1 = pSeries.priceToCoordinate(box.high);
         const rawY2 = pSeries.priceToCoordinate(box.low);
 
-        // Null-clamp: if one edge is off-screen, extend to chart edge
-        if (rawY1 === null && rawY2 === null) continue;
         if (rawX1 === null && rawX2 === null) continue;
+        if (rawY1 === null && rawY2 === null) continue;
         const x1 = rawX1 != null ? Math.max(0, rawX1) : 0;
         const x2 = rawX2 != null ? Math.min(rect.width, rawX2) : rect.width;
         if (x2 < 0 || x1 > rect.width) continue;
@@ -257,7 +245,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
         ctx.lineWidth = 1;
         ctx.strokeRect(bx, by, bw, bh);
 
-        // Label at top-right of box
+        // Label at top-right
         ctx.font = '10px monospace';
         ctx.fillStyle = box.labelColor;
         ctx.textAlign = 'right';
@@ -305,38 +293,46 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
 
     // --- Session H/L levels (persist from session end to day end) ---
     const slHidden = hiddenRef.current;
-    // Skip weekend/holiday days with no session data
     const latestSL = [...slDays].sort((a, b) => b.date.localeCompare(a.date))
       .find(d => d.ny_high != null || d.tokyo_high != null);
-    // Session H/L extension lines — use box H/L (from chart candles) for consistency
-    const sessionLineMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
-      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#22D3EE' },
-      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#34D399' },
-    };
+    // Session H/L extension lines — use backend session levels directly
+    const sessionLineDefs: Array<{
+      sessionName: string;
+      hKey: string; lKey: string;
+      hLabel: string; lLabel: string;
+      color: string;
+      startField: keyof import('@/types').SessionLevelDay;
+      endField: keyof import('@/types').SessionLevelDay;
+      highField: keyof import('@/types').SessionLevelDay;
+      lowField: keyof import('@/types').SessionLevelDay;
+    }> = [
+      { sessionName: 'Tokyo', hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#22D3EE', startField: 'tokyo_start', endField: 'tokyo_end', highField: 'tokyo_high', lowField: 'tokyo_low' },
+      { sessionName: 'London', hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#34D399', startField: 'london_start', endField: 'london_end', highField: 'london_high', lowField: 'london_low' },
+    ];
 
-    // Draw session H/L dashed lines from box end to day end (22:00 CET)
-    if (boxes.length > 0) {
-      for (const box of boxes) {
-        const meta = sessionLineMeta[box.name];
-        if (!meta) continue;
+    // Draw session H/L dashed lines from session end to day end (22:00 CET)
+    if (latestSL) {
+      for (const def of sessionLineDefs) {
+        const sessionEnd = latestSL[def.endField] as number;
+        if (!sessionEnd) continue;
 
-        // Use box H/L (computed from chart candles — matches visible data)
-        const lineHigh = box.high;
-        const lineLow = box.low;
+        const lineHigh = latestSL[def.highField] as number | null;
+        const lineLow = latestSL[def.lowField] as number | null;
 
-        // Day end = 22:00 CET: compute from box end + remaining CET minutes
-        const boxEndCETMin = epochToCETMinute(box.endEpoch);
-        const dayEndEpoch = box.endEpoch + (22 * 60 - boxEndCETMin) * 60;
+        // Day end = 22:00 CET
+        const boxEndCETMin = epochToCETMinute(sessionEnd);
+        const dayEndEpoch = sessionEnd + (22 * 60 - boxEndCETMin) * 60;
 
         for (const { key, price, label } of [
-          { key: meta.hKey, price: lineHigh, label: meta.hLabel },
-          { key: meta.lKey, price: lineLow, label: meta.lLabel },
+          { key: def.hKey, price: lineHigh, label: def.hLabel },
+          { key: def.lKey, price: lineLow, label: def.lLabel },
         ]) {
+          if (price == null) continue;
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);
           if (y === null) continue;
 
-          const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+          const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(sessionEnd) as Time);
           const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
           if (rawX1 === null && rawX2 === null) continue;
           const lx = rawX1 ?? 0;
@@ -346,7 +342,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
           const drawX2 = Math.min(rect.width, rx);
 
           ctx.save();
-          ctx.strokeStyle = meta.color;
+          ctx.strokeStyle = def.color;
           ctx.lineWidth = 1;
           ctx.setLineDash([3, 3]);
           ctx.beginPath();
@@ -355,45 +351,45 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
-          ctx.fillStyle = meta.color;
+          ctx.fillStyle = def.color;
           ctx.textAlign = 'left';
           ctx.fillText(label, drawX1 + 3, y - 3);
           ctx.restore();
         }
       }
+    }
 
-      // --- Swing levels from session-levels API ---
-      if (latestSL) {
-        const swingLevels: { key: string; price: number | null; label: string; color: string }[] = [
-          { key: 'daily_swing_high', price: latestSL.daily_swing_high, label: 'D-SH', color: '#e2e8f0' },
-          { key: 'daily_swing_low', price: latestSL.daily_swing_low, label: 'D-SL', color: '#e2e8f0' },
-          { key: 'weekly_swing_high', price: latestSL.weekly_swing_high, label: 'W-SH', color: '#3b82f6' },
-          { key: 'weekly_swing_low', price: latestSL.weekly_swing_low, label: 'W-SL', color: '#3b82f6' },
-          { key: 'monthly_swing_high', price: latestSL.monthly_swing_high, label: 'M-SH', color: '#a855f7' },
-          { key: 'monthly_swing_low', price: latestSL.monthly_swing_low, label: 'M-SL', color: '#a855f7' },
-        ];
+    // --- Swing levels from session-levels API ---
+    if (latestSL) {
+      const swingLevels: { key: string; price: number | null; label: string; color: string }[] = [
+        { key: 'daily_swing_high', price: latestSL.daily_swing_high, label: 'D-SH', color: '#e2e8f0' },
+        { key: 'daily_swing_low', price: latestSL.daily_swing_low, label: 'D-SL', color: '#e2e8f0' },
+        { key: 'weekly_swing_high', price: latestSL.weekly_swing_high, label: 'W-SH', color: '#3b82f6' },
+        { key: 'weekly_swing_low', price: latestSL.weekly_swing_low, label: 'W-SL', color: '#3b82f6' },
+        { key: 'monthly_swing_high', price: latestSL.monthly_swing_high, label: 'M-SH', color: '#a855f7' },
+        { key: 'monthly_swing_low', price: latestSL.monthly_swing_low, label: 'M-SL', color: '#a855f7' },
+      ];
 
-        for (const { key, price, label, color } of swingLevels) {
-          if (price == null) continue;
-          if (slHidden?.has(key)) continue;
-          const y = pSeries.priceToCoordinate(price);
-          if (y === null) continue;
+      for (const { key, price, label, color } of swingLevels) {
+        if (price == null) continue;
+        if (slHidden?.has(key)) continue;
+        const y = pSeries.priceToCoordinate(price);
+        if (y === null) continue;
 
-          ctx.save();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
-          ctx.setLineDash([6, 3]);
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(rect.width, y);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.font = '9px monospace';
-          ctx.fillStyle = color;
-          ctx.textAlign = 'left';
-          ctx.fillText(label, 3, y - 3);
-          ctx.restore();
-        }
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(rect.width, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '9px monospace';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'left';
+        ctx.fillText(label, 3, y - 3);
+        ctx.restore();
       }
     }
 
@@ -796,6 +792,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
   }, [interval]);
 
   // Subscribe VP overlay redraws to chart events (throttled to ~60fps)
+  // Must re-run on interval change because chart instance is recreated
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -809,6 +806,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
       });
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
+    chart.subscribeCrosshairMove(redraw);
 
     const observer = new ResizeObserver(redraw);
     if (containerRef.current) observer.observe(containerRef.current);
@@ -816,11 +814,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
+      chart.unsubscribeCrosshairMove(redraw);
       observer.disconnect();
     };
-  }, [drawOverlays]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawOverlays, interval]);
 
-  // Fetch VP curve data for all timeframes (daily, weekly, monthly) — once on mount
+  // Fetch VP curve data for all timeframes — refetch when interval changes (chart recreated)
   useEffect(() => {
     let cancelled = false;
     for (const overlay of VP_OVERLAYS) {
@@ -834,9 +834,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
     }
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [interval]);
 
-  // Fetch session levels for multi-day overlay — once on mount
+  // Fetch session levels for multi-day overlay — refetch when interval changes (chart recreated)
   useEffect(() => {
     let cancelled = false;
     api.getSessionLevels(INITIAL_DAYS + 2).then(res => {
@@ -848,9 +848,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
     }).catch(err => { console.warn('[SessionLevels] fetch failed:', err); });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [interval]);
 
-  // Fetch per-session TPO letter grid data — once on mount
+  // Fetch per-session TPO letter grid data — refetch when interval changes (chart recreated)
   useEffect(() => {
     let cancelled = false;
     api.getSessionTPO().then(res => {
@@ -862,7 +862,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
     }).catch(err => { console.warn('[SessionTPO] fetch failed:', err); });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [interval]);
 
   // Redraw when VP data loads, TPO changes, session/macro changes, or visibility changes
   useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, zones, session, drawOverlays]);
@@ -975,46 +975,53 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
 
     // Fetch tick-level VWAP from backend
     let cancelled = false;
-    api.getVWAP().then(res => {
-      if (cancelled || !res.vwap?.length || !chartRef.current) return;
+    api.getVWAP(interval).then(res => {
+      if (cancelled || !chartRef.current) return;
 
-      const toLD = (arr: typeof res.vwap, key: keyof typeof arr[0]): LineData<Time>[] =>
-        arr.map(p => ({ time: toLocalEpoch(p.t) as Time, value: p[key] as number }));
+      // Each day is a separate segment — no connecting lines across midnight resets
+      const days = res.vwap_days ?? (res.vwap?.length ? [res.vwap] : []);
+      if (!days.length) return;
 
-      const addLine = (color: string, width: 1 | 2, style: number, title: string, data: LineData<Time>[]) => {
-        // Dedupe + sort VWAP points to prevent lightweight-charts crash
-        const seen = new Set<number>();
-        const clean = data.filter(d => {
-          const t = d.time as number;
-          if (seen.has(t)) return false;
-          seen.add(t);
-          return true;
-        }).sort((a, b) => (a.time as number) - (b.time as number));
+      const bands: Array<{ color: string; width: 1 | 2; style: number; title: string; key: string }> = [
+        { color: '#EAB308', width: 2, style: LineStyle.Solid, title: 'VWAP', key: 'vwap' },
+        { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '+σ', key: 'sd1_u' },
+        { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '-σ', key: 'sd1_l' },
+        { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '+2σ', key: 'sd2_u' },
+        { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '-2σ', key: 'sd2_l' },
+        { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '+3σ', key: 'sd3_u' },
+        { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '-3σ', key: 'sd3_l' },
+      ];
 
-        const s = chartRef.current!.addLineSeries({
-          color,
-          lineWidth: width,
-          lineStyle: style,
-          lastValueVisible: true,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-          title,
-        } as any);
-        s.setData(clean);
-        vwapSeriesRefs.current.push(s);
-      };
+      for (const dayData of days) {
+        for (const band of bands) {
+          const seen = new Set<number>();
+          const data: LineData<Time>[] = dayData
+            .map(p => ({ time: toLocalEpoch(p.t) as Time, value: (p as unknown as Record<string, number>)[band.key] }))
+            .filter(d => {
+              const t = d.time as number;
+              if (seen.has(t)) return false;
+              seen.add(t);
+              return true;
+            })
+            .sort((a, b) => (a.time as number) - (b.time as number));
 
-      addLine('#EAB308', 2, LineStyle.Solid, 'VWAP', toLD(res.vwap, 'vwap'));
-      addLine('rgba(234,179,8,0.5)', 1, LineStyle.Solid, '+\u03C3', toLD(res.vwap, 'sd1_u'));
-      addLine('rgba(234,179,8,0.5)', 1, LineStyle.Solid, '-\u03C3', toLD(res.vwap, 'sd1_l'));
-      addLine('rgba(234,179,8,0.25)', 1, LineStyle.Dashed, '+2\u03C3', toLD(res.vwap, 'sd2_u'));
-      addLine('rgba(234,179,8,0.25)', 1, LineStyle.Dashed, '-2\u03C3', toLD(res.vwap, 'sd2_l'));
-      addLine('rgba(234,179,8,0.15)', 1, LineStyle.Dotted, '+3\u03C3', toLD(res.vwap, 'sd3_u'));
-      addLine('rgba(234,179,8,0.15)', 1, LineStyle.Dotted, '-3\u03C3', toLD(res.vwap, 'sd3_l'));
+          const s = chartRef.current!.addLineSeries({
+            color: band.color,
+            lineWidth: band.width,
+            lineStyle: band.style,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+          } as any);
+          s.setData(data);
+          vwapSeriesRefs.current.push(s);
+        }
+      }
     }).catch(err => console.warn('Failed to load VWAP:', err));
 
     return () => { cancelled = true; };
-  }, [session, hiddenLevels]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, hiddenLevels, interval]);
 
   // Static reference lines: IB, dPOC (these are flat — correct for structural levels)
   useEffect(() => {

@@ -68,7 +68,8 @@ export interface VWAPPoint {
 }
 
 export interface VWAPResponse {
-  vwap: VWAPPoint[]
+  vwap?: VWAPPoint[]
+  vwap_days?: VWAPPoint[][]
   symbol: string
   count: number
 }
@@ -190,4 +191,30 @@ export interface Trade {
   price: number
   timestamp: string
   [key: string]: unknown
+}
+
+export interface LevelEntry {
+  level_type: string
+  price_low: number
+  price_high: number
+  direction: string
+  session: string
+  is_filled: boolean
+}
+
+export interface LevelsReplayResponse {
+  date: string
+  ticks_count: number
+  episodes_count: number
+  active_levels: Array<{
+    name: string
+    price: number
+    type: string
+  }>
+  fvgs: Array<{ low: number; high: number; direction: string }>
+  order_blocks: Array<{ low: number; high: number; direction: string }>
+  session_levels: Record<string, number | null>
+  vwap: { vwap: number | null; sd1_upper: number | null; sd1_lower: number | null; sd2_upper: number | null; sd2_lower: number | null } | null
+  volume_profile: { poc: number | null; vah: number | null; val: number | null } | null
+  error?: string
 }
