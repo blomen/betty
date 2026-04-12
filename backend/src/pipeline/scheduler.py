@@ -12,11 +12,12 @@ browser concurrency managed by pool manager semaphores, not scheduler-level lock
 
 import asyncio
 import logging
-from pathlib import Path
-import yaml
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Callable, Optional
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +25,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProviderSchedule:
     """Schedule state for a single provider (or grouped sharp providers)."""
-    provider_id: str              # Single provider or "sharp" for grouped
-    category: str                 # "sharp", "api_soft", "browser_soft", "browser_antibot"
-    interval_seconds: int         # Cooldown AFTER completion
+
+    provider_id: str  # Single provider or "sharp" for grouped
+    category: str  # "sharp", "api_soft", "browser_soft", "browser_antibot"
+    interval_seconds: int  # Cooldown AFTER completion
     providers: list[str] | None = None  # Only for grouped (sharp): list of providers
     running: bool = False
-    task: Optional[asyncio.Task] = field(default=None, repr=False)
-    last_completed: Optional[datetime] = None
+    task: asyncio.Task | None = field(default=None, repr=False)
+    last_completed: datetime | None = None
     run_count: int = 0
-    last_error: Optional[str] = None
-    last_duration: Optional[float] = None
+    last_error: str | None = None
+    last_duration: float | None = None
     consecutive_failures: int = 0
     revival_attempts: int = 0
     reviving: bool = False
@@ -44,6 +46,7 @@ class ProviderSchedule:
 try:
     from src.api.state import update_provider_state
 except ImportError:
+
     def update_provider_state(provider_id: str, state: dict):
         """Stub — will be replaced by Task 3 implementation."""
         pass
@@ -75,11 +78,11 @@ class ExtractionScheduler:
     def __init__(self, pipeline=None):
         self._pipeline = pipeline
         self._schedules: dict[str, ProviderSchedule] = {}
-        self._boosts_task: Optional[asyncio.Task] = None
-        self._cleanup_task: Optional[asyncio.Task] = None
-        self._settlement_task: Optional[asyncio.Task] = None
-        self._trading_reset_task: Optional[asyncio.Task] = None
-        self._watchdog_task: Optional[asyncio.Task] = None
+        self._boosts_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
+        self._settlement_task: asyncio.Task | None = None
+        self._trading_reset_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
         # Per-provider locks prevent the same provider from overlapping with itself.
         self._provider_locks: dict[str, asyncio.Lock] = {}
         # Browser concurrency controlled by pool manager semaphores (max_browser_instances=6).
@@ -96,6 +99,7 @@ class ExtractionScheduler:
         """Lazy-load pipeline if not provided."""
         if self._pipeline is None:
             from src.api.deps import get_pipeline
+
             self._pipeline = get_pipeline()
         return self._pipeline
 
@@ -112,13 +116,16 @@ class ExtractionScheduler:
         self._provider_locks[schedule.provider_id] = asyncio.Lock()
 
         # Register initial state so /progress shows this provider immediately
-        update_provider_state(schedule.provider_id, {
-            "running": False,
-            "last_completed": None,
-            "last_duration": None,
-            "last_error": None,
-            "category": schedule.category,
-        })
+        update_provider_state(
+            schedule.provider_id,
+            {
+                "running": False,
+                "last_completed": None,
+                "last_duration": None,
+                "last_error": None,
+                "category": schedule.category,
+            },
+        )
 
         logger.info(
             f"[Scheduler] Starting schedule '{schedule.provider_id}': "
@@ -140,12 +147,9 @@ class ExtractionScheduler:
             exc = task.exception()
             if exc and sched.running:
                 logger.error(
-                    f"[Scheduler:{sched.provider_id}] Schedule task died unexpectedly: {exc}. "
-                    f"Auto-restarting in 10s..."
+                    f"[Scheduler:{sched.provider_id}] Schedule task died unexpectedly: {exc}. Auto-restarting in 10s..."
                 )
-                _loop.call_later(10, lambda: asyncio.ensure_future(
-                    self._restart_schedule(sched)
-                ))
+                _loop.call_later(10, lambda: asyncio.ensure_future(self._restart_schedule(sched)))
 
         schedule.task.add_done_callback(_on_schedule_done)
 
@@ -163,13 +167,8 @@ class ExtractionScheduler:
                 return
             exc = task.exception()
             if exc and sched.running:
-                logger.error(
-                    f"[Scheduler:{sched.provider_id}] Schedule died again: {exc}. "
-                    f"Auto-restarting in 30s..."
-                )
-                _loop.call_later(30, lambda: asyncio.ensure_future(
-                    self._restart_schedule(sched)
-                ))
+                logger.error(f"[Scheduler:{sched.provider_id}] Schedule died again: {exc}. Auto-restarting in 30s...")
+                _loop.call_later(30, lambda: asyncio.ensure_future(self._restart_schedule(sched)))
 
         schedule.task.add_done_callback(_on_restart_done)
 
@@ -191,12 +190,12 @@ class ExtractionScheduler:
     def _get_last_extraction_time(self, provider_ids: list[str]) -> datetime | None:
         """Check DB for the most recent Odds.updated_at for given provider(s)."""
         try:
-            from src.db.models import Odds, get_session
             from sqlalchemy import func
+
+            from src.db.models import Odds, get_session
+
             with get_session() as session:
-                result = session.query(func.max(Odds.updated_at)).filter(
-                    Odds.provider_id.in_(provider_ids)
-                ).scalar()
+                result = session.query(func.max(Odds.updated_at)).filter(Odds.provider_id.in_(provider_ids)).scalar()
                 # SQLite stores naive datetimes in LOCAL time — convert to UTC
                 if result and result.tzinfo is None:
                     result = result.astimezone(timezone.utc)
@@ -213,14 +212,16 @@ class ExtractionScheduler:
         For ungrouped (api_soft), checks provider_run_metrics for the specific provider.
         """
         try:
-            from src.db.models import get_session
             from sqlalchemy import text
+
+            from src.db.models import get_session
+
             with get_session() as session:
                 # Grouped categories (sharp) have trigger matching the category name
-                row = session.execute(text(
-                    "SELECT MAX(end_time) FROM extraction_runs "
-                    "WHERE trigger = :cat AND end_time IS NOT NULL"
-                ), {"cat": category}).scalar()
+                row = session.execute(
+                    text("SELECT MAX(end_time) FROM extraction_runs WHERE trigger = :cat AND end_time IS NOT NULL"),
+                    {"cat": category},
+                ).scalar()
                 if row:
                     result = row if isinstance(row, datetime) else datetime.fromisoformat(str(row))
                     if result.tzinfo is None:
@@ -270,11 +271,14 @@ class ExtractionScheduler:
                     f"sleeping {remaining:.0f}s before first run"
                 )
                 schedule.last_completed = last_completed
-                update_provider_state(schedule.provider_id, {
-                    "running": False,
-                    "last_completed": last_completed.isoformat(),
-                    "category": schedule.category,
-                })
+                update_provider_state(
+                    schedule.provider_id,
+                    {
+                        "running": False,
+                        "last_completed": last_completed.isoformat(),
+                        "category": schedule.category,
+                    },
+                )
                 try:
                     await asyncio.sleep(remaining)
                 except asyncio.CancelledError:
@@ -285,9 +289,7 @@ class ExtractionScheduler:
                     f"(stale), running immediately"
                 )
         else:
-            logger.info(
-                f"[Scheduler:{schedule.provider_id}] No completed run found, running immediately"
-            )
+            logger.info(f"[Scheduler:{schedule.provider_id}] No completed run found, running immediately")
 
         while schedule.running:
             start = datetime.now(timezone.utc)
@@ -326,13 +328,16 @@ class ExtractionScheduler:
                 schedule.consecutive_failures += 1
                 logger.exception(f"[Scheduler:{schedule.provider_id}] Extraction failed: {e}")
             finally:
-                update_provider_state(schedule.provider_id, {
-                    "running": False,
-                    "last_completed": schedule.last_completed.isoformat() if schedule.last_completed else None,
-                    "last_duration": schedule.last_duration,
-                    "last_error": schedule.last_error,
-                    "category": schedule.category,
-                })
+                update_provider_state(
+                    schedule.provider_id,
+                    {
+                        "running": False,
+                        "last_completed": schedule.last_completed.isoformat() if schedule.last_completed else None,
+                        "last_duration": schedule.last_duration,
+                        "last_error": schedule.last_error,
+                        "category": schedule.category,
+                    },
+                )
 
             # Cooldown AFTER completion (full interval elapses after run finishes)
             try:
@@ -359,9 +364,7 @@ class ExtractionScheduler:
             asyncio.set_event_loop(loop)
             pipeline = ExtractionPipeline()
             try:
-                return loop.run_until_complete(
-                    pipeline.run(providers=providers, tier_name=schedule.category)
-                )
+                return loop.run_until_complete(pipeline.run(providers=providers, tier_name=schedule.category))
             finally:
                 try:
                     pipeline.session.close()
@@ -402,27 +405,35 @@ class ExtractionScheduler:
     def _load_scheduling_config(self) -> dict:
         """Load extraction scheduling config from providers.yaml."""
         from ..paths import get_config_path
+
         config_path = get_config_path("providers.yaml")
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return config.get("extraction_scheduling", {})
 
     def _get_disabled_providers(self) -> set:
         """Get providers disabled by user in settings for the active profile."""
         from ..db.models import Profile, ProviderExtractionSetting, get_session
+
         session = get_session()
         try:
-            profile = session.query(Profile).filter(
-                Profile.is_active == True  # noqa: E712
-            ).first()
+            profile = (
+                session.query(Profile)
+                .filter(
+                    Profile.is_active == True  # noqa: E712
+                )
+                .first()
+            )
             if not profile:
                 return set()
             return {
                 s.provider_id
-                for s in session.query(ProviderExtractionSetting).filter(
+                for s in session.query(ProviderExtractionSetting)
+                .filter(
                     ProviderExtractionSetting.profile_id == profile.id,
                     ProviderExtractionSetting.enabled == False,  # noqa: E712
-                ).all()
+                )
+                .all()
             }
         finally:
             session.close()
@@ -510,12 +521,9 @@ class ExtractionScheduler:
                     continue  # Exhausted all attempts
                 # Schedule revival
                 schedule.reviving = True
-                backoff = self.REVIVAL_BACKOFFS[
-                    min(schedule.revival_attempts, len(self.REVIVAL_BACKOFFS) - 1)
-                ]
+                backoff = self.REVIVAL_BACKOFFS[min(schedule.revival_attempts, len(self.REVIVAL_BACKOFFS) - 1)]
                 logger.info(
-                    f"[Watchdog] Scheduling revival #{schedule.revival_attempts + 1} "
-                    f"for '{provider_id}' in {backoff}s"
+                    f"[Watchdog] Scheduling revival #{schedule.revival_attempts + 1} for '{provider_id}' in {backoff}s"
                 )
                 asyncio.create_task(self._attempt_revival(schedule, backoff))
                 continue
@@ -531,12 +539,15 @@ class ExtractionScheduler:
                 if schedule.task:
                     schedule.task.cancel()
                     schedule.task = None
-                update_provider_state(provider_id, {
-                    "running": False,
-                    "permanently_failed": True,
-                    "last_error": schedule.last_error,
-                    "consecutive_failures": schedule.consecutive_failures,
-                })
+                update_provider_state(
+                    provider_id,
+                    {
+                        "running": False,
+                        "permanently_failed": True,
+                        "last_error": schedule.last_error,
+                        "consecutive_failures": schedule.consecutive_failures,
+                    },
+                )
                 continue
 
             # ── EXISTING: Check if the asyncio task is still alive ──
@@ -576,8 +587,11 @@ class ExtractionScheduler:
                         )
 
             # Starvation detection for browser providers
-            if (schedule.category in ("browser_soft", "browser_antibot") and schedule.running
-                    and schedule.last_completed):
+            if (
+                schedule.category in ("browser_soft", "browser_antibot")
+                and schedule.running
+                and schedule.last_completed
+            ):
                 starvation_threshold = schedule.interval_seconds * 2
                 elapsed = (now - schedule.last_completed).total_seconds()
                 if elapsed > starvation_threshold:
@@ -592,12 +606,38 @@ class ExtractionScheduler:
                 if schedule.last_completed is None:
                     pass  # Handled by stale check above once interval elapses
 
+    # Python's memory allocator doesn't return pages to the OS after large
+    # allocations (arena fragmentation). Over hours of extraction runs, each
+    # creating ExtractionPipeline + ORM objects + browser contexts in threads,
+    # RSS grows monotonically. The only reliable fix is process restart.
+    # Docker restart: unless-stopped brings us back in seconds.
+    MEMORY_LIMIT_GB = 32  # Exit when RSS exceeds this (well under 48GB Docker cap)
+
+    def _check_memory(self):
+        """Check if process RSS exceeds limit and exit if so."""
+        try:
+            import resource
+
+            rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024  # Linux: KB → bytes
+            rss_gb = rss_bytes / (1024**3)
+            if rss_gb > self.MEMORY_LIMIT_GB:
+                logger.critical(
+                    f"[Watchdog] RSS {rss_gb:.1f}GB exceeds {self.MEMORY_LIMIT_GB}GB limit. "
+                    f"Exiting for Docker restart to reclaim memory."
+                )
+                import os
+
+                os._exit(1)  # Hard exit — Docker restarts us
+        except Exception as e:
+            logger.warning(f"[Watchdog] Memory check failed: {e}")
+
     async def _watchdog_loop(self):
         """Periodically check that all schedules are running and not stale."""
         await asyncio.sleep(30)  # Initial delay before first check
         while True:
             try:
                 await self._check_schedules_once()
+                self._check_memory()
             except Exception as e:
                 logger.error(f"[Watchdog] Error: {e}", exc_info=True)
             await asyncio.sleep(60)
@@ -645,9 +685,7 @@ class ExtractionScheduler:
             return
 
         logger.info(f"[Scheduler] Starting boosts tier: interval={interval_seconds}s")
-        self._boosts_task = asyncio.create_task(
-            self._boosts_loop(interval_seconds)
-        )
+        self._boosts_task = asyncio.create_task(self._boosts_loop(interval_seconds))
 
     async def _boosts_loop(self, interval_seconds: int):
         """Recurring loop for oddsboost scraping.
@@ -668,7 +706,10 @@ class ExtractionScheduler:
                 logger.info("[Scheduler:boosts] Starting boost scrape")
                 await self._run_boost_scrape()
                 logger.info("[Scheduler:boosts] Boost scrape complete")
-                update_provider_state("boosts", {"running": False, "last_completed": datetime.now(timezone.utc).isoformat(), "category": "boosts"})
+                update_provider_state(
+                    "boosts",
+                    {"running": False, "last_completed": datetime.now(timezone.utc).isoformat(), "category": "boosts"},
+                )
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Loop cancelled")
                 update_provider_state("boosts", {"running": False, "category": "boosts"})
@@ -689,12 +730,19 @@ class ExtractionScheduler:
         """Execute the boost scraper in a thread executor."""
         import sys
         from dataclasses import asdict
+
         # Ensure scripts/ package is importable (lives in backend/)
         _root = str(Path(__file__).resolve().parent.parent.parent)
         if _root not in sys.path:
             sys.path.insert(0, _root)
-        from scripts.scrape_specials import scrape_all, save_specials
-        from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
+        from scripts.scrape_specials import save_specials, scrape_all
+
+        from src.analysis.ev_enrichment import (
+            deduplicate_specials,
+            enrich_specials_with_ev,
+            filter_expired,
+            store_specials_to_db,
+        )
         from src.db.models import get_session
 
         update_provider_state("boosts", {"running": True, "category": "boosts"})
@@ -717,12 +765,15 @@ class ExtractionScheduler:
 
                 # LLM probability research (async — Brave Search + Claude Haiku)
                 from src.analysis.llm_enrichment import enrich_specials_with_llm
+
                 specials_dicts = await enrich_specials_with_llm(specials_dicts, session)
 
                 count = store_specials_to_db(specials_dicts, session)
                 ev_count = sum(1 for s in specials_dicts if s.get("is_positive_ev"))
                 llm_count = sum(1 for s in specials_dicts if s.get("llm_probability") is not None)
-                logger.info(f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV, {llm_count} LLM-researched)")
+                logger.info(
+                    f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV, {llm_count} LLM-researched)"
+                )
             else:
                 # Scrape returned empty — still purge expired boosts from DB
                 self._purge_expired_boosts(session)
@@ -759,9 +810,12 @@ class ExtractionScheduler:
 
     def _persist_boost_log(self, run_log, max_runs: int = 10):
         """Persist boost extraction log to DB. Keeps last `max_runs` runs."""
-        from src.db.models import BoostExtractionLog, get_session
-        from datetime import datetime as dt, timezone
+        from datetime import datetime as dt
+        from datetime import timezone
+
         from sqlalchemy import func
+
+        from src.db.models import BoostExtractionLog, get_session
 
         try:
             session = get_session()
@@ -770,33 +824,37 @@ class ExtractionScheduler:
             # Prune old boost runs beyond max_runs (keep N-1, adding 1 new = N total)
             # Each run shares the same run_id, so count distinct run_ids
             distinct_run_ids = (
-                session.query(BoostExtractionLog.run_id, func.max(BoostExtractionLog.scraped_at).label('latest'))
+                session.query(BoostExtractionLog.run_id, func.max(BoostExtractionLog.scraped_at).label("latest"))
                 .group_by(BoostExtractionLog.run_id)
                 .order_by(func.max(BoostExtractionLog.scraped_at).desc())
                 .all()
             )
             if len(distinct_run_ids) >= max_runs:
-                stale_run_ids = [r.run_id for r in distinct_run_ids[max_runs - 1:]]
-                session.query(BoostExtractionLog).filter(
-                    BoostExtractionLog.run_id.in_(stale_run_ids)
-                ).delete(synchronize_session='fetch')
+                stale_run_ids = [r.run_id for r in distinct_run_ids[max_runs - 1 :]]
+                session.query(BoostExtractionLog).filter(BoostExtractionLog.run_id.in_(stale_run_ids)).delete(
+                    synchronize_session="fetch"
+                )
 
             for pl in run_log.providers:
-                session.add(BoostExtractionLog(
-                    run_id=run_log.run_id,
-                    scraped_at=scraped_at,
-                    provider_id=pl.provider_id,
-                    scraper_type=pl.scraper_type,
-                    status=pl.status,
-                    duration_seconds=pl.duration_seconds,
-                    boosts_found=pl.boosts_found,
-                    error_message=pl.error_message,
-                    run_total_boosts=run_log.total_boosts,
-                    run_duration_seconds=run_log.duration_seconds,
-                ))
+                session.add(
+                    BoostExtractionLog(
+                        run_id=run_log.run_id,
+                        scraped_at=scraped_at,
+                        provider_id=pl.provider_id,
+                        scraper_type=pl.scraper_type,
+                        status=pl.status,
+                        duration_seconds=pl.duration_seconds,
+                        boosts_found=pl.boosts_found,
+                        error_message=pl.error_message,
+                        run_total_boosts=run_log.total_boosts,
+                        run_duration_seconds=run_log.duration_seconds,
+                    )
+                )
 
             session.commit()
-            logger.info(f"[Scheduler:boosts] Persisted log: {len(run_log.providers)} providers, {run_log.total_boosts} boosts in {run_log.duration_seconds:.1f}s")
+            logger.info(
+                f"[Scheduler:boosts] Persisted log: {len(run_log.providers)} providers, {run_log.total_boosts} boosts in {run_log.duration_seconds:.1f}s"
+            )
         except Exception as e:
             logger.error(f"[Scheduler:boosts] Failed to persist log: {e}")
             try:
@@ -822,9 +880,7 @@ class ExtractionScheduler:
             return
 
         logger.info(f"[Scheduler] Starting trading reset tier: check_interval={check_interval}s")
-        self._trading_reset_task = asyncio.create_task(
-            self._trading_reset_loop(check_interval)
-        )
+        self._trading_reset_task = asyncio.create_task(self._trading_reset_loop(check_interval))
 
     async def _trading_reset_loop(self, check_interval: int):
         """Recurring check for daily/weekly trading resets."""
@@ -840,8 +896,8 @@ class ExtractionScheduler:
                 # Daily reset — once per UTC day
                 if last_daily_reset != today_str:
                     try:
-                        from src.services.trading_service import TradingService
                         from src.db.models import get_session
+                        from src.services.trading_service import TradingService
 
                         session = get_session()
                         try:
@@ -849,7 +905,9 @@ class ExtractionScheduler:
                             result = svc.auto_reset_daily()
                             last_daily_reset = today_str
                             if result["reset_accounts"] > 0:
-                                logger.info(f"[Scheduler:trading_reset] Daily reset: {result['reset_accounts']} accounts")
+                                logger.info(
+                                    f"[Scheduler:trading_reset] Daily reset: {result['reset_accounts']} accounts"
+                                )
                         finally:
                             session.close()
                     except Exception as e:
@@ -858,8 +916,8 @@ class ExtractionScheduler:
                 # Weekly reset — once per UTC week (Monday = weekday 0)
                 if now.weekday() == 0 and last_weekly_reset != week_str:
                     try:
-                        from src.services.trading_service import TradingService
                         from src.db.models import get_session
+                        from src.services.trading_service import TradingService
 
                         session = get_session()
                         try:
@@ -867,7 +925,9 @@ class ExtractionScheduler:
                             result = svc.auto_reset_weekly()
                             last_weekly_reset = week_str
                             if result["reset_accounts"] > 0:
-                                logger.info(f"[Scheduler:trading_reset] Weekly reset: {result['reset_accounts']} accounts")
+                                logger.info(
+                                    f"[Scheduler:trading_reset] Weekly reset: {result['reset_accounts']} accounts"
+                                )
                         finally:
                             session.close()
                     except Exception as e:
@@ -897,9 +957,7 @@ class ExtractionScheduler:
             return
 
         logger.info(f"[Scheduler] Starting cleanup tier: interval={interval_seconds}s")
-        self._cleanup_task = asyncio.create_task(
-            self._cleanup_loop(interval_seconds)
-        )
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop(interval_seconds))
 
     async def _cleanup_loop(self, interval_seconds: int):
         """Recurring loop for data retention cleanup."""
@@ -933,71 +991,79 @@ class ExtractionScheduler:
 
     async def _run_cleanup(self) -> dict:
         """Execute data retention cleanup in a thread executor."""
-        from src.db.models import Event, Odds, Opportunity, Bet, get_session
+        from src.db.models import Bet, Event, Odds, Opportunity, get_session
 
         loop = asyncio.get_running_loop()
 
         def _do_cleanup() -> dict:
             stats = {
-                "inactive": 0, "orphaned": 0, "past_events": 0,
-                "past_events_deleted": 0, "past_odds_deleted": 0,
+                "inactive": 0,
+                "orphaned": 0,
+                "past_events": 0,
+                "past_events_deleted": 0,
+                "past_odds_deleted": 0,
                 "deactivated": 0,
             }
             session = get_session()
             try:
                 from sqlalchemy import or_
+
                 now = datetime.now(timezone.utc)
 
                 # 1. Delete inactive opportunities
-                stats["inactive"] = session.query(Opportunity).filter(
-                    Opportunity.is_active == False
-                ).delete()
+                stats["inactive"] = session.query(Opportunity).filter(Opportunity.is_active == False).delete()
 
                 # 2. Delete orphaned opportunities (event doesn't exist)
                 valid_event_subq = session.query(Event.id).subquery()
-                stats["orphaned"] = session.query(Opportunity).filter(
-                    ~Opportunity.event_id.in_(session.query(valid_event_subq))
-                ).delete(synchronize_session=False)
+                stats["orphaned"] = (
+                    session.query(Opportunity)
+                    .filter(~Opportunity.event_id.in_(session.query(valid_event_subq)))
+                    .delete(synchronize_session=False)
+                )
 
                 # 3. Delete opportunities for past events (keep live/finished for settlement)
-                past_event_subq = session.query(Event.id).filter(
-                    Event.start_time < now,
-                    or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
-                ).subquery()
-                stats["past_events"] = session.query(Opportunity).filter(
-                    Opportunity.event_id.in_(session.query(past_event_subq))
-                ).delete(synchronize_session=False)
+                past_event_subq = (
+                    session.query(Event.id)
+                    .filter(
+                        Event.start_time < now,
+                        or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
+                    )
+                    .subquery()
+                )
+                stats["past_events"] = (
+                    session.query(Opportunity)
+                    .filter(Opportunity.event_id.in_(session.query(past_event_subq)))
+                    .delete(synchronize_session=False)
+                )
 
                 # 4. Delete past events + their odds (bulk)
                 #    Preserve events that have bets OR are live/finished
                 past_event_ids = [
-                    row[0] for row in session.query(Event.id).filter(
+                    row[0]
+                    for row in session.query(Event.id)
+                    .filter(
                         Event.start_time < now,
                         or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
-                    ).all()
+                    )
+                    .all()
                 ]
                 if past_event_ids:
                     # Safety: query ALL bets (not just past_event_ids) to ensure
                     # we never delete an event referenced by any bet
                     event_ids_with_bets = set(
-                        row[0] for row in session.query(Bet.event_id).filter(
-                            Bet.event_id.isnot(None)
-                        ).distinct().all()
+                        row[0] for row in session.query(Bet.event_id).filter(Bet.event_id.isnot(None)).distinct().all()
                     )
-                    deletable_ids = [
-                        eid for eid in past_event_ids
-                        if eid not in event_ids_with_bets
-                    ]
+                    deletable_ids = [eid for eid in past_event_ids if eid not in event_ids_with_bets]
                     if deletable_ids:
                         # Bulk delete odds first, then events (batched)
                         for i in range(0, len(deletable_ids), 500):
-                            batch = deletable_ids[i:i + 500]
-                            stats["past_odds_deleted"] += session.query(Odds).filter(
-                                Odds.event_id.in_(batch)
-                            ).delete(synchronize_session=False)
-                            stats["past_events_deleted"] += session.query(Event).filter(
-                                Event.id.in_(batch)
-                            ).delete(synchronize_session=False)
+                            batch = deletable_ids[i : i + 500]
+                            stats["past_odds_deleted"] += (
+                                session.query(Odds).filter(Odds.event_id.in_(batch)).delete(synchronize_session=False)
+                            )
+                            stats["past_events_deleted"] += (
+                                session.query(Event).filter(Event.id.in_(batch)).delete(synchronize_session=False)
+                            )
 
                 # 5. Skip blanket deactivation — the analyzer handles incremental
                 #    deactivation per-event during extraction.  Deactivating all here
@@ -1027,9 +1093,7 @@ class ExtractionScheduler:
             return
 
         logger.info(f"[Scheduler] Starting settlement tier: interval={interval_seconds}s")
-        self._settlement_task = asyncio.create_task(
-            self._settlement_loop(interval_seconds)
-        )
+        self._settlement_task = asyncio.create_task(self._settlement_loop(interval_seconds))
 
     async def _settlement_loop(self, interval_seconds: int):
         """Recurring loop for CLV snapshots."""
@@ -1055,8 +1119,8 @@ class ExtractionScheduler:
 
     def _run_settlement(self) -> dict:
         """Snapshot closing odds for CLV tracking."""
-        from src.services.bet_service import BetService
         from src.db.models import get_session
+        from src.services.bet_service import BetService
 
         session = get_session()
         try:
@@ -1066,8 +1130,7 @@ class ExtractionScheduler:
 
             if clv_stats.get("updated", 0) > 0:
                 logger.info(
-                    f"[Scheduler:settlement] CLV snapshot: "
-                    f"{clv_stats['updated']}/{clv_stats['processed']} bets updated"
+                    f"[Scheduler:settlement] CLV snapshot: {clv_stats['updated']}/{clv_stats['processed']} bets updated"
                 )
 
             return clv_stats
@@ -1122,7 +1185,7 @@ class ExtractionScheduler:
         return any(s.running for s in self._schedules.values())
 
     @property
-    def last_run(self) -> Optional[datetime]:
+    def last_run(self) -> datetime | None:
         """Get most recent run across all schedules."""
         runs = [s.last_completed for s in self._schedules.values() if s.last_completed]
         return max(runs) if runs else None
@@ -1133,13 +1196,13 @@ class ExtractionScheduler:
         return sum(s.run_count for s in self._schedules.values())
 
     @property
-    def interval_seconds(self) -> Optional[int]:
+    def interval_seconds(self) -> int | None:
         """Get sharp schedule interval (legacy)."""
         sharp = self._schedules.get("sharp")
         return sharp.interval_seconds if sharp else None
 
     @property
-    def providers(self) -> Optional[list[str]]:
+    def providers(self) -> list[str] | None:
         """Get sharp schedule providers (legacy)."""
         sharp = self._schedules.get("sharp")
         return sharp.providers if sharp else None
@@ -1157,9 +1220,7 @@ class ExtractionScheduler:
                 next_run_dt = schedule.last_completed + timedelta(seconds=schedule.interval_seconds)
                 next_run = next_run_dt.isoformat()
                 seconds_since_last_run = (now - schedule.last_completed).total_seconds()
-                is_overdue = seconds_since_last_run > (
-                    schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
-                )
+                is_overdue = seconds_since_last_run > (schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER)
 
             task_alive = schedule.task is not None and not schedule.task.done() if schedule.task else False
 
@@ -1217,13 +1278,14 @@ class ExtractionScheduler:
         """Clear extraction state on error."""
         try:
             from src.api.state import update_extraction_state
+
             update_extraction_state(running=False)
         except Exception:
             pass
 
 
 # Global scheduler instance
-_scheduler: Optional[ExtractionScheduler] = None
+_scheduler: ExtractionScheduler | None = None
 
 
 def get_scheduler() -> ExtractionScheduler:
