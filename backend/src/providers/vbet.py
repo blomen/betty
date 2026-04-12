@@ -89,7 +89,8 @@ class VbetRetriever(Retriever):
         "MatchTotal2Asian": "total",  # ice_hockey (Asian variant)
         "TotalRunsOver/Under": "total",  # baseball
         "TotalGamesOver/Under": "total",  # tennis
-        "TotalPointsOver/Under": "total",  # volleyball
+        "SetTotalOverUnder": "total",  # volleyball
+        "SetOverUnder": "total",  # tennis (set-level)
         # Spread variants — discovered via unmapped market type logging
         "AsianHandicap": "spread",  # football
         "Handicap": "spread",  # 2-way sports (excluded for football below)
@@ -98,7 +99,7 @@ class VbetRetriever(Retriever):
         "MatchHandicap2Asian": "spread",  # ice_hockey (Asian variant)
         "RunLine": "spread",  # baseball
         "Sets Handicap": "spread",  # tennis
-        "SetPointHandicap": "spread",  # volleyball
+        "SetHandicap": "spread",  # volleyball, tennis
     }
 
     # BetConstruct event outcome types → our outcome names
