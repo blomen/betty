@@ -1,79 +1,130 @@
 """Playwright browser lifecycle — launch, manage tabs, intercept traffic."""
+
 import asyncio
 import json
 import logging
-from typing import Optional, Callable, Any
+from collections.abc import Callable
+from pathlib import Path  # noqa: F401
+from typing import Any
 
 from playwright.async_api import (
-    async_playwright, Browser, BrowserContext, Page, Playwright, Response,
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    Response,
+    async_playwright,
 )
 
 logger = logging.getLogger(__name__)
 
 # URL patterns for classifying intercepted responses
 _BALANCE_KEYWORDS = (
-    "account/balance", "/wallets", "mainbalance", "wallet/balance",
-    "payment-stats", "/cashier/balance",
+    "account/balance",
+    "/wallets",
+    "mainbalance",
+    "wallet/balance",
+    "payment-stats",
+    "/cashier/balance",
 )
 _HISTORY_KEYWORDS = (
-    "bethistory", "bet-history", "betHistory", "mybets", "my-bets",
-    "widgetBetHistory", "coupon-history",
+    "bethistory",
+    "bet-history",
+    "betHistory",
+    "mybets",
+    "my-bets",
+    "widgetBetHistory",
+    "coupon-history",
 )
 _BET_PLACEMENT_KEYWORDS = (
-    "placeWidget", "placeBet", "/coupons", "bets/straight",
-    "bets/parlay", "bets/place", "clob.polymarket.com/order",
+    "placeWidget",
+    "placeBet",
+    "/coupons",
+    "bets/straight",
+    "bets/parlay",
+    "bets/place",
+    "clob.polymarket.com/order",
 )
 
 # Provider domain → provider_id mapping
 _DOMAIN_TO_PROVIDER: dict[str, str] = {
-    "betinia.se": "betinia", "quickcasino.com": "quickcasino",
-    "campobet.se": "campobet", "comeon.com": "comeon",
-    "unibet.se": "unibet", "leovegas.se": "leovegas",
-    "expekt.se": "expekt", "spelklubben.com": "spelklubben",
-    "betsson.se": "betsson", "nordicbet.com": "nordicbet",
-    "betsafe.se": "betsafe", "pinnacle.se": "pinnacle",
-    "interwetten.se": "interwetten", "coolbet.com": "coolbet",
-    "vbet.com": "vbet", "10bet.com": "10bet",
-    "polymarket.com": "polymarket", "tipwin.se": "tipwin",
-    "mrgreen.com": "mrgreen", "888sport.com": "888sport",
-    "hajper.com": "hajper", "x3000.se": "x3000",
-    "speedybet.com": "speedybet", "goldenbull.se": "goldenbull",
+    "betinia.se": "betinia",
+    "quickcasino.com": "quickcasino",
+    "campobet.se": "campobet",
+    "comeon.com": "comeon",
+    "unibet.se": "unibet",
+    "leovegas.se": "leovegas",
+    "expekt.se": "expekt",
+    "spelklubben.com": "spelklubben",
+    "betsson.se": "betsson",
+    "nordicbet.com": "nordicbet",
+    "betsafe.se": "betsafe",
+    "pinnacle.se": "pinnacle",
+    "interwetten.se": "interwetten",
+    "coolbet.com": "coolbet",
+    "vbet.com": "vbet",
+    "10bet.com": "10bet",
+    "polymarket.com": "polymarket",
+    "tipwin.se": "tipwin",
+    "mrgreen.com": "mrgreen",
+    "888sport.com": "888sport",
+    "hajper.com": "hajper",
+    "x3000.se": "x3000",
+    "speedybet.com": "speedybet",
+    "goldenbull.se": "goldenbull",
 }
 
 # Altenar/Gecko/Kambi API domains use integration= param to identify the provider
 # We detect provider from the page URL (which tab made the request), not the API domain
 # But we also need to recognize these API domains as "belonging to a provider"
 _API_DOMAINS = {
-    "biahosted.com", "bfrndz.com",  # Altenar API
-    "sbapi.sbtech.com", "sportsbook-api",  # SBTech
-    "kambi.com", "push.aws",  # Kambi
+    "biahosted.com",
+    "bfrndz.com",  # Altenar API
+    "sbapi.sbtech.com",
+    "sportsbook-api",  # SBTech
+    "kambi.com",
+    "push.aws",  # Kambi
     "clob.polymarket.com",  # Polymarket
 }
 
 
+_USER_DATA_DIR = Path(__file__).parent.parent / "data" / "browser_profile"
+
+
 class MirrorBrowser:
-    """Manages a headed Chromium browser with network interception."""
+    """Manages a headed Chromium browser with persistent profile.
+
+    Uses launch_persistent_context with a real Chrome profile directory.
+    Cookies, localStorage, and login sessions survive server restarts
+    and even force-kills — no explicit save needed.
+    """
 
     def __init__(self):
-        self._playwright: Optional[Playwright] = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None  # unused with persistent context
+        self._context: BrowserContext | None = None
         self._running = False
         # Intercepted data per provider
         self.provider_data: dict[str, dict] = {}  # pid → {logged_in, balance, last_url, ...}
         # Callback for broadcasting events
-        self._on_event: Optional[Callable[[str, dict], None]] = None
+        self._on_event: Callable[[str, dict], None] | None = None
+        # Callback for stream dispatch (provider_id, event_type, data)
+        self._on_stream_callback: Callable[[str, str, Any], None] | None = None
 
     def set_event_callback(self, callback: Callable[[str, dict], None]):
         """Set callback for intercepted events (e.g. broadcaster.publish)."""
         self._on_event = callback
+
+    def set_stream_callback(self, callback: Callable[[str, str, Any], None]):
+        """Set callback for stream-relevant events: (provider_id, event_type, data)."""
+        self._on_stream_callback = callback
 
     @property
     def running(self) -> bool:
         return self._running
 
     @property
-    def context(self) -> Optional[BrowserContext]:
+    def context(self) -> BrowserContext | None:
         return self._context
 
     async def start(self) -> BrowserContext:
@@ -81,18 +132,22 @@ class MirrorBrowser:
             return self._context
         self._playwright = await async_playwright().start()
 
-        self._browser = await self._playwright.chromium.launch(
+        # Persistent context = real Chrome profile on disk.
+        # Cookies, localStorage, service workers all survive restarts.
+        _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"[browser] Using profile: {_USER_DATA_DIR}", flush=True)
+
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=str(_USER_DATA_DIR),
             headless=False,
+            locale="en-GB",
+            timezone_id="Europe/Stockholm",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            no_viewport=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--start-maximized",
             ],
-        )
-        self._context = await self._browser.new_context(
-            no_viewport=True,
-            locale="sv-SE",
-            timezone_id="Europe/Stockholm",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
 
         # Attach interception to ALL existing + future pages
@@ -101,17 +156,16 @@ class MirrorBrowser:
         self._context.on("page", lambda p: self._attach_page(p))
 
         self._running = True
-        print("[browser] Mirror browser started", flush=True)
+        print("[browser] Mirror browser started (persistent profile)", flush=True)
         return self._context
 
     async def stop(self):
         if not self._running:
             return
         try:
+            # Persistent context auto-saves to disk — no manual save needed
             if self._context:
                 await self._context.close()
-            if self._browser:
-                await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
         except Exception:
@@ -159,6 +213,7 @@ class MirrorBrowser:
         if not self._context:
             return {"logged_in": False}
         from .workflows import get_workflow
+
         workflow = get_workflow(provider_id)
         page = None
         for p in self._context.pages:
@@ -193,9 +248,14 @@ class MirrorBrowser:
                 self.provider_data[provider_id]["balance"] = balance
                 self.provider_data[provider_id]["source"] = "dom"
                 if self._on_event:
-                    self._on_event("balance_intercepted", {
-                        "provider_id": provider_id, "balance": balance, "source": "dom",
-                    })
+                    self._on_event(
+                        "balance_intercepted",
+                        {
+                            "provider_id": provider_id,
+                            "balance": balance,
+                            "source": "dom",
+                        },
+                    )
                 return {"logged_in": True, "balance": balance}
         except Exception:
             pass
@@ -239,8 +299,11 @@ class MirrorBrowser:
         provider_id = self._detect_provider(page_url) or self._detect_provider(url)
 
         # Log API calls for debugging (skip static assets)
-        if provider_id and not any(ext in url for ext in ('.js', '.css', '.png', '.jpg', '.svg', '.woff', '.ico')):
-            if any(kw in url.lower() for kw in ('api', 'balance', 'wallet', 'account', 'relay', 'graphql', 'login', 'auth', 'session')):
+        if provider_id and not any(ext in url for ext in (".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico")):
+            if any(
+                kw in url.lower()
+                for kw in ("api", "balance", "wallet", "account", "relay", "graphql", "login", "auth", "session")
+            ):
                 print(f"[intercept] {provider_id} API: {url[:120]}", flush=True)
 
         if not provider_id:
@@ -264,9 +327,16 @@ class MirrorBrowser:
                 self.provider_data[provider_id]["last_balance_url"] = url
                 logger.info(f"[browser] {provider_id} BALANCE: {balance} (from {url[:80]})")
                 if self._on_event:
-                    self._on_event("balance_intercepted", {
-                        "provider_id": provider_id, "balance": balance, "url": url,
-                    })
+                    self._on_event(
+                        "balance_intercepted",
+                        {
+                            "provider_id": provider_id,
+                            "balance": balance,
+                            "url": url,
+                        },
+                    )
+                if self._on_stream_callback:
+                    self._on_stream_callback(provider_id, "balance_intercepted", {"balance": balance})
             return
 
         # GraphQL relay (LeoVegas etc.) — check body for balance data
@@ -283,9 +353,16 @@ class MirrorBrowser:
                         self.provider_data[provider_id]["balance"] = balance
                         logger.info(f"[browser] {provider_id} BALANCE (relay): {balance}")
                         if self._on_event:
-                            self._on_event("balance_intercepted", {
-                                "provider_id": provider_id, "balance": balance, "url": url,
-                            })
+                            self._on_event(
+                                "balance_intercepted",
+                                {
+                                    "provider_id": provider_id,
+                                    "balance": balance,
+                                    "url": url,
+                                },
+                            )
+                        if self._on_stream_callback:
+                            self._on_stream_callback(provider_id, "balance_intercepted", {"balance": balance})
             except Exception:
                 pass
             return
@@ -296,9 +373,14 @@ class MirrorBrowser:
                 body = await response.text()
                 logger.info(f"[browser] {provider_id} history: {url[:80]} ({len(body)}b)")
                 if self._on_event:
-                    self._on_event("history_intercepted", {
-                        "provider_id": provider_id, "url": url, "size": len(body),
-                    })
+                    self._on_event(
+                        "history_intercepted",
+                        {
+                            "provider_id": provider_id,
+                            "url": url,
+                            "size": len(body),
+                        },
+                    )
             except Exception:
                 pass
             return
@@ -307,12 +389,19 @@ class MirrorBrowser:
         if any(kw in url_lower for kw in _BET_PLACEMENT_KEYWORDS):
             try:
                 body_text = await response.text()
+                body_parsed = json.loads(body_text)
                 logger.info(f"[browser] {provider_id} BET PLACED: {url[:80]}")
                 if self._on_event:
-                    self._on_event("bet_intercepted", {
-                        "provider_id": provider_id, "url": url,
-                        "body": json.loads(body_text),
-                    })
+                    self._on_event(
+                        "bet_intercepted",
+                        {
+                            "provider_id": provider_id,
+                            "url": url,
+                            "body": body_parsed,
+                        },
+                    )
+                if self._on_stream_callback:
+                    self._on_stream_callback(provider_id, "bet_intercepted", {"body": body_parsed})
             except Exception:
                 pass
             return

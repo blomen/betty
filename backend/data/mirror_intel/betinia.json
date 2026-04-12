@@ -1,0 +1,86 @@
+{
+  "provider_id": "betinia",
+  "domain": "betinia.se",
+  "platform": "altenar",
+  "integration": "betiniase2",
+  "capabilities": {
+    "api_balance": true,
+    "api_history_settled": true,
+    "api_history_open": true,
+    "shadow_dom": true,
+    "auto_select": true,
+    "auto_stake": true,
+    "streaming": true
+  },
+  "login": {
+    "method": "balance_api"
+  },
+  "balance": {
+    "method": "api",
+    "api": {
+      "url": "https://betinia.se/sv/api/v3/account/balance",
+      "path": "result.cash.total"
+    }
+  },
+  "history": {
+    "method": "interceptor",
+    "note": "widgetBetHistory API intercepted by on_bet_history callback",
+    "navigation": {
+      "url": "https://betinia.se/sv/sport?sportRoutingParams=page~betHistory",
+      "tabs": {
+        "open": {"text": "öppet", "selector": "button[class*='BetHistoryTab']"},
+        "settled": {"text": "rättats", "selector": "button[class*='BetHistoryTab']"}
+      }
+    },
+    "status_map": {
+      "0": "pending",
+      "1": "won",
+      "2": "lost",
+      "3": "void",
+      "4": "cashout"
+    }
+  },
+  "positions": {
+    "method": "api",
+    "api": {
+      "endpoint": "https://sb2frontend-altenar2.biahosted.com/api/widget/widgetBetHistory?integration=betiniase2&status=open&page=1&pageSize=50",
+      "data_path": "data.bets"
+    }
+  },
+  "navigation": {
+    "event_url_template": "https://betinia.se/sv/sport?sportRoutingParams=page~event__sportId~{sport_id}__categoryIds~{category_id}__championshipIds~{championship_id}__eventId~{event_id}",
+    "event_url_minimal": "https://betinia.se/sv/sport?sportRoutingParams=page~event__eventId~{event_id}",
+    "history_path": "https://betinia.se/sv/sport?sportRoutingParams=page~betHistory",
+    "provider_meta_keys": ["event_id", "sport_id", "category_id", "championship_id"]
+  },
+  "betslip": {
+    "shadow_dom": true,
+    "shadow_root_path": "STB-SPORTSBOOK > div:first-child",
+    "odds_selector": "div[class*='OddValue']",
+    "stake_input_selector": "input[type='tel']",
+    "confirm_button_text": "placera spel",
+    "match_by": "outcome_name",
+    "outcome_keywords": {
+      "over": "över",
+      "under": "under",
+      "draw": "oavgjort"
+    }
+  },
+  "live_price": {
+    "method": "interceptor_cache",
+    "api_pattern": "GetEventDetails",
+    "market_type_map": {
+      "1": "1x2", "186": "moneyline", "219": "moneyline", "251": "moneyline",
+      "406": "moneyline", "30001": "moneyline",
+      "18": "total", "189": "total", "225": "total", "238": "total",
+      "258": "total", "412": "total",
+      "16": "spread", "187": "spread", "223": "spread", "237": "spread",
+      "256": "spread", "410": "spread"
+    },
+    "odd_type_map": {
+      "1": "home", "2": "draw", "3": "away",
+      "1714": "home", "1715": "away",
+      "12": "over", "13": "under"
+    }
+  }
+}

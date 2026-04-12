@@ -1,0 +1,1149 @@
+{
+    "title": "betinia nav",
+    "steps": [
+        {
+            "type": "setViewport",
+            "width": 1365,
+            "height": 945,
+            "deviceScaleFactor": 1,
+            "isMobile": false,
+            "hasTouch": false,
+            "isLandscape": false
+        },
+        {
+            "type": "navigate",
+            "url": "https://betinia.se/sv/casino",
+            "assertedEvents": [
+                {
+                    "type": "navigation",
+                    "url": "https://betinia.se/sv/casino",
+                    "title": "Casino Online – Spela över 6000 casinospel på svenskt casino"
+                }
+            ]
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/Öppna användarmeny",
+                    "aria/[role=\"image\"]"
+                ],
+                [
+                    "[data-testid='headerUserMenuBtnDesktop'] img"
+                ],
+                [
+                    "xpath///*[@data-testid=\"headerUserMenuBtnDesktop\"]/span/picture/img"
+                ],
+                [
+                    "pierce/[data-testid='headerUserMenuBtnDesktop'] img"
+                ]
+            ],
+            "offsetY": 22.40625,
+            "offsetX": 30
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "span.card__icon > span"
+                ],
+                [
+                    "xpath///*[@data-testid=\"toggleMarketingBtn\"]/span[2]/span"
+                ],
+                [
+                    "pierce/span.card__icon > span"
+                ]
+            ],
+            "offsetY": 6.203125,
+            "offsetX": 18.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "span.card__icon"
+                ],
+                [
+                    "xpath///*[@data-testid=\"toggleMarketingBtn\"]/span[2]"
+                ],
+                [
+                    "pierce/span.card__icon"
+                ]
+            ],
+            "offsetY": 1.203125,
+            "offsetX": 30.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/NEJ, TACK"
+                ],
+                [
+                    "[data-testid='unsubscribeMarketingBtn']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"unsubscribeMarketingBtn\"]"
+                ],
+                [
+                    "pierce/[data-testid='unsubscribeMarketingBtn']"
+                ],
+                [
+                    "text/Nej, tack"
+                ]
+            ],
+            "offsetY": 26.46875,
+            "offsetX": 221.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/[role=\"contentinfo\"]",
+                    "aria/SVENSKA"
+                ],
+                [
+                    "stb-actions button"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/div/stb-footer/footer/stb-actions/div/button"
+                ],
+                [
+                    "pierce/stb-actions button"
+                ]
+            ],
+            "offsetY": 27.40625,
+            "offsetX": 105.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/English"
+                ],
+                [
+                    "div.stb-overlay-container li:nth-of-type(2) > button"
+                ],
+                [
+                    "xpath//html/body/div[1]/stb-overlay-container/div[2]/div/stb-switch-language-dialog/div/div/div[2]/ul/li[2]/button"
+                ],
+                [
+                    "pierce/div.stb-overlay-container li:nth-of-type(2) > button"
+                ]
+            ],
+            "offsetY": 19.46875,
+            "offsetX": 103.5,
+            "assertedEvents": [
+                {
+                    "type": "navigation",
+                    "url": "https://betinia.se/en/account/settings",
+                    "title": ""
+                }
+            ]
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/Open user menu",
+                    "aria/[role=\"image\"]"
+                ],
+                [
+                    "[data-testid='headerUserMenuBtnDesktop'] img"
+                ],
+                [
+                    "xpath///*[@data-testid=\"headerUserMenuBtnDesktop\"]/span/picture/img"
+                ],
+                [
+                    "pierce/[data-testid='headerUserMenuBtnDesktop'] img"
+                ]
+            ],
+            "offsetY": 10.40625,
+            "offsetX": 13
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-accordion-item:nth-of-type(4) > [data-testid='btnToggleAccordionItem4'] > span:nth-of-type(1)"
+                ],
+                [
+                    "xpath///*[@data-testid=\"btnToggleAccordionItem4\"]/span[1]"
+                ],
+                [
+                    "pierce/stb-accordion-item:nth-of-type(4) > [data-testid='btnToggleAccordionItem4'] > span:nth-of-type(1)"
+                ],
+                [
+                    "text/Game History"
+                ]
+            ],
+            "offsetY": 10.71875,
+            "offsetX": 37
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/SPORTS"
+                ],
+                [
+                    "[data-testid='linkSportHistory']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"linkSportHistory\"]"
+                ],
+                [
+                    "pierce/[data-testid='linkSportHistory']"
+                ]
+            ],
+            "offsetY": 16.21875,
+            "offsetX": 86
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "div.search-filter__tabs > label:nth-of-type(1)"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[2]/form/stb-form-error/div[1]/label[1]"
+                ],
+                [
+                    "pierce/div.search-filter__tabs > label:nth-of-type(1)"
+                ],
+                [
+                    "text/Settled"
+                ]
+            ],
+            "offsetY": 15,
+            "offsetX": 59.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/SHOW HISTORY"
+                ],
+                [
+                    "main button"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[2]/form/button"
+                ],
+                [
+                    "pierce/main button"
+                ],
+                [
+                    "text/Show history"
+                ]
+            ],
+            "offsetY": 28,
+            "offsetX": 95.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "div.history-page__header svg"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[1]/button/svg-icon-sprite/svg"
+                ],
+                [
+                    "pierce/div.history-page__header svg"
+                ]
+            ],
+            "offsetY": 2.109375,
+            "offsetX": 10.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 20,
+            "offsetX": 105.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 26,
+            "offsetX": 367.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 9,
+            "offsetX": 11.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 30,
+            "offsetX": 143.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 19,
+            "offsetX": 39.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/From"
+                ],
+                [
+                    "[data-testid='startDate']"
+                ],
+                [
+                    "xpath///*[@data-testid=\"startDate\"]"
+                ],
+                [
+                    "pierce/[data-testid='startDate']"
+                ],
+                [
+                    "text/11/03/2026"
+                ]
+            ],
+            "offsetY": 20,
+            "offsetX": 117.5
+        },
+        {
+            "type": "keyDown",
+            "target": "main",
+            "key": "Backspace"
+        },
+        {
+            "type": "keyDown",
+            "target": "main",
+            "key": "5"
+        },
+        {
+            "type": "keyUp",
+            "key": "Backspace",
+            "target": "main"
+        },
+        {
+            "type": "keyUp",
+            "key": "5",
+            "target": "main"
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "aria/SHOW HISTORY"
+                ],
+                [
+                    "main button"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[2]/form/button"
+                ],
+                [
+                    "pierce/main button"
+                ],
+                [
+                    "text/Show history"
+                ]
+            ],
+            "offsetY": 29,
+            "offsetX": 121.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "div.history-page__header svg"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[1]/button/svg-icon-sprite/svg"
+                ],
+                [
+                    "pierce/div.history-page__header svg"
+                ]
+            ],
+            "offsetY": 8.109375,
+            "offsetX": 8.5
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "label:nth-of-type(2)"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[2]/form/stb-form-error/div[1]/label[2]"
+                ],
+                [
+                    "pierce/label:nth-of-type(2)"
+                ]
+            ],
+            "offsetY": 12,
+            "offsetX": 8.140625
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "label:nth-of-type(2)"
+                ],
+                [
+                    "xpath//html/body/stb-root/stb-base-layout/div/div/main/stb-account-history-page/div/stb-history/stb-stepper/div/div[2]/form/stb-form-error/div[1]/label[2]"
+                ],
+                [
+                    "pierce/label:nth-of-type(2)"
+                ]
+            ],
+            "offsetY": 19,
+            "offsetX": 18.140625
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "div:nth-of-type(6) li:nth-of-type(1) span"
+                ],
+                [
+                    "xpath///*[@data-testid=\"navSportsLink\"]/span"
+                ],
+                [
+                    "pierce/div:nth-of-type(6) li:nth-of-type(1) span"
+                ]
+            ],
+            "offsetY": 5.203125,
+            "offsetX": 32
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 88,
+            "offsetX": 208
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 288,
+            "offsetX": 1008
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 338,
+            "offsetX": 1016
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 343,
+            "offsetX": 1016
+        },
+        {
+            "type": "doubleClick",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 339,
+            "offsetX": 1012
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 339,
+            "offsetX": 1012
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 339,
+            "offsetX": 1012
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 345,
+            "offsetX": 874
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 405,
+            "offsetX": 1100
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 657,
+            "offsetX": 1094
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 288,
+            "offsetX": 991
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 341,
+            "offsetX": 863
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 652,
+            "offsetX": 1001
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 343,
+            "offsetX": 1019
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 335,
+            "offsetX": 984
+        },
+        {
+            "type": "doubleClick",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 343,
+            "offsetX": 863
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 343,
+            "offsetX": 863
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 408,
+            "offsetX": 1105
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 665,
+            "offsetX": 1098
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 292,
+            "offsetX": 1052
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 346,
+            "offsetX": 875
+        },
+        {
+            "type": "doubleClick",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 340,
+            "offsetX": 869
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 340,
+            "offsetX": 869
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 650,
+            "offsetX": 1118
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 287,
+            "offsetX": 1034
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 342,
+            "offsetX": 866
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 425,
+            "offsetX": 869
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 649,
+            "offsetX": 1079
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 286,
+            "offsetX": 378
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 281,
+            "offsetX": 407
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 280,
+            "offsetX": 427
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 285,
+            "offsetX": 476
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 281,
+            "offsetX": 333
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 26,
+            "offsetX": 426
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 426,
+            "offsetX": 839
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "offsetY": 621,
+            "offsetX": 880
+        },
+        {
+            "type": "change",
+            "value": "",
+            "selectors": [
+                [
+                    "stb-sport-page-container > div div"
+                ],
+                [
+                    "xpath///*[@id=\"STB_SPORTSBOOK\"]/div"
+                ],
+                [
+                    "pierce/stb-sport-page-container > div div"
+                ]
+            ],
+            "target": "main"
+        }
+    ]
+}

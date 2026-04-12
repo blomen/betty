@@ -8,11 +8,12 @@ Price reading: cached from GetEventDetails intercepted responses
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING
 
-from .base import ProviderWorkflow, WorkflowMode, PlacementResult, HistoryEntry
+from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -21,19 +22,35 @@ logger = logging.getLogger(__name__)
 
 # Altenar market typeId → our canonical market type
 _MARKET_TYPE_MAP = {
-    1: "1x2", 186: "moneyline", 219: "moneyline", 251: "moneyline",
-    406: "moneyline", 30001: "moneyline",
-    18: "total", 189: "total", 225: "total", 238: "total",
-    258: "total", 412: "total",
-    16: "spread", 187: "spread", 223: "spread", 237: "spread",
-    256: "spread", 410: "spread",
+    1: "1x2",
+    186: "moneyline",
+    219: "moneyline",
+    251: "moneyline",
+    406: "moneyline",
+    30001: "moneyline",
+    18: "total",
+    189: "total",
+    225: "total",
+    238: "total",
+    258: "total",
+    412: "total",
+    16: "spread",
+    187: "spread",
+    223: "spread",
+    237: "spread",
+    256: "spread",
+    410: "spread",
 }
 
 # Altenar odd typeId → our outcome
 _ODD_TYPE_MAP = {
-    1: "home", 2: "draw", 3: "away",
-    1714: "home", 1715: "away",
-    12: "over", 13: "under",
+    1: "home",
+    2: "draw",
+    3: "away",
+    1714: "home",
+    1715: "away",
+    12: "over",
+    13: "under",
 }
 
 
@@ -56,14 +73,18 @@ class AltenarWorkflow(ProviderWorkflow):
         # Cache for GetEventDetails responses (set by interceptor via service)
         self._event_details_cache: dict[str, tuple[dict, float]] = {}  # event_id → (data, timestamp)
 
+    @property
+    def home_url(self) -> str:
+        return f"https://{self.domain}/en/"
+
     def _balance_url(self) -> str:
-        return f"https://{self.domain}/sv/api/v3/account/balance"
+        return f"https://{self.domain}/en/api/v3/account/balance"
 
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         result = await self._evaluate_api(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
@@ -74,61 +95,368 @@ class AltenarWorkflow(ProviderWorkflow):
         except (KeyError, TypeError, ValueError):
             return False
 
-    async def sync_balance(self, page: "Page") -> float:
-        result = await self._evaluate_api(page, self._balance_url())
-        if result is None or "__error" in (result or {}):
-            return -1
+    async def sync_balance(self, page: Page) -> float:
+        """Read balance from DOM — API requires auth token we can't access.
+
+        Scrapes the smallest KR amount in header/nav area (the actual balance,
+        not promo/bonus numbers which are typically larger).
+        """
+        import re
+
         try:
-            return float(result["cash"]["total"])
-        except (KeyError, TypeError, ValueError):
-            logger.warning(f"[{self.provider_id}] Unexpected balance response: {result}")
-            return -1
-
-    # ------------------------------------------------------------------
-    # History
-    # ------------------------------------------------------------------
-
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
-        """Navigate to bet history and click RÄTTATS tab to trigger settled bets API."""
-        import asyncio
-        history_url = f"https://{self.domain}/sv/sport?sportRoutingParams=page~betHistory"
-        try:
-            current = page.url or ""
-            if "betHistory" not in current:
-                await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(2)
-
-            # Click RÄTTATS tab to load settled bets (shadow DOM)
-            clicked = await page.evaluate("""
-                () => {
-                    const stb = document.querySelector('STB-SPORTSBOOK');
-                    if (!stb || !stb.firstElementChild) return false;
-                    const sr = stb.firstElementChild.shadowRoot;
-                    if (!sr) return false;
-                    const tabs = sr.querySelectorAll('button[class*="BetHistoryTab"]');
-                    for (const tab of tabs) {
-                        const text = (tab.textContent || '').trim().toLowerCase();
-                        if (text === 'rättats' || text === 'settled') {
-                            tab.click();
-                            return true;
-                        }
+            text = await page.evaluate(r"""() => {
+                // Only look in the top header/nav bar for the real balance
+                const els = document.querySelectorAll('header, nav, [class*="Header"], [class*="header"]');
+                const amounts = [];
+                for (const el of els) {
+                    const t = el.innerText || '';
+                    // Find all KR amounts
+                    const matches = t.matchAll(/(\d[\d\s,.]*\d)\s*KR/gi);
+                    for (const m of matches) {
+                        amounts.push(m[1]);
                     }
-                    return false;
                 }
-            """)
-            if clicked:
-                await asyncio.sleep(2)  # Wait for settled bets API response
-
-            logger.info(f"[{self.provider_id}] Scanned bet history for settlements")
+                // Return the smallest — that's the real balance, not promos
+                if (amounts.length === 0) return null;
+                return amounts.sort((a, b) => {
+                    const na = parseFloat(a.replace(/[\s\xa0]/g, '').replace(',', '.'));
+                    const nb = parseFloat(b.replace(/[\s\xa0]/g, '').replace(',', '.'));
+                    return na - nb;
+                })[0];
+            }""")
+            if text:
+                cleaned = re.sub(r"[\s\xa0]", "", text).replace(",", ".")
+                return float(cleaned)
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] Failed to navigate to bet history: {e}")
-        return []  # Actual settlement handled by interceptor
+            logger.warning(f"[{self.provider_id}] DOM balance scrape failed: {e}")
+        return -1
+
+    # ------------------------------------------------------------------
+    # History + Positions — via account history page (NOT the sportsbook widget)
+    # ------------------------------------------------------------------
+    # Betinia/Altenar sites have a separate account history page with regular
+    # DOM (data-testid selectors). The sportsbook widget (STB-SPORTSBOOK)
+    # is only for betting, not for viewing history.
+    #
+    # Flow: navigate to /en/account → Game History → SPORTS → Settled/Open tab
+    #       → set date range → Show History → intercept widgetBetHistory response
+
+    def _is_bet_history_response(self, url: str) -> bool:
+        u = url.lower()
+        return "bethistory" in u or "widgetreports" in u or "/api/v3/history" in u
+
+    def _parse_bets_data(self, result: dict) -> list[dict]:
+        """Extract the bets array from various response shapes.
+
+        Betinia /api/v3/history: {result: {total, limit, offset, node: [...]}}
+        Altenar widgetBetHistory: {data: {bets: [...]}} or {bets: [...]}
+        """
+        # Try result.node (betinia v3), then result directly, then data/bets
+        inner = result.get("result", result.get("data", result.get("bets", [])))
+        if isinstance(inner, dict):
+            inner = inner.get("node", inner.get("bets", inner.get("items", [])))
+        return inner if isinstance(inner, list) else []
+
+    def _parse_history_entry(self, bet: dict) -> HistoryEntry | None:
+        try:
+            status_raw = str(bet.get("status") or bet.get("betStatus") or "").lower()
+            status_map = {
+                "won": "won",
+                "win": "won",
+                "lost": "lost",
+                "lose": "lost",
+                "void": "void",
+                "voided": "void",
+                "cancelled": "void",
+                "refund": "void",
+                "cashout": "cashout",
+                "cashed_out": "cashout",
+            }
+            status = status_map.get(status_raw)
+            if not status:
+                return None
+
+            odds = float(bet.get("totalOdds") or bet.get("odds") or 0)
+            stake = float(bet.get("totalStake") or bet.get("stake") or bet.get("amount") or 0)
+            payout = float(bet.get("totalWin") or bet.get("payout") or bet.get("winAmount") or bet.get("returns") or 0)
+
+            # Extract event info — try events[] (v3 API), then selections[] (widget API)
+            events = bet.get("events") or bet.get("selections") or bet.get("legs") or bet.get("betLegs") or []
+            event_name = bet.get("title") or ""
+            market = outcome = ""
+            if events and isinstance(events, list):
+                ev = events[0]
+                if not event_name:
+                    event_name = ev.get("eventName") or ev.get("matchName") or ev.get("title") or ""
+                market = ev.get("marketName") or ev.get("marketTypeName") or ""
+                outcome = ev.get("outcomeName") or ev.get("selectionName") or ev.get("outcome") or ""
+
+            return HistoryEntry(
+                provider_bet_id=str(bet.get("id") or bet.get("betId") or ""),
+                event_name=event_name,
+                market=market,
+                outcome=outcome,
+                odds=odds,
+                stake=stake,
+                status=status,
+                payout=payout,
+            )
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def _parse_position_entry(self, bet: dict) -> PositionEntry | None:
+        try:
+            odds = float(bet.get("totalOdds") or bet.get("odds") or 0)
+            stake = float(bet.get("totalStake") or bet.get("stake") or bet.get("amount") or 0)
+            payout = float(bet.get("totalWin") or bet.get("potentialWin") or 0)
+
+            events = bet.get("events") or bet.get("selections") or bet.get("legs") or bet.get("betLegs") or []
+            event_name = bet.get("title") or ""
+            market = outcome = ""
+            if events and isinstance(events, list):
+                ev = events[0]
+                if not event_name:
+                    event_name = ev.get("eventName") or ev.get("matchName") or ev.get("title") or ""
+                market = ev.get("marketName") or ev.get("marketTypeName") or ""
+                outcome = ev.get("outcomeName") or ev.get("selectionName") or ev.get("outcome") or ""
+
+            return PositionEntry(
+                provider_bet_id=str(bet.get("id") or bet.get("betId") or ""),
+                event_name=event_name,
+                market=market,
+                outcome=outcome,
+                odds=odds,
+                stake=stake,
+                placed_at=bet.get("dateCreated") or bet.get("createdAt") or bet.get("dateTs"),
+                potential_payout=payout if payout > 0 else None,
+            )
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    async def _ensure_bet_history_page(self, page: Page) -> None:
+        """Navigate to bet history if not already there."""
+        if "betHistory" not in (page.url or ""):
+            await page.goto(self._history_url(), wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(3)
+
+    async def _navigate_to_sports_history(self, page: Page) -> bool:
+        """Navigate to the account sports history page.
+
+        First tries direct URL navigation. Falls back to menu clicks.
+        The sports history page uses the site's own UI (not Altenar widget),
+        with data-testid selectors for tabs, date inputs, and show button.
+        """
+        current = page.url or ""
+        if "account/history" in current or "account-history" in current:
+            return True
+
+        # Navigate directly to English sports history page
+        try:
+            await page.goto(
+                f"https://{self.domain}/en/account/history",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            await asyncio.sleep(2)
+
+            # Click SPORTS to go to sports history
+            sports_link = page.locator("[data-testid='linkSportHistory']")
+            if await sports_link.count() > 0:
+                await sports_link.click(timeout=5000)
+                await asyncio.sleep(2)
+                logger.info(f"[{self.provider_id}] Navigated to sports history via URL")
+                return True
+
+            # If no SPORTS link, we might already be on the right page
+            if "search-filter" in (await page.content())[:5000].lower():
+                return True
+
+        except Exception:
+            pass
+
+        # Fallback: menu clicks
+        try:
+            await page.locator("[data-testid='headerUserMenuBtnDesktop']").click(timeout=5000)
+            await asyncio.sleep(1)
+            # Try English then Swedish
+            for text in ["Game History", "Spelhistorik"]:
+                try:
+                    await page.get_by_text(text).click(timeout=3000)
+                    break
+                except Exception:
+                    continue
+            await asyncio.sleep(1)
+            await page.locator("[data-testid='linkSportHistory']").click(timeout=5000)
+            await asyncio.sleep(2)
+            logger.info(f"[{self.provider_id}] Navigated to sports history via menu")
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Failed to navigate to sports history: {e}")
+            return False
+
+    async def _set_date_and_show(self, page: Page, tab: str, days_back: int = 90) -> dict | None:
+        """Select tab (Settled/Open), set date range, click Show History, intercept response."""
+        from datetime import datetime, timedelta
+
+        try:
+            # Click the tab
+            tab_label = page.locator("div.search-filter__tabs label", has_text=tab)
+            if await tab_label.count() > 0:
+                await tab_label.first.click(timeout=3000)
+                await asyncio.sleep(0.5)
+
+            # Set start date
+            start_date = (datetime.now() - timedelta(days=days_back)).strftime("%d/%m/%Y")
+            date_input = page.locator("[data-testid='startDate']")
+            if await date_input.count() > 0:
+                await date_input.click()
+                await date_input.fill(start_date)
+                await asyncio.sleep(0.5)
+
+            # Click Show History + intercept
+            async with page.expect_response(
+                lambda r: self._is_bet_history_response(r.url) and r.status == 200,
+                timeout=15000,
+            ) as resp_info:
+                # Try multiple button text variants (EN/SV)
+                show_btn = None
+                for text in ["Show history", "SHOW HISTORY", "Visa historik", "VISA HISTORIK"]:
+                    loc = page.get_by_role("button", name=text)
+                    if await loc.count() > 0:
+                        show_btn = loc.first
+                        break
+                if not show_btn:
+                    # Fallback: any button in main content
+                    show_btn = page.locator("main button").first
+                await show_btn.click(timeout=5000)
+
+            response = await resp_info.value
+            body = await response.text()
+            if not body:
+                return None
+            import json as _json
+
+            result = _json.loads(body)
+            # Log response shape for debugging
+            if isinstance(result, dict):
+                keys = list(result.keys())
+                sample = ""
+                # Find the data array
+                for k in keys:
+                    v = result[k]
+                    if isinstance(v, list) and v:
+                        sample = (
+                            f" {k}[0]_keys={list(v[0].keys())[:10]}" if isinstance(v[0], dict) else f" {k}[0]={v[0]}"
+                        )
+                        break
+                print(f"[{self.provider_id}] API response: keys={keys}{sample} body_len={len(body)}", flush=True)
+            else:
+                print(f"[{self.provider_id}] API response: type={type(result).__name__} len={len(result)}", flush=True)
+            return result
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] _set_date_and_show({tab}) failed: {e}")
+            return None
+
+    async def _go_back_to_filter(self, page: Page) -> None:
+        """Click the back arrow to return to tab selection."""
+        try:
+            back = page.locator("div.history-page__header svg")
+            if await back.count() > 0:
+                await back.first.click(timeout=3000)
+                await asyncio.sleep(1)
+        except Exception:
+            pass
+
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
+        """Navigate to account sports history -> Settled -> Show History."""
+        try:
+            print(f"[{self.provider_id}] sync_history: starting", flush=True)
+            if not await self._navigate_to_sports_history(page):
+                print(f"[{self.provider_id}] sync_history: navigation failed", flush=True)
+                return []
+
+            result = None
+            for label in ["Settled", "settled", "SETTLED"]:
+                result = await self._set_date_and_show(page, label)
+                print(
+                    f"[{self.provider_id}] _set_date_and_show({label}) -> {type(result).__name__}, truthy={bool(result)}",
+                    flush=True,
+                )
+                if result:
+                    break
+            if not result:
+                return []
+
+            await self._go_back_to_filter(page)
+
+            bets_data = self._parse_bets_data(result)
+            if bets_data:
+                print(
+                    f"[{self.provider_id}] bets_data: {len(bets_data)} items, first keys={list(bets_data[0].keys())[:15]}",
+                    flush=True,
+                )
+            else:
+                # Debug: show what 'result' contains
+                inner = result.get("result")
+                inner_type = type(inner).__name__
+                inner_keys = (
+                    list(inner.keys())[:10]
+                    if isinstance(inner, dict)
+                    else (f"len={len(inner)}" if isinstance(inner, list) else str(inner)[:100])
+                )
+                print(
+                    f"[{self.provider_id}] bets_data: EMPTY. result[result] type={inner_type} info={inner_keys}",
+                    flush=True,
+                )
+            entries = [e for b in bets_data if (e := self._parse_history_entry(b)) is not None]
+            logger.info(f"[{self.provider_id}] sync_history: {len(entries)} settled bets")
+            return entries
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] sync_history failed: {e}")
+            return []
+
+    async def fetch_positions(self, page: Page) -> list[PositionEntry]:
+        """Navigate to account sports history -> Open -> Show History."""
+        try:
+            if not await self._navigate_to_sports_history(page):
+                return []
+
+            result = await self._set_date_and_show(page, "Open")
+            if not result:
+                return []
+
+            await self._go_back_to_filter(page)
+
+            bets_data = self._parse_bets_data(result)
+            positions = [p for b in bets_data if (p := self._parse_position_entry(b)) is not None]
+            logger.info(f"[{self.provider_id}] fetch_positions: {len(positions)} open bets")
+            return positions
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] fetch_positions failed: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # Placement response parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def parse_placement_response(body: dict) -> str | None:
+        """Extract provider_bet_id from Altenar placeWidget response."""
+        try:
+            return str(body["data"]["betId"])
+        except (KeyError, TypeError):
+            pass
+        try:
+            return str(body["bets"][0]["id"])
+        except (KeyError, TypeError, IndexError):
+            pass
+        return None
 
     # ------------------------------------------------------------------
     # Navigation — sportRoutingParams URL pattern
     # ------------------------------------------------------------------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate via sportRoutingParams query param.
 
         URL pattern: {domain}/sv/sport?sportRoutingParams=page~event__sportId~{s}__categoryIds~{c}__championshipIds~{ch}__eventId~{e}
@@ -170,13 +498,12 @@ class AltenarWorkflow(ProviderWorkflow):
         """Called by service when GetEventDetails is intercepted."""
         self._event_details_cache[event_id] = (data, time.time())
 
-    async def check_live_price(self, page: "Page", bet) -> float | None:
+    async def check_live_price(self, page: Page, bet) -> float | None:
         """Read live odds from cached GetEventDetails response.
 
         The interceptor caches GetEventDetails responses when they flow through.
         After navigate_to_event, the widget auto-fetches event details.
         """
-        from ...analysis.value import compute_edge
 
         eid = getattr(bet, "altenar_event_id", None)
         fair_odds = getattr(bet, "fair_odds", None)
@@ -188,6 +515,7 @@ class AltenarWorkflow(ProviderWorkflow):
         if not cached:
             # Wait briefly for the widget to load event details after navigation
             import asyncio
+
             await asyncio.sleep(2)
             cached = self._event_details_cache.get(str(eid))
 
@@ -218,13 +546,12 @@ class AltenarWorkflow(ProviderWorkflow):
             our_market = _MARKET_TYPE_MAP.get(m.get("typeId"))
             if not our_market:
                 continue
-            if our_market != target_market and not (
-                {our_market, target_market} <= {"1x2", "moneyline"}
-            ):
+            if our_market != target_market and not ({our_market, target_market} <= {"1x2", "moneyline"}):
                 continue
 
-            flat_ids = [oid for group in m.get("desktopOddIds", [])
-                        for oid in (group if isinstance(group, list) else [group])]
+            flat_ids = [
+                oid for group in m.get("desktopOddIds", []) for oid in (group if isinstance(group, list) else [group])
+            ]
 
             for oid in flat_ids:
                 odd = odds_by_id.get(oid)
@@ -258,7 +585,8 @@ class AltenarWorkflow(ProviderWorkflow):
     def _extract_point(odd_name: str) -> float | None:
         """Extract point from odd name like 'Team (+1.5)' or 'Over 4.5'."""
         import re
-        match = re.search(r'[(\s]([+-]?\d+\.?\d*)\)?$', odd_name.strip())
+
+        match = re.search(r"[(\s]([+-]?\d+\.?\d*)\)?$", odd_name.strip())
         if match:
             return abs(float(match.group(1)))
         return None
@@ -267,7 +595,7 @@ class AltenarWorkflow(ProviderWorkflow):
     # Placement — auto-select outcome + fill stake, user confirms
     # ------------------------------------------------------------------
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         """Auto-select outcome and fill stake in the Altenar betslip.
 
         1. Find the matching odds button by price in shadow DOM
@@ -289,7 +617,8 @@ class AltenarWorkflow(ProviderWorkflow):
         # Step 1: Click the matching odds button by outcome position
         # Altenar layout: first market group has home/away buttons in order
         # For totals: "Över X.5" / "Under X.5"
-        clicked = await page.evaluate("""
+        clicked = await page.evaluate(
+            """
             (args) => {
                 const stb = document.querySelector('STB-SPORTSBOOK');
                 if (!stb || !stb.firstElementChild) return { error: 'no_stb' };
@@ -329,8 +658,9 @@ class AltenarWorkflow(ProviderWorkflow):
                 }
                 return { clicked: false, count: oddValues.length };
             }
-        """, {"outcome": target_outcome, "market": target_market,
-              "home": display_home, "away": display_away})
+        """,
+            {"outcome": target_outcome, "market": target_market, "home": display_home, "away": display_away},
+        )
 
         if not clicked or clicked.get("error"):
             reason = clicked.get("error", "unknown") if clicked else "eval_failed"
@@ -338,7 +668,9 @@ class AltenarWorkflow(ProviderWorkflow):
             return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason=reason)
 
         if not clicked.get("clicked"):
-            logger.warning(f"[{self.provider_id}] Odds {target_odds} not found ({clicked.get('count', 0)} odds on page)")
+            logger.warning(
+                f"[{self.provider_id}] Odds {target_odds} not found ({clicked.get('count', 0)} odds on page)"
+            )
             return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="odds_not_found")
 
         logger.info(f"[{self.provider_id}] Clicked: {clicked.get('text', '?')} @ {clicked.get('price')}")

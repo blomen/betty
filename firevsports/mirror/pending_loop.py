@@ -27,42 +27,90 @@ _STAKE_TOL = 0.30  # 30% tolerance
 # Module-level detection helper
 # ---------------------------------------------------------------------------
 
+
+def _token_overlap(a: str, b: str) -> float:
+    """Word-level overlap ratio between two strings."""
+    sa, sb = set(a.split()), set(b.split())
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / max(len(sa), len(sb))
+
+
+_NAME_ODDS_TOL = 0.05  # 5% tolerance when event name matches
+
+
 def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dict]:
-    """Match DB pending bets against provider history entries by odds + stake.
+    """Three-tier matching: exact provider_bet_id → event name+odds → fuzzy odds+stake.
 
-    Matching criteria (fuzzy):
-    - odds within 10% of each other
-    - stake within 30% of each other
-    - history entry status is NOT "pending"
-
-    Returns a list of settlement dicts: {bet_id, result, payout}.
+    Returns a list of settlement dicts: {bet_id, result, payout, match_method}.
     """
     settlements: list[dict] = []
+    used_history: set[int] = set()  # indices of matched history entries
+
     for bet in db_pending:
+        bet_id = bet.get("bet_id") or bet.get("id")
+        bet_provider_id = str(bet.get("provider_bet_id") or "")
+        bet_event = (bet.get("event_name") or "").lower().strip()
         bet_odds = float(bet.get("odds", 0) or 0)
         bet_stake = float(bet.get("stake", 0) or 0)
 
-        for entry in history:
-            h_odds = float(entry.get("odds", 0) or 0)
-            h_stake = float(entry.get("stake", 0) or 0)
-            h_status = (entry.get("status") or "").lower()
+        matched = None
+        method = None
 
-            if h_status == "pending":
+        for idx, entry in enumerate(history):
+            if idx in used_history:
+                continue
+            h_status = (entry.get("status") or "").lower()
+            if h_status in ("pending", "open", ""):
                 continue
 
-            if bet_odds > 0 and h_odds > 0:
-                if abs(h_odds - bet_odds) / bet_odds > _ODDS_TOL:
-                    continue
-            if bet_stake > 0 and h_stake > 0:
-                if abs(h_stake - bet_stake) / bet_stake > _STAKE_TOL:
-                    continue
+            # Tier 1: exact provider_bet_id match
+            h_pid = str(entry.get("provider_bet_id") or "")
+            if bet_provider_id and h_pid and bet_provider_id == h_pid:
+                matched = (idx, entry)
+                method = "id"
+                break
 
-            settlements.append({
-                "bet_id": bet["bet_id"],
-                "result": h_status,
-                "payout": entry.get("payout"),
-            })
-            break  # matched — move to next pending bet
+            # Tier 2: event name + tight odds match
+            h_event = (entry.get("event_name") or "").lower().strip()
+            if (
+                bet_event
+                and h_event
+                and (bet_event in h_event or h_event in bet_event or _token_overlap(bet_event, h_event) > 0.7)
+            ):
+                h_odds = float(entry.get("odds", 0) or 0)
+                if bet_odds > 0 and h_odds > 0 and abs(h_odds - bet_odds) / bet_odds <= _NAME_ODDS_TOL:
+                    matched = (idx, entry)
+                    method = "name"
+                    break
+
+            # Tier 3: fuzzy odds+stake fallback
+            h_odds = float(entry.get("odds", 0) or 0)
+            h_stake = float(entry.get("stake", 0) or 0)
+            if (
+                bet_odds > 0
+                and h_odds > 0
+                and abs(h_odds - bet_odds) / bet_odds <= _ODDS_TOL
+                and bet_stake > 0
+                and h_stake > 0
+                and abs(h_stake - bet_stake) / bet_stake <= _STAKE_TOL
+            ):
+                matched = (idx, entry)
+                method = "fuzzy"
+                break
+
+        if matched:
+            idx, entry = matched
+            used_history.add(idx)
+            settlements.append(
+                {
+                    "bet_id": bet_id,
+                    "result": (entry.get("status") or "").lower(),
+                    "payout": entry.get("payout"),
+                    "match_method": method,
+                    "provider_bet_id": str(entry.get("provider_bet_id") or ""),
+                }
+            )
 
     return settlements
 
@@ -71,13 +119,14 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
 # PendingLoop
 # ---------------------------------------------------------------------------
 
+
 class PendingLoop:
     """Periodically fetches pending bets and syncs settlement status per provider."""
 
     def __init__(
         self,
-        browser: "MirrorBrowser",
-        broadcaster: "MirrorBroadcaster",
+        browser: MirrorBrowser,
+        broadcaster: MirrorBroadcaster,
         proxy_url: str,
     ):
         self._browser = browser
@@ -139,10 +188,7 @@ class PendingLoop:
         if not pending_by_provider:
             return
 
-        tasks = [
-            self._sync_provider(pid, bets)
-            for pid, bets in pending_by_provider.items()
-        ]
+        tasks = [self._sync_provider(pid, bets) for pid, bets in pending_by_provider.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_pending(self) -> dict[str, list[dict]]:
@@ -176,12 +222,13 @@ class PendingLoop:
         page = None
         if self._browser.running and self._browser.context:
             from .workflows import get_workflow
+
             workflow = get_workflow(pid)
             page = await workflow.find_tab(self._browser.context)
 
             if page is None:
                 try:
-                    page = await self._browser.open_tab(f"https://{workflow.domain}")
+                    page = await self._browser.open_tab(workflow.home_url)
                 except Exception:
                     logger.warning(f"[PendingLoop] could not open tab for {pid}")
                     return
@@ -230,10 +277,13 @@ class PendingLoop:
         logger.info(f"[PendingLoop] {len(settlements)} settlements detected for {pid}")
 
         # 5. Broadcast and wait for confirm
-        self._broadcaster.publish("settlements_detected", {
-            "provider_id": pid,
-            "settlements": settlements,
-        })
+        self._broadcaster.publish(
+            "settlements_detected",
+            {
+                "provider_id": pid,
+                "settlements": settlements,
+            },
+        )
 
         ev = asyncio.Event()
         self._confirm_events[pid] = ev
@@ -247,10 +297,13 @@ class PendingLoop:
 
         # 6. Record settlements
         await self._record_settlements(pid, settlements)
-        self._broadcaster.publish("settlements_confirmed", {
-            "provider_id": pid,
-            "settlements": settlements,
-        })
+        self._broadcaster.publish(
+            "settlements_confirmed",
+            {
+                "provider_id": pid,
+                "settlements": settlements,
+            },
+        )
 
         # 7. Sync balance
         try:

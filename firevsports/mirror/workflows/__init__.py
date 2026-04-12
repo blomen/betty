@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import ProviderWorkflow, WorkflowMode, PlacementResult, HistoryEntry
+from .base import HistoryEntry, PlacementResult, PositionEntry, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     pass
@@ -17,12 +17,13 @@ _WORKFLOW_CACHE: dict[str, ProviderWorkflow] = {}  # Cached instances per provid
 
 
 def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
-    from .polymarket import PolymarketWorkflow
-    from .pinnacle import PinnacleWorkflow
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
-    from .kambi import KambiWorkflow
     from .generic import GenericWorkflow
+    from .kambi import KambiWorkflow
+    from .pinnacle import PinnacleWorkflow
+    from .polymarket import PolymarketWorkflow
+
     return {
         "polymarket": PolymarketWorkflow,
         "pinnacle": PinnacleWorkflow,
@@ -54,6 +55,33 @@ _RETRIEVER_TO_PLATFORM = {
     "interwetten": "interwetten",
     "coolbet": "coolbet",
     "tipwin": "tipwin",
+}
+
+# Fallback: provider_id → platform (when config.loader is unavailable in firevsports)
+_PROVIDER_TO_PLATFORM: dict[str, str] = {
+    # Altenar
+    "betinia": "altenar",
+    "campobet": "altenar",
+    "quickcasino": "altenar",
+    "swiper": "altenar",
+    "lodur": "altenar",
+    "dbet": "altenar",
+    # Gecko V2
+    "betsson": "gecko_v2",
+    "nordicbet": "gecko_v2",
+    "betsafe": "gecko_v2",
+    "spelklubben": "gecko_v2",
+    # Kambi
+    "unibet": "kambi",
+    "leovegas": "kambi",
+    "expekt": "kambi",
+    "888sport": "kambi",
+    "speedybet": "kambi",
+    "x3000": "kambi",
+    "goldenbull": "kambi",
+    "1x2": "kambi",
+    "betmgm": "kambi",
+    "mrgreen": "kambi",
 }
 
 
@@ -103,18 +131,27 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     provider = None
     try:
         from ...config.loader import load_config
+
         cfg = load_config()
         provider = cfg.get_provider(provider_id)
     except ImportError:
-        logger.warning(f"[workflows] config.loader not available — using platform map only")
+        logger.warning("[workflows] config.loader not available — using platform map only")
 
     if provider is None:
         domain = _FALLBACK_DOMAINS.get(provider_id, "")
+        # Check platform map directly (platform names like "altenar", "kambi")
         if provider_id in _PLATFORM_MAP:
             instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
+        # Resolve provider → platform (e.g. "betinia" → "altenar")
+        platform = _PROVIDER_TO_PLATFORM.get(provider_id)
+        if platform and platform in _PLATFORM_MAP:
+            instance = _PLATFORM_MAP[platform](provider_id=provider_id, domain=domain)
+            _WORKFLOW_CACHE[provider_id] = instance
+            return instance
         from .generic import GenericWorkflow
+
         instance = GenericWorkflow(provider_id=provider_id, domain=domain)
         _WORKFLOW_CACHE[provider_id] = instance
         return instance
@@ -123,6 +160,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     cls = _PLATFORM_MAP.get(platform)
     if cls is None:
         from .generic import GenericWorkflow
+
         cls = GenericWorkflow
 
     domain = provider.domain or ""
@@ -134,6 +172,10 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
 
 
 __all__ = [
-    "ProviderWorkflow", "WorkflowMode", "PlacementResult", "HistoryEntry",
+    "ProviderWorkflow",
+    "WorkflowMode",
+    "PlacementResult",
+    "HistoryEntry",
+    "PositionEntry",
     "get_workflow",
 ]

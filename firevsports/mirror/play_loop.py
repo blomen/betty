@@ -35,7 +35,8 @@ STATE_PLACING = "placing"
 
 LOGIN_POLL_INTERVAL = 5.0  # seconds between login checks
 LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
-DAILY_BET_CAP = 10  # max bets per provider per day
+DAILY_BET_CAP = 10  # max bets per soft provider per day
+UNCAPPED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
 
 
 class PlayLoop:
@@ -61,6 +62,7 @@ class PlayLoop:
         self.current_bet: dict | None = None
         self.provider_stats: dict[str, dict] = {}
         self._placed_today: dict[str, int] = {}  # provider_id → bets placed today (from server)
+        self._blocked: set[tuple[str, str]] = set()  # (event_id, market) — placed, block across all providers
 
         # Queue
         self._queue: list[dict] = []
@@ -146,6 +148,12 @@ class PlayLoop:
                 bet = self._queue.pop(0)
                 provider_id: str = bet.get("provider_id", "")
 
+                # Skip if this event+market was already placed on another provider
+                m = bet.get("market", "")
+                m_key = "moneyline" if m in ("1x2", "moneyline") else m
+                if (bet.get("event_id", ""), m_key) in self._blocked:
+                    continue
+
                 # Init stats for this provider
                 if provider_id not in self.provider_stats:
                     self.provider_stats[provider_id] = {"placed": 0, "skipped": 0, "total": 0}
@@ -174,7 +182,7 @@ class PlayLoop:
 
                     if page is None:
                         domain = workflow.domain
-                        url = f"https://{domain}" if domain else None
+                        url = workflow.home_url if domain else None
                         if url and self._browser.context:
                             logger.info(f"[PlayLoop] Opening tab for {provider_id}: {url}")
                             page = await self._browser.open_tab(url)
@@ -207,11 +215,28 @@ class PlayLoop:
                     # Scan pending bets for settlements before placing new bets
                     await self._settle_pending(provider_id, workflow, page)
 
-                    # Fetch placed-today count and check daily cap
-                    await self._fetch_placed_today(provider_id)
+                    # Fetch placed-today count and check daily cap (soft only)
+                    if provider_id not in UNCAPPED_PROVIDERS:
+                        await self._fetch_placed_today(provider_id)
+                        placed = self._placed_today.get(provider_id, 0)
+                        if placed >= DAILY_BET_CAP:
+                            logger.info(f"[PlayLoop] {provider_id} at daily cap ({placed}/{DAILY_BET_CAP})")
+                            self._broadcaster.publish(
+                                "provider_skipped",
+                                {
+                                    "provider_id": provider_id,
+                                    "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
+                                },
+                            )
+                            self._skip_provider(provider_id)
+                            current_provider = None
+                            continue
+
+                # Check daily cap before each bet (soft only)
+                if provider_id not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(provider_id, 0)
                     if placed >= DAILY_BET_CAP:
-                        logger.info(f"[PlayLoop] {provider_id} at daily cap ({placed}/{DAILY_BET_CAP})")
+                        logger.info(f"[PlayLoop] {provider_id} hit daily cap mid-session — skipping remaining")
                         self._broadcaster.publish(
                             "provider_skipped",
                             {
@@ -222,21 +247,6 @@ class PlayLoop:
                         self._skip_provider(provider_id)
                         current_provider = None
                         continue
-
-                # Check daily cap before each bet
-                placed = self._placed_today.get(provider_id, 0)
-                if placed >= DAILY_BET_CAP:
-                    logger.info(f"[PlayLoop] {provider_id} hit daily cap mid-session — skipping remaining")
-                    self._broadcaster.publish(
-                        "provider_skipped",
-                        {
-                            "provider_id": provider_id,
-                            "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
-                        },
-                    )
-                    self._skip_provider(provider_id)
-                    current_provider = None
-                    continue
 
                 # Navigate to event
                 self.state = STATE_NAVIGATING
@@ -290,6 +300,8 @@ class PlayLoop:
                         self.provider_stats[provider_id]["placed"] += 1
                         self._placed_today[provider_id] = self._placed_today.get(provider_id, 0) + 1
                         await self._record_bet(bet, result)
+                        # Block same event+market across all providers
+                        self._block_event_market(bet)
                     except Exception:
                         logger.exception(f"[PlayLoop] place_bet() failed for {provider_id}")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "place_exception"})
@@ -367,6 +379,26 @@ class PlayLoop:
             self.provider_stats[provider_id]["skipped"] += 1
             self.provider_stats[provider_id]["total"] += 1
 
+    def _block_event_market(self, bet: dict) -> None:
+        """After placing a bet, block the same event+market across all providers."""
+        event_id = bet.get("event_id", "")
+        market = bet.get("market", "")
+        # Normalize: 1x2 and moneyline are the same market type for blocking
+        market_key = "moneyline" if market in ("1x2", "moneyline") else market
+        block_key = (event_id, market_key)
+        self._blocked.add(block_key)
+        # Remove matching bets from queue
+        before = len(self._queue)
+        self._queue = [
+            b
+            for b in self._queue
+            if (b.get("event_id"), "moneyline" if b.get("market") in ("1x2", "moneyline") else b.get("market"))
+            != block_key
+        ]
+        removed = before - len(self._queue)
+        if removed:
+            logger.info(f"[PlayLoop] Blocked {event_id} {market_key} — removed {removed} bets from queue")
+
     async def _settle_pending(self, provider_id: str, workflow, page) -> None:
         """Scan pending bets, show breakdown, wait for user confirm, then proceed."""
         self.state = STATE_SETTLING
@@ -386,22 +418,39 @@ class PlayLoop:
             )
             return
 
-        # Sync history from provider site
-        try:
-            raw_history = await workflow.sync_history(page)
-        except Exception:
-            logger.exception(f"[PlayLoop] sync_history failed for {provider_id}")
-            self._broadcaster.publish(
-                "settling_done",
-                {
-                    "provider_id": provider_id,
-                    "pending_count": len(pending_bets),
-                    "settlements": [],
-                },
-            )
-            return
+        # Use stream cache if available and fresh, otherwise fetch from provider
+        from . import stream_registry
 
-        history = [{"odds": e.odds, "stake": e.stake, "status": e.status, "payout": e.payout} for e in raw_history]
+        stream = stream_registry.get(provider_id)
+        if stream and stream.is_history_fresh():
+            raw_history = stream.get_history()
+            logger.info(f"[PlayLoop] Using stream cache for {provider_id} ({len(raw_history)} entries)")
+        else:
+            try:
+                raw_history = await workflow.sync_history(page)
+            except Exception:
+                logger.exception(f"[PlayLoop] sync_history failed for {provider_id}")
+                self._broadcaster.publish(
+                    "settling_done",
+                    {
+                        "provider_id": provider_id,
+                        "pending_count": len(pending_bets),
+                        "settlements": [],
+                    },
+                )
+                return
+
+        history = [
+            {
+                "odds": e.odds,
+                "stake": e.stake,
+                "status": e.status,
+                "payout": e.payout,
+                "provider_bet_id": e.provider_bet_id,
+                "event_name": e.event_name,
+            }
+            for e in raw_history
+        ]
 
         # Detect settlements
         settlements = _detect_settlements(pending_bets, history)

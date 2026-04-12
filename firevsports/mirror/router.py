@@ -83,7 +83,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         domain = workflow.domain
         if not domain:
             raise HTTPException(400, f"No domain for provider {pid}")
-        page = await browser.open_tab(f"https://{domain}")
+        page = await browser.open_tab(workflow.home_url)
         return {"status": "opened", "url": page.url, "provider_id": pid}
 
     @router.get("/browser/tabs")
@@ -280,6 +280,165 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def play_status():
         """Return current play loop status."""
         return play_loop.get_status()
+
+    # -----------------------------------------------------------------------
+    # Data streams (per-provider continuous polling)
+    # -----------------------------------------------------------------------
+
+    @router.post("/data-stream/start/{provider_id}")
+    async def start_data_stream(provider_id: str):
+        """Start continuous data polling for a provider (balance, positions, history)."""
+        from . import stream_registry
+        from .data_stream import ProviderDataStream
+
+        existing = stream_registry.get(provider_id)
+        if existing and existing.running:
+            return existing.get_status()
+
+        if not browser.running or not browser.context:
+            raise HTTPException(status_code=400, detail="Mirror browser is not running")
+
+        wf = get_workflow(provider_id)
+        page = await wf.find_tab(browser.context)
+        if page is None:
+            raise HTTPException(status_code=404, detail=f"No open tab for {provider_id}")
+
+        stream = ProviderDataStream(provider_id, wf, page, broadcaster, proxy_url)
+        stream.start()
+        return stream.get_status()
+
+    @router.post("/data-stream/stop/{provider_id}")
+    async def stop_data_stream(provider_id: str):
+        """Stop the data stream for a provider."""
+        from . import stream_registry
+
+        stream = stream_registry.get(provider_id)
+        if not stream:
+            return {"provider_id": provider_id, "running": False}
+        stream.stop()
+        return {"provider_id": provider_id, "running": False}
+
+    @router.get("/data-stream/status")
+    async def data_stream_status():
+        """Return status of all active data streams."""
+        from . import stream_registry
+
+        streams = stream_registry.get_all()
+        return {
+            "streams": {pid: s.get_status() for pid, s in streams.items()},
+            "count": len(streams),
+        }
+
+    @router.get("/data-stream/debug/{provider_id}")
+    async def debug_data_stream(provider_id: str):
+        """Test each API call for a provider and return raw results."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        wf = get_workflow(provider_id)
+        page = await wf.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab found"}
+
+        results: dict = {"provider_id": provider_id, "page_url": page.url}
+
+        # Raw API test — see what the fetch actually returns
+        bal_url = f"https://{wf.domain}/sv/api/v3/account/balance"
+        raw_bal = await page.evaluate(
+            f"""async () => {{
+            try {{
+                const r = await fetch("{bal_url}", {{credentials: "include"}});
+                return {{status: r.status, ok: r.ok, body: r.ok ? await r.json() : await r.text()}};
+            }} catch(e) {{ return {{error: e.message}}; }}
+        }}"""
+        )
+        results["raw_balance_api"] = raw_bal
+
+        hist_url = f"https://sb2frontend-altenar2.biahosted.com/api/widget/widgetBetHistory?integration={wf._integration}&status=settled&page=1&pageSize=5"
+        raw_hist = await page.evaluate(
+            f"""async () => {{
+            try {{
+                const r = await fetch("{hist_url}", {{credentials: "include"}});
+                return {{status: r.status, ok: r.ok, body: r.ok ? await r.json() : await r.text()}};
+            }} catch(e) {{ return {{error: e.message}}; }}
+        }}"""
+        )
+        results["raw_history_api"] = {
+            "status": raw_hist.get("status"),
+            "ok": raw_hist.get("ok"),
+            "error": raw_hist.get("error"),
+            "keys": list(raw_hist.get("body", {}).keys())
+            if isinstance(raw_hist.get("body"), dict)
+            else str(type(raw_hist.get("body"))),
+        }
+
+        # Probe shadow DOM structure
+        dom_probe = await page.evaluate("""() => {
+            const stb = document.querySelector('STB-SPORTSBOOK');
+            // Also look for iframes or other custom elements
+            const iframes = document.querySelectorAll('iframe');
+            const customs = document.querySelectorAll('*');
+            const customEls = [];
+            for (const el of customs) {
+                if (el.tagName.includes('-') && !el.tagName.startsWith('FONT')) {
+                    customEls.push(el.tagName);
+                }
+            }
+            // Check for shadow roots on any element
+            const shadowHosts = [];
+            for (const el of customs) {
+                if (el.shadowRoot) shadowHosts.push(el.tagName);
+            }
+            if (!stb) return {
+                stb: false,
+                url: location.href,
+                iframes: Array.from(iframes).map(f => f.src?.substring(0, 100)),
+                customElements: [...new Set(customEls)].slice(0, 20),
+                shadowHosts: [...new Set(shadowHosts)].slice(0, 10),
+                bodyText: document.body?.innerText?.substring(0, 300),
+            };
+            const fc = stb.firstElementChild;
+            if (!fc) return {stb: true, firstChild: false};
+            const sr = fc.shadowRoot;
+            return {
+                stb: true, firstChild: true,
+                firstChildTag: fc.tagName, shadowRoot: !!sr,
+                children: Array.from(stb.children).map(c => ({
+                    tag: c.tagName, shadow: !!c.shadowRoot,
+                })),
+            };
+        }""")
+        results["dom_probe"] = dom_probe
+
+        # Test balance
+        try:
+            bal = await wf.sync_balance(page)
+            results["balance"] = {"value": bal, "ok": bal >= 0}
+        except Exception as e:
+            results["balance"] = {"error": str(e)}
+
+        # Test positions
+        try:
+            pos = await wf.fetch_positions(page)
+            results["positions"] = {
+                "count": len(pos),
+                "items": [{"event": p.event_name, "odds": p.odds, "stake": p.stake} for p in pos[:5]],
+            }
+        except Exception as e:
+            results["positions"] = {"error": str(e)}
+
+        # Test history
+        try:
+            hist = await wf.sync_history(page)
+            results["history"] = {
+                "count": len(hist),
+                "items": [
+                    {"event": h.event_name, "status": h.status, "odds": h.odds, "stake": h.stake} for h in hist[:5]
+                ],
+            }
+        except Exception as e:
+            results["history"] = {"error": str(e)}
+
+        return results
 
     # -----------------------------------------------------------------------
     # SSE stream
