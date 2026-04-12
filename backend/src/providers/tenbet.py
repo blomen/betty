@@ -28,35 +28,36 @@ URL structure:
   - /sports/{sport}/competitions/{id}/matches = matches for a competition
 """
 
-from typing import List, Any, Optional, Dict
-import logging
 import asyncio
+import logging
 import re
 from datetime import datetime, timedelta
-from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from typing import Any
+
+from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
 # Market type code -> canonical market type mapping.
 # Each sport uses different DOM class codes for the same market concepts.
-MARKET_TYPE_MAP: Dict[str, str] = {
+MARKET_TYPE_MAP: dict[str, str] = {
     # 1x2 / Moneyline (winner market)
-    "MRES": "1x2",       # Match Result -- football, handball (3-way)
-    "MREP": "1x2",       # Match Result (boxing/MMA) -- 3-way with draw
-    "H2HT": "moneyline", # Head-to-Head -- basketball, ice hockey, american football (2-way)
-    "HTOH": "moneyline", # Head-to-Head -- tennis, MMA (2-way)
+    "MRES": "1x2",  # Match Result -- football, handball (3-way)
+    "MREP": "1x2",  # Match Result (boxing/MMA) -- 3-way with draw
+    "H2HT": "moneyline",  # Head-to-Head -- basketball, ice hockey, american football (2-way)
+    "HTOH": "moneyline",  # Head-to-Head -- tennis, MMA (2-way)
     # Total (over/under)
-    "HCTG": "total",     # Total Goals -- football, handball
-    "TPOT": "total",     # Total Points -- basketball
-    "OUTG": "total",     # Over/Under Total Goals -- ice hockey
-    "FTPO": "total",     # Full-game Total Points -- american football
-    "TROU": "total",     # Total Rounds Over/Under -- boxing/MMA
+    "HCTG": "total",  # Total Goals -- football, handball
+    "TPOT": "total",  # Total Points -- basketball
+    "OUTG": "total",  # Over/Under Total Goals -- ice hockey
+    "FTPO": "total",  # Full-game Total Points -- american football
+    "TROU": "total",  # Total Rounds Over/Under -- boxing/MMA
     # Spread (handicap)
-    "HCMR": "spread",   # Handicap Match Result -- football (3-way)
-    "HCOT": "spread",   # Handicap -- basketball, ice hockey (2-way)
-    "FHOT": "spread",   # Full-game Handicap -- american football
-    "TGHC": "spread",   # Total Games Handicap -- tennis
+    "HCMR": "spread",  # Handicap Match Result -- football (3-way)
+    "HCOT": "spread",  # Handicap -- basketball, ice hockey (2-way)
+    "FHOT": "spread",  # Full-game Handicap -- american football
+    "TGHC": "spread",  # Total Games Handicap -- tennis
     "MAHCP": "spread",  # Match Handicap -- volleyball
 }
 
@@ -115,7 +116,7 @@ class TenBetRetriever(BrowserRetriever):
     then scrapes each competition's matches page for events and odds.
     """
 
-    SPORT_SLUGS: Dict[str, str] = {
+    SPORT_SLUGS: dict[str, str] = {
         "football": "football",
         "basketball": "basketball",
         "tennis": "tennis",
@@ -145,8 +146,8 @@ class TenBetRetriever(BrowserRetriever):
     # Each comp needs ~4-5s (page nav + DOM render + parse) with Semaphore(4).
     # Football was 60 but timed out at 600s in 4/5 runs — reduced to 30
     # (top competitions discovered first, covers ~90% of Pinnacle matches).
-    SPORT_COMPETITION_CAPS: Dict[str, int] = {
-        "football": 40,     # Each comp ~4-5s with Semaphore(4). 40 × 5s / 4 = 50s
+    SPORT_COMPETITION_CAPS: dict[str, int] = {
+        "football": 40,  # Each comp ~4-5s with Semaphore(4). 40 × 5s / 4 = 50s
         "basketball": 40,
         "ice_hockey": 35,
         "tennis": 30,
@@ -155,7 +156,7 @@ class TenBetRetriever(BrowserRetriever):
         "esports": 15,
     }
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.10bet.se")
 
@@ -164,9 +165,10 @@ class TenBetRetriever(BrowserRetriever):
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
         return f"{self.site_url}/sports/{sport_slug}/competitions"
 
-    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> list[StandardEvent]:
         """Extract events for a sport by discovering and scraping competitions."""
         import time as _time
+
         extract_start = _time.time()
 
         # Initialize session
@@ -189,10 +191,7 @@ class TenBetRetriever(BrowserRetriever):
         # Cap competitions to avoid timeout (use per-sport cap if available)
         cap = self.SPORT_COMPETITION_CAPS.get(sport, self.MAX_COMPETITIONS_PER_SPORT)
         if len(competitions) > cap:
-            logger.info(
-                f"[{self.provider_id}] Capping {sport} from {len(competitions)} to "
-                f"{cap} competitions"
-            )
+            logger.info(f"[{self.provider_id}] Capping {sport} from {len(competitions)} to {cap} competitions")
             competitions = competitions[:cap]
 
         logger.info(f"[{self.provider_id}] Found {len(competitions)} competitions for {sport}")
@@ -201,7 +200,8 @@ class TenBetRetriever(BrowserRetriever):
         all_events = []
         unique_ids = set()
         # Large sports (football 40+ comps) need fewer concurrent tabs to avoid timeouts
-        concurrency = 3 if len(competitions) > 20 else 6
+        # Reduced from 3→2 for large sports to prevent SPA rendering failures under memory pressure
+        concurrency = 2 if len(competitions) > 20 else 4
         sem = asyncio.Semaphore(concurrency)
         batch_size = 15
         sport_timeout = self.config.get("sport_timeout", 600)
@@ -214,7 +214,7 @@ class TenBetRetriever(BrowserRetriever):
             if len(all_events) >= limit:
                 break
 
-            batch = competitions[batch_start:batch_start + batch_size]
+            batch = competitions[batch_start : batch_start + batch_size]
             tasks = [process_competition(c) for c in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -226,25 +226,19 @@ class TenBetRetriever(BrowserRetriever):
                         all_events.append(ev)
                         unique_ids.add(ev.id)
 
-        logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s")
+        logger.info(
+            f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s"
+        )
 
-        # Pass 2: Enrich events with detail page spread/total
-        if all_events and sport in self.DETAIL_SPORTS:
-            detail_count = await self._enrich_events_with_details(all_events, sport)
-            logger.info(
-                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} with spread/total"
-            )
-        elif all_events and sport in self.DETAIL_SPORTS:
-            logger.warning(
-                f"[{self.provider_id}] {sport}: skipping detail enrichment — "
-                f"{elapsed:.0f}s already elapsed (budget: {sport_timeout}s)"
-            )
+        # Pass 2: Detail enrichment disabled — JS_EXTRACT_DETAIL_MARKETS has 0%
+        # success rate across all observed runs (class names don't match 10bet.se DOM).
+        # Skipping saves ~1500ms × N events per sport. Re-enable after fixing selectors.
 
         return all_events
 
     async def _handle_cookie_consent(self):
         """Dismiss cookie consent banner without navigating away."""
-        if hasattr(self, '_cookies_handled') and self._cookies_handled:
+        if hasattr(self, "_cookies_handled") and self._cookies_handled:
             return
 
         try:
@@ -269,12 +263,16 @@ class TenBetRetriever(BrowserRetriever):
                     pass
 
             # Fallback: set cookie manually
-            await self.transport.context.add_cookies([{
-                "name": "cookie_consent",
-                "value": "accepted",
-                "domain": ".10bet.se",
-                "path": "/",
-            }])
+            await self.transport.context.add_cookies(
+                [
+                    {
+                        "name": "cookie_consent",
+                        "value": "accepted",
+                        "domain": ".10bet.se",
+                        "path": "/",
+                    }
+                ]
+            )
             self._cookies_handled = True
             logger.debug(f"[{self.provider_id}] Cookie consent set via cookie injection")
 
@@ -282,7 +280,7 @@ class TenBetRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Cookie handling: {e}")
             self._cookies_handled = True  # Don't retry
 
-    async def _discover_competitions(self, sport_slug: str) -> List[Dict]:
+    async def _discover_competitions(self, sport_slug: str) -> list[dict]:
         """
         Discover competition IDs by navigating to the sport's competitions page.
 
@@ -297,9 +295,7 @@ class TenBetRetriever(BrowserRetriever):
 
             # Try to wait for competition links to appear
             try:
-                await page.wait_for_selector(
-                    'a[href*="competitions/"]', timeout=10000
-                )
+                await page.wait_for_selector('a[href*="competitions/"]', timeout=10000)
             except Exception:
                 await page.wait_for_timeout(3000)
 
@@ -351,14 +347,14 @@ class TenBetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Failed to discover competitions for {sport_slug}: {e}")
             return []
 
-    async def _scrape_competition(self, comp: Dict, sport: str) -> List[StandardEvent]:
+    async def _scrape_competition(self, comp: dict, sport: str) -> list[StandardEvent]:
         """Scrape all events from a single competition's matches page.
 
         Also captures XHR/fetch API requests made by the Playtech SPA for
         potential direct API extraction (logged at debug level for discovery).
         """
-        comp_id = comp['id']
-        comp_name = comp.get('name', f'competition-{comp_id}')
+        comp_id = comp["id"]
+        comp_name = comp.get("name", f"competition-{comp_id}")
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
         url = f"{self.site_url}/sports/{sport_slug}/competitions/{comp_id}/matches"
         events = []
@@ -373,17 +369,19 @@ class TenBetRetriever(BrowserRetriever):
 
         # Capture API requests for potential direct extraction
         api_urls_seen = set()
+
         def _on_response(response):
             req_url = response.url
-            if any(p in req_url for p in ('/api/', '/graphql', '/sportsbook', '/sb/', '/odds')):
+            if any(p in req_url for p in ("/api/", "/graphql", "/sportsbook", "/sb/", "/odds")):
                 if req_url not in api_urls_seen:
                     api_urls_seen.add(req_url)
                     logger.debug(f"[{self.provider_id}] API intercept: {response.status} {req_url[:150]}")
+
         page.on("response", _on_response)
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
-            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=35000)
 
             # Wait for event items to render
             events_loaded = False
@@ -392,7 +390,7 @@ class TenBetRetriever(BrowserRetriever):
                 events_loaded = True
             except Exception:
                 # Check for empty state
-                empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
+                empty = await page.query_selector_all("text=/Inga matcher|Inga evenemang|No matches|No events/i")
                 if empty:
                     logger.debug(f"[{self.provider_id}] No matches for {comp_name}")
                     return []
@@ -475,7 +473,7 @@ class TenBetRetriever(BrowserRetriever):
             }""")
 
             # Log scrape stats for debugging
-            part_counts = [len(item.get('participants', [])) for item in scraped]
+            part_counts = [len(item.get("participants", [])) for item in scraped]
             valid_items = sum(1 for p in part_counts if p == 2)
             logger.info(
                 f"[{self.provider_id}] {comp_name}: scraped {len(scraped)} DOM items "
@@ -494,18 +492,16 @@ class TenBetRetriever(BrowserRetriever):
 
         return events
 
-    def _parse_event(
-        self, item: Dict, sport: str, league: str, page_url: str, comp_id: str
-    ) -> Optional[StandardEvent]:
+    def _parse_event(self, item: dict, sport: str, league: str, page_url: str, comp_id: str) -> StandardEvent | None:
         """Parse a single scraped DOM item into a StandardEvent."""
-        participants = item.get('participants', [])
+        participants = item.get("participants", [])
         if len(participants) != 2:
             # Exactly 2 participants expected; skip container elements with many
             # participants and items with fewer than 2
             return None
 
         # Skip live events
-        if item.get('isLive'):
+        if item.get("isLive"):
             return None
 
         home_raw = participants[0]
@@ -520,19 +516,23 @@ class TenBetRetriever(BrowserRetriever):
         all_markets = []
         seen_winner_types = set()
 
-        for market_data in item.get('markets', []):
-            market_type = market_data.get('type', '')
-            prices = market_data.get('prices', [])
-            info_texts = market_data.get('infoTexts', [])
-            sel_labels = market_data.get('selLabels', [])
+        for market_data in item.get("markets", []):
+            market_type = market_data.get("type", "")
+            prices = market_data.get("prices", [])
+            info_texts = market_data.get("infoTexts", [])
+            sel_labels = market_data.get("selLabels", [])
 
             parsed_market = self._parse_market(
-                market_type, prices, info_texts, home_raw, away_raw,
+                market_type,
+                prices,
+                info_texts,
+                home_raw,
+                away_raw,
                 sel_labels=sel_labels,
             )
             if not parsed_market:
                 continue
-            ptype = parsed_market['type']
+            ptype = parsed_market["type"]
             # Dedup only winner markets (1x2/moneyline); allow multiple spread/total lines
             if ptype in ("1x2", "moneyline"):
                 if ptype in seen_winner_types:
@@ -548,14 +548,14 @@ class TenBetRetriever(BrowserRetriever):
             return None
 
         # Build event ID from href or participants
-        href = item.get('href', '')
-        event_id_match = re.search(r'/events/(\d+)', href)
+        href = item.get("href", "")
+        event_id_match = re.search(r"/events/(\d+)", href)
         if event_id_match:
             ev_id = f"10bet-{event_id_match.group(1)}"
         else:
             ev_id = f"10bet-{home}-{away}-{comp_id}"
 
-        start_time = self._parse_time(item.get('timing', ''))
+        start_time = self._parse_time(item.get("timing", ""))
 
         return StandardEvent(
             id=ev_id,
@@ -573,12 +573,12 @@ class TenBetRetriever(BrowserRetriever):
     def _parse_market(
         self,
         market_type: str,
-        prices: List[str],
-        info_texts: List[str],
+        prices: list[str],
+        info_texts: list[str],
         home_raw: str,
         away_raw: str,
-        sel_labels: Optional[List[str]] = None,
-    ) -> Optional[Dict]:
+        sel_labels: list[str] | None = None,
+    ) -> dict | None:
         """
         Parse a market from DOM data using the MARKET_TYPE_MAP lookup.
 
@@ -595,7 +595,9 @@ class TenBetRetriever(BrowserRetriever):
         canonical = MARKET_TYPE_MAP.get(market_type)
         if not canonical:
             if market_type and market_type != "undefined":
-                logger.debug(f"[{self.provider_id}] Unknown DOM market type: '{market_type}' prices={prices[:2]} info={info_texts[:2]}")
+                logger.debug(
+                    f"[{self.provider_id}] Unknown DOM market type: '{market_type}' prices={prices[:2]} info={info_texts[:2]}"
+                )
             return None
 
         # Merge info_texts + sel_labels for point extraction fallback
@@ -617,7 +619,7 @@ class TenBetRetriever(BrowserRetriever):
 
         return None
 
-    def _parse_1x2(self, prices: List[str]) -> Optional[Dict]:
+    def _parse_1x2(self, prices: list[str]) -> dict | None:
         """Parse 1x2 market (3-way: home/draw/away)."""
         parsed = self._parse_prices(prices)
         if not parsed or len(parsed) < 3:
@@ -633,7 +635,7 @@ class TenBetRetriever(BrowserRetriever):
             ],
         }
 
-    def _parse_moneyline(self, prices: List[str]) -> Optional[Dict]:
+    def _parse_moneyline(self, prices: list[str]) -> dict | None:
         """Parse moneyline market (2-way: home/away)."""
         parsed = self._parse_prices(prices)
         if not parsed or len(parsed) < 2:
@@ -648,7 +650,7 @@ class TenBetRetriever(BrowserRetriever):
             ],
         }
 
-    def _parse_total(self, prices: List[str], info_texts: List[str]) -> Optional[Dict]:
+    def _parse_total(self, prices: list[str], info_texts: list[str]) -> dict | None:
         """Parse over/under total market."""
         parsed = self._parse_prices(prices)
         if not parsed or len(parsed) < 2:
@@ -670,7 +672,7 @@ class TenBetRetriever(BrowserRetriever):
             ],
         }
 
-    def _parse_spread(self, prices: List[str], info_texts: List[str]) -> Optional[Dict]:
+    def _parse_spread(self, prices: list[str], info_texts: list[str]) -> dict | None:
         """Parse handicap/spread market (2-way or 3-way)."""
         parsed = self._parse_prices(prices)
         if not parsed or len(parsed) < 2:
@@ -704,12 +706,12 @@ class TenBetRetriever(BrowserRetriever):
             ],
         }
 
-    def _parse_prices(self, prices: List[str]) -> Optional[List[float]]:
+    def _parse_prices(self, prices: list[str]) -> list[float] | None:
         """Parse price strings to floats, filtering invalid values."""
         result = []
         for p in prices:
             try:
-                val = float(p.replace(',', '.').strip())
+                val = float(p.replace(",", ".").strip())
                 if val <= 1.0:
                     return None  # Invalid odds
                 result.append(val)
@@ -717,11 +719,11 @@ class TenBetRetriever(BrowserRetriever):
                 return None
         return result if result else None
 
-    def _extract_point_value(self, info_texts: List[str]) -> Optional[float]:
+    def _extract_point_value(self, info_texts: list[str]) -> float | None:
         """Extract point value (spread/total) from info text elements."""
         for text in info_texts:
             # Try to extract a number like "2.5", "+1.5", "-0.5"
-            match = re.search(r'([+-]?\d+\.?\d*)', text.replace(',', '.'))
+            match = re.search(r"([+-]?\d+\.?\d*)", text.replace(",", "."))
             if match:
                 try:
                     return float(match.group(1))
@@ -729,19 +731,19 @@ class TenBetRetriever(BrowserRetriever):
                     pass
         return None
 
-    def _extract_point_from_prices(self, prices: List[str]) -> Optional[float]:
+    def _extract_point_from_prices(self, prices: list[str]) -> float | None:
         """Fallback: extract point value from price label text.
 
         Football HCMR embeds handicap in labels like "1 (0:1)" or "(+1.5)".
         """
         for p in prices:
             # Match "(0:1)" format → goal handicap (European notation)
-            m = re.search(r'\((\d+):(\d+)\)', p)
+            m = re.search(r"\((\d+):(\d+)\)", p)
             if m:
                 home_goals, away_goals = int(m.group(1)), int(m.group(2))
                 return float(home_goals - away_goals)
             # Match "(+1.5)" or "(-0.5)" embedded in label
-            m = re.search(r'\(([+-]?\d+\.?\d*)\)', p)
+            m = re.search(r"\(([+-]?\d+\.?\d*)\)", p)
             if m:
                 try:
                     return float(m.group(1))
@@ -758,48 +760,58 @@ class TenBetRetriever(BrowserRetriever):
         ts = time_str.lower().strip()
 
         # "13:30" — today
-        if re.match(r'^\d{1,2}:\d{2}$', ts):
+        if re.match(r"^\d{1,2}:\d{2}$", ts):
             try:
-                h, m = map(int, ts.split(':'))
+                h, m = map(int, ts.split(":"))
                 return now.replace(hour=h, minute=m, second=0, microsecond=0)
             except ValueError:
                 return now
 
         # "idag 13:30"
-        if 'idag' in ts:
-            match = re.search(r'(\d{1,2}:\d{2})', ts)
+        if "idag" in ts:
+            match = re.search(r"(\d{1,2}:\d{2})", ts)
             if match:
                 try:
-                    h, m = map(int, match.group(1).split(':'))
+                    h, m = map(int, match.group(1).split(":"))
                     return now.replace(hour=h, minute=m, second=0, microsecond=0)
                 except ValueError:
                     return now
 
         # "imorgon 13:30"
-        if 'imorgon' in ts:
-            match = re.search(r'(\d{1,2}:\d{2})', ts)
+        if "imorgon" in ts:
+            match = re.search(r"(\d{1,2}:\d{2})", ts)
             if match:
                 try:
                     tomorrow = now + timedelta(days=1)
-                    h, m = map(int, match.group(1).split(':'))
+                    h, m = map(int, match.group(1).split(":"))
                     return tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
                 except ValueError:
                     return now
 
         # "lör 24 jan 13:30" or "24 jan. 13:30"
         months = {
-            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'maj': 5, 'jun': 6,
-            'jul': 7, 'aug': 8, 'sep': 9, 'okt': 10, 'nov': 11, 'dec': 12,
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "maj": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "okt": 10,
+            "nov": 11,
+            "dec": 12,
         }
-        match = re.search(r'(\d{1,2})\s+([a-zåäö]{3})', ts)
+        match = re.search(r"(\d{1,2})\s+([a-zåäö]{3})", ts)
         if match:
             try:
                 day = int(match.group(1))
                 month = months.get(match.group(2), now.month)
-                time_match = re.search(r'(\d{1,2}:\d{2})', ts)
+                time_match = re.search(r"(\d{1,2}:\d{2})", ts)
                 h, m = (0, 0)
                 if time_match:
-                    h, m = map(int, time_match.group(1).split(':'))
+                    h, m = map(int, time_match.group(1).split(":"))
                 year = now.year
                 if month < now.month and now.month == 12:
                     year += 1
@@ -808,7 +820,7 @@ class TenBetRetriever(BrowserRetriever):
                 return now
 
         # "15/02 13:30" or "15/02/2026 13:30"
-        match = re.search(r'(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\s*(\d{1,2}:\d{2})?', ts)
+        match = re.search(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\s*(\d{1,2}:\d{2})?", ts)
         if match:
             try:
                 day = int(match.group(1))
@@ -818,14 +830,14 @@ class TenBetRetriever(BrowserRetriever):
                     year += 2000
                 h, m = (0, 0)
                 if match.group(4):
-                    h, m = map(int, match.group(4).split(':'))
+                    h, m = map(int, match.group(4).split(":"))
                 return datetime(year, month, day, h, m)
             except (ValueError, TypeError):
                 return now
 
         return now
 
-    def _parse_detail_spread(self, raw: dict) -> Optional[Dict]:
+    def _parse_detail_spread(self, raw: dict) -> dict | None:
         """Parse Asian Handicap from event detail JS output."""
         outcomes = []
         has_point = False
@@ -854,7 +866,7 @@ class TenBetRetriever(BrowserRetriever):
             return None
         return {"type": "spread", "outcomes": outcomes}
 
-    def _parse_detail_total(self, raw: dict) -> Optional[Dict]:
+    def _parse_detail_total(self, raw: dict) -> dict | None:
         """Parse Over/Under total from event detail JS output."""
         outcomes = []
         for o in raw.get("outcomes", []):
@@ -876,7 +888,7 @@ class TenBetRetriever(BrowserRetriever):
                 side = "over" if len(outcomes) == 0 else "under"
 
             # Extract point from name: "Over 2.5" -> 2.5
-            m = re.search(r'(\d+\.?\d*)', name)
+            m = re.search(r"(\d+\.?\d*)", name)
             point = float(m.group(1)) if m else None
 
             outcome = {"name": side, "odds": odds}
@@ -890,9 +902,7 @@ class TenBetRetriever(BrowserRetriever):
 
     MAX_DETAIL_EVENTS = 300  # No provider timeout — enrich all events
 
-    async def _enrich_events_with_details(
-        self, events: List[StandardEvent], sport: str
-    ) -> int:
+    async def _enrich_events_with_details(self, events: list[StandardEvent], sport: str) -> int:
         """Navigate to event detail pages to extract Asian Handicap + Asian Total."""
         # Only enrich events that have href-derived IDs
         todo = [(ev, ev.id) for ev in events if ev.id.startswith("10bet-")]
@@ -901,7 +911,7 @@ class TenBetRetriever(BrowserRetriever):
 
         if len(todo) > self.MAX_DETAIL_EVENTS:
             logger.info(f"[{self.provider_id}] Capping detail enrichment from {len(todo)} to {self.MAX_DETAIL_EVENTS}")
-            todo = todo[:self.MAX_DETAIL_EVENTS]
+            todo = todo[: self.MAX_DETAIL_EVENTS]
 
         enriched = 0
         errors = 0
@@ -941,7 +951,7 @@ class TenBetRetriever(BrowserRetriever):
                         await worker_page.goto(url, wait_until="domcontentloaded", timeout=10000)
                         # Wait briefly for markets to render
                         await worker_page.wait_for_timeout(1500)
-                    except Exception as e:
+                    except Exception:
                         errors += 1
                         return
 
@@ -984,6 +994,6 @@ class TenBetRetriever(BrowserRetriever):
 
         return enriched
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — extract() is overridden."""
         raise NotImplementedError("TenBetRetriever uses extract() directly")

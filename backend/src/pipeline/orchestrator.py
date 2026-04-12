@@ -7,16 +7,17 @@ Main ExtractionPipeline class that coordinates extraction from all sources.
 import asyncio
 import logging
 import time
-from typing import Callable
-
-from ..factory import ExtractorFactory
-from sqlalchemy import func
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from ..db.models import get_session, Event, Odds, Provider, DeferredEvent
-from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
-from .pool_manager import ProviderPoolManager
-from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS, PROVIDER_CANONICAL
+
+from sqlalchemy import func
+
+from ..constants import ALLOWED_SPORTS, PROVIDER_CANONICAL, SHARP_PROVIDERS
+from ..db.models import DeferredEvent, Event, Odds, Provider, get_session
+from ..factory import ExtractorFactory
 from .broadcast import odds_broadcaster
+from .pool_manager import ProviderPoolManager
+from .storage import OddsBatchProcessor, store_polymarket_event, store_provider_event
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +82,22 @@ class ExtractionPipeline:
         if not sharp_sports:
             return 0, 0
 
-        deferred = self.session.query(DeferredEvent).filter(
-            DeferredEvent.start_time > now,
-            DeferredEvent.sport.in_(sharp_sports),
-        ).all()
+        deferred = (
+            self.session.query(DeferredEvent)
+            .filter(
+                DeferredEvent.start_time > now,
+                DeferredEvent.sport.in_(sharp_sports),
+            )
+            .all()
+        )
 
         if not deferred:
             # Cleanup expired only
-            expired = self.session.query(DeferredEvent).filter(
-                (DeferredEvent.start_time <= now)
-                | (DeferredEvent.created_at < now - timedelta(hours=6))
-            ).delete()
+            expired = (
+                self.session.query(DeferredEvent)
+                .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
+                .delete()
+            )
             if expired:
                 self.session.commit()
             return 0, expired
@@ -123,10 +129,11 @@ class ExtractionPipeline:
                 de.attempt_count += 1
 
         # Cleanup expired or stale (>6 hours)
-        expired = self.session.query(DeferredEvent).filter(
-            (DeferredEvent.start_time <= now)
-            | (DeferredEvent.created_at < now - timedelta(hours=6))
-        ).delete()
+        expired = (
+            self.session.query(DeferredEvent)
+            .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
+            .delete()
+        )
 
         self.session.commit()
 
@@ -157,6 +164,7 @@ class ExtractionPipeline:
         """
         from ..db.models import Event
         from .storage import _update_event_cache
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=self._CACHE_MAX_AGE_DAYS)
         events = (
             self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league)
@@ -164,15 +172,20 @@ class ExtractionPipeline:
             .all()
         )
         for eid, sport, home, away, start_time, league in events:
-            if hasattr(start_time, 'strftime'):
-                date_str = start_time.strftime('%Y%m%d')
+            if hasattr(start_time, "strftime"):
+                date_str = start_time.strftime("%Y%m%d")
             elif isinstance(start_time, str):
-                date_str = start_time.split('T')[0].replace('-', '')
+                date_str = start_time.split("T")[0].replace("-", "")
             else:
                 date_str = "00000000"
             _update_event_cache(
-                self.event_cache, self.event_cache_by_date,
-                sport, eid, home, away, date_str,
+                self.event_cache,
+                self.event_cache_by_date,
+                sport,
+                eid,
+                home,
+                away,
+                date_str,
                 league=league or "",
             )
         total = sum(len(v) for v in self.event_cache.values())
@@ -203,6 +216,7 @@ class ExtractionPipeline:
         Returns number of events marked as finished.
         """
         from datetime import datetime, timedelta, timezone
+
         from sqlalchemy import or_, update
 
         now = datetime.now(timezone.utc)
@@ -230,6 +244,7 @@ class ExtractionPipeline:
 
         # Strategy 3: never-live events with pending bets, past sport duration
         from ..db.models import Bet
+
         min_hours = min(self.SPORT_DURATION_HOURS.values())
         broad_cutoff = now - timedelta(hours=min_hours)
         never_live_candidates = (
@@ -254,11 +269,7 @@ class ExtractionPipeline:
                 logger.info(f"[FT] {home} vs {away} -> finished (never-live, past {hours}h)")
 
         if finish_ids:
-            self.session.execute(
-                update(Event)
-                .where(Event.id.in_(finish_ids))
-                .values(match_status="finished")
-            )
+            self.session.execute(update(Event).where(Event.id.in_(finish_ids)).values(match_status="finished"))
             count += len(finish_ids)
 
         return count
@@ -271,13 +282,15 @@ class ExtractionPipeline:
         round-trips across 30+ soft providers.
         """
         # Pre-warm sharp odds cache (1x2/moneyline for inversion detection)
-        sharp_rows = self.session.query(
-            Odds.event_id, Odds.outcome, Odds.odds
-        ).filter(
-            Odds.provider_id == 'pinnacle',
-            Odds.outcome.in_(['home', 'away']),
-            Odds.market.in_(['1x2', 'moneyline']),
-        ).all()
+        sharp_rows = (
+            self.session.query(Odds.event_id, Odds.outcome, Odds.odds)
+            .filter(
+                Odds.provider_id == "pinnacle",
+                Odds.outcome.in_(["home", "away"]),
+                Odds.market.in_(["1x2", "moneyline"]),
+            )
+            .all()
+        )
 
         self._sharp_odds_cache = {}
         for event_id, outcome, odds in sharp_rows:
@@ -285,9 +298,7 @@ class ExtractionPipeline:
                 self._sharp_odds_cache[event_id] = {}
             self._sharp_odds_cache[event_id][outcome] = odds
 
-        logger.debug(
-            f"Pre-warmed Pinnacle caches: {len(self._sharp_odds_cache)} sharp odds entries"
-        )
+        logger.debug(f"Pre-warmed Pinnacle caches: {len(self._sharp_odds_cache)} sharp odds entries")
 
     def _init_orchestrator(self):
         """Initialize orchestrator components (called from __init__)."""
@@ -296,17 +307,12 @@ class ExtractionPipeline:
         self.orchestrator_config = orchestrator_config
 
         # Create provider semaphore for global concurrency control (fallback)
-        self.provider_semaphore = asyncio.Semaphore(
-            orchestrator_config.max_concurrent_providers
-        )
+        self.provider_semaphore = asyncio.Semaphore(orchestrator_config.max_concurrent_providers)
 
         # Initialize pool manager for type-aware scheduling
         if orchestrator_config.provider_groups:
             # Use config_loader.providers which has ProviderConfig objects
-            self.pool_manager = ProviderPoolManager(
-                orchestrator_config,
-                self.engine.config_loader.providers
-            )
+            self.pool_manager = ProviderPoolManager(orchestrator_config, self.engine.config_loader.providers)
             logger.debug("[Orchestrator] Type-aware pool manager enabled")
         else:
             self.pool_manager = None
@@ -315,9 +321,8 @@ class ExtractionPipeline:
         # Initialize metrics collector if enabled
         if orchestrator_config.metrics.enabled:
             from .metrics import MetricsCollector
-            self.metrics = MetricsCollector(
-                max_history=orchestrator_config.metrics.retention_count
-            )
+
+            self.metrics = MetricsCollector(max_history=orchestrator_config.metrics.retention_count)
             logger.debug("[Orchestrator] Metrics collection enabled")
         else:
             self.metrics = None
@@ -325,10 +330,11 @@ class ExtractionPipeline:
         # Initialize circuit breaker if enabled
         if orchestrator_config.circuit_breaker.enabled:
             from .circuit_breaker import CircuitBreaker
+
             self.circuit_breaker = CircuitBreaker(
                 failure_threshold=orchestrator_config.circuit_breaker.failure_threshold,
                 recovery_timeout_seconds=orchestrator_config.circuit_breaker.recovery_timeout_seconds,
-                half_open_max_attempts=orchestrator_config.circuit_breaker.half_open_max_attempts
+                half_open_max_attempts=orchestrator_config.circuit_breaker.half_open_max_attempts,
             )
             # Inject circuit breaker into factory for transport-level 429 detection
             self.engine.set_circuit_breaker(self.circuit_breaker)
@@ -339,10 +345,11 @@ class ExtractionPipeline:
         # Initialize cache if enabled
         if orchestrator_config.cache.enabled:
             from .cache import ResponseCache
+
             self.cache = ResponseCache(
                 default_ttl_seconds=orchestrator_config.cache.ttl_seconds,
                 max_entries=orchestrator_config.cache.max_entries,
-                per_provider=orchestrator_config.cache.cache_per_provider
+                per_provider=orchestrator_config.cache.cache_per_provider,
             )
             logger.debug("[Orchestrator] Response cache enabled")
         else:
@@ -351,6 +358,7 @@ class ExtractionPipeline:
         # Load ML models from registry, fall back to disk discovery
         try:
             from src.ml.serving.predictor import get_predictor
+
             predictor = get_predictor()
             loaded = predictor.load_from_registry(self.session)
             if loaded == 0:
@@ -363,16 +371,14 @@ class ExtractionPipeline:
         # Initialize health checker if enabled
         if orchestrator_config.health_check.enabled:
             from .health import HealthChecker
-            self.health_checker = HealthChecker(
-                timeout_seconds=orchestrator_config.health_check.timeout_seconds
-            )
+
+            self.health_checker = HealthChecker(timeout_seconds=orchestrator_config.health_check.timeout_seconds)
             logger.debug("[Orchestrator] Health checker enabled")
         else:
             self.health_checker = None
 
         # Initialize graceful shutdown if enabled
         if orchestrator_config.graceful_shutdown.enabled:
-            import signal
             self._shutdown_event = asyncio.Event()
             self._shutdown_timeout = orchestrator_config.graceful_shutdown.shutdown_timeout_seconds
             self._cancel_pending = orchestrator_config.graceful_shutdown.cancel_pending_tasks
@@ -390,17 +396,19 @@ class ExtractionPipeline:
             ("pinnacle", "Pinnacle"),
             ("polymarket", "Polymarket"),
             ("consensus", "Consensus"),
-            *[(pid, (cfg.get("domain") or pid).title()) for pid, cfg in all_providers.items()]
+            *[(pid, (cfg.get("domain") or pid).title()) for pid, cfg in all_providers.items()],
         ]
 
         for pid, name in providers:
             existing = self.session.query(Provider).filter(Provider.id == pid).first()
             if not existing:
                 # Note: bonus_status is now tracked per-profile in ProfileProviderBonus table
-                self.session.add(Provider(
-                    id=pid,
-                    name=name,
-                ))
+                self.session.add(
+                    Provider(
+                        id=pid,
+                        name=name,
+                    )
+                )
         self.session.commit()
 
     def _register_signal_handlers(self):
@@ -478,11 +486,11 @@ class ExtractionPipeline:
                 # Calculate backoff
                 if attempt < retry_config.max_retries - 1:
                     backoff = min(
-                        retry_config.initial_backoff_seconds * (retry_config.exponential_base ** attempt),
-                        retry_config.max_backoff_seconds
+                        retry_config.initial_backoff_seconds * (retry_config.exponential_base**attempt),
+                        retry_config.max_backoff_seconds,
                     )
                     logger.warning(
-                        f"[{provider_id}] Timeout on attempt {attempt+1}/{retry_config.max_retries}, "
+                        f"[{provider_id}] Timeout on attempt {attempt + 1}/{retry_config.max_retries}, "
                         f"retrying in {backoff:.1f}s..."
                     )
                     await asyncio.sleep(backoff)
@@ -496,11 +504,11 @@ class ExtractionPipeline:
 
                 if attempt < retry_config.max_retries - 1:
                     backoff = min(
-                        retry_config.initial_backoff_seconds * (retry_config.exponential_base ** attempt),
-                        retry_config.max_backoff_seconds
+                        retry_config.initial_backoff_seconds * (retry_config.exponential_base**attempt),
+                        retry_config.max_backoff_seconds,
                     )
                     logger.warning(
-                        f"[{provider_id}] Error on attempt {attempt+1}/{retry_config.max_retries}: {str(e) or repr(e)}, "
+                        f"[{provider_id}] Error on attempt {attempt + 1}/{retry_config.max_retries}: {str(e) or repr(e)}, "
                         f"retrying in {backoff:.1f}s..."
                     )
                     await asyncio.sleep(backoff)
@@ -622,11 +630,7 @@ class ExtractionPipeline:
                         self.metrics.set_provider_total_sports("pinnacle", len(target_sports))
 
                     pinnacle_result = await asyncio.wait_for(
-                        self._extract_provider(
-                            "pinnacle",
-                            target_sports,
-                            max_events_per_sport
-                        ),
+                        self._extract_provider("pinnacle", target_sports, max_events_per_sport),
                         timeout=self.orchestrator_config.provider_timeout,
                     )
                     results["providers"]["pinnacle"] = pinnacle_result
@@ -690,9 +694,7 @@ class ExtractionPipeline:
                         )
 
                     poly_elapsed = time.time() - poly_start
-                    log_progress(
-                        f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
-                    )
+                    log_progress(f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s")
                 except asyncio.TimeoutError:
                     error_msg = f"Timed out after {self.orchestrator_config.provider_timeout}s"
                     logger.error(f"[polymarket] {error_msg}")
@@ -713,8 +715,7 @@ class ExtractionPipeline:
                 kambi_sports = sorted(s for s in kambi_sports if s in sharp_sports)
                 if skipped:
                     logger.debug(
-                        f"[Orchestrator] Skipping {len(skipped)} sports with no Pinnacle events: "
-                        f"{', '.join(skipped)}"
+                        f"[Orchestrator] Skipping {len(skipped)} sports with no Pinnacle events: {', '.join(skipped)}"
                     )
 
             # Order sports by Pinnacle event count (most events first)
@@ -724,14 +725,14 @@ class ExtractionPipeline:
                 # Use a fresh session — per-tier pipelines have isolated sessions
                 # that may not see data committed by the sharp tier's session.
                 from sqlalchemy import func as sa_count
+
                 fresh_session = get_session()
-                rows = fresh_session.query(
-                    Event.sport, sa_count.count(Event.id)
-                ).filter(
-                    Event.id.in_(
-                        fresh_session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
-                    )
-                ).group_by(Event.sport).all()
+                rows = (
+                    fresh_session.query(Event.sport, sa_count.count(Event.id))
+                    .filter(Event.id.in_(fresh_session.query(Odds.event_id).filter(Odds.provider_id == "pinnacle")))
+                    .group_by(Event.sport)
+                    .all()
+                )
                 pin_event_counts = {sport: count for sport, count in rows}
                 fresh_session.close()
             except Exception:
@@ -747,13 +748,12 @@ class ExtractionPipeline:
 
             # Build league lookup from Pinnacle events in DB for filtering soft books
             # Works whether Pinnacle was extracted this run or a previous one
-            sharp_league_rows = self.session.query(
-                Event.sport, Event.league
-            ).filter(
-                Event.id.in_(
-                    self.session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
-                )
-            ).distinct().all()
+            sharp_league_rows = (
+                self.session.query(Event.sport, Event.league)
+                .filter(Event.id.in_(self.session.query(Odds.event_id).filter(Odds.provider_id == "pinnacle")))
+                .distinct()
+                .all()
+            )
 
             self.sharp_leagues = {}
             for sport, league in sharp_league_rows:
@@ -764,13 +764,15 @@ class ExtractionPipeline:
                 normalized = league.lower().strip()
                 self.sharp_leagues[sport].add(normalized)
                 # Also strip country prefix: "England - Premier League" → "premier league"
-                if ' - ' in league:
-                    stripped = league.split(' - ', 1)[1].lower().strip()
+                if " - " in league:
+                    stripped = league.split(" - ", 1)[1].lower().strip()
                     self.sharp_leagues[sport].add(stripped)
 
             if self.sharp_leagues:
                 total_leagues = sum(len(v) for v in self.sharp_leagues.values())
-                logger.debug(f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports")
+                logger.debug(
+                    f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports"
+                )
 
             # Platform consolidation: skip non-canonical providers when their
             # canonical is also in the list (e.g., skip expekt when unibet is present).
@@ -806,16 +808,26 @@ class ExtractionPipeline:
 
                     # Health check if enabled (with group-aware delays)
                     # Skip health check for browser-based providers (too slow for pre-check)
-                    BROWSER_TYPES = ('sbtech', 'gecko_v2', 'spectate', 'custom', 'tipwin',
-                                     'snabbare', 'interwetten', 'coolbet', 'tenbet',
-                                     'betconstruct')
+                    BROWSER_TYPES = (
+                        "sbtech",
+                        "gecko_v2",
+                        "spectate",
+                        "custom",
+                        "tipwin",
+                        "snabbare",
+                        "interwetten",
+                        "coolbet",
+                        "tenbet",
+                        "betconstruct",
+                    )
                     provider_cfg = self.engine.get_provider(pid)
-                    retriever_type = getattr(provider_cfg, 'retriever_type', '')
+                    retriever_type = getattr(provider_cfg, "retriever_type", "")
 
-                    if (self.health_checker and
-                        self.orchestrator_config.health_check.check_before_extraction and
-                        retriever_type not in BROWSER_TYPES):
-
+                    if (
+                        self.health_checker
+                        and self.orchestrator_config.health_check.check_before_extraction
+                        and retriever_type not in BROWSER_TYPES
+                    ):
                         # Add delay between health checks for same-API groups
                         if self.pool_manager:
                             delay = self.pool_manager.get_health_check_delay(pid)
@@ -850,7 +862,7 @@ class ExtractionPipeline:
                 async def extract_with_error_handling(provider_id):
                     # Per-provider timeout override (e.g., Coolbet needs longer for Camoufox)
                     provider_cfg = self.engine.get_provider(provider_id)
-                    per_provider_timeout = getattr(provider_cfg, 'provider_timeout', None)
+                    per_provider_timeout = getattr(provider_cfg, "provider_timeout", None)
                     provider_timeout = per_provider_timeout if per_provider_timeout else default_provider_timeout
 
                     # Start provider metrics
@@ -865,7 +877,7 @@ class ExtractionPipeline:
                         # Determine sports for this provider:
                         # If provider has supported_sports config, use intersection with
                         # Pinnacle-available sports. Otherwise use global kambi_sports.
-                        provider_supported = getattr(provider_cfg, 'supported_sports', None)
+                        provider_supported = getattr(provider_cfg, "supported_sports", None)
                         if provider_supported:
                             # Use provider's supported sports, filtered to ALLOWED + sharp
                             provider_sports = [s for s in provider_supported if s in ALLOWED_SPORTS]
@@ -879,8 +891,8 @@ class ExtractionPipeline:
                                 # DOM scrapers with time budgets: smallest sports first
                                 # so more sports complete before the budget cuts off.
                                 # API/WS providers: largest sports first (most value first).
-                                DOM_SCRAPERS = ('custom', 'tipwin', 'interwetten', 'coolbet', 'tenbet')
-                                prov_retriever = getattr(provider_cfg, 'retriever_type', '')
+                                DOM_SCRAPERS = ("custom", "tipwin", "interwetten", "coolbet", "tenbet")
+                                prov_retriever = getattr(provider_cfg, "retriever_type", "")
                                 is_dom_scraper = prov_retriever in DOM_SCRAPERS
                                 provider_sports.sort(
                                     key=lambda s: pin_event_counts.get(s, 0),
@@ -895,8 +907,11 @@ class ExtractionPipeline:
 
                         # Use retry wrapper with optional timeout enforcement
                         _extract_coro = self._extract_provider_with_retry(
-                            provider_id, provider_sports, max_events_per_sport, sharp_sports,
-                            sharp_leagues=getattr(self, 'sharp_leagues', None),
+                            provider_id,
+                            provider_sports,
+                            max_events_per_sport,
+                            sharp_sports,
+                            sharp_leagues=getattr(self, "sharp_leagues", None),
                         )
                         if provider_timeout:
                             provider_results = await asyncio.wait_for(_extract_coro, timeout=provider_timeout)
@@ -959,7 +974,7 @@ class ExtractionPipeline:
                             "events_new": 0,
                             "odds_processed": 0,
                             "odds_new": 0,
-                            "error": error_str
+                            "error": error_str,
                         }
 
                 # Wrap provider extraction with type-aware concurrency control
@@ -1008,21 +1023,21 @@ class ExtractionPipeline:
                         sports_ok = provider_result.get("sports_succeeded", 0)
                         sports_total = provider_result.get("sports_attempted", 0)
 
-                        ev = provider_result['events_processed']
-                        odds = provider_result.get('odds_processed', 0)
+                        ev = provider_result["events_processed"]
+                        odds = provider_result.get("odds_processed", 0)
                         ratio = f"{odds / ev:.1f}" if ev > 0 else "-"
 
                         # Match rate
-                        matched = provider_result.get('events_matched', 0)
-                        unmatched = provider_result.get('events_unmatched', 0)
+                        matched = provider_result.get("events_matched", 0)
+                        unmatched = provider_result.get("events_unmatched", 0)
                         match_total = matched + unmatched
                         match_str = f" | match={matched}/{match_total}" if match_total > 0 else ""
 
                         # Market breakdown
-                        mc = provider_result.get('market_counts', {})
-                        ml = mc.get('1x2', 0) + mc.get('moneyline', 0)
-                        spr = mc.get('spread', 0)
-                        tot = mc.get('total', 0)
+                        mc = provider_result.get("market_counts", {})
+                        ml = mc.get("1x2", 0) + mc.get("moneyline", 0)
+                        spr = mc.get("spread", 0)
+                        tot = mc.get("total", 0)
                         mkt_str = f" | 1x2={ml} spr={spr} tot={tot}" if odds > 0 else ""
 
                         status = f"{sports_ok}/{sports_total} sports"
@@ -1038,68 +1053,78 @@ class ExtractionPipeline:
                             )
                             # Directly update metrics to avoid duration corruption
                             # from calling end_provider() a second time
-                            if self.metrics and hasattr(self.metrics, '_current_run'):
+                            if self.metrics and hasattr(self.metrics, "_current_run"):
                                 pm = self.metrics._current_run.providers.get(provider_id)
                                 if pm:
                                     pm.success = False
                                     pm.error = "Silent failure: 0 events extracted"
 
-                        log_progress(
-                            f"[{provider_id}] {ev} ev, {odds} odds (r={ratio}), {status}{match_str}{mkt_str}"
-                        )
+                        log_progress(f"[{provider_id}] {ev} ev, {odds} odds (r={ratio}), {status}{match_str}{mkt_str}")
 
             self.session.commit()
 
             # Run opportunity analysis
             log_progress("Running opportunity analysis...")
             from .analyzer import OpportunityAnalyzer
+
             analyzer = OpportunityAnalyzer(self.session)
             changed_ids = self._changed_event_ids if self._changed_event_ids else None
             analysis_results = analyzer.run(changed_event_ids=changed_ids)
             results["analysis"] = analysis_results
-            log_progress(
-                f"Analysis complete: {analysis_results['value']['found']} value bets"
-            )
+            log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
 
             # Broadcast opportunity deltas to SSE clients
             if odds_broadcaster.client_count > 0 and analysis_results:
                 for opp in analysis_results.get("added_opportunities", []):
-                    odds_broadcaster.publish("opportunity_added", {
-                        "id": opp.id,
-                        "type": opp.type if hasattr(opp, "type") else "value",
-                        "edge_pct": getattr(opp, "edge_pct", None),
-                        "odds1": getattr(opp, "odds1", None),
-                        "fair_odds": getattr(opp, "fair_odds", None),
-                        "stake": getattr(opp, "stake", None),
-                        "event_id": getattr(opp, "event_id", None),
-                        "provider1": getattr(opp, "provider1_id", None),
-                        "outcome1": getattr(opp, "outcome1", None),
-                        "market": getattr(opp, "market", None),
-                    })
+                    odds_broadcaster.publish(
+                        "opportunity_added",
+                        {
+                            "id": opp.id,
+                            "type": opp.type if hasattr(opp, "type") else "value",
+                            "edge_pct": getattr(opp, "edge_pct", None),
+                            "odds1": getattr(opp, "odds1", None),
+                            "fair_odds": getattr(opp, "fair_odds", None),
+                            "stake": getattr(opp, "stake", None),
+                            "event_id": getattr(opp, "event_id", None),
+                            "provider1": getattr(opp, "provider1_id", None),
+                            "outcome1": getattr(opp, "outcome1", None),
+                            "market": getattr(opp, "market", None),
+                        },
+                    )
                 for opp in analysis_results.get("updated_opportunities", []):
-                    odds_broadcaster.publish("opportunity_update", {
-                        "id": opp.id,
-                        "type": opp.type if hasattr(opp, "type") else "value",
-                        "edge_pct": getattr(opp, "edge_pct", None),
-                        "odds1": getattr(opp, "odds1", None),
-                        "fair_odds": getattr(opp, "fair_odds", None),
-                        "stake": getattr(opp, "stake", None),
-                    })
+                    odds_broadcaster.publish(
+                        "opportunity_update",
+                        {
+                            "id": opp.id,
+                            "type": opp.type if hasattr(opp, "type") else "value",
+                            "edge_pct": getattr(opp, "edge_pct", None),
+                            "odds1": getattr(opp, "odds1", None),
+                            "fair_odds": getattr(opp, "fair_odds", None),
+                            "stake": getattr(opp, "stake", None),
+                        },
+                    )
                 for item in analysis_results.get("removed_opportunities", []):
                     if isinstance(item, tuple) and len(item) == 2:
                         opp_id, opp_type = item
                     else:
                         opp_id, opp_type = item, "value"
-                    odds_broadcaster.publish("opportunity_removed", {
-                        "id": opp_id,
-                        "type": opp_type,
-                        "reason": "edge_below_threshold",
-                    })
-                odds_broadcaster.publish("tier_complete", {
-                    "changed_events": len(self._changed_event_ids),
-                })
+                    odds_broadcaster.publish(
+                        "opportunity_removed",
+                        {
+                            "id": opp_id,
+                            "type": opp_type,
+                            "reason": "edge_below_threshold",
+                        },
+                    )
+                odds_broadcaster.publish(
+                    "tier_complete",
+                    {
+                        "changed_events": len(self._changed_event_ids),
+                    },
+                )
                 # Invalidate opportunity response cache so next request gets fresh data
                 from ..api.routes.opportunities import _opp_cache
+
                 _opp_cache.clear()
 
             # Count totals
@@ -1148,6 +1173,7 @@ class ExtractionPipeline:
             # Generate extraction report
             total_elapsed = time.time() - pipeline_start_time
             from .extraction_report import ExtractionReport
+
             report = ExtractionReport().generate(
                 results=results,
                 metrics=current_run,
@@ -1170,6 +1196,7 @@ class ExtractionPipeline:
             if tier_name != "sharp":
                 try:
                     from src.ml.features.pinnacle_coverage import log_coverage
+
                     coverage_rows = log_coverage(self.session, run_id)
                     logger.info(f"Logged {coverage_rows} Pinnacle coverage rows")
                     self.session.commit()
@@ -1179,7 +1206,8 @@ class ExtractionPipeline:
             # Log ML extraction features (best-effort)
             try:
                 from src.ml.features.extraction_features import (
-                    extract_extraction_features, log_extraction_run,
+                    extract_extraction_features,
+                    log_extraction_run,
                     update_extraction_outcomes,
                 )
 
@@ -1205,20 +1233,19 @@ class ExtractionPipeline:
                 if analysis_results:
                     value_found = analysis_results.get("value", {}).get("found", 0)
                     dutch_found = analysis_results.get("dutch", {}).get("found", 0)
-                    reverse_found = (
-                        analysis_results.get("reverse", {}).get("found", 0)
-                        + analysis_results.get("reverse_value", {}).get("found", 0)
-                    )
+                    reverse_found = analysis_results.get("reverse", {}).get("found", 0) + analysis_results.get(
+                        "reverse_value", {}
+                    ).get("found", 0)
                     # Compute avg edge from opportunities table for this run's timeframe
                     avg_edge = None
                     try:
                         from sqlalchemy import func
+
                         from ..db.models import Opportunity
-                        row = self.session.query(
-                            func.avg(Opportunity.edge_pct)
-                        ).filter(
-                            Opportunity.edge_pct > 0
-                        ).scalar()
+
+                        row = (
+                            self.session.query(func.avg(Opportunity.edge_pct)).filter(Opportunity.edge_pct > 0).scalar()
+                        )
                         avg_edge = float(row) if row else None
                     except Exception:
                         pass
@@ -1234,10 +1261,13 @@ class ExtractionPipeline:
 
                 # Log per-provider value attribution
                 if current_run and current_run.providers:
-                    from src.ml.features.extraction_features import (
-                        extract_provider_value, log_provider_value,
-                    )
                     from sqlalchemy import func as sa_func
+
+                    from src.ml.features.extraction_features import (
+                        extract_provider_value,
+                        log_provider_value,
+                    )
+
                     from ..db.models import Opportunity
 
                     for pid, pm in current_run.providers.items():
@@ -1249,14 +1279,18 @@ class ExtractionPipeline:
                         vb_count = 0
                         vb_avg_edge = None
                         try:
-                            row = self.session.query(
-                                sa_func.count(Opportunity.id),
-                                sa_func.avg(Opportunity.edge_pct),
-                            ).filter(
-                                Opportunity.provider1_id == pid,
-                                Opportunity.edge_pct > 0,
-                                Opportunity.type == "value",
-                            ).first()
+                            row = (
+                                self.session.query(
+                                    sa_func.count(Opportunity.id),
+                                    sa_func.avg(Opportunity.edge_pct),
+                                )
+                                .filter(
+                                    Opportunity.provider1_id == pid,
+                                    Opportunity.edge_pct > 0,
+                                    Opportunity.type == "value",
+                                )
+                                .first()
+                            )
                             if row:
                                 vb_count = row[0] or 0
                                 vb_avg_edge = float(row[1]) if row[1] else None
@@ -1284,6 +1318,7 @@ class ExtractionPipeline:
             # Run extraction analytics (best-effort, never blocks extraction)
             try:
                 from src.ml.analytics.engine import AnalyticsEngine
+
                 analytics = AnalyticsEngine()
                 analytics.refresh(self.session, run_id)
                 self.session.commit()
@@ -1293,9 +1328,11 @@ class ExtractionPipeline:
             # Daily ML model training (best-effort)
             try:
                 import time as _time
+
                 today = _time.strftime("%Y-%m-%d")
-                if getattr(self, '_ml_last_train_day', None) != today:
+                if getattr(self, "_ml_last_train_day", None) != today:
                     from src.ml.training.train_all import TrainingOrchestrator
+
                     orch = TrainingOrchestrator()
                     train_results = orch.train_all(self.session)
                     self._ml_last_train_day = today
@@ -1308,6 +1345,7 @@ class ExtractionPipeline:
             # Resolve CLV outcomes for ML feature rows (best-effort)
             try:
                 from src.ml.feature_store import resolve_clv_outcomes
+
                 resolved = resolve_clv_outcomes(self.session)
                 if resolved > 0:
                     logger.info(f"Resolved CLV for {resolved} ML feature rows")
@@ -1316,8 +1354,9 @@ class ExtractionPipeline:
 
             # Store daily macro data to options_flow (M9)
             try:
-                from src.ml.models.macro_engine import store_daily_options_flow
                 from src.market_data.macro_provider import fetch_macro_snapshot
+                from src.ml.models.macro_engine import store_daily_options_flow
+
                 macro = await fetch_macro_snapshot()
                 await store_daily_options_flow(self.session, macro)
             except Exception as e:
@@ -1326,6 +1365,7 @@ class ExtractionPipeline:
             # Resolve trading signal outcomes
             try:
                 from src.ml.feature_store import resolve_trading_outcomes
+
                 resolved = resolve_trading_outcomes(self.session)
                 if resolved:
                     logger.info(f"Resolved {resolved} trading signal outcomes")
@@ -1424,9 +1464,14 @@ class ExtractionPipeline:
                             _odds_new, _odds_updated = odds_batch.get_stats()
 
                         poly_session.commit()
-                    except Exception:
+                    except Exception as e:
                         poly_session.rollback()
-                        raise
+                        # StaleDataError = cleanup deleted event mid-update (race condition)
+                        # Log and return partial results instead of failing the whole run
+                        if "expected to update" in str(e) and "0 were matched" in str(e):
+                            logger.warning(f"[polymarket] StaleDataError (cleanup race): {e}")
+                        else:
+                            raise
                     finally:
                         poly_session.close()
 
@@ -1457,15 +1502,18 @@ class ExtractionPipeline:
                 self._changed_event_ids |= poly_result["changed_event_ids"]
                 if odds_broadcaster.client_count > 0:
                     for record in poly_result["changed_records"]:
-                        odds_broadcaster.publish("odds_update", {
-                            "event_id": record["event_id"],
-                            "provider": record.get("provider_id", record.get("provider", "")),
-                            "market": record.get("market", ""),
-                            "outcome": record.get("outcome", ""),
-                            "point": record.get("point"),
-                            "odds": record["odds"],
-                            "prev_odds": record.get("prev_odds"),
-                        })
+                        odds_broadcaster.publish(
+                            "odds_update",
+                            {
+                                "event_id": record["event_id"],
+                                "provider": record.get("provider_id", record.get("provider", "")),
+                                "market": record.get("market", ""),
+                                "outcome": record.get("outcome", ""),
+                                "point": record.get("point"),
+                                "odds": record["odds"],
+                                "prev_odds": record.get("prev_odds"),
+                            },
+                        )
                 db_elapsed = time.time() - db_start
 
             except Exception as e:
@@ -1479,7 +1527,8 @@ class ExtractionPipeline:
                 if self.metrics:
                     for sport, counts in sport_counts.items():
                         self.metrics.end_sport(
-                            "polymarket", sport,
+                            "polymarket",
+                            sport,
                             events_processed=counts["events"],
                             odds_processed=counts["odds"],
                             success=True,
@@ -1498,7 +1547,7 @@ class ExtractionPipeline:
             "events_processed": events_processed,
             "events_new": events_new,
             "odds_processed": odds_processed,
-            "odds_new": odds_new
+            "odds_new": odds_new,
         }
 
     async def _extract_provider(
@@ -1529,16 +1578,28 @@ class ExtractionPipeline:
         provider_config = self.engine.get_provider(provider_id)
 
         # Check if this provider needs sequential sport extraction
-        retriever_type = getattr(provider_config, 'retriever_type', '')
-        is_kambi = retriever_type == 'kambi'
+        retriever_type = getattr(provider_config, "retriever_type", "")
+        is_kambi = retriever_type == "kambi"
         # Browser-based providers share a single page — concurrent goto() causes ERR_ABORTED
-        is_single_page = retriever_type in ('sbtech', 'gecko_v2', 'spectate', 'custom', 'tipwin', 'snabbare', 'interwetten', 'coolbet', 'tenbet')
+        is_single_page = retriever_type in (
+            "sbtech",
+            "gecko_v2",
+            "spectate",
+            "custom",
+            "tipwin",
+            "snabbare",
+            "interwetten",
+            "coolbet",
+            "tenbet",
+        )
 
         # Kambi + browser-based: sequential (1), Others: parallel (up to 4)
-        concurrent_sports = 1 if (is_kambi or is_single_page) else getattr(
-            provider_config,
-            'concurrent_leagues',
-            self.orchestrator_config.max_concurrent_sports_per_provider
+        concurrent_sports = (
+            1
+            if (is_kambi or is_single_page)
+            else getattr(
+                provider_config, "concurrent_leagues", self.orchestrator_config.max_concurrent_sports_per_provider
+            )
         )
 
         # Create semaphore for sport-level concurrency
@@ -1570,7 +1631,7 @@ class ExtractionPipeline:
         # Sport timeout from config (default 60s)
         # Browser-based providers need longer: page load + rendering + data extraction
         # Per-provider sport_timeout override takes precedence (e.g., 10Bet has many competitions)
-        per_provider_sport_timeout = getattr(provider_config, 'sport_timeout', None)
+        per_provider_sport_timeout = getattr(provider_config, "sport_timeout", None)
         if per_provider_sport_timeout:
             sport_timeout = per_provider_sport_timeout
         else:
@@ -1596,8 +1657,10 @@ class ExtractionPipeline:
                     target_leagues = sharp_leagues.get(sport) if sharp_leagues else None
                     events = await asyncio.wait_for(
                         extractor.extract(
-                            sport, limit=limit, target_leagues=target_leagues,
-                            run_id=getattr(self, '_current_run_id', None),
+                            sport,
+                            limit=limit,
+                            target_leagues=target_leagues,
+                            run_id=getattr(self, "_current_run_id", None),
                         ),
                         timeout=sport_timeout,
                     )
@@ -1662,6 +1725,7 @@ class ExtractionPipeline:
                                 err_lower = str(e).lower()
                                 if "deadlock detected" in err_lower:
                                     import time as _time
+
                                     logger.info(f"[{provider_id}] {sport} deadlock on commit, retrying flush+commit...")
                                     _time.sleep(0.2)
                                     try:
@@ -1701,15 +1765,18 @@ class ExtractionPipeline:
                     self._changed_event_ids |= result["changed_event_ids"]
                     if odds_broadcaster.client_count > 0:
                         for record in result["changed_records"]:
-                            odds_broadcaster.publish("odds_update", {
-                                "event_id": record["event_id"],
-                                "provider": record.get("provider_id", record.get("provider", "")),
-                                "market": record.get("market", ""),
-                                "outcome": record.get("outcome", ""),
-                                "point": record.get("point"),
-                                "odds": record["odds"],
-                                "prev_odds": record.get("prev_odds"),
-                            })
+                            odds_broadcaster.publish(
+                                "odds_update",
+                                {
+                                    "event_id": record["event_id"],
+                                    "provider": record.get("provider_id", record.get("provider", "")),
+                                    "market": record.get("market", ""),
+                                    "outcome": record.get("outcome", ""),
+                                    "point": record.get("point"),
+                                    "odds": record["odds"],
+                                    "prev_odds": record.get("prev_odds"),
+                                },
+                            )
 
                     sport_elapsed = time.time() - sport_start_time
                     # Build detailed per-sport log line
@@ -1726,7 +1793,8 @@ class ExtractionPipeline:
 
                     if self.metrics:
                         self.metrics.end_sport(
-                            provider_id, sport,
+                            provider_id,
+                            sport,
                             events_processed=events_processed,
                             events_new=events_new,
                             events_matched=events_matched,
@@ -1746,7 +1814,7 @@ class ExtractionPipeline:
                         "odds_processed": odds_processed,
                         "odds_new": odds_new,
                         "market_counts": market_counts,
-                        "error": None
+                        "error": None,
                     }
 
                 except asyncio.TimeoutError:
@@ -1754,7 +1822,8 @@ class ExtractionPipeline:
                     logger.warning(f"[{provider_id}] {sport} {error_msg}")
                     if self.metrics:
                         self.metrics.end_sport(
-                            provider_id, sport,
+                            provider_id,
+                            sport,
                             success=False,
                             error=error_msg,
                         )
@@ -1767,7 +1836,7 @@ class ExtractionPipeline:
                         "odds_processed": 0,
                         "odds_new": 0,
                         "market_counts": {},
-                        "error": {"error": error_msg, "error_type": "TimeoutError"}
+                        "error": {"error": error_msg, "error_type": "TimeoutError"},
                     }
 
                 except Exception as e:
@@ -1775,7 +1844,8 @@ class ExtractionPipeline:
                     logger.warning(f"[{provider_id}] {sport} failed: {error_str}", exc_info=True)
                     if self.metrics:
                         self.metrics.end_sport(
-                            provider_id, sport,
+                            provider_id,
+                            sport,
                             success=False,
                             error=error_str,
                         )
@@ -1788,7 +1858,7 @@ class ExtractionPipeline:
                         "odds_processed": 0,
                         "odds_new": 0,
                         "market_counts": {},
-                        "error": {"error": error_str, "error_type": type(e).__name__}
+                        "error": {"error": error_str, "error_type": type(e).__name__},
                     }
 
         try:
@@ -1818,10 +1888,7 @@ class ExtractionPipeline:
                     total_market_counts[mkt] = total_market_counts.get(mkt, 0) + cnt
 
                 if result["error"]:
-                    sport_errors.append({
-                        "sport": result["sport"],
-                        **result["error"]
-                    })
+                    sport_errors.append({"sport": result["sport"], **result["error"]})
 
             # Final commit
             self.session.commit()
@@ -1836,7 +1903,7 @@ class ExtractionPipeline:
                 "market_counts": total_market_counts,
                 "sport_errors": sport_errors,
                 "sports_attempted": len(sports),
-                "sports_succeeded": len(sports) - len(sport_errors)
+                "sports_succeeded": len(sports) - len(sport_errors),
             }
 
         except Exception as e:
@@ -1845,7 +1912,7 @@ class ExtractionPipeline:
 
         finally:
             # Cleanup with timeout — Playwright browsers can hang on close
-            if hasattr(extractor, 'close'):
+            if hasattr(extractor, "close"):
                 try:
                     if asyncio.iscoroutinefunction(extractor.close):
                         await asyncio.wait_for(extractor.close(), timeout=10)
@@ -1861,11 +1928,14 @@ class ExtractionPipeline:
         Returns:
             Number of events with 2+ providers
         """
-        from sqlalchemy import func
 
-        return self.session.query(Event).join(Odds).group_by(Event.id).having(
-            func.count(func.distinct(Odds.provider_id)) > 1
-        ).count()
+        return (
+            self.session.query(Event)
+            .join(Odds)
+            .group_by(Event.id)
+            .having(func.count(func.distinct(Odds.provider_id)) > 1)
+            .count()
+        )
 
     def get_matched_events(self, limit: int = 50) -> list[dict]:
         """
@@ -1877,35 +1947,40 @@ class ExtractionPipeline:
         Returns:
             List of event dictionaries with odds grouped by provider
         """
-        from sqlalchemy import func
         from sqlalchemy.orm import joinedload
 
         # Use eager loading to avoid N+1 query problem
-        matched = self.session.query(Event)\
-            .join(Odds)\
-            .options(joinedload(Event.odds))\
-            .group_by(Event.id)\
-            .having(func.count(func.distinct(Odds.provider_id)) > 1)\
-            .limit(limit)\
+        matched = (
+            self.session.query(Event)
+            .join(Odds)
+            .options(joinedload(Event.odds))
+            .group_by(Event.id)
+            .having(func.count(func.distinct(Odds.provider_id)) > 1)
+            .limit(limit)
             .all()
+        )
 
         results = []
         for event in matched:
             odds_by_provider = {}
             for odds in event.odds:
-                odds_by_provider.setdefault(odds.provider_id, []).append({
-                    "market": odds.market,
-                    "outcome": odds.outcome,
-                    "odds": odds.odds,
-                })
+                odds_by_provider.setdefault(odds.provider_id, []).append(
+                    {
+                        "market": odds.market,
+                        "outcome": odds.outcome,
+                        "odds": odds.odds,
+                    }
+                )
 
-            results.append({
-                "id": event.id,
-                "home_team": event.home_team,
-                "away_team": event.away_team,
-                "sport": event.sport,
-                "start_time": event.start_time,
-                "providers": odds_by_provider,
-            })
+            results.append(
+                {
+                    "id": event.id,
+                    "home_team": event.home_team,
+                    "away_team": event.away_team,
+                    "sport": event.sport,
+                    "start_time": event.start_time,
+                    "providers": odds_by_provider,
+                }
+            )
 
         return results

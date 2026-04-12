@@ -1022,10 +1022,12 @@ class ExtractionScheduler:
                 )
 
                 # 3. Delete opportunities for past events (keep live/finished for settlement)
+                #    Grace period: 48h after start_time to avoid racing with Polymarket
+                #    which actively updates match_status on recently-started events
                 past_event_subq = (
                     session.query(Event.id)
                     .filter(
-                        Event.start_time < now,
+                        Event.start_time < now - timedelta(hours=48),
                         or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
                     )
                     .subquery()
@@ -1038,11 +1040,12 @@ class ExtractionScheduler:
 
                 # 4. Delete past events + their odds (bulk)
                 #    Preserve events that have bets OR are live/finished
+                #    Grace period: 48h to avoid racing with Polymarket updates
                 past_event_ids = [
                     row[0]
                     for row in session.query(Event.id)
                     .filter(
-                        Event.start_time < now,
+                        Event.start_time < now - timedelta(hours=48),
                         or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
                     )
                     .all()

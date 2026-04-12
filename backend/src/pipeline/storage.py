@@ -4,21 +4,26 @@ Pipeline Storage
 Functions for storing events and odds in the database.
 """
 
-import asyncio
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from ..constants import (
+    ALLOWED_MARKETS,
+    ENRICHMENT_MARKETS,
+    EXTENDED_MARKET_PROVIDERS,
+    PROVIDER_CANONICAL,
+    SHARP_PROVIDERS,
+)
 from ..core import StandardEvent
 from ..db.models import DeferredEvent, Event, Odds
 from ..matching import (
-    parse_teams_from_title,
     normalize_market,
     normalize_outcome,
+    parse_teams_from_title,
 )
 from ..matching.normalizer import generate_canonical_id
-from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EXTENDED_MARKET_PROVIDERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +32,15 @@ _known_event_ids: set[str] = set()
 
 # Youth/reserve league indicators — used to prevent cross-tier matching
 _YOUTH_INDICATORS = re.compile(
-    r'\bu[- ]?(?:17|18|19|20|21|23)\b|'
-    r'\breserve[s]?\b|'
-    r'\byouth\b|'
-    r'\bdevelopment\b|'
-    r'\bespoir[s]?\b|'
-    r'\bjunior[s]?\b|'
-    r'\b[bB] team\b|'
-    r'\bprimavera\b|'
-    r'\bjuvenil\b',
+    r"\bu[- ]?(?:17|18|19|20|21|23)\b|"
+    r"\breserve[s]?\b|"
+    r"\byouth\b|"
+    r"\bdevelopment\b|"
+    r"\bespoir[s]?\b|"
+    r"\bjunior[s]?\b|"
+    r"\b[bB] team\b|"
+    r"\bprimavera\b|"
+    r"\bjuvenil\b",
     re.IGNORECASE,
 )
 
@@ -48,9 +53,9 @@ def _is_youth_league(league: str) -> bool:
 def _extract_date_str(start_time) -> str:
     """Extract YYYYMMDD date string from start_time (str or datetime)."""
     if isinstance(start_time, str):
-        return start_time.split('T')[0].replace('-', '')
-    elif hasattr(start_time, 'strftime'):
-        return start_time.strftime('%Y%m%d')
+        return start_time.split("T")[0].replace("-", "")
+    elif hasattr(start_time, "strftime"):
+        return start_time.strftime("%Y%m%d")
     return "00000000"
 
 
@@ -58,7 +63,7 @@ def _parse_display_names(event_name: str) -> tuple[str | None, str | None]:
     """Parse original cased team names from event.name (e.g. 'León vs Necaxa')."""
     if not event_name:
         return None, None
-    for sep in [' vs. ', ' vs ', ' @ ']:
+    for sep in [" vs. ", " vs ", " @ "]:
         if sep in event_name:
             parts = event_name.split(sep, 1)
             if len(parts) == 2:
@@ -105,10 +110,16 @@ def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_
     return candidates
 
 
-def _update_event_cache(event_cache: dict, date_index: dict,
-                        sport: str, event_id: str,
-                        home: str, away: str, date_str: str,
-                        league: str = ""):
+def _update_event_cache(
+    event_cache: dict,
+    date_index: dict,
+    sport: str,
+    event_id: str,
+    home: str,
+    away: str,
+    date_str: str,
+    league: str = "",
+):
     """Update both event_cache and date_index atomically."""
     if sport not in event_cache:
         event_cache[sport] = {}
@@ -151,23 +162,27 @@ def detect_and_fix_inversion(
         sharp = sharp_odds_cache[event_id]
     else:
         # Get sharp odds (Pinnacle only) - exact match uses index
-        sharp_rows = session.query(Odds).filter(
-            Odds.event_id == event_id,
-            Odds.provider_id == 'pinnacle',
-            Odds.outcome.in_(['home', 'away']),
-            Odds.market.in_(['1x2', 'moneyline']),
-        ).all()
+        sharp_rows = (
+            session.query(Odds)
+            .filter(
+                Odds.event_id == event_id,
+                Odds.provider_id == "pinnacle",
+                Odds.outcome.in_(["home", "away"]),
+                Odds.market.in_(["1x2", "moneyline"]),
+            )
+            .all()
+        )
 
         sharp = {o.outcome: o.odds for o in sharp_rows}
         if sharp_odds_cache is not None:
             sharp_odds_cache[event_id] = sharp
 
-    if 'home' not in sharp or 'away' not in sharp:
+    if "home" not in sharp or "away" not in sharp:
         return False
 
     # Determine favorites
-    new_fav = 'home' if home_odds < away_odds else 'away'
-    sharp_fav = 'home' if sharp['home'] < sharp['away'] else 'away'
+    new_fav = "home" if home_odds < away_odds else "away"
+    sharp_fav = "home" if sharp["home"] < sharp["away"] else "away"
 
     if new_fav == sharp_fav:
         return False  # Same favorite, no inversion
@@ -176,7 +191,7 @@ def detect_and_fix_inversion(
     # This catches cases where Pinnacle shows clear favorite but provider shows opposite
     # e.g., Pinnacle home=7.38/away=1.11 (away fav) vs Polymarket home=1.94/away=2.06 (home fav)
     # Threshold 1.15 catches cases like Pinnacle 1.81/2.23 (ratio 1.23) where team order is wrong
-    sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
+    sharp_ratio = max(sharp["home"], sharp["away"]) / min(sharp["home"], sharp["away"])
     if sharp_ratio < 1.15:
         return False  # Sharp odds are close, could be legitimate difference
 
@@ -192,19 +207,19 @@ def swap_home_away_outcomes(outcomes: list[dict]) -> list[dict]:
     """Swap home and away outcome labels in a list of outcomes."""
     swapped = []
     for o in outcomes:
-        name = o.get('name', '').lower()
+        name = o.get("name", "").lower()
         new_outcome = dict(o)
 
         # Swap home <-> away
-        if name in ['home', 'hemma', '1']:
-            new_outcome['name'] = 'away'
+        if name in ["home", "hemma", "1"]:
+            new_outcome["name"] = "away"
             # Negate spread points when swapping
-            if new_outcome.get('point') is not None:
-                new_outcome['point'] = -new_outcome['point']
-        elif name in ['away', 'borta', '2']:
-            new_outcome['name'] = 'home'
-            if new_outcome.get('point') is not None:
-                new_outcome['point'] = -new_outcome['point']
+            if new_outcome.get("point") is not None:
+                new_outcome["point"] = -new_outcome["point"]
+        elif name in ["away", "borta", "2"]:
+            new_outcome["name"] = "home"
+            if new_outcome.get("point") is not None:
+                new_outcome["point"] = -new_outcome["point"]
 
         swapped.append(new_outcome)
     return swapped
@@ -279,17 +294,13 @@ def store_polymarket_event(
         if swapped_id in sport_events_poly or swapped_id in _known_event_ids:
             matched_id = swapped_id
             teams_swapped = True
-            logger.debug(
-                f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
-                f"canonical event with swapped teams"
-            )
+            logger.debug(f"[polymarket] Aligned '{home_team} vs {away_team}' -> canonical event with swapped teams")
         elif session.query(Event.id).filter(Event.id == swapped_id).first():
             _known_event_ids.add(swapped_id)
             matched_id = swapped_id
             teams_swapped = True
             logger.debug(
-                f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
-                f"canonical event with swapped teams (DB)"
+                f"[polymarket] Aligned '{home_team} vs {away_team}' -> canonical event with swapped teams (DB)"
             )
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
@@ -356,15 +367,18 @@ def store_polymarket_event(
     # If no match found, skip — Polymarket is not a sharp source,
     # so unmatched events are useless (no sharp baseline to compare against)
     if not matched_id:
-        logger.debug(
-            f"[polymarket] Skipped '{home_team} vs {away_team}' ({kambi_sport}) - no sharp match"
-        )
+        logger.debug(f"[polymarket] Skipped '{home_team} vs {away_team}' ({kambi_sport}) - no sharp match")
         return False, 0, 0
 
     # Add to sport-indexed cache (use Polymarket's team order for cache key)
     _update_event_cache(
-        event_cache, date_index or {},
-        kambi_sport, matched_id, home_team, away_team, date_str,
+        event_cache,
+        date_index or {},
+        kambi_sport,
+        matched_id,
+        home_team,
+        away_team,
+        date_str,
     )
 
     # Create/get event
@@ -376,7 +390,7 @@ def store_polymarket_event(
         start_dt = event.start_time
         if isinstance(start_dt, str):
             try:
-                start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+                start_dt = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 start_dt = None
 
@@ -393,6 +407,7 @@ def store_polymarket_event(
             start_time=start_dt,
         )
         session.add(db_event)
+        session.flush()
         is_new_event = True
 
     # Update live scores from Polymarket (if available)
@@ -447,10 +462,20 @@ def store_polymarket_event(
     # Team-name outcomes (e.g., "Celtics") are resolved by normalize_outcome
     # against canonical_home/canonical_away, so they're ALREADY canonical —
     # swapping would double-flip them.
-    POSITIONAL_KEYWORDS = frozenset({
-        'home', 'hemma', '1', 'yes', 'ja',
-        'away', 'borta', '2', 'no', 'nej',
-    })
+    POSITIONAL_KEYWORDS = frozenset(
+        {
+            "home",
+            "hemma",
+            "1",
+            "yes",
+            "ja",
+            "away",
+            "borta",
+            "2",
+            "no",
+            "nej",
+        }
+    )
 
     for market in event.markets:
         if not market.get("is_active", True):  # Default to active if missing
@@ -470,7 +495,7 @@ def store_polymarket_event(
         # (e.g., "spread_-1.5") so value detection only compares matching points.
 
         # Build provider_meta from market-level metadata (e.g., event_slug for deep links)
-        market_meta = market.get('provider_meta', {})
+        market_meta = market.get("provider_meta", {})
 
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
@@ -485,7 +510,7 @@ def store_polymarket_event(
 
             # Skip outcomes that couldn't be normalized to home/away/draw/over/under
             # (e.g., player names from prop markets that slipped through parsing)
-            if outcome_norm not in ('home', 'away', 'draw', 'over', 'under'):
+            if outcome_norm not in ("home", "away", "draw", "over", "under"):
                 continue
 
             # Only swap positional-keyword outcomes when teams are in different
@@ -498,37 +523,61 @@ def store_polymarket_event(
                 outcome_norm = "away" if outcome_norm == "home" else "home"
 
             # Track moneyline home/away for post-storage validation
-            if market_type in ('moneyline', '1x2'):
-                if outcome_norm == 'home':
+            if market_type in ("moneyline", "1x2"):
+                if outcome_norm == "home":
                     poly_ml_home = odds
-                elif outcome_norm == 'away':
+                elif outcome_norm == "away":
                     poly_ml_away = odds
 
-            outcome_meta = outcome.get('provider_meta', {})
+            outcome_meta = outcome.get("provider_meta", {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
             # Swap poly_home/poly_away in metadata to match canonical home/away
-            if teams_swapped and provider_meta and 'poly_home' in provider_meta and 'poly_away' in provider_meta:
-                provider_meta['poly_home'], provider_meta['poly_away'] = provider_meta['poly_away'], provider_meta['poly_home']
+            if teams_swapped and provider_meta and "poly_home" in provider_meta and "poly_away" in provider_meta:
+                provider_meta["poly_home"], provider_meta["poly_away"] = (
+                    provider_meta["poly_away"],
+                    provider_meta["poly_home"],
+                )
             # CLOB microstructure (bid/ask/depth from order book)
-            bid_value = outcome.get('bid')
-            ask_value = outcome.get('ask')
-            depth_value = outcome.get('depth_usd')
+            bid_value = outcome.get("bid")
+            ask_value = outcome.get("ask")
+            depth_value = outcome.get("depth_usd")
 
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
-                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
+                odds_batch.add(
+                    matched_id,
+                    "polymarket",
+                    market_type,
+                    outcome_norm,
+                    odds,
+                    point_value,
+                    provider_meta=provider_meta,
+                    bid=bid_value,
+                    ask=ask_value,
+                    depth_usd=depth_value,
+                )
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
-                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
+                odds_new += upsert_odds(
+                    session,
+                    matched_id,
+                    "polymarket",
+                    market_type,
+                    outcome_norm,
+                    odds,
+                    point_value,
+                    provider_meta=provider_meta,
+                    bid=bid_value,
+                    ask=ask_value,
+                    depth_usd=depth_value,
+                )
 
     # Safety net: compare stored Polymarket ML odds against Pinnacle.
     # If favorites disagree with high confidence, odds are likely inverted.
     if poly_ml_home and poly_ml_away and sharp_odds_cache is not None:
         sharp = sharp_odds_cache.get(matched_id, {})
-        if 'home' in sharp and 'away' in sharp:
-            poly_fav = 'home' if poly_ml_home < poly_ml_away else 'away'
-            sharp_fav = 'home' if sharp['home'] < sharp['away'] else 'away'
-            sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
+        if "home" in sharp and "away" in sharp:
+            poly_fav = "home" if poly_ml_home < poly_ml_away else "away"
+            sharp_fav = "home" if sharp["home"] < sharp["away"] else "away"
+            sharp_ratio = max(sharp["home"], sharp["away"]) / min(sharp["home"], sharp["away"])
             if poly_fav != sharp_fav and sharp_ratio > 1.2:
                 logger.warning(
                     f"[polymarket] INVERSION DETECTED for {matched_id}: "
@@ -562,8 +611,6 @@ def _resolve_event_id(
     from ..matching.matcher import get_team_match_score
 
     default_id = generate_canonical_id(event.sport, event.home_team, event.away_team, event.start_time)
-
-    from ..matching.matcher import get_team_match_score
 
     # 1. Exact match on canonical ID — check memory cache first, DB fallback
     sport_events = event_cache.get(event.sport, {})
@@ -604,6 +651,7 @@ def _resolve_event_id(
     # Pre-filter by team name prefix for better performance
     # Uses word-level prefixes to handle reversed name order (e.g. "Cina Federico" vs "Federico Cina")
     if prefix_filter_length > 0 and len(candidates) > 10:
+
         def _word_prefixes(name: str) -> set:
             return {w[:prefix_filter_length].lower() for w in name.split() if len(w) >= prefix_filter_length}
 
@@ -659,7 +707,9 @@ def _resolve_event_id(
 
         if team1_score < min_individual_score or team2_score < min_individual_score:
             if is_new_best:
-                near_miss_reason = f"individual {team1_score:.0f}/{team2_score:.0f}, min required {min_individual_score}"
+                near_miss_reason = (
+                    f"individual {team1_score:.0f}/{team2_score:.0f}, min required {min_individual_score}"
+                )
             logger.debug(
                 f"[{provider}] Rejected match '{event.home_team} vs {event.away_team}' -> "
                 f"'{poly_home} vs {poly_away}': individual scores {team1_score:.0f}/{team2_score:.0f}"
@@ -680,9 +730,7 @@ def _resolve_event_id(
         candidate_is_youth = _is_youth_league(candidate_league)
         if candidate_league and event_league and event_is_youth != candidate_is_youth:
             if is_new_best:
-                near_miss_reason = (
-                    f"league tier mismatch: '{event.league}' vs '{candidate_league}'"
-                )
+                near_miss_reason = f"league tier mismatch: '{event.league}' vs '{candidate_league}'"
             logger.debug(
                 f"[{provider}] Rejected league tier mismatch "
                 f"'{event.home_team} vs {event.away_team}' ({event.league}) -> "
@@ -716,9 +764,7 @@ def _resolve_event_id(
 
     # 4. No match at all
     if require_match:
-        logger.debug(
-            f"[{provider}] Skipped '{event.home_team} vs {event.away_team}' - no sharp match"
-        )
+        logger.debug(f"[{provider}] Skipped '{event.home_team} vs {event.away_team}' - no sharp match")
         return None, False
 
     # Use default ID — sharp providers creating new events (expected, log at DEBUG)
@@ -736,8 +782,7 @@ def _resolve_event_id(
         )
     else:
         logger.debug(
-            f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
-            f"(0 candidates for {event.sport})"
+            f"[{provider}] No match for '{event.home_team} vs {event.away_team}' (0 candidates for {event.sport})"
         )
 
     return default_id, False
@@ -758,29 +803,35 @@ def _store_deferred_event(session, event: StandardEvent, provider: str):
     normalized_home = normalize_team_name(event.home_team)
     normalized_away = normalize_team_name(event.away_team)
 
-    existing = session.query(DeferredEvent).filter_by(
-        provider_id=provider,
-        sport=event.sport,
-        normalized_home=normalized_home,
-        normalized_away=normalized_away,
-        start_time=start_time,
-    ).first()
+    existing = (
+        session.query(DeferredEvent)
+        .filter_by(
+            provider_id=provider,
+            sport=event.sport,
+            normalized_home=normalized_home,
+            normalized_away=normalized_away,
+            start_time=start_time,
+        )
+        .first()
+    )
 
     if existing:
         existing.markets_json = json.dumps(event.markets)
         existing.attempt_count = 0  # Reset on fresh data
     else:
-        session.add(DeferredEvent(
-            provider_id=provider,
-            sport=event.sport,
-            league=event.league,
-            home_team=event.home_team,
-            away_team=event.away_team,
-            normalized_home=normalized_home,
-            normalized_away=normalized_away,
-            start_time=start_time,
-            markets_json=json.dumps(event.markets),
-        ))
+        session.add(
+            DeferredEvent(
+                provider_id=provider,
+                sport=event.sport,
+                league=event.league,
+                home_team=event.home_team,
+                away_team=event.away_team,
+                normalized_home=normalized_home,
+                normalized_away=normalized_away,
+                start_time=start_time,
+                markets_json=json.dumps(event.markets),
+            )
+        )
 
 
 def store_provider_event(
@@ -806,14 +857,21 @@ def store_provider_event(
     """
     # Resolve event ID via exact/fuzzy/swapped matching
     matched_id, fuzzy_swapped = _resolve_event_id(
-        session, event, provider, event_cache,
-        fuzzy_threshold, min_individual_score, prefix_filter_length, require_match,
-        max_asymmetry_diff, min_for_asymmetry_check,
+        session,
+        event,
+        provider,
+        event_cache,
+        fuzzy_threshold,
+        min_individual_score,
+        prefix_filter_length,
+        require_match,
+        max_asymmetry_diff,
+        min_for_asymmetry_check,
         date_index=date_index,
     )
 
     if matched_id is None:
-        if require_match and not getattr(event, '_from_deferred', False):
+        if require_match and not getattr(event, "_from_deferred", False):
             _store_deferred_event(session, event, provider)
         return (False, 0, 0)
 
@@ -828,7 +886,7 @@ def store_provider_event(
         start_dt = event.start_time
         if isinstance(start_dt, str):
             try:
-                start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+                start_dt = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 start_dt = None
 
@@ -853,8 +911,13 @@ def store_provider_event(
         date_str = _extract_date_str(event.start_time)
 
         _update_event_cache(
-            event_cache, date_index or {},
-            event.sport, final_id, db_event.home_team, db_event.away_team, date_str,
+            event_cache,
+            date_index or {},
+            event.sport,
+            final_id,
+            db_event.home_team,
+            db_event.away_team,
+            date_str,
             league=db_event.league or "",
         )
 
@@ -906,18 +969,14 @@ def store_provider_event(
     # Only use 1x2/moneyline — spread odds have inverted favorite semantics
     home_odds, away_odds = None, None
     for market in event.markets:
-        market_type = normalize_market(market.get('type', ''))
-        if market_type in ('1x2', 'moneyline'):
-            for outcome in market.get('outcomes', []):
-                norm = normalize_outcome(
-                    outcome.get('name', ''),
-                    event.home_team,
-                    event.away_team
-                )
-                if norm == 'home':
-                    home_odds = outcome.get('odds')
-                elif norm == 'away':
-                    away_odds = outcome.get('odds')
+        market_type = normalize_market(market.get("type", ""))
+        if market_type in ("1x2", "moneyline"):
+            for outcome in market.get("outcomes", []):
+                norm = normalize_outcome(outcome.get("name", ""), event.home_team, event.away_team)
+                if norm == "home":
+                    home_odds = outcome.get("odds")
+                elif norm == "away":
+                    away_odds = outcome.get("odds")
 
     # Track if we need an odds inversion swap (separate from team order swap)
     odds_inverted = False
@@ -934,8 +993,9 @@ def store_provider_event(
             canonical_away_odds = away_odds
 
         # Check for odds inversion against sharp source
-        if detect_and_fix_inversion(session, matched_id, provider, canonical_home_odds, canonical_away_odds,
-                                    sharp_odds_cache=sharp_odds_cache):
+        if detect_and_fix_inversion(
+            session, matched_id, provider, canonical_home_odds, canonical_away_odds, sharp_odds_cache=sharp_odds_cache
+        ):
             odds_inverted = True
 
     # Swap outcomes if:
@@ -945,9 +1005,7 @@ def store_provider_event(
     should_swap = fuzzy_swapped != odds_inverted  # XOR: swap if exactly one is true
 
     if should_swap:
-        logger.debug(
-            f"[{provider}] Swapping outcomes for {final_id} to align with canonical event"
-        )
+        logger.debug(f"[{provider}] Swapping outcomes for {final_id} to align with canonical event")
 
     is_sharp = provider.lower() in SHARP_PROVIDERS
 
@@ -966,12 +1024,12 @@ def store_provider_event(
         norm_away = event.away_team
 
     for market in event.markets:
-        market_type = normalize_market(market.get('type', ''))
+        market_type = normalize_market(market.get("type", ""))
         allowed = ENRICHMENT_MARKETS if provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
 
-        outcomes = market.get('outcomes', [])
+        outcomes = market.get("outcomes", [])
 
         # Swap home/away if team order differs from canonical event
         if should_swap:
@@ -985,14 +1043,14 @@ def store_provider_event(
 
         # Build provider_meta from market-level + outcome-level metadata
         # Used by placement system to resolve canonical events to provider-specific IDs
-        market_meta = market.get('provider_meta', {})
+        market_meta = market.get("provider_meta", {})
 
         # Inject provider's own team names into provider_meta.
         # If should_swap, the provider's home is the canonical away and vice versa.
         # Store in canonical order so frontend always gets (canonical_home_name, canonical_away_name).
         if should_swap:
-            _prov_home = event.away_team   # provider's away = canonical home
-            _prov_away = event.home_team   # provider's home = canonical away
+            _prov_home = event.away_team  # provider's away = canonical home
+            _prov_away = event.home_team  # provider's home = canonical away
         else:
             _prov_home = event.home_team
             _prov_away = event.away_team
@@ -1000,9 +1058,9 @@ def store_provider_event(
             market_meta = {**(market_meta or {}), "prov_home": _prov_home, "prov_away": _prov_away}
 
         for outcome in outcomes:
-            outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
-            odds_value = outcome.get('odds', 0)
-            point_value = outcome.get('point')
+            outcome_name = normalize_outcome(outcome.get("name", ""), norm_home, norm_away)
+            odds_value = outcome.get("odds", 0)
+            point_value = outcome.get("point")
 
             if odds_value <= 1:
                 continue
@@ -1014,21 +1072,42 @@ def store_provider_event(
             storage_provider = PROVIDER_CANONICAL.get(provider, provider)
 
             # Merge market-level and outcome-level provider_meta
-            outcome_meta = outcome.get('provider_meta', {})
+            outcome_meta = outcome.get("provider_meta", {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
 
             # CLOB microstructure (Polymarket only, None for others)
-            bid_value = outcome.get('bid')
-            ask_value = outcome.get('ask')
-            depth_value = outcome.get('depth_usd')
+            bid_value = outcome.get("bid")
+            ask_value = outcome.get("ask")
+            depth_value = outcome.get("depth_usd")
 
             # Use batch processor if available, otherwise individual upsert
             if odds_batch:
-                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
-                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
+                odds_batch.add(
+                    final_id,
+                    storage_provider,
+                    market_type,
+                    outcome_name,
+                    odds_value,
+                    point_value,
+                    provider_meta=provider_meta,
+                    bid=bid_value,
+                    ask=ask_value,
+                    depth_usd=depth_value,
+                )
             else:
-                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
-                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
+                odds_new += upsert_odds(
+                    session,
+                    final_id,
+                    storage_provider,
+                    market_type,
+                    outcome_name,
+                    odds_value,
+                    point_value,
+                    provider_meta=provider_meta,
+                    bid=bid_value,
+                    ask=ask_value,
+                    depth_usd=depth_value,
+                )
 
     # When using batch processor, we don't know the new count until flush
     # Return 0 for now - caller should get stats from batch processor
@@ -1089,18 +1168,20 @@ def upsert_odds(
         existing.depth_usd = depth_usd
         return 0
     else:
-        session.add(Odds(
-            event_id=event_id,
-            provider_id=provider,
-            market=market,
-            outcome=outcome,
-            odds=odds,
-            point=point,
-            provider_meta=provider_meta,
-            bid=bid,
-            ask=ask,
-            depth_usd=depth_usd,
-        ))
+        session.add(
+            Odds(
+                event_id=event_id,
+                provider_id=provider,
+                market=market,
+                outcome=outcome,
+                odds=odds,
+                point=point,
+                provider_meta=provider_meta,
+                bid=bid,
+                ask=ask,
+                depth_usd=depth_usd,
+            )
+        )
         return 1
 
 
@@ -1170,6 +1251,7 @@ class OddsBatchProcessor:
             return
 
         import time
+
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
         max_retries = 3
@@ -1179,17 +1261,15 @@ class OddsBatchProcessor:
                 return
             except SAOperationalError as e:
                 err_str = str(e).lower()
-                is_retryable = (
-                    "database is locked" in err_str
-                    or "deadlock detected" in err_str
-                )
+                is_retryable = "database is locked" in err_str or "deadlock detected" in err_str
                 if is_retryable and attempt < max_retries - 1:
-                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms
+                    wait = 0.05 * (2**attempt)  # 50ms, 100ms, 200ms
                     logger.warning(
-                        "OddsBatchProcessor: %s on flush (attempt %d/%d), "
-                        "retrying in %.0fms...",
+                        "OddsBatchProcessor: %s on flush (attempt %d/%d), retrying in %.0fms...",
                         "deadlock" if "deadlock" in err_str else "DB locked",
-                        attempt + 1, max_retries, wait * 1000
+                        attempt + 1,
+                        max_retries,
+                        wait * 1000,
                     )
                     self.session.rollback()
                     time.sleep(wait)
@@ -1201,33 +1281,38 @@ class OddsBatchProcessor:
         now = datetime.now(timezone.utc)
 
         # Fetch existing records in one query using 5-column key
-        from sqlalchemy import tuple_, and_, or_
+        from sqlalchemy import and_, or_
+
         existing_records = {}
         keys = list(self._pending.keys())
 
         if keys:
             # Query in batches to avoid SQLite limits
             for i in range(0, len(keys), 500):
-                batch_keys = keys[i:i + 500]
+                batch_keys = keys[i : i + 500]
                 # Build filter for 5-column key including point (handles NULL)
                 conditions = []
                 for event_id, provider_id, market, outcome, point in batch_keys:
                     if point is None:
-                        conditions.append(and_(
-                            Odds.event_id == event_id,
-                            Odds.provider_id == provider_id,
-                            Odds.market == market,
-                            Odds.outcome == outcome,
-                            Odds.point.is_(None)
-                        ))
+                        conditions.append(
+                            and_(
+                                Odds.event_id == event_id,
+                                Odds.provider_id == provider_id,
+                                Odds.market == market,
+                                Odds.outcome == outcome,
+                                Odds.point.is_(None),
+                            )
+                        )
                     else:
-                        conditions.append(and_(
-                            Odds.event_id == event_id,
-                            Odds.provider_id == provider_id,
-                            Odds.market == market,
-                            Odds.outcome == outcome,
-                            Odds.point == point
-                        ))
+                        conditions.append(
+                            and_(
+                                Odds.event_id == event_id,
+                                Odds.provider_id == provider_id,
+                                Odds.market == market,
+                                Odds.outcome == outcome,
+                                Odds.point == point,
+                            )
+                        )
 
                 if conditions:
                     existing = self.session.query(Odds).filter(or_(*conditions)).all()

@@ -22,11 +22,11 @@ Event detail page market labels:
   Handball: "Handicap" (spread), "Over/Under" (total)
 """
 
-from typing import Dict, Any, List, Optional
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
@@ -62,16 +62,23 @@ class InterwettenRetriever(BrowserRetriever):
     OUTCOME_MAP = {"1": "home", "X": "draw", "2": "away"}
 
     DETAIL_SPORTS = {
-        "football", "basketball", "ice_hockey", "tennis",
-        "handball", "volleyball", "american_football", "baseball", "rugby",
+        "football",
+        "basketball",
+        "ice_hockey",
+        "tennis",
+        "handball",
+        "volleyball",
+        "american_football",
+        "baseball",
+        "rugby",
     }
 
     SPREAD_LABELS = {"Asian Handicap", "Handicap", "Handicap Games"}
-    TOTAL_LABELS = {"How many goals", "Over/Under", "How many games"}
+    TOTAL_LABELS = {"How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål"}
 
     JS_EXTRACT_DETAIL_MARKETS = """() => {
         const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games"]);
-        const TOTAL = new Set(["How many goals", "Over/Under", "How many games"]);
+        const TOTAL = new Set(["How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål"]);
         const results = { spread: null, total: null, datetime: null };
 
         const timeEl = document.querySelector('[class*="gametime"]');
@@ -120,14 +127,14 @@ class InterwettenRetriever(BrowserRetriever):
     CONCURRENT_DETAIL_PAGES = 20
     MAX_DETAIL_EVENTS = 250
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         transport = transport or BrowserTransport(headless=True)
         super().__init__(config, transport=transport)
         self.base_url = config.get("site_url", "https://www.interwetten.se")
         # Interwetten only reads data-betting attributes — no CSS needed
         self.transport._BLOCK_STYLESHEETS = True
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """
         Extract events via two-pass DOM strategy with dynamic league discovery:
         1. Discover leagues from sport overview page
@@ -135,6 +142,7 @@ class InterwettenRetriever(BrowserRetriever):
         3. Event detail pages (concurrent): get spread + total markets
         """
         import time as _time
+
         extract_start = _time.time()
         sport_timeout = self.config.get("sport_timeout", 300)
 
@@ -186,9 +194,7 @@ class InterwettenRetriever(BrowserRetriever):
             worker_page = await league_page_pool.get()
             try:
                 async with league_sem:
-                    return await self._extract_league(
-                        worker_page, league["id"], league["slug"], sport
-                    )
+                    return await self._extract_league(worker_page, league["id"], league["slug"], sport)
             except Exception as e:
                 errors += 1
                 logger.debug(f"[{self.provider_id}] League {league.get('slug')} error: {e}")
@@ -199,8 +205,7 @@ class InterwettenRetriever(BrowserRetriever):
         # Scrape leagues in batches
         batch_size = 40
         for batch_start in range(0, len(leagues), batch_size):
-
-            batch = leagues[batch_start:batch_start + batch_size]
+            batch = leagues[batch_start : batch_start + batch_size]
             tasks = [extract_league_concurrent(lg) for lg in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -225,19 +230,19 @@ class InterwettenRetriever(BrowserRetriever):
         # --- Pass 2: Event detail pages (spread + total) ---
         if all_events and event_hrefs and sport in self.DETAIL_SPORTS:
             detail_count = await self._enrich_with_detail_markets(
-                page, all_events, event_hrefs, sport,
-                extract_start=extract_start, sport_timeout=None,
+                page,
+                all_events,
+                event_hrefs,
+                sport,
+                extract_start=extract_start,
+                sport_timeout=sport_timeout,
             )
             logger.info(
-                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} "
-                f"events with spread/total"
+                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} events with spread/total"
             )
 
         total_elapsed = _time.time() - extract_start
-        logger.info(
-            f"[{self.provider_id}] {sport}: completed in {total_elapsed:.0f}s — "
-            f"{len(all_events)} events"
-        )
+        logger.info(f"[{self.provider_id}] {sport}: completed in {total_elapsed:.0f}s — {len(all_events)} events")
 
         return all_events[:limit] if limit else all_events
 
@@ -248,7 +253,7 @@ class InterwettenRetriever(BrowserRetriever):
                 'button:has-text("ACCEPT ALL")',
                 'button:has-text("NECESSARY ONLY")',
                 'button:has-text("Acceptera alla")',
-                '.tru_overlay button',
+                ".tru_overlay button",
             ]:
                 btn = await page.query_selector(selector)
                 if btn:
@@ -259,7 +264,7 @@ class InterwettenRetriever(BrowserRetriever):
         except Exception:
             pass
 
-    async def _discover_leagues_from_overview(self, page, sport: str) -> List[dict]:
+    async def _discover_leagues_from_overview(self, page, sport: str) -> list[dict]:
         """Navigate to sport overview page and extract league links from DOM."""
         sport_info = self.SPORT_OVERVIEW_MAP.get(sport)
         if not sport_info:
@@ -299,7 +304,7 @@ class InterwettenRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Failed to discover leagues for {sport}: {e}")
             return []
 
-    def _filter_leagues(self, leagues: List[dict], target_leagues: set) -> List[dict]:
+    def _filter_leagues(self, leagues: list[dict], target_leagues: set) -> list[dict]:
         """Filter discovered leagues to match target_leagues names."""
         target_lower = {t.lower() for t in target_leagues}
         matched = []
@@ -313,14 +318,18 @@ class InterwettenRetriever(BrowserRetriever):
         return matched
 
     async def _extract_league(
-        self, page, league_id: int, league_slug: str, sport: str,
-    ) -> tuple[List[StandardEvent], Dict[str, str]]:
+        self,
+        page,
+        league_id: int,
+        league_slug: str,
+        sport: str,
+    ) -> tuple[list[StandardEvent], dict[str, str]]:
         """Extract events from a single league page."""
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
         try:
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             if not resp or resp.status != 200:
-                status = resp.status if resp else '?'
+                status = resp.status if resp else "?"
                 if status != 404:
                     logger.debug(f"[{self.provider_id}] League {league_slug}: HTTP {status}")
                 return [], {}
@@ -329,7 +338,7 @@ class InterwettenRetriever(BrowserRetriever):
             return [], {}
 
         try:
-            await page.wait_for_selector('.s-event', timeout=3000)
+            await page.wait_for_selector(".s-event", timeout=3000)
         except Exception:
             return [], {}
 
@@ -392,9 +401,13 @@ class InterwettenRetriever(BrowserRetriever):
         return events, hrefs
 
     async def _enrich_with_detail_markets(
-        self, page, events: List[StandardEvent],
-        event_hrefs: Dict[str, str], sport: str,
-        extract_start: float = 0, sport_timeout: float = 300,
+        self,
+        page,
+        events: list[StandardEvent],
+        event_hrefs: dict[str, str],
+        sport: str,
+        extract_start: float = 0,
+        sport_timeout: float = 300,
     ) -> int:
         """Navigate to event detail pages to extract spread and total markets."""
         todo = [(ev, event_hrefs[ev.id]) for ev in events if ev.id in event_hrefs]
@@ -406,7 +419,7 @@ class InterwettenRetriever(BrowserRetriever):
                 f"[{self.provider_id}] {sport}: capping detail enrichment from "
                 f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
             )
-            todo = todo[:self.MAX_DETAIL_EVENTS]
+            todo = todo[: self.MAX_DETAIL_EVENTS]
 
         enriched = 0
         errors = 0
@@ -432,6 +445,7 @@ class InterwettenRetriever(BrowserRetriever):
 
             # Time-budget check: stop if approaching sport timeout (if set)
             import time as _time
+
             if sport_timeout and extract_start and _time.time() - extract_start > sport_timeout * 0.90:
                 return
 
@@ -482,10 +496,11 @@ class InterwettenRetriever(BrowserRetriever):
 
         return enriched
 
-    def _parse_datetime_str(self, dt_str: str) -> Optional[datetime]:
+    def _parse_datetime_str(self, dt_str: str) -> datetime | None:
         """Parse interwetten datetime string like '15.03. - 15:00' into UTC datetime."""
         from zoneinfo import ZoneInfo
-        m = re.search(r'(\d{1,2})\.(\d{1,2})\.\s*-\s*(\d{1,2}):(\d{2})', dt_str)
+
+        m = re.search(r"(\d{1,2})\.(\d{1,2})\.\s*-\s*(\d{1,2}):(\d{2})", dt_str)
         if not m:
             return None
         try:
@@ -496,15 +511,18 @@ class InterwettenRetriever(BrowserRetriever):
             if now.month >= 11 and month <= 2:
                 year += 1
             return datetime(
-                year, month, day, hour, minute, 0,
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                0,
                 tzinfo=ZoneInfo("Europe/Vienna"),  # CET/CEST — DST-aware
             ).astimezone(timezone.utc)
         except (ValueError, TypeError):
             return None
 
-    def _parse_spread_market(
-        self, raw_market: dict, event: StandardEvent
-    ) -> Optional[dict]:
+    def _parse_spread_market(self, raw_market: dict, event: StandardEvent) -> dict | None:
         """Parse Asian Handicap / Handicap market into spread format."""
         outcomes = []
         point = None
@@ -529,7 +547,7 @@ class InterwettenRetriever(BrowserRetriever):
             except (ValueError, TypeError):
                 continue
 
-            match = re.search(r'\(([+-]?\d+\.?\d*)\)', name)
+            match = re.search(r"\(([+-]?\d+\.?\d*)\)", name)
             if match:
                 p = float(match.group(1))
                 point_by_side[outcome_name] = p
@@ -550,7 +568,7 @@ class InterwettenRetriever(BrowserRetriever):
             return {"type": "spread", "outcomes": outcomes}
         return None
 
-    def _parse_total_market(self, raw_market: dict) -> Optional[dict]:
+    def _parse_total_market(self, raw_market: dict) -> dict | None:
         """Parse How many goals / Over/Under market into total format."""
         outcomes = []
         point = None
@@ -567,14 +585,14 @@ class InterwettenRetriever(BrowserRetriever):
                 continue
 
             name_lower = name.lower()
-            if name_lower.startswith("over"):
+            if name_lower.startswith("over") or name_lower.startswith("över"):
                 outcome_name = "over"
             elif name_lower.startswith("under"):
                 outcome_name = "under"
             else:
                 continue
 
-            match = re.search(r'(\d+\.?\d*)', name)
+            match = re.search(r"(\d+\.?\d*)", name)
             outcome_point = None
             if match:
                 outcome_point = float(match.group(1))
@@ -588,8 +606,11 @@ class InterwettenRetriever(BrowserRetriever):
         return None
 
     def _parse_raw_event(
-        self, raw: dict, sport: str, league: str,
-    ) -> Optional[StandardEvent]:
+        self,
+        raw: dict,
+        sport: str,
+        league: str,
+    ) -> StandardEvent | None:
         """Parse a raw event dict from JavaScript extraction."""
         try:
             event_id = raw.get("id", "")
@@ -608,9 +629,7 @@ class InterwettenRetriever(BrowserRetriever):
                 try:
                     hour, minute = time_str.split(":")
                     now = datetime.now(timezone.utc)
-                    start_time = now.replace(
-                        hour=int(hour), minute=int(minute), second=0, microsecond=0
-                    )
+                    start_time = now.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
                     if start_time < now:
                         start_time += timedelta(days=1)
                 except (ValueError, TypeError):
@@ -656,6 +675,6 @@ class InterwettenRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Failed to parse event: {e}")
             return None
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — browser-based extraction."""
         return []

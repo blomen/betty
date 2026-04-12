@@ -21,18 +21,18 @@ Event outcome types:
 - Over → over, Under → under
 """
 
-from typing import Dict, Any, List, Optional
+import asyncio
+import base64
 import json
 import logging
 import os
-from datetime import datetime, timezone
-import asyncio
-
-import websockets
-import socks
 import socket
-import base64
+from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
+
+import socks
+import websockets
 
 from ..core import Retriever, StandardEvent
 from ..core.exceptions import RetryableError
@@ -76,14 +76,23 @@ class VbetRetriever(Retriever):
     SPORT_KEY_TO_ALIAS = {v: k for k, v in SPORT_ALIAS_MAP.items()}
 
     # BetConstruct market types we care about
-    # NOTE: "Handicap" (European 3-way) is deliberately excluded — it includes
+    # NOTE: "Handicap" (European 3-way) is deliberately excluded for football — it includes
     # a draw outcome that inflates home/away odds vs Pinnacle's 2-way Asian handicap.
-    # Only "AsianHandicap" is comparable to Pinnacle's spread lines.
+    # For 2-way sports (basketball, hockey, tennis, etc.) "Handicap" IS the spread.
     MARKET_TYPE_MAP = {
         "P1XP2": "1x2",
         "P1P2": "moneyline",
+        # Total variants across sports
         "OverUnder": "total",
+        "TotalPoints": "total",
+        "TotalGames": "total",
+        "Total": "total",
+        # Spread variants across sports
         "AsianHandicap": "spread",
+        "Handicap": "spread",
+        "GameHandicap": "spread",
+        "PointSpread": "spread",
+        "SetHandicap": "spread",
     }
 
     # BetConstruct event outcome types → our outcome names
@@ -99,7 +108,7 @@ class VbetRetriever(Retriever):
         "2": "away",
     }
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         self.ws_url = config.get("ws_url", "wss://eu-swarm-newm.vbet.se/")
         self.site_id = config.get("site_id", 1088)
@@ -115,7 +124,7 @@ class VbetRetriever(Retriever):
         """Not used — WebSocket-based extraction."""
         return ""
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — we override extract() completely."""
         return []
 
@@ -129,8 +138,8 @@ class VbetRetriever(Retriever):
         self,
         data: dict,
         sport: str,
-        market_types: List[str],
-    ) -> List[StandardEvent]:
+        market_types: list[str],
+    ) -> list[StandardEvent]:
         """
         Parse nested Swarm response into StandardEvents.
 
@@ -163,9 +172,7 @@ class VbetRetriever(Retriever):
                         continue
 
                     for game_id, game in games.items():
-                        event = self._parse_single_game(
-                            game, game_id, sport, league, market_types
-                        )
+                        event = self._parse_single_game(game, game_id, sport, league, market_types)
                         if event:
                             events.append(event)
 
@@ -177,8 +184,8 @@ class VbetRetriever(Retriever):
         game_id: str,
         sport: str,
         league: str,
-        market_types: List[str],
-    ) -> Optional[StandardEvent]:
+        market_types: list[str],
+    ) -> StandardEvent | None:
         """Parse a single game object into a StandardEvent."""
         try:
             team1 = game.get("team1_name", "")
@@ -221,6 +228,12 @@ class VbetRetriever(Retriever):
 
                 if not mkt_type:
                     continue  # Skip unsupported market types
+
+                # "Handicap" is 3-way (home/draw/away) in football — not comparable
+                # to Pinnacle's 2-way Asian Handicap. Skip for football only;
+                # for 2-way sports (basketball, tennis, etc.) it IS the spread.
+                if mkt_type_raw == "Handicap" and sport == "football":
+                    continue
 
                 # Get point/base for spread and total
                 mkt_base = market.get("base")
@@ -316,7 +329,7 @@ class VbetRetriever(Retriever):
     WS_MAX_RETRIES = 3
     WS_BACKOFF_BASE = 2  # seconds: 2, 4, 8
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """
         Extract events via BetConstruct Swarm WebSocket.
 
@@ -370,9 +383,7 @@ class VbetRetriever(Retriever):
                         tunnel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         tunnel.settimeout(15)
                         tunnel.connect((parsed_proxy.hostname, parsed_proxy.port or 12323))
-                        auth = base64.b64encode(
-                            f"{parsed_proxy.username}:{parsed_proxy.password}".encode()
-                        ).decode()
+                        auth = base64.b64encode(f"{parsed_proxy.username}:{parsed_proxy.password}".encode()).decode()
                         tunnel.sendall(
                             f"CONNECT {ws_host}:{ws_port} HTTP/1.1\r\n"
                             f"Host: {ws_host}:{ws_port}\r\n"
@@ -397,7 +408,7 @@ class VbetRetriever(Retriever):
             except Exception as e:
                 last_err = e
                 if attempt < self.WS_MAX_RETRIES - 1:
-                    delay = self.WS_BACKOFF_BASE * (2 ** attempt)
+                    delay = self.WS_BACKOFF_BASE * (2**attempt)
                     logger.debug(
                         f"[{self.provider_id}] WebSocket attempt {attempt + 1}/{self.WS_MAX_RETRIES} "
                         f"for {sport} failed: {e}, retrying in {delay}s"
@@ -409,21 +420,22 @@ class VbetRetriever(Retriever):
         logger.error(f"[{self.provider_id}] {error_msg}")
         raise RetryableError(error_msg)
 
-    async def _fetch_sport(
-        self, ws, sport: str, bc_alias: str, limit: int
-    ) -> List[StandardEvent]:
+    async def _fetch_sport(self, ws, sport: str, bc_alias: str, limit: int) -> list[StandardEvent]:
         """Fetch events for a sport over an established WebSocket connection."""
         all_events = []
 
         # 1. Request session
-        session_resp = await self._ws_request(ws, {
-            "command": "request_session",
-            "params": {
-                "source": 42,
-                "language": "eng",
-                "site_id": self.site_id,
+        session_resp = await self._ws_request(
+            ws,
+            {
+                "command": "request_session",
+                "params": {
+                    "source": 42,
+                    "language": "eng",
+                    "site_id": self.site_id,
+                },
             },
-        })
+        )
 
         if session_resp.get("code") != 0:
             logger.error(f"[{self.provider_id}] Session request failed: {session_resp}")
@@ -432,35 +444,40 @@ class VbetRetriever(Retriever):
         logger.debug(f"[{self.provider_id}] Session established")
 
         # 2. Fetch 1x2/moneyline markets
-        match_winner_resp = await self._ws_request(ws, {
-            "command": "get",
-            "params": {
-                "source": "betting",
-                "what": {
-                    "sport": ["id", "name", "alias"],
-                    "region": ["id", "name", "alias"],
-                    "competition": ["id", "name"],
-                    "game": [
-                        "id", "team1_name", "team2_name", "start_ts",
-                        "is_live", "type",
-                    ],
-                    "market": ["id", "type", "name", "base"],
-                    "event": ["id", "name", "price", "type", "base", "order"],
+        match_winner_resp = await self._ws_request(
+            ws,
+            {
+                "command": "get",
+                "params": {
+                    "source": "betting",
+                    "what": {
+                        "sport": ["id", "name", "alias"],
+                        "region": ["id", "name", "alias"],
+                        "competition": ["id", "name"],
+                        "game": [
+                            "id",
+                            "team1_name",
+                            "team2_name",
+                            "start_ts",
+                            "is_live",
+                            "type",
+                        ],
+                        "market": ["id", "type", "name", "base"],
+                        "event": ["id", "name", "price", "type", "base", "order"],
+                    },
+                    "where": {
+                        "sport": {"alias": bc_alias},
+                        "game": {"type": {"@in": [0, 2]}},
+                        "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
+                    },
+                    "subscribe": False,
                 },
-                "where": {
-                    "sport": {"alias": bc_alias},
-                    "game": {"type": {"@in": [0, 2]}},
-                    "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
-                },
-                "subscribe": False,
+                "rid": self._next_rid(),
             },
-            "rid": self._next_rid(),
-        })
+        )
 
         if match_winner_resp.get("code") == 0:
-            winner_events = self._parse_games(
-                match_winner_resp, sport, ["P1XP2", "P1P2"]
-            )
+            winner_events = self._parse_games(match_winner_resp, sport, ["P1XP2", "P1P2"])
             if not winner_events:
                 # WS returned success but no parseable events — log response structure
                 inner = match_winner_resp.get("data", {})
@@ -470,52 +487,75 @@ class VbetRetriever(Retriever):
                     f"(sport_keys={sport_keys[:3]}, resp_keys={list(match_winner_resp.keys())[:5]})"
                 )
             else:
-                logger.debug(
-                    f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
-                )
+                logger.debug(f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline")
             all_events.extend(winner_events)
         else:
-            logger.warning(
-                f"[{self.provider_id}] Match winner request failed: code={match_winner_resp.get('code')}"
-            )
+            logger.warning(f"[{self.provider_id}] Match winner request failed: code={match_winner_resp.get('code')}")
 
         # 3. Fetch spread/total markets
-        spread_total_resp = await self._ws_request(ws, {
-            "command": "get",
-            "params": {
-                "source": "betting",
-                "what": {
-                    "sport": ["id", "name", "alias"],
-                    "region": ["id", "name"],
-                    "competition": ["id", "name"],
-                    "game": [
-                        "id", "team1_name", "team2_name", "start_ts",
-                        "is_live", "type",
-                    ],
-                    "market": ["id", "type", "name", "base"],
-                    "event": ["id", "name", "price", "type", "base", "order"],
-                },
-                "where": {
-                    "sport": {"alias": bc_alias},
-                    "game": {
-                        "type": {"@in": [0, 2]},
+        spread_total_resp = await self._ws_request(
+            ws,
+            {
+                "command": "get",
+                "params": {
+                    "source": "betting",
+                    "what": {
+                        "sport": ["id", "name", "alias"],
+                        "region": ["id", "name"],
+                        "competition": ["id", "name"],
+                        "game": [
+                            "id",
+                            "team1_name",
+                            "team2_name",
+                            "start_ts",
+                            "is_live",
+                            "type",
+                        ],
+                        "market": ["id", "type", "name", "base"],
+                        "event": ["id", "name", "price", "type", "base", "order"],
                     },
-                    "market": {
-                        "type": {"@in": ["OverUnder", "AsianHandicap"]},
+                    "where": {
+                        "sport": {"alias": bc_alias},
+                        "game": {
+                            "type": {"@in": [0, 2]},
+                        },
+                        # No market type filter — let _parse_single_game filter
+                        # via MARKET_TYPE_MAP. BetConstruct uses different type
+                        # strings per sport (OverUnder for football, TotalPoints
+                        # for basketball, etc.)
                     },
+                    "subscribe": False,
                 },
-                "subscribe": False,
+                "rid": self._next_rid(),
             },
-            "rid": self._next_rid(),
-        })
+        )
 
         if spread_total_resp.get("code") == 0:
-            st_events = self._parse_games(
-                spread_total_resp, sport, ["OverUnder", "AsianHandicap"]
-            )
-            logger.debug(
-                f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total"
-            )
+            # Log discovered market types for this sport (debug-level, for discovery)
+            discovered_types = set()
+            inner = spread_total_resp.get("data", {}).get("data", spread_total_resp.get("data", {}))
+            for s_obj in (inner.get("sport", inner) if isinstance(inner, dict) else {}).values():
+                if not isinstance(s_obj, dict):
+                    continue
+                for r in (s_obj.get("region", {}) or {}).values():
+                    if not isinstance(r, dict):
+                        continue
+                    for c in (r.get("competition", {}) or {}).values():
+                        if not isinstance(c, dict):
+                            continue
+                        for g in (c.get("game", {}) or {}).values():
+                            if not isinstance(g, dict):
+                                continue
+                            for m in (g.get("market", {}) or {}).values():
+                                if isinstance(m, dict) and m.get("type"):
+                                    discovered_types.add(m["type"])
+            unmapped = discovered_types - set(self.MARKET_TYPE_MAP.keys())
+            if unmapped:
+                logger.info(f"[{self.provider_id}] {sport}: unmapped market types: {sorted(unmapped)}")
+
+            spread_total_types = [k for k, v in self.MARKET_TYPE_MAP.items() if v in ("spread", "total")]
+            st_events = self._parse_games(spread_total_resp, sport, spread_total_types)
+            logger.debug(f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total")
 
             if not st_events and all_events:
                 logger.info(
@@ -531,9 +571,7 @@ class VbetRetriever(Retriever):
                 else:
                     all_events.append(st_event)
         else:
-            logger.warning(
-                f"[{self.provider_id}] Spread/total request failed: code={spread_total_resp.get('code')}"
-            )
+            logger.warning(f"[{self.provider_id}] Spread/total request failed: code={spread_total_resp.get('code')}")
 
         # Apply limit
         if limit and len(all_events) > limit:

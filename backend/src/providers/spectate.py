@@ -1,13 +1,15 @@
-from typing import List, Any, Optional, Dict, Set
+import asyncio
+import json
 import logging
 import re
-import json
-import asyncio
-from datetime import datetime, timedelta
-from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from datetime import datetime
+from typing import Any
+
+from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
+
 
 class SpectateRetriever(BrowserRetriever):
     """
@@ -21,30 +23,49 @@ class SpectateRetriever(BrowserRetriever):
     No event detail API exists — the SPA uses authenticated /load/state
     which requires BankID login. This is a confirmed platform limitation.
     """
+
     # Track unknown market names for discovery (class-level to avoid noise)
     _logged_unknown_markets: set = set()
 
-    SPORT_SLUGS: Dict[str, str] = {
-        "football": "football", "basketball": "basketball", "tennis": "tennis",
-        "ice_hockey": "ice-hockey", "american_football": "american-football",
-        "baseball": "baseball", "mma": "mma", "esports": "esports",
-        "rugby": "rugby-union", "cricket": "cricket", "boxing": "boxing",
+    SPORT_SLUGS: dict[str, str] = {
+        "football": "football",
+        "basketball": "basketball",
+        "tennis": "tennis",
+        "ice_hockey": "ice-hockey",
+        "american_football": "american-football",
+        "baseball": "baseball",
+        "mma": "mma",
+        "esports": "esports",
+        "rugby": "rugby-union",
+        "cricket": "cricket",
+        "boxing": "boxing",
         "motorsports": "motor-racing",
-        "handball": "handball", "volleyball": "volleyball",
-        "darts": "darts", "table_tennis": "table-tennis",
+        "handball": "handball",
+        "volleyball": "volleyball",
+        "darts": "darts",
+        "table_tennis": "table-tennis",
     }
 
-    SITE_SLUGS: Dict[str, str] = {
-        "football": "fotboll", "basketball": "basket", "tennis": "tennis",
-        "ice_hockey": "ishockey", "american_football": "amerikansk-fotboll",
-        "baseball": "baseboll", "mma": "mma", "esports": "esports",
-        "rugby": "rugby-union", "cricket": "cricket", "boxing": "boxning",
+    SITE_SLUGS: dict[str, str] = {
+        "football": "fotboll",
+        "basketball": "basket",
+        "tennis": "tennis",
+        "ice_hockey": "ishockey",
+        "american_football": "amerikansk-fotboll",
+        "baseball": "baseboll",
+        "mma": "mma",
+        "esports": "esports",
+        "rugby": "rugby-union",
+        "cricket": "cricket",
+        "boxing": "boxning",
         "motorsports": "motorsport",
-        "handball": "handboll", "volleyball": "volleyboll",
-        "darts": "dart", "table_tennis": "bordtennis",
+        "handball": "handboll",
+        "volleyball": "volleyboll",
+        "darts": "dart",
+        "table_tennis": "bordtennis",
     }
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
 
         self.api_base: str = config.get("api_base", "https://spectate-web.888sport.se/spectate")
@@ -53,13 +74,13 @@ class SpectateRetriever(BrowserRetriever):
         self.site_url: str = raw_site_url.rstrip("/")
 
         # ✅ OPTIMIZATION: Digest cache (TTL: 5 minutes)
-        self._digest_cache: Dict[str, Dict] = {}
-        self._digest_cache_time: Dict[str, datetime] = {}
+        self._digest_cache: dict[str, dict] = {}
+        self._digest_cache_time: dict[str, datetime] = {}
         self._digest_cache_ttl: int = 300  # 5 minutes in seconds
 
         # ✅ OPTIMIZATION: Bucket response cache (TTL: 2 minutes)
-        self._bucket_cache: Dict[str, List[StandardEvent]] = {}
-        self._bucket_cache_time: Dict[str, datetime] = {}
+        self._bucket_cache: dict[str, list[StandardEvent]] = {}
+        self._bucket_cache_time: dict[str, datetime] = {}
         self._bucket_cache_ttl: int = 120  # 2 minutes (shorter for event data)
 
     async def _ensure_sport_init(self, sport: str) -> None:
@@ -79,17 +100,18 @@ class SpectateRetriever(BrowserRetriever):
                 await self.transport.page.wait_for_timeout(3000)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Page load error: {e}")
+                return  # Don't mark ready — allow retry on next sport call
 
             self._session_ready = True
             self._initialized_pages.add("spectate_session")
             logger.debug(f"[{self.provider_id}] Session initialized")
 
-    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> list[StandardEvent]:
         # 1. Ensure session is initialized for this sport
         await self._ensure_sport_init(sport)
 
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
-        all_events: List[StandardEvent] = []
+        all_events: list[StandardEvent] = []
 
         # ✅ OPTIMIZATION 1: Check digest cache first
         digest = None
@@ -110,7 +132,7 @@ class SpectateRetriever(BrowserRetriever):
                 self._digest_cache_time[sport] = datetime.now()
 
         # ✅ OPTIMIZATION 2: Better bucket filtering to avoid 400 errors
-        buckets_to_fetch: List[str] = []
+        buckets_to_fetch: list[str] = []
 
         if isinstance(digest, dict):
             # Prioritize near-term buckets (only if count > 0)
@@ -132,8 +154,8 @@ class SpectateRetriever(BrowserRetriever):
             buckets_to_fetch = ["upcoming"]
 
         # Deduplicate buckets
-        unique_buckets: List[str] = []
-        seen_buckets: Set[str] = set()
+        unique_buckets: list[str] = []
+        seen_buckets: set[str] = set()
         for b in buckets_to_fetch:
             if b not in seen_buckets:
                 unique_buckets.append(b)
@@ -142,9 +164,9 @@ class SpectateRetriever(BrowserRetriever):
         logger.debug(f"[{self.provider_id}] {sport}: Crawling {len(unique_buckets)} buckets with events")
 
         # ✅ OPTIMIZATION 3: Fetch buckets in parallel instead of sequentially
-        seen_events: Set[str] = set()
+        seen_events: set[str] = set()
 
-        async def fetch_bucket(bucket: str) -> List[StandardEvent]:
+        async def fetch_bucket(bucket: str) -> list[StandardEvent]:
             """Fetch events from a single bucket with caching."""
             cache_key = f"{sport}:{bucket}"
 
@@ -185,13 +207,15 @@ class SpectateRetriever(BrowserRetriever):
 
         return all_events
 
-    async def _fetch_api(self, endpoint: str, method: str = "GET", data: Any = None, headers: Optional[Dict[str, str]] = None) -> Any:
+    async def _fetch_api(
+        self, endpoint: str, method: str = "GET", data: Any = None, headers: dict[str, str] | None = None
+    ) -> Any:
         url = f"{self.api_base}{endpoint}"
 
         base_headers = {
-             "accept": "application/json",
-             "origin": self.site_url,
-             "referer": f"{self.site_url}/",
+            "accept": "application/json",
+            "origin": self.site_url,
+            "referer": f"{self.site_url}/",
         }
         if headers:
             base_headers.update(headers)
@@ -223,7 +247,7 @@ class SpectateRetriever(BrowserRetriever):
                 return {}
             elif response.status == 429:
                 logger.warning(f"[{self.provider_id}] 429 Rate Limited. Backing off.")
-                await asyncio.sleep(2) # Simple backoff
+                await asyncio.sleep(2)  # Simple backoff
                 return {}
             elif response.status not in (200, 201):
                 logger.warning(f"[{self.provider_id}] {method} {url} returned {response.status}")
@@ -243,10 +267,11 @@ class SpectateRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] API fetch failed: {e}")
             return {}
 
-    def parse(self, data: Any, sport: str, league: str = "") -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str, league: str = "") -> list[StandardEvent]:
         """Parse API response data into StandardEvents."""
-        events: List[StandardEvent] = []
-        if not data: return events
+        events: list[StandardEvent] = []
+        if not data:
+            return events
 
         # unexpected types
         if not isinstance(data, (dict, list)):
@@ -261,42 +286,58 @@ class SpectateRetriever(BrowserRetriever):
         # Handle Dict with 'events' key
         events_data = data.get("events")
         if events_data:
-            items = events_data.values() if isinstance(events_data, dict) else events_data if isinstance(events_data, list) else []
+            items = (
+                events_data.values()
+                if isinstance(events_data, dict)
+                else events_data
+                if isinstance(events_data, list)
+                else []
+            )
             for ev_data in items:
                 if isinstance(ev_data, dict):
                     ev = self._parse_event(ev_data, sport, league)
-                    if ev: events.append(ev)
-        
+                    if ev:
+                        events.append(ev)
+
         # Handle single event dict structure (Top-level)
         # Note: Spectate usually wraps in 'events', but sometimes for single event requests it's direct
         if not events and isinstance(data, dict) and data.get("name") and data.get("id") and data.get("markets"):
             ev = self._parse_event(data, sport, league)
-            if ev: events.append(ev)
-            
+            if ev:
+                events.append(ev)
+
         return events
 
-    def _parse_event(self, event_data: dict, sport: str, league: str) -> Optional[StandardEvent]:
+    def _parse_event(self, event_data: dict, sport: str, league: str) -> StandardEvent | None:
         try:
-            if event_data.get("inplay"): return None
+            if event_data.get("inplay"):
+                return None
 
             ev_id = str(event_data.get("id", ""))
             name = event_data.get("name", "")
             start_time = event_data.get("start_time", "")
-            
+
             # Competitors Logic
             competitors = event_data.get("competitors", {})
             home, away = "", ""
-            comps = competitors.values() if isinstance(competitors, dict) else competitors if isinstance(competitors, list) else []
-            
+            comps = (
+                competitors.values()
+                if isinstance(competitors, dict)
+                else competitors
+                if isinstance(competitors, list)
+                else []
+            )
+
             for c in comps:
-                if not isinstance(c, dict): continue
-                if c.get("home") or c.get("is_home_team"): 
+                if not isinstance(c, dict):
+                    continue
+                if c.get("home") or c.get("is_home_team"):
                     home = c.get("name", "")
-                else: 
+                else:
                     away = c.get("name", "")
-            
+
             # Fallback name split
-            if (not home or not away):
+            if not home or not away:
                 if " v " in name:
                     parts = name.split(" v ", 1)
                     home, away = parts[0].strip(), parts[1].strip()
@@ -322,22 +363,22 @@ class SpectateRetriever(BrowserRetriever):
                 id=ev_id,
                 name=name,
                 home_team=home,
-                away_team=away, 
+                away_team=away,
                 sport=sport,
                 league=event_data.get("tournament_name") or event_data.get("tournament", {}).get("name") or league,
-                start_time=start_time, 
-                markets=markets, 
-                provider=self.provider_id
+                start_time=start_time,
+                markets=markets,
+                provider=self.provider_id,
             )
-        except Exception as e:
+        except Exception:
             # logger.debug(f"Event parsing error: {e}")
             return None
 
-    def _parse_markets(self, event_data: dict, home_raw: str = "", away_raw: str = "") -> List[dict]:
-        markets: List[dict] = []
+    def _parse_markets(self, event_data: dict, home_raw: str = "", away_raw: str = "") -> list[dict]:
+        markets: list[dict] = []
         m_data = event_data.get("markets", {})
         items = m_data.values() if isinstance(m_data, dict) else m_data if isinstance(m_data, list) else []
-        
+
         # Standardized Mappings
         MARKET_MAP = {
             # 1x2 / moneyline
@@ -382,7 +423,8 @@ class SpectateRetriever(BrowserRetriever):
         }
 
         for m in items:
-            if not isinstance(m, dict): continue
+            if not isinstance(m, dict):
+                continue
             raw_name = m.get("name", "").lower().strip()
 
             m_type = MARKET_MAP.get(raw_name)
@@ -399,31 +441,33 @@ class SpectateRetriever(BrowserRetriever):
             s_data = m.get("selections", {})
             s_items = s_data.values() if isinstance(s_data, dict) else s_data if isinstance(s_data, list) else []
 
-            outcomes: List[dict] = []
+            outcomes: list[dict] = []
             for s in s_items:
-                if not isinstance(s, dict) or not s.get("active", True): continue
+                if not isinstance(s, dict) or not s.get("active", True):
+                    continue
                 try:
                     price = s.get("decimal_price") or s.get("price")
                     if not price:
                         continue
                     sel_name = s.get("name", "")
-                    outcome: Dict[str, Any] = {"odds": round(float(price), 3)}
+                    outcome: dict[str, Any] = {"odds": round(float(price), 3)}
 
                     if m_type == "total":
-                        # "Over (5.5)" / "Under (5.5)" → name=over/under, point=5.5
-                        match = re.match(r'(over|under)\s*\(([0-9.]+)\)', sel_name, re.IGNORECASE)
+                        # "Over (5.5)" / "Under (5.5)" or Swedish "Över 5.5" / "Under 5.5"
+                        match = re.match(r"(over|under|över)\s*\(?\s*([0-9.]+)\s*\)?", sel_name, re.IGNORECASE)
                         if match:
-                            outcome["name"] = match.group(1).lower()
+                            raw_name = match.group(1).lower()
+                            outcome["name"] = "over" if raw_name == "över" else raw_name
                             outcome["point"] = float(match.group(2))
                         else:
                             continue
                     elif m_type == "spread":
                         # "Team (+2.5)" / "Team (-2.5)" → name=home/away, point=±2.5
-                        match = re.search(r'\(([+-]?[0-9.]+)\)', sel_name)
+                        match = re.search(r"\(([+-]?[0-9.]+)\)", sel_name)
                         if match:
                             point_val = float(match.group(1))
                             # Strip point from name for team matching
-                            team_part = re.sub(r'\s*\([+-]?[0-9.]+\)\s*', '', sel_name).strip().lower()
+                            team_part = re.sub(r"\s*\([+-]?[0-9.]+\)\s*", "", sel_name).strip().lower()
                             if home_raw and team_part == home_raw.lower():
                                 outcome["name"] = "home"
                             elif away_raw and team_part == away_raw.lower():
@@ -453,15 +497,29 @@ class SpectateRetriever(BrowserRetriever):
     def _fuzzy_market_match(name: str) -> str | None:
         """Catch spread/total markets not in the static MARKET_MAP via keyword matching."""
         # Spread keywords (Swedish + English)
-        if any(kw in name for kw in (
-            "handicap", "handikapp", "pucklinje", "run line",
-            "spread", "asian handicap",
-        )):
+        if any(
+            kw in name
+            for kw in (
+                "handicap",
+                "handikapp",
+                "pucklinje",
+                "run line",
+                "spread",
+                "asian handicap",
+            )
+        ):
             return "spread"
         # Total keywords (Swedish + English)
-        if any(kw in name for kw in (
-            "över/under", "over/under", "totalt antal",
-            "total goals", "total points", "total mål",
-        )):
+        if any(
+            kw in name
+            for kw in (
+                "över/under",
+                "over/under",
+                "totalt antal",
+                "total goals",
+                "total points",
+                "total mål",
+            )
+        ):
             return "total"
         return None
