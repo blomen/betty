@@ -244,7 +244,6 @@ async def _run(config, topstepx_client, relay, stream, adapter):
 
         time.sleep(3)
         webbrowser.open(f"http://127.0.0.1:{LOCAL_DASHBOARD_PORT}")
-        webbrowser.open("https://topstepx.com/trade")
 
     threading.Thread(target=_open_browser, daemon=True, name="browser-open").start()
 
