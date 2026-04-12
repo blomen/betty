@@ -11,6 +11,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/hooks/useApi';
+import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels } from '@/lib/indicators';
 import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } from '@/types';
 
 const INITIAL_DAYS = 3;
@@ -930,113 +931,71 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawOverlays, interval]);
 
-  // Fetch VP curve data for all timeframes — refetch when interval changes (chart recreated)
+  // --- Client-side indicator computation from candle data ---
+  // Recompute VP, VWAP, session levels whenever candles change (instant, no server round-trip)
+  const recomputeIndicators = useCallback(() => {
+    const candles = candlesRef.current;
+    if (!candles.length) return;
+
+    // Session VP: compute from today's candles
+    const today = todayCET();
+    const todayCandles = candles.filter(c => epochToCETDate(c.t) === today);
+    if (todayCandles.length > 0) {
+      const sessionVP = computeVP(todayCandles);
+      if (sessionVP.levels.length > 0) {
+        vpDataRef.current.set('session', sessionVP);
+      }
+    }
+
+    // Historical per-day VP: compute for all non-today days from loaded candles
+    const histVPs = computeVPByDay(candles.filter(c => epochToCETDate(c.t) !== today));
+    for (const [date, vp] of histVPs) {
+      vpHistoryRef.current.set(date, vp);
+    }
+
+    // Session levels (PDH/PDL, IB, Tokyo/London H/L): compute from candles
+    const levels = computeSessionLevels(candles);
+    if (levels.length > 0) {
+      sessionLevelsRef.current = levels;
+      setSlLoaded(true);
+    }
+
+    setVpLoaded(n => n + 1);
+  }, []);
+
+  // Trigger recompute when candles are loaded or updated
+  const lastCandleCountRef = useRef(0);
+  useEffect(() => {
+    const count = candlesRef.current.length;
+    if (count !== lastCandleCountRef.current) {
+      lastCandleCountRef.current = count;
+      recomputeIndicators();
+    }
+  });
+
+  // Fetch weekly/monthly VP from server (needs more data than loaded candles)
   useEffect(() => {
     let cancelled = false;
     for (const overlay of VP_OVERLAYS) {
+      if (overlay.tf === 'session') continue; // computed client-side
       api.getVP(overlay.tf).then(data => {
         if (!cancelled && data.levels?.length) {
           vpDataRef.current.set(overlay.tf, data);
           setVpLoaded(n => n + 1);
-          drawOverlays();
         }
-      }).catch(() => { /* skip if not available */ });
+      }).catch(() => {});
     }
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interval]);
 
-  // Live refresh: re-fetch session VP every 30s during market hours
+  // Live refresh: recompute session VP from candles every 30s during market hours
   useEffect(() => {
     const timer = window.setInterval(() => {
-      // Check if market hours (15:30-22:00 CET, weekday)
-      const now = new Date();
-      const cetStr = now.toLocaleString('en-US', { timeZone: 'Europe/Stockholm', hour12: false });
-      const cetDate = new Date(cetStr);
-      const cetHour = cetDate.getHours();
-      const cetMin = cetDate.getMinutes();
-      const cetMinutes = cetHour * 60 + cetMin;
-      const day = cetDate.getDay();
-      if (day === 0 || day === 6) return; // weekend
-      if (cetMinutes < 15 * 60 + 30 || cetMinutes >= 22 * 60) return; // outside RTH
-
-      api.getVP('session').then(data => {
-        if (data.levels?.length) {
-          vpDataRef.current.set('session', data);
-          setVpLoaded(n => n + 1);
-        }
-      }).catch(() => {});
+      recomputeIndicators();
     }, 30_000);
     return () => clearInterval(timer);
-  }, []);
-
-  // Fetch historical per-day VP when visible candles span past days
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart) return;
-
-    let debounceTimer: number | undefined;
-    const fetchVisibleDayVPs = () => {
-      const candles = candlesRef.current;
-      if (!candles.length) return;
-
-      const range = chart.timeScale().getVisibleLogicalRange();
-      if (!range) return;
-
-      // Get visible candle date range
-      const startIdx = Math.max(0, Math.floor(range.from));
-      const endIdx = Math.min(candles.length - 1, Math.ceil(range.to));
-
-      const visibleDates = new Set<string>();
-      const today = todayCET();
-      for (let i = startIdx; i <= endIdx; i++) {
-        const d = epochToCETDate(candles[i].t);
-        if (d !== today) visibleDates.add(d);
-      }
-
-      // Fetch VP for dates we haven't fetched yet
-      for (const date of visibleDates) {
-        if (vpHistoryFetchedRef.current.has(date)) continue;
-        vpHistoryFetchedRef.current.add(date);
-
-        api.getVP('session', date).then(data => {
-          if (data.levels?.length) {
-            vpHistoryRef.current.set(date, data);
-            setVpLoaded(n => n + 1);
-          }
-        }).catch(() => {});
-      }
-    };
-
-    const onRangeChange = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = window.setTimeout(fetchVisibleDayVPs, 300);
-    };
-
-    chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
-    // Initial fetch for currently visible range
-    fetchVisibleDayVPs();
-
-    return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interval]);
-
-  // Fetch session levels for multi-day overlay — refetch when interval changes (chart recreated)
-  useEffect(() => {
-    let cancelled = false;
-    api.getSessionLevels(INITIAL_DAYS + 2).then(res => {
-      if (!cancelled && res.days?.length) {
-        sessionLevelsRef.current = res.days;
-        setSlLoaded(true);
-        drawOverlays();
-      }
-    }).catch(err => { console.warn('[SessionLevels] fetch failed:', err); });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interval]);
+  }, [recomputeIndicators]);
 
   // Fetch per-session TPO letter grid data — refetch when interval changes (chart recreated)
   useEffect(() => {
@@ -1161,53 +1120,48 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
       return;
     }
 
-    // Fetch tick-level VWAP from backend
-    let cancelled = false;
-    api.getVWAP(interval).then(res => {
-      if (cancelled || !chartRef.current) return;
+    // Compute VWAP client-side from loaded candles (instant, no server round-trip)
+    const candles = candlesRef.current;
+    if (!candles.length) return;
 
-      // Each day is a separate segment — no connecting lines across midnight resets
-      const days = res.vwap_days ?? (res.vwap?.length ? [res.vwap] : []);
-      if (!days.length) return;
+    const days = computeVWAP(candles);
+    if (!days.length) return;
 
-      const bands: Array<{ color: string; width: 1 | 2; style: number; title: string; key: string }> = [
-        { color: '#EAB308', width: 2, style: LineStyle.Solid, title: 'VWAP', key: 'vwap' },
-        { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '+σ', key: 'sd1_u' },
-        { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '-σ', key: 'sd1_l' },
-        { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '+2σ', key: 'sd2_u' },
-        { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '-2σ', key: 'sd2_l' },
-        { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '+3σ', key: 'sd3_u' },
-        { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '-3σ', key: 'sd3_l' },
-      ];
+    const bands: Array<{ color: string; width: 1 | 2; style: number; title: string; key: string }> = [
+      { color: '#EAB308', width: 2, style: LineStyle.Solid, title: 'VWAP', key: 'vwap' },
+      { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '+σ', key: 'sd1_u' },
+      { color: 'rgba(234,179,8,0.5)', width: 1, style: LineStyle.Solid, title: '-σ', key: 'sd1_l' },
+      { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '+2σ', key: 'sd2_u' },
+      { color: 'rgba(234,179,8,0.25)', width: 1, style: LineStyle.Dashed, title: '-2σ', key: 'sd2_l' },
+      { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '+3σ', key: 'sd3_u' },
+      { color: 'rgba(234,179,8,0.15)', width: 1, style: LineStyle.Dotted, title: '-3σ', key: 'sd3_l' },
+    ];
 
-      for (const dayData of days) {
-        for (const band of bands) {
-          const seen = new Set<number>();
-          const data: LineData<Time>[] = dayData
-            .map(p => ({ time: toLocalEpoch(p.t) as Time, value: (p as unknown as Record<string, number>)[band.key] }))
-            .filter(d => {
-              const t = d.time as number;
-              if (seen.has(t)) return false;
-              seen.add(t);
-              return true;
-            })
-            .sort((a, b) => (a.time as number) - (b.time as number));
+    for (const dayData of days) {
+      for (const band of bands) {
+        const seen = new Set<number>();
+        const data: LineData<Time>[] = dayData
+          .map(p => ({ time: toLocalEpoch(p.t) as Time, value: (p as unknown as Record<string, number>)[band.key] }))
+          .filter(d => {
+            const t = d.time as number;
+            if (seen.has(t)) return false;
+            seen.add(t);
+            return true;
+          })
+          .sort((a, b) => (a.time as number) - (b.time as number));
 
-          const s = chartRef.current!.addLineSeries({
-            color: band.color,
-            lineWidth: band.width,
-            lineStyle: band.style,
-            lastValueVisible: false,
-            priceLineVisible: false,
-            crosshairMarkerVisible: false,
-          } as any);
-          s.setData(data);
-          vwapSeriesRefs.current.push(s);
-        }
+        const s = chart.addLineSeries({
+          color: band.color,
+          lineWidth: band.width,
+          lineStyle: band.style,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        } as any);
+        s.setData(data);
+        vwapSeriesRefs.current.push(s);
       }
-    }).catch(err => console.warn('Failed to load VWAP:', err));
-
-    return () => { cancelled = true; };
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, hiddenLevels, interval]);
 
