@@ -24,7 +24,7 @@ from ..bankroll.stake_calculator import (
     calculate_stake,
     dynamic_min_stake,
 )
-from ..constants import PLATFORM_GROUPS
+from ..constants import PLATFORM_GROUPS, PROVIDER_CANONICAL
 from ..repositories.opportunity_repo import OpportunityRepo
 from ..repositories.profile_repo import ProfileRepo
 from ..services.play_service import derive_lifecycle
