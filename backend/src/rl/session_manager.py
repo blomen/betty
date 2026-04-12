@@ -8,21 +8,21 @@ Sits on top of a frozen model (DQN or GBT) and manages the execution layer:
 
 The model itself never changes — SessionManager is pure execution logic.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Union
 
 import numpy as np
 import torch
 
 from .agent.gbt_model import GBTModel
 from .agent.network import DQNetwork
-from .config import Action, TICK_SIZE, STOP_TICKS
+from .config import STOP_TICKS, TICK_SIZE, Action
 from .data.normalization import RunningNormalizer
-from .features.observation import build_observation, OBSERVATION_DIM
+from .features.observation import build_observation
 from .zone_builder import Zone
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ class PositionSide(str, Enum):
 @dataclass
 class Position:
     """An open position with entry, stop, and target tracking."""
+
     side: PositionSide
     entry_price: float
     stop_price: float
@@ -55,6 +56,7 @@ class Position:
 @dataclass
 class TradeRecord:
     """Completed trade for session P&L tracking."""
+
     side: str
     entry_price: float
     exit_price: float
@@ -69,6 +71,7 @@ class TradeRecord:
 @dataclass
 class SessionState:
     """Running session state for intraday compounding."""
+
     trades: list[TradeRecord] = field(default_factory=list)
     total_pnl_r: float = 0.0
     max_pnl_r: float = 0.0
@@ -99,23 +102,23 @@ class SessionManager:
     """
 
     # --- Configuration ---
-    BASE_SIZE: float = 1.0          # Base position size in R-units
+    BASE_SIZE: float = 1.0  # Base position size in R-units
     COMPOUND_THRESHOLD_R: float = 2.0  # Start compounding after +2R
-    COMPOUND_STEP: float = 0.25     # +25% size per compound step
-    MAX_COMPOUND: float = 2.0       # Cap at 2x base size
-    MIN_Q_SPREAD: float = 0.01     # Minimum Q-spread to consider trading
-    FLIP_SPREAD_MULT: float = 2.0   # Only flip if new signal is 2x stronger than entry spread
-    MIN_HOLD_SECONDS: float = 120.0 # Don't flip within 2 min of entry
-    TRAIL_LOCK_TICKS: float = 0.0   # Structural trailing only (on level touches)
-    INDEPENDENT_MODE: bool = True   # Each level touch is independent — no position carry
+    COMPOUND_STEP: float = 0.25  # +25% size per compound step
+    MAX_COMPOUND: float = 2.0  # Cap at 2x base size
+    MIN_Q_SPREAD: float = 0.01  # Minimum Q-spread to consider trading
+    FLIP_SPREAD_MULT: float = 2.0  # Only flip if new signal is 2x stronger than entry spread
+    MIN_HOLD_SECONDS: float = 120.0  # Don't flip within 2 min of entry
+    TRAIL_LOCK_TICKS: float = 0.0  # Structural trailing only (on level touches)
+    INDEPENDENT_MODE: bool = True  # Each level touch is independent — no position carry
     MAX_CONSECUTIVE_LOSSES: int = 3  # 3 stops = HALT trading for session (Fabio's rule)
-    REVERSAL_CUSHION_R: float = 2.0 # Only take reversal trades after +2R session profit
+    REVERSAL_CUSHION_R: float = 2.0  # Only take reversal trades after +2R session profit
     IB_NO_TRADE_MINUTES: float = 15.0  # Don't trade during IB formation (first 15 min)
-    PROFIT_CAP_R: float = 20.0     # Stop trading after hitting session profit target
+    PROFIT_CAP_R: float = 20.0  # Stop trading after hitting session profit target
 
     def __init__(
         self,
-        network: Union[DQNetwork, GBTModel],
+        network: DQNetwork | GBTModel,
         normalizer: RunningNormalizer | None = None,
     ) -> None:
         self._network = network
@@ -127,8 +130,10 @@ class SessionManager:
         # Try to load specialist ensemble (preferred for CONT/REV decisions)
         self._specialists = None
         try:
-            from .agent.specialists import SpecialistEnsemble
             from pathlib import Path
+
+            from .agent.specialists import SpecialistEnsemble
+
             for search_dir in [Path("data/rl/models"), Path("backend/data/rl/models")]:
                 for name in ["specialists_latest.joblib", "specialists_v5.joblib"]:
                     p = search_dir / name
@@ -188,7 +193,7 @@ class SessionManager:
             obs = self._normalizer.normalize(obs)
 
         # Try specialist ensemble first
-        _specialists = getattr(self, '_specialists', None)
+        _specialists = getattr(self, "_specialists", None)
         if _specialists is not None:
             decision = _specialists.decide(obs)
             if decision["action"] == "continuation":
@@ -243,35 +248,41 @@ class SessionManager:
         # Reversal cushion: only take reversal trades after session profit (Fabio's rule)
         is_reversal = q_rev > q_cont
         if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
-            return self._signal("skip", current_price,
-                                q_spread=q_spread, confidence=confidence,
-                                reason="reversal_no_cushion")
+            return self._signal(
+                "skip", current_price, q_spread=q_spread, confidence=confidence, reason="reversal_no_cushion"
+            )
 
         if self.INDEPENDENT_MODE:
             # Independent mode: each level touch is a standalone signal
             # No position carry, no flipping, no trailing
             # The reward comes from the velocity measurement, not stop/target
             if q_spread < self.MIN_Q_SPREAD:
-                return self._signal("skip", current_price,
-                                    q_spread=q_spread, confidence=confidence,
-                                    reason="low_confidence")
+                return self._signal(
+                    "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
+                )
 
             action = f"signal_{model_side.value}"
-            return self._signal(action, current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                stop_price=stop_price, size=size,
-                                reason="independent_signal")
+            return self._signal(
+                action,
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                stop_price=stop_price,
+                size=size,
+                reason="independent_signal",
+            )
 
         if not self.position.is_open:
             # No position — enter or skip
             if q_spread < self.MIN_Q_SPREAD:
-                return self._signal("skip", current_price,
-                                    q_spread=q_spread, confidence=confidence,
-                                    reason="low_confidence")
+                return self._signal(
+                    "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
+                )
 
             action = f"enter_{model_side.value}"
             import time
+
             self.position = Position(
                 side=model_side,
                 entry_price=current_price,
@@ -281,15 +292,21 @@ class SessionManager:
                 entry_q_spread=q_spread,
                 entry_timestamp=state.get("touch_epoch", time.time()),
             )
-            return self._signal(action, current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                stop_price=stop_price, size=size,
-                                reason="new_entry")
+            return self._signal(
+                action,
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                stop_price=stop_price,
+                size=size,
+                reason="new_entry",
+            )
 
         else:
             # Position open — check for flip, trail, or skip
             import time
+
             current_epoch = state.get("touch_epoch", time.time())
             hold_time = current_epoch - self.position.entry_timestamp
 
@@ -314,12 +331,17 @@ class SessionManager:
                     entry_q_spread=q_spread,
                     entry_timestamp=current_epoch,
                 )
-                return self._signal(action, current_price,
-                                    q_values=[q_cont, q_rev],
-                                    q_spread=q_spread, confidence=confidence,
-                                    stop_price=stop_price, size=size,
-                                    closed_pnl_r=pnl,
-                                    reason="direction_flip")
+                return self._signal(
+                    action,
+                    current_price,
+                    q_values=[q_cont, q_rev],
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    stop_price=stop_price,
+                    size=size,
+                    closed_pnl_r=pnl,
+                    reason="direction_flip",
+                )
 
             elif model_side != self.position.side:
                 # BOS without conviction to flip — move to breakeven (Fabio's rule)
@@ -328,38 +350,71 @@ class SessionManager:
                     be_price = self.position.entry_price + 1 * TICK_SIZE
                     if be_price > self.position.stop_price:
                         self.position.stop_price = be_price
-                        return self._signal("move_to_breakeven", current_price,
-                                            q_values=[q_cont, q_rev],
-                                            q_spread=q_spread, confidence=confidence,
-                                            stop_price=be_price,
-                                            reason="bos_no_conviction_breakeven")
+                        return self._signal(
+                            "move_to_breakeven",
+                            current_price,
+                            q_values=[q_cont, q_rev],
+                            q_spread=q_spread,
+                            confidence=confidence,
+                            stop_price=be_price,
+                            reason="bos_no_conviction_breakeven",
+                        )
                 else:
                     be_price = self.position.entry_price - 1 * TICK_SIZE
                     if be_price < self.position.stop_price:
                         self.position.stop_price = be_price
-                        return self._signal("move_to_breakeven", current_price,
-                                            q_values=[q_cont, q_rev],
-                                            q_spread=q_spread, confidence=confidence,
-                                            stop_price=be_price,
-                                            reason="bos_no_conviction_breakeven")
+                        return self._signal(
+                            "move_to_breakeven",
+                            current_price,
+                            q_values=[q_cont, q_rev],
+                            q_spread=q_spread,
+                            confidence=confidence,
+                            stop_price=be_price,
+                            reason="bos_no_conviction_breakeven",
+                        )
 
             if model_side == self.position.side:
-                # Same direction — trail the stop
+                # Same direction at the ENTRY level = exit into strength.
+                # Price retested our entry with a continuation signal — the
+                # continuation crowd provides liquidity to close profitably.
+                entry_dist_ticks = abs(current_price - self.position.entry_price) / TICK_SIZE
+                is_entry_retest = entry_dist_ticks <= STOP_TICKS  # within 1R of entry
+                if is_entry_retest and q_cont > q_rev:
+                    pnl = self._close_position(current_price, "entry_retest_exit")
+                    return self._signal(
+                        "close_position",
+                        current_price,
+                        q_values=[q_cont, q_rev],
+                        q_spread=q_spread,
+                        confidence=confidence,
+                        closed_pnl_r=pnl,
+                        reason="entry_retest_cont_exit",
+                    )
+
+                # Same direction at a NEW level — trail the stop
                 new_stop = self._trail_stop(current_price, stop_price)
                 if new_stop != self.position.stop_price:
                     self.position.stop_price = new_stop
                     self.position.levels_captured += 1
-                    return self._signal("trail_stop", current_price,
-                                        q_values=[q_cont, q_rev],
-                                        q_spread=q_spread, confidence=confidence,
-                                        stop_price=new_stop,
-                                        reason=f"level_{self.position.levels_captured}_captured")
+                    return self._signal(
+                        "trail_stop",
+                        current_price,
+                        q_values=[q_cont, q_rev],
+                        q_spread=q_spread,
+                        confidence=confidence,
+                        stop_price=new_stop,
+                        reason=f"level_{self.position.levels_captured}_captured",
+                    )
 
             # Model agrees but no stop improvement — hold
-            return self._signal("hold", current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                reason="hold_position")
+            return self._signal(
+                "hold",
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                reason="hold_position",
+            )
 
     def on_zone_entry(self, state: dict, current_price: float) -> dict:
         """Process a zone entry event — like on_level_touch but with zone-boundary stops.
@@ -428,32 +483,38 @@ class SessionManager:
         # Reversal cushion check
         is_reversal = q_rev > q_cont
         if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
-            return self._signal("skip", current_price,
-                                q_spread=q_spread, confidence=confidence,
-                                reason="reversal_no_cushion")
+            return self._signal(
+                "skip", current_price, q_spread=q_spread, confidence=confidence, reason="reversal_no_cushion"
+            )
 
         if self.INDEPENDENT_MODE:
             if q_spread < self.MIN_Q_SPREAD:
-                return self._signal("skip", current_price,
-                                    q_spread=q_spread, confidence=confidence,
-                                    reason="low_confidence")
+                return self._signal(
+                    "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
+                )
 
             action = f"signal_{model_side.value}"
-            return self._signal(action, current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                stop_price=stop_price, size=size,
-                                zone_members=zone.member_count,
-                                reason="independent_signal")
+            return self._signal(
+                action,
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                stop_price=stop_price,
+                size=size,
+                zone_members=zone.member_count,
+                reason="independent_signal",
+            )
 
         if not self.position.is_open:
             if q_spread < self.MIN_Q_SPREAD:
-                return self._signal("skip", current_price,
-                                    q_spread=q_spread, confidence=confidence,
-                                    reason="low_confidence")
+                return self._signal(
+                    "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
+                )
 
             action = f"enter_{model_side.value}"
             import time
+
             self.position = Position(
                 side=model_side,
                 entry_price=current_price,
@@ -463,15 +524,21 @@ class SessionManager:
                 entry_q_spread=q_spread,
                 entry_timestamp=state.get("touch_epoch", time.time()),
             )
-            return self._signal(action, current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                stop_price=stop_price, size=size,
-                                zone_members=zone.member_count,
-                                reason="new_entry")
+            return self._signal(
+                action,
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                stop_price=stop_price,
+                size=size,
+                zone_members=zone.member_count,
+                reason="new_entry",
+            )
 
         else:
             import time
+
             current_epoch = state.get("touch_epoch", time.time())
             hold_time = current_epoch - self.position.entry_timestamp
 
@@ -494,49 +561,70 @@ class SessionManager:
                     entry_q_spread=q_spread,
                     entry_timestamp=current_epoch,
                 )
-                return self._signal(action, current_price,
-                                    q_values=[q_cont, q_rev],
-                                    q_spread=q_spread, confidence=confidence,
-                                    stop_price=stop_price, size=size,
-                                    closed_pnl_r=pnl,
-                                    zone_members=zone.member_count,
-                                    reason="direction_flip")
+                return self._signal(
+                    action,
+                    current_price,
+                    q_values=[q_cont, q_rev],
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    stop_price=stop_price,
+                    size=size,
+                    closed_pnl_r=pnl,
+                    zone_members=zone.member_count,
+                    reason="direction_flip",
+                )
 
             elif model_side != self.position.side:
                 if self.position.side == PositionSide.LONG:
                     be_price = self.position.entry_price + 1 * TICK_SIZE
                     if be_price > self.position.stop_price:
                         self.position.stop_price = be_price
-                        return self._signal("move_to_breakeven", current_price,
-                                            q_values=[q_cont, q_rev],
-                                            q_spread=q_spread, confidence=confidence,
-                                            stop_price=be_price,
-                                            reason="bos_no_conviction_breakeven")
+                        return self._signal(
+                            "move_to_breakeven",
+                            current_price,
+                            q_values=[q_cont, q_rev],
+                            q_spread=q_spread,
+                            confidence=confidence,
+                            stop_price=be_price,
+                            reason="bos_no_conviction_breakeven",
+                        )
                 else:
                     be_price = self.position.entry_price - 1 * TICK_SIZE
                     if be_price < self.position.stop_price:
                         self.position.stop_price = be_price
-                        return self._signal("move_to_breakeven", current_price,
-                                            q_values=[q_cont, q_rev],
-                                            q_spread=q_spread, confidence=confidence,
-                                            stop_price=be_price,
-                                            reason="bos_no_conviction_breakeven")
+                        return self._signal(
+                            "move_to_breakeven",
+                            current_price,
+                            q_values=[q_cont, q_rev],
+                            q_spread=q_spread,
+                            confidence=confidence,
+                            stop_price=be_price,
+                            reason="bos_no_conviction_breakeven",
+                        )
 
             if model_side == self.position.side:
                 new_stop = self._trail_stop(current_price, stop_price)
                 if new_stop != self.position.stop_price:
                     self.position.stop_price = new_stop
                     self.position.levels_captured += 1
-                    return self._signal("trail_stop", current_price,
-                                        q_values=[q_cont, q_rev],
-                                        q_spread=q_spread, confidence=confidence,
-                                        stop_price=new_stop,
-                                        reason=f"level_{self.position.levels_captured}_captured")
+                    return self._signal(
+                        "trail_stop",
+                        current_price,
+                        q_values=[q_cont, q_rev],
+                        q_spread=q_spread,
+                        confidence=confidence,
+                        stop_price=new_stop,
+                        reason=f"level_{self.position.levels_captured}_captured",
+                    )
 
-            return self._signal("hold", current_price,
-                                q_values=[q_cont, q_rev],
-                                q_spread=q_spread, confidence=confidence,
-                                reason="hold_position")
+            return self._signal(
+                "hold",
+                current_price,
+                q_values=[q_cont, q_rev],
+                q_spread=q_spread,
+                confidence=confidence,
+                reason="hold_position",
+            )
 
     def on_price_update(self, current_price: float) -> dict | None:
         """Check if stop was hit on a price update (called on every tick/bar).
@@ -547,16 +635,17 @@ class SessionManager:
             return None
 
         stopped = False
-        if self.position.side == PositionSide.LONG and current_price <= self.position.stop_price:
-            stopped = True
-        elif self.position.side == PositionSide.SHORT and current_price >= self.position.stop_price:
+        if (
+            self.position.side == PositionSide.LONG
+            and current_price <= self.position.stop_price
+            or self.position.side == PositionSide.SHORT
+            and current_price >= self.position.stop_price
+        ):
             stopped = True
 
         if stopped:
             pnl = self._close_position(current_price, "stop")
-            return self._signal("stopped_out", current_price,
-                                closed_pnl_r=pnl,
-                                reason="stop_hit")
+            return self._signal("stopped_out", current_price, closed_pnl_r=pnl, reason="stop_hit")
         return None
 
     def on_session_end(self, current_price: float) -> dict | None:
@@ -564,9 +653,7 @@ class SessionManager:
         if not self.position.is_open:
             return None
         pnl = self._close_position(current_price, "session_end")
-        return self._signal("session_close", current_price,
-                            closed_pnl_r=pnl,
-                            reason="session_end")
+        return self._signal("session_close", current_price, closed_pnl_r=pnl, reason="session_end")
 
     # --- Private helpers ---
 
@@ -624,6 +711,7 @@ class SessionManager:
     def _compute_size(self, confidence: float) -> float:
         """Compute position size based on composite confidence + session P&L."""
         from src.rl.confidence import size_multiplier
+
         base = self.BASE_SIZE
 
         # Composite confidence → sizing tier (0x to 1.5x)
@@ -631,12 +719,8 @@ class SessionManager:
 
         # Intraday compounding: increase after profits ONLY if no recent losses
         # (Fabio: "never raise exposure to recover")
-        if (self.session.total_pnl_r > self.COMPOUND_THRESHOLD_R
-                and self.session.consecutive_losses == 0):
-            compound_steps = int(
-                (self.session.total_pnl_r - self.COMPOUND_THRESHOLD_R)
-                / self.COMPOUND_THRESHOLD_R
-            )
+        if self.session.total_pnl_r > self.COMPOUND_THRESHOLD_R and self.session.consecutive_losses == 0:
+            compound_steps = int((self.session.total_pnl_r - self.COMPOUND_THRESHOLD_R) / self.COMPOUND_THRESHOLD_R)
             compound_mult = 1.0 + compound_steps * self.COMPOUND_STEP
             size *= min(compound_mult, self.MAX_COMPOUND)
 
@@ -654,8 +738,7 @@ class SessionManager:
             "position": self.position.side.value,
             "session_pnl_r": round(self.session.total_pnl_r, 2),
             "trade_count": self.session.trade_count,
-            **{k: round(v, 4) if isinstance(v, float) else v
-               for k, v in kwargs.items()},
+            **{k: round(v, 4) if isinstance(v, float) else v for k, v in kwargs.items()},
         }
 
     def on_structural_event(self, event_type: str, state: dict) -> None:
@@ -664,7 +747,7 @@ class SessionManager:
         Events: ib_close, new_swing_high, new_swing_low, value_area_breach,
                 single_print_created.
         """
-        if hasattr(self, '_inference_v5') and self._inference_v5 is not None:
+        if hasattr(self, "_inference_v5") and self._inference_v5 is not None:
             self._inference_v5.update_narrative(state)
             log.info("Narrative updated on %s", event_type)
 
@@ -689,7 +772,7 @@ class SessionManager:
             "max_pnl_r": round(self.session.max_pnl_r, 2),
             "max_drawdown_r": round(self.session.drawdown_r, 2),
             "avg_levels_captured": round(np.mean([t.levels_captured for t in trades]), 1),
-            "profit_factor": round(
-                sum(t.pnl_r for t in winners) / max(abs(sum(t.pnl_r for t in losers)), 0.01), 2
-            ) if winners else 0.0,
+            "profit_factor": round(sum(t.pnl_r for t in winners) / max(abs(sum(t.pnl_r for t in losers)), 0.01), 2)
+            if winners
+            else 0.0,
         }
