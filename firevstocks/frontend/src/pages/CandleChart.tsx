@@ -11,7 +11,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/hooks/useApi';
-import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels } from '@/lib/indicators';
+import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels, computeSessionTPOs } from '@/lib/indicators';
 import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent } from '@/types';
 
 const INITIAL_DAYS = 3;
@@ -1081,6 +1081,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       setSlLoaded(true);
     }
 
+    // TPO letter grids: compute from today's candles
+    const tpo = computeSessionTPOs(candles);
+    if (tpo) {
+      sessionTPORef.current = tpo;
+      setSessionTPOLoaded(true);
+    }
+
     setVpLoaded(n => n + 1);
   }, []);
 
@@ -1146,19 +1153,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
     return () => clearInterval(timer);
   }, [recomputeIndicators]);
 
-  // Fetch per-session TPO letter grid data — refetch when interval changes (chart recreated)
-  useEffect(() => {
-    let cancelled = false;
-    api.getSessionTPO().then(res => {
-      if (!cancelled && res.sessions) {
-        sessionTPORef.current = res;
-        setSessionTPOLoaded(true);
-        drawOverlays();
-      }
-    }).catch(err => { console.warn('[SessionTPO] fetch failed:', err); });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interval]);
+  // TPO is now computed client-side in recomputeIndicators()
 
   // Redraw when VP data loads, TPO changes, session/macro changes, signals/fills, or visibility changes
   useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, zones, signals, fills, exits, session, drawOverlays]);

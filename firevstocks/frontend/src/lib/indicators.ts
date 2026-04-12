@@ -4,7 +4,7 @@
  *
  * All times are UTC epochs. CET conversion uses Europe/Stockholm timezone.
  */
-import type { CandleData, VPData, VWAPPoint, SessionLevelDay } from '@/types'
+import type { CandleData, VPData, VWAPPoint, SessionLevelDay, SessionTPOData, SessionTPOResponse } from '@/types'
 
 const TICK_SIZE = 0.25
 
@@ -259,4 +259,158 @@ export function computeSessionLevels(candles: CandleData[]): SessionLevelDay[] {
   }
 
   return results
+}
+
+// --- TPO (Time Price Opportunity) Letter Grid ---
+
+const TPO_PERIOD_MINUTES = 30
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+
+interface SessionDef {
+  name: 'tokyo' | 'london' | 'ny'
+  startMin: number
+  endMin: number
+  ibDuration: number // minutes for IB (first N minutes)
+}
+
+const TPO_SESSIONS: SessionDef[] = [
+  { name: 'tokyo', startMin: TOKYO_START, endMin: TOKYO_END, ibDuration: 60 },
+  { name: 'london', startMin: LONDON_START, endMin: LONDON_END, ibDuration: 60 },
+  { name: 'ny', startMin: NY_START, endMin: NY_END, ibDuration: 60 },
+]
+
+function computeSessionTPO(bars: CandleData[], sessionDef: SessionDef): SessionTPOData | null {
+  // Filter bars to this session's CET time range
+  const sessionBars = bars.filter(b => {
+    const m = cetHourMin(b.t)
+    return m >= sessionDef.startMin && m < sessionDef.endMin
+  })
+  if (sessionBars.length === 0) return null
+
+  // Group bars into 30-min TPO periods, assign letters
+  const sorted = sessionBars.sort((a, b) => a.t - b.t)
+  const letters: Record<string, string[]> = {} // price → [letters]
+  const tpoCounts: Record<string, number> = {} // price → count
+  let letterIdx = 0
+  let currentPeriodStart = -1
+
+  let sessionHigh = -Infinity, sessionLow = Infinity
+  let ibHigh = -Infinity, ibLow = Infinity, ibValid = false
+
+  for (const bar of sorted) {
+    const m = cetHourMin(bar.t)
+    const periodStart = Math.floor((m - sessionDef.startMin) / TPO_PERIOD_MINUTES)
+
+    if (periodStart !== currentPeriodStart) {
+      currentPeriodStart = periodStart
+      letterIdx = Math.min(periodStart, LETTERS.length - 1)
+    }
+
+    const letter = LETTERS[letterIdx] || 'z'
+
+    // Mark all tick prices in this bar's range
+    const lo = Math.round(bar.l / TICK_SIZE) * TICK_SIZE
+    const hi = Math.round(bar.h / TICK_SIZE) * TICK_SIZE
+    for (let p = lo; p <= hi + TICK_SIZE * 0.1; p += TICK_SIZE) {
+      const pk = p.toFixed(2)
+      if (!letters[pk]) letters[pk] = []
+      if (!letters[pk].includes(letter)) {
+        letters[pk].push(letter)
+        tpoCounts[pk] = (tpoCounts[pk] ?? 0) + 1
+      }
+    }
+
+    // Track session H/L
+    if (bar.h > sessionHigh) sessionHigh = bar.h
+    if (bar.l < sessionLow) sessionLow = bar.l
+
+    // IB = first N minutes
+    const elapsed = m - sessionDef.startMin
+    if (elapsed < sessionDef.ibDuration) {
+      if (bar.h > ibHigh) ibHigh = bar.h
+      if (bar.l < ibLow) ibLow = bar.l
+      ibValid = true
+    }
+  }
+
+  // POC = price with most TPO letters
+  let poc = 0, pocCount = 0
+  for (const [pk, count] of Object.entries(tpoCounts)) {
+    if (count > pocCount) { poc = parseFloat(pk); pocCount = count }
+  }
+
+  // Value Area = 70% of total TPO count, expanding from POC
+  const sortedPrices = Object.keys(tpoCounts).map(Number).sort((a, b) => a - b)
+  const totalCount = Object.values(tpoCounts).reduce((a, b) => a + b, 0)
+  const vaTarget = totalCount * 0.70
+  let pocIdx = sortedPrices.indexOf(poc)
+  if (pocIdx < 0) pocIdx = 0
+  let lo = pocIdx, hi = pocIdx
+  let vaCount = tpoCounts[poc.toFixed(2)] ?? 0
+
+  while (vaCount < vaTarget && (lo > 0 || hi < sortedPrices.length - 1)) {
+    const upC = hi < sortedPrices.length - 1 ? (tpoCounts[sortedPrices[hi + 1].toFixed(2)] ?? 0) : 0
+    const dnC = lo > 0 ? (tpoCounts[sortedPrices[lo - 1].toFixed(2)] ?? 0) : 0
+    if (upC >= dnC && hi < sortedPrices.length - 1) {
+      hi++; vaCount += tpoCounts[sortedPrices[hi].toFixed(2)] ?? 0
+    } else if (lo > 0) {
+      lo--; vaCount += tpoCounts[sortedPrices[lo].toFixed(2)] ?? 0
+    } else break
+  }
+
+  const vah = sortedPrices[hi] ?? poc
+  const val = sortedPrices[lo] ?? poc
+
+  // Shape detection (simplified)
+  const midPrice = (sessionHigh + sessionLow) / 2
+  const shape = poc > midPrice + (sessionHigh - sessionLow) * 0.15
+    ? 'p-shape'
+    : poc < midPrice - (sessionHigh - sessionLow) * 0.15
+      ? 'b-shape'
+      : 'D-shape'
+
+  return {
+    letters,
+    tpo_counts: tpoCounts,
+    poc, vah, val,
+    ib_high: ibValid ? ibHigh : 0,
+    ib_low: ibValid ? ibLow : 0,
+    ib_valid: ibValid,
+    shape,
+    opening_type: 'unknown',
+    opening_direction: 'unknown',
+    poor_high: false,
+    poor_low: false,
+    upper_excess: 0,
+    lower_excess: 0,
+    session_high: sessionHigh,
+    session_low: sessionLow,
+    rotation_factor: 0,
+  }
+}
+
+/** Compute per-session TPO profiles from today's candles. */
+export function computeSessionTPOs(candles: CandleData[]): SessionTPOResponse | null {
+  if (!candles.length) return null
+
+  // Use today's candles only
+  const today = cetDate(candles[candles.length - 1].t)
+  const todayBars = candles.filter(c => cetDate(c.t) === today)
+  if (todayBars.length === 0) return null
+
+  const sessions: Record<string, SessionTPOData | null> = {}
+  for (const def of TPO_SESSIONS) {
+    sessions[def.name] = computeSessionTPO(todayBars, def)
+  }
+
+  return {
+    date: today,
+    sessions: {
+      tokyo: sessions.tokyo ?? null,
+      london: sessions.london ?? null,
+      ny: sessions.ny ?? null,
+    },
+    poc_migration_tokyo_london: 0,
+    poc_migration_london_ny: 0,
+  }
 }
