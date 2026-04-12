@@ -730,8 +730,12 @@ async def lifespan(app: FastAPI):
                 _last = MarketRepo(_seed_db).get_latest_candle("NQ", _interval)
                 if _last:
                     _ts = _last.ts.replace(tzinfo=timezone.utc) if not _last.ts.tzinfo else _last.ts
-                    _flow.seed(int(_ts.timestamp()), _last.o, _last.h, _last.l, _last.c, _last.v)
-                    logger.info("[Stocks] Seeded %s CandleFlow from DB: %s", _interval, _ts)
+                    _age = (datetime.now(timezone.utc) - _ts).total_seconds()
+                    if _age < 3600:  # Only seed if less than 1 hour old
+                        _flow.seed(int(_ts.timestamp()), _last.o, _last.h, _last.l, _last.c, _last.v)
+                        logger.info("[Stocks] Seeded %s CandleFlow from DB: %s", _interval, _ts)
+                    else:
+                        logger.info("[Stocks] Skipping stale %s seed (%.0fs old)", _interval, _age)
             _seed_db.close()
         except Exception:
             logger.warning("[Stocks] CandleFlow seed failed (will start fresh)")
