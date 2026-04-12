@@ -277,36 +277,70 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
 
     const hidden = hiddenRef.current;
 
-    // Helper: draw a single VP histogram
+    // Helper: draw a single VP histogram with pixel-bucketing for crisp rendering
     const drawVPHistogram = (vp: VPData, color: [number, number, number], isDaily: boolean) => {
       const maxVol = Math.max(...vp.levels.map(l => l.volume));
       if (maxVol <= 0) return;
       const [r, g, b] = color;
 
-      // Draw bars
-      for (const level of vp.levels) {
-        const y = pSeries.priceToCoordinate(level.price);
-        if (y === null || y < 0 || y > rect.height) continue;
+      // Bucket levels by pixel row — prevents fuzzy overlap when zoomed out
+      const pixelBuckets = new Map<number, { volume: number; isPOC: boolean; inVA: boolean }>();
+      const pocY = pSeries.priceToCoordinate(vp.poc);
 
-        const barW = (level.volume / maxVol) * maxBarWidth;
+      for (const level of vp.levels) {
+        const rawY = pSeries.priceToCoordinate(level.price);
+        if (rawY === null || rawY < -1 || rawY > rect.height + 1) continue;
+
+        const py = Math.round(rawY);
+        const existing = pixelBuckets.get(py);
         const isPOC = level.price === vp.poc;
         const inVA = level.price >= vp.val && level.price <= vp.vah;
 
-        ctx.fillStyle = isPOC
+        if (existing) {
+          existing.volume += level.volume;
+          if (isPOC) existing.isPOC = true;
+          if (inVA) existing.inVA = true;
+        } else {
+          pixelBuckets.set(py, { volume: level.volume, isPOC, inVA });
+        }
+      }
+
+      // Recompute max after bucketing
+      let bucketMax = 0;
+      for (const b of pixelBuckets.values()) {
+        if (b.volume > bucketMax) bucketMax = b.volume;
+      }
+      if (bucketMax <= 0) return;
+
+      // Determine bar height: at least 1px, scale with zoom level
+      // When few buckets relative to height, bars can be thicker
+      const barH = Math.max(1, Math.min(4, Math.floor(rect.height / Math.max(pixelBuckets.size, 1))));
+
+      // Draw bars
+      for (const [py, bucket] of pixelBuckets) {
+        if (py < 0 || py > rect.height) continue;
+
+        const barW = (bucket.volume / bucketMax) * maxBarWidth;
+        if (barW < 0.5) continue; // skip invisible bars
+
+        ctx.fillStyle = bucket.isPOC
           ? `rgba(${r}, ${g}, ${b}, 0.8)`
-          : inVA
+          : bucket.inVA
             ? `rgba(${r}, ${g}, ${b}, 0.35)`
             : `rgba(${r}, ${g}, ${b}, 0.12)`;
 
-        ctx.fillRect(xRight - barW, y - 1, barW, 3);
+        ctx.fillRect(xRight - barW, py - Math.floor(barH / 2), barW, barH);
+      }
 
-        // POC label on the POC bar
-        if (isPOC) {
-          ctx.font = '9px monospace';
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
-          ctx.textAlign = 'right';
-          ctx.fillText('POC', xRight - barW - 3, y + 3);
-        }
+      // POC label
+      if (pocY !== null && pocY >= 0 && pocY <= rect.height) {
+        const pocPx = Math.round(pocY);
+        const pocBucket = pixelBuckets.get(pocPx);
+        const pocBarW = pocBucket ? (pocBucket.volume / bucketMax) * maxBarWidth : 0;
+        ctx.font = '9px monospace';
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+        ctx.textAlign = 'right';
+        ctx.fillText('POC', xRight - pocBarW - 3, pocPx + 3);
       }
 
       // VAH/VAL dashed lines (only for daily VP to avoid clutter)
@@ -315,22 +349,23 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
           { price: vp.vah, label: 'VAH' },
           { price: vp.val, label: 'VAL' },
         ]) {
-          const y = pSeries.priceToCoordinate(price);
-          if (y === null || y < 0 || y > rect.height) continue;
+          const rawY = pSeries.priceToCoordinate(price);
+          if (rawY === null || rawY < 0 || rawY > rect.height) continue;
+          const py = Math.round(rawY);
 
           ctx.save();
           ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(xRight, y);
+          ctx.moveTo(0, py + 0.5);
+          ctx.lineTo(xRight, py + 0.5);
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
           ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
           ctx.textAlign = 'left';
-          ctx.fillText(label, 3, y - 3);
+          ctx.fillText(label, 3, py - 3);
           ctx.restore();
         }
       }
@@ -357,38 +392,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
         drawVPHistogram(todayVP, dailyColor, true);
       }
 
-      // Historical per-day VPs (drawn with lower opacity, no VAH/VAL lines)
-      vpHistory.forEach((vp, _date) => {
+      // Historical per-day VPs (lower opacity, reuse pixel-bucketing via drawVPHistogram)
+      vpHistory.forEach((vp) => {
         if (!vp.levels.length) return;
-        const maxVol = Math.max(...vp.levels.map(l => l.volume));
-        if (maxVol <= 0) return;
-
-        for (const level of vp.levels) {
-          const y = pSeries.priceToCoordinate(level.price);
-          if (y === null || y < 0 || y > rect.height) continue;
-
-          const barW = (level.volume / maxVol) * maxBarWidth;
-          const isPOC = level.price === vp.poc;
-          const inVA = level.price >= vp.val && level.price <= vp.vah;
-
-          ctx.fillStyle = isPOC
-            ? 'rgba(168, 85, 247, 0.5)'
-            : inVA
-              ? 'rgba(168, 85, 247, 0.2)'
-              : 'rgba(168, 85, 247, 0.07)';
-
-          ctx.fillRect(xRight - barW, y - 1, barW, 3);
-        }
-
-        // POC label for historical days
-        const pocY = pSeries.priceToCoordinate(vp.poc);
-        if (pocY !== null && pocY >= 0 && pocY <= rect.height) {
-          const pocBarW = (vp.levels.find(l => l.price === vp.poc)?.volume ?? 0) / maxVol * maxBarWidth;
-          ctx.font = '9px monospace';
-          ctx.fillStyle = 'rgba(168, 85, 247, 0.6)';
-          ctx.textAlign = 'right';
-          ctx.fillText('POC', xRight - pocBarW - 3, pocY + 3);
-        }
+        // Draw with dimmer opacity by using a slightly different color channel trick:
+        // We reuse drawVPHistogram but pass isDaily=false (no VAH/VAL lines for historical)
+        drawVPHistogram(vp, [148, 75, 217], false); // slightly dimmer purple
       });
     }
 
