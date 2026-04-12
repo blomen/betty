@@ -11,12 +11,14 @@
 
 # Global orchestrator configuration
 # Tuned for bare metal i7-7700 (4C/8T), 64GB RAM, 2x 256GB SSD
+# Memory budget: uvicorn ~10GB, RL ~4GB, Postgres ~8GB, OS ~2GB = 24GB base.
+# Remaining ~40GB for browsers. Each browser = 1-2 GB (renderer + content procs).
+# 4 browsers * 2GB = 8GB, total ~32GB peak — safe under 48GB Docker limit.
 orchestrator:
   # Concurrency limits
-  # Bare metal: no hypervisor tax, 8 dedicated threads, 64GB RAM
-  max_concurrent_providers: 16         # Direct gost + 65% CPU idle — push it
-  max_concurrent_sports_per_provider: 4 # 8 threads + fast CPU = handle parallel sport extraction
-  max_browser_instances: 6             # 52 GB free RAM — browsers are ~500MB each
+  max_concurrent_providers: 8          # Reduced from 16 — 8 threads, no point oversaturating
+  max_concurrent_sports_per_provider: 3 # Reduced from 4 — less parallel memory pressure
+  max_browser_instances: 4             # Reduced from 6 — each browser is 1-2GB not 500MB
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -30,12 +32,12 @@ orchestrator:
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
-      max_concurrent: 3                # Direct gost — restored
+      max_concurrent: 2                # Reduced from 3 — each gecko browser = 1-2GB
       shared_resource: browser
 
     - name: spectate_browser
       retriever_types: [spectate]
-      max_concurrent: 3                # Direct gost — restored
+      max_concurrent: 2                # Reduced from 3 — each spectate browser = 1-2GB
       shared_resource: browser
 
     - name: comeon_group
@@ -934,23 +936,23 @@ extraction_scheduling:
     grouped: false
 
   browser_soft:
-    # Browser-based extractors — direct gost, 65% CPU idle
-    max_concurrent_browsers: 4
+    # Browser-based extractors — each browser = 1-2GB RAM
+    max_concurrent_browsers: 2           # Reduced from 4 — memory constrained
     providers:
       - 888sport
       - interwetten
       - 10bet
       - tipwin
-    interval_minutes: 8
+    interval_minutes: 10
     grouped: false
 
   browser_antibot:
     # Providers with aggressive anti-bot (Cloudflare, Imperva)
-    max_concurrent_browsers: 2
+    max_concurrent_browsers: 1           # Reduced from 2 — comeon alone takes 20min + 1.5GB
     providers:
       - coolbet
       - comeon
-    interval_minutes: 10
+    interval_minutes: 15
     grouped: false
 
   signal_international:
