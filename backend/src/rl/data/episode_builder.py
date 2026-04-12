@@ -21,10 +21,10 @@ from typing import Any
 import numpy as np
 
 from src.rl.config import (
-    Action,
     COST_PER_TRADE_TICKS,
     STOP_TICKS,
     TICK_SIZE,
+    Action,
 )
 
 # Time windows (seconds) to measure immediate velocity
@@ -33,14 +33,15 @@ _WINDOW_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
 
 # Trailing reward params
 _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
-_MAX_TRAIL_LEVELS = 6         # cap at 6 levels (3.0R max trail bonus)
-_TRAIL_TIMEOUT_S = 600        # 10 min max to scan for levels
-_STOP_TICKS_TRAIL = 10        # initial stop distance in ticks
+_MAX_TRAIL_LEVELS = 6  # cap at 6 levels (3.0R max trail bonus)
+_TRAIL_TIMEOUT_S = 600  # 10 min max to scan for levels
+_STOP_TICKS_TRAIL = 10  # initial stop distance in ticks
 
 
 @dataclass
 class MovementProfile:
     """Captures how price moved after a level touch in one direction."""
+
     net_ticks: float = 0.0
     max_favorable: float = 0.0
     max_adverse: float = 0.0
@@ -95,10 +96,15 @@ def _measure_movement(
             t = max(1.0, _WINDOWS[window_idx])
             vel = net / math.sqrt(t)
             clean = max_fav / max(max_fav + max_adv, 0.01)
-            profiles.append(MovementProfile(
-                net_ticks=net, max_favorable=max_fav, max_adverse=max_adv,
-                velocity=vel, cleanliness=clean,
-            ))
+            profiles.append(
+                MovementProfile(
+                    net_ticks=net,
+                    max_favorable=max_fav,
+                    max_adverse=max_adv,
+                    velocity=vel,
+                    cleanliness=clean,
+                )
+            )
             window_idx += 1
 
     while len(profiles) < len(_WINDOWS):
@@ -180,7 +186,7 @@ def _count_levels_captured(
     Returns (levels_captured, exit_pnl_ticks) tuple.
     """
     if not levels_ahead:
-        return 0
+        return 0, False
 
     initial_stop_ticks = _STOP_TICKS_TRAIL
     stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
@@ -208,9 +214,7 @@ def _count_levels_captured(
                 at_breakeven = True
 
         # Check stop hit
-        if direction == 1 and price <= stop_price:
-            break
-        elif direction == -1 and price >= stop_price:
+        if direction == 1 and price <= stop_price or direction == -1 and price >= stop_price:
             break
 
         # Phase 2→3: Check if we captured a new level → trail stop there
@@ -224,7 +228,7 @@ def _count_levels_captured(
                 if captured >= _MAX_TRAIL_LEVELS:
                     break
 
-    return captured
+    return captured, at_breakeven
 
 
 def _compute_rewards(
@@ -271,11 +275,23 @@ def label_outcome_from_array(
     levels_up = levels_above or []
     levels_dn = levels_below or []
 
-    long_levels = _count_levels_captured(
-        touch_price, ticks, start, end, touch_ts, direction=+1, levels_ahead=levels_up,
+    long_levels, long_be = _count_levels_captured(
+        touch_price,
+        ticks,
+        start,
+        end,
+        touch_ts,
+        direction=+1,
+        levels_ahead=levels_up,
     )
-    short_levels = _count_levels_captured(
-        touch_price, ticks, start, end, touch_ts, direction=-1, levels_ahead=levels_dn,
+    short_levels, short_be = _count_levels_captured(
+        touch_price,
+        ticks,
+        start,
+        end,
+        touch_ts,
+        direction=-1,
+        levels_ahead=levels_dn,
     )
 
     # Measure breathing room (MAE) for each direction
@@ -288,7 +304,10 @@ def label_outcome_from_array(
     reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r
 
     reward_cont, reward_rev = _compute_rewards(
-        touch_price, approach_direction, reward_long, reward_short,
+        touch_price,
+        approach_direction,
+        reward_long,
+        reward_short,
     )
     reward_skip = 0.0
 
@@ -307,7 +326,6 @@ def label_outcome_from_array(
     #
     # Method: test stop distances 6-40 ticks and pick the one that gives
     # the best R-multiple on this specific episode.
-    be_reached = False
     if best_action == Action.SKIP:
         optimal_stop = float(_STOP_TICKS_TRAIL)
     else:
@@ -335,15 +353,15 @@ def label_outcome_from_array(
             optimal_stop = max(optimal_stop, mae_floor)
             optimal_stop = min(40.0, optimal_stop)
 
-    # Best direction stats
+    # Best direction stats — use breakeven from _count_levels_captured
     if best_action == Action.CONTINUATION:
         best_dir = 1 if approach_direction == "up" else -1
         best_levels = long_levels if best_dir == 1 else short_levels
-        best_be = be_reached if best_action != Action.SKIP else False
+        best_be = long_be if best_dir == 1 else short_be
     elif best_action == Action.REVERSAL:
         best_dir = -1 if approach_direction == "up" else 1
         best_levels = short_levels if best_dir == -1 else long_levels
-        best_be = be_reached if best_action != Action.SKIP else False
+        best_be = short_be if best_dir == -1 else long_be
     else:
         best_levels = 0
         best_be = False
