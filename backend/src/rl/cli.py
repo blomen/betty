@@ -453,6 +453,7 @@ def _replay_single_file(
 
     pfile = Path(pfile_path)
     out_dir = Path(chunk_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load GBT in this subprocess if needed
     gbt_model = None
