@@ -549,12 +549,21 @@ class BatchBuilder:
             return
         from ..db.models import Odds
 
-        keys = {(b.event_id, b.provider_id, b.market, b.outcome) for b in batch}
+        # Collect all provider IDs we need to query — include canonical IDs
+        # for cloned bets (e.g. quickcasino odds are stored under betinia)
+        provider_ids = set()
+        for b in batch:
+            provider_ids.add(b.provider_id)
+            canonical = PROVIDER_CANONICAL.get(b.provider_id)
+            if canonical:
+                provider_ids.add(canonical)
+
+        keys = {(b.event_id, b.market, b.outcome) for b in batch}
         rows = (
             self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.provider_meta)
             .filter(
                 Odds.event_id.in_(list({k[0] for k in keys})),
-                Odds.provider_id.in_(list({k[1] for k in keys})),
+                Odds.provider_id.in_(list(provider_ids)),
                 Odds.provider_meta.isnot(None),
             )
             .all()
@@ -567,6 +576,11 @@ class BatchBuilder:
                 )
         for b in batch:
             meta = lookup.get((b.event_id, b.provider_id, b.market, b.outcome))
+            # Fallback: look up via canonical provider (clone shares same odds/meta)
+            if not meta:
+                canonical = PROVIDER_CANONICAL.get(b.provider_id)
+                if canonical:
+                    meta = lookup.get((b.event_id, canonical, b.market, b.outcome))
             if meta:
                 b.provider_meta = meta
 
