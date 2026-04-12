@@ -151,8 +151,11 @@ def create_dashboard_app() -> FastAPI:
         return await _proxy("/api/trading/market/session-levels", {"symbol": "NQ", "days": str(days)})
 
     @app.get("/api/vp/{tf}")
-    async def proxy_vp(tf: str):
-        return await _proxy("/api/trading/market/volume-profile", {"symbol": "NQ", "timeframe": tf})
+    async def proxy_vp(tf: str, date: str | None = None):
+        params = {"symbol": "NQ", "timeframe": tf}
+        if date:
+            params["date"] = date
+        return await _proxy("/api/trading/market/volume-profile", params)
 
     @app.get("/api/vwap")
     async def local_vwap(days: int = 3, interval: str = "5m"):

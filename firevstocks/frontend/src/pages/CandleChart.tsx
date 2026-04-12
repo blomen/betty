@@ -76,6 +76,18 @@ function toLocalEpoch(utcEpoch: number): number {
   return utcEpoch + offsetSeconds;
 }
 
+/** Get CET date string (YYYY-MM-DD) from a UTC epoch. CET = UTC+1, CEST = UTC+2. */
+function epochToCETDate(epoch: number): string {
+  // Stockholm timezone gives CET/CEST automatically
+  const d = new Date(epoch * 1000);
+  return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
+}
+
+/** Get today's CET date string */
+function todayCET(): string {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
+}
+
 interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
@@ -173,8 +185,11 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
   const fetchingRef = useRef(false);
   const exhaustedRef = useRef(false);
 
-  // VP overlay data
+  // VP overlay data (global: weekly/monthly, today's session)
   const vpDataRef = useRef<Map<string, VPData>>(new Map());
+  // Historical per-day session VP keyed by date string (YYYY-MM-DD)
+  const vpHistoryRef = useRef<Map<string, VPData>>(new Map());
+  const vpHistoryFetchedRef = useRef<Set<string>>(new Set());
   const [vpLoaded, setVpLoaded] = useState(0); // trigger redraws
   const hiddenRef = useRef(hiddenLevels);
   hiddenRef.current = hiddenLevels;
@@ -255,24 +270,20 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
 
     // --- VP histograms on right edge (daily / weekly / monthly stacked) ---
     const vpMap = vpDataRef.current;
+    const vpHistory = vpHistoryRef.current;
     const priceScaleWidth = 65;
     const xRight = rect.width - priceScaleWidth;
-    const maxBarWidth = 80;
+    const maxBarWidth = 120;
 
-    // Draw in reverse order so daily (most important) renders on top
     const hidden = hiddenRef.current;
-    // VP hidden keys: vp_session, vp_weekly, vp_monthly
-    for (let oi = VP_OVERLAYS.length - 1; oi >= 0; oi--) {
-      const overlay = VP_OVERLAYS[oi];
-      if (hidden?.has(`vp_${overlay.tf}`)) continue;
-      const vp = vpMap.get(overlay.tf);
-      if (!vp || !vp.levels.length) continue;
 
+    // Helper: draw a single VP histogram
+    const drawVPHistogram = (vp: VPData, color: [number, number, number], isDaily: boolean) => {
       const maxVol = Math.max(...vp.levels.map(l => l.volume));
-      if (maxVol <= 0) continue;
+      if (maxVol <= 0) return;
+      const [r, g, b] = color;
 
-      const [r, g, b] = overlay.color;
-
+      // Draw bars
       for (const level of vp.levels) {
         const y = pSeries.priceToCoordinate(level.price);
         if (y === null || y < 0 || y > rect.height) continue;
@@ -282,13 +293,103 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
         const inVA = level.price >= vp.val && level.price <= vp.vah;
 
         ctx.fillStyle = isPOC
-          ? `rgba(${r}, ${g}, ${b}, 0.6)`
+          ? `rgba(${r}, ${g}, ${b}, 0.8)`
           : inVA
-            ? `rgba(${r}, ${g}, ${b}, 0.2)`
-            : `rgba(${r}, ${g}, ${b}, 0.06)`;
+            ? `rgba(${r}, ${g}, ${b}, 0.35)`
+            : `rgba(${r}, ${g}, ${b}, 0.12)`;
 
-        ctx.fillRect(xRight - barW, y - 1, barW, 2);
+        ctx.fillRect(xRight - barW, y - 1, barW, 3);
+
+        // POC label on the POC bar
+        if (isPOC) {
+          ctx.font = '9px monospace';
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+          ctx.textAlign = 'right';
+          ctx.fillText('POC', xRight - barW - 3, y + 3);
+        }
       }
+
+      // VAH/VAL dashed lines (only for daily VP to avoid clutter)
+      if (isDaily) {
+        for (const { price, label } of [
+          { price: vp.vah, label: 'VAH' },
+          { price: vp.val, label: 'VAL' },
+        ]) {
+          const y = pSeries.priceToCoordinate(price);
+          if (y === null || y < 0 || y > rect.height) continue;
+
+          ctx.save();
+          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(xRight, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
+          ctx.textAlign = 'left';
+          ctx.fillText(label, 3, y - 3);
+          ctx.restore();
+        }
+      }
+    };
+
+    // Draw in reverse order so daily (most important) renders on top
+    // Weekly/monthly: global VP
+    for (let oi = VP_OVERLAYS.length - 1; oi >= 0; oi--) {
+      const overlay = VP_OVERLAYS[oi];
+      if (hidden?.has(`vp_${overlay.tf}`)) continue;
+      if (overlay.tf === 'session') continue; // handled separately below
+      const vp = vpMap.get(overlay.tf);
+      if (!vp || !vp.levels.length) continue;
+      drawVPHistogram(vp, overlay.color as unknown as [number, number, number], false);
+    }
+
+    // Daily session VP: today's + historical per-day
+    if (!hidden?.has('vp_session')) {
+      const dailyColor: [number, number, number] = [168, 85, 247]; // purple
+
+      // Today's session VP (from global fetch)
+      const todayVP = vpMap.get('session');
+      if (todayVP && todayVP.levels.length) {
+        drawVPHistogram(todayVP, dailyColor, true);
+      }
+
+      // Historical per-day VPs (drawn with lower opacity, no VAH/VAL lines)
+      vpHistory.forEach((vp, _date) => {
+        if (!vp.levels.length) return;
+        const maxVol = Math.max(...vp.levels.map(l => l.volume));
+        if (maxVol <= 0) return;
+
+        for (const level of vp.levels) {
+          const y = pSeries.priceToCoordinate(level.price);
+          if (y === null || y < 0 || y > rect.height) continue;
+
+          const barW = (level.volume / maxVol) * maxBarWidth;
+          const isPOC = level.price === vp.poc;
+          const inVA = level.price >= vp.val && level.price <= vp.vah;
+
+          ctx.fillStyle = isPOC
+            ? 'rgba(168, 85, 247, 0.5)'
+            : inVA
+              ? 'rgba(168, 85, 247, 0.2)'
+              : 'rgba(168, 85, 247, 0.07)';
+
+          ctx.fillRect(xRight - barW, y - 1, barW, 3);
+        }
+
+        // POC label for historical days
+        const pocY = pSeries.priceToCoordinate(vp.poc);
+        if (pocY !== null && pocY >= 0 && pocY <= rect.height) {
+          const pocBarW = (vp.levels.find(l => l.price === vp.poc)?.volume ?? 0) / maxVol * maxBarWidth;
+          ctx.font = '9px monospace';
+          ctx.fillStyle = 'rgba(168, 85, 247, 0.6)';
+          ctx.textAlign = 'right';
+          ctx.fillText('POC', xRight - pocBarW - 3, pocY + 3);
+        }
+      });
     }
 
     // --- Session H/L levels (persist from session end to day end) ---
@@ -833,6 +934,84 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
       }).catch(() => { /* skip if not available */ });
     }
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval]);
+
+  // Live refresh: re-fetch session VP every 30s during market hours
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      // Check if market hours (15:30-22:00 CET, weekday)
+      const now = new Date();
+      const cetStr = now.toLocaleString('en-US', { timeZone: 'Europe/Stockholm', hour12: false });
+      const cetDate = new Date(cetStr);
+      const cetHour = cetDate.getHours();
+      const cetMin = cetDate.getMinutes();
+      const cetMinutes = cetHour * 60 + cetMin;
+      const day = cetDate.getDay();
+      if (day === 0 || day === 6) return; // weekend
+      if (cetMinutes < 15 * 60 + 30 || cetMinutes >= 22 * 60) return; // outside RTH
+
+      api.getVP('session').then(data => {
+        if (data.levels?.length) {
+          vpDataRef.current.set('session', data);
+          setVpLoaded(n => n + 1);
+        }
+      }).catch(() => {});
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch historical per-day VP when visible candles span past days
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    let debounceTimer: number | undefined;
+    const fetchVisibleDayVPs = () => {
+      const candles = candlesRef.current;
+      if (!candles.length) return;
+
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (!range) return;
+
+      // Get visible candle date range
+      const startIdx = Math.max(0, Math.floor(range.from));
+      const endIdx = Math.min(candles.length - 1, Math.ceil(range.to));
+
+      const visibleDates = new Set<string>();
+      const today = todayCET();
+      for (let i = startIdx; i <= endIdx; i++) {
+        const d = epochToCETDate(candles[i].t);
+        if (d !== today) visibleDates.add(d);
+      }
+
+      // Fetch VP for dates we haven't fetched yet
+      for (const date of visibleDates) {
+        if (vpHistoryFetchedRef.current.has(date)) continue;
+        vpHistoryFetchedRef.current.add(date);
+
+        api.getVP('session', date).then(data => {
+          if (data.levels?.length) {
+            vpHistoryRef.current.set(date, data);
+            setVpLoaded(n => n + 1);
+          }
+        }).catch(() => {});
+      }
+    };
+
+    const onRangeChange = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(fetchVisibleDayVPs, 300);
+    };
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
+    // Initial fetch for currently visible range
+    fetchVisibleDayVPs();
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interval]);
 

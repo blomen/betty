@@ -3,28 +3,36 @@
 import asyncio
 import json
 import logging
-import os
-from datetime import datetime, date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
 from ..config.trading_loader import get_market_data_config, get_scanner_config, get_setups
 from ..db.models import TradingSignal
-from ..market_data.amt import build_session_analysis, SessionAnalysis
+from ..market_data.amt import SessionAnalysis, build_session_analysis
 from ..market_data.base import MarketDataProvider
 from ..market_data.levels import (
-    compute_session_levels, compute_volume_profile, compute_vwap_bands,
-    bars_to_trades, compute_volume_profile_from_bars, VolumeProfile, VWAPBands, SessionLevels,
-    _TOKYO_START, _TOKYO_END, _LONDON_START, _LONDON_END,
-    _NY_START, _NY_END, _IB_END,
+    _IB_END,
+    _LONDON_END,
+    _LONDON_START,
+    _NY_END,
+    _NY_START,
+    _TOKYO_END,
+    _TOKYO_START,
+    SessionLevels,
+    VolumeProfile,
+    compute_session_levels,
+    compute_volume_profile,
+    compute_volume_profile_from_bars,
+    compute_vwap_bands,
 )
 from ..market_data.macro_provider import fetch_macro_snapshot
-from ..market_data.metrics import compute_rotation_factor, compute_aspr, compute_aspr_percentile, detect_value_migration
+from ..market_data.metrics import compute_aspr, compute_aspr_percentile, compute_rotation_factor, detect_value_migration
 from ..market_data.orderflow import build_candle_flow, compute_signals
 from ..market_data.scanner import MarketScanner
-from ..market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
+from ..market_data.scoring import day_type_fits_setup, filter_by_rr, score_candidate
 from ..market_data.setups.detector import DetectorContext, run_all_detectors
-from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m, compute_session_tpos
+from ..market_data.tpo import aggregate_bars_30m, build_full_tpo_profile, compute_session_tpos
 from ..repositories.market_repo import MarketRepo
 
 logger = logging.getLogger(__name__)
@@ -43,8 +51,8 @@ def _get_provider() -> MarketDataProvider:
     provider_type = config.get("provider", "databento")
 
     if provider_type == "databento":
-        from ..market_data.databento_provider import DabentoProvider
         from ..market_data.cache import CachedMarketDataProvider
+        from ..market_data.databento_provider import DabentoProvider
         from ..paths import get_data_dir
 
         inner = DabentoProvider(config)
@@ -58,26 +66,28 @@ def _get_provider() -> MarketDataProvider:
 
 def _serialize_swing_structure(swing) -> dict:
     """Serialize SwingStructure to JSON-safe dict."""
+
     def _ev(ev):
         if ev is None:
             return None
         return {
-            "price": ev.price, "timestamp": ev.timestamp,
-            "event_type": ev.event_type, "swing_type": ev.swing_type,
+            "price": ev.price,
+            "timestamp": ev.timestamp,
+            "event_type": ev.event_type,
+            "swing_type": ev.swing_type,
             "swing_price": ev.swing_price,
         }
+
     def _tf(tf_swings):
         return {
             "timeframe": tf_swings.timeframe,
             "structure": tf_swings.structure,
             "swing_highs": [
-                {"price": s.price, "timestamp": s.timestamp,
-                 "type": s.type, "timeframe": s.timeframe}
+                {"price": s.price, "timestamp": s.timestamp, "type": s.type, "timeframe": s.timeframe}
                 for s in tf_swings.swing_highs
             ],
             "swing_lows": [
-                {"price": s.price, "timestamp": s.timestamp,
-                 "type": s.type, "timeframe": s.timeframe}
+                {"price": s.price, "timestamp": s.timestamp, "type": s.type, "timeframe": s.timeframe}
                 for s in tf_swings.swing_lows
             ],
             "last_bos": _ev(tf_swings.last_bos),
@@ -85,6 +95,7 @@ def _serialize_swing_structure(swing) -> dict:
             "bos_active": tf_swings.bos_active,
             "choch_active": tf_swings.choch_active,
         }
+
     return {
         "daily": _tf(swing.daily),
         "weekly": _tf(swing.weekly),
@@ -108,6 +119,7 @@ class MarketService:
         Weekend close: Fri 17:00 ET → Sun 18:00 ET.
         """
         import zoneinfo
+
         et = zoneinfo.ZoneInfo("America/New_York")
         now = dt or datetime.now(et)
         if now.tzinfo is None:
@@ -131,10 +143,11 @@ class MarketService:
     def _filter_halt(rows: list) -> list:
         """Remove rows during the daily CME halt (17:00-18:00 ET / 22:00-23:00 CET)."""
         from zoneinfo import ZoneInfo
+
         _ET = ZoneInfo("US/Eastern")
         filtered = []
         for r in rows:
-            ts = r.ts if hasattr(r, 'ts') else None
+            ts = r.ts if hasattr(r, "ts") else None
             if ts is None:
                 filtered.append(r)
                 continue
@@ -145,20 +158,32 @@ class MarketService:
             filtered.append(r)
         return filtered
 
-    async def _get_session_bars(self, symbol: str) -> list[dict]:
-        """Get today's 1m bars from DB for VP computation.
+    async def _get_session_bars(self, symbol: str, date_str: str | None = None) -> list[dict]:
+        """Get 1m bars from DB for VP computation.
 
         DB-only — the live stream populates candles in real-time.
         Falls back to previous day if today has no data yet.
+
+        Args:
+            date_str: Optional YYYY-MM-DD for historical day. None = today.
         """
         from zoneinfo import ZoneInfo
+
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
-        today_cet = now.astimezone(_CET).date()
-        d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
 
-        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
+        if date_str:
+            from datetime import date as date_cls
+
+            target_date = date_cls.fromisoformat(date_str)
+        else:
+            target_date = now.astimezone(_CET).date()
+
+        d_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=_CET).astimezone(timezone.utc)
+        d_end = now if not date_str else d_start + timedelta(days=1)
+
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, d_end))
         if rows:
             logger.info("VP bars: %d from DB", len(rows))
             return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
@@ -181,11 +206,12 @@ class MarketService:
         into daily bars so swing detection stays current.
         """
         import json
-        from pathlib import Path
         from collections import defaultdict
+        from pathlib import Path
+        from zoneinfo import ZoneInfo
+
         from ..market_data.levels import compute_multi_tf_swings
 
-        from zoneinfo import ZoneInfo
         CET = ZoneInfo("Europe/Stockholm")
 
         synth_bars = []
@@ -205,18 +231,26 @@ class MarketService:
                         continue
                     dt = datetime.strptime(date_str, "%Y-%m-%d")
                     ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
-                    synth_bars.append({
-                        "ts": ts, "open": s.get("poc", rth_high),
-                        "high": rth_high, "low": rth_low,
-                        "close": s.get("poc", rth_low),
-                    })
+                    synth_bars.append(
+                        {
+                            "ts": ts,
+                            "open": s.get("poc", rth_high),
+                            "high": rth_high,
+                            "low": rth_low,
+                            "close": s.get("poc", rth_low),
+                        }
+                    )
                     last_summary_date = date_str
             except Exception as e:
                 logger.warning("Failed to load session summaries: %s", e)
 
         # Phase 2: Supplement with live DB candles for dates after last summary
         try:
-            gap_start = datetime.strptime(last_summary_date, "%Y-%m-%d") + timedelta(days=1) if last_summary_date else datetime.now(timezone.utc) - timedelta(days=30)
+            gap_start = (
+                datetime.strptime(last_summary_date, "%Y-%m-%d") + timedelta(days=1)
+                if last_summary_date
+                else datetime.now(timezone.utc) - timedelta(days=30)
+            )
             gap_start_utc = gap_start.replace(hour=0, tzinfo=CET).astimezone(timezone.utc)
             now = datetime.now(timezone.utc)
 
@@ -239,13 +273,20 @@ class MarketService:
                     d_close = candles[-1].c
                     dt = datetime.strptime(d_str, "%Y-%m-%d")
                     ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
-                    synth_bars.append({
-                        "ts": ts, "open": d_open,
-                        "high": d_high, "low": d_low,
-                        "close": d_close,
-                    })
-                logger.info("Swing structure: supplemented with %d live daily bars after %s",
-                           len(daily), last_summary_date or "N/A")
+                    synth_bars.append(
+                        {
+                            "ts": ts,
+                            "open": d_open,
+                            "high": d_high,
+                            "low": d_low,
+                            "close": d_close,
+                        }
+                    )
+                logger.info(
+                    "Swing structure: supplemented with %d live daily bars after %s",
+                    len(daily),
+                    last_summary_date or "N/A",
+                )
         except Exception as e:
             logger.warning("Failed to supplement swing data from DB: %s", e)
 
@@ -254,9 +295,7 @@ class MarketService:
 
         return compute_multi_tf_swings(synth_bars)
 
-    async def compute_session(
-        self, target_date: str | None = None, symbol: str | None = None
-    ) -> dict:
+    async def compute_session(self, target_date: str | None = None, symbol: str | None = None) -> dict:
         """Fetch market data → run AMT analysis → persist to DB."""
         config = get_market_data_config()
         symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
@@ -281,17 +320,15 @@ class MarketService:
         dt = datetime.strptime(target_date, "%Y-%m-%d")
         # Globex opens previous day 18:00 ET
         globex_start = datetime.combine(
-            dt - timedelta(days=1),
-            datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
+            dt - timedelta(days=1), datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
         )
-        rth_close = datetime.combine(
-            dt,
-            datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
-        )
+        rth_close = datetime.combine(dt, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
 
         # --- Fetch bars: DB-first, Databento only for backfill ---
         from zoneinfo import ZoneInfo
+
         from ..market_data.base import BarData
+
         _ET = ZoneInfo("America/New_York")
         gs_utc = globex_start.replace(tzinfo=_ET).astimezone(timezone.utc)
         rc_utc = min(
@@ -302,9 +339,17 @@ class MarketService:
         db_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", gs_utc, rc_utc))
         if db_rows:
             logger.info("compute_session: %d bars from DB for %s on %s", len(db_rows), symbol, target_date)
-            bars = [BarData(timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
-                            open=r.o, high=r.h, low=r.l, close=r.c, volume=r.v or 0)
-                    for r in db_rows]
+            bars = [
+                BarData(
+                    timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
+                    open=r.o,
+                    high=r.h,
+                    low=r.l,
+                    close=r.c,
+                    volume=r.v or 0,
+                )
+                for r in db_rows
+            ]
         else:
             # No DB bars — try Databento as last resort (with timeout)
             sym = config.get("symbol", "NQ.FUT")
@@ -329,21 +374,34 @@ class MarketService:
         ticks = []
 
         # Previous day bars from DB
-        prev_gs_utc = (gs_utc - timedelta(days=1))
-        prev_rc_utc = (rc_utc - timedelta(days=1))
+        prev_gs_utc = gs_utc - timedelta(days=1)
+        prev_rc_utc = rc_utc - timedelta(days=1)
         prev_db_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", prev_gs_utc, prev_rc_utc))
         if prev_db_rows:
-            prev_bars = [BarData(timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
-                                 open=r.o, high=r.h, low=r.l, close=r.c, volume=r.v or 0)
-                         for r in prev_db_rows]
+            prev_bars = [
+                BarData(
+                    timestamp=r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
+                    open=r.o,
+                    high=r.h,
+                    low=r.l,
+                    close=r.c,
+                    volume=r.v or 0,
+                )
+                for r in prev_db_rows
+            ]
         else:
             prev_bars = []
 
         # Fetch macro data (VIX, DXY, yields)
         try:
             macro = await fetch_macro_snapshot()
-            logger.info("Macro: VIX=%.1f (%s), regime=%s (%.2f)",
-                        macro.vix or 0, macro.vix_change_pct, macro.regime, macro.regime_score)
+            logger.info(
+                "Macro: VIX=%.1f (%s), regime=%s (%.2f)",
+                macro.vix or 0,
+                macro.vix_change_pct,
+                macro.regime,
+                macro.regime_score,
+            )
         except Exception as e:
             logger.warning("Macro fetch failed: %s", e)
             macro = None
@@ -369,15 +427,12 @@ class MarketService:
         # can find PDH/PDL (yesterday's 09:30-16:00) and Tokyo (yesterday 20:00 - today 02:00)
         all_bars_for_levels = []
         if prev_bars:
-            all_bars_for_levels.extend(
-                {"ts": b.timestamp, "high": b.high, "low": b.low} for b in prev_bars
-            )
-        all_bars_for_levels.extend(
-            {"ts": b.timestamp, "high": b.high, "low": b.low} for b in bars
-        )
+            all_bars_for_levels.extend({"ts": b.timestamp, "high": b.high, "low": b.low} for b in prev_bars)
+        all_bars_for_levels.extend({"ts": b.timestamp, "high": b.high, "low": b.low} for b in bars)
         # Use ET noon so .astimezone(ET).date() gives the correct calendar day
         # (UTC midnight would become previous day in ET due to UTC-4/5 offset)
         from zoneinfo import ZoneInfo as _ZI
+
         _et = _ZI("US/Eastern")
         _dt_parsed = datetime.strptime(target_date, "%Y-%m-%d")
         session_date = _dt_parsed.replace(hour=12, tzinfo=_et)
@@ -396,18 +451,21 @@ class MarketService:
         for b in bars:
             chunk.append(b)
             if len(chunk) == 30:
-                bars_30m_ts.append({
-                    "ts": chunk[0].timestamp,
-                    "high": max(c.high for c in chunk),
-                    "low": min(c.low for c in chunk),
-                    "open": chunk[0].open,
-                    "close": chunk[-1].close,
-                    "volume": sum(c.volume for c in chunk),
-                })
+                bars_30m_ts.append(
+                    {
+                        "ts": chunk[0].timestamp,
+                        "high": max(c.high for c in chunk),
+                        "low": min(c.low for c in chunk),
+                        "open": chunk[0].open,
+                        "close": chunk[-1].close,
+                        "volume": sum(c.volume for c in chunk),
+                    }
+                )
                 chunk = []
         session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=tick_size)
 
         from dataclasses import asdict as _asdict
+
         session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
         # Keep live object reference for RL context (stripped before DB serialization)
         _session_tpo_obj = session_tpo_set
@@ -429,17 +487,26 @@ class MarketService:
         # Value migration vs prior session
         value_migration = None
         prev_session = self.repo.get_previous_session(symbol, before_date=target_date)
-        if (prev_session and prev_session.vah and prev_session.val
-                and session_data.get("vah") and session_data.get("val")):
+        if (
+            prev_session
+            and prev_session.vah
+            and prev_session.val
+            and session_data.get("vah")
+            and session_data.get("val")
+        ):
             value_migration = detect_value_migration(
-                session_data["vah"], session_data["val"],
-                prev_session.vah, prev_session.val,
+                session_data["vah"],
+                session_data["val"],
+                prev_session.vah,
+                prev_session.val,
             )
 
         # --- AMT static feature enrichment ---
         historical_ibs = self.repo.get_historical_ib_ranges(symbol)
         ib_range_val = session_data.get("ib_range", 0) or 0
-        ib_pct = sum(1 for h in historical_ibs if h <= ib_range_val) / max(len(historical_ibs), 1) if historical_ibs else 0.5
+        ib_pct = (
+            sum(1 for h in historical_ibs if h <= ib_range_val) / max(len(historical_ibs), 1) if historical_ibs else 0.5
+        )
 
         # Overnight gap: (RTH open - prior close) / IB range
         overnight_gap = 0.0
@@ -453,6 +520,7 @@ class MarketService:
         rth_open_price = None
         if bars:
             from zoneinfo import ZoneInfo as _ZI2
+
             _et2 = _ZI2("US/Eastern")
             h_rth, m_rth = map(int, rth_open.split(":"))
             rth_open_time = datetime.strptime(rth_open, "%H:%M").time()
@@ -548,46 +616,54 @@ class MarketService:
         level_rows = self._session_levels_to_rows(session_levels, session_data)
 
         # Detect order blocks and FVGs from 30-min bars
-        from ..market_data.levels import detect_order_blocks, detect_fvgs
+        from ..market_data.levels import detect_fvgs, detect_order_blocks
+
         order_blocks = detect_order_blocks(bars_30m)
         fvgs = detect_fvgs(bars_30m)
 
         for ob in order_blocks:
-            level_rows.append({
-                "level_type": f"order_block_{ob.direction}",
-                "price_low": ob.price_low,
-                "price_high": ob.price_high,
-                "direction": ob.direction,
-                "session": "rth",
-                "is_filled": False,
-            })
+            level_rows.append(
+                {
+                    "level_type": f"order_block_{ob.direction}",
+                    "price_low": ob.price_low,
+                    "price_high": ob.price_high,
+                    "direction": ob.direction,
+                    "session": "rth",
+                    "is_filled": False,
+                }
+            )
         for fvg in fvgs:
-            level_rows.append({
-                "level_type": f"fvg_{fvg.direction}",
-                "price_low": fvg.price_low,
-                "price_high": fvg.price_high,
-                "direction": fvg.direction,
-                "session": "rth",
-                "is_filled": False,
-            })
+            level_rows.append(
+                {
+                    "level_type": f"fvg_{fvg.direction}",
+                    "price_low": fvg.price_low,
+                    "price_high": fvg.price_high,
+                    "direction": fvg.direction,
+                    "session": "rth",
+                    "is_filled": False,
+                }
+            )
 
         if level_rows:
             self.repo.upsert_levels(symbol, target_date, level_rows)
 
         self.db.commit()
 
-        logger.info("Computed session for %s %s: POC=%.2f, VA=%.2f-%.2f, RF=%d, ASPR=%.2f",
-                     symbol, target_date,
-                     session_data.get("poc", 0),
-                     session_data.get("val", 0),
-                     session_data.get("vah", 0),
-                     rf, aspr)
+        logger.info(
+            "Computed session for %s %s: POC=%.2f, VA=%.2f-%.2f, RF=%d, ASPR=%.2f",
+            symbol,
+            target_date,
+            session_data.get("poc", 0),
+            session_data.get("val", 0),
+            session_data.get("vah", 0),
+            rf,
+            aspr,
+        )
 
         return session_data
 
     async def build_expanded_session(self, symbol: str = "NQ") -> dict | None:
         """Build the expanded session response with all analytical layers."""
-        from ..market_data.levels import detect_swing_points, detect_naked_pocs, compute_developing_poc
 
         config = get_market_data_config()
         symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
@@ -627,12 +703,14 @@ class MarketService:
         # News proximity for RL macro features
         try:
             from ..data.economic_calendar import get_upcoming_events
+
             upcoming = get_upcoming_events(self.db, minutes_ahead=120)
             if upcoming:
                 nearest = upcoming[0]
                 evt_dt = nearest.event_datetime
                 if evt_dt.tzinfo is None:
                     from datetime import timezone as _tz
+
                     evt_dt = evt_dt.replace(tzinfo=_tz.utc)
                 minutes_away = max(0, (evt_dt - datetime.now(timezone.utc)).total_seconds() / 60.0)
                 macro["news_proximity"] = max(0.0, 1.0 - minutes_away / 120.0)
@@ -658,7 +736,9 @@ class MarketService:
         # Only use DB VP values if session_row is from today; stale previous-day values mislead
         is_today = session_row.date == today
         profiles = {
-            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val} if is_today else {"poc": None, "vah": None, "val": None},
+            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
+            if is_today
+            else {"poc": None, "vah": None, "val": None},
             "developing_poc": None,
             "developing_poc_direction": None,
             "naked_pocs": [],
@@ -669,15 +749,16 @@ class MarketService:
             # Run bar enrichment in a thread with a HARD timeout.
             # asyncio.wait_for doesn't cancel synchronous blocking calls.
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 inner_loop = asyncio.new_event_loop()
+
                 def _run_enrich():
                     try:
-                        return inner_loop.run_until_complete(
-                            self._enrich_with_bars(symbol, today, session_row, sj)
-                        )
+                        return inner_loop.run_until_complete(self._enrich_with_bars(symbol, today, session_row, sj))
                     finally:
                         inner_loop.close()
+
                 future = pool.submit(_run_enrich)
                 try:
                     structure, profiles, swing_struct = future.result(timeout=30.0)
@@ -691,24 +772,28 @@ class MarketService:
                 for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
                     if tf_swings.swing_highs:
                         sh_price = tf_swings.swing_highs[0].price
-                        levels_list.append({
-                            "type": f"{tf_swings.timeframe}_swing_high",
-                            "price_low": sh_price,
-                            "price_high": sh_price,
-                            "direction": "resistance",
-                            "session": tf_swings.timeframe,
-                            "is_filled": False,
-                        })
+                        levels_list.append(
+                            {
+                                "type": f"{tf_swings.timeframe}_swing_high",
+                                "price_low": sh_price,
+                                "price_high": sh_price,
+                                "direction": "resistance",
+                                "session": tf_swings.timeframe,
+                                "is_filled": False,
+                            }
+                        )
                     if tf_swings.swing_lows:
                         sl_price = tf_swings.swing_lows[0].price
-                        levels_list.append({
-                            "type": f"{tf_swings.timeframe}_swing_low",
-                            "price_low": sl_price,
-                            "price_high": sl_price,
-                            "direction": "support",
-                            "session": tf_swings.timeframe,
-                            "is_filled": False,
-                        })
+                        levels_list.append(
+                            {
+                                "type": f"{tf_swings.timeframe}_swing_low",
+                                "price_low": sl_price,
+                                "price_high": sl_price,
+                                "direction": "support",
+                                "session": tf_swings.timeframe,
+                                "is_filled": False,
+                            }
+                        )
         except Exception as e:
             logger.warning("Bar enrichment failed: %s", e)
 
@@ -717,19 +802,39 @@ class MarketService:
             "session": {
                 "date": session_row.date,
                 "symbol": session_row.symbol,
-                **{k: sj.get(k) for k in [
-                    "poc", "vah", "val", "vwap",
-                    "vwap_1sd_upper", "vwap_1sd_lower",
-                    "vwap_2sd_upper", "vwap_2sd_lower",
-                    "vwap_3sd_upper", "vwap_3sd_lower",
-                    "ib_high", "ib_low", "ib_range",
-                    "market_type", "opening_type",
-                    "poor_high", "poor_low", "single_prints",
-                    "value_migration", "overnight_high", "overnight_low",
-                    "total_delta", "delta_divergence",
-                    "last_price", "price_vs_va", "price_vs_vwap", "price_vs_ib",
-                    "distribution_type",
-                ]},
+                **{
+                    k: sj.get(k)
+                    for k in [
+                        "poc",
+                        "vah",
+                        "val",
+                        "vwap",
+                        "vwap_1sd_upper",
+                        "vwap_1sd_lower",
+                        "vwap_2sd_upper",
+                        "vwap_2sd_lower",
+                        "vwap_3sd_upper",
+                        "vwap_3sd_lower",
+                        "ib_high",
+                        "ib_low",
+                        "ib_range",
+                        "market_type",
+                        "opening_type",
+                        "poor_high",
+                        "poor_low",
+                        "single_prints",
+                        "value_migration",
+                        "overnight_high",
+                        "overnight_low",
+                        "total_delta",
+                        "delta_divergence",
+                        "last_price",
+                        "price_vs_va",
+                        "price_vs_vwap",
+                        "price_vs_ib",
+                        "distribution_type",
+                    ]
+                },
                 "rotation_factor": session_row.rotation_factor,
                 "aspr": session_row.aspr,
                 "aspr_percentile": session_row.aspr_percentile,
@@ -762,15 +867,31 @@ class MarketService:
 
     async def _enrich_with_bars(self, symbol: str, today: str, session_row, sj: dict) -> tuple[dict, dict, object]:
         """Fetch bars and compute analytics. Returns (structure, profiles). May be slow/fail."""
-        from ..market_data.levels import detect_swing_points, detect_naked_pocs, compute_developing_poc
+        from ..market_data.levels import compute_developing_poc, detect_naked_pocs, detect_swing_points
 
         bars = await self._get_session_bars(symbol)
 
-        bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
+        bar_dicts = (
+            [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars]
+            if bars
+            else []
+        )
         structure = detect_swing_points(bar_dicts, lookback=5)
 
         # Compute VP live — prefer tick data for accuracy, fall back to bars
-        bar_dicts_with_vol = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0), "volume": b.get("volume", 1)} for b in bars] if bars else []
+        bar_dicts_with_vol = (
+            [
+                {
+                    "high": b.get("high", 0),
+                    "low": b.get("low", 0),
+                    "close": b.get("close", 0),
+                    "volume": b.get("volume", 1),
+                }
+                for b in bars
+            ]
+            if bars
+            else []
+        )
         tick_vp = await self._compute_tick_vp(symbol)
         if tick_vp is not None:
             vp = tick_vp
@@ -780,19 +901,13 @@ class MarketService:
             vp = None
 
         if vp is not None:
-            profiles = {
-                "session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}
-            }
+            profiles = {"session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}}
         elif session_row.date == today:
             # Only use DB fallback if session_row is from today
-            profiles = {
-                "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
-            }
+            profiles = {"session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}}
         else:
             # Previous-day session_row — VP values are stale, omit them
-            profiles = {
-                "session": {"poc": None, "vah": None, "val": None}
-            }
+            profiles = {"session": {"poc": None, "vah": None, "val": None}}
 
         # Weekly and monthly VP
         for tf in ("weekly", "monthly"):
@@ -850,9 +965,8 @@ class MarketService:
 
         # Rebuild SessionAnalysis from stored JSON
         sj = session_row.session_json
-        from ..market_data.amt import (
-            VolumeProfile, VWAPBands, InitialBalance, DeltaAnalysis, SessionAnalysis
-        )
+        from ..market_data.amt import DeltaAnalysis, InitialBalance, VolumeProfile, VWAPBands
+
         analysis = SessionAnalysis(
             date=sj.get("date", today),
             symbol=sj.get("symbol", symbol),
@@ -872,9 +986,7 @@ class MarketService:
             prev_val=sj.get("prev_val"),
         )
         if sj.get("poc") is not None:
-            analysis.volume_profile = VolumeProfile(
-                poc=sj["poc"], vah=sj.get("vah", 0), val=sj.get("val", 0)
-            )
+            analysis.volume_profile = VolumeProfile(poc=sj["poc"], vah=sj.get("vah", 0), val=sj.get("val", 0))
         if sj.get("vwap") is not None:
             analysis.vwap_bands = VWAPBands(
                 vwap=sj["vwap"],
@@ -937,19 +1049,21 @@ class MarketService:
                 ib_low=sj.get("ib_low"),
                 cumulative_delta=sj.get("cumulative_delta_last"),
             )
-            results.append({
-                "id": signal_row.id,
-                "setup_type": sig.setup_type,
-                "setup_name": sig.setup_name,
-                "category": sig.category,
-                "direction": sig.direction,
-                "score": sig.score,
-                "conditions": conds_json,
-                "price_at_signal": analysis.last_price,
-                "suggested_entry": sig.suggested_entry,
-                "suggested_stop": sig.suggested_stop,
-                "suggested_target": sig.suggested_target,
-            })
+            results.append(
+                {
+                    "id": signal_row.id,
+                    "setup_type": sig.setup_type,
+                    "setup_name": sig.setup_name,
+                    "category": sig.category,
+                    "direction": sig.direction,
+                    "score": sig.score,
+                    "conditions": conds_json,
+                    "price_at_signal": analysis.last_price,
+                    "suggested_entry": sig.suggested_entry,
+                    "suggested_stop": sig.suggested_stop,
+                    "suggested_target": sig.suggested_target,
+                }
+            )
 
         # --- New: Setup detector-based signal generation ---
         try:
@@ -962,9 +1076,7 @@ class MarketService:
         logger.info("Scan produced %d signals above threshold %.0f", len(results), threshold)
         return results
 
-    def _run_setup_detectors(
-        self, session_row, sj: dict, symbol: str
-    ) -> list[dict]:
+    def _run_setup_detectors(self, session_row, sj: dict, symbol: str) -> list[dict]:
         """Run the level-based setup detectors and return scored signals."""
         config = get_market_data_config()
         sessions_cfg = config.get("sessions", {})
@@ -976,19 +1088,24 @@ class MarketService:
         now = datetime.now(timezone.utc)
 
         recent_ticks = self.repo.get_trades(symbol, start=session_start, end=now)
-        tick_dicts = [
-            {"ts": t.ts, "price": t.price, "size": t.size, "side": t.side}
-            for t in recent_ticks
-        ]
+        tick_dicts = [{"ts": t.ts, "price": t.price, "size": t.size, "side": t.side} for t in recent_ticks]
 
         # Build candle flow
         candles = build_candle_flow(tick_dicts, period_seconds=60)
 
         # Auto-detect direction from price action structure
         from ..market_data.levels import detect_swing_points
+
         bars_for_structure = sj.get("bars", [])
         if bars_for_structure:
-            bar_dicts_for_struct = [{"high": b.get("high", 0) if isinstance(b, dict) else 0, "low": b.get("low", 0) if isinstance(b, dict) else 0, "close": b.get("close", 0) if isinstance(b, dict) else 0} for b in bars_for_structure]
+            bar_dicts_for_struct = [
+                {
+                    "high": b.get("high", 0) if isinstance(b, dict) else 0,
+                    "low": b.get("low", 0) if isinstance(b, dict) else 0,
+                    "close": b.get("close", 0) if isinstance(b, dict) else 0,
+                }
+                for b in bars_for_structure
+            ]
         else:
             bar_dicts_for_struct = []
         structure_result = detect_swing_points(bar_dicts_for_struct, lookback=5)
@@ -1028,10 +1145,14 @@ class MarketService:
 
         # Build TPO stub from session row data
         from ..market_data.tpo import TPOProfile
+
         tpo = TPOProfile(
-            letters={}, poc=sj.get("poc", 0) or 0,
-            vah=sj.get("vah", 0) or 0, val=sj.get("val", 0) or 0,
-            single_prints=[], ledges=[],
+            letters={},
+            poc=sj.get("poc", 0) or 0,
+            vah=sj.get("vah", 0) or 0,
+            val=sj.get("val", 0) or 0,
+            single_prints=[],
+            ledges=[],
             poor_high=sj.get("poor_high", False),
             poor_low=sj.get("poor_low", False),
             ib_tpo_count=session_row.ib_tpo_count or 0,
@@ -1059,8 +1180,12 @@ class MarketService:
             fits = day_type_fits_setup(detector_ctx.day_type, c.setup_type)
             macro_ok = True  # No longer gating on manual macro bias
             final_score = score_candidate(
-                c, orderflow, fits, macro_ok,
-                session_row.rotation_factor, session_row.aspr_percentile,
+                c,
+                orderflow,
+                fits,
+                macro_ok,
+                session_row.rotation_factor,
+                session_row.aspr_percentile,
             )
             if final_score >= 70:
                 c.base_score = final_score
@@ -1098,26 +1223,27 @@ class MarketService:
             )
             self.db.add(signal)
             self.db.flush()
-            results.append({
-                "id": signal.id,
-                "setup_type": c.setup_type,
-                "setup_name": c.setup_name,
-                "category": c.setup_type,
-                "direction": c.direction,
-                "score": c.base_score,
-                "price_at_signal": detector_ctx.last_price,
-                "suggested_entry": c.entry_price,
-                "suggested_stop": c.stop_price,
-                "suggested_target": c.target_1,
-                "suggested_target_2": c.target_2,
-                "suggested_target_3": c.target_3,
-                "level_touched": c.level_touched,
-                "rr_tp1": c.rr_tp1,
-                "rr_tp2": c.rr_tp2,
-            })
+            results.append(
+                {
+                    "id": signal.id,
+                    "setup_type": c.setup_type,
+                    "setup_name": c.setup_name,
+                    "category": c.setup_type,
+                    "direction": c.direction,
+                    "score": c.base_score,
+                    "price_at_signal": detector_ctx.last_price,
+                    "suggested_entry": c.entry_price,
+                    "suggested_stop": c.stop_price,
+                    "suggested_target": c.target_1,
+                    "suggested_target_2": c.target_2,
+                    "suggested_target_3": c.target_3,
+                    "level_touched": c.level_touched,
+                    "rr_tp1": c.rr_tp1,
+                    "rr_tp2": c.rr_tp2,
+                }
+            )
 
-        logger.info("Setup detectors produced %d signals (from %d candidates)",
-                     len(results), len(raw_candidates))
+        logger.info("Setup detectors produced %d signals (from %d candidates)", len(results), len(raw_candidates))
         return results
 
     def get_current_session(self, symbol: str | None = None) -> dict | None:
@@ -1171,12 +1297,19 @@ class MarketService:
         session_data = self.get_current_session(symbol)
 
         empty_of = {
-            "checked": False, "delta": None, "divergence": False,
-            "delta_aligned": False, "delta_unwind": False,
-            "cvd": None, "cvd_trend": "flat",
-            "vsa_absorption": False, "tick_vol_accelerating": False,
-            "trapped_traders": False, "passive_active_ratio": 0.0,
-            "big_trades_count": 0, "big_trades_net_delta": 0,
+            "checked": False,
+            "delta": None,
+            "divergence": False,
+            "delta_aligned": False,
+            "delta_unwind": False,
+            "cvd": None,
+            "cvd_trend": "flat",
+            "vsa_absorption": False,
+            "tick_vol_accelerating": False,
+            "trapped_traders": False,
+            "passive_active_ratio": 0.0,
+            "big_trades_count": 0,
+            "big_trades_net_delta": 0,
             "stop_run_detected": False,
         }
 
@@ -1209,8 +1342,9 @@ class MarketService:
         ml_day_type = None
         ml_day_type_confidence = None
         try:
+            from ..ml.models.gate_classifier import DAY_TYPE_LABELS
             from ..ml.serving.predictor import get_predictor
-            from ..ml.models.gate_classifier import DAY_TYPE_FEATURE_NAMES, DAY_TYPE_LABELS
+
             predictor = get_predictor()
             if predictor.is_loaded("gate_classifier"):
                 gate_features = {
@@ -1218,7 +1352,8 @@ class MarketService:
                     "ib_range": session_data.get("ib_range", 0),
                     "ib_range_vs_avg": session_data.get("ib_range_vs_avg", 1.0),
                     "opening_type_encoded": {"od": 0, "oi": 1, "or": 2, "otd": 3}.get(
-                        session_data.get("opening_type", ""), 0),
+                        session_data.get("opening_type", ""), 0
+                    ),
                     "first_hour_delta_total": session_data.get("total_delta", 0),
                     "first_hour_volume_vs_avg": 1.0,
                     "overnight_range_pct": 0,
@@ -1230,7 +1365,8 @@ class MarketService:
                     "vix_level": (session_data.get("macro") or {}).get("vix", 0) or 0,
                     "gex": 0,
                     "value_migration_encoded": {"up": 1, "down": -1, "neutral": 0}.get(
-                        session_data.get("value_migration", "neutral"), 0),
+                        session_data.get("value_migration", "neutral"), 0
+                    ),
                     "ib_tpo_count": session_data.get("ib_tpo_count", 0),
                 }
                 pred = predictor.predict("gate_classifier", gate_features)
@@ -1238,8 +1374,9 @@ class MarketService:
                     ml_day_type = DAY_TYPE_LABELS.get(pred["class"], "unknown")
                     probs = pred.get("probabilities", [])
                     ml_day_type_confidence = round(max(probs) * 100, 1) if probs else None
-                    logger.info("M7 predicted day type: %s (%.1f%% confidence)",
-                               ml_day_type, ml_day_type_confidence or 0)
+                    logger.info(
+                        "M7 predicted day type: %s (%.1f%% confidence)", ml_day_type, ml_day_type_confidence or 0
+                    )
         except Exception as e:
             logger.debug("M7 gate classifier skipped: %s", e)
 
@@ -1260,13 +1397,15 @@ class MarketService:
 
         # === Gate 4: Orderflow (rich signals from live ticks) ===
         # Checked if: delta aligned + at least 1 confirming signal
-        confirming_count = sum([
-            of_signals.delta_aligned,
-            of_signals.vsa_absorption,
-            of_signals.trapped_traders,
-            of_signals.tick_vol_accelerating,
-            of_signals.cvd_trend in ("rising", "falling"),
-        ])
+        confirming_count = sum(
+            [
+                of_signals.delta_aligned,
+                of_signals.vsa_absorption,
+                of_signals.trapped_traders,
+                of_signals.tick_vol_accelerating,
+                of_signals.cvd_trend in ("rising", "falling"),
+            ]
+        )
         of_checked = of_signals.delta_aligned and confirming_count >= 2
 
         return {
@@ -1304,7 +1443,11 @@ class MarketService:
         session_row = self.repo.get_session(date.today().isoformat(), symbol)
         sj = {}
         if session_row and session_row.session_json:
-            sj = session_row.session_json if isinstance(session_row.session_json, dict) else json.loads(session_row.session_json)
+            sj = (
+                session_row.session_json
+                if isinstance(session_row.session_json, dict)
+                else json.loads(session_row.session_json)
+            )
 
         # Bars not in session_json — fetch from cache (with timeout)
         try:
@@ -1314,10 +1457,15 @@ class MarketService:
             )
         except (asyncio.TimeoutError, Exception):
             bars = []
-        bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
+        bar_dicts = (
+            [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars]
+            if bars
+            else []
+        )
 
         # Direction from structure, not manual gates
         from ..market_data.levels import detect_swing_points
+
         structure = detect_swing_points(bar_dicts, lookback=5)
         struct_class = structure.get("structure", "ranging")
         if struct_class == "uptrend":
@@ -1334,8 +1482,9 @@ class MarketService:
         ml_day_type = None
         ml_day_type_confidence = None
         try:
-            from ..ml.serving.predictor import get_predictor
             from ..ml.models.gate_classifier import DAY_TYPE_LABELS
+            from ..ml.serving.predictor import get_predictor
+
             predictor = get_predictor()
             if predictor.is_loaded("gate_classifier"):
                 gate_features = self._build_gate_features(sj, session_row)
@@ -1361,15 +1510,20 @@ class MarketService:
     # Session levels cache: {(symbol, days): (result, expiry_time)}
     _session_levels_cache: dict[tuple, tuple] = {}
 
-    async def get_volume_profile_curve(self, symbol: str = "NQ", timeframe: str = "session") -> dict:
-        """Return VP curve (price→volume) for charting. Cached for 60s.
+    async def get_volume_profile_curve(
+        self, symbol: str = "NQ", timeframe: str = "session", date: str | None = None
+    ) -> dict:
+        """Return VP curve (price→volume) for charting.
 
         Session VP uses tick data from market_trades for accuracy (exact trade prices).
         Weekly/monthly use 1m bar approximation (good enough at scale).
+
+        Args:
+            date: Optional YYYY-MM-DD for historical session VP. Ignored for weekly/monthly.
         """
         import time as _time
 
-        cache_key = (symbol, timeframe)
+        cache_key = (symbol, timeframe, date)
         cached = MarketService._vp_cache.get(cache_key)
         if cached and _time.time() < cached[1]:
             return cached[0]
@@ -1378,12 +1532,12 @@ class MarketService:
 
         if timeframe == "session":
             # Try tick-based VP first (accurate — no bar-spread approximation)
-            vp = await self._compute_tick_vp(symbol)
+            vp = await self._compute_tick_vp(symbol, date)
 
         if vp is None:
             # Fall back to bar-based VP
             if timeframe == "session":
-                bars = await self._get_session_bars(symbol)
+                bars = await self._get_session_bars(symbol, date)
             else:
                 bars = await self._get_period_bars(symbol, timeframe)
 
@@ -1399,25 +1553,43 @@ class MarketService:
             "val": vp.val,
             "levels": [{"price": lv.price, "volume": lv.volume} for lv in vp.levels],
         }
-        MarketService._vp_cache[cache_key] = (result, _time.time() + 300)
+        # Session VP: 30s cache (live refresh). Historical/weekly/monthly: 300s.
+        ttl = 30 if timeframe == "session" and not date else 300
+        MarketService._vp_cache[cache_key] = (result, _time.time() + ttl)
         return result
 
-    async def _compute_tick_vp(self, symbol: str) -> VolumeProfile | None:
-        """Compute VP from tick data using SQL aggregation (no ORM object loading)."""
+    async def _compute_tick_vp(self, symbol: str, date_str: str | None = None) -> VolumeProfile | None:
+        """Compute VP from tick data using SQL aggregation (no ORM object loading).
+
+        Args:
+            date_str: Optional YYYY-MM-DD for historical day. None = today.
+        """
         from zoneinfo import ZoneInfo
+
         from sqlalchemy import text
 
         _CET = ZoneInfo("Europe/Stockholm")
         now = datetime.now(timezone.utc)
-        today_cet = now.astimezone(_CET).date()
-        d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
+
+        if date_str:
+            from datetime import date as date_cls
+
+            target_date = date_cls.fromisoformat(date_str)
+        else:
+            target_date = now.astimezone(_CET).date()
+
+        d_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=_CET).astimezone(timezone.utc)
+        d_end = now if not date_str else d_start + timedelta(days=1)
 
         try:
             # Count first
-            count_result = self.repo.market_db.execute(
-                text("SELECT COUNT(*) FROM market_trades WHERE symbol = :sym AND ts >= :start AND ts <= :end"),
-                {"sym": symbol, "start": d_start, "end": now},
-            ).scalar() or 0
+            count_result = (
+                self.repo.market_db.execute(
+                    text("SELECT COUNT(*) FROM market_trades WHERE symbol = :sym AND ts >= :start AND ts <= :end"),
+                    {"sym": symbol, "start": d_start, "end": d_end},
+                ).scalar()
+                or 0
+            )
 
             if count_result < 100:
                 logger.info("Tick VP: only %d ticks, falling back to bars", count_result)
@@ -1436,7 +1608,7 @@ class MarketService:
                     GROUP BY tick_price
                     ORDER BY tick_price
                 """),
-                {"sym": symbol, "start": d_start, "end": now},
+                {"sym": symbol, "start": d_start, "end": d_end},
             ).fetchall()
 
             if not rows:
@@ -1444,8 +1616,12 @@ class MarketService:
 
             trade_dicts = [{"price": float(r[0]), "size": int(r[1])} for r in rows]
             vp = compute_volume_profile(trade_dicts)
-            logger.info("Tick VP: SQL aggregation from %d ticks → %d price levels (POC=%.2f)",
-                        count_result, len(trade_dicts), vp.poc)
+            logger.info(
+                "Tick VP: SQL aggregation from %d ticks → %d price levels (POC=%.2f)",
+                count_result,
+                len(trade_dicts),
+                vp.poc,
+            )
             return vp
         except Exception as e:
             logger.warning("Tick VP SQL failed: %s", e)
@@ -1460,6 +1636,7 @@ class MarketService:
         the correct approach when volume data quality varies across days.
         """
         from zoneinfo import ZoneInfo
+
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
@@ -1489,6 +1666,7 @@ class MarketService:
         """
         import math
         from zoneinfo import ZoneInfo
+
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
@@ -1524,16 +1702,18 @@ class MarketService:
             sd = math.sqrt(variance)
 
             epoch = int(ts.timestamp())
-            series.append({
-                "t": epoch,
-                "vwap": round(vwap, 2),
-                "sd1_u": round(vwap + sd, 2),
-                "sd1_l": round(vwap - sd, 2),
-                "sd2_u": round(vwap + 2 * sd, 2),
-                "sd2_l": round(vwap - 2 * sd, 2),
-                "sd3_u": round(vwap + 3 * sd, 2),
-                "sd3_l": round(vwap - 3 * sd, 2),
-            })
+            series.append(
+                {
+                    "t": epoch,
+                    "vwap": round(vwap, 2),
+                    "sd1_u": round(vwap + sd, 2),
+                    "sd1_l": round(vwap - sd, 2),
+                    "sd2_u": round(vwap + 2 * sd, 2),
+                    "sd2_l": round(vwap - 2 * sd, 2),
+                    "sd3_u": round(vwap + 3 * sd, 2),
+                    "sd3_l": round(vwap - 3 * sd, 2),
+                }
+            )
 
         logger.info("VWAP: computed %d points from 1m candles (00:00 CET anchor)", len(series))
         return {"vwap": series, "symbol": symbol, "count": len(series)}
@@ -1546,8 +1726,8 @@ class MarketService:
         same logic used by RL backtesting. Cached for 60s.
         """
         import time as _time
-        from zoneinfo import ZoneInfo
         from collections import defaultdict
+        from zoneinfo import ZoneInfo
 
         cache_key = (symbol, days)
         cached = MarketService._session_levels_cache.get(cache_key)
@@ -1562,7 +1742,9 @@ class MarketService:
         # Fetch enough 1m candles to cover `days` trading days + 1 extra for PDH/PDL
         pad_days = days + (days // 5) * 2 + 3
         start_dt = datetime(
-            today_cet.year, today_cet.month, today_cet.day,
+            today_cet.year,
+            today_cet.month,
+            today_cet.day,
             tzinfo=_CET,
         ) - timedelta(days=pad_days)
         start_utc = start_dt.astimezone(timezone.utc)
@@ -1573,8 +1755,7 @@ class MarketService:
 
         # Convert DB rows to bar dicts for compute_session_levels()
         bars = [
-            {"ts": r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc), "high": r.h, "low": r.l}
-            for r in rows
+            {"ts": r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc), "high": r.h, "low": r.l} for r in rows
         ]
 
         # Group bars by CET date
@@ -1618,39 +1799,43 @@ class MarketService:
             # CET epoch boundaries for frontend time-scoping
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
 
-            result_days.append({
-                "date": date_str,
-                "pdh": sl.pdh,
-                "pdl": sl.pdl,
-                "pdh_time": sl.pdh_time,
-                "pdl_time": sl.pdl_time,
-                "ib_high": sl.ib_high,
-                "ib_low": sl.ib_low,
-                "tokyo_high": sl.tokyo_high,
-                "tokyo_low": sl.tokyo_low,
-                "london_high": sl.london_high,
-                "london_low": sl.london_low,
-                "ny_high": sl.ny_high,
-                "ny_low": sl.ny_low,
-                # Time boundaries (CET epochs) from levels.py constants
-                "tokyo_start": _cet_epoch(d, _TOKYO_START.hour, _TOKYO_START.minute),
-                "tokyo_end": _cet_epoch(d, _TOKYO_END.hour, _TOKYO_END.minute),
-                "london_start": _cet_epoch(d, _LONDON_START.hour, _LONDON_START.minute),
-                "london_end": _cet_epoch(d, _LONDON_END.hour, _LONDON_END.minute),
-                "ib_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
-                "ib_end": _cet_epoch(d, _IB_END.hour, _IB_END.minute),
-                "ny_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
-                "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
-                "day_start": _cet_epoch(d, 0, 0),
-                "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
-                **swing_data,
-            })
+            result_days.append(
+                {
+                    "date": date_str,
+                    "pdh": sl.pdh,
+                    "pdl": sl.pdl,
+                    "pdh_time": sl.pdh_time,
+                    "pdl_time": sl.pdl_time,
+                    "ib_high": sl.ib_high,
+                    "ib_low": sl.ib_low,
+                    "tokyo_high": sl.tokyo_high,
+                    "tokyo_low": sl.tokyo_low,
+                    "london_high": sl.london_high,
+                    "london_low": sl.london_low,
+                    "ny_high": sl.ny_high,
+                    "ny_low": sl.ny_low,
+                    # Time boundaries (CET epochs) from levels.py constants
+                    "tokyo_start": _cet_epoch(d, _TOKYO_START.hour, _TOKYO_START.minute),
+                    "tokyo_end": _cet_epoch(d, _TOKYO_END.hour, _TOKYO_END.minute),
+                    "london_start": _cet_epoch(d, _LONDON_START.hour, _LONDON_START.minute),
+                    "london_end": _cet_epoch(d, _LONDON_END.hour, _LONDON_END.minute),
+                    "ib_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
+                    "ib_end": _cet_epoch(d, _IB_END.hour, _IB_END.minute),
+                    "ny_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
+                    "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
+                    "day_start": _cet_epoch(d, 0, 0),
+                    "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
+                    **swing_data,
+                }
+            )
 
         result = {"days": result_days, "symbol": symbol}
         MarketService._session_levels_cache[cache_key] = (result, _time.time() + 60)
         return result
 
-    async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5) -> dict:
+    async def get_candles(
+        self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5
+    ) -> dict:
         """Return OHLCV candle array for charting from market_candles DB.
 
         Stored intervals: 1m, 5m.  15m is resampled from 1m on the fly.
@@ -1676,8 +1861,14 @@ class MarketService:
         else:
             rows = repo.get_candles(symbol, interval, start_dt, end_dt)
             candles = [
-                {"t": int(r.ts.replace(tzinfo=timezone.utc).timestamp() if not r.ts.tzinfo else r.ts.timestamp()),
-                 "o": r.o, "h": r.h, "l": r.l, "c": r.c, "v": r.v}
+                {
+                    "t": int(r.ts.replace(tzinfo=timezone.utc).timestamp() if not r.ts.tzinfo else r.ts.timestamp()),
+                    "o": r.o,
+                    "h": r.h,
+                    "l": r.l,
+                    "c": r.c,
+                    "v": r.v,
+                }
                 for r in rows
             ]
 
@@ -1693,6 +1884,7 @@ class MarketService:
         gaps = self._detect_gaps(candles, base_interval)
         if gaps:
             import threading
+
             def _run_backfill(sym, iv, gap_list, ck):
                 loop = asyncio.new_event_loop()
                 try:
@@ -1703,9 +1895,12 @@ class MarketService:
                     logger.warning("Background gap backfill failed: %s", e)
                 finally:
                     loop.close()
+
             threading.Thread(
-                target=_run_backfill, args=(symbol, base_interval, gaps, cache_key),
-                daemon=True, name="candle-backfill",
+                target=_run_backfill,
+                args=(symbol, base_interval, gaps, cache_key),
+                daemon=True,
+                name="candle-backfill",
             ).start()
 
         result = {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
@@ -1790,6 +1985,7 @@ class MarketService:
         """
         try:
             from ..market_data.databento_provider import DabentoProvider
+
             config = get_market_data_config()
             inner = DabentoProvider(config)
             db_symbol = config.get("symbol", "NQ.v.0")
@@ -1799,6 +1995,7 @@ class MarketService:
             intervals.add(interval)
 
             from ..db.models import get_session as _get_db_session
+
             for gap_start, gap_end in gaps:
                 start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
                 end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
@@ -1834,6 +2031,7 @@ class MarketService:
         """
         if MarketService._ET is None:
             from zoneinfo import ZoneInfo
+
             MarketService._ET = ZoneInfo("US/Eastern")
         dt = datetime.fromtimestamp(epoch, tz=MarketService._ET)
         wd = dt.weekday()  # Mon=0 … Sun=6
@@ -1867,14 +2065,16 @@ class MarketService:
         result = []
         for bucket_ts in sorted(buckets):
             bars = buckets[bucket_ts]
-            result.append({
-                "t": bucket_ts,
-                "o": bars[0].o,
-                "h": max(b.h for b in bars),
-                "l": min(b.l for b in bars),
-                "c": bars[-1].c,
-                "v": sum(b.v for b in bars),
-            })
+            result.append(
+                {
+                    "t": bucket_ts,
+                    "o": bars[0].o,
+                    "h": max(b.h for b in bars),
+                    "l": min(b.l for b in bars),
+                    "c": bars[-1].c,
+                    "v": sum(b.v for b in bars),
+                }
+            )
         return result
 
     def get_session_history(self, symbol: str | None = None, limit: int = 30) -> list[dict]:
@@ -1903,39 +2103,61 @@ class MarketService:
 
     def store_tpo_session(self, profile, symbol: str, date_str: str):
         """Store a completed TPO session profile to the DB."""
-        from ..db.models import MarketTPOSession
         import json as _json
         from dataclasses import asdict
+
+        from ..db.models import MarketTPOSession
+
         session_json = _json.dumps(asdict(profile), default=str)
 
         existing = self.db.query(MarketTPOSession).filter_by(symbol=symbol, date=date_str).first()
         if existing:
-            for attr in ['poc', 'vah', 'val', 'ib_high', 'ib_low', 'rotation_factor',
-                          'profile_shape', 'opening_type', 'opening_direction',
-                          'upper_excess', 'lower_excess', 'session_high', 'session_low']:
+            for attr in [
+                "poc",
+                "vah",
+                "val",
+                "ib_high",
+                "ib_low",
+                "rotation_factor",
+                "profile_shape",
+                "opening_type",
+                "opening_direction",
+                "upper_excess",
+                "lower_excess",
+                "session_high",
+                "session_low",
+            ]:
                 setattr(existing, attr, getattr(profile, attr))
             existing.session_json = session_json
         else:
-            self.db.add(MarketTPOSession(
-                symbol=symbol, date=date_str,
-                poc=profile.poc, vah=profile.vah, val=profile.val,
-                ib_high=profile.ib_high, ib_low=profile.ib_low,
-                rotation_factor=profile.rotation_factor,
-                profile_shape=profile.profile_shape,
-                opening_type=profile.opening_type,
-                opening_direction=profile.opening_direction,
-                upper_excess=profile.upper_excess,
-                lower_excess=profile.lower_excess,
-                session_high=profile.session_high,
-                session_low=profile.session_low,
-                session_json=session_json,
-            ))
+            self.db.add(
+                MarketTPOSession(
+                    symbol=symbol,
+                    date=date_str,
+                    poc=profile.poc,
+                    vah=profile.vah,
+                    val=profile.val,
+                    ib_high=profile.ib_high,
+                    ib_low=profile.ib_low,
+                    rotation_factor=profile.rotation_factor,
+                    profile_shape=profile.profile_shape,
+                    opening_type=profile.opening_type,
+                    opening_direction=profile.opening_direction,
+                    upper_excess=profile.upper_excess,
+                    lower_excess=profile.lower_excess,
+                    session_high=profile.session_high,
+                    session_low=profile.session_low,
+                    session_json=session_json,
+                )
+            )
         self.db.commit()
 
     def get_tpo_history(self, symbol: str = "NQ", days: int = 30) -> list[dict]:
         """Fetch historical TPO sessions for RL batch access."""
-        from ..db.models import MarketTPOSession
         import json as _json
+
+        from ..db.models import MarketTPOSession
+
         rows = (
             self.db.query(MarketTPOSession)
             .filter_by(symbol=symbol)
@@ -1961,6 +2183,7 @@ class MarketService:
         import time as _time
         from dataclasses import asdict
         from zoneinfo import ZoneInfo
+
         cache_key = f"tpo_live_{symbol}"
         now = _time.time()
 
@@ -1983,8 +2206,10 @@ class MarketService:
 
         class _Bar:
             __slots__ = ("open", "high", "low", "close", "volume")
+
             def __init__(self, r):
                 self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
+
         bars_30m = aggregate_bars_30m([_Bar(r) for r in rows])
 
         profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
@@ -2010,17 +2235,20 @@ class MarketService:
         for r in rows:
             chunk.append(r)
             if len(chunk) == 30:
-                bars_30m_ts.append({
-                    "ts": chunk[0].ts,
-                    "high": max(c.h for c in chunk),
-                    "low": min(c.l for c in chunk),
-                    "open": chunk[0].o,
-                    "close": chunk[-1].c,
-                    "volume": sum(c.v for c in chunk),
-                })
+                bars_30m_ts.append(
+                    {
+                        "ts": chunk[0].ts,
+                        "high": max(c.h for c in chunk),
+                        "low": min(c.l for c in chunk),
+                        "open": chunk[0].o,
+                        "close": chunk[-1].c,
+                        "volume": sum(c.v for c in chunk),
+                    }
+                )
                 chunk = []
         session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
         from dataclasses import asdict as _asdict
+
         result["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
 
         MarketService._tpo_cache[cache_key] = (now, result)
@@ -2031,7 +2259,12 @@ class MarketService:
         live = self.get_tpo_live(symbol=symbol)
         session_tpos = live.get("session_tpos")
         if not session_tpos:
-            return {"date": live.get("date", ""), "sessions": {"tokyo": None, "london": None, "ny": None}, "poc_migration_tokyo_london": 0, "poc_migration_london_ny": 0}
+            return {
+                "date": live.get("date", ""),
+                "sessions": {"tokyo": None, "london": None, "ny": None},
+                "poc_migration_tokyo_london": 0,
+                "poc_migration_london_ny": 0,
+            }
 
         def _fix_keys(d):
             """Ensure float dict keys are strings for JSON serialization."""
@@ -2056,8 +2289,8 @@ class MarketService:
 
     def backfill_tpo_sessions(self, symbol: str = "NQ", days: int = 30) -> int:
         """Backfill historical TPO sessions from existing 1m bar data."""
-        from dataclasses import asdict
         from zoneinfo import ZoneInfo
+
         from ..db.models import MarketTPOSession
 
         _CET = ZoneInfo("Europe/Stockholm")
@@ -2072,9 +2305,7 @@ class MarketService:
             date_str = target.isoformat()
 
             # Skip if already stored
-            existing = self.db.query(MarketTPOSession).filter_by(
-                symbol=symbol, date=date_str
-            ).first()
+            existing = self.db.query(MarketTPOSession).filter_by(symbol=symbol, date=date_str).first()
             if existing:
                 continue
 
@@ -2082,7 +2313,8 @@ class MarketService:
             day_start = datetime(target.year, target.month, target.day, tzinfo=_CET)
             day_end = day_start + timedelta(hours=22)
             rows = self.repo.get_candles(
-                symbol, "1m",
+                symbol,
+                "1m",
                 day_start.astimezone(timezone.utc),
                 day_end.astimezone(timezone.utc),
             )
@@ -2091,6 +2323,7 @@ class MarketService:
 
             class _Bar:
                 __slots__ = ("open", "high", "low", "close", "volume")
+
                 def __init__(self, r):
                     self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
 
@@ -2104,14 +2337,16 @@ class MarketService:
             for r in rows:
                 chunk.append(r)
                 if len(chunk) == 30:
-                    bars_30m_ts.append({
-                        "ts": chunk[0].ts,
-                        "high": max(c.h for c in chunk),
-                        "low": min(c.l for c in chunk),
-                        "open": chunk[0].o,
-                        "close": chunk[-1].c,
-                        "volume": sum(c.v for c in chunk),
-                    })
+                    bars_30m_ts.append(
+                        {
+                            "ts": chunk[0].ts,
+                            "high": max(c.h for c in chunk),
+                            "low": min(c.l for c in chunk),
+                            "open": chunk[0].o,
+                            "close": chunk[-1].c,
+                            "volume": sum(c.v for c in chunk),
+                        }
+                    )
                     chunk = []
             session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
 
@@ -2123,12 +2358,12 @@ class MarketService:
 
                 # Append per-session TPO to stored session_json
                 from ..db.models import MarketTPOSession
-                row = self.db.query(MarketTPOSession).filter_by(
-                    symbol=symbol, date=date_str
-                ).first()
+
+                row = self.db.query(MarketTPOSession).filter_by(symbol=symbol, date=date_str).first()
                 if row and session_tpo_set:
                     import json as _json
                     from dataclasses import asdict as _asdict
+
                     sj = _json.loads(row.session_json) if isinstance(row.session_json, str) else row.session_json
                     sj["session_tpos"] = _asdict(session_tpo_set)
                     row.session_json = _json.dumps(sj, default=str)
@@ -2154,14 +2389,16 @@ class MarketService:
 
         def _add(level_type, price, direction=None, session_name=None):
             if price is not None:
-                rows.append({
-                    "level_type": level_type,
-                    "price_low": price,
-                    "price_high": price,
-                    "direction": direction,
-                    "session": session_name,
-                    "is_filled": False,
-                })
+                rows.append(
+                    {
+                        "level_type": level_type,
+                        "price_low": price,
+                        "price_high": price,
+                        "direction": direction,
+                        "session": session_name,
+                        "is_filled": False,
+                    }
+                )
 
         _add("pdh", levels.pdh, "resistance", "prior_day")
         _add("pdl", levels.pdl, "support", "prior_day")
@@ -2193,17 +2430,23 @@ class MarketService:
             sessions_cfg = config.get("sessions", {})
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             globex_start = datetime.combine(
-                dt - timedelta(days=1),
-                datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
+                dt - timedelta(days=1), datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
             )
-            rth_close = datetime.combine(
-                dt,
-                datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
-            )
+            rth_close = datetime.combine(dt, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
             bars = await provider.get_bars(full_symbol, "1m", globex_start, rth_close)
             if not bars:
                 return []
-            return [{"high": b.high, "low": b.low, "close": b.close, "open": b.open, "volume": b.volume, "timestamp": b.timestamp} for b in bars]
+            return [
+                {
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "open": b.open,
+                    "volume": b.volume,
+                    "timestamp": b.timestamp,
+                }
+                for b in bars
+            ]
         except Exception as e:
             logger.warning("Failed to fetch bars for %s %s: %s", symbol, date_str, e)
             return []
@@ -2226,9 +2469,8 @@ class MarketService:
         """Get latest COT data from DB."""
         try:
             from sqlalchemy import text
-            rows = self.db.execute(
-                text("SELECT * FROM cot_data ORDER BY report_date DESC LIMIT 2")
-            ).fetchall()
+
+            rows = self.db.execute(text("SELECT * FROM cot_data ORDER BY report_date DESC LIMIT 2")).fetchall()
             if not rows:
                 logger.debug("COT: no data in cot_data table")
                 return None
@@ -2251,6 +2493,7 @@ class MarketService:
         """Compute live orderflow signals. Returns OrderflowSignals or None."""
         try:
             from ..market_data.orderflow import build_candle_flow, compute_signals
+
             config = get_market_data_config()
             sessions_cfg = config.get("sessions", {})
             today = date.today()

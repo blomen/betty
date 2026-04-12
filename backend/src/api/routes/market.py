@@ -1,12 +1,17 @@
 """Market data API routes — AMT session analysis and scanner signals."""
 
+import asyncio
+import json
+import threading
+import time
+from collections.abc import Callable
+from typing import TypeVar
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
-import asyncio, json, time, threading
-from typing import Callable, TypeVar
 
-from ..deps import get_db
 from ...services.market_service import MarketService
+from ..deps import get_db
 
 T = TypeVar("T")
 
@@ -22,18 +27,21 @@ async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
     Running them on the event loop starves SSE streams and health checks.
     This helper creates a throwaway event loop in a thread pool worker.
     """
+
     def _run():
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(coro_fn(*args, **kwargs))
         finally:
             loop.close()
+
     return await asyncio.to_thread(_run)
 
 
 def _get_live_stream(request: Request):
     """Get the DatabentoLiveStream from app state (set during lifespan startup)."""
     return getattr(request.app.state, "databento_stream", None)
+
 
 router = APIRouter(prefix="/api/trading/market", tags=["market"])
 
@@ -57,6 +65,7 @@ async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
     data = svc.get_current_session()  # Will query by date
     # Override: query specific date
     from ...repositories.market_repo import MarketRepo
+
     repo = MarketRepo(svc.db)
     session = repo.get_session(date, "NQ")
     if session and session.session_json:
@@ -66,6 +75,7 @@ async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
 
 # Pre-serialized candle cache: {cache_key: (json_bytes, expiry)}
 _candle_json_cache: dict[tuple, tuple] = {}
+
 
 @router.get("/candles")
 async def get_candles(
@@ -78,12 +88,12 @@ async def get_candles(
 ):
     """Return OHLCV candles for charting from market_candles DB."""
     import time as _time
+
     cache_key = (symbol, interval, date, days)
     cached = _candle_json_cache.get(cache_key)
     now = _time.time()
     if cached and now < cached[1]:
-        return Response(content=cached[0], media_type="application/json",
-                        headers={"Cache-Control": "max-age=15"})
+        return Response(content=cached[0], media_type="application/json", headers={"Cache-Control": "max-age=15"})
 
     data = await _offload(svc.get_candles, symbol, interval, date, days)
     serialized = json.dumps(data, separators=(",", ":"))
@@ -145,7 +155,9 @@ async def trigger_compute(
                     "lower_2": session.get("vwap_2sd_lower"),
                     "upper_3": session.get("vwap_3sd_upper"),
                     "lower_3": session.get("vwap_3sd_lower"),
-                } if session.get("vwap") else None,
+                }
+                if session.get("vwap")
+                else None,
                 "volume_profile": session.get("volume_profile"),
                 "session_levels": session.get("session_levels"),
                 "session_tpos": session.get("session_tpos"),
@@ -163,18 +175,21 @@ async def trigger_compute(
                 ds = stream.daily_stats
                 if ds:
                     macro_dict = rl_context.get("macro") or {}
-                    macro_dict.update({
-                        "oi": ds.get("open_interest", {}).get("value", 0),
-                        "oi_change": 0,
-                        "settlement_price": ds.get("settlement_price", {}).get("value", 0),
-                        "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
-                        "block_volume": ds.get("block_volume", {}).get("value", 0),
-                    })
+                    macro_dict.update(
+                        {
+                            "oi": ds.get("open_interest", {}).get("value", 0),
+                            "oi_change": 0,
+                            "settlement_price": ds.get("settlement_price", {}).get("value", 0),
+                            "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
+                            "block_volume": ds.get("block_volume", {}).get("value", 0),
+                        }
+                    )
                     rl_context["macro"] = macro_dict
 
             level_monitor.set_session_context(rl_context)
     except Exception:
         import logging
+
         logging.getLogger(__name__).warning("RL context enrichment failed (non-fatal)", exc_info=True)
 
     return data
@@ -205,6 +220,7 @@ async def get_confirmations(svc: MarketService = Depends(_svc)):
 async def get_macro_snapshot():
     """Get current macro data (VIX, DXY, yields, regime)."""
     from ...market_data.macro_provider import fetch_macro_snapshot
+
     macro = await fetch_macro_snapshot()
     return {
         "vix": macro.vix,
@@ -227,8 +243,8 @@ async def market_status(request: Request):
 
     Frontend can use this to skip SSE/data calls when market is closed.
     """
-    from ...services.market_service import MarketService
     from ...market_data.stream import DatabentoLiveStream
+    from ...services.market_service import MarketService
 
     closed = MarketService._is_globex_closed()
     stream = _get_live_stream(request)
@@ -296,6 +312,7 @@ async def get_levels(
 ):
     """Get all structural levels (PDH/PDL, Tokyo/London, IB, VP, VWAP, etc.) for a session."""
     from datetime import datetime, timezone
+
     target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     levels = svc.repo.get_levels(symbol, target_date)
     return [
@@ -322,8 +339,8 @@ async def get_replay_levels(
     RL agent would see during training — enabling visual verification before training.
     """
     import json
-    from pathlib import Path
     from datetime import datetime as dt_cls
+    from pathlib import Path
 
     # Check for pre-computed JSON first (from CLI verify-levels)
     data_dir = Path(__file__).resolve().parents[3] / "data" / "rl"
@@ -334,8 +351,10 @@ async def get_replay_levels(
 
     # Otherwise replay on-the-fly from parquet
     try:
-        import pandas as pd
         from zoneinfo import ZoneInfo
+
+        import pandas as pd
+
         from ...rl.data.fetcher import TICKS_DIR
         from ...rl.data.replay_engine import ReplayEngine
 
@@ -413,6 +432,7 @@ async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
 async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = Depends(_svc)):
     """Update market context — accepts ISO date strings for VP anchors."""
     from datetime import datetime as dt_cls
+
     # Map vp_current_start → vp_old_macro_start (repurposed column)
     if "vp_current_start" in data:
         data["vp_old_macro_start"] = data.pop("vp_current_start")
@@ -429,11 +449,15 @@ async def get_volume_profile(
     response: Response,
     symbol: str = Query(default="NQ"),
     timeframe: str = Query(default="session", pattern="^(session|weekly|monthly)$"),
+    date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     svc: MarketService = Depends(_svc),
 ):
-    """Return VP curve (price→volume pairs) for session/weekly/monthly."""
-    response.headers["Cache-Control"] = f"max-age={30 if timeframe == 'session' else 120}"
-    return await _offload(svc.get_volume_profile_curve, symbol, timeframe)
+    """Return VP curve (price→volume pairs) for session/weekly/monthly.
+
+    Pass date=YYYY-MM-DD for historical session VP (ignored for weekly/monthly).
+    """
+    response.headers["Cache-Control"] = f"max-age={30 if timeframe == 'session' and not date else 120}"
+    return await _offload(svc.get_volume_profile_curve, symbol, timeframe, date)
 
 
 @router.get("/session-levels")
@@ -573,8 +597,8 @@ async def backfill_trades(
     if not api_key:
         return {"error": "DATABENTO_API_KEY not set"}
 
-    from ...market_data.history import backfill_trades_to_db
     from ...db.models import get_market_session
+    from ...market_data.history import backfill_trades_to_db
 
     start_date = dt_date.fromisoformat(start)
     end_date = dt_date.fromisoformat(end) if end else None
@@ -607,10 +631,10 @@ async def backfill_candles(
     if not api_key:
         return {"error": "DATABENTO_API_KEY not set"}
 
-    from ...market_data.databento_provider import DabentoProvider
     from ...config.trading_loader import get_market_data_config
-    from ...repositories.market_repo import MarketRepo
     from ...db.models import get_session as get_db_session
+    from ...market_data.databento_provider import DabentoProvider
+    from ...repositories.market_repo import MarketRepo
 
     config = get_market_data_config()
     db_symbol = config.get("symbol", "NQ.v.0")
@@ -687,11 +711,13 @@ async def backfill_candles(
 async def get_ml_prediction():
     """Get latest ML prediction for level touch."""
     from src.ml.serving.predictor import get_predictor
+
     predictor = get_predictor()
     if not predictor.is_loaded("level_classifier"):
         return {"status": "model_not_loaded", "prediction": None}
 
     from src.ml.level_touch import get_last_prediction
+
     prediction = get_last_prediction()
     if prediction:
         return {"status": "ok", "prediction": prediction}
@@ -701,10 +727,10 @@ async def get_ml_prediction():
 @router.get("/ml/health")
 async def get_ml_health():
     """Get ML level classifier model health and training stats."""
-    import json
-    from src.ml.serving.predictor import get_predictor
-    from src.db.models import get_session, LevelTouchOutcome
     from sqlalchemy import func
+
+    from src.db.models import LevelTouchOutcome, get_session
+    from src.ml.serving.predictor import get_predictor
 
     result = {
         "model_loaded": False,
@@ -733,13 +759,11 @@ async def get_ml_health():
             importances = model_obj.feature_importances_
             pairs = sorted(
                 zip(feature_names, importances),
-                key=lambda x: x[1], reverse=True,
+                key=lambda x: x[1],
+                reverse=True,
             )
             total = sum(importances) or 1
-            result["top_features"] = [
-                {"name": n, "importance": round(float(v / total), 4)}
-                for n, v in pairs[:10]
-            ]
+            result["top_features"] = [{"name": n, "importance": round(float(v / total), 4)} for n, v in pairs[:10]]
 
     # Class distribution + recent accuracy from DB (offloaded to thread to avoid blocking event loop)
     def _query_ml_stats():
@@ -804,10 +828,9 @@ async def get_tpo_live(
 ):
     """Today's developing TPO profile."""
     import asyncio
+
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=15.0
-        )
+        return await asyncio.wait_for(asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=15.0)
     except asyncio.TimeoutError:
         return {"error": "tpo_timeout", "cached": True}
 
@@ -819,10 +842,9 @@ async def get_tpo_sessions(
 ):
     """Per-session TPO profiles (Tokyo/London/NY) with letter grids for chart visualization."""
     import asyncio
+
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=15.0
-        )
+        return await asyncio.wait_for(asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=15.0)
     except asyncio.TimeoutError:
         return {"error": "tpo_timeout"}
 
@@ -842,6 +864,7 @@ async def backfill_tpo(
 async def get_cot_data(limit: int = Query(default=4, le=52)):
     """Get latest COT report data."""
     from ...market_data.cot import fetch_cot
+
     reports = await fetch_cot(limit=limit)
     return [
         {

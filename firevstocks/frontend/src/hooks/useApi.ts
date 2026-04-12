@@ -21,8 +21,9 @@ export const api = {
     return fetchJson<import('@/types').SessionLevelsResponse>(`/session-levels?days=${days}`)
   },
 
-  getVP(tf: string) {
-    return fetchJson<import('@/types').VPData>(`/vp/${tf}`)
+  getVP(tf: string, date?: string) {
+    const params = date ? `?date=${date}` : ''
+    return fetchJson<import('@/types').VPData>(`/vp/${tf}${params}`)
   },
 
   getVWAP(interval = '5m') {
