@@ -35,17 +35,19 @@ export interface SessionLevelDay {
   ny_end: number
   day_start: number
   day_end: number
-  daily_swing_high: number | null
-  daily_swing_low: number | null
-  weekly_swing_high: number | null
-  weekly_swing_low: number | null
-  monthly_swing_high: number | null
-  monthly_swing_low: number | null
+}
+
+export interface SwingPivot {
+  price: number
+  tf: string      // "daily" | "weekly"
+  type: string    // "high" | "low"
+  rank: number    // 0 = most recent
 }
 
 export interface SessionLevelsResponse {
   days: SessionLevelDay[]
   symbol: string
+  swings?: SwingPivot[]
 }
 
 export interface VPData {

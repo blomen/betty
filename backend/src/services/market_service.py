@@ -198,19 +198,19 @@ class MarketService:
 
         return []
 
-    def _load_swing_structure(self):
-        """Load swing structure from RL session summaries + live DB candles.
+    def _load_swing_pivots(self) -> dict:
+        """Detect simple N-bar pivot highs/lows on daily/weekly candles.
 
-        Session summaries provide historical data (back to 2011).
-        For dates after the last summary, we aggregate 1m candles from market_candles
-        into daily bars so swing detection stays current.
+        Returns up to 3 most recent pivot highs and lows per timeframe.
+        A pivot high = bar whose high >= all bars within lookback on each side.
+        Much more intuitive than BOS/CHoCH structural breaks for chart display.
+
+        Data sources: session_summaries.json (historical) + live DB candles (recent).
         """
         import json
-        from collections import defaultdict
+        from collections import OrderedDict, defaultdict
         from pathlib import Path
         from zoneinfo import ZoneInfo
-
-        from ..market_data.levels import compute_multi_tf_swings
 
         CET = ZoneInfo("Europe/Stockholm")
 
@@ -229,17 +229,7 @@ class MarketService:
                     rth_low = s.get("rth_low")
                     if rth_high is None or rth_low is None:
                         continue
-                    dt = datetime.strptime(date_str, "%Y-%m-%d")
-                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
-                    synth_bars.append(
-                        {
-                            "ts": ts,
-                            "open": s.get("poc", rth_high),
-                            "high": rth_high,
-                            "low": rth_low,
-                            "close": s.get("poc", rth_low),
-                        }
-                    )
+                    synth_bars.append({"high": rth_high, "low": rth_low, "date": date_str})
                     last_summary_date = date_str
             except Exception as e:
                 logger.warning("Failed to load session summaries: %s", e)
@@ -256,7 +246,6 @@ class MarketService:
 
             rows = self.repo.get_candles("NQ", "1m", gap_start_utc, now)
             if rows:
-                # Group by CET date and aggregate into daily bars
                 daily: dict[str, list] = defaultdict(list)
                 for r in rows:
                     ts = r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)
@@ -265,35 +254,75 @@ class MarketService:
 
                 for d_str in sorted(daily.keys()):
                     candles = daily[d_str]
-                    if len(candles) < 60:  # Skip partial days (< 1 hour of data)
+                    if len(candles) < 60:
                         continue
-                    d_high = max(c.h for c in candles)
-                    d_low = min(c.l for c in candles)
-                    d_open = candles[0].o
-                    d_close = candles[-1].c
-                    dt = datetime.strptime(d_str, "%Y-%m-%d")
-                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
                     synth_bars.append(
                         {
-                            "ts": ts,
-                            "open": d_open,
-                            "high": d_high,
-                            "low": d_low,
-                            "close": d_close,
+                            "high": max(c.h for c in candles),
+                            "low": min(c.l for c in candles),
+                            "date": d_str,
                         }
                     )
                 logger.info(
-                    "Swing structure: supplemented with %d live daily bars after %s",
+                    "Swing pivots: supplemented with %d live daily bars after %s",
                     len(daily),
                     last_summary_date or "N/A",
                 )
         except Exception as e:
             logger.warning("Failed to supplement swing data from DB: %s", e)
 
-        if len(synth_bars) < 5:
-            return None
+        if len(synth_bars) < 10:
+            return {"swings": []}
 
-        return compute_multi_tf_swings(synth_bars)
+        # --- Aggregate daily bars into weekly candles ---
+        weekly_buckets: OrderedDict[str, list] = OrderedDict()
+        for bar in synth_bars:
+            dt = datetime.strptime(bar["date"], "%Y-%m-%d")
+            week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+            weekly_buckets.setdefault(week_start, []).append(bar)
+
+        weekly_bars = [
+            {"high": max(b["high"] for b in group), "low": min(b["low"] for b in group)}
+            for group in weekly_buckets.values()
+        ]
+
+        def _find_pivots(bars: list[dict], lookback: int, max_pivots: int = 3) -> tuple[list[float], list[float]]:
+            """Return up to max_pivots most recent pivot highs and lows (newest first)."""
+            n = len(bars)
+            highs: list[float] = []
+            lows: list[float] = []
+            for i in range(lookback, n - lookback):
+                h = bars[i]["high"]
+                if all(h >= bars[j]["high"] for j in range(i - lookback, i + lookback + 1) if j != i):
+                    highs.append(h)
+                lo = bars[i]["low"]
+                if all(lo <= bars[j]["low"] for j in range(i - lookback, i + lookback + 1) if j != i):
+                    lows.append(lo)
+            # Newest first, capped
+            return highs[-max_pivots:][::-1], lows[-max_pivots:][::-1]
+
+        daily_ph, daily_pl = _find_pivots(synth_bars[-120:], lookback=5, max_pivots=3)
+        weekly_ph, weekly_pl = _find_pivots(weekly_bars[-52:], lookback=3, max_pivots=3)
+
+        logger.info(
+            "Swing pivots: daily=%d/%d, weekly=%d/%d",
+            len(daily_ph),
+            len(daily_pl),
+            len(weekly_ph),
+            len(weekly_pl),
+        )
+
+        swings = []
+        for i, p in enumerate(daily_ph):
+            swings.append({"price": p, "tf": "daily", "type": "high", "rank": i})
+        for i, p in enumerate(daily_pl):
+            swings.append({"price": p, "tf": "daily", "type": "low", "rank": i})
+        for i, p in enumerate(weekly_ph):
+            swings.append({"price": p, "tf": "weekly", "type": "high", "rank": i})
+        for i, p in enumerate(weekly_pl):
+            swings.append({"price": p, "tf": "weekly", "type": "low", "rank": i})
+
+        return {"swings": swings}
 
     async def compute_session(self, target_date: str | None = None, symbol: str | None = None) -> dict:
         """Fetch market data → run AMT analysis → persist to DB."""
@@ -1772,14 +1801,23 @@ class MarketService:
 
         all_dates_sorted = sorted(bars_by_date.keys())  # ascending
 
-        swing = self._load_swing_structure()
-        swing_data = {
-            "daily_swing_high": swing.daily.swing_highs[0].price if swing and swing.daily.swing_highs else None,
-            "daily_swing_low": swing.daily.swing_lows[0].price if swing and swing.daily.swing_lows else None,
-            "weekly_swing_high": swing.weekly.swing_highs[0].price if swing and swing.weekly.swing_highs else None,
-            "weekly_swing_low": swing.weekly.swing_lows[0].price if swing and swing.weekly.swing_lows else None,
-            "monthly_swing_high": swing.monthly.swing_highs[0].price if swing and swing.monthly.swing_highs else None,
-            "monthly_swing_low": swing.monthly.swing_lows[0].price if swing and swing.monthly.swing_lows else None,
+        pivot_data = self._load_swing_pivots()
+        swings = pivot_data.get("swings", [])
+
+        # Backward compat: extract most recent pivot per tf/type for old per-day fields
+        def _first_pivot(tf: str, ptype: str) -> float | None:
+            for s in swings:
+                if s["tf"] == tf and s["type"] == ptype and s["rank"] == 0:
+                    return s["price"]
+            return None
+
+        legacy_swing = {
+            "daily_swing_high": _first_pivot("daily", "high"),
+            "daily_swing_low": _first_pivot("daily", "low"),
+            "weekly_swing_high": _first_pivot("weekly", "high"),
+            "weekly_swing_low": _first_pivot("weekly", "low"),
+            "monthly_swing_high": None,
+            "monthly_swing_low": None,
         }
 
         result_days = []
@@ -1825,11 +1863,11 @@ class MarketService:
                     "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
                     "day_start": _cet_epoch(d, 0, 0),
                     "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
-                    **swing_data,
+                    **legacy_swing,
                 }
             )
 
-        result = {"days": result_days, "symbol": symbol}
+        result = {"days": result_days, "symbol": symbol, "swings": swings}
         MarketService._session_levels_cache[cache_key] = (result, _time.time() + 60)
         return result
 

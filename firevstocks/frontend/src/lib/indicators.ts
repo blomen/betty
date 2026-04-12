@@ -251,10 +251,6 @@ export function computeSessionLevels(candles: CandleData[]): SessionLevelDay[] {
       ib_start: ibStart, ib_end: ibEnd,
       ny_start: nyStart, ny_end: nyEnd,
       day_start: dayStart, day_end: dayEnd,
-      // Swing levels need multi-week/month data — keep server-side
-      daily_swing_high: null, daily_swing_low: null,
-      weekly_swing_high: null, weekly_swing_low: null,
-      monthly_swing_high: null, monthly_swing_low: null,
     })
   }
 
@@ -393,7 +389,7 @@ function computeSessionTPO(bars: CandleData[], sessionDef: SessionDef): SessionT
 export function computeSessionTPOs(candles: CandleData[]): SessionTPOResponse | null {
   if (!candles.length) return null
 
-  // Use today's candles only
+  // Use today's candles only (for single-day backward compat)
   const today = cetDate(candles[candles.length - 1].t)
   const todayBars = candles.filter(c => cetDate(c.t) === today)
   if (todayBars.length === 0) return null
@@ -413,4 +409,37 @@ export function computeSessionTPOs(candles: CandleData[]): SessionTPOResponse | 
     poc_migration_tokyo_london: 0,
     poc_migration_london_ny: 0,
   }
+}
+
+/** Compute TPOs for ALL days in the candle set (for historical session profiles). */
+export function computeAllDayTPOs(candles: CandleData[]): Map<string, SessionTPOResponse> {
+  const result = new Map<string, SessionTPOResponse>()
+  if (!candles.length) return result
+
+  // Group by CET date
+  const byDay = new Map<string, CandleData[]>()
+  for (const c of candles) {
+    const d = cetDate(c.t)
+    const arr = byDay.get(d)
+    if (arr) arr.push(c); else byDay.set(d, [c])
+  }
+
+  for (const [date, dayBars] of byDay) {
+    const sessions: Record<string, SessionTPOData | null> = {}
+    for (const def of TPO_SESSIONS) {
+      sessions[def.name] = computeSessionTPO(dayBars, def)
+    }
+    result.set(date, {
+      date,
+      sessions: {
+        tokyo: sessions.tokyo ?? null,
+        london: sessions.london ?? null,
+        ny: sessions.ny ?? null,
+      },
+      poc_migration_tokyo_london: 0,
+      poc_migration_london_ny: 0,
+    })
+  }
+
+  return result
 }

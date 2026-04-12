@@ -25,9 +25,8 @@ const LEVEL_GROUPS: Record<string, string[]> = {
   tpo_tokyo: ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val'],
   tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val'],
   tpo_ny: ['tpo_ny_letters', 'tpo_ny_poc', 'tpo_ny_vah', 'tpo_ny_val'],
-  daily_swing: ['daily_swing_high', 'daily_swing_low'],
-  weekly_swing: ['weekly_swing_high', 'weekly_swing_low'],
-  monthly_swing: ['monthly_swing_high', 'monthly_swing_low'],
+  daily_swing: ['daily_swing'],
+  weekly_swing: ['weekly_swing'],
   zones: ['zones'],
 }
 
@@ -66,11 +65,10 @@ const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label
     ],
   },
   {
-    label: 'Swing Levels',
+    label: 'Swing Pivots',
     groups: [
-      { key: 'daily_swing', label: 'Daily', color: '#E2E8F0' },
+      { key: 'daily_swing', label: 'Daily', color: '#94A3B8' },
       { key: 'weekly_swing', label: 'Weekly', color: '#3B82F6' },
-      { key: 'monthly_swing', label: 'Monthly', color: '#A855F7' },
     ],
   },
 ]
