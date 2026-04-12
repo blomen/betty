@@ -175,6 +175,13 @@ The server runs 24/7 without intervention:
 - Container watchdog cron (every 5 min, auto-restarts if backend is down)
 - Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
 
+### Memory Budget (IMPORTANT — OOM killed the server on 2026-04-12)
+64 GB total, partitioned via Docker `mem_limit` to prevent kernel OOM:
+- **Postgres**: 12 GB cap (shared_buffers=4GB + work_mem + OS cache)
+- **Backend**: 48 GB cap (Python + Playwright browsers + RL training)
+- **OS/SSH/kernel**: ~4 GB remaining
+If the backend exceeds 48 GB, Docker kills the **container** (not the kernel) and `restart: unless-stopped` brings it back. Without these limits, the OOM killer takes down SSH and requires a Hetzner Robot hard reset.
+
 ### CPU Isolation (RL vs Extraction)
 RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To prevent contention:
 - **Cores 0-1 (threads 0,1,4,5)** → RL training daemon (2 workers, nice 19, via `taskset`)

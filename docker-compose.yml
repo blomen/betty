@@ -31,6 +31,10 @@ services:
       - checkpoint_completion_target=0.9
       - -c
       - max_wal_size=2GB
+    # Memory cap: prevents Postgres from contributing to OOM.
+    # shared_buffers=4GB + work_mem=256MB * connections + OS cache.
+    mem_limit: 12g
+    memswap_limit: 13g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U firev"]
       interval: 5s
@@ -66,11 +70,18 @@ services:
       - FIREV_FRONTEND_DIR=/app/frontend/dist
       - DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/firev
       - MARKET_DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/market
-
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # Memory cap: prevents OOM-killing the entire server.
+    # Budget: 64GB total - 2GB OS - 8GB Postgres = 54GB for backend.
+    # Cap at 48GB to leave headroom. Docker kills the container (not the kernel)
+    # if exceeded, and restart: unless-stopped brings it back.
+    mem_limit: 48g
+    memswap_limit: 50g
+    # OOM priority: kill backend container before system processes
+    oom_score_adj: 500
     # Playwright browsers need time to close cleanly on SIGTERM.
     # Default 10s causes force-kill every time. 30s lets graceful shutdown work.
     stop_grace_period: 30s
