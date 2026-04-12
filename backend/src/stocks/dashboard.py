@@ -151,7 +151,15 @@ def create_dashboard_app() -> FastAPI:
                 ).fetchall()
 
             candles = [
-                {"t": int(r[0].timestamp()), "o": r[1], "h": r[2], "l": r[3], "c": r[4], "v": r[5]} for r in rows
+                {
+                    "t": int(r[0].replace(tzinfo=timezone.utc).timestamp()),
+                    "o": r[1],
+                    "h": r[2],
+                    "l": r[3],
+                    "c": r[4],
+                    "v": r[5],
+                }
+                for r in rows
             ]
 
             # Aggregate 1m to target interval

@@ -484,43 +484,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // --- Swing pivot levels from server (simple N-bar pivots, multiple per timeframe) ---
-    const swingPivots = swingPivotsRef.current;
-    if (swingPivots.length > 0) {
-      const TF_COLORS: Record<string, string> = {
-        daily: '#94A3B8',   // slate-400
-        weekly: '#3B82F6',  // blue-500
-      };
-      const TF_PREFIX: Record<string, string> = { daily: 'D', weekly: 'W' };
-
-      for (const pivot of swingPivots) {
-        const groupKey = `${pivot.tf}_swing`;
-        if (slHidden?.has(groupKey)) continue;
-        const y = pSeries.priceToCoordinate(pivot.price);
-        if (y === null) continue;
-
-        const color = TF_COLORS[pivot.tf] ?? '#94A3B8';
-        // Most recent pivot = solid, older = more transparent
-        const alpha = pivot.rank === 0 ? 1.0 : pivot.rank === 1 ? 0.5 : 0.3;
-        const label = `${TF_PREFIX[pivot.tf] ?? pivot.tf}-S${pivot.type === 'high' ? 'H' : 'L'}`;
-
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([6, 3]);
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(rect.width, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.font = '9px monospace';
-        ctx.fillStyle = color;
-        ctx.textAlign = 'left';
-        ctx.fillText(label, 3, y - 3);
-        ctx.restore();
-      }
-    }
+    // Swing pivot levels are rendered as native price lines (see useEffect for session-levels fetch)
+    // They're always visible on the price axis regardless of zoom level.
 
     // --- PDH/PDL levels — latest day only, full chart width ---
     if (latestSL) {
@@ -1085,8 +1050,46 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
     api.getSessionLevels(INITIAL_DAYS + 2).then(res => {
       if (cancelled) return;
       swingPivotsRef.current = res.swings ?? [];
+
+      // Render swing levels as native price lines (always visible on price axis)
+      const pSeries = priceSeriesRef.current;
+      if (pSeries) {
+        // Remove old swing price lines
+        for (const [key, line] of Object.entries(priceLineRefs.current)) {
+          if (key.startsWith('swing_')) {
+            pSeries.removePriceLine(line);
+            delete priceLineRefs.current[key];
+          }
+        }
+
+        const TF_COLORS: Record<string, string> = { daily: '#94A3B8', weekly: '#3B82F6' };
+        const TF_PREFIX: Record<string, string> = { daily: 'D', weekly: 'W' };
+        const hidden = hiddenRef.current;
+
+        for (const pivot of res.swings ?? []) {
+          const groupKey = `${pivot.tf}_swing`;
+          if (hidden?.has(groupKey)) continue;
+          const color = TF_COLORS[pivot.tf] ?? '#94A3B8';
+          const alpha = pivot.rank === 0 ? 1.0 : pivot.rank === 1 ? 0.5 : 0.3;
+          const label = `${TF_PREFIX[pivot.tf] ?? pivot.tf}-S${pivot.type === 'high' ? 'H' : 'L'}`;
+          const lineKey = `swing_${pivot.tf}_${pivot.type}_${pivot.rank}`;
+
+          const line = pSeries.createPriceLine({
+            price: pivot.price,
+            color,
+            lineWidth: 1,
+            lineStyle: 2, // dashed
+            axisLabelVisible: pivot.rank === 0,
+            title: label,
+            lineVisible: true,
+          });
+          // Apply alpha via the line's options isn't directly supported,
+          // but rank > 0 lines won't have axis labels so they're subtler
+          priceLineRefs.current[lineKey] = line;
+        }
+      }
+
       setSlLoaded(true);
-      drawOverlays();
     }).catch(() => {});
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps

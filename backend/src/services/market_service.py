@@ -301,8 +301,8 @@ class MarketService:
             # Newest first, capped
             return highs[-max_pivots:][::-1], lows[-max_pivots:][::-1]
 
-        daily_ph, daily_pl = _find_pivots(synth_bars[-120:], lookback=5, max_pivots=3)
-        weekly_ph, weekly_pl = _find_pivots(weekly_bars[-52:], lookback=3, max_pivots=3)
+        daily_ph, daily_pl = _find_pivots(synth_bars[-30:], lookback=3, max_pivots=3)
+        weekly_ph, weekly_pl = _find_pivots(weekly_bars[-12:], lookback=2, max_pivots=2)
 
         logger.info(
             "Swing pivots: daily=%d/%d, weekly=%d/%d",
