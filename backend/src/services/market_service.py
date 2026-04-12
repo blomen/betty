@@ -188,8 +188,8 @@ class MarketService:
             logger.info("VP bars: %d from DB", len(rows))
             return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
 
-        # No bars today — try previous day
-        prev_cet = today_cet - timedelta(days=1)
+        # No bars for target date — try previous day
+        prev_cet = target_date - timedelta(days=1)
         p_start = datetime(prev_cet.year, prev_cet.month, prev_cet.day, tzinfo=_CET).astimezone(timezone.utc)
         prev_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", p_start, d_start))
         if prev_rows:
