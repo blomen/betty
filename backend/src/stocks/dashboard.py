@@ -19,15 +19,47 @@ log = logging.getLogger(__name__)
 SERVER_URL = "http://127.0.0.1:18000"
 _SERVER_API_KEY = os.environ.get("FIREV_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI")
 
+# Persistent HTTP client — reuses TCP connections through SSH tunnel
+_http_client: httpx.AsyncClient | None = None
+_proxy_cache: dict[str, tuple[float, dict]] = {}  # key → (expiry_ts, data)
 
-async def _proxy(path: str, params: dict | None = None):
-    """Proxy GET to server via SSH tunnel. Returns {} on connection failure."""
+import time as _time
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            base_url=SERVER_URL,
+            headers={"X-API-Key": _SERVER_API_KEY},
+            timeout=120.0,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _http_client
+
+
+async def _proxy(path: str, params: dict | None = None, cache_ttl: float = 0):
+    """Proxy GET to server via SSH tunnel with optional local caching."""
+    cache_key = f"{path}?{json.dumps(params, sort_keys=True)}" if params else path
+
+    if cache_ttl > 0:
+        cached = _proxy_cache.get(cache_key)
+        if cached and _time.time() < cached[0]:
+            return cached[1]
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.get(f"{SERVER_URL}{path}", params=params, headers={"X-API-Key": _SERVER_API_KEY})
-            return r.json()
+        client = _get_client()
+        r = await client.get(path, params=params)
+        data = r.json()
+        if cache_ttl > 0 and data:
+            _proxy_cache[cache_key] = (_time.time() + cache_ttl, data)
+        return data
     except Exception as exc:
         log.warning("Proxy %s failed: %s: %s", path, type(exc).__name__, exc)
+        # Return stale cache if available
+        cached = _proxy_cache.get(cache_key)
+        if cached:
+            return cached[1]
         return {}
 
 
@@ -144,18 +176,20 @@ def create_dashboard_app() -> FastAPI:
 
     @app.get("/api/session")
     async def proxy_session():
-        return await _proxy("/api/trading/market/session")
+        return await _proxy("/api/trading/market/session", cache_ttl=30)
 
     @app.get("/api/session-levels")
     async def proxy_session_levels(days: int = 5):
-        return await _proxy("/api/trading/market/session-levels", {"symbol": "NQ", "days": str(days)})
+        return await _proxy("/api/trading/market/session-levels", {"symbol": "NQ", "days": str(days)}, cache_ttl=60)
 
     @app.get("/api/vp/{tf}")
     async def proxy_vp(tf: str, date: str | None = None):
         params = {"symbol": "NQ", "timeframe": tf}
         if date:
             params["date"] = date
-        return await _proxy("/api/trading/market/volume-profile", params)
+        # Session VP: 30s cache, historical/weekly/monthly: 5 min local cache
+        ttl = 30 if tf == "session" and not date else 300
+        return await _proxy("/api/trading/market/volume-profile", params, cache_ttl=ttl)
 
     @app.get("/api/vwap")
     async def local_vwap(days: int = 3, interval: str = "5m"):
@@ -261,7 +295,7 @@ def create_dashboard_app() -> FastAPI:
 
     @app.get("/api/session-tpo")
     async def proxy_session_tpo():
-        return await _proxy("/api/trading/market/tpo/sessions", {"symbol": "NQ"})
+        return await _proxy("/api/trading/market/tpo/sessions", {"symbol": "NQ"}, cache_ttl=120)
 
     @app.get("/api/levels")
     async def proxy_levels(date: str | None = None):
