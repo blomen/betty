@@ -97,7 +97,7 @@ class TickArray:
         ts_col = "ts" if "ts" in df.columns else "timestamp"
         ts_series = pd.to_datetime(df[ts_col], utc=True)
         # Convert to Python datetime objects (needed for .astimezone() calls)
-        ts_arr = ts_series.dt.to_pydatetime()
+        ts_arr = np.array(ts_series.dt.to_pydatetime())
 
         return cls(
             ts=ts_arr,

@@ -434,10 +434,8 @@ def _replay_single_file(
 ) -> tuple[int, int]:
     """Replay a single parquet file into episode chunks. Runs in subprocess.
 
-    Memory-optimised: reads parquet via pyarrow row groups, assigns session
-    dates from the timestamp column alone (never loads full DataFrame), and
-    uses TickArray (column arrays) instead of list[dict] — ~7x less RAM per
-    session.
+    Memory-optimised: uses TickArray (column arrays) instead of
+    to_dict(orient='records') — ~7x less RAM per session.
 
     Returns (n_episodes, n_sessions).
     """
@@ -447,7 +445,6 @@ def _replay_single_file(
     from pathlib import Path
 
     import numpy as np
-    import pyarrow.parquet as pq
 
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.session_store import compute_precomputed_levels
@@ -481,54 +478,33 @@ def _replay_single_file(
 
     engine = ReplayEngine(macro_data=macro_data)
 
-    # --- Phase 1: scan timestamps to build session→row_index mapping ---
-    # Read only the timestamp column via pyarrow (tiny memory footprint).
-    pf = pq.ParquetFile(pfile)
-    if "timestamp" not in pf.schema.names:
-        return 0, 0
-
+    # --- Phase 1: read parquet, compute session dates, group by date ---
     import pandas as pd
 
-    ts_table = pf.read(columns=["timestamp"])
-    ts_series = ts_table.column("timestamp").to_pandas()
-    del ts_table
-    ts_et = pd.to_datetime(ts_series, utc=True).dt.tz_convert(_ET)
-    del ts_series
+    df = pd.read_parquet(pfile)
+    if "timestamp" not in df.columns:
+        return 0, 0
+    df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+    df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+    df = df.dropna(subset=["_session_date"])
+    df = df.rename(columns={"timestamp": "ts"})
+    sorted_dates = sorted(df["_session_date"].unique())
 
-    session_dates = ts_et.map(_assign_session_date)
-    del ts_et
+    # Group by session and release the full DataFrame immediately
+    session_groups: dict = {}
+    for sd in sorted_dates:
+        session_groups[sd] = df.loc[df["_session_date"] == sd, ["ts", "price", "size", "side"]]
+    del df
+    gc.collect()
 
-    # Build {session_date: (row_start, row_end)} index — no data loaded yet
-    valid_mask = session_dates.notna()
-    session_date_arr = session_dates.to_numpy()
-    del session_dates
-
-    sorted_dates: list = sorted(set(d for d, v in zip(session_date_arr, valid_mask) if v))
-
-    # --- Phase 2: replay each session, reading only its rows ---
+    # --- Phase 2: replay each session using TickArray (not to_dict) ---
     month_obs, month_rc, month_rr = [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
     session_count = 0
     prior_levels = None
 
-    # Read full table once (pyarrow zero-copy) — much cheaper than pandas
-    full_table = pf.read()
-
     for date_idx, session_date in enumerate(sorted_dates):
-        # Extract rows for this session using the pre-computed date array
-        row_mask = np.array(
-            [(d == session_date and v) for d, v in zip(session_date_arr, valid_mask)],
-            dtype=bool,
-        )
-        indices = np.where(row_mask)[0]
-        if len(indices) == 0:
-            continue
-
-        # Slice the arrow table (zero-copy) → convert to small pandas → TickArray
-        session_table = full_table.take(indices)
-        session_df = session_table.to_pandas()
-        del session_table
-        session_df = session_df.rename(columns={"timestamp": "ts"})
+        session_df = session_groups.pop(session_date)
         ticks = TickArray.from_dataframe(session_df)
         del session_df
         gc.collect()
@@ -623,7 +599,6 @@ def _replay_single_file(
         del episodes
         session_count += 1
 
-    del full_table, session_date_arr, valid_mask
     gc.collect()
 
     n_eps = len(month_obs)
