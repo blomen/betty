@@ -21,8 +21,12 @@ SIDE_BUY = 0
 SIDE_SELL = 1
 
 # TopstepX order type constants
+ORDER_TYPE_LIMIT = 1
 ORDER_TYPE_MARKET = 2
-ORDER_TYPE_STOP = 3
+ORDER_TYPE_STOP_MARKET = 4  # stop-loss (triggers market order at stop price)
+ORDER_TYPE_TRAILING_STOP = 5  # trailing stop (needs trailDistance)
+ORDER_TYPE_JOIN_BID = 6  # join bid/ask
+ORDER_TYPE_STOP = 4  # alias for backward compat
 
 
 class TopstepXClient:
@@ -155,11 +159,11 @@ class TopstepXClient:
         return result
 
     async def place_stop_order(self, action: str, quantity: int, stop_price: float) -> dict:
-        """Place a stop order (for stop-loss). action: 'Buy' or 'Sell'."""
+        """Place a stop-market order (stop-loss). action: 'Buy' or 'Sell'."""
         payload = {
             "accountId": self._account_id,
             "contractId": self._config.contract_id,
-            "type": ORDER_TYPE_STOP,
+            "type": ORDER_TYPE_STOP_MARKET,
             "side": self._side(action),
             "size": quantity,
             "stopPrice": stop_price,
@@ -168,15 +172,32 @@ class TopstepXClient:
         log.info("Stop order placed: %s %d @ %.2f → %s", action, quantity, stop_price, result)
         return result
 
-    async def modify_order(self, order_id: int, new_stop_price: float) -> dict:
-        """Modify an existing order's stop price."""
+    async def place_limit_order(self, action: str, quantity: int, limit_price: float) -> dict:
+        """Place a limit order (profit target). action: 'Buy' or 'Sell'."""
+        payload = {
+            "accountId": self._account_id,
+            "contractId": self._config.contract_id,
+            "type": ORDER_TYPE_LIMIT,
+            "side": self._side(action),
+            "size": quantity,
+            "limitPrice": limit_price,
+        }
+        result = await self._post("/api/Order/place", payload)
+        log.info("Limit order placed: %s %d @ %.2f → %s", action, quantity, limit_price, result)
+        return result
+
+    async def modify_order(self, order_id: int, **kwargs) -> dict:
+        """Modify an existing order. Pass stopPrice= and/or limitPrice=."""
         payload = {
             "accountId": self._account_id,
             "orderId": order_id,
-            "stopPrice": new_stop_price,
         }
+        if "stop_price" in kwargs:
+            payload["stopPrice"] = kwargs["stop_price"]
+        if "limit_price" in kwargs:
+            payload["limitPrice"] = kwargs["limit_price"]
         result = await self._post("/api/Order/modify", payload)
-        log.info("Order %d modified: stop=%.2f", order_id, new_stop_price)
+        log.info("Order %d modified: %s → %s", order_id, kwargs, result)
         return result
 
     async def cancel_order(self, order_id: int) -> dict:
