@@ -75,7 +75,7 @@ const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label
   },
 ]
 
-export function ChartPage({ lastTick, session, zones, signals: _signals, fills: _fills, exits: _exits }: Props) {
+export function ChartPage({ lastTick, session, zones, signals, fills, exits }: Props) {
   const [interval, setInterval_] = useState<'1m' | '5m' | '15m'>('5m')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [hiddenLevels, setHiddenLevels] = useState<Set<string>>(() => {
@@ -189,6 +189,9 @@ export function ChartPage({ lastTick, session, zones, signals: _signals, fills: 
             session={session}
             hiddenLevels={hiddenLevels}
             zones={zones}
+            signals={signals}
+            fills={fills}
+            exits={exits}
             interval={interval}
           />
         </div>

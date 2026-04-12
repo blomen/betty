@@ -12,7 +12,7 @@ import {
 } from 'lightweight-charts';
 import { api } from '@/hooks/useApi';
 import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels } from '@/lib/indicators';
-import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } from '@/types';
+import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent } from '@/types';
 
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
@@ -94,6 +94,9 @@ interface Props {
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
   zones?: Array<{ price: number; members: number }>;
+  signals?: Signal[];
+  fills?: Fill[];
+  exits?: ExitEvent[];
   interval?: '1m' | '5m' | '15m';
 }
 
@@ -168,7 +171,7 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval = '1m' }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals, fills, exits, interval = '1m' }: Props) {
   const CACHE_KEY = `firevstocks_candles_v2_${interval}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -208,6 +211,14 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
   useEffect(() => {
     zonesRef.current = zones ?? [];
   }, [zones]);
+
+  // Signals/fills/exits refs
+  const signalsRef = useRef<Signal[]>([]);
+  useEffect(() => { signalsRef.current = signals ?? []; }, [signals]);
+  const fillsRef = useRef<Fill[]>([]);
+  useEffect(() => { fillsRef.current = fills ?? []; }, [fills]);
+  const exitsRef = useRef<ExitEvent[]>([]);
+  useEffect(() => { exitsRef.current = exits ?? []; }, [exits]);
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -763,6 +774,116 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
         ctx.restore();
       }
     }
+
+    // --- Signal markers (green ▲ CONT / red ▼ REV) ---
+    const currentSignals = signalsRef.current;
+    if (currentSignals.length > 0) {
+      for (const sig of currentSignals) {
+        if (!sig.ts || !sig.price) continue;
+
+        const x = timeScale.timeToCoordinate(toLocalEpoch(sig.ts) as Time);
+        const y = pSeries.priceToCoordinate(sig.price);
+        if (x === null || y === null || x < 0 || x > rect.width) continue;
+
+        const isCont = sig.action === 'CONT';
+        const color = isCont ? '#10B981' : '#EF4444'; // green / red
+        const size = 6;
+
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (isCont) {
+          // Up triangle (▲) below the candle
+          ctx.moveTo(x, y + size + 4);
+          ctx.lineTo(x - size, y + size * 2 + 4);
+          ctx.lineTo(x + size, y + size * 2 + 4);
+        } else {
+          // Down triangle (▼) above the candle
+          ctx.moveTo(x, y - size - 4);
+          ctx.lineTo(x - size, y - size * 2 - 4);
+          ctx.lineTo(x + size, y - size * 2 - 4);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // Confidence label
+        if (sig.confidence) {
+          ctx.font = '8px monospace';
+          ctx.fillStyle = color;
+          ctx.textAlign = 'center';
+          const labelY = isCont ? y + size * 2 + 14 : y - size * 2 - 8;
+          ctx.fillText(`${Math.round(sig.confidence * 100)}%`, x, labelY);
+        }
+        ctx.restore();
+      }
+    }
+
+    // --- Fill markers (trade entries: blue ◆ buy / orange ◆ sell) ---
+    const currentFills = fillsRef.current;
+    if (currentFills.length > 0) {
+      for (const fill of currentFills) {
+        const x = timeScale.timeToCoordinate(toLocalEpoch(fill.ts) as Time);
+        const y = pSeries.priceToCoordinate(fill.price);
+        if (x === null || y === null || x < 0 || x > rect.width) continue;
+
+        const isBuy = fill.side === 'Buy' || fill.side === 'buy';
+        const color = isBuy ? '#3B82F6' : '#F97316'; // blue / orange
+        const size = 5;
+
+        ctx.save();
+        // Diamond shape
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x, y - size);
+        ctx.lineTo(x + size, y);
+        ctx.lineTo(x, y + size);
+        ctx.lineTo(x - size, y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Size label
+        ctx.font = '8px monospace';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'center';
+        ctx.fillText(`${fill.size}`, x, y - size - 3);
+        ctx.restore();
+      }
+    }
+
+    // --- Exit markers (trade exits: green ✓ profit / red ✕ stop) ---
+    const currentExits = exitsRef.current;
+    if (currentExits.length > 0) {
+      for (const exit of currentExits) {
+        const x = timeScale.timeToCoordinate(toLocalEpoch(exit.ts) as Time);
+        const y = pSeries.priceToCoordinate(exit.price);
+        if (x === null || y === null || x < 0 || x > rect.width) continue;
+
+        const isStop = exit.was_stop;
+        const color = isStop ? '#EF4444' : '#10B981'; // red stop / green profit
+        const size = 5;
+
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        if (isStop) {
+          // X mark
+          ctx.beginPath();
+          ctx.moveTo(x - size, y - size);
+          ctx.lineTo(x + size, y + size);
+          ctx.moveTo(x + size, y - size);
+          ctx.lineTo(x - size, y + size);
+          ctx.stroke();
+        } else {
+          // Checkmark
+          ctx.beginPath();
+          ctx.moveTo(x - size, y);
+          ctx.lineTo(x - 1, y + size);
+          ctx.lineTo(x + size, y - size);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
   }, []);
 
   // Initialize chart
@@ -973,6 +1094,34 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
     }
   });
 
+  // Fetch swing levels from server (needs months of daily data — can't compute client-side)
+  // Merge into client-computed session levels
+  useEffect(() => {
+    let cancelled = false;
+    api.getSessionLevels(INITIAL_DAYS + 2).then(res => {
+      if (cancelled || !res.days?.length) return;
+      const serverDays = res.days;
+      const clientDays = sessionLevelsRef.current;
+
+      // Merge swing data from server into client-computed days
+      for (const cd of clientDays) {
+        const sd = serverDays.find(s => s.date === cd.date);
+        if (sd) {
+          cd.daily_swing_high = sd.daily_swing_high;
+          cd.daily_swing_low = sd.daily_swing_low;
+          cd.weekly_swing_high = sd.weekly_swing_high;
+          cd.weekly_swing_low = sd.weekly_swing_low;
+          cd.monthly_swing_high = sd.monthly_swing_high;
+          cd.monthly_swing_low = sd.monthly_swing_low;
+        }
+      }
+      setSlLoaded(true);
+      drawOverlays();
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval]);
+
   // Fetch weekly/monthly VP from server (needs more data than loaded candles)
   useEffect(() => {
     let cancelled = false;
@@ -1011,8 +1160,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, interval
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interval]);
 
-  // Redraw when VP data loads, TPO changes, session/macro changes, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, zones, session, drawOverlays]);
+  // Redraw when VP data loads, TPO changes, session/macro changes, signals/fills, or visibility changes
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, zones, signals, fills, exits, session, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
