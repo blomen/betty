@@ -1,11 +1,12 @@
 """Level engine: computes all structural levels from bar/tick data."""
+
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone, timedelta
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .structure import StructureEvent, SwingLevel, MarketStructureEngine  # noqa: F401 — re-exported
+from .structure import MarketStructureEngine, StructureEvent, SwingLevel  # noqa: F401 — re-exported
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,13 @@ class SessionLevels:
 @dataclass
 class TimeframeSwings:
     """Swing detection result for a single timeframe."""
-    timeframe: str       # "daily", "weekly", "monthly"
-    structure: str       # "uptrend", "downtrend", "reversing_up", "reversing_down", "ranging"
+
+    timeframe: str  # "daily", "weekly", "monthly"
+    structure: str  # "uptrend", "downtrend", "reversing_up", "reversing_down", "ranging"
     swing_highs: list[SwingLevel] = field(default_factory=list)  # newest first
-    swing_lows: list[SwingLevel] = field(default_factory=list)   # newest first
+    swing_lows: list[SwingLevel] = field(default_factory=list)  # newest first
     prior_high: float | None = None  # previous period high (PDH / prior week H / prior month H)
-    prior_low: float | None = None   # previous period low  (PDL / prior week L / prior month L)
+    prior_low: float | None = None  # previous period low  (PDL / prior week L / prior month L)
     last_bos: StructureEvent | None = None
     last_choch: StructureEvent | None = None
     bos_active: bool = False
@@ -76,6 +78,7 @@ class TimeframeSwings:
 @dataclass
 class SwingStructure:
     """Multi-timeframe swing analysis result."""
+
     daily: TimeframeSwings
     weekly: TimeframeSwings
     monthly: TimeframeSwings
@@ -139,14 +142,16 @@ def aggregate_to_timeframe(
         if first_ts.tzinfo is None:
             first_ts = first_ts.replace(tzinfo=timezone.utc)
 
-        result.append({
-            "date": key,
-            "open": group[0].get("open", group[0].get("close", highs[0])),
-            "high": max(highs),
-            "low": min(lows),
-            "close": group[-1].get("close", group[-1].get("open", lows[-1])),
-            "ts": int(first_ts.timestamp()),
-        })
+        result.append(
+            {
+                "date": key,
+                "open": group[0].get("open", group[0].get("close", highs[0])),
+                "high": max(highs),
+                "low": min(lows),
+                "close": group[-1].get("close", group[-1].get("open", lows[-1])),
+                "ts": int(first_ts.timestamp()),
+            }
+        )
 
     return result
 
@@ -163,6 +168,7 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
     Aggregates 1m bars into higher-timeframe candles and runs MarketStructureEngine
     (Dow Theory BOS/CHoCH state machine) on each timeframe.
     """
+
     def empty_tf(tf: str) -> TimeframeSwings:
         return TimeframeSwings(timeframe=tf, structure="ranging")
 
@@ -175,8 +181,11 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
         )
 
     trend_scores = {
-        "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
-        "reversing_down": -0.5, "downtrend": -1.0,
+        "uptrend": 1.0,
+        "reversing_up": 0.5,
+        "ranging": 0.0,
+        "reversing_down": -0.5,
+        "downtrend": -1.0,
     }
 
     results: dict[str, TimeframeSwings] = {}
@@ -220,9 +229,7 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
             choch_active=sr.choch_active,
         )
 
-    alignment = sum(
-        trend_scores.get(results[tf].structure, 0.0) for tf in ("daily", "weekly", "monthly")
-    ) / 3.0
+    alignment = sum(trend_scores.get(results[tf].structure, 0.0) for tf in ("daily", "weekly", "monthly")) / 3.0
 
     return SwingStructure(
         daily=results["daily"],
@@ -262,7 +269,11 @@ def compute_volume_profile(
     hi_idx = poc_idx
 
     while va_volume < va_target and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
-        expand_up = buckets.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], 0) if hi_idx < len(sorted_prices) - 1 else 0
+        expand_up = (
+            buckets.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], 0)
+            if hi_idx < len(sorted_prices) - 1
+            else 0
+        )
         expand_down = buckets.get(sorted_prices[max(lo_idx - 1, 0)], 0) if lo_idx > 0 else 0
 
         if expand_up >= expand_down and hi_idx < len(sorted_prices) - 1:
@@ -285,7 +296,7 @@ def compute_volume_profile(
         if buckets[sorted_prices[i]] < poc_vol * 0.05:
             single_prints.append((sorted_prices[i], sorted_prices[i]))
 
-    levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items())]
+    levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items()) if v > 0]
 
     return VolumeProfile(poc=poc, vah=vah, val=val, levels=levels, single_prints=single_prints)
 
@@ -375,24 +386,45 @@ def _accumulate_bars_into_buckets(bars: list[dict], tick_size: float = 0.25) -> 
 
         n_levels = round((high_snapped - low_snapped) / tick_size) + 1
         vol_per_level = volume // n_levels
-        remainder = volume - vol_per_level * n_levels
 
-        price = low_snapped
-        for _ in range(n_levels):
-            p = round(price, 10)
-            buckets[p] = buckets.get(p, 0) + vol_per_level
-            price += tick_size
+        if vol_per_level > 0:
+            # Normal case: enough volume to spread across the range
+            remainder = volume - vol_per_level * n_levels
 
-        # Distribute remainder near close
-        if remainder > 0:
+            price = low_snapped
+            for _ in range(n_levels):
+                p = round(price, 10)
+                buckets[p] = buckets.get(p, 0) + vol_per_level
+                price += tick_size
+
+            # Distribute remainder near close
+            if remainder > 0:
+                close_snapped = round(close / tick_size) * tick_size
+                given = 0
+                offset = 0
+                while given < remainder:
+                    for p in (
+                        round(close_snapped + offset * tick_size, 10),
+                        round(close_snapped - offset * tick_size, 10),
+                    ):
+                        if given >= remainder:
+                            break
+                        if low_snapped <= p <= high_snapped:
+                            buckets[p] = buckets.get(p, 0) + 1
+                            given += 1
+                    offset += 1
+                    if offset > n_levels:
+                        break
+        else:
+            # TPO-style: volume < n_levels (e.g. volume=1, bar spans 40 ticks)
+            # Place all volume units near the close price instead of creating
+            # thousands of zero-volume entries that bloat the profile.
             close_snapped = round(close / tick_size) * tick_size
-            price = close_snapped
             given = 0
             offset = 0
-            while given < remainder:
-                for p in (round(close_snapped + offset * tick_size, 10),
-                          round(close_snapped - offset * tick_size, 10)):
-                    if given >= remainder:
+            while given < volume:
+                for p in (round(close_snapped + offset * tick_size, 10), round(close_snapped - offset * tick_size, 10)):
+                    if given >= volume:
                         break
                     if low_snapped <= p <= high_snapped:
                         buckets[p] = buckets.get(p, 0) + 1
@@ -428,7 +460,11 @@ def compute_volume_profile_from_bars(
     hi_idx = poc_idx
 
     while va_volume < va_target and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
-        expand_up = buckets.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], 0) if hi_idx < len(sorted_prices) - 1 else 0
+        expand_up = (
+            buckets.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], 0)
+            if hi_idx < len(sorted_prices) - 1
+            else 0
+        )
         expand_down = buckets.get(sorted_prices[max(lo_idx - 1, 0)], 0) if lo_idx > 0 else 0
 
         if expand_up >= expand_down and hi_idx < len(sorted_prices) - 1:
@@ -450,7 +486,7 @@ def compute_volume_profile_from_bars(
         if buckets[sorted_prices[i]] < poc_vol * 0.05:
             single_prints.append((sorted_prices[i], sorted_prices[i]))
 
-    levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items())]
+    levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items()) if v > 0]
 
     return VolumeProfile(poc=poc, vah=vah, val=val, levels=levels, single_prints=single_prints)
 
@@ -571,16 +607,18 @@ def compute_developing_vwap(
             variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
             sd = math.sqrt(variance)
 
-            result.append({
-                "t": bucket * interval_seconds,
-                "vwap": round(vwap, 2),
-                "sd1_u": round(vwap + sd, 2),
-                "sd1_l": round(vwap - sd, 2),
-                "sd2_u": round(vwap + 2 * sd, 2),
-                "sd2_l": round(vwap - 2 * sd, 2),
-                "sd3_u": round(vwap + 3 * sd, 2),
-                "sd3_l": round(vwap - 3 * sd, 2),
-            })
+            result.append(
+                {
+                    "t": bucket * interval_seconds,
+                    "vwap": round(vwap, 2),
+                    "sd1_u": round(vwap + sd, 2),
+                    "sd1_l": round(vwap - sd, 2),
+                    "sd2_u": round(vwap + 2 * sd, 2),
+                    "sd2_l": round(vwap - 2 * sd, 2),
+                    "sd3_u": round(vwap + 3 * sd, 2),
+                    "sd3_l": round(vwap - 3 * sd, 2),
+                }
+            )
 
     return result
 
@@ -595,7 +633,7 @@ _LONDON_START = time(8, 0)
 _LONDON_END = time(16, 30)
 _NY_START = time(15, 30)
 _NY_END = time(22, 0)
-_IB_END = time(16, 30)       # NY open + 60 min
+_IB_END = time(16, 30)  # NY open + 60 min
 
 
 def compute_session_levels(
@@ -717,12 +755,14 @@ def detect_order_blocks(bars: list[dict], min_move_pct: float = 0.003) -> list[O
             # Impulsive move detected — prior candle is the order block
             ob = bars[i]
             direction = "bullish" if move > 0 else "bearish"
-            blocks.append(OrderBlock(
-                price_low=ob["low"],
-                price_high=ob["high"],
-                direction=direction,
-                volume=ob.get("volume", 0),
-            ))
+            blocks.append(
+                OrderBlock(
+                    price_low=ob["low"],
+                    price_high=ob["high"],
+                    direction=direction,
+                    volume=ob.get("volume", 0),
+                )
+            )
 
     return blocks
 
@@ -739,19 +779,23 @@ def detect_fvgs(bars: list[dict]) -> list[FairValueGap]:
 
         # Bullish FVG: prev_bar high < next_bar low (gap up)
         if prev_bar["high"] < next_bar["low"]:
-            gaps.append(FairValueGap(
-                price_low=prev_bar["high"],
-                price_high=next_bar["low"],
-                direction="bullish",
-            ))
+            gaps.append(
+                FairValueGap(
+                    price_low=prev_bar["high"],
+                    price_high=next_bar["low"],
+                    direction="bullish",
+                )
+            )
 
         # Bearish FVG: prev_bar low > next_bar high (gap down)
         if prev_bar["low"] > next_bar["high"]:
-            gaps.append(FairValueGap(
-                price_low=next_bar["high"],
-                price_high=prev_bar["low"],
-                direction="bearish",
-            ))
+            gaps.append(
+                FairValueGap(
+                    price_low=next_bar["high"],
+                    price_high=prev_bar["low"],
+                    direction="bearish",
+                )
+            )
 
     return gaps
 
@@ -768,9 +812,12 @@ def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
     if n < 2 * lookback + 1:
         return {
             "structure": "ranging",
-            "last_hh": None, "last_hl": None,
-            "last_lh": None, "last_ll": None,
-            "swing_high": None, "swing_low": None,
+            "last_hh": None,
+            "last_hl": None,
+            "last_lh": None,
+            "last_ll": None,
+            "swing_high": None,
+            "swing_low": None,
         }
 
     # Find pivot highs and lows
@@ -780,12 +827,8 @@ def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
     for i in range(lookback, n - lookback):
         high = bars[i]["high"]
         low = bars[i]["low"]
-        is_pivot_high = all(
-            high >= bars[j]["high"] for j in range(i - lookback, i + lookback + 1) if j != i
-        )
-        is_pivot_low = all(
-            low <= bars[j]["low"] for j in range(i - lookback, i + lookback + 1) if j != i
-        )
+        is_pivot_high = all(high >= bars[j]["high"] for j in range(i - lookback, i + lookback + 1) if j != i)
+        is_pivot_low = all(low <= bars[j]["low"] for j in range(i - lookback, i + lookback + 1) if j != i)
         if is_pivot_high:
             pivot_highs.append((i, high))
         if is_pivot_low:
@@ -795,7 +838,9 @@ def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
         return {
             "structure": "ranging",
             "last_hh": pivot_highs[-1][1] if pivot_highs else None,
-            "last_hl": None, "last_lh": None, "last_ll": None,
+            "last_hl": None,
+            "last_lh": None,
+            "last_ll": None,
             "swing_high": pivot_highs[-1][1] if pivot_highs else None,
             "swing_low": pivot_lows[-1][1] if pivot_lows else None,
         }
@@ -848,10 +893,7 @@ def detect_naked_pocs(
     naked = []
     for session in prior_sessions:
         poc = session["poc"]
-        touched = any(
-            bar["low"] <= poc <= bar["high"]
-            for bar in bars_since
-        )
+        touched = any(bar["low"] <= poc <= bar["high"] for bar in bars_since)
         if not touched:
             naked.append({"date": session["date"], "price": poc})
 
@@ -881,12 +923,14 @@ def compute_vp_hierarchy(profiles: dict, current_price: float | None = None, clu
         for level_type, type_w in TYPE_WEIGHTS.items():
             price = vp.get(level_type) if isinstance(vp, dict) else getattr(vp, level_type, None)
             if price and price > 0:
-                raw_levels.append({
-                    "price": price,
-                    "tf": tf,
-                    "type": level_type,
-                    "base_weight": weight * type_w,
-                })
+                raw_levels.append(
+                    {
+                        "price": price,
+                        "tf": tf,
+                        "type": level_type,
+                        "base_weight": weight * type_w,
+                    }
+                )
 
     if not raw_levels:
         return []
@@ -921,15 +965,17 @@ def compute_vp_hierarchy(profiles: dict, current_price: float | None = None, clu
 
         strength = base_strength * confluence_mult
 
-        clusters.append({
-            "price": round(avg_price, 2),
-            "strength": round(strength, 1),
-            "zone_high": max(prices),
-            "zone_low": min(prices),
-            "sources": [{"tf": s["tf"], "type": s["type"], "price": s["price"]} for s in cluster_sources],
-            "confluence": n,
-            "distance": round(abs(avg_price - current_price), 2) if current_price else None,
-        })
+        clusters.append(
+            {
+                "price": round(avg_price, 2),
+                "strength": round(strength, 1),
+                "zone_high": max(prices),
+                "zone_low": min(prices),
+                "sources": [{"tf": s["tf"], "type": s["type"], "price": s["price"]} for s in cluster_sources],
+                "confluence": n,
+                "distance": round(abs(avg_price - current_price), 2) if current_price else None,
+            }
+        )
 
     # Sort by strength descending
     clusters.sort(key=lambda x: x["strength"], reverse=True)
