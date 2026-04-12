@@ -12,29 +12,29 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone, time
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .candle_aggregator import CandleAggregator
-from .accumulators import IncrementalVWAP, IncrementalVolumeProfile
-from .episode_builder import Episode, label_outcome, label_outcome_from_array
-from ..features.observation import build_observation
-from ..config import LevelType, AT_LEVEL_TICKS, ATR_PERIOD, TICK_SIZE
-from ..zone_builder import Zone, build_zones
+from ...market_data.amt_dynamics import AMTDynamicsTracker
 from ...market_data.levels import (
+    SessionLevels,
     compute_session_levels,
     detect_fvgs,
     detect_order_blocks,
-    SessionLevels,
 )
-from ...market_data.tpo import build_full_tpo_profile, compute_session_tpos
 from ...market_data.orderflow import (
+    CandleFlow,
     build_candle_flow,
     compute_signals,
-    CandleFlow,
 )
-from ...market_data.amt_dynamics import AMTDynamicsTracker
+from ...market_data.tpo import build_full_tpo_profile, compute_session_tpos
+from ..config import AT_LEVEL_TICKS, ATR_PERIOD, TICK_SIZE, LevelType
+from ..features.observation import build_observation
+from ..zone_builder import Zone, build_zones
+from .accumulators import IncrementalVolumeProfile, IncrementalVWAP
+from .candle_aggregator import CandleAggregator
+from .episode_builder import Episode, label_outcome_from_array
 
 ET = ZoneInfo("US/Eastern")
 log = logging.getLogger(__name__)
@@ -174,7 +174,9 @@ class ReplayEngine:
             "pdl": rth_low,
             "weekly_high": max(filter(None, [sl.weekly_high, rth_high])) if any([sl.weekly_high, rth_high]) else None,
             "weekly_low": min(filter(None, [sl.weekly_low, rth_low])) if any([sl.weekly_low, rth_low]) else None,
-            "monthly_high": max(filter(None, [sl.monthly_high, rth_high])) if any([sl.monthly_high, rth_high]) else None,
+            "monthly_high": max(filter(None, [sl.monthly_high, rth_high]))
+            if any([sl.monthly_high, rth_high])
+            else None,
             "monthly_low": min(filter(None, [sl.monthly_low, rth_low])) if any([sl.monthly_low, rth_low]) else None,
         }
 
@@ -218,17 +220,12 @@ class ReplayEngine:
                 "vah": vp.vah if vp else None,
                 "val": vp.val if vp else None,
             },
-            "fvgs": [
-                {"low": f.price_low, "high": f.price_high, "direction": f.direction}
-                for f in self._fvgs
-            ],
+            "fvgs": [{"low": f.price_low, "high": f.price_high, "direction": f.direction} for f in self._fvgs],
             "order_blocks": [
-                {"low": ob.price_low, "high": ob.price_high, "direction": ob.direction}
-                for ob in self._order_blocks
+                {"low": ob.price_low, "high": ob.price_high, "direction": ob.direction} for ob in self._order_blocks
             ],
             "active_levels": [
-                {"name": name, "type": lt.value, "price": price}
-                for name, lt, price in self._active_levels
+                {"name": name, "type": lt.value, "price": price} for name, lt, price in self._active_levels
             ],
         }
 
@@ -263,8 +260,14 @@ class ReplayEngine:
         if precomputed_levels:
             self._precomputed = precomputed_levels
 
-        # Normalise ticks to dicts once for uniform access
-        norm_ticks: list[dict] = [_normalise_tick(t) for t in ticks]
+        # Normalise ticks for uniform dict-like access.
+        # TickArray already provides dict-like access via TickView — skip copy.
+        from .tick_array import TickArray
+
+        if isinstance(ticks, TickArray):
+            norm_ticks = ticks
+        else:
+            norm_ticks: list[dict] = [_normalise_tick(t) for t in ticks]
 
         episodes: list[Episode] = []
         self._amt_tracker = AMTDynamicsTracker()
@@ -334,7 +337,7 @@ class ReplayEngine:
 
                 # Last 50 ticks for raw tick sequence (temporal stream)
                 micro_start = max(0, i - 50)
-                recent_ticks = norm_ticks[micro_start:i + 1]
+                recent_ticks = norm_ticks[micro_start : i + 1]
 
                 state = self._build_state(tick, zone, session_date, date_str)
                 state["recent_ticks"] = recent_ticks
@@ -342,8 +345,12 @@ class ReplayEngine:
                 observation = build_observation(state)
 
                 # Gather zone centers above and below for multi-level trailing reward
-                zone_centers_above = sorted([z.center_price for z in self._active_zones if z.center_price > price + TICK_SIZE])
-                zone_centers_below = sorted([z.center_price for z in self._active_zones if z.center_price < price - TICK_SIZE], reverse=True)
+                zone_centers_above = sorted(
+                    [z.center_price for z in self._active_zones if z.center_price > price + TICK_SIZE]
+                )
+                zone_centers_below = sorted(
+                    [z.center_price for z in self._active_zones if z.center_price < price - TICK_SIZE], reverse=True
+                )
 
                 episode = label_outcome_from_array(
                     touch_price=zone.center_price,
@@ -407,14 +414,16 @@ class ReplayEngine:
             if not self._amt_tracker._initialized and computed.ib_high and computed.ib_low:
                 vp = self._vp.get()
                 tpo_data = self._tpo_profile or {}
-                self._amt_tracker.initialize({
-                    "ib_high": computed.ib_high,
-                    "ib_low": computed.ib_low,
-                    "vah": vp.vah if vp else 0,
-                    "val": vp.val if vp else 0,
-                    "poc": vp.poc if vp else 0,
-                    "single_prints": tpo_data.get("single_prints", []),
-                })
+                self._amt_tracker.initialize(
+                    {
+                        "ib_high": computed.ib_high,
+                        "ib_low": computed.ib_low,
+                        "vah": vp.vah if vp else 0,
+                        "val": vp.val if vp else 0,
+                        "poc": vp.poc if vp else 0,
+                        "single_prints": tpo_data.get("single_prints", []),
+                    }
+                )
 
             # Update AMT tracker on 30-min period close (after initialization)
             if self._amt_tracker._initialized and bar_count % 30 == 0:
@@ -443,15 +452,13 @@ class ReplayEngine:
 
         # Recompute orderflow signals if we have enough candle flows
         if len(self._candle_flows) >= _MIN_CANDLE_FLOWS:
-            self._orderflow_signals = compute_signals(
-                self._candle_flows, direction="long", lookback=10
-            )
+            self._orderflow_signals = compute_signals(self._candle_flows, direction="long", lookback=10)
 
         # Invalidate naked POCs that the current session has swept through
-        if (self._precomputed and self._precomputed.get("naked_pocs")
-                and self._session_high is not None):
+        if self._precomputed and self._precomputed.get("naked_pocs") and self._session_high is not None:
             self._precomputed["naked_pocs"] = [
-                n for n in self._precomputed["naked_pocs"]
+                n
+                for n in self._precomputed["naked_pocs"]
                 if not (self._session_low <= n["price"] <= self._session_high)
             ]
 
@@ -563,9 +570,7 @@ class ReplayEngine:
     # Level touch detection with debouncing
     # ------------------------------------------------------------------
 
-    def _check_level_touch(
-        self, price: float
-    ) -> list[tuple[str, LevelType, float]]:
+    def _check_level_touch(self, price: float) -> list[tuple[str, LevelType, float]]:
         """Detect newly-touched levels, with debouncing.
 
         A level is "touched" when price comes within _TOUCH_PROXIMITY.
@@ -621,7 +626,7 @@ class ReplayEngine:
                     newly_entered.append(zone)
 
         # Remove keys for zones price has exited
-        self._zone_keys -= (self._zone_keys - still_inside)
+        self._zone_keys -= self._zone_keys - still_inside
         return newly_entered
 
     # ------------------------------------------------------------------
@@ -652,7 +657,7 @@ class ReplayEngine:
         # TPO profile from 30m bars
         tpo_profile_dict: dict | None = None
         tpo_profile_obj = None  # TPOProfile object for setup detection
-        session_tpos = None     # Per-session TPO for RL features
+        session_tpos = None  # Per-session TPO for RL features
         if bars_30m:
             profile = build_full_tpo_profile(bars_30m, tick_size=TICK_SIZE)
             tpo_profile_obj = profile  # Keep object for setup detection
@@ -719,7 +724,7 @@ class ReplayEngine:
         candle_flows_5m: list = []
         if len(self._candle_flows) >= 5:
             for chunk_start in range(0, len(self._candle_flows) - 4, 5):
-                chunk = self._candle_flows[chunk_start:chunk_start + 5]
+                chunk = self._candle_flows[chunk_start : chunk_start + 5]
                 agg_high = max(c.high for c in chunk)
                 agg_low = min(c.low for c in chunk)
                 agg = CandleFlow(
@@ -756,14 +761,8 @@ class ReplayEngine:
             "session_context": session_context,
             "day_type": day_type,
             "fvgs": self._fvgs,
-            "single_print_zones": (
-                self._precomputed.get("single_print_zones", [])
-                if self._precomputed else []
-            ),
-            "swing_structure": (
-                self._precomputed.get("swing_structure")
-                if self._precomputed else None
-            ),
+            "single_print_zones": (self._precomputed.get("single_print_zones", []) if self._precomputed else []),
+            "swing_structure": (self._precomputed.get("swing_structure") if self._precomputed else None),
             "amt_dynamics": self._amt_tracker.snapshot(),
         }
 
@@ -797,10 +796,7 @@ class ReplayEngine:
 
         # Session progress: fraction of RTH elapsed (390 minutes total)
         # We can't know future volume, so bar count is the best proxy
-        rth_bar_count = sum(
-            1 for b in bars_1m
-            if _is_rth_bar(b)
-        )
+        rth_bar_count = sum(1 for b in bars_1m if _is_rth_bar(b))
         session_volume_pct = min(1.0, rth_bar_count / 390.0)
 
         # Daily range percentage
@@ -906,6 +902,7 @@ class ReplayEngine:
 # Helpers
 # ------------------------------------------------------------------
 
+
 def _normalise_tick(tick: Any) -> dict:
     """Convert a tick to a plain dict with consistent keys.
 
@@ -955,5 +952,3 @@ def _date_key(session_date: datetime | Any) -> str:
     else:
         d = session_date  # assume date object
     return d.isoformat()
-
-

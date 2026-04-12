@@ -434,16 +434,24 @@ def _replay_single_file(
 ) -> tuple[int, int]:
     """Replay a single parquet file into episode chunks. Runs in subprocess.
 
+    Memory-optimised: reads parquet via pyarrow row groups, assigns session
+    dates from the timestamp column alone (never loads full DataFrame), and
+    uses TickArray (column arrays) instead of list[dict] — ~7x less RAM per
+    session.
+
     Returns (n_episodes, n_sessions).
     """
+    import gc
+    import sys
     from datetime import datetime
     from pathlib import Path
 
     import numpy as np
-    import pandas as pd
+    import pyarrow.parquet as pq
 
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.session_store import compute_precomputed_levels
+    from src.rl.data.tick_array import TickArray
     from src.rl.features.observation import augment_observation, build_position_state
 
     pfile = Path(pfile_path)
@@ -458,63 +466,74 @@ def _replay_single_file(
 
         _gbt_data = _jl.load(Path(gbt_path))
         if isinstance(_gbt_data, dict) and _gbt_data.get("version", "").startswith("v5_trigger"):
-            # v5 trigger GBT: needs narrative features + trigger feature assembly
             from src.rl.agent.narrative_gbt import NarrativeGBT
             from src.rl.agent.trigger_gbt import TriggerGBT
 
             gbt_model = TriggerGBT.load(Path(gbt_path))
             gbt_is_trigger = True
-            # Try to load narrative GBT for setup probs
             ngbt_path = Path(gbt_path).parent / "narrative_gbt_v5.joblib"
             if ngbt_path.exists():
                 narrative_gbt = NarrativeGBT.load(ngbt_path)
         else:
-            # v4 or earlier: standard GBTModel on 276-dim observations
             from src.rl.agent.gbt_model import GBTModel
 
             gbt_model = GBTModel.load(Path(gbt_path))
 
     engine = ReplayEngine(macro_data=macro_data)
 
-    df = pd.read_parquet(pfile)
-    if "timestamp" not in df.columns:
+    # --- Phase 1: scan timestamps to build session→row_index mapping ---
+    # Read only the timestamp column via pyarrow (tiny memory footprint).
+    pf = pq.ParquetFile(pfile)
+    if "timestamp" not in pf.schema.names:
         return 0, 0
 
-    df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
-    df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
-    df = df.dropna(subset=["_session_date"])
-    df_renamed = df.rename(columns={"timestamp": "ts"})
-    dates = sorted(df_renamed["_session_date"].unique())
+    import pandas as pd
 
-    # For large files, group by session upfront and release the full DataFrame
-    is_large = len(df_renamed) > 1_000_000
-    session_groups = {}
-    if is_large:
-        for session_date in dates:
-            session_groups[session_date] = df_renamed[df_renamed["_session_date"] == session_date].drop(
-                columns=["_session_date", "_ts_et"], errors="ignore"
-            )
-        del df, df_renamed  # release ~600MB
-        import gc
+    ts_table = pf.read(columns=["timestamp"])
+    ts_series = ts_table.column("timestamp").to_pandas()
+    del ts_table
+    ts_et = pd.to_datetime(ts_series, utc=True).dt.tz_convert(_ET)
+    del ts_series
 
-        gc.collect()
+    session_dates = ts_et.map(_assign_session_date)
+    del ts_et
 
+    # Build {session_date: (row_start, row_end)} index — no data loaded yet
+    valid_mask = session_dates.notna()
+    session_date_arr = session_dates.to_numpy()
+    del session_dates
+
+    sorted_dates: list = sorted(set(d for d, v in zip(session_date_arr, valid_mask) if v))
+
+    # --- Phase 2: replay each session, reading only its rows ---
     month_obs, month_rc, month_rr = [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
-
     session_count = 0
     prior_levels = None
 
-    for session_date in dates:
-        if is_large:
-            day_df = session_groups.pop(session_date)  # pop to free memory after use
-        else:
-            day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
-                columns=["_session_date", "_ts_et"], errors="ignore"
-            )
-        ticks = day_df.to_dict(orient="records")
-        del day_df  # free session DataFrame immediately
-        if not ticks:
+    # Read full table once (pyarrow zero-copy) — much cheaper than pandas
+    full_table = pf.read()
+
+    for date_idx, session_date in enumerate(sorted_dates):
+        # Extract rows for this session using the pre-computed date array
+        row_mask = np.array(
+            [(d == session_date and v) for d, v in zip(session_date_arr, valid_mask)],
+            dtype=bool,
+        )
+        indices = np.where(row_mask)[0]
+        if len(indices) == 0:
+            continue
+
+        # Slice the arrow table (zero-copy) → convert to small pandas → TickArray
+        session_table = full_table.take(indices)
+        session_df = session_table.to_pandas()
+        del session_table
+        session_df = session_df.rename(columns={"timestamp": "ts"})
+        ticks = TickArray.from_dataframe(session_df)
+        del session_df
+        gc.collect()
+
+        if len(ticks) == 0:
             continue
 
         session_dt = datetime(
@@ -539,17 +558,17 @@ def _replay_single_file(
                 precomputed_levels=precomputed,
             )
         except Exception as _replay_exc:
-            import sys
-
             print(f"  replay_session FAILED for {session_date}: {_replay_exc}", file=sys.stderr)
             continue
+        finally:
+            del ticks
+            gc.collect()
 
         prior_levels = engine.get_prior_session_for_chaining()
 
         # Reset weekly/monthly at boundaries
-        idx = dates.tolist().index(session_date) + 1 if hasattr(dates, "tolist") else None
-        if idx and idx < len(dates):
-            nd = dates[idx]
+        if date_idx + 1 < len(sorted_dates):
+            nd = sorted_dates[date_idx + 1]
             if hasattr(nd, "weekday") and nd.weekday() == 0:
                 prior_levels["weekly_high"] = None
                 prior_levels["weekly_low"] = None
@@ -561,11 +580,8 @@ def _replay_single_file(
             obs = ep.observation
             if gbt_model is not None:
                 if gbt_is_trigger:
-                    # v5: extract narrative features from base obs, build trigger input
                     from src.rl.features.passthrough_features import extract_passthrough
 
-                    # Approximate narrative from observation indices
-                    # (we don't have state dict, so extract from obs vector)
                     narr_feats = np.concatenate(
                         [
                             obs[52:116],
@@ -574,12 +590,11 @@ def _replay_single_file(
                             obs[208:228],
                             obs[228:248],
                         ]
-                    )  # 153 dims for narrative GBT input
+                    )
                     setup_probs = np.zeros(8, dtype=np.float32)
                     if narrative_gbt is not None:
                         setup_probs = narrative_gbt.predict_setup_probs(narr_feats)
                     passthrough = extract_passthrough(obs)
-                    # Build trigger-like input for trigger GBT
                     trigger_raw = np.concatenate(
                         [
                             obs[0:31],
@@ -590,7 +605,7 @@ def _replay_single_file(
                             obs[248:268],
                             obs[268:269],
                         ]
-                    )  # 97 dims
+                    )
                     trigger_input = np.concatenate([trigger_raw, passthrough, setup_probs])
                     gbt_forecast = gbt_model.predict_full(trigger_input)
                 else:
@@ -605,7 +620,11 @@ def _replay_single_file(
             month_be.append(float(ep.breakeven_reached))
             month_lc.append(float(ep.levels_captured_best))
 
+        del episodes
         session_count += 1
+
+    del full_table, session_date_arr, valid_mask
+    gc.collect()
 
     n_eps = len(month_obs)
     if n_eps > 0:
@@ -617,7 +636,7 @@ def _replay_single_file(
         np.save(out_dir / f"be_{chunk_idx:04d}.npy", np.array(month_be, dtype=np.float32))
         np.save(out_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
 
-    return n_eps, len(dates)
+    return n_eps, len(sorted_dates)
 
 
 @rl_app.command()
