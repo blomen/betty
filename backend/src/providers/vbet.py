@@ -82,17 +82,23 @@ class VbetRetriever(Retriever):
     MARKET_TYPE_MAP = {
         "P1XP2": "1x2",
         "P1P2": "moneyline",
-        # Total variants across sports
-        "OverUnder": "total",
-        "TotalPoints": "total",
-        "TotalGames": "total",
-        "Total": "total",
-        # Spread variants across sports
-        "AsianHandicap": "spread",
-        "Handicap": "spread",
-        "GameHandicap": "spread",
-        "PointSpread": "spread",
-        "SetHandicap": "spread",
+        # Total variants — discovered via unmapped market type logging
+        "OverUnder": "total",  # football
+        "MatchTotal": "total",  # basketball
+        "MatchTotal2": "total",  # ice_hockey, handball
+        "MatchTotal2Asian": "total",  # ice_hockey (Asian variant)
+        "TotalRunsOver/Under": "total",  # baseball
+        "TotalGamesOver/Under": "total",  # tennis
+        "TotalPointsOver/Under": "total",  # volleyball
+        # Spread variants — discovered via unmapped market type logging
+        "AsianHandicap": "spread",  # football
+        "Handicap": "spread",  # 2-way sports (excluded for football below)
+        "MatchHandicap": "spread",  # basketball
+        "MatchHandicap2": "spread",  # ice_hockey, handball
+        "MatchHandicap2Asian": "spread",  # ice_hockey (Asian variant)
+        "RunLine": "spread",  # baseball
+        "Sets Handicap": "spread",  # tennis
+        "SetPointHandicap": "spread",  # volleyball
     }
 
     # BetConstruct event outcome types → our outcome names
