@@ -75,7 +75,12 @@ def _kill_port(port: int, label: str) -> bool:
     return False
 
 
+_had_previous_instance = False
+
+
 def _cleanup_old_instance():
+    global _had_previous_instance
+    _had_previous_instance = _port_in_use(LOCAL_DASHBOARD_PORT)
     _kill_port(LOCAL_DASHBOARD_PORT, "firevstocks-dashboard")
     # Do NOT kill the PG or WS tunnel ports -- mirror may be using them
 
@@ -232,8 +237,14 @@ async def _run(config, topstepx_client, relay, stream, adapter):
     def _open_browser():
         import webbrowser
 
+        if _had_previous_instance:
+            # Browser tab already exists — boot_id WS message will trigger reload
+            log.info("Previous instance detected — skipping browser open (existing tab will auto-reload)")
+            return
+
         time.sleep(3)
         webbrowser.open(f"http://127.0.0.1:{LOCAL_DASHBOARD_PORT}")
+        webbrowser.open("https://topstepx.com/trade")
 
     threading.Thread(target=_open_browser, daemon=True, name="browser-open").start()
 

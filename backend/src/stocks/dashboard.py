@@ -82,6 +82,7 @@ _state = {
 }
 
 _dashboard_clients: list[WebSocket] = []
+_boot_id = str(int(_time.time()))  # unique per process start — frontend reloads on change
 _dash_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -418,6 +419,7 @@ def create_dashboard_app() -> FastAPI:
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(ws: WebSocket):
         await ws.accept()
+        await ws.send_json({"type": "boot", "boot_id": _boot_id})
         _dashboard_clients.append(ws)
         try:
             while True:

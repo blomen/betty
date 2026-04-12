@@ -1168,8 +1168,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   // Live candle updates
   useEffect(() => {
     if (!lastCandle || !priceSeriesRef.current || !volumeSeriesRef.current) return;
-    // Don't update until initial data is loaded — prevents "Cannot update oldest data"
-    if (loading || candlesRef.current.length === 0) return;
+    if (loading) return;
+
+    // Seed series with first live candle if no historical data was loaded
+    if (candlesRef.current.length === 0) {
+      priceSeriesRef.current.setData([toCandle(lastCandle)]);
+      volumeSeriesRef.current.setData([toVolume(lastCandle)]);
+      candlesRef.current = [lastCandle];
+      setNoData(false);
+      drawOverlays();
+      return;
+    }
+
     try {
       priceSeriesRef.current.update(toCandle(lastCandle));
       volumeSeriesRef.current.update(toVolume(lastCandle));

@@ -43,6 +43,7 @@ export function useDashboardWS() {
   const [lastTick, setLastTick] = useState<TickEvent | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | undefined>(undefined)
+  const bootIdRef = useRef<string | null>(null)
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -66,6 +67,14 @@ export function useDashboardWS() {
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data)
       switch (msg.type) {
+        case 'boot':
+          if (bootIdRef.current !== null && bootIdRef.current !== msg.boot_id) {
+            // Server restarted — hard reload to pick up new assets
+            window.location.reload()
+            return
+          }
+          bootIdRef.current = msg.boot_id
+          break
         case 'tick':
           setLastTick({ price: msg.price, ts: msg.ts, tick_count: msg.tick_count })
           setState(s => ({ ...s, lastPrice: msg.price, tickCount: msg.tick_count }))

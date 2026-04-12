@@ -1,7 +1,7 @@
 """WebSocket relay: local firevstocks client <-> server LevelMonitor."""
+
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import threading
@@ -18,6 +18,7 @@ def _get_market_db(app):
     factory = getattr(app.state, "_market_db_factory", None)
     if not factory:
         from ...db.models import get_market_session
+
         factory = get_market_session
         app.state._market_db_factory = factory
     return factory
@@ -25,20 +26,29 @@ def _get_market_db(app):
 
 def _persist_candle(app, candle: dict, interval: str) -> None:
     """Persist a closed candle to DB (background, non-blocking)."""
+    from datetime import datetime, timezone
+
     try:
         db = _get_market_db(app)()
         try:
             from ...repositories.market_repo import MarketRepo
+
+            ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
             MarketRepo(db).upsert_candle(
-                "NQ", interval,
-                candle["t"], candle["o"], candle["h"],
-                candle["l"], candle["c"], candle["v"],
+                "NQ",
+                interval,
+                ts,
+                candle["o"],
+                candle["h"],
+                candle["l"],
+                candle["c"],
+                candle["v"],
             )
             db.commit()
         finally:
             db.close()
     except Exception:
-        log.debug("Failed to persist %s candle", interval)
+        log.warning("Failed to persist %s candle: %s", interval, candle, exc_info=True)
 
 
 # Batch tick writer for market_trades (same table Databento path uses)
@@ -68,10 +78,15 @@ def _buffer_tick(app, price: float, size: int, ts_dt, side: str) -> None:
     """Add a tick to the batch buffer, flush if full."""
     batch = None
     with _tick_batch_lock:
-        _tick_batch.append({
-            "symbol": "NQ", "price": price, "size": size,
-            "ts": ts_dt, "side": side,
-        })
+        _tick_batch.append(
+            {
+                "symbol": "NQ",
+                "price": price,
+                "size": size,
+                "ts": ts_dt,
+                "side": side,
+            }
+        )
         if len(_tick_batch) >= _TICK_FLUSH_SIZE:
             batch = list(_tick_batch)
             _tick_batch.clear()
@@ -95,11 +110,13 @@ def _do_flush(app, batch: list[dict]) -> None:
         db = _get_market_db(app)()
         try:
             from ...repositories.market_repo import MarketRepo
+
             MarketRepo(db).bulk_insert_trades(batch)
         finally:
             db.close()
     except Exception:
         log.debug("Failed to flush %d ticks to market_trades", len(batch))
+
 
 @router.websocket("/ws/signals")
 async def signal_relay(ws: WebSocket):
@@ -137,6 +154,7 @@ async def signal_relay(ws: WebSocket):
                 tick_buffer = getattr(ws.app.state, "stocks_tick_buffer", None)
                 if tick_buffer:
                     from datetime import datetime, timezone
+
                     tick_ts = datetime.fromtimestamp(ts, tz=timezone.utc)
                     side = msg.get("side", "B")  # A=sell aggressor, B=buy aggressor
                     tick_buffer.add(tick_ts, price, size, side)
