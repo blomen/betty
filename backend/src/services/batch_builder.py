@@ -91,6 +91,9 @@ class BatchBet:
     funded: bool = True  # False = needs deposit to play
     skip_reason: str | None = None
 
+    # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
+    provider_meta: dict | None = None
+
 
 @dataclass
 class ProviderBalance:
@@ -283,6 +286,9 @@ class BatchBuilder:
 
         # Bulk-populate odds_age_minutes from Odds.updated_at
         self._populate_odds_age(batch)
+
+        # Bulk-populate provider_meta for navigation (altenar IDs, etc.)
+        self._populate_provider_meta(batch)
 
         # Count opportunity volume per cluster (from ALL candidates, not just batch)
         cluster_opp_stats = self._compute_cluster_opp_stats(candidates)
@@ -537,6 +543,33 @@ class BatchBuilder:
                     ts = ts.replace(tzinfo=timezone.utc)
                 b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
+    def _populate_provider_meta(self, batch: list[BatchBet]) -> None:
+        """Bulk-lookup Odds.provider_meta for navigation (altenar IDs, kambi matchup, etc.)."""
+        if not batch:
+            return
+        from ..db.models import Odds
+
+        keys = {(b.event_id, b.provider_id, b.market, b.outcome) for b in batch}
+        rows = (
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.provider_meta)
+            .filter(
+                Odds.event_id.in_(list({k[0] for k in keys})),
+                Odds.provider_id.in_(list({k[1] for k in keys})),
+                Odds.provider_meta.isnot(None),
+            )
+            .all()
+        )
+        lookup = {}
+        for r in rows:
+            if r.provider_meta:
+                lookup[(r.event_id, r.provider_id, r.market, r.outcome)] = (
+                    r.provider_meta if isinstance(r.provider_meta, dict) else {}
+                )
+        for b in batch:
+            meta = lookup.get((b.event_id, b.provider_id, b.market, b.outcome))
+            if meta:
+                b.provider_meta = meta
+
     # Daily placement cap per provider (enforced in play loop, not here).
     # Batch returns ALL +EV bets so the UI shows the full picture.
     BETS_PER_PROVIDER = 10
@@ -584,6 +617,7 @@ class BatchBuilder:
             odds_age_minutes=bet.odds_age_minutes,
             lifecycle=pb.lifecycle,
             cluster=bet.cluster,
+            provider_meta=bet.provider_meta,
         )
 
     def _allocate_batch(
@@ -852,6 +886,7 @@ class BatchBuilder:
             "cluster": bet.cluster,
             "funded": bet.funded,
             "skip_reason": bet.skip_reason,
+            "provider_meta": bet.provider_meta,
         }
 
     @staticmethod
