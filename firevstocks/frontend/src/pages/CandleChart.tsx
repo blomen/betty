@@ -748,7 +748,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         const y = pSeries.priceToCoordinate(sig.price);
         if (x === null || y === null || x < 0 || x > rect.width) continue;
 
-        const isCont = sig.action === 'CONT';
+        const isCont = sig.action === 'CONT' || sig.action === 'enter_long' || sig.action === 'CONTINUATION';
         const color = isCont ? '#10B981' : '#EF4444'; // green / red
         const size = 6;
 
@@ -1051,10 +1051,20 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     })();
 
+    let savedRange: { from: number; to: number } | null = null;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
+        if (width === 0 || height === 0) {
+          // Tab hidden — save zoom before chart loses dimensions
+          savedRange = chart.timeScale().getVisibleLogicalRange();
+          return;
+        }
         chart.applyOptions({ width, height });
+        if (savedRange) {
+          chart.timeScale().setVisibleLogicalRange(savedRange);
+          savedRange = null;
+        }
       }
     });
     observer.observe(containerRef.current);

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
+import { useRef, useEffect, useState, useMemo, useCallback, useReducer } from 'react'
 import { api } from '@/hooks/useApi'
 import type { Signal, Zone, DQNInferenceEvent, LevelsReplayResponse } from '@/types'
 import { NeuralNetworkSVG } from './NeuralNetworkSVG'
@@ -10,12 +10,30 @@ interface Props {
   zones: Zone[]
   lastPrice: number | null
   dqnInference: DQNInferenceEvent | null
+  dqnInferenceAt: number | null
 }
 
-export function DQNPage({ signals, zones: liveZones, lastPrice, dqnInference }: Props) {
+export function DQNPage({ signals, zones: liveZones, lastPrice, dqnInference, dqnInferenceAt }: Props) {
   const historyRef = useRef<HTMLDivElement>(null)
   const [replayData, setReplayData] = useState<LevelsReplayResponse | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
+
+  // Staleness: tick every second to recompute age
+  const [, tick] = useReducer(n => n + 1, 0)
+  useEffect(() => {
+    if (!dqnInferenceAt) return
+    const id = setInterval(() => tick(), 1000)
+    return () => clearInterval(id)
+  }, [dqnInferenceAt])
+
+  const ageSeconds = dqnInferenceAt ? (Date.now() - dqnInferenceAt) / 1000 : null
+  // Start fading at 30s, fully stale at 90s
+  const staleFactor = ageSeconds == null ? 1 : Math.min(1, Math.max(0, (ageSeconds - 30) / 60))
+
+  function formatAge(s: number): string {
+    if (s < 60) return `${Math.round(s)}s ago`
+    return `${Math.floor(s / 60)}m ago`
+  }
 
   useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
@@ -77,6 +95,11 @@ export function DQNPage({ signals, zones: liveZones, lastPrice, dqnInference }: 
           ? <span className="text-emerald-500 text-[10px] tracking-wider">● LIVE</span>
           : <span className="text-zinc-600 text-[10px] tracking-wider">○ NO SIGNAL</span>
         }
+        {ageSeconds != null && (
+          <span className="text-[10px]" style={{ color: staleFactor > 0.5 ? '#52525b' : '#78716c' }}>
+            {formatAge(ageSeconds)}
+          </span>
+        )}
 
         <Stat label="conf"    value={confidence != null ? `${(confidence * 100).toFixed(0)}%` : '---'} color="#f59e0b" />
         <Stat label="P(cont)" value={contP != null ? contP.toFixed(2) : '---'} color="#22c55e" />
@@ -104,7 +127,7 @@ export function DQNPage({ signals, zones: liveZones, lastPrice, dqnInference }: 
             DQN — 276→256→256→128→64→Q(3)
           </div>
           <div style={{ height: 218 }}>
-            <NeuralNetworkSVG dqnInference={dqnInference} />
+            <NeuralNetworkSVG dqnInference={dqnInference} staleFactor={staleFactor} />
           </div>
         </div>
 
@@ -189,7 +212,7 @@ export function DQNPage({ signals, zones: liveZones, lastPrice, dqnInference }: 
                     <td className="text-zinc-500">
                       {sig.ts ? new Date(sig.ts * 1000).toLocaleTimeString() : '---'}
                     </td>
-                    <td style={{ color: sig.action === 'CONTINUATION' ? '#22c55e' : sig.action === 'REVERSAL' ? '#ef4444' : '#888' }}>
+                    <td style={{ color: (sig.action === 'CONTINUATION' || sig.action === 'enter_long') ? '#22c55e' : (sig.action === 'REVERSAL' || sig.action === 'enter_short') ? '#ef4444' : '#888' }}>
                       {sig.action}
                     </td>
                     <td>{sig.confidence != null ? `${(sig.confidence * 100).toFixed(0)}%` : '---'}</td>

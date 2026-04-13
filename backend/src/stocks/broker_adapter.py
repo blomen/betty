@@ -106,12 +106,25 @@ class TopstepXBrokerAdapter:
             return None
 
     def on_stream_fill(self, fill: dict) -> None:
-        """Update tracker from real TopstepX fill (GatewayUserTrade)."""
+        """Update tracker from real TopstepX fill (GatewayUserTrade).
+
+        A stream fill can be either an entry confirmation or an exit.
+        We distinguish by checking entry_price: if it's still 0.0, the
+        market order just got filled (entry); otherwise it's an exit fill.
+        """
         price = float(fill.get("price", 0))
         if price == 0:
             return
 
-        if not self.tracker.is_flat:
+        if not self.tracker.is_flat and self.tracker.entry_price == 0.0:
+            # Entry fill arriving — market order confirmed at actual price
+            self.tracker.entry_price = price
+            if self._pending_trade:
+                self._pending_trade["entry_price"] = price
+            log.info("Stream fill (entry confirmed): %.2f", price)
+
+        elif not self.tracker.is_flat:
+            # Exit fill — position was closed (stop hit, manual flatten, etc.)
             is_stop = abs(price - self.tracker.stop_price) < 1.0 if self.tracker.stop_price else False
             entry_px = self.tracker.entry_price
             self.tracker.on_exit(exit_price=price, was_stop=is_stop)
@@ -148,12 +161,6 @@ class TopstepXBrokerAdapter:
                     closed_at=datetime.now(timezone.utc),
                 )
                 self._pending_trade = None
-        else:
-            self.tracker.entry_price = price
-            log.info("Stream fill (entry): %.2f", price)
-            # Update pending trade with actual fill price
-            if self._pending_trade:
-                self._pending_trade["entry_price"] = price
 
     def reset_session(self) -> None:
         """Daily midnight reset."""

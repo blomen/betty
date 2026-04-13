@@ -979,6 +979,7 @@ class LevelMonitor:
                             "model_type": result.get("model_type"),
                             "zone": zone.center_price,
                             "zone_members": zone.member_count,
+                            "ts": time.time(),
                         }
                     )
                 else:
