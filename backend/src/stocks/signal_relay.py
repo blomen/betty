@@ -29,6 +29,7 @@ class SignalRelayClient:
         self._connected = False
         self._listen_task: asyncio.Task | None = None
         self.on_signal: Callable[[dict], None] | None = None  # UI callback
+        self.on_dqn_inference: Callable[[dict], None] | None = None  # DQN viz callback
         self.on_zone_update: Callable[[dict], None] | None = None
 
     # ------------------------------------------------------------------
@@ -112,20 +113,39 @@ class SignalRelayClient:
 
             msg_type = msg.get("type")
             if msg_type == "signal":
+                log.info(
+                    "SignalRelay: received signal: %s conf=%.3f price=%.2f",
+                    msg.get("action"),
+                    msg.get("confidence", 0),
+                    msg.get("price", 0),
+                )
                 if self.on_signal:
                     try:
                         self.on_signal(msg)
                     except Exception:
                         log.exception("SignalRelay: on_signal callback failed")
                 await self._execute_signal(msg)
+            elif msg_type == "dqn_inference":
+                log.info(
+                    "SignalRelay: received dqn_inference: %s conf=%.3f",
+                    msg.get("action"),
+                    msg.get("confidence", 0),
+                )
+                if self.on_dqn_inference:
+                    try:
+                        self.on_dqn_inference(msg)
+                    except Exception:
+                        log.exception("SignalRelay: on_dqn_inference callback failed")
             elif msg_type == "zone_update":
                 if self.on_zone_update:
                     try:
                         self.on_zone_update(msg)
                     except Exception:
                         log.exception("SignalRelay: on_zone_update callback failed")
+            elif msg_type == "pong":
+                pass  # keepalive response
             else:
-                log.debug("SignalRelay: unknown message type %r", msg_type)
+                log.info("SignalRelay: unknown message type %r", msg_type)
 
     async def _execute_signal(self, signal: dict) -> None:
         """Parse signal and execute via adapter (if set) or directly on TopstepX."""

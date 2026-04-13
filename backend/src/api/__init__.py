@@ -914,20 +914,26 @@ async def lifespan(app: FastAPI):
     _live_collector_task = None
     if not _mirror_only:
         try:
+            from sqlalchemy import create_engine
+            from sqlalchemy import text as sa_text
+
             from ..rl.live_collector import get_live_collector
+
+            _market_engine = create_engine(
+                os.environ.get(
+                    "MARKET_DATABASE_URL",
+                    "postgresql://firev:firev2026secure@postgres:5432/market",
+                ).replace("+asyncpg", ""),
+                pool_size=5,
+                max_overflow=5,
+                pool_pre_ping=True,
+            )
 
             async def _get_recent_trades(since, until):
                 """Query market_trades for outcome measurement."""
-                from sqlalchemy import create_engine, text
-
-                market_url = os.environ.get(
-                    "MARKET_DATABASE_URL",
-                    "postgresql://firev:firev2026secure@postgres:5432/market",
-                ).replace("+asyncpg", "")  # Use sync driver for thread safety
-                engine = create_engine(market_url, pool_size=20, max_overflow=10, pool_pre_ping=True)
-                with engine.connect() as conn:
+                with _market_engine.connect() as conn:
                     rows = conn.execute(
-                        text(
+                        sa_text(
                             "SELECT ts, price, size FROM market_trades WHERE ts >= :since AND ts <= :until ORDER BY ts"
                         ),
                         {"since": since, "until": until},
@@ -942,13 +948,23 @@ async def lifespan(app: FastAPI):
 
     yield  # App is running
 
-    # Graceful shutdown
+    # Graceful shutdown — flush live episodes before stopping
     if _live_collector_task and not _live_collector_task.done():
         _live_collector_task.cancel()
         try:
             await _live_collector_task
         except asyncio.CancelledError:
             pass
+    try:
+        from ..rl.live_collector import get_live_collector
+
+        collector = get_live_collector()
+        stats = collector.get_stats()
+        if stats["buffered"] > 0:
+            collector.flush()
+            logger.info("Flushed %d live episodes on shutdown", stats["buffered"])
+    except Exception:
+        pass
     logger.info("Shutting down...")
 
     # Cancel the trading gate sleep loop (can block for hours when market closed)

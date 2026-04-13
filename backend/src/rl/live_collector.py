@@ -9,20 +9,21 @@ Hooks into LevelMonitor zone touches. For each touch:
 Episodes accumulate in data/rl/live_episodes/. The training scheduler
 merges these with historical episodes for periodic retraining.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
 import numpy as np
 
-from .features.observation import build_observation, OBSERVATION_DIM
 from .config import STOP_TICKS, TICK_SIZE
+from .features.observation import build_observation
 
 log = logging.getLogger(__name__)
 
@@ -34,13 +35,15 @@ OUTCOME_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
 COST_R = 1.0 / STOP_TICKS  # 1 tick cost / 10 tick stop = 0.1R
 
 # Buffer config
-FLUSH_INTERVAL = 100  # Write to disk every N episodes
+FLUSH_INTERVAL = 10  # Write to disk every N episodes
+FLUSH_TIMER_S = 300  # Force flush every 5 minutes regardless of count
 LIVE_DIR_NAME = "live_episodes"
 
 
 @dataclass
 class PendingEpisode:
     """Episode waiting for outcome measurement."""
+
     observation: np.ndarray
     touch_price: float
     touch_ts: float  # epoch seconds
@@ -52,6 +55,7 @@ class PendingEpisode:
 @dataclass
 class CompletedEpisode:
     """Episode with measured outcome."""
+
     observation: np.ndarray
     reward_continuation: float
     reward_reversal: float
@@ -89,11 +93,11 @@ class LiveEpisodeCollector:
         # Load existing count
         self._chunk_idx = len(list(self._live_dir.glob("obs_*.npy")))
 
-        log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d",
-                 self._live_dir, self._chunk_idx)
+        log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d", self._live_dir, self._chunk_idx)
 
-    def on_zone_touch(self, rl_state: dict, price: float,
-                      approach: str, level_type: str, zone_members: int = 1) -> None:
+    def on_zone_touch(
+        self, rl_state: dict, price: float, approach: str, level_type: str, zone_members: int = 1
+    ) -> None:
         """Called by LevelMonitor when a zone is touched.
 
         Builds observation and queues for outcome measurement.
@@ -110,9 +114,15 @@ class LiveEpisodeCollector:
             )
             with self._lock:
                 self._pending.append(pending)
-            log.debug("Queued live episode: %s @ %.2f (%s)", level_type, price, approach)
+            log.info(
+                "Queued live episode: %s @ %.2f (%s) [pending=%d]",
+                level_type,
+                price,
+                approach,
+                len(self._pending),
+            )
         except Exception:
-            log.debug("Failed to build observation for live episode", exc_info=True)
+            log.warning("Failed to build observation for live episode", exc_info=True)
 
     async def measure_outcomes_loop(self, get_recent_trades_fn) -> None:
         """Background loop that measures outcomes for pending episodes.
@@ -122,9 +132,16 @@ class LiveEpisodeCollector:
                 Returns trades with keys: ts (datetime), price (float), size (int)
                 Typically queries market_trades table.
         """
+        last_flush = time.time()
         while True:
             try:
                 await self._process_pending(get_recent_trades_fn)
+                # Periodic flush — don't lose episodes to restarts
+                now = time.time()
+                if now - last_flush >= FLUSH_TIMER_S and self._completed:
+                    log.info("Periodic flush: %d buffered episodes", len(self._completed))
+                    self._flush_to_disk()
+                    last_flush = now
             except Exception:
                 log.exception("Error in outcome measurement loop")
             await asyncio.sleep(30)  # Check every 30s
@@ -153,7 +170,7 @@ class LiveEpisodeCollector:
                 trades = await get_trades_fn(since, until)
 
                 if not trades:
-                    log.debug("No trades found for outcome measurement at %.2f", ep.touch_price)
+                    log.warning("No trades found for outcome measurement at %.2f", ep.touch_price)
                     continue
 
                 completed = self._compute_reward(ep, trades)
@@ -161,12 +178,20 @@ class LiveEpisodeCollector:
                     with self._lock:
                         self._completed.append(completed)
                         self.total_collected += 1
+                    log.info(
+                        "Episode measured: %.2f rc=%.3f rr=%.3f [collected=%d, buffered=%d]",
+                        ep.touch_price,
+                        completed.reward_continuation,
+                        completed.reward_reversal,
+                        self.total_collected,
+                        len(self._completed),
+                    )
 
                     if len(self._completed) >= FLUSH_INTERVAL:
                         self._flush_to_disk()
 
             except Exception:
-                log.debug("Failed to measure outcome for episode at %.2f", ep.touch_price, exc_info=True)
+                log.warning("Failed to measure outcome for episode at %.2f", ep.touch_price, exc_info=True)
 
     def _compute_reward(self, ep: PendingEpisode, trades: list[dict]) -> CompletedEpisode | None:
         """Compute velocity-based reward from trade data after the touch."""
@@ -266,8 +291,7 @@ class LiveEpisodeCollector:
 
         self._chunk_idx += 1
         self.total_flushed += len(episodes)
-        log.info("Flushed %d live episodes to chunk %04d (total: %d)",
-                 len(episodes), idx, self.total_flushed)
+        log.info("Flushed %d live episodes to chunk %04d (total: %d)", len(episodes), idx, self.total_flushed)
 
     def flush(self) -> None:
         """Force flush any buffered episodes to disk."""

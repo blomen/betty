@@ -6,8 +6,9 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
-from src.rl.zone_builder import Zone, ZoneMember, build_zones
 from src.rl.config import LevelType as RLLevelType
+from src.rl.zone_builder import Zone, build_zones
+
 from .amt_dynamics import AMTDynamicsTracker
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class LevelStatus(str, Enum):
 @dataclass
 class MonitoredLevel:
     """A structural level being tracked for proximity."""
+
     name: str
     price: float
     category: str
@@ -33,9 +35,9 @@ class MonitoredLevel:
     touched_at: float = 0.0
     cluster: list[str] = field(default_factory=list)
     approach_price: float | None = None  # price when WATCHING → APPROACHING
-    approach_ticks: int = 15   # default, overridden for swing levels
-    at_level_ticks: int = 5    # default
-    reject_ticks: int = 20     # default
+    approach_ticks: int = 15  # default, overridden for swing levels
+    at_level_ticks: int = 5  # default
+    reject_ticks: int = 20  # default
 
     def distance_ticks(self, price: float) -> float:
         return (price - self.price) / TICK_SIZE
@@ -76,6 +78,7 @@ class LevelMonitor:
         self._last_price: float = 0.0
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
+
             self._outcome_tracker = OutcomeTracker()
         except Exception:
             self._outcome_tracker = None
@@ -92,24 +95,33 @@ class LevelMonitor:
                 continue
             name = lv.get("type", "unknown")
             category = self._categorize(name)
-            self._levels.append(MonitoredLevel(
-                name=name,
-                price=float(price),
-                category=category,
-            ))
+            self._levels.append(
+                MonitoredLevel(
+                    name=name,
+                    price=float(price),
+                    category=category,
+                )
+            )
 
         for band_name, key in [
-            ("VWAP", "vwap"), ("VWAP +1SD", "vwap_1sd_upper"),
-            ("VWAP -1SD", "vwap_1sd_lower"), ("VWAP +2SD", "vwap_2sd_upper"),
-            ("VWAP -2SD", "vwap_2sd_lower"), ("VWAP +3SD", "vwap_3sd_upper"),
+            ("VWAP", "vwap"),
+            ("VWAP +1SD", "vwap_1sd_upper"),
+            ("VWAP -1SD", "vwap_1sd_lower"),
+            ("VWAP +2SD", "vwap_2sd_upper"),
+            ("VWAP -2SD", "vwap_2sd_lower"),
+            ("VWAP +3SD", "vwap_3sd_upper"),
             ("VWAP -3SD", "vwap_3sd_lower"),
         ]:
             val = session.get(key)
             if val is not None:
                 if not any(l.name == band_name and abs(l.price - val) < TICK_SIZE for l in self._levels):
-                    self._levels.append(MonitoredLevel(
-                        name=band_name, price=float(val), category="band",
-                    ))
+                    self._levels.append(
+                        MonitoredLevel(
+                            name=band_name,
+                            price=float(val),
+                            category="band",
+                        )
+                    )
 
         logger.info("LevelMonitor loaded %d levels", len(self._levels))
 
@@ -131,18 +143,30 @@ class LevelMonitor:
 
     def _rebuild_zones(self) -> None:
         level_type_map = {
-            "poc": RLLevelType.DAILY_POC, "daily_poc": RLLevelType.DAILY_POC,
-            "vah": RLLevelType.DAILY_VAH, "daily_vah": RLLevelType.DAILY_VAH,
-            "val": RLLevelType.DAILY_VAL, "daily_val": RLLevelType.DAILY_VAL,
+            "poc": RLLevelType.DAILY_POC,
+            "daily_poc": RLLevelType.DAILY_POC,
+            "vah": RLLevelType.DAILY_VAH,
+            "daily_vah": RLLevelType.DAILY_VAH,
+            "val": RLLevelType.DAILY_VAL,
+            "daily_val": RLLevelType.DAILY_VAL,
             "vwap": RLLevelType.VWAP,
-            "vwap +1sd": RLLevelType.VWAP_SD1, "vwap -1sd": RLLevelType.VWAP_SD1,
-            "vwap +2sd": RLLevelType.VWAP_SD2, "vwap -2sd": RLLevelType.VWAP_SD2,
-            "vwap +3sd": RLLevelType.VWAP_SD3, "vwap -3sd": RLLevelType.VWAP_SD3,
-            "pdh": RLLevelType.PDH, "pdl": RLLevelType.PDL,
-            "tokyo_high": RLLevelType.TOKYO_HIGH, "tokyo_low": RLLevelType.TOKYO_LOW,
-            "nyib_high": RLLevelType.NYIB_HIGH, "nyib_low": RLLevelType.NYIB_LOW,
-            "tpoc": RLLevelType.TPOC, "tvah": RLLevelType.TVAH, "tval": RLLevelType.TVAL,
-            "tibh": RLLevelType.TIBH, "tibl": RLLevelType.TIBL,
+            "vwap +1sd": RLLevelType.VWAP_SD1,
+            "vwap -1sd": RLLevelType.VWAP_SD1,
+            "vwap +2sd": RLLevelType.VWAP_SD2,
+            "vwap -2sd": RLLevelType.VWAP_SD2,
+            "vwap +3sd": RLLevelType.VWAP_SD3,
+            "vwap -3sd": RLLevelType.VWAP_SD3,
+            "pdh": RLLevelType.PDH,
+            "pdl": RLLevelType.PDL,
+            "tokyo_high": RLLevelType.TOKYO_HIGH,
+            "tokyo_low": RLLevelType.TOKYO_LOW,
+            "nyib_high": RLLevelType.NYIB_HIGH,
+            "nyib_low": RLLevelType.NYIB_LOW,
+            "tpoc": RLLevelType.TPOC,
+            "tvah": RLLevelType.TVAH,
+            "tval": RLLevelType.TVAL,
+            "tibh": RLLevelType.TIBH,
+            "tibl": RLLevelType.TIBL,
             "naked_poc": RLLevelType.NAKED_POC,
             "daily_swing_high": RLLevelType.DAILY_SWING_HIGH,
             "daily_swing_low": RLLevelType.DAILY_SWING_LOW,
@@ -262,10 +286,10 @@ class LevelMonitor:
                 still_in_zones.add(zid)
                 if zid not in self._zone_debounce:
                     # Check time cooldown
-                    last_fire = getattr(self, '_zone_last_fire', {}).get(zid, 0)
+                    last_fire = getattr(self, "_zone_last_fire", {}).get(zid, 0)
                     if (now - last_fire) >= _ZONE_COOLDOWN_S:
                         self._zone_debounce.add(zid)
-                        if not hasattr(self, '_zone_last_fire'):
+                        if not hasattr(self, "_zone_last_fire"):
                             self._zone_last_fire = {}
                         self._zone_last_fire[zid] = now
                         newly_entered_zones.append(zone)
@@ -274,9 +298,14 @@ class LevelMonitor:
         # Only fire inference for the BEST zone (highest confluence) per tick
         if newly_entered_zones:
             best_zone = max(newly_entered_zones, key=lambda z: (z.member_count, z.hierarchy_score))
-            logger.info("Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
-                        price, best_zone.center_price, best_zone.lower_bound, best_zone.upper_bound,
-                        best_zone.member_count)
+            logger.info(
+                "Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
+                price,
+                best_zone.center_price,
+                best_zone.lower_bound,
+                best_zone.upper_bound,
+                best_zone.member_count,
+            )
             self._emit_zone_dqn_inference(best_zone, price)
 
         self._check_positions(price)
@@ -292,14 +321,16 @@ class LevelMonitor:
         """Return all levels with current distance and status for REST API."""
         result = []
         for level in self._levels:
-            result.append({
-                "name": level.name,
-                "price": level.price,
-                "category": level.category,
-                "status": level.status.value,
-                "distance_ticks": round(level.distance_ticks(price), 1),
-                "cluster": level.cluster,
-            })
+            result.append(
+                {
+                    "name": level.name,
+                    "price": level.price,
+                    "category": level.category,
+                    "status": level.status.value,
+                    "distance_ticks": round(level.distance_ticks(price), 1),
+                    "cluster": level.cluster,
+                }
+            )
         result.sort(key=lambda x: abs(x["distance_ticks"]))
         return result
 
@@ -341,7 +372,7 @@ class LevelMonitor:
 
     def _compute_orderflow_snapshot(self) -> dict:
         """Compute orderflow signals for both directions and package as snapshot."""
-        from .orderflow import compute_signals, build_candle_flow
+        from .orderflow import compute_signals
 
         if not self._candle_flow_fn:
             return {}
@@ -362,13 +393,15 @@ class LevelMonitor:
 
     def register_position(self, trade_id: int, direction: str, entry: float, stop: float, targets: list[dict]) -> None:
         """Register an open position for target monitoring."""
-        self._open_positions.append({
-            "trade_id": trade_id,
-            "direction": direction,
-            "entry_price": entry,
-            "stop_price": stop,
-            "targets": [{"name": t["name"], "price": t["price"], "hit": False} for t in targets],
-        })
+        self._open_positions.append(
+            {
+                "trade_id": trade_id,
+                "direction": direction,
+                "entry_price": entry,
+                "stop_price": stop,
+                "targets": [{"name": t["name"], "price": t["price"], "hit": False} for t in targets],
+            }
+        )
 
     def close_position(self, trade_id: int) -> None:
         """Remove a closed position from monitoring."""
@@ -384,41 +417,47 @@ class LevelMonitor:
                 if dist <= self.AT_LEVEL_TICKS:
                     target["hit"] = True
                     snapshot = self._compute_orderflow_snapshot()
-                    self._publish({
-                        "type": "position_at_target",
-                        "trade_id": pos["trade_id"],
-                        "target_name": target["name"],
-                        "target_price": target["price"],
-                        "price": price,
-                        "direction": pos["direction"],
-                        "orderflow": snapshot,
-                    })
+                    self._publish(
+                        {
+                            "type": "position_at_target",
+                            "trade_id": pos["trade_id"],
+                            "target_name": target["name"],
+                            "target_price": target["price"],
+                            "price": price,
+                            "direction": pos["direction"],
+                            "orderflow": snapshot,
+                        }
+                    )
 
     # --- SSE event emitters ---
 
     def _on_level_approaching(self, level: MonitoredLevel, price: float, dist: float) -> None:
-        self._publish({
-            "type": "level_approaching",
-            "level": level.name,
-            "level_price": level.price,
-            "category": level.category,
-            "price": price,
-            "distance_ticks": round(dist, 1),
-        })
+        self._publish(
+            {
+                "type": "level_approaching",
+                "level": level.name,
+                "level_price": level.price,
+                "category": level.category,
+                "price": price,
+                "distance_ticks": round(dist, 1),
+            }
+        )
         self._emit_dqn_inference(level, price, "approaching")
 
     def _on_level_touched(self, level: MonitoredLevel, price: float) -> None:
         snapshot = self._compute_orderflow_snapshot()
-        self._publish({
-            "type": "level_touched",
-            "level": level.name,
-            "level_price": level.price,
-            "category": level.category,
-            "price": price,
-            "confluence": level.cluster,
-            "orderflow": snapshot,
-            "amt_dynamics": self._amt_tracker.snapshot(),
-        })
+        self._publish(
+            {
+                "type": "level_touched",
+                "level": level.name,
+                "level_price": level.price,
+                "category": level.category,
+                "price": price,
+                "confluence": level.cluster,
+                "orderflow": snapshot,
+                "amt_dynamics": self._amt_tracker.snapshot(),
+            }
+        )
         # Schedule async ML/macro fetch
         if self._loop and self._db_session_factory:
             asyncio.run_coroutine_threadsafe(
@@ -441,6 +480,7 @@ class LevelMonitor:
         async with self._level_context_lock:
             try:
                 from ..services.market_service import MarketService
+
                 # Get indicators (holds DB session briefly, then releases)
                 db = self._db_session_factory()
                 try:
@@ -453,6 +493,7 @@ class LevelMonitor:
                 macro_data = {}
                 try:
                     from ..market_data.macro_provider import fetch_macro_snapshot
+
                     macro = await fetch_macro_snapshot()
                     macro_data = {
                         "vix": macro.vix,
@@ -463,17 +504,19 @@ class LevelMonitor:
                 except Exception:
                     pass
 
-                self._publish({
-                    "type": "level_context",
-                    "level": level_name,
-                    "level_price": level_price,
-                    "ml": {
-                        "day_type": indicators.get("ml_day_type"),
-                        "day_type_confidence": indicators.get("ml_day_type_confidence"),
-                    },
-                    "macro": macro_data,
-                    "amt_dynamics": self._amt_tracker.snapshot(),
-                })
+                self._publish(
+                    {
+                        "type": "level_context",
+                        "level": level_name,
+                        "level_price": level_price,
+                        "ml": {
+                            "day_type": indicators.get("ml_day_type"),
+                            "day_type_confidence": indicators.get("ml_day_type_confidence"),
+                        },
+                        "macro": macro_data,
+                        "amt_dynamics": self._amt_tracker.snapshot(),
+                    }
+                )
             except Exception as e:
                 logger.warning("Failed to emit level_context for %s: %s", level_name, e)
 
@@ -486,8 +529,13 @@ class LevelMonitor:
         """Extract ML features, optionally predict, register with outcome tracker."""
         try:
             from datetime import datetime
+
             from src.ml.features.level_touch_features import extract_level_touch_features
-            from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features, compute_approach_volume_features
+            from src.ml.level_touch.compute import (
+                compute_approach_volume_features,
+                compute_candle_pattern_features,
+                compute_temporal_derivatives,
+            )
 
             approach_dir = self._get_approach_direction(level)
             direction = "long" if approach_dir == "from_below" else "short"
@@ -496,6 +544,7 @@ class LevelMonitor:
             of_signals = None
             if self._candle_flow_fn:
                 from .orderflow import compute_signals
+
                 candles = self._candle_flow_fn()
                 if candles and len(candles) >= 3:
                     of_signals = compute_signals(candles, direction, lookback=10)
@@ -508,27 +557,32 @@ class LevelMonitor:
                 if candles:
                     candle_dicts = []
                     for c in candles:
-                        candle_dicts.append({
-                            "delta": getattr(c, "delta", 0),
-                            "volume": getattr(c, "volume", 0),
-                            "tick_count": getattr(c, "tick_count", 0),
-                            "spread": getattr(c, "spread", 0),
-                            "body_ratio": getattr(c, "body_ratio", 0),
-                            "stacked_imbalance_count": (
-                                len(getattr(c, "stacked_imbalances", [])) if hasattr(c, "stacked_imbalances") else 0
-                            ),
-                            "open": getattr(c, "open", 0),
-                            "close": getattr(c, "close", 0),
-                        })
+                        candle_dicts.append(
+                            {
+                                "delta": getattr(c, "delta", 0),
+                                "volume": getattr(c, "volume", 0),
+                                "tick_count": getattr(c, "tick_count", 0),
+                                "spread": getattr(c, "spread", 0),
+                                "body_ratio": getattr(c, "body_ratio", 0),
+                                "stacked_imbalance_count": (
+                                    len(getattr(c, "stacked_imbalances", [])) if hasattr(c, "stacked_imbalances") else 0
+                                ),
+                                "open": getattr(c, "open", 0),
+                                "close": getattr(c, "close", 0),
+                            }
+                        )
                     temporal = compute_temporal_derivatives(candle_dicts)
                     candle_patterns = compute_candle_pattern_features(candle_dicts)
                     # Approach volume: how volume behaves coming into the level
-                    approach_vol_dicts = [{
-                        "volume": getattr(c, "volume", 0),
-                        "delta": getattr(c, "delta", 0),
-                        "buy_volume": getattr(c, "buy_volume", 0),
-                        "sell_volume": getattr(c, "sell_volume", 0),
-                    } for c in candles]
+                    approach_vol_dicts = [
+                        {
+                            "volume": getattr(c, "volume", 0),
+                            "delta": getattr(c, "delta", 0),
+                            "buy_volume": getattr(c, "buy_volume", 0),
+                            "sell_volume": getattr(c, "sell_volume", 0),
+                        }
+                        for c in candles
+                    ]
                     approach_vol = compute_approach_volume_features(approach_vol_dicts)
                     temporal.update(approach_vol)
 
@@ -574,18 +628,21 @@ class LevelMonitor:
             self._active_level_name = level.name
 
             # Emit full feature snapshot for gauge dashboard
-            self._publish({
-                "type": "ml_features",
-                "level": level.name,
-                "features": features,
-                "timestamp": time.time(),
-            })
+            self._publish(
+                {
+                    "type": "ml_features",
+                    "level": level.name,
+                    "features": features,
+                    "timestamp": time.time(),
+                }
+            )
 
             # Optional: Run ML prediction if model loaded
             prediction = None
             confidence = None
             try:
                 from src.ml.serving.predictor import get_predictor
+
                 predictor = get_predictor()
                 if predictor.is_loaded("level_classifier"):
                     pred_result = predictor.predict("level_classifier", features)
@@ -598,24 +655,29 @@ class LevelMonitor:
                         threshold = 0.50 if prediction in ACTIONABLE else 0.35
                         surfaced = prediction if confidence and confidence > threshold else "uncertain"
 
-                        self._publish({
-                            "type": "ml_prediction",
-                            "level": level.name,
-                            "predicted": surfaced,
-                            "raw_predicted": prediction,
-                            "confidence": confidence,
-                            "probabilities": pred_result.get("probabilities", {}),
-                        })
+                        self._publish(
+                            {
+                                "type": "ml_prediction",
+                                "level": level.name,
+                                "predicted": surfaced,
+                                "raw_predicted": prediction,
+                                "confidence": confidence,
+                                "probabilities": pred_result.get("probabilities", {}),
+                            }
+                        )
 
                         from src.ml.level_touch import set_last_prediction
-                        set_last_prediction({
-                            "level": level.name,
-                            "predicted": surfaced,
-                            "raw_predicted": prediction,
-                            "confidence": confidence,
-                            "probabilities": pred_result.get("probabilities", {}),
-                            "timestamp": time.time(),
-                        })
+
+                        set_last_prediction(
+                            {
+                                "level": level.name,
+                                "predicted": surfaced,
+                                "raw_predicted": prediction,
+                                "confidence": confidence,
+                                "probabilities": pred_result.get("probabilities", {}),
+                                "timestamp": time.time(),
+                            }
+                        )
             except Exception:
                 logger.debug("ML prediction not available", exc_info=True)
 
@@ -640,11 +702,13 @@ class LevelMonitor:
         if self._active_level_name == level.name:
             self._last_ml_features = None
             self._active_level_name = None
-        self._publish({
-            "type": "level_rejected",
-            "level": level.name,
-            "level_price": level.price,
-        })
+        self._publish(
+            {
+                "type": "level_rejected",
+                "level": level.name,
+                "level_price": level.price,
+            }
+        )
 
     def _recompute_live_features(self, of_snapshot: dict, price: float) -> dict:
         """Refresh live-changing features (orderflow + temporal + candle) on cached base."""
@@ -653,11 +717,22 @@ class LevelMonitor:
 
         # Refresh orderflow fields from fresh snapshot
         of_keys = [
-            "delta", "delta_aligned", "delta_divergence", "delta_unwind",
-            "cvd", "cvd_trend", "vsa_absorption", "tick_vol_accelerating",
-            "trapped_traders", "passive_active_ratio", "big_trades_count",
-            "big_trades_net_delta", "stop_run_detected", "imbalance_ratio_max",
-            "stacked_imbalance_count", "stacked_imbalance_direction",
+            "delta",
+            "delta_aligned",
+            "delta_divergence",
+            "delta_unwind",
+            "cvd",
+            "cvd_trend",
+            "vsa_absorption",
+            "tick_vol_accelerating",
+            "trapped_traders",
+            "passive_active_ratio",
+            "big_trades_count",
+            "big_trades_net_delta",
+            "stop_run_detected",
+            "imbalance_ratio_max",
+            "stacked_imbalance_count",
+            "stacked_imbalance_direction",
         ]
         for k in of_keys:
             if k in long_of:
@@ -666,27 +741,40 @@ class LevelMonitor:
         # Refresh temporal derivatives + candle patterns from fresh candles
         if self._candle_flow_fn:
             try:
-                from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features, compute_approach_volume_features
+                from src.ml.level_touch.compute import (
+                    compute_approach_volume_features,
+                    compute_candle_pattern_features,
+                    compute_temporal_derivatives,
+                )
+
                 candles = self._candle_flow_fn()
                 if candles:
-                    candle_dicts = [{
-                        "delta": getattr(c, "delta", 0),
-                        "volume": getattr(c, "volume", 0),
-                        "tick_count": getattr(c, "tick_count", 0),
-                        "spread": getattr(c, "spread", 0),
-                        "body_ratio": getattr(c, "body_ratio", 0),
-                        "stacked_imbalance_count": len(getattr(c, "stacked_imbalances", [])) if hasattr(c, "stacked_imbalances") else 0,
-                        "open": getattr(c, "open", 0),
-                        "close": getattr(c, "close", 0),
-                    } for c in candles]
+                    candle_dicts = [
+                        {
+                            "delta": getattr(c, "delta", 0),
+                            "volume": getattr(c, "volume", 0),
+                            "tick_count": getattr(c, "tick_count", 0),
+                            "spread": getattr(c, "spread", 0),
+                            "body_ratio": getattr(c, "body_ratio", 0),
+                            "stacked_imbalance_count": len(getattr(c, "stacked_imbalances", []))
+                            if hasattr(c, "stacked_imbalances")
+                            else 0,
+                            "open": getattr(c, "open", 0),
+                            "close": getattr(c, "close", 0),
+                        }
+                        for c in candles
+                    ]
                     features.update(compute_temporal_derivatives(candle_dicts))
                     # Approach volume features
-                    approach_vol_dicts = [{
-                        "volume": getattr(c, "volume", 0),
-                        "delta": getattr(c, "delta", 0),
-                        "buy_volume": getattr(c, "buy_volume", 0),
-                        "sell_volume": getattr(c, "sell_volume", 0),
-                    } for c in candles]
+                    approach_vol_dicts = [
+                        {
+                            "volume": getattr(c, "volume", 0),
+                            "delta": getattr(c, "delta", 0),
+                            "buy_volume": getattr(c, "buy_volume", 0),
+                            "sell_volume": getattr(c, "sell_volume", 0),
+                        }
+                        for c in candles
+                    ]
                     features.update(compute_approach_volume_features(approach_vol_dicts))
                     features.update(compute_candle_pattern_features(candle_dicts))
                     # Refresh last candle specifics
@@ -706,24 +794,28 @@ class LevelMonitor:
     def _emit_orderflow_update(self, price: float) -> None:
         snapshot = self._compute_orderflow_snapshot()
         if snapshot:
-            self._publish({
-                "type": "orderflow_update",
-                "price": price,
-                "ts": time.time(),
-                "orderflow": snapshot,
-            })
+            self._publish(
+                {
+                    "type": "orderflow_update",
+                    "price": price,
+                    "ts": time.time(),
+                    "orderflow": snapshot,
+                }
+            )
 
             # Emit refreshed ML feature snapshot for gauge dashboard
             if self._last_ml_features is not None:
                 try:
                     updated = self._recompute_live_features(snapshot, price)
                     self._last_ml_features = updated
-                    self._publish({
-                        "type": "ml_features",
-                        "level": self._active_level_name,
-                        "features": updated,
-                        "timestamp": time.time(),
-                    })
+                    self._publish(
+                        {
+                            "type": "ml_features",
+                            "level": self._active_level_name,
+                            "features": updated,
+                            "timestamp": time.time(),
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -737,45 +829,52 @@ class LevelMonitor:
         """Run DQN inference and emit dqn_inference SSE event."""
         try:
             from src.rl.live_inference import get_dqn_inference
+
             dqn = get_dqn_inference()
             if not dqn.is_loaded:
                 return
             rl_state = self._build_rl_state(level, price)
             result = dqn.infer(rl_state)
             if result is not None:
-                self._publish({
-                    "type": "dqn_inference",
-                    "trigger": trigger,
-                    "level": level.name,
-                    "level_price": level.price,
-                    **result,
-                    "timestamp": time.time(),
-                })
+                self._publish(
+                    {
+                        "type": "dqn_inference",
+                        "trigger": trigger,
+                        "level": level.name,
+                        "level_price": level.price,
+                        **result,
+                        "timestamp": time.time(),
+                    }
+                )
         except Exception:
             logger.debug("DQN inference failed for %s", level.name, exc_info=True)
 
     def _emit_zone_dqn_inference(self, zone: Zone, price: float) -> None:
         try:
             from src.rl.live_inference import get_dqn_inference
+
             dqn = get_dqn_inference()
             if not dqn.is_loaded:
                 return
             rl_state = self._build_rl_state_zone(zone, price)
             result = dqn.infer(rl_state)
             if result is not None:
-                self._publish({
-                    "type": "dqn_inference",
-                    "trigger": "zone_entry",
-                    "zone_members": zone.member_count,
-                    "zone_center": zone.center_price,
-                    "zone_hierarchy": round(zone.hierarchy_score, 3),
-                    **result,
-                    "timestamp": time.time(),
-                })
+                self._publish(
+                    {
+                        "type": "dqn_inference",
+                        "trigger": "zone_entry",
+                        "zone_members": zone.member_count,
+                        "zone_center": zone.center_price,
+                        "zone_hierarchy": round(zone.hierarchy_score, 3),
+                        **result,
+                        "timestamp": time.time(),
+                    }
+                )
 
                 # Persist signal for post-session review
                 try:
                     from src.rl.signal_log import log_signal
+
                     approach = "up" if price < zone.center_price else "down"
                     log_signal(
                         price=price,
@@ -791,9 +890,12 @@ class LevelMonitor:
             # Collect live episode for continuous training
             try:
                 from src.rl.live_collector import get_live_collector
+
                 approach = "up" if price < zone.center_price else "down"
                 get_live_collector().on_zone_touch(
-                    rl_state, price, approach,
+                    rl_state,
+                    price,
+                    approach,
                     level_type=f"zone_{zone.member_count}m",
                     zone_members=zone.member_count,
                 )
@@ -801,46 +903,85 @@ class LevelMonitor:
                 pass  # Never block inference for collection
 
             # Execute via broker if enabled
-            broker = getattr(self, '_broker_adapter', None)
+            broker = getattr(self, "_broker_adapter", None)
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
                 if action not in ("SKIP", "skip"):
                     import asyncio
+
                     try:
                         broker_signal = {
                             "action": "enter_long" if action == "CONTINUATION" else "enter_short",
                             "price": price,
-                            "stop_price": price - result.get("stop_ticks", 15) * 0.25 if action == "CONTINUATION"
-                                         else price + result.get("stop_ticks", 15) * 0.25,
+                            "stop_price": price - result.get("stop_ticks", 15) * 0.25
+                            if action == "CONTINUATION"
+                            else price + result.get("stop_ticks", 15) * 0.25,
                             "size": result.get("sizing_signal", 1.0),
                         }
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:
                         logger.warning("Broker execution failed", exc_info=True)
 
-            # Send signal via relay callback (for firevstocks local client)
-            callback = getattr(self, '_signal_callback', None)
+            # Send via relay callback (for firevstocks local client)
+            callback = getattr(self, "_signal_callback", None)
             if callback is not None and result is not None:
-                action = result.get("action", "SKIP")
-                if action not in ("SKIP", "skip"):
-                    signal_msg = {
-                        "action": "enter_long" if action == "CONTINUATION" else "enter_short",
-                        "price": price,
-                        "stop_price": price - result.get("stop_ticks", 15) * 0.25
-                                     if action == "CONTINUATION"
-                                     else price + result.get("stop_ticks", 15) * 0.25,
-                        "size": result.get("sizing_signal", 1.0),
-                        "confidence": result.get("confidence", 0.0),
-                        "zone": zone.center_price,
-                        "zone_members": zone.member_count,
-                    }
+                import asyncio
+
+                def _send(msg):
                     try:
                         if asyncio.iscoroutinefunction(callback):
-                            asyncio.create_task(callback(signal_msg))
+                            asyncio.create_task(callback(msg))
                         else:
-                            callback(signal_msg)
+                            callback(msg)
                     except Exception:
                         logger.warning("Signal callback failed", exc_info=True)
+
+                # Always send full inference for DQN page visualization
+                _send(
+                    {
+                        "type": "dqn_inference",
+                        "trigger": "zone_entry",
+                        "zone_members": zone.member_count,
+                        "zone_center": zone.center_price,
+                        "zone_hierarchy": round(zone.hierarchy_score, 3),
+                        **result,
+                        "price": price,
+                        "timestamp": time.time(),
+                    }
+                )
+
+                # Send trading signal for non-SKIP actions
+                action = result.get("action", "SKIP")
+                if action not in ("SKIP", "skip"):
+                    sig_action = "enter_long" if action == "CONTINUATION" else "enter_short"
+                    confidence = result.get("confidence", 0.0)
+                    logger.info(
+                        "Dispatching signal via callback: %s conf=%.3f price=%.2f zone=%.2f",
+                        sig_action,
+                        confidence,
+                        price,
+                        zone.center_price,
+                    )
+                    _send(
+                        {
+                            "type": "signal",
+                            "action": sig_action,
+                            "price": price,
+                            "stop_price": price - result.get("stop_ticks", 15) * 0.25
+                            if action == "CONTINUATION"
+                            else price + result.get("stop_ticks", 15) * 0.25,
+                            "size": result.get("sizing_signal", 1.0),
+                            "confidence": confidence,
+                            "cont_p": result.get("cont_p"),
+                            "rev_p": result.get("rev_p"),
+                            "stop_ticks": result.get("stop_ticks"),
+                            "model_type": result.get("model_type"),
+                            "zone": zone.center_price,
+                            "zone_members": zone.member_count,
+                        }
+                    )
+                else:
+                    logger.debug("DQN action=SKIP for zone %.2f, not sending signal", zone.center_price)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
 
@@ -854,6 +995,7 @@ class LevelMonitor:
 
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time
+
         candles = self._candle_flow_fn() if self._candle_flow_fn else []
         ctx = self._session_context or {}
         approach = "up" if price < zone.center_price else "down"
@@ -896,24 +1038,37 @@ class LevelMonitor:
         VWAP, VP, TPO, session level, and macro context. Without it, the
         model gets ~60% zeros and can't make meaningful predictions.
         """
-        from src.rl.config import LevelType
         import time as _time
+
+        from src.rl.config import LevelType
 
         # Map level name to LevelType enum
         name_lower = level.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
         level_type_map = {
-            "poc": LevelType.DAILY_POC, "daily_poc": LevelType.DAILY_POC,
-            "vah": LevelType.DAILY_VAH, "daily_vah": LevelType.DAILY_VAH,
-            "val": LevelType.DAILY_VAL, "daily_val": LevelType.DAILY_VAL,
+            "poc": LevelType.DAILY_POC,
+            "daily_poc": LevelType.DAILY_POC,
+            "vah": LevelType.DAILY_VAH,
+            "daily_vah": LevelType.DAILY_VAH,
+            "val": LevelType.DAILY_VAL,
+            "daily_val": LevelType.DAILY_VAL,
             "vwap": LevelType.VWAP,
-            "vwap_1sd_upper": LevelType.VWAP_SD1, "vwap_1sd_lower": LevelType.VWAP_SD1,
-            "vwap_2sd_upper": LevelType.VWAP_SD2, "vwap_2sd_lower": LevelType.VWAP_SD2,
-            "vwap_3sd_upper": LevelType.VWAP_SD3, "vwap_3sd_lower": LevelType.VWAP_SD3,
-            "pdh": LevelType.PDH, "pdl": LevelType.PDL,
-            "tokyo_high": LevelType.TOKYO_HIGH, "tokyo_low": LevelType.TOKYO_LOW,
-            "nyib_high": LevelType.NYIB_HIGH, "nyib_low": LevelType.NYIB_LOW,
-            "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
-            "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
+            "vwap_1sd_upper": LevelType.VWAP_SD1,
+            "vwap_1sd_lower": LevelType.VWAP_SD1,
+            "vwap_2sd_upper": LevelType.VWAP_SD2,
+            "vwap_2sd_lower": LevelType.VWAP_SD2,
+            "vwap_3sd_upper": LevelType.VWAP_SD3,
+            "vwap_3sd_lower": LevelType.VWAP_SD3,
+            "pdh": LevelType.PDH,
+            "pdl": LevelType.PDL,
+            "tokyo_high": LevelType.TOKYO_HIGH,
+            "tokyo_low": LevelType.TOKYO_LOW,
+            "nyib_high": LevelType.NYIB_HIGH,
+            "nyib_low": LevelType.NYIB_LOW,
+            "tpoc": LevelType.TPOC,
+            "tvah": LevelType.TVAH,
+            "tval": LevelType.TVAL,
+            "tibh": LevelType.TIBH,
+            "tibl": LevelType.TIBL,
             "naked_poc": LevelType.NAKED_POC,
             "daily_swing_high": LevelType.DAILY_SWING_HIGH,
             "daily_swing_low": LevelType.DAILY_SWING_LOW,
