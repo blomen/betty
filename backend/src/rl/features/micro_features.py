@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..config import TICK_SIZE
+
 _N_FEATURES = 20
 
 
