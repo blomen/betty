@@ -18,7 +18,7 @@ orchestrator:
   # Concurrency limits
   max_concurrent_providers: 8          # Reduced from 16 — 8 threads, no point oversaturating
   max_concurrent_sports_per_provider: 3 # Reduced from 4 — less parallel memory pressure
-  max_browser_instances: 4             # Reduced from 6 — each browser is 1-2GB not 500MB
+  max_browser_instances: 5             # Bumped from 4 — interwetten was starving (0 runs in 7d), 20GB/48GB headroom
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -601,14 +601,12 @@ providers:
     supported_sports:
       # Fast/small sports first — ensures coverage even if provider timeout hits
       - mma
-      - esports
       - handball
       - volleyball        # Retry: 16 Pinnacle events
       - boxing            # Retry: 13 Pinnacle events
-      - tennis
-      - ice_hockey
-      - basketball
       - football
+      # Removed: esports (0 events), tennis (0 events), basketball (0 events),
+      # ice_hockey (0-1 events) — wasting 400s of browser time for no yield
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -1015,6 +1013,7 @@ active:
   # - lyllo     # TESTED 2026-03-18: 93 events, 900s timeout — worst of all
   # - snabbare  # TESTED 2026-03-18: 96 events, 544s — consolidated via PLATFORM_GROUPS
   # International signal-only providers
+  - stake
   - cloudbet
   - marathon
 

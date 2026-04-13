@@ -175,7 +175,23 @@ class OpportunityAnalyzer:
                 results["reverse_value"]["new"] += rv_count["new"]
                 upserted_opps.extend(rv_count.get("opps", []))
 
-        self.session.commit()
+        # Commit with deadlock retry — concurrent pipelines can deadlock on
+        # opportunity rows when two analyzers update overlapping event sets.
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.session.commit()
+                break
+            except OperationalError as e:
+                if "deadlock" in str(e).lower() and attempt < max_retries - 1:
+                    wait = 0.1 * (2**attempt)  # 100ms, 200ms
+                    logger.warning(
+                        f"[Analyzer] Deadlock on commit (attempt {attempt + 1}), retrying in {wait:.0f}ms..."
+                    )
+                    self.session.rollback()
+                    time.sleep(wait)
+                else:
+                    raise
 
         # Build delta lists after commit (IDs are now assigned for new objects)
         if changed_event_ids is not None:

@@ -964,14 +964,7 @@ class MarketService:
         else:
             profiles["naked_pocs"] = []
 
-        # Multi-timeframe swing detection — use session summaries for full history
-        try:
-            swing_structure = self._load_swing_structure()
-        except Exception as e:
-            logger.warning("Swing detection failed: %s", e)
-            swing_structure = None
-
-        return structure, profiles, swing_structure
+        return structure, profiles, None
 
     async def run_scan(self, threshold: float | None = None) -> list[dict]:
         """Run scanner on current session → persist signals → return."""

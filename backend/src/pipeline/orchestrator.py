@@ -1063,15 +1063,23 @@ class ExtractionPipeline:
 
             self.session.commit()
 
-            # Run opportunity analysis
+            # Run opportunity analysis (with deadlock resilience)
             log_progress("Running opportunity analysis...")
             from .analyzer import OpportunityAnalyzer
 
             analyzer = OpportunityAnalyzer(self.session)
             changed_ids = self._changed_event_ids if self._changed_event_ids else None
-            analysis_results = analyzer.run(changed_event_ids=changed_ids)
-            results["analysis"] = analysis_results
-            log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
+            try:
+                analysis_results = analyzer.run(changed_event_ids=changed_ids)
+                results["analysis"] = analysis_results
+                log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
+            except Exception as e:
+                err_lower = str(e).lower()
+                if "deadlock" in err_lower:
+                    logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
+                    self.session.rollback()
+                else:
+                    raise
 
             # Broadcast opportunity deltas to SSE clients
             if odds_broadcaster.client_count > 0 and analysis_results:
