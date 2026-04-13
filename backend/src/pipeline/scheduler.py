@@ -33,6 +33,7 @@ class ProviderSchedule:
     running: bool = False
     task: asyncio.Task | None = field(default=None, repr=False)
     last_completed: datetime | None = None
+    last_run_started: datetime | None = None
     run_count: int = 0
     last_error: str | None = None
     last_duration: float | None = None
@@ -293,6 +294,7 @@ class ExtractionScheduler:
 
         while schedule.running:
             start = datetime.now(timezone.utc)
+            schedule.last_run_started = start
             try:
                 async with self._provider_locks[schedule.provider_id]:
                     results = await self._run_provider_extraction(schedule)
@@ -570,10 +572,18 @@ class ExtractionScheduler:
                     # Use a higher threshold before force-restarting (5x interval)
                     # to avoid killing long-but-progressing extractions
                     force_restart_threshold = schedule.interval_seconds * 5
-                    if elapsed > force_restart_threshold:
+                    # Don't kill a run that started recently — give it at least 600s
+                    # to complete (extract + analyze). Prevents death spiral where
+                    # watchdog keeps killing Pinnacle runs before they can finish.
+                    run_age = (
+                        (now - schedule.last_run_started).total_seconds() if schedule.last_run_started else float("inf")
+                    )
+                    min_run_duration = max(600, force_restart_threshold)
+                    if elapsed > force_restart_threshold and run_age > min_run_duration:
                         logger.critical(
                             f"[Watchdog] Provider '{provider_id}' is STUCK — "
-                            f"last completed {elapsed:.0f}s ago (threshold: {force_restart_threshold:.0f}s). "
+                            f"last completed {elapsed:.0f}s ago, current run {run_age:.0f}s old "
+                            f"(threshold: {min_run_duration:.0f}s). "
                             f"Force-cancelling and restarting..."
                         )
                         if schedule.task and not schedule.task.done():
