@@ -979,15 +979,21 @@ class TenBetRetriever(BrowserRetriever):
                     url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
                     try:
                         await worker_page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                        # Wait for skeleton to disappear and markets to render
+                        # Wait for actual price content (not just skeleton container)
                         try:
-                            await worker_page.wait_for_selector(
-                                '[class*="ta-price_text"], [class*="price"], [data-betting]',
-                                timeout=8000,
+                            await worker_page.wait_for_function(
+                                """() => {
+                                    const prices = document.querySelectorAll('[class*="ta-price_text"]');
+                                    for (const p of prices) {
+                                        if (/^\\d/.test(p.textContent.trim())) return true;
+                                    }
+                                    return false;
+                                }""",
+                                timeout=12000,
                             )
                         except Exception:
-                            # Fallback: wait longer for SPA content
-                            await worker_page.wait_for_timeout(5000)
+                            # Fallback: wait even longer
+                            await worker_page.wait_for_timeout(8000)
                     except Exception:
                         errors += 1
                         return

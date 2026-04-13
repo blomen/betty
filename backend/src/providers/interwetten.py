@@ -426,6 +426,7 @@ class InterwettenRetriever(BrowserRetriever):
     ) -> int:
         """Navigate to event detail pages to extract spread and total markets."""
         todo = [(ev, event_hrefs[ev.id]) for ev in events if ev.id in event_hrefs]
+        logger.info(f"[{self.provider_id}] {sport}: detail pass: {len(todo)}/{len(events)} events have hrefs")
         if not todo:
             return 0
 
@@ -505,7 +506,10 @@ class InterwettenRetriever(BrowserRetriever):
                         enriched += 1
 
             except Exception as e:
-                logger.debug(f"[{self.provider_id}] Detail page error for {event.id}: {e}")
+                if errors < 3:
+                    logger.info(
+                        f"[{self.provider_id}] {sport} detail error #{errors + 1} ({event.id}): {type(e).__name__}: {e}"
+                    )
                 errors += 1
             finally:
                 await page_pool.put(worker_page)
