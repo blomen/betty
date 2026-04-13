@@ -14,6 +14,7 @@ Forecast dims:
   6: predicted_levels    — E[structural levels captured by best action]
   7: predicted_stop      — optimal stop distance in ticks
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,11 +26,14 @@ from sklearn.preprocessing import StandardScaler
 
 # Prefer LightGBM (10-50x faster, multi-threaded) with sklearn fallback
 try:
-    from lightgbm import LGBMClassifier as _Classifier, LGBMRegressor as _Regressor
+    from lightgbm import LGBMClassifier as _Classifier
+    from lightgbm import LGBMRegressor as _Regressor
+
     _ENGINE = "lightgbm"
 except ImportError:
     from sklearn.ensemble import GradientBoostingClassifier as _Classifier  # type: ignore[assignment]
     from sklearn.ensemble import GradientBoostingRegressor as _Regressor  # type: ignore[assignment]
+
     _ENGINE = "sklearn"
 
 log = logging.getLogger(__name__)
@@ -157,16 +161,13 @@ class TriggerGBT:
         # Head 1: Direction classifier (prob_cont, prob_rev, confidence)
         log.info(
             "Training direction head: %d samples, %d features",
-            len(X_scaled), alive_count,
+            len(X_scaled),
+            alive_count,
         )
         self.direction_model = _Classifier(**clf_params)
         self.direction_model.fit(X_scaled, y_direction, sample_weight=sample_weight)
-        metrics["direction_trees"] = int(
-            getattr(self.direction_model, "n_estimators_", n_estimators)
-        )
-        metrics["direction_accuracy"] = round(
-            self.direction_model.score(X_scaled, y_direction) * 100, 1
-        )
+        metrics["direction_trees"] = int(getattr(self.direction_model, "n_estimators_", n_estimators))
+        metrics["direction_accuracy"] = round(self.direction_model.score(X_scaled, y_direction) * 100, 1)
 
         # Head 2: Expected best/worst R (magnitude of best and worst action reward)
         if rewards_cont is not None and rewards_rev is not None:
@@ -187,9 +188,7 @@ class TriggerGBT:
             self.breakeven_model = _Classifier(**clf_params)
             self.breakeven_model.fit(X_scaled, breakeven_reached.astype(np.int32))
             metrics["breakeven_accuracy"] = round(
-                self.breakeven_model.score(
-                    X_scaled, breakeven_reached.astype(np.int32)
-                ) * 100,
+                self.breakeven_model.score(X_scaled, breakeven_reached.astype(np.int32)) * 100,
                 1,
             )
 
@@ -236,37 +235,17 @@ class TriggerGBT:
         confidence = abs(prob_cont - prob_rev)
 
         # Expected R
-        best_r = (
-            float(self.expected_best_r_model.predict(x)[0])
-            if self.expected_best_r_model is not None
-            else 0.0
-        )
-        worst_r = (
-            float(self.expected_worst_r_model.predict(x)[0])
-            if self.expected_worst_r_model is not None
-            else 0.0
-        )
+        best_r = float(self.expected_best_r_model.predict(x)[0]) if self.expected_best_r_model is not None else 0.0
+        worst_r = float(self.expected_worst_r_model.predict(x)[0]) if self.expected_worst_r_model is not None else 0.0
 
         # Breakeven
-        prob_be = (
-            float(self.breakeven_model.predict_proba(x)[0, 1])
-            if self.breakeven_model is not None
-            else 0.5
-        )
+        prob_be = float(self.breakeven_model.predict_proba(x)[0, 1]) if self.breakeven_model is not None else 0.5
 
         # Levels
-        levels = (
-            float(np.clip(self.levels_model.predict(x)[0], 0.0, 6.0))
-            if self.levels_model is not None
-            else 0.0
-        )
+        levels = float(np.clip(self.levels_model.predict(x)[0], 0.0, 6.0)) if self.levels_model is not None else 0.0
 
         # Stop
-        stop = (
-            float(np.clip(self.stop_model.predict(x)[0], 6.0, 40.0))
-            if self.stop_model is not None
-            else 10.0
-        )
+        stop = float(np.clip(self.stop_model.predict(x)[0], 6.0, 40.0)) if self.stop_model is not None else 10.0
 
         return np.array(
             [prob_cont, prob_rev, confidence, best_r, worst_r, prob_be, levels, stop],
@@ -342,13 +321,11 @@ class TriggerGBT:
         else:
             stop = np.full(n, 10.0, dtype=np.float32)
 
-        return np.column_stack(
-            [prob_cont, prob_rev, confidence, best_r, worst_r, prob_be, levels, stop]
-        ).astype(np.float32)
+        return np.column_stack([prob_cont, prob_rev, confidence, best_r, worst_r, prob_be, levels, stop]).astype(
+            np.float32
+        )
 
-    def predict_direction_batch(
-        self, obs: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def predict_direction_batch(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Batch direction prediction.
 
         Returns:
@@ -389,7 +366,7 @@ class TriggerGBT:
                 "stop_model": self.stop_model,
                 "scaler": self.scaler,
                 "alive_mask": self._alive_mask,
-                "version": 1,
+                "version": "v5_trigger",
             },
             path,
         )

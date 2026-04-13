@@ -463,7 +463,7 @@ def _replay_single_file(
         import joblib as _jl
 
         _gbt_data = _jl.load(Path(gbt_path))
-        if isinstance(_gbt_data, dict) and _gbt_data.get("version", "").startswith("v5_trigger"):
+        if isinstance(_gbt_data, dict) and str(_gbt_data.get("version", "")).startswith("v5_trigger"):
             from src.rl.agent.narrative_gbt import NarrativeGBT
             from src.rl.agent.trigger_gbt import TriggerGBT
 
