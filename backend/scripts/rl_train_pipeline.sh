@@ -65,7 +65,7 @@ step_run "0/8" "Merging live episodes" "optional" \
 
 # Step 1: Parallel replay → base episodes (CRITICAL)
 step_run "1/8" "Replaying historical ticks → base episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --workers 2
+    nice -n 19 python -m src.app rl replay --all --workers 1
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 2: Label setups (optional — pipeline can continue without labels)
@@ -85,7 +85,7 @@ step_run "4/8" "Training Trigger GBT v5" "critical" \
 # Step 5: Re-replay with GBT augmentation → hybrid trigger episodes (critical)
 # --clean: must wipe base chunks since augmented obs have different dims
 step_run "5/8" "Re-replaying with GBT augmentation → hybrid trigger episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers 2 --clean
+    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers 1 --clean
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 6: Train Trigger DQN (critical)

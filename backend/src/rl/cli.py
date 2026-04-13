@@ -792,6 +792,8 @@ def _replay_single_file(
                 pos_state = build_position_state()
                 obs = augment_observation(obs, gbt_forecast, pos_state)
 
+            ep.state = None  # free large state dict — not needed after trigger_obs built
+
             month_obs.append(obs)
             month_trig.append(trigger_obs)
             month_rc.append(ep.reward_continuation)
@@ -802,6 +804,7 @@ def _replay_single_file(
             month_lc.append(float(ep.levels_captured_best))
 
         del episodes
+        gc.collect()
         session_count += 1
 
     gc.collect()
