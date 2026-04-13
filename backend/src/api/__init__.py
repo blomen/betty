@@ -230,6 +230,29 @@ async def lifespan(app: FastAPI):
                 logger.warning("[Startup] RL daemon start failed: %s", e)
 
         threading.Thread(target=_start_rl_daemon, daemon=True, name="startup-rl-daemon").start()
+
+        # Auto-start TopstepX trading service (server-side, 24/7)
+        def _start_trading_service():
+            import subprocess as _sp
+
+            trading_script = "/app/backend/scripts/trading_service.py"
+            if not os.path.exists(trading_script):
+                return
+            if not os.getenv("TOPSTEPX_USERNAME"):
+                logger.info("[Startup] Trading service skipped (no TOPSTEPX_USERNAME)")
+                return
+            try:
+                _sp.Popen(
+                    ["python", trading_script],
+                    start_new_session=True,
+                    stdout=open("/app/logs/trading_service.log", "a"),
+                    stderr=open("/app/logs/trading_service.log", "a"),
+                )
+                logger.info("[Startup] Trading service started")
+            except Exception as e:
+                logger.warning("[Startup] Trading service start failed: %s", e)
+
+        threading.Thread(target=_start_trading_service, daemon=True, name="startup-trading").start()
     else:
         logger.info("[Startup] Scheduler disabled (FIREV_NO_SCHEDULER set)")
 
