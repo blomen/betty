@@ -84,7 +84,21 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         if _prev_callback:
             _prev_callback(event_type, data)
         if event_type == "bet_intercepted":
-            play_loop.on_bet_intercepted(data.get("provider_id", ""), data.get("body", {}))
+            play_loop.on_bet_intercepted(
+                data.get("provider_id", ""),
+                data.get("body", {}),
+                data.get("request_body"),
+            )
+        if event_type == "event_details_intercepted":
+            pid = data.get("provider_id", "")
+            eid = data.get("event_id", "")
+            body = data.get("body")
+            if pid and eid and body:
+                from .workflows import get_workflow
+
+                wf = get_workflow(pid)
+                if hasattr(wf, "cache_event_details"):
+                    wf.cache_event_details(eid, body)
         if event_type == "balance_intercepted":
             pid = data.get("provider_id", "")
             bal = data.get("balance")

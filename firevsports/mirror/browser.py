@@ -446,9 +446,44 @@ class MirrorBrowser:
                 pass
             return
 
+        # Altenar GetEventDetails — live odds for price sync
+        if "geteventdetails" in url_lower:
+            try:
+                body_text = await response.text()
+                body_parsed = json.loads(body_text)
+                # Extract eventId from query params
+                from urllib.parse import parse_qs, urlparse
+
+                qs = parse_qs(urlparse(url).query)
+                event_id = qs.get("eventId", [None])[0]
+                if event_id and body_parsed:
+                    logger.info(f"[browser] {provider_id} EventDetails: event={event_id}")
+                    if self._on_event:
+                        self._on_event(
+                            "event_details_intercepted",
+                            {
+                                "provider_id": provider_id,
+                                "event_id": event_id,
+                                "body": body_parsed,
+                            },
+                        )
+            except Exception:
+                pass
+            return
+
         # Bet placement
         if any(kw in url_lower for kw in _BET_PLACEMENT_KEYWORDS):
             try:
+                # Capture request body — contains the actual stake submitted by the browser
+                # (may differ from requested stake if WSDK/site capped it)
+                request_body: dict | None = None
+                try:
+                    post_data = response.request.post_data
+                    if post_data:
+                        request_body = json.loads(post_data)
+                except Exception:
+                    pass
+
                 body_text = await response.text()
                 body_parsed = json.loads(body_text)
                 logger.info(f"[browser] {provider_id} BET PLACED: {url[:80]}")
@@ -459,6 +494,7 @@ class MirrorBrowser:
                             "provider_id": provider_id,
                             "url": url,
                             "body": body_parsed,
+                            "request_body": request_body,
                         },
                     )
                 if self._on_stream_callback:

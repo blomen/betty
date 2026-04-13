@@ -90,6 +90,7 @@ class PlayLoop:
         self._settle_confirm_event: asyncio.Event = asyncio.Event()
         self._bet_intercepted_event: asyncio.Event = asyncio.Event()
         self._intercepted_body: dict | None = None  # placeWidget response body
+        self._intercepted_request_body: dict | None = None  # placeWidget request body (actual submitted stake)
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,7 +158,7 @@ class PlayLoop:
         self._place_event.clear()
         self._skip_event.set()
 
-    def on_bet_intercepted(self, provider_id: str, body: dict) -> None:
+    def on_bet_intercepted(self, provider_id: str, body: dict, request_body: dict | None = None) -> None:
         """Called by browser interceptor when a placeWidget response is detected.
 
         If the play loop is in READY state for this provider, auto-records
@@ -170,6 +171,7 @@ class PlayLoop:
             return
         logger.info(f"[PlayLoop] Bet intercepted for {provider_id} — auto-recording")
         self._intercepted_body = body
+        self._intercepted_request_body = request_body
         self._bet_intercepted_event.set()
 
     def confirm_settlements(self, confirmed: list[dict] | None = None) -> None:
@@ -351,10 +353,52 @@ class PlayLoop:
                     self.provider_stats[provider_id]["skipped"] += 1
                     continue
 
+                # Check if event page shows completed/closed
+                if await self._is_event_closed(page):
+                    logger.info(f"[PlayLoop] Event closed on {provider_id} — skipping")
+                    self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "event_closed"})
+                    self.provider_stats[provider_id]["skipped"] += 1
+                    continue
+
                 # Auto-fill betslip (outcome + stake) before showing confirm
                 stake = bet.get("stake", 0.0)
+                # Cap stake to latest known balance (interceptor may have fresher data)
+                cached_bal = self._browser.provider_data.get(provider_id, {}).get("balance")
+                if cached_bal is not None and cached_bal > 0 and stake > cached_bal:
+                    logger.info(
+                        f"[PlayLoop] Capping stake {stake:.0f} → {cached_bal:.0f} (balance limit for {provider_id})"
+                    )
+                    stake = cached_bal
+                    bet["stake"] = stake
                 prep_result = await workflow.prep_betslip(page, bet, stake)
                 prep_ok = prep_result.status == "prepped"
+
+                # Check live price from intercepted event details
+                live_odds = prep_result.actual_odds
+                live_edge = bet.get("edge_pct")
+                if hasattr(workflow, "check_live_price"):
+                    try:
+                        lo, le = await workflow.check_live_price(page, bet)
+                        if lo is not None:
+                            live_odds = lo
+                            live_edge = le
+                    except Exception:
+                        pass
+
+                # Auto-skip if live odds show negative EV
+                if live_edge is not None and live_edge < 0:
+                    logger.info(f"[PlayLoop] Auto-skip {provider_id}: live edge {live_edge:.1f}% (odds dropped)")
+                    self._broadcaster.publish(
+                        "bet_skipped",
+                        {
+                            "bet": bet,
+                            "reason": f"negative EV at live odds ({live_odds:.2f}, edge {live_edge:.1f}%)",
+                            "live_odds": live_odds,
+                            "live_edge": live_edge,
+                        },
+                    )
+                    self.provider_stats[provider_id]["skipped"] += 1
+                    continue
 
                 # Ready — wait for bet interception (user places manually) or skip
                 self.state = STATE_READY
@@ -362,13 +406,15 @@ class PlayLoop:
                 self._skip_event.clear()
                 self._bet_intercepted_event.clear()
                 self._intercepted_body = None
+                self._intercepted_request_body = None
                 self._broadcaster.publish(
                     "bet_ready",
                     {
                         "bet": bet,
                         "provider_id": provider_id,
                         "prep_ok": prep_ok,
-                        "live_odds": prep_result.actual_odds,
+                        "live_odds": live_odds,
+                        "live_edge": live_edge,
                         "prep_reason": prep_result.reason,
                     },
                 )
@@ -390,19 +436,69 @@ class PlayLoop:
                         provider_bet_id = None
                         actual_odds = prep_result.actual_odds
                         actual_stake = prep_result.actual_stake
+                        requested_stake = stake
                         if self._intercepted_body:
+                            # Validate placement status before recording
+                            if hasattr(workflow, "parse_placement_status"):
+                                pstatus = workflow.parse_placement_status(self._intercepted_body)
+                                if not pstatus["success"]:
+                                    err = pstatus.get("error", "unknown error")
+                                    max_s = pstatus.get("max_stake")
+                                    logger.warning(
+                                        f"[PlayLoop] Placement FAILED for {provider_id}: {err} (max_stake={max_s})"
+                                    )
+                                    self._broadcaster.publish(
+                                        "bet_failed",
+                                        {
+                                            "bet": bet,
+                                            "reason": err,
+                                            "max_stake": max_s,
+                                            "response_body": self._intercepted_body,
+                                        },
+                                    )
+                                    self.provider_stats[provider_id]["skipped"] += 1
+                                    continue
+
                             provider_bet_id = workflow.parse_placement_response(self._intercepted_body)
-                            # Parse actual stake/odds — provider may limit stake
+                            # Parse actual stake/odds — provider may limit stake.
+                            # Priority: response body (confirmed by server) > request body (submitted by browser)
                             if hasattr(workflow, "parse_placement_details"):
                                 details = workflow.parse_placement_details(self._intercepted_body)
                                 if details.get("actual_stake"):
                                     actual_stake = details["actual_stake"]
                                 if details.get("actual_odds"):
                                     actual_odds = details["actual_odds"]
+                            # Fallback: extract stake from request body if response didn't include it.
+                            # The request body contains the exact stake submitted by the browser after
+                            # any WSDK/site-side capping (e.g. 110 requested → 14.14 submitted).
+                            if actual_stake == requested_stake and self._intercepted_request_body:
+                                if hasattr(workflow, "parse_placement_request_stake"):
+                                    req_stake = workflow.parse_placement_request_stake(self._intercepted_request_body)
+                                    if req_stake:
+                                        actual_stake = req_stake
                             logger.info(
                                 f"[PlayLoop] Intercepted bet_id={provider_bet_id} "
                                 f"stake={actual_stake} odds={actual_odds}"
                             )
+
+                            # Detect stake limitation: actual << requested
+                            if actual_stake and requested_stake and actual_stake < requested_stake * 0.9:
+                                logger.warning(
+                                    f"[PlayLoop] STAKE LIMITED on {provider_id}: "
+                                    f"requested={requested_stake:.1f} actual={actual_stake:.1f} "
+                                    f"({actual_stake / requested_stake * 100:.0f}%)"
+                                )
+                                self._broadcaster.publish(
+                                    "stake_limited",
+                                    {
+                                        "bet": bet,
+                                        "provider_id": provider_id,
+                                        "requested_stake": requested_stake,
+                                        "actual_stake": actual_stake,
+                                        "actual_odds": actual_odds,
+                                        "provider_bet_id": provider_bet_id,
+                                    },
+                                )
 
                         result = PlacementResult(
                             status="placed",
@@ -498,6 +594,33 @@ class PlayLoop:
                 },
             )
         return False
+
+    @staticmethod
+    async def _is_event_closed(page) -> bool:
+        """Check if the event page shows the event is completed/closed."""
+        try:
+            # Wait briefly for page content to settle after navigation
+            await asyncio.sleep(1.5)
+            text = await page.evaluate("""() => {
+                // Check visible text in the main content area (not nav/footer)
+                const main = document.querySelector('main, [class*="content"], [class*="event"]')
+                    || document.body;
+                return (main.innerText || '').substring(0, 3000).toLowerCase();
+            }""")
+            closed_phrases = [
+                "avslutat",  # Swedish: "ended"
+                "avslutad",  # Swedish variant
+                "event has ended",
+                "event is over",
+                "event closed",
+                "market closed",
+                "market suspended",
+                "no longer available",
+                "inte tillgänglig",  # Swedish: "not available"
+            ]
+            return any(phrase in text for phrase in closed_phrases)
+        except Exception:
+            return False
 
     def _skip_provider(self, provider_id: str) -> None:
         """Mark remaining bets for this provider as skipped and drain them from the queue."""
