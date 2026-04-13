@@ -741,7 +741,7 @@ class FairValueGap:
     direction: str  # "bullish" or "bearish"
 
 
-def detect_order_blocks(bars: list[dict], min_move_pct: float = 0.003) -> list[OrderBlock]:
+def detect_order_blocks(bars: list[dict], min_move_pct: float = 0.0002) -> list[OrderBlock]:
     """Detect order blocks: last candle before an impulsive move."""
     blocks = []
     if len(bars) < 3:
