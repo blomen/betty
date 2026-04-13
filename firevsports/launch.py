@@ -28,24 +28,77 @@ def _port_in_use(port: int) -> bool:
 
 
 def _kill_port(port: int, label: str):
-    """Kill any process listening on the given port (Windows only)."""
+    """Kill any process listening on the given port (Windows only).
+
+    Uses PowerShell Get-NetTCPConnection as primary method (handles ghost PIDs
+    that show up in netstat but can't be found by Get-Process), with taskkill
+    as fallback for non-SSH processes.
+    """
+    killed = False
     try:
+        # Primary: PowerShell Get-NetTCPConnection — resolves ghost PIDs correctly
         result = subprocess.run(
-            ["netstat", "-ano"],
+            [
+                "powershell.exe",
+                "-Command",
+                f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue"
+                f" | Select-Object -ExpandProperty OwningProcess",
+            ],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=10,
         )
         for line in result.stdout.splitlines():
-            if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-                pid = line.strip().split()[-1]
+            pid = line.strip()
+            if not pid.isdigit():
+                continue
+            # Verify process actually exists before trying to kill
+            check = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-Command",
+                    f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if check.stdout.strip() == pid:
                 print(f"[firevsports] Killing old {label} (PID {pid}) on port {port}")
-                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
-                time.sleep(0.5)
-                return True
+                subprocess.run(
+                    ["powershell.exe", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                killed = True
+            else:
+                print(f"[firevsports] Ghost socket on port {port} (PID {pid} no longer exists) — skipping kill")
     except Exception:
         pass
-    return False
+
+    # Fallback: taskkill via netstat (catches cases PowerShell misses)
+    if not killed:
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if f"127.0.0.1:{port}" in line and "LISTENING" in line:
+                    pid = line.strip().split()[-1]
+                    if pid.isdigit() and pid != "0":
+                        print(f"[firevsports] Killing old {label} (PID {pid}) on port {port} [fallback]")
+                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                        killed = True
+                        break
+        except Exception:
+            pass
+
+    if killed:
+        time.sleep(0.5)
+    return killed
 
 
 def _kill_old_chromium():
@@ -207,12 +260,40 @@ def main(open_browser: bool = True):
         return
 
     def _tunnel_watchdog():
-        """Check tunnel every 30s, restart if dead."""
+        """Check tunnel every 15s — test actual HTTP health, not just port.
+
+        SSH tunnel can be 'zombie': port open, process alive, but forwarded
+        connections fail with ReadError/RemoteProtocolError. Port-only checks
+        miss this. We do an actual HTTP request through the tunnel.
+        """
+        consecutive_fails = 0
         while True:
-            time.sleep(30)
+            time.sleep(15)
             if not _port_in_use(TUNNEL_LOCAL_PORT):
-                print("[firevsports] Tunnel died — restarting...")
+                print("[firevsports] Tunnel port closed — restarting...")
+                consecutive_fails = 0
+                _kill_port(TUNNEL_LOCAL_PORT, "dead tunnel")
+                time.sleep(1)
                 _start_tunnel()
+                continue
+            # Port is open — but is the tunnel actually forwarding data?
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health/live",
+                    timeout=5,
+                )
+                consecutive_fails = 0
+            except Exception:
+                consecutive_fails += 1
+                if consecutive_fails >= 3:
+                    print(
+                        f"[firevsports] Tunnel zombie (port open, {consecutive_fails} health fails) "
+                        f"— killing and restarting..."
+                    )
+                    _kill_port(TUNNEL_LOCAL_PORT, "zombie tunnel")
+                    time.sleep(1)
+                    consecutive_fails = 0
+                    _start_tunnel()
 
     threading.Thread(target=_tunnel_watchdog, daemon=True).start()
 

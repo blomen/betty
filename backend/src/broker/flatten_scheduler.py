@@ -1,4 +1,5 @@
 """Auto-flatten scheduler — closes all positions before market close."""
+
 from __future__ import annotations
 
 import asyncio
@@ -42,13 +43,15 @@ class FlattenScheduler:
                 try:
                     result = await self._adapter.flatten("eod_flatten")
                     self._flattened_today = True
+                    # Halt the adapter so no new signals can open positions after close
+                    self._adapter.halt("eod_flatten")
                     log.info("EOD flatten complete: session P&L=$%.2f", result.get("session_pnl", 0))
                 except Exception:
                     log.exception("EOD flatten failed!")
 
-            # Safety verify at +4 min
+            # Safety verify at +4 min — skip if adapter is already halted (EOD done)
             if self._flattened_today and current_time >= self._verify_time:
-                if not self._adapter.tracker.is_flat:
+                if not self._adapter._halted and not self._adapter.tracker.is_flat:
                     log.error("SAFETY: Still not flat at %s — forcing liquidation!", current_time)
                     await self._adapter.flatten("safety_verify")
 

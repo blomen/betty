@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Component } from 'react'
+import type { ReactNode } from 'react'
 import { useDashboardWS } from './hooks/useDashboardWS'
 import { api } from './hooks/useApi'
 import type { ExpandedSession } from './types'
@@ -6,6 +7,26 @@ import { ChartPage } from './pages/ChartPage'
 import { DQNPage } from './pages/DQNPage'
 import { BankrollPage } from './pages/BankrollPage'
 import { StatsPage } from './pages/StatsPage'
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen bg-zinc-950 text-red-400 p-8 font-mono text-sm">
+          <div className="text-red-500 font-bold mb-4">React crashed — error details:</div>
+          <pre className="bg-zinc-900 p-4 rounded max-w-4xl overflow-auto text-xs text-zinc-300 border border-red-800">
+            {String(this.state.error)}
+            {'\n\n'}
+            {(this.state.error as Error).stack}
+          </pre>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 type Tab = 'chart' | 'dqn' | 'bankroll' | 'stats'
 
@@ -29,6 +50,7 @@ export default function App() {
   }, [])
 
   return (
+    <ErrorBoundary>
     <div className="flex flex-col h-screen bg-zinc-950">
       <div className="flex items-center gap-1 px-3 py-1 border-b border-zinc-800 bg-zinc-900">
         <span className="text-sm font-bold text-amber-500 mr-4">firevstocks</span>
@@ -55,7 +77,7 @@ export default function App() {
             NQ {ws.lastPrice.toFixed(2)}
           </span>
         )}
-        {ws.quote && (
+        {ws.quote && ws.quote.bid > 0 && (
           <span className="text-[10px] font-mono text-zinc-500 ml-2">
             <span className="text-emerald-400/70">{ws.quote.bid.toFixed(2)}</span>
             <span className="text-zinc-700">/</span>
@@ -88,5 +110,6 @@ export default function App() {
         {activeTab === 'stats' && <StatsPage />}
       </div>
     </div>
+    </ErrorBoundary>
   )
 }

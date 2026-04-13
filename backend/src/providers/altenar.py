@@ -15,10 +15,10 @@ Providers using Altenar:
 - FrankFred (frankfred.com)
 """
 
-from typing import Dict, Any, List, Optional
 import asyncio
 import logging
 from datetime import datetime
+from typing import Any
 
 from ..core import Retriever, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -46,51 +46,52 @@ class AltenarRetriever(Retriever):
 
     # Sport mapping from Altenar sportId to our sport keys
     SPORT_MAPPING = {
-        66: 'football',
-        67: 'basketball',
-        68: 'tennis',
-        69: 'volleyball',
-        70: 'ice_hockey',
-        71: 'boxing',
-        73: 'handball',
-        74: 'cricket',
-        75: 'american_football',
-        76: 'baseball',
-        77: 'table_tennis',
-        84: 'mma',
-        101: 'rugby',
-        102: 'rugby',
-        145: 'esports',
+        66: "football",
+        67: "basketball",
+        68: "tennis",
+        69: "volleyball",
+        70: "ice_hockey",
+        71: "boxing",
+        73: "handball",
+        74: "cricket",
+        75: "american_football",
+        76: "baseball",
+        77: "table_tennis",
+        84: "mma",
+        101: "rugby",
+        102: "rugby",
+        145: "esports",
     }
 
     # Market type mapping from Altenar typeId to our market types
     MARKET_TYPE_MAPPING = {
         # 1x2 / moneyline (match winner)
-        1: '1x2',              # Match result (football, handball, rugby)
-        186: 'moneyline',      # Winner (tennis, volleyball, table tennis, MMA)
-        219: 'moneyline',      # Winner incl. OT (basketball, american football)
-        251: 'moneyline',      # Winner incl. extra innings (baseball)
-        406: 'moneyline',      # Winner incl. OT+penalties (ice hockey)
-        30001: 'moneyline',    # Match winner (esports)
+        1: "1x2",  # Match result (football, handball, rugby)
+        186: "moneyline",  # Winner (tennis, volleyball, table tennis, MMA)
+        219: "moneyline",  # Winner incl. OT (basketball, american football)
+        251: "moneyline",  # Winner incl. extra innings (baseball)
+        406: "moneyline",  # Winner incl. OT+penalties (ice hockey)
+        30001: "moneyline",  # Match winner (esports)
         # Total (over/under)
-        18: 'total',           # Total (football, ice hockey, MMA, rugby)
-        189: 'total',          # Total games (tennis)
-        225: 'total',          # Total incl. OT (basketball, american football)
-        238: 'total',          # Total points (volleyball, table tennis)
-        258: 'total',          # Total incl. extra innings (baseball)
-        412: 'total',          # Total incl. OT+penalties (ice hockey)
+        18: "total",  # Total (football, ice hockey, MMA, rugby)
+        189: "total",  # Total games (tennis)
+        225: "total",  # Total incl. OT (basketball, american football)
+        238: "total",  # Total points (volleyball, table tennis)
+        258: "total",  # Total incl. extra innings (baseball)
+        412: "total",  # Total incl. OT+penalties (ice hockey)
         # Spread (handicap)
-        16: 'spread',          # Handicap (handball, rugby)
-        187: 'spread',         # Game handicap (tennis)
-        223: 'spread',         # Spread incl. OT (basketball, american football)
-        237: 'spread',         # Point handicap (volleyball, table tennis)
-        256: 'spread',         # Handicap incl. extra innings (baseball)
-        410: 'spread',         # Handicap incl. OT+penalties (ice hockey)
+        16: "spread",  # Handicap (handball, rugby)
+        187: "spread",  # Game handicap (tennis)
+        223: "spread",  # Spread incl. OT (basketball, american football)
+        237: "spread",  # Point handicap (volleyball, table tennis)
+        256: "spread",  # Handicap incl. extra innings (baseball)
+        410: "spread",  # Handicap incl. OT+penalties (ice hockey)
     }
 
-    def __init__(self, config: Dict[str, Any], transport=None, circuit_breaker=None, rate_limit_config=None):
+    def __init__(self, config: dict[str, Any], transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
             from ..core import HttpTransport
+
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
@@ -104,17 +105,12 @@ class AltenarRetriever(Retriever):
         self.integration = config.get("integration", "betiniase2")
 
     @staticmethod
-    def _build_id_index(items: List[Dict]) -> Dict[int, Dict]:
+    def _build_id_index(items: list[dict]) -> dict[int, dict]:
         """Build O(1) lookup index from list of dicts with 'id' field."""
-        return {item['id']: item for item in items if 'id' in item}
+        return {item["id"]: item for item in items if "id" in item}
 
     def _standardize_outcome(
-        self,
-        outcome_name: str,
-        market_type: str,
-        raw_home: str,
-        raw_away: str,
-        outcome_index: int = -1
+        self, outcome_name: str, market_type: str, raw_home: str, raw_away: str, outcome_index: int = -1
     ) -> str:
         """
         Standardize outcome names to platform conventions.
@@ -132,34 +128,34 @@ class AltenarRetriever(Retriever):
         outcome_lower = outcome_name.lower().strip()
 
         # Handle total markets: "Over X.5" → "over", "Under X.5" → "under"
-        if market_type == 'total':
-            if outcome_lower.startswith('over') or outcome_lower.startswith('över'):
-                return 'over'
-            if outcome_lower.startswith('under'):
-                return 'under'
+        if market_type == "total":
+            if outcome_lower.startswith("over") or outcome_lower.startswith("över"):
+                return "over"
+            if outcome_lower.startswith("under"):
+                return "under"
             return outcome_name
 
         # Handle 1x2, moneyline, and spread markets
-        if market_type in ('1x2', 'moneyline', 'spread'):
+        if market_type in ("1x2", "moneyline", "spread"):
             # Check for draw first (1x2 only)
-            if market_type == '1x2' and outcome_lower in ['x', 'draw', 'tie', 'x2']:
-                return 'draw'
+            if market_type == "1x2" and outcome_lower in ["x", "draw", "tie", "x2"]:
+                return "draw"
 
             # Simple numeric markers (common in all sports)
-            if outcome_lower in ['1', '2']:
-                return 'home' if outcome_lower == '1' else 'away'
+            if outcome_lower in ["1", "2"]:
+                return "home" if outcome_lower == "1" else "away"
 
             # Explicit home/away keywords
-            if outcome_lower in ['home', 'hemma']:
-                return 'home'
-            if outcome_lower in ['away', 'borta']:
-                return 'away'
+            if outcome_lower in ["home", "hemma"]:
+                return "home"
+            if outcome_lower in ["away", "borta"]:
+                return "away"
 
             # Extract team name without parentheses and extra text
             import re
 
             def extract_base_name(team_name):
-                base = re.sub(r'\([^)]*\)', '', team_name).strip()
+                base = re.sub(r"\([^)]*\)", "", team_name).strip()
                 return normalize_team_name(base)
 
             home_base = extract_base_name(raw_home)
@@ -168,9 +164,9 @@ class AltenarRetriever(Retriever):
 
             # Try exact match with normalized names
             if outcome_base == home_base:
-                return 'home'
+                return "home"
             if outcome_base == away_base:
-                return 'away'
+                return "away"
 
             # Try partial match - check if any word from team name is in outcome
             # Filter out very short words (< 3 chars) to avoid false matches
@@ -182,23 +178,23 @@ class AltenarRetriever(Retriever):
             away_overlap = away_words & outcome_words
 
             if home_overlap and not away_overlap:
-                return 'home'
+                return "home"
             if away_overlap and not home_overlap:
-                return 'away'
+                return "away"
 
             # Positional fallback for 2-way markets (moneyline, spread)
             # When outcome name doesn't match team names (common in esports/MMA),
             # use position: first outcome = home, second = away
-            if market_type in ('moneyline', 'spread') and outcome_index >= 0:
+            if market_type in ("moneyline", "spread") and outcome_index >= 0:
                 if outcome_index == 0:
-                    return 'home'
+                    return "home"
                 elif outcome_index == 1:
-                    return 'away'
+                    return "away"
 
         # If no match found, return original (will be logged as 'other')
         return outcome_name
 
-    async def _fetch_events(self, endpoint: str, sport_id: Optional[int] = None) -> Dict[str, Any]:
+    async def _fetch_events(self, endpoint: str, sport_id: int | None = None) -> dict[str, Any]:
         """
         Fetch events from Altenar API endpoint.
 
@@ -215,16 +211,16 @@ class AltenarRetriever(Retriever):
             url = f"{self.api_base}/{endpoint}"
 
             params = {
-                'culture': 'en-GB',
-                'timezoneOffset': '0',
-                'integration': self.integration,
-                'deviceType': '1',
-                'numFormat': 'en-GB'
+                "culture": "en-GB",
+                "timezoneOffset": "0",
+                "integration": self.integration,
+                "deviceType": "1",
+                "numFormat": "en-GB",
             }
 
             # Add sport filter if provided
             if sport_id is not None:
-                params['sportId'] = str(sport_id)
+                params["sportId"] = str(sport_id)
 
             data = await self.transport.get(url, params=params)
             if data and isinstance(data, dict):
@@ -239,11 +235,11 @@ class AltenarRetriever(Retriever):
 
     def _parse_event(
         self,
-        event_data: Dict,
+        event_data: dict,
         sport: str,
-        reference_data: Dict[str, List[Dict]],
+        reference_data: dict[str, list[dict]],
         sport_id: int = None,
-    ) -> Optional[StandardEvent]:
+    ) -> StandardEvent | None:
         """
         Parse event data from Altenar API.
 
@@ -256,29 +252,29 @@ class AltenarRetriever(Retriever):
             StandardEvent or None
         """
         try:
-            event_id = str(event_data.get('id', ''))
-            event_name = event_data.get('name', '')
+            event_id = str(event_data.get("id", ""))
+            event_name = event_data.get("name", "")
 
             if not event_id:
                 return None
 
             # Parse start time
-            start_time_str = event_data.get('startDate')
+            start_time_str = event_data.get("startDate")
             start_time = None
             if start_time_str:
                 try:
-                    start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                    start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Failed to parse start time: {e}")
 
             # Get competitors (teams) — O(1) via pre-built index
-            comp_idx = reference_data.get('_comp_idx', {})
-            competitor_ids = event_data.get('competitorIds', [])
+            comp_idx = reference_data.get("_comp_idx", {})
+            competitor_ids = event_data.get("competitorIds", [])
             competitors = [comp_idx[cid] for cid in competitor_ids if cid in comp_idx]
 
             # Determine home/away teams (normalize immediately)
-            raw_home = competitors[0]['name'] if len(competitors) > 0 else None
-            raw_away = competitors[1]['name'] if len(competitors) > 1 else None
+            raw_home = competitors[0]["name"] if len(competitors) > 0 else None
+            raw_away = competitors[1]["name"] if len(competitors) > 1 else None
 
             # For events with only one competitor (e.g., futures), use event name
             if not raw_home and not raw_away:
@@ -291,53 +287,65 @@ class AltenarRetriever(Retriever):
             away_team = normalize_team_name(raw_away) if raw_away else None
 
             # Get championship (league) — O(1) via pre-built index
-            champ_idx = reference_data.get('_champ_idx', {})
-            champ_id = event_data.get('champId')
+            champ_idx = reference_data.get("_champ_idx", {})
+            champ_id = event_data.get("champId")
             champ = champ_idx.get(champ_id)
-            league = champ['name'] if champ else 'Unknown'
+            league = champ["name"] if champ else "Unknown"
             # Category ID (country) for URL building
-            category_id = champ.get('catId') if champ else None
+            category_id = champ.get("catId") if champ else None
 
             # Parse markets
             markets = []
-            market_ids = event_data.get('marketIds', [])
+            market_ids = event_data.get("marketIds", [])
 
-            market_idx = reference_data.get('_market_idx', {})
-            odd_idx = reference_data.get('_odd_idx', {})
+            market_idx = reference_data.get("_market_idx", {})
+            odd_idx = reference_data.get("_odd_idx", {})
             for market_id in market_ids:
                 market = market_idx.get(market_id)
                 if not market:
                     continue
 
                 # Map market type — skip unsupported markets early
-                market_type_id = market.get('typeId')
+                market_type_id = market.get("typeId")
                 market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
 
                 # Ice hockey: skip regulation-only total (typeId 18) — OT-inclusive
                 # variant (412) preferred. Pinnacle sharp odds include OT.
-                if sport == 'ice_hockey' and market_type_id == 18:
+                if sport == "ice_hockey" and market_type_id == 18:
                     continue
 
                 if not market_type:
                     # Fallback: match by market name keywords (catches unmapped
                     # sport-specific typeIds like football Asian Handicap)
-                    market_name = (market.get('name') or '').lower()
-                    if any(kw in market_name for kw in (
-                        'handicap', 'handikapp', 'asian handicap',
-                        'spread', 'puck line', 'run line',
-                    )):
-                        market_type = 'spread'
-                    elif any(kw in market_name for kw in (
-                        'over/under', 'över/under', 'total',
-                    )):
-                        market_type = 'total'
+                    market_name = (market.get("name") or "").lower()
+                    if any(
+                        kw in market_name
+                        for kw in (
+                            "handicap",
+                            "handikapp",
+                            "asian handicap",
+                            "spread",
+                            "puck line",
+                            "run line",
+                        )
+                    ):
+                        market_type = "spread"
+                    elif any(
+                        kw in market_name
+                        for kw in (
+                            "over/under",
+                            "över/under",
+                            "total",
+                        )
+                    ):
+                        market_type = "total"
                     else:
                         continue
 
                 # Extract point value from market's 'sv' field for spread/total
                 market_point = None
-                if market_type in ('spread', 'total'):
-                    sv = market.get('sv')
+                if market_type in ("spread", "total"):
+                    sv = market.get("sv")
                     if sv:
                         try:
                             market_point = float(sv)
@@ -345,51 +353,49 @@ class AltenarRetriever(Retriever):
                             pass
 
                 # Get odds for this market
-                odd_ids = market.get('oddIds', [])
+                odd_ids = market.get("oddIds", [])
                 outcomes = []
 
                 for idx, odd_id in enumerate(odd_ids):
                     odd = odd_idx.get(odd_id)
                     if odd:
-                        raw_outcome = odd.get('name', '')
+                        raw_outcome = odd.get("name", "")
                         standardized_outcome = self._standardize_outcome(
-                            raw_outcome,
-                            market_type,
-                            raw_home,
-                            raw_away,
-                            outcome_index=idx
+                            raw_outcome, market_type, raw_home, raw_away, outcome_index=idx
                         )
                         # Debug: log outcome mapping for moneyline to catch inversions
-                        if market_type == 'moneyline' and standardized_outcome in ('home', 'away'):
-                            logger.debug(f"[{self.provider_id}] ML outcome: raw='{raw_outcome}' → {standardized_outcome} | home='{raw_home}' away='{raw_away}' idx={idx} odds={odd.get('price')}")
+                        if market_type == "moneyline" and standardized_outcome in ("home", "away"):
+                            logger.debug(
+                                f"[{self.provider_id}] ML outcome: raw='{raw_outcome}' → {standardized_outcome} | home='{raw_home}' away='{raw_away}' idx={idx} odds={odd.get('price')}"
+                            )
 
                         outcome_dict = {
-                            'name': standardized_outcome,
-                            'odds': odd.get('price', 0.0),
-                            'provider_meta': {
-                                'outcome_id': str(odd_id),
+                            "name": standardized_outcome,
+                            "odds": odd.get("price", 0.0),
+                            "provider_meta": {
+                                "outcome_id": str(odd_id),
                             },
                         }
                         if market_point is not None:
-                            outcome_dict['point'] = market_point
+                            outcome_dict["point"] = market_point
                         outcomes.append(outcome_dict)
 
                 if outcomes:
                     market_meta = {
-                        'event_id': event_id,
-                        'market_id': str(market_id),
+                        "event_id": event_id,
+                        "market_id": str(market_id),
                     }
                     # Include Altenar routing IDs for bet placement URL building
                     if sport_id is not None:
-                        market_meta['sport_id'] = str(sport_id)
+                        market_meta["sport_id"] = str(sport_id)
                     if category_id is not None:
-                        market_meta['category_id'] = str(category_id)
+                        market_meta["category_id"] = str(category_id)
                     if champ_id is not None:
-                        market_meta['championship_id'] = str(champ_id)
+                        market_meta["championship_id"] = str(champ_id)
                     market_dict = {
-                        'type': market_type,
-                        'outcomes': outcomes,
-                        'provider_meta': market_meta,
+                        "type": market_type,
+                        "outcomes": outcomes,
+                        "provider_meta": market_meta,
                     }
                     markets.append(market_dict)
 
@@ -403,7 +409,7 @@ class AltenarRetriever(Retriever):
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time,
-                markets=markets
+                markets=markets,
             )
 
         except Exception as e:
@@ -419,7 +425,7 @@ class AltenarRetriever(Retriever):
         """
         return f"{self.api_base}/widget/GetUpcoming"
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """
         Parse Altenar API response data.
 
@@ -428,7 +434,7 @@ class AltenarRetriever(Retriever):
         """
         return []
 
-    async def extract(self, sport: str, limit: int = 100, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 100, **kwargs) -> list[StandardEvent]:
         """
         Extract events using REST API.
 
@@ -455,14 +461,14 @@ class AltenarRetriever(Retriever):
         try:
             # Fetch upcoming events with sport filter
             logger.debug(f"[{self.provider_id}] Fetching upcoming events for {sport} (sportId={sport_id})")
-            data = await self._fetch_events('widget/GetUpcoming', sport_id=sport_id)
+            data = await self._fetch_events("widget/GetUpcoming", sport_id=sport_id)
 
-            if not data or 'events' not in data:
+            if not data or "events" not in data:
                 logger.warning(f"[{self.provider_id}] No data returned from API")
                 return []
 
             # All events should match the requested sport (no client-side filtering needed)
-            sport_events = data.get('events', [])
+            sport_events = data.get("events", [])
 
             logger.debug(f"[{self.provider_id}] Found {len(sport_events)} {sport} events")
 
@@ -470,15 +476,15 @@ class AltenarRetriever(Retriever):
             # Without indexing: ~4 list scans per market × ~3 markets × ~500 events = ~6000 O(n) scans
             # With indexing: 4 dict builds + O(1) lookups = massive speedup
             reference_data = {
-                'competitors': data.get('competitors', []),
-                'champs': data.get('champs', []),
-                'markets': data.get('markets', []),
-                'odds': data.get('odds', []),
+                "competitors": data.get("competitors", []),
+                "champs": data.get("champs", []),
+                "markets": data.get("markets", []),
+                "odds": data.get("odds", []),
                 # Pre-built indexes for O(1) lookups
-                '_comp_idx': self._build_id_index(data.get('competitors', [])),
-                '_champ_idx': self._build_id_index(data.get('champs', [])),
-                '_market_idx': self._build_id_index(data.get('markets', [])),
-                '_odd_idx': self._build_id_index(data.get('odds', [])),
+                "_comp_idx": self._build_id_index(data.get("competitors", [])),
+                "_champ_idx": self._build_id_index(data.get("champs", [])),
+                "_market_idx": self._build_id_index(data.get("markets", [])),
+                "_odd_idx": self._build_id_index(data.get("odds", [])),
             }
 
             # Parse events
@@ -496,7 +502,7 @@ class AltenarRetriever(Retriever):
 
             # Pass 2: Enrich events missing spread/total via GetEventDetails
             # Football on Altenar has no spread markets at all (platform limitation)
-            if events and sport != 'football':
+            if events and sport != "football":
                 enriched = await self._enrich_missing_spreads(events, sport_id, sport)
                 if enriched:
                     logger.info(f"[{self.provider_id}] Enriched {enriched} spread/total markets for {sport}")
@@ -509,7 +515,7 @@ class AltenarRetriever(Retriever):
 
     MAX_ENRICH_EVENTS = 200
 
-    async def _enrich_missing_spreads(self, events: List[StandardEvent], sport_id: int, sport: str = "") -> int:
+    async def _enrich_missing_spreads(self, events: list[StandardEvent], sport_id: int, sport: str = "") -> int:
         """Fetch spread/total from GetEventDetails for events missing them.
 
         The bulk GetUpcoming endpoint often omits spread markets (73% missing for football).
@@ -517,12 +523,12 @@ class AltenarRetriever(Retriever):
         Uses batched parallel requests with semaphore to respect rate limits.
         """
         # Filter to events that have 1x2/ML but no spread
-        todo = [ev for ev in events if not any(m['type'] == 'spread' for m in ev.markets)]
+        todo = [ev for ev in events if not any(m["type"] == "spread" for m in ev.markets)]
         if not todo:
             return 0
 
         if len(todo) > self.MAX_ENRICH_EVENTS:
-            todo = todo[:self.MAX_ENRICH_EVENTS]
+            todo = todo[: self.MAX_ENRICH_EVENTS]
 
         logger.debug(f"[{self.provider_id}] Enriching {len(todo)} events missing spread via GetEventDetails")
 
@@ -535,12 +541,12 @@ class AltenarRetriever(Retriever):
                 try:
                     url = f"{self.api_base}/widget/GetEventDetails"
                     params = {
-                        'culture': 'en-GB',
-                        'timezoneOffset': '0',
-                        'integration': self.integration,
-                        'deviceType': '1',
-                        'numFormat': 'en-GB',
-                        'eventId': ev.id,
+                        "culture": "en-GB",
+                        "timezoneOffset": "0",
+                        "integration": self.integration,
+                        "deviceType": "1",
+                        "numFormat": "en-GB",
+                        "eventId": ev.id,
                     }
                     data = await self.transport.get(url, params=params)
                     if not data or not isinstance(data, dict):
@@ -551,7 +557,7 @@ class AltenarRetriever(Retriever):
 
         # Process in batches
         for i in range(0, len(todo), BATCH_SIZE):
-            batch = todo[i:i + BATCH_SIZE]
+            batch = todo[i : i + BATCH_SIZE]
             results = await asyncio.gather(
                 *[_fetch_event_detail(ev) for ev in batch],
                 return_exceptions=True,
@@ -568,16 +574,16 @@ class AltenarRetriever(Retriever):
         return enriched
 
     def _extract_spread_total_from_detail(
-        self, detail: Dict[str, Any], event: StandardEvent, sport: str = ""
-    ) -> List[Dict]:
+        self, detail: dict[str, Any], event: StandardEvent, sport: str = ""
+    ) -> list[dict]:
         """Extract spread/total markets from GetEventDetails response.
 
         Reuses existing MARKET_TYPE_MAPPING and _standardize_outcome() logic.
         Only returns spread/total markets not already present on the event.
         """
-        markets_data = detail.get('markets', [])
-        odds_data = detail.get('odds', [])
-        competitors = detail.get('competitors', [])
+        markets_data = detail.get("markets", [])
+        odds_data = detail.get("odds", [])
+        competitors = detail.get("competitors", [])
 
         if not markets_data or not odds_data:
             return []
@@ -586,44 +592,44 @@ class AltenarRetriever(Retriever):
         odd_idx = self._build_id_index(odds_data)
 
         # Get raw team names from competitors for outcome matching
-        raw_home, raw_away = '', ''
-        events_data = detail.get('events', [])
+        raw_home, raw_away = "", ""
+        events_data = detail.get("events", [])
         if events_data and competitors:
             ev_data = events_data[0] if events_data else {}
             comp_idx = self._build_id_index(competitors)
-            for cid in ev_data.get('competitorIds', []):
+            for cid in ev_data.get("competitorIds", []):
                 comp = comp_idx.get(cid)
                 if comp:
                     if not raw_home:
-                        raw_home = comp.get('name', '')
+                        raw_home = comp.get("name", "")
                     else:
-                        raw_away = comp.get('name', '')
+                        raw_away = comp.get("name", "")
 
         # Existing market type+point combos to avoid duplicates
         existing_keys = set()
         for m in event.markets:
-            key = m['type']
-            for o in m.get('outcomes', []):
-                if 'point' in o:
+            key = m["type"]
+            for o in m.get("outcomes", []):
+                if "point" in o:
                     key = f"{m['type']}_{o['point']}"
             existing_keys.add(key)
 
         new_markets = []
         for market in markets_data:
-            market_type_id = market.get('typeId')
+            market_type_id = market.get("typeId")
             market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
 
-            if market_type not in ('spread', 'total'):
+            if market_type not in ("spread", "total"):
                 continue
 
             # Ice hockey: skip regulation-only markets (same filter as Pass 1)
-            if sport == 'ice_hockey' and market_type_id in (18, 16):
+            if sport == "ice_hockey" and market_type_id in (18, 16):
                 continue
 
             # Extract point value
             market_point = None
-            if market_type in ('spread', 'total'):
-                sv = market.get('sv')
+            if market_type in ("spread", "total"):
+                sv = market.get("sv")
                 if sv:
                     try:
                         market_point = float(sv)
@@ -638,26 +644,26 @@ class AltenarRetriever(Retriever):
                 continue
 
             # Parse outcomes
-            odd_ids = market.get('oddIds', [])
+            odd_ids = market.get("oddIds", [])
             outcomes = []
             for idx, odd_id in enumerate(odd_ids):
                 odd = odd_idx.get(odd_id)
                 if not odd:
                     continue
-                raw_outcome = odd.get('name', '')
+                raw_outcome = odd.get("name", "")
                 standardized = self._standardize_outcome(
                     raw_outcome, market_type, raw_home, raw_away, outcome_index=idx
                 )
                 outcome_dict = {
-                    'name': standardized,
-                    'odds': odd.get('price', 0.0),
+                    "name": standardized,
+                    "odds": odd.get("price", 0.0),
                 }
                 if market_point is not None:
-                    outcome_dict['point'] = market_point
+                    outcome_dict["point"] = market_point
                 outcomes.append(outcome_dict)
 
             if outcomes:
-                new_markets.append({'type': market_type, 'outcomes': outcomes})
+                new_markets.append({"type": market_type, "outcomes": outcomes})
                 existing_keys.add(dup_key)
 
         return new_markets

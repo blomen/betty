@@ -128,7 +128,15 @@ export function BankrollPage() {
     ev: (p) => depositMap.get(p.provider_id)?.ev ?? 0,
   };
 
-  const providerList = useMemo(() => exposure?.providers ?? [], [exposure]);
+  // Hide signal-only providers (no balance, no bets, not playable)
+  const SIGNAL_ONLY = new Set(['consensus', 'stake', 'marathon']);
+  const providerList = useMemo(() => {
+    const list = exposure?.providers ?? [];
+    return list.filter(p =>
+      !SIGNAL_ONLY.has(p.provider_id) &&
+      (p.total_balance > 0 || depositMap.has(p.provider_id) || p.pending_exposure > 0)
+    );
+  }, [exposure, depositMap]);
   const { sorted: tableSorted, sort: provSort, toggle: toggleProvSort } =
     useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'deposit', direction: 'desc' }, 'bbq_bankroll_sort');
 

@@ -152,7 +152,7 @@ export default function PlayPage() {
     if (type === 'provider_skipped') setLoopStatus(`Skipped ${data.provider_id}: ${data.reason}`)
     if (type === 'bet_ready') {
       const bet = data.bet ?? data
-      setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, prep_reason: data.prep_reason })
+      setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge, prep_reason: data.prep_reason })
       setLoopStatus(null)
     }
     if (type === 'bet_placed') {
@@ -358,7 +358,7 @@ export default function PlayPage() {
           <span className="text-xs font-mono text-zinc-200">
             @ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}
           </span>
-          <span className="text-xs text-green-400">+{currentBetReady.edge_pct?.toFixed(1)}%</span>
+          <span className="text-xs text-green-400">+{(currentBetReady.live_edge ?? currentBetReady.edge_pct)?.toFixed(1)}%</span>
           <span className="text-xs font-mono text-zinc-400">{Math.round(currentBetReady.stake ?? 0)} kr</span>
           <div className="ml-auto flex gap-2">
             <button onClick={handleSkip}
@@ -406,11 +406,10 @@ export default function PlayPage() {
                     const bal = providerBalances[pid] ?? 0
                     const placed = placedToday[pid] ?? 0
                     const pending = pendingByProvider[pid]?.length ?? 0
-                    const hasBets = (byCluster[clusterId] || []).some(b => b.provider_id === pid)
                     const isSkinActive = activeSkin === pid
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
                     const atCap = !uncapped && placed >= 10
-                    const disabled = bal <= 0 && !hasBets && pending === 0
+                    const disabled = bal <= 0 && pending === 0
                     return (
                       <button key={pid}
                         onClick={() => !disabled && startSkin(pid, clusterId)}

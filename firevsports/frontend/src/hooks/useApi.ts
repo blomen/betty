@@ -29,9 +29,13 @@ export const api = {
   startMirror: () => apiFetch<any>('/mirror/start', { method: 'POST' }),
   openTab: (providerId: string) => apiFetch<any>('/mirror/open-provider-tab', { method: 'POST', body: JSON.stringify({ provider_id: providerId }) }),
   // Play loop control
-  startPlayLoop: (batch: any[], balances: Record<string, number>) =>
-    apiFetch<any>('/mirror/play/start', { method: 'POST', body: JSON.stringify({ batch, balances }) }),
-  confirmSettlements: () => apiFetch<any>('/mirror/play/confirm-settlements', { method: 'POST' }),
+  startPlayLoop: (batch: any[], balances: Record<string, number>, providerId?: string) =>
+    apiFetch<any>('/mirror/play/start', { method: 'POST', body: JSON.stringify({ batch, balances, provider_id: providerId }) }),
+  confirmSettlements: (confirmed?: { bet_id: number; result: string; payout: number }[]) =>
+    apiFetch<any>('/mirror/play/confirm-settlements', {
+      method: 'POST',
+      body: JSON.stringify(confirmed ? { confirmed } : {}),
+    }),
   placeCurrent: () => apiFetch<any>('/mirror/play/place', { method: 'POST' }),
   skipCurrent: () => apiFetch<any>('/mirror/play/skip', { method: 'POST' }),
   stopPlayLoop: () => apiFetch<any>('/mirror/play/stop', { method: 'POST' }),

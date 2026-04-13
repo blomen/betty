@@ -569,11 +569,14 @@ class BatchBuilder:
             .all()
         )
         lookup = {}
+        event_lookup: dict[tuple[str, str], dict] = {}  # (event_id, provider_id) → any meta
         for r in rows:
             if r.provider_meta:
-                lookup[(r.event_id, r.provider_id, r.market, r.outcome)] = (
-                    r.provider_meta if isinstance(r.provider_meta, dict) else {}
-                )
+                meta = r.provider_meta if isinstance(r.provider_meta, dict) else {}
+                lookup[(r.event_id, r.provider_id, r.market, r.outcome)] = meta
+                # Keep first meta per event+provider for fallback navigation
+                if meta.get("event_id") and (r.event_id, r.provider_id) not in event_lookup:
+                    event_lookup[(r.event_id, r.provider_id)] = meta
         for b in batch:
             meta = lookup.get((b.event_id, b.provider_id, b.market, b.outcome))
             # Fallback: look up via canonical provider (clone shares same odds/meta)
@@ -581,6 +584,13 @@ class BatchBuilder:
                 canonical = PROVIDER_CANONICAL.get(b.provider_id)
                 if canonical:
                     meta = lookup.get((b.event_id, canonical, b.market, b.outcome))
+            # Fallback: any meta for same event+provider (navigation IDs are event-level)
+            if not meta:
+                meta = event_lookup.get((b.event_id, b.provider_id))
+                if not meta:
+                    canonical = PROVIDER_CANONICAL.get(b.provider_id)
+                    if canonical:
+                        meta = event_lookup.get((b.event_id, canonical))
             if meta:
                 b.provider_meta = meta
 
@@ -684,8 +694,14 @@ class BatchBuilder:
                 if pb is None:
                     pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
                 placed = self._clone_bet_to_provider(bet, pid, pb)
-                placed.funded = pb.remaining >= bet.stake
-                if placed.funded:
+                if pb.remaining >= bet.stake:
+                    placed.funded = True
+                    pb.allocated += placed.stake
+                elif pb.remaining >= ABSOLUTE_MIN_STAKE:
+                    # Cap stake to available balance
+                    placed.stake = pb.remaining
+                    placed.expected_profit = placed.stake * (bet.edge_pct / 100.0)
+                    placed.funded = True
                     pb.allocated += placed.stake
                 bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
                 batch.append(placed)
@@ -702,8 +718,14 @@ class BatchBuilder:
                     pb = ProviderBalance(provider_id=pid, cluster=cluster, initial_balance=0)
 
                 placed = self._clone_bet_to_provider(bet, pid, pb)
-                placed.funded = pb.remaining >= bet.stake
-                if placed.funded:
+                if pb.remaining >= bet.stake:
+                    placed.funded = True
+                    pb.allocated += placed.stake
+                elif pb.remaining >= ABSOLUTE_MIN_STAKE:
+                    # Cap stake to available balance
+                    placed.stake = pb.remaining
+                    placed.expected_profit = placed.stake * (bet.edge_pct / 100.0)
+                    placed.funded = True
                     pb.allocated += placed.stake
                 else:
                     placed.skip_reason = f"insufficient balance on {pid}"

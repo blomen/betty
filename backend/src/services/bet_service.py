@@ -2,13 +2,14 @@
 
 import logging
 from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
-from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus, SpecialOdds
-from ..analysis.devig import get_fair_odds_for_outcome, compute_consensus_fair_odds
-from ..constants import SHARP_PROVIDERS, PLATFORM_MAP
-from ..config import get_exchange_rate, get_provider_currency
+from ..analysis.devig import compute_consensus_fair_odds, get_fair_odds_for_outcome
+from ..config import get_provider_currency
+from ..constants import PLATFORM_MAP, SHARP_PROVIDERS
+from ..db.models import Bet, Event, Odds, ProfileProviderBonus, Provider, ProviderRiskProfile, SpecialOdds
+from ..repositories import BetRepo, ProfileRepo
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,7 @@ class BetService:
 
     def _check_cooldown(self, provider_id: str) -> str | None:
         """Check if provider is on cooldown. Returns reason string or None."""
-        risk_profile = self.db.query(ProviderRiskProfile).filter(
-            ProviderRiskProfile.provider_id == provider_id
-        ).first()
+        risk_profile = self.db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
         if not risk_profile or not risk_profile.is_on_cooldown:
             return None
         if risk_profile.cooldown_until and risk_profile.cooldown_until < datetime.now(timezone.utc):
@@ -40,9 +39,7 @@ class BetService:
 
     def _get_risk_score(self, provider_id: str) -> float:
         """Get current risk score for provider, or 0.0 if none."""
-        risk_profile = self.db.query(ProviderRiskProfile).filter(
-            ProviderRiskProfile.provider_id == provider_id
-        ).first()
+        risk_profile = self.db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
         return risk_profile.risk_score if risk_profile else 0.0
 
     def create_bet(
@@ -75,6 +72,7 @@ class BetService:
 
         # Block bets on banned providers
         from ..repositories.limit_repo import LimitRepo
+
         banned = LimitRepo(self.db).get_banned_providers(profile.id)
         if provider_id in banned:
             return {"error": f"Provider {provider_id} is banned — account closed"}
@@ -95,7 +93,9 @@ class BetService:
             existing = dup_query.first()
             if existing:
                 point_str = f" {point}" if point is not None else ""
-                return {"error": f"Already have a pending bet on this market ({market} {outcome}{point_str}) at {existing.provider_id}"}
+                return {
+                    "error": f"Already have a pending bet on this market ({market} {outcome}{point_str}) at {existing.provider_id}"
+                }
 
         # Check cooldown
         cooldown_reason = self._check_cooldown(provider_id)
@@ -111,9 +111,7 @@ class BetService:
             unit = "$" if currency != "SEK" else " kr"
             fmt = f"${current_balance:.2f}" if currency != "SEK" else f"{current_balance:.0f} kr"
             fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
-            return {
-                "error": f"Insufficient balance: {fmt} available, {fmt_req} required"
-            }
+            return {"error": f"Insufficient balance: {fmt} available, {fmt_req} required"}
 
         # Populate behavioral fields
         now = datetime.now(timezone.utc)
@@ -141,13 +139,10 @@ class BetService:
         # so we can look up the Gamma event for settlement even after odds are cleaned up
         confirmation_id = None
         if provider_id == "polymarket" and event_id:
-            odds_row = (
-                self.db.query(Odds)
-                .filter(Odds.event_id == event_id, Odds.provider_id == "polymarket")
-                .first()
-            )
+            odds_row = self.db.query(Odds).filter(Odds.event_id == event_id, Odds.provider_id == "polymarket").first()
             if odds_row and odds_row.provider_meta:
                 import json as _json
+
                 try:
                     meta = _json.loads(odds_row.provider_meta)
                     confirmation_id = meta.get("event_slug")
@@ -205,11 +200,15 @@ class BetService:
 
         # Auto-advance freebet: mark as completed when freebet is used
         if is_bonus:
-            bonus = self.db.query(ProfileProviderBonus).filter(
-                ProfileProviderBonus.profile_id == profile.id,
-                ProfileProviderBonus.provider_id == provider_id,
-                ProfileProviderBonus.bonus_status == "freebet_available",
-            ).first()
+            bonus = (
+                self.db.query(ProfileProviderBonus)
+                .filter(
+                    ProfileProviderBonus.profile_id == profile.id,
+                    ProfileProviderBonus.provider_id == provider_id,
+                    ProfileProviderBonus.bonus_status == "freebet_available",
+                )
+                .first()
+            )
             if bonus:
                 bonus.bonus_status = "completed"
                 bonus.updated_at = datetime.now(timezone.utc)
@@ -223,18 +222,23 @@ class BetService:
             "bet_id": bet.id,
             "profile_id": profile.id,
             "risk_score": risk_score,
-            "bonus_wagering": wagering_status if wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
+            "bonus_wagering": wagering_status
+            if wagering_status.get("status") in ("in_progress", "trigger_needed")
+            else None,
         }
 
         # Advisory: warn if daily cap exceeded for this platform group
         try:
             from ..risk.allocator import ProviderAllocator
+
             allocator = ProviderAllocator(self.db, profile.id)
             allocator.preload_daily_bets()
             group_bets = allocator._count_group_bets(provider_id)
             cap = allocator._daily_cap
             if group_bets >= cap:
-                result_dict["daily_cap_warning"] = f"Daily cap reached ({group_bets}/{cap} bets today in this platform group)"
+                result_dict["daily_cap_warning"] = (
+                    f"Daily cap reached ({group_bets}/{cap} bets today in this platform group)"
+                )
         except Exception:
             pass
 
@@ -260,32 +264,34 @@ class BetService:
         # Record wagering progress on settlement (not placement)
         wagering_status = None
         if bet.profile_id and result in ("won", "lost", "void"):
-            wagering_status = self.profile_repo.record_wagering(
-                bet.profile_id, bet.provider_id, bet.stake, bet.odds
-            )
+            wagering_status = self.profile_repo.record_wagering(bet.profile_id, bet.provider_id, bet.stake, bet.odds)
 
         # Auto-advance freebet: if trigger bet settled, unlock the freebet
         if bet.profile_id:
-            bonus = self.db.query(ProfileProviderBonus).filter(
-                ProfileProviderBonus.profile_id == bet.profile_id,
-                ProfileProviderBonus.provider_id == bet.provider_id,
-                ProfileProviderBonus.bonus_status == "trigger_needed",
-            ).first()
+            bonus = (
+                self.db.query(ProfileProviderBonus)
+                .filter(
+                    ProfileProviderBonus.profile_id == bet.profile_id,
+                    ProfileProviderBonus.provider_id == bet.provider_id,
+                    ProfileProviderBonus.bonus_status == "trigger_needed",
+                )
+                .first()
+            )
             if bonus:
                 # Refresh so wagered_amount reflects what record_wagering() just wrote
                 self.db.refresh(bonus)
                 trigger_mode = getattr(bonus, "trigger_mode", None) or "cumulative"
                 if trigger_mode == "single":
                     # Single-shot: one bet that meets stake + odds requirements
-                    if (bet.odds >= (bonus.min_odds or 1.80)
-                            and bet.stake >= (bonus.bonus_amount or 0)):
+                    if bet.odds >= (bonus.min_odds or 1.80) and bet.stake >= (bonus.bonus_amount or 0):
                         bonus.bonus_status = "freebet_available"
                         bonus.wagered_amount = bet.stake
                         bonus.updated_at = datetime.now(timezone.utc)
                 else:
                     # Cumulative: total wagered across bets meets the requirement
                     if (bonus.wagering_requirement or 0) > 0 and (
-                            bonus.wagered_amount or 0) >= bonus.wagering_requirement:
+                        bonus.wagered_amount or 0
+                    ) >= bonus.wagering_requirement:
                         bonus.bonus_status = "freebet_available"
                         bonus.updated_at = datetime.now(timezone.utc)
 
@@ -293,6 +299,7 @@ class BetService:
         if bet.profile_id and wagering_status:
             try:
                 from .planner_service import BankrollPlannerService
+
                 BankrollPlannerService.invalidate_cache(bet.profile_id)
             except Exception:
                 pass  # Non-critical — planner cache will expire naturally
@@ -305,7 +312,9 @@ class BetService:
             "profit": bet.profit,
             "profile_id": bet.profile_id,
             "clv_pct": clv_pct,
-            "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
+            "bonus_wagering": wagering_status
+            if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed")
+            else None,
         }
 
     @staticmethod
@@ -315,15 +324,18 @@ class BetService:
 
         def _run():
             from ..db.models import get_session
+
             db = get_session()
             try:
                 from .postmortem_service import PostmortemService
+
                 bet = db.query(Bet).get(bet_id)
                 if bet:
                     PostmortemService(db).compute_bet(bet)
 
                 if bet_type == "boost" and outcome:
                     from src.ml.feature_store import resolve_boost_outcomes
+
                     resolve_boost_outcomes(db, outcome)
 
                 db.commit()
@@ -348,10 +360,12 @@ class BetService:
         for row in query.all():
             if row.odds <= 1.0:
                 continue
-            result.setdefault(row.outcome, []).append({
-                "provider": row.provider_id,
-                "odds": row.odds,
-            })
+            result.setdefault(row.outcome, []).append(
+                {
+                    "provider": row.provider_id,
+                    "odds": row.odds,
+                }
+            )
         return result
 
     def _consensus_closing_odds(self, bet: Bet) -> float | None:
@@ -465,8 +479,8 @@ class BetService:
             )
             .filter(
                 # Need Pinnacle CLV, or provider CLV for Polymarket bets
-                (Bet.closing_odds.is_(None)) |
-                ((Bet.provider_id == "polymarket") & (Bet.provider_closing_odds.is_(None)))
+                (Bet.closing_odds.is_(None))
+                | ((Bet.provider_id == "polymarket") & (Bet.provider_closing_odds.is_(None)))
             )
             .all()
         )
@@ -622,5 +636,27 @@ class BetService:
             "payout": bet.payout,
             "profit": bet.profit,
             "balance_adjustment": (bet.payout - old_payout) - (bet.stake - old_stake),
-            "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
+            "bonus_wagering": wagering_status
+            if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed")
+            else None,
         }
+
+    def delete_bet(self, bet_id: int) -> dict:
+        """Delete a pending bet that was incorrectly recorded.
+
+        Only allows deletion of pending bets — settled bets cannot be deleted
+        (use edit_bet to void them instead).
+        """
+        bet = self.bet_repo.get_by_id(bet_id)
+        if not bet:
+            return {"error": f"Bet {bet_id} not found"}
+        if bet.result != "pending":
+            return {"error": f"Cannot delete settled bet (result={bet.result}). Use edit to void instead."}
+
+        provider_id = bet.provider_id
+        stake = bet.stake
+        self.db.delete(bet)
+        self.db.commit()
+
+        logger.info(f"[BetService] Deleted pending bet #{bet_id} ({provider_id}, stake={stake})")
+        return {"success": True, "bet_id": bet_id, "deleted": True}

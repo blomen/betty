@@ -130,6 +130,12 @@ class ReplayEngine:
         self._prior_excess_quality: int = 0
         self._prior_poc: float | None = None
 
+        # Computed AMT enrichment — updated on bar close once data is available.
+        # Start at 0.5 (neutral median) so early-session observations carry the
+        # least-biased prior rather than a hard zero.
+        self._ib_range_percentile: float = 0.5
+        self._composite_va_overlap: float = 0.5
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -453,6 +459,30 @@ class ReplayEngine:
         # Recompute orderflow signals if we have enough candle flows
         if len(self._candle_flows) >= _MIN_CANDLE_FLOWS:
             self._orderflow_signals = compute_signals(self._candle_flows, direction="long", lookback=10)
+
+        # Update ib_range_percentile once the IB has formed (bar 60 = 10:30 ET)
+        # and composite_va_overlap on every VP update (both need precomputed data).
+        if self._precomputed and bar_count >= 60:
+            sl = self._session_levels
+            if sl.ib_high is not None and sl.ib_low is not None:
+                today_ib = sl.ib_high - sl.ib_low
+                ref = self._precomputed.get("prior_ib_ranges_sorted", [])
+                if ref and today_ib > 0:
+                    # Fraction of prior sessions with a smaller IB than today
+                    n_below = sum(1 for r in ref if r < today_ib)
+                    self._ib_range_percentile = n_below / len(ref)
+
+            vp = self._vp.get()
+            prior_vas: list[tuple[float, float]] = self._precomputed.get("prior_vas", [])
+            if vp and prior_vas:
+                curr_vah, curr_val = vp.vah, vp.val
+                curr_width = max(curr_vah - curr_val, 1e-9)
+                overlaps = []
+                for p_vah, p_val in prior_vas:
+                    p_width = max(p_vah - p_val, 1e-9)
+                    overlap = max(0.0, min(curr_vah, p_vah) - max(curr_val, p_val))
+                    overlaps.append(overlap / max(curr_width, p_width))
+                self._composite_va_overlap = sum(overlaps) / len(overlaps)
 
         # Invalidate naked POCs that the current session has swept through
         if self._precomputed and self._precomputed.get("naked_pocs") and self._session_high is not None:
@@ -842,10 +872,10 @@ class ReplayEngine:
             "ib_high": ib_high,
             "ib_low": ib_low,
             # AMT static enrichment (for amt_features indices 13-19)
-            "ib_range_percentile": 0.5,  # No historical DB in replay — default to median
+            "ib_range_percentile": self._ib_range_percentile,  # updated in _on_bar_close once IB forms
             "overnight_gap": self._compute_overnight_gap(bars_1m),
             "open_vs_prior_poc": self._compute_open_vs_prior_poc(open_price),
-            "composite_va_overlap": 0.5,  # No multi-day history in single-session replay
+            "composite_va_overlap": self._composite_va_overlap,  # updated in _on_bar_close each VP update
             "prior_poor_high": self._prior_poor_high,
             "prior_poor_low": self._prior_poor_low,
             "prior_excess_quality": self._prior_excess_quality,

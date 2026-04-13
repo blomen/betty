@@ -1,4 +1,5 @@
 """Setup detection feature extraction — encodes active AMT setups as binary features."""
+
 from __future__ import annotations
 
 import logging
@@ -68,7 +69,8 @@ def extract_setup_features(
             candles=state.get("candles"),
         )
         candidates = run_all_detectors(ctx)
-    except Exception:
+    except Exception as exc:
+        log.warning("setup_features: detector failed at price=%.2f: %s", price, exc)
         return feats
 
     # Encode detected setups as binary vector

@@ -2,18 +2,18 @@
 
 import asyncio
 import logging
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy import tuple_
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
 
-from ...services import BetService
-from ...repositories import BetRepo, ProfileRepo
-from ...db.models import Odds, Event, SpecialOdds
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import tuple_
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+
 from ...analysis.devig import get_fair_odds_for_outcome
+from ...db.models import Event, Odds, SpecialOdds
+from ...repositories import BetRepo, ProfileRepo
+from ...services import BetService
 from ..deps import get_db, get_db_writer
-from ..schemas import BetCreate, BetUpdate, BetEdit, BatchBetCreate
+from ..schemas import BatchBetCreate, BetCreate, BetEdit, BetUpdate
 from .providers import load_provider_site_urls
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ def _get_bo_format(event) -> int:
     """Get best-of format from stats_json, or sport default (3)."""
     if event.stats_json:
         import json as _json
+
         try:
             stats = _json.loads(event.stats_json)
             bo = stats.get("bo")
@@ -64,8 +65,9 @@ def _predict_result(bet, event) -> str | None:
     For BO series sports (esports/tennis), can predict moneyline result
     when the series is clinched (e.g., 2-0 in BO3) even before match is finished.
     """
-    from ...services.results_service import determine_bet_result
     import json as _json
+
+    from ...services.results_service import determine_bet_result
 
     if not event:
         return None
@@ -83,8 +85,11 @@ def _predict_result(bet, event) -> str | None:
                     market = market.split("_", 1)[0]
                 if market in ("1x2", "moneyline"):
                     return determine_bet_result(
-                        event.home_score, event.away_score,
-                        market, bet.outcome, bet.point,
+                        event.home_score,
+                        event.away_score,
+                        market,
+                        bet.outcome,
+                        bet.point,
                     )
 
     if event.match_status != "finished":
@@ -116,8 +121,11 @@ def _predict_result(bet, event) -> str | None:
     # Path 1: Score-based
     if event.home_score is not None and event.away_score is not None:
         return determine_bet_result(
-            event.home_score, event.away_score,
-            market, bet.outcome, point,
+            event.home_score,
+            event.away_score,
+            market,
+            bet.outcome,
+            point,
         )
 
     # Path 2: Winner-based (from Polymarket outcomePrices)
@@ -127,6 +135,7 @@ def _predict_result(bet, event) -> str | None:
             winner = stats.get("winner")
             if winner:
                 from ...matching.matcher import get_team_match_score
+
                 home_match = get_team_match_score(winner, event.home_team)
                 away_match = get_team_match_score(winner, event.away_team)
                 if home_match > away_match and home_match >= 75:
@@ -153,7 +162,7 @@ def _get_service(db: Session = Depends(get_db)) -> BetService:
 
 @router.get("")
 def list_bets(
-    status: Optional[str] = None,
+    status: str | None = None,
     exclude_bonus: bool = False,
     limit: int = 50,
     db: Session = Depends(get_db),
@@ -199,11 +208,7 @@ def list_bets(
             pinnacle_map[key][row.outcome] = row.odds
 
     # Pre-fetch current provider odds for pending bets (for live ODDS column)
-    pending_lookups = [
-        (b.event_id, b.provider_id)
-        for b in bets
-        if b.result == "pending" and b.event_id
-    ]
+    pending_lookups = [(b.event_id, b.provider_id) for b in bets if b.result == "pending" and b.event_id]
     # (event_id, provider_id, market, outcome, point) -> current odds
     current_odds_map: dict[tuple, float] = {}
     if pending_lookups:
@@ -239,9 +244,7 @@ def list_bets(
 
         if b.event_id and b.market and b.outcome:
             # Current provider odds from Odds table (keyed by point for spread/total)
-            current_odds = current_odds_map.get(
-                (b.event_id, b.provider_id, b.market, b.outcome, b.point)
-            )
+            current_odds = current_odds_map.get((b.event_id, b.provider_id, b.market, b.outcome, b.point))
 
             pin_market = pinnacle_map.get((b.event_id, b.market), {})
             if len(pin_market) >= 2 and b.outcome in pin_market:
@@ -261,53 +264,57 @@ def list_bets(
         if sel_prob is None and b.fair_odds_at_placement and b.fair_odds_at_placement > 1.0:
             sel_prob = round(1.0 / b.fair_odds_at_placement, 4)
 
-        bet_list.append({
-            "id": b.id,
-            "event_id": b.event_id,
-            "provider": b.provider_id,
-            "market": b.market,
-            "outcome": b.outcome,
-            "odds": b.odds,
-            "stake": b.stake,
-            "currency": b.currency or "SEK",
-            "is_bonus": b.is_bonus,
-            "bonus_type": b.bonus_type,
-            "result": b.result,
-            "payout": b.payout,
-            "profit": b.profit,
-            "roi_pct": b.roi_pct,
-            "placed_at": b.placed_at.isoformat() if b.placed_at else None,
-            "settled_at": b.settled_at.isoformat() if b.settled_at else None,
-            "risk_score": b.risk_score_at_bet,
-            "clv_pct": b.clv_pct,
-            "closing_odds": b.closing_odds,
-            "provider_closing_odds": b.provider_closing_odds,
-            "provider_clv_pct": b.provider_clv_pct,
-            "edge_pct": edge_pct,
-            "fair_odds": fair_odds,
-            "selection_probability": sel_prob,
-            "placed_edge_pct": placed_edge_pct,
-            "fair_odds_at_placement": b.fair_odds_at_placement,
-            "current_odds": current_odds,
-            "point": b.point,
-            "settlement_source": b.settlement_source,
-            "home_team": ev.home_team if ev else (_boost_home(b, sp)),
-            "away_team": ev.away_team if ev else (_boost_away(b, sp)),
-            "display_home": ev.display_home if ev else None,
-            "display_away": ev.display_away if ev else None,
-            "sport": ev.sport if ev else (sp.sport if sp and sp.sport != "unknown" else None),
-            "league": ev.league if ev else (sp.league if sp else None),
-            "start_time": (b.start_time.isoformat() + "Z") if b.start_time else ((ev.start_time.isoformat() + "Z") if ev and ev.start_time else None),
-            "home_score": ev.home_score if ev else None,
-            "away_score": ev.away_score if ev else None,
-            "match_status": ev.match_status if ev else None,
-            "match_minute": ev.match_minute if ev else None,
-            "match_period": ev.match_period if ev else None,
-            "predicted_result": _predict_result(b, ev) if ev else None,
-            "provider_site_url": site_urls.get(b.provider_id),
-            "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
-            "bet_type": b.bet_type,
-        })
+        bet_list.append(
+            {
+                "id": b.id,
+                "event_id": b.event_id,
+                "provider": b.provider_id,
+                "market": b.market,
+                "outcome": b.outcome,
+                "odds": b.odds,
+                "stake": b.stake,
+                "currency": b.currency or "SEK",
+                "is_bonus": b.is_bonus,
+                "bonus_type": b.bonus_type,
+                "result": b.result,
+                "payout": b.payout,
+                "profit": b.profit,
+                "roi_pct": b.roi_pct,
+                "placed_at": b.placed_at.isoformat() if b.placed_at else None,
+                "settled_at": b.settled_at.isoformat() if b.settled_at else None,
+                "risk_score": b.risk_score_at_bet,
+                "clv_pct": b.clv_pct,
+                "closing_odds": b.closing_odds,
+                "provider_closing_odds": b.provider_closing_odds,
+                "provider_clv_pct": b.provider_clv_pct,
+                "edge_pct": edge_pct,
+                "fair_odds": fair_odds,
+                "selection_probability": sel_prob,
+                "placed_edge_pct": placed_edge_pct,
+                "fair_odds_at_placement": b.fair_odds_at_placement,
+                "current_odds": current_odds,
+                "point": b.point,
+                "settlement_source": b.settlement_source,
+                "home_team": ev.home_team if ev else (_boost_home(b, sp)),
+                "away_team": ev.away_team if ev else (_boost_away(b, sp)),
+                "display_home": ev.display_home if ev else None,
+                "display_away": ev.display_away if ev else None,
+                "sport": ev.sport if ev else (sp.sport if sp and sp.sport != "unknown" else None),
+                "league": ev.league if ev else (sp.league if sp else None),
+                "start_time": (b.start_time.isoformat() + "Z")
+                if b.start_time
+                else ((ev.start_time.isoformat() + "Z") if ev and ev.start_time else None),
+                "home_score": ev.home_score if ev else None,
+                "away_score": ev.away_score if ev else None,
+                "match_status": ev.match_status if ev else None,
+                "match_minute": ev.match_minute if ev else None,
+                "match_period": ev.match_period if ev else None,
+                "predicted_result": _predict_result(b, ev) if ev else None,
+                "provider_site_url": site_urls.get(b.provider_id),
+                "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
+                "bet_type": b.bet_type,
+            }
+        )
 
     return {
         "profile_id": profile.id,
@@ -362,7 +369,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             return result
         except OperationalError as e:
             if "database is locked" in str(e) and attempt < _BET_COMMIT_MAX_RETRIES - 1:
-                wait = _BET_COMMIT_BACKOFF_BASE * (2 ** attempt)
+                wait = _BET_COMMIT_BACKOFF_BASE * (2**attempt)
                 logger.warning(
                     f"[Bets] Commit blocked by SQLite lock (attempt {attempt + 1}/"
                     f"{_BET_COMMIT_MAX_RETRIES}), retrying in {wait:.1f}s"
@@ -421,13 +428,15 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
             )
 
             if "error" in result:
-                results.append({
-                    "leg_index": i,
-                    "provider_id": leg.provider_id,
-                    "outcome": leg.outcome,
-                    "success": False,
-                    "error": result["error"],
-                })
+                results.append(
+                    {
+                        "leg_index": i,
+                        "provider_id": leg.provider_id,
+                        "outcome": leg.outcome,
+                        "success": False,
+                        "error": result["error"],
+                    }
+                )
                 leg_placed = True  # Not placed, but handled
                 break
 
@@ -435,43 +444,49 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
                 db.commit()
                 placed_count += 1
                 total_staked += leg.stake
-                results.append({
-                    "leg_index": i,
-                    "provider_id": leg.provider_id,
-                    "outcome": leg.outcome,
-                    "success": True,
-                    "bet_id": result["bet_id"],
-                    "stake": leg.stake,
-                    "odds": leg.odds,
-                })
+                results.append(
+                    {
+                        "leg_index": i,
+                        "provider_id": leg.provider_id,
+                        "outcome": leg.outcome,
+                        "success": True,
+                        "bet_id": result["bet_id"],
+                        "stake": leg.stake,
+                        "odds": leg.odds,
+                    }
+                )
                 leg_placed = True
                 break
             except OperationalError as e:
                 if "database is locked" in str(e) and attempt < _BET_COMMIT_MAX_RETRIES - 1:
-                    wait = _BET_COMMIT_BACKOFF_BASE * (2 ** attempt)
+                    wait = _BET_COMMIT_BACKOFF_BASE * (2**attempt)
                     logger.warning(f"[Bets:batch] Leg {i} commit blocked (attempt {attempt + 1})")
                     db.rollback()
                     await asyncio.sleep(wait)
                 else:
-                    results.append({
-                        "leg_index": i,
-                        "provider_id": leg.provider_id,
-                        "outcome": leg.outcome,
-                        "success": False,
-                        "error": "Database busy",
-                    })
+                    results.append(
+                        {
+                            "leg_index": i,
+                            "provider_id": leg.provider_id,
+                            "outcome": leg.outcome,
+                            "success": False,
+                            "error": "Database busy",
+                        }
+                    )
                     db.rollback()
                     leg_placed = True
                     break
 
         if not leg_placed:
-            results.append({
-                "leg_index": i,
-                "provider_id": leg.provider_id,
-                "outcome": leg.outcome,
-                "success": False,
-                "error": "Database busy after retries",
-            })
+            results.append(
+                {
+                    "leg_index": i,
+                    "provider_id": leg.provider_id,
+                    "outcome": leg.outcome,
+                    "success": False,
+                    "error": "Database busy after retries",
+                }
+            )
 
     return {
         "success": placed_count > 0,
@@ -510,3 +525,16 @@ def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_get_serv
     return result
 
 
+@router.delete("/{bet_id}")
+def delete_bet(bet_id: int, service: BetService = Depends(_get_service)):
+    """Delete a pending bet that was incorrectly recorded.
+
+    Only pending bets can be deleted. Settled bets must be voided via PATCH.
+    """
+    result = service.delete_bet(bet_id)
+
+    if "error" in result:
+        status_code = 404 if "not found" in result["error"] else 400
+        raise HTTPException(status_code, result["error"])
+
+    return result

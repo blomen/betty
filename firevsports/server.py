@@ -48,9 +48,21 @@ app.include_router(create_mirror_router(browser, mirror_broadcaster, TUNNEL_URL)
 # Mount API proxy
 app.include_router(create_proxy_router(TUNNEL_URL))
 
-# Serve frontend static files (must be last)
+# Serve frontend static files with no-cache on HTML (must be last)
 if os.path.isdir(FRONTEND_DIR):
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
+    _static = StaticFiles(directory=FRONTEND_DIR, html=True)
+
+    @app.middleware("http")
+    async def no_cache_html(request, call_next):
+        response = await call_next(request)
+        # No-cache on HTML — forces browser to always fetch fresh index.html
+        # (JS/CSS have content hashes in filenames so they self-bust)
+        ct = response.headers.get("content-type", "")
+        if "text/html" in ct:
+            response.headers["cache-control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+    app.mount("/", _static, name="static")
 
 
 @app.on_event("startup")

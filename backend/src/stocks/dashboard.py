@@ -597,9 +597,19 @@ def record_tick(price: float, size: int, ts: float, side: str = "B") -> None:
 
 
 def record_quote(quote: dict) -> None:
-    """Called from pipeline on each quote update."""
-    _state["quotes"].append(quote)
-    _emit({"type": "quote", **quote})
+    """Called from pipeline on each quote update.
+
+    Normalizes TopstepX GatewayQuote field names (bestBid/bestAsk) to the
+    canonical names the frontend Quote interface expects (bid/ask).
+    """
+    normalized = {
+        "bid": quote.get("bestBid") or quote.get("bid") or 0.0,
+        "ask": quote.get("bestAsk") or quote.get("ask") or 0.0,
+        "bid_size": quote.get("bestBidSize") or quote.get("bid_size") or 0,
+        "ask_size": quote.get("bestAskSize") or quote.get("ask_size") or 0,
+    }
+    _state["quotes"].append(normalized)
+    _emit({"type": "quote", **normalized})
 
 
 def record_signal(signal: dict) -> None:

@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0backend"
-python run_mirror.py
+cd /d "%~dp0firevsports"
+python launch.py

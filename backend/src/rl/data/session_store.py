@@ -4,6 +4,7 @@ Precomputes per-session data (volume profile, RTH/ETH ranges, single prints)
 so cross-session levels (naked POCs, composite multi-TF POCs, Globex HL) can
 be injected into the replay engine.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,6 +27,7 @@ _RTH_END = time(16, 0)
 # Dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SessionSummary:
     date: str
@@ -38,11 +40,14 @@ class SessionSummary:
     eth_high: float | None = None
     eth_low: float | None = None
     single_print_zones: list[tuple[float, float]] = field(default_factory=list)
+    ib_high: float | None = None  # Initial balance high (09:30–10:30 ET)
+    ib_low: float | None = None  # Initial balance low  (09:30–10:30 ET)
 
 
 # ---------------------------------------------------------------------------
 # Task 1: filter_single_print_zones
 # ---------------------------------------------------------------------------
+
 
 def filter_single_print_zones(
     single_prints: list[tuple[float, float]],
@@ -94,6 +99,7 @@ def filter_single_print_zones(
 # ---------------------------------------------------------------------------
 # Task 2: composite_histogram + poc_from_histogram
 # ---------------------------------------------------------------------------
+
 
 def composite_histogram(summaries: list[SessionSummary]) -> dict[float, int]:
     """Merge volume histograms from multiple SessionSummaries by adding bucket volumes.
@@ -157,6 +163,7 @@ def vah_val_from_histogram(
 # Task 3: find_naked_pocs
 # ---------------------------------------------------------------------------
 
+
 def find_naked_pocs(
     summaries: dict[str, SessionSummary],
     current_date: str,
@@ -209,6 +216,7 @@ def find_naked_pocs(
 # Task 4: build_session_summary
 # ---------------------------------------------------------------------------
 
+
 def _parse_ts(ts) -> datetime:
     """Convert a timestamp (str, datetime, or pandas Timestamp) to ET datetime."""
     if isinstance(ts, str):
@@ -238,11 +246,15 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
             histogram={},
         )
 
+    _IB_END = time(10, 30)  # Initial balance = 09:30–10:30 ET
+
     vp = IncrementalVolumeProfile(tick_size=0.25)
     rth_high: float | None = None
     rth_low: float | None = None
     eth_high: float | None = None
     eth_low: float | None = None
+    ib_high: float | None = None
+    ib_low: float | None = None
 
     for tick in ticks:
         price: float = float(tick["price"])
@@ -251,6 +263,7 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
         t = dt.time()
 
         is_rth = _RTH_START <= t < _RTH_END
+        is_ib = _RTH_START <= t < _IB_END
 
         vp.update(price, size)
 
@@ -260,6 +273,10 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
         else:
             eth_high = price if eth_high is None else max(eth_high, price)
             eth_low = price if eth_low is None else min(eth_low, price)
+
+        if is_ib:
+            ib_high = price if ib_high is None else max(ib_high, price)
+            ib_low = price if ib_low is None else min(ib_low, price)
 
     profile = vp.get()
     if profile is None:
@@ -273,18 +290,15 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
             rth_low=rth_low,
             eth_high=eth_high,
             eth_low=eth_low,
+            ib_high=ib_high,
+            ib_low=ib_low,
         )
 
     # Build canonical histogram from the internal accumulator state
-    histogram: dict[str, int] = {
-        f"{price:.2f}": vol
-        for price, vol in vp._histogram.items()
-    }
+    histogram: dict[str, int] = {f"{price:.2f}": vol for price, vol in vp._histogram.items()}
 
     # Filter single prints into zones
-    single_print_zones = filter_single_print_zones(
-        profile.single_prints, tick_size=0.25, min_consecutive=3
-    )
+    single_print_zones = filter_single_print_zones(profile.single_prints, tick_size=0.25, min_consecutive=3)
 
     return SessionSummary(
         date=date_str,
@@ -297,12 +311,15 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
         eth_high=eth_high,
         eth_low=eth_low,
         single_print_zones=single_print_zones,
+        ib_high=ib_high,
+        ib_low=ib_low,
     )
 
 
 # ---------------------------------------------------------------------------
 # Task 5: JSON I/O + compute_precomputed_levels
 # ---------------------------------------------------------------------------
+
 
 def save_summaries(summaries: dict[str, SessionSummary], path: Path) -> None:
     """Write dict[str, SessionSummary] to JSON file.
@@ -369,9 +386,7 @@ def _composite_poc(summaries: dict[str, SessionSummary], dates: list[str]) -> fl
     return poc_from_histogram(histo)
 
 
-def _composite_vah_val(
-    summaries: dict[str, SessionSummary], dates: list[str]
-) -> tuple[float | None, float | None]:
+def _composite_vah_val(summaries: dict[str, SessionSummary], dates: list[str]) -> tuple[float | None, float | None]:
     """Return VAH, VAL from composite histogram of the given session dates."""
     selected = [summaries[d] for d in dates if d in summaries]
     if not selected:
@@ -383,16 +398,17 @@ def _composite_vah_val(
 def _compute_swing_from_summaries(
     summaries: dict[str, SessionSummary],
     current_date: str,
-) -> "SwingStructure | None":
+) -> SwingStructure | None:
     """Build SwingStructure from session summaries for backtesting.
 
     Converts each prior session into a daily candle (using rth_high/rth_low/poc),
     then runs compute_multi_tf_swings. Weekly/monthly candles are aggregated from
     the daily candles by the same function.
     """
-    from src.market_data.levels import compute_multi_tf_swings
-    from datetime import timezone, timedelta
+    from datetime import timezone
     from zoneinfo import ZoneInfo
+
+    from src.market_data.levels import compute_multi_tf_swings
 
     CET = ZoneInfo("Europe/Stockholm")
     prior_dates = sorted(d for d in summaries if d < current_date)
@@ -408,13 +424,15 @@ def _compute_swing_from_summaries(
             continue
         dt = datetime.strptime(d, "%Y-%m-%d")
         ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
-        synth_bars.append({
-            "ts": ts,
-            "open": s.poc,
-            "high": s.rth_high,
-            "low": s.rth_low,
-            "close": s.poc,
-        })
+        synth_bars.append(
+            {
+                "ts": ts,
+                "open": s.poc,
+                "high": s.rth_high,
+                "low": s.rth_low,
+                "close": s.poc,
+            }
+        )
 
     if len(synth_bars) < 7:  # need at least 2*lookback+1 for daily (lookback=3)
         return None
@@ -484,6 +502,31 @@ def compute_precomputed_levels(
     # --- Multi-timeframe swing structure ---
     swing_structure = _compute_swing_from_summaries(summaries, current_date)
 
+    # --- IB range percentile: current session vs prior 30 sessions ---
+    # Ranks how large/small today's IB is compared to recent history.
+    # Requires ib_high/ib_low on SessionSummary (added 2026-04-13).
+    # Falls back to 0.5 for old summaries that pre-date the field.
+    ib_range_percentile: float = 0.5
+    ib_lookup_dates = prior_dates[-30:]
+    prior_ib_ranges = [
+        summaries[d].ib_high - summaries[d].ib_low
+        for d in ib_lookup_dates
+        if summaries[d].ib_high is not None and summaries[d].ib_low is not None
+    ]
+    if len(prior_ib_ranges) >= 5:
+        # Will be filled in at replay time once today's IB forms; store the
+        # sorted reference distribution so replay_engine can do the lookup.
+        prior_ib_ranges_sorted = sorted(prior_ib_ranges)
+    else:
+        prior_ib_ranges_sorted = []
+
+    # --- Prior VAs: last 3 sessions' VAH/VAL for composite_va_overlap ---
+    prior_vas: list[tuple[float, float]] = []
+    for d in prior_dates[-3:]:
+        s = summaries[d]
+        if s.vah and s.val and s.vah > s.val:
+            prior_vas.append((s.vah, s.val))
+
     return {
         "naked_pocs": naked_pocs,
         "poc_daily": poc_daily,
@@ -500,4 +543,6 @@ def compute_precomputed_levels(
         "overnight_low": globex_low,
         "single_print_zones": all_spz,
         "swing_structure": swing_structure,
+        "prior_ib_ranges_sorted": prior_ib_ranges_sorted,  # for ib_range_percentile
+        "prior_vas": prior_vas,  # for composite_va_overlap
     }

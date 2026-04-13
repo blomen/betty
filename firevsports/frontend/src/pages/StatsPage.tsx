@@ -196,7 +196,7 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
           {/* Dotted horizontal grid lines */}
           {yLines.map((l, i) => (
-            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" />
+            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" vectorEffect="non-scaling-stroke" />
           ))}
           {/* Gradient fill under line */}
           <defs>
@@ -207,10 +207,10 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
           </defs>
           <path d={`${pathD} L${pts[pts.length - 1].x.toFixed(1)},${H - PB} L${pts[0].x.toFixed(1)},${H - PB} Z`} fill="url(#bankrollGrad)" />
           {/* Main line */}
-          <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
           {/* Endpoint dot */}
-          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} />
-          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" />
+          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} vectorEffect="non-scaling-stroke" />
+          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" vectorEffect="non-scaling-stroke" />
         </svg>
         {/* Y labels — right side */}
         {yLines.map((l, i) => (
@@ -316,10 +316,10 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
           {/* Dotted horizontal grid lines */}
           {yLines.map((l, i) => (
-            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" />
+            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" vectorEffect="non-scaling-stroke" />
           ))}
           {/* Zero line — clear and prominent */}
-          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#484f58" strokeWidth="1" />
+          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#484f58" strokeWidth="1" vectorEffect="non-scaling-stroke" />
           {/* Gradient fill under line */}
           <defs>
             <linearGradient id="clvGrad" x1="0" y1="0" x2="0" y2="1">
@@ -329,10 +329,10 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
           </defs>
           <path d={`${avgPathD} L${clvPts[clvPts.length - 1].x.toFixed(1)},${H - PB} L${clvPts[0].x.toFixed(1)},${H - PB} Z`} fill="url(#clvGrad)" />
           {/* Main line */}
-          <path d={avgPathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={avgPathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
           {/* Endpoint dot */}
-          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} />
-          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" />
+          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} vectorEffect="non-scaling-stroke" />
+          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" vectorEffect="non-scaling-stroke" />
         </svg>
         {/* Zero label */}
         <span className="absolute text-[10px] text-[#8b949e] font-medium -translate-y-1/2" style={{ top: `${(zeroY / H * 100).toFixed(2)}%`, right: '4px' }}>0%</span>

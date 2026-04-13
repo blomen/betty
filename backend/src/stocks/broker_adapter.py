@@ -83,9 +83,12 @@ class TopstepXBrokerAdapter:
                 await self.client.liquidate_position()
             except Exception:
                 log.exception("Failed to liquidate position")
+            # If the order was never actually filled (entry_price=0), no fill will arrive —
+            # force tracker to flat now so the flatten scheduler doesn't loop forever.
+            if self.tracker.entry_price == 0.0:
+                self.tracker.on_exit(0.0)
+                self._pending_trade = None
 
-        # Don't close tracker here — real exit price arrives via on_stream_fill.
-        # Just log intent; P&L will be calculated when the fill comes through.
         log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
         return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
 
@@ -208,6 +211,11 @@ class TopstepXBrokerAdapter:
             log.exception("Market order failed")
             return {"rejected": True, "reason": "order_failed"}
 
+        if isinstance(result, dict) and not result.get("success", True):
+            err = result.get("errorMessage", "order_rejected")
+            log.warning("Market order rejected (errorCode=%s): %s", result.get("errorCode"), err)
+            return {"rejected": True, "reason": err}
+
         stop_order_id = None
         if stop_price > 0:
             try:
@@ -248,6 +256,10 @@ class TopstepXBrokerAdapter:
         if new_stop and new_stop > 0:
             return await self.modify_stop(new_stop)
         return None
+
+    def halt(self, reason: str) -> None:
+        """Halt trading for the rest of the session (public, for EOD/external callers)."""
+        self._halt(reason)
 
     def _halt(self, reason: str) -> None:
         """Halt trading for the session."""

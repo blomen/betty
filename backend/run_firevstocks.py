@@ -55,24 +55,74 @@ def _port_in_use(port: int) -> bool:
 
 
 def _kill_port(port: int, label: str) -> bool:
-    """Kill any process listening on the given port (Windows only)."""
+    """Kill any process listening on the given port (Windows only).
+
+    Uses PowerShell Get-NetTCPConnection as primary method (handles ghost PIDs
+    that show up in netstat but can't be found by Get-Process), with taskkill
+    as fallback for non-SSH processes.
+    """
+    killed = False
     try:
         result = subprocess.run(
-            ["netstat", "-ano"],
+            [
+                "powershell.exe",
+                "-Command",
+                f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue"
+                f" | Select-Object -ExpandProperty OwningProcess",
+            ],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=10,
         )
         for line in result.stdout.splitlines():
-            if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-                pid = line.strip().split()[-1]
+            pid = line.strip()
+            if not pid.isdigit():
+                continue
+            check = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-Command",
+                    f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if check.stdout.strip() == pid:
                 log.info("Killing old %s (PID %s) on port %d", label, pid, port)
-                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
-                time.sleep(0.5)
-                return True
+                subprocess.run(
+                    ["powershell.exe", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                killed = True
+            else:
+                log.info("Ghost socket on port %d (PID %s no longer exists) — skipping kill", port, pid)
     except Exception:
         pass
-    return False
+
+    if not killed:
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if f"127.0.0.1:{port}" in line and "LISTENING" in line:
+                    pid = line.strip().split()[-1]
+                    if pid.isdigit() and pid != "0":
+                        log.info("Killing old %s (PID %s) on port %d [fallback]", label, pid, port)
+                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                        killed = True
+                        break
+        except Exception:
+            pass
+
+    if killed:
+        time.sleep(0.5)
+    return killed
 
 
 _had_previous_instance = False
@@ -115,7 +165,8 @@ def _start_tunnels() -> bool:
             _kill_port(LOCAL_WS_PORT, "stale-ws-tunnel")
             time.sleep(1)
 
-    # Discover container IPs on server (port 8000 is only inside Docker, not on host)
+    # Backend publishes on host localhost:8000 (127.0.0.1:8000->8000/tcp in docker-compose).
+    # Postgres container IP is needed since postgres has no host port binding.
     log.info("Opening SSH tunnels to %s...", SERVER)
     try:
         result = subprocess.run(
@@ -132,23 +183,10 @@ def _start_tunnels() -> bool:
     except Exception:
         pg_ip = "172.18.0.2"
 
-    # Backend container IP (name may have prefix from Docker conflicts)
-    try:
-        result = subprocess.run(
-            ["ssh", f"root@{SERVER}", "docker compose -f /opt/firev/docker-compose.yml exec -T backend hostname -i"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        backend_ip = result.stdout.strip() or "172.18.0.4"
-    except Exception:
-        backend_ip = "172.18.0.4"
-
     log.info(
-        "Tunneling: pg=%s:5432 -> localhost:%d, backend=%s:8000 -> localhost:%d",
+        "Tunneling: pg=%s:5432 -> localhost:%d, backend=localhost:8000 -> localhost:%d",
         pg_ip,
         LOCAL_PG_PORT,
-        backend_ip,
         LOCAL_WS_PORT,
     )
 
@@ -156,27 +194,30 @@ def _start_tunnels() -> bool:
         [
             "ssh",
             "-N",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
             "-L",
             f"{LOCAL_PG_PORT}:{pg_ip}:5432",
             "-L",
-            f"{LOCAL_WS_PORT}:{backend_ip}:8000",
+            f"{LOCAL_WS_PORT}:localhost:8000",
             f"root@{SERVER}",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
 
-    # Wait for both ports to become available
-    for _ in range(30):
+    # Wait for both ports to become available (up to 30s)
+    for _ in range(60):
         time.sleep(0.5)
         if _port_in_use(LOCAL_PG_PORT) and _port_in_use(LOCAL_WS_PORT):
             log.info("SSH tunnels ready (pg=%d, ws=%d)", LOCAL_PG_PORT, LOCAL_WS_PORT)
-            # Now safe to set DB URLs — tunnel is up
             os.environ["DATABASE_URL"] = f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/firev"
             os.environ["MARKET_DATABASE_URL"] = f"postgresql://firev:{DB_PASSWORD}@127.0.0.1:{LOCAL_PG_PORT}/market"
             return True
 
-    log.error("SSH tunnels failed to start within 15s")
+    log.error("SSH tunnels failed to start within 30s")
     return False
 
 

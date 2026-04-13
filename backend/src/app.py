@@ -5,21 +5,20 @@ A Rich + Typer based terminal UI for betting analytics.
 """
 
 import asyncio
-from datetime import datetime
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from rich.table import Table
 
-from .db.models import init_db, get_session, Event, Odds, Provider, Bet, Profile
+from src.rl.cli import rl_app
+
+from .analysis.scanner import OpportunityScanner
+from .db.models import Event, Odds, Profile, Provider, get_session, init_db
 from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
-from .analysis.scanner import OpportunityScanner
-from src.rl.cli import rl_app
 
 console = Console(force_terminal=True)
 app = typer.Typer(help="Firev - Betting Analytics Platform")
@@ -47,9 +46,14 @@ def show_stats():
 
     # Count matched events
     from sqlalchemy import func
-    matched = session.query(Event).join(Odds).group_by(Event.id).having(
-        func.count(func.distinct(Odds.provider_id)) > 1
-    ).count()
+
+    matched = (
+        session.query(Event)
+        .join(Odds)
+        .group_by(Event.id)
+        .having(func.count(func.distinct(Odds.provider_id)) > 1)
+        .count()
+    )
 
     table = Table(title="Database Statistics", show_header=False)
     table.add_column("Metric", style="cyan")
@@ -124,7 +128,7 @@ def show_providers():
     console.print(table)
 
 
-async def run_extraction(providers: Optional[list] = None):
+async def run_extraction(providers: list | None = None):
     """Run the extraction pipeline.
 
     Polymarket is only extracted when explicitly included in providers list.
@@ -255,7 +259,9 @@ def run():
 
 @app.command()
 def extract(
-    providers: Optional[list[str]] = typer.Argument(None, help="Providers to extract from (include 'polymarket' to extract from Polymarket)"),
+    providers: list[str] | None = typer.Argument(
+        None, help="Providers to extract from (include 'polymarket' to extract from Polymarket)"
+    ),
 ):
     """Run extraction without interactive mode.
 
@@ -306,12 +312,12 @@ def value():
 @app.command()
 def ml_backfill(
     start: str = typer.Option("2025-01-01", help="Start date YYYY-MM-DD"),
-    end: Optional[str] = typer.Option(None, help="End date YYYY-MM-DD (default: today)"),
+    end: str | None = typer.Option(None, help="End date YYYY-MM-DD (default: today)"),
     symbol: str = typer.Option("NQ", help="Symbol"),
 ):
     """Backfill level touch training data from historical candles."""
-    from src.ml.level_touch.backfill import run_backfill
     from src.db.models import get_session_factory, init_db
+    from src.ml.level_touch.backfill import run_backfill
 
     init_db()
     factory = get_session_factory()
@@ -340,9 +346,10 @@ def ml_train_level_classifier(
     symbol: str = typer.Option("NQ", help="Symbol"),
 ):
     """Train the level touch classifier model."""
-    from src.ml.models.level_classifier import LevelClassifierModel
-    from src.db.models import LevelTouchOutcome, LevelTouchFeature, get_session, init_db
     import json
+
+    from src.db.models import LevelTouchFeature, LevelTouchOutcome, get_session, init_db
+    from src.ml.models.level_classifier import LevelClassifierModel
 
     init_db()
     session = get_session()
@@ -402,12 +409,15 @@ def backfill_tpo(
     symbol: str = typer.Option("NQ", help="Symbol"),
 ):
     """Backfill TPO session profiles from stored 1m candles."""
-    from datetime import date, timedelta, datetime as dt_cls, timezone as tz
-    from src.db.models import init_db, get_session_factory, MarketTPOSession
-    from src.market_data.tpo import build_full_tpo_profile, aggregate_bars_30m
-    from src.repositories.market_repo import MarketRepo
     import json
     from dataclasses import asdict
+    from datetime import date, timedelta
+    from datetime import datetime as dt_cls
+    from datetime import timezone as tz
+
+    from src.db.models import MarketTPOSession, get_session_factory, init_db
+    from src.market_data.tpo import aggregate_bars_30m, build_full_tpo_profile
+    from src.repositories.market_repo import MarketRepo
 
     init_db()
     session_factory = get_session_factory()
@@ -440,8 +450,10 @@ def backfill_tpo(
             # Convert MarketCandle ORM (.o/.h/.l/.c/.v) to BarData-like (.open/.high/.low/.close/.volume)
             class _Bar:
                 __slots__ = ("open", "high", "low", "close", "volume")
+
                 def __init__(self, r):
                     self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
+
             bars_30m = aggregate_bars_30m([_Bar(r) for r in bars])
             if not bars_30m:
                 current += timedelta(days=1)
@@ -449,20 +461,26 @@ def backfill_tpo(
 
             profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
 
-            db.add(MarketTPOSession(
-                symbol=symbol, date=date_str,
-                poc=profile.poc, vah=profile.vah, val=profile.val,
-                ib_high=profile.ib_high, ib_low=profile.ib_low,
-                rotation_factor=profile.rotation_factor,
-                profile_shape=profile.profile_shape,
-                opening_type=profile.opening_type,
-                opening_direction=profile.opening_direction,
-                upper_excess=profile.upper_excess,
-                lower_excess=profile.lower_excess,
-                session_high=profile.session_high,
-                session_low=profile.session_low,
-                session_json=json.dumps(asdict(profile), default=str),
-            ))
+            db.add(
+                MarketTPOSession(
+                    symbol=symbol,
+                    date=date_str,
+                    poc=profile.poc,
+                    vah=profile.vah,
+                    val=profile.val,
+                    ib_high=profile.ib_high,
+                    ib_low=profile.ib_low,
+                    rotation_factor=profile.rotation_factor,
+                    profile_shape=profile.profile_shape,
+                    opening_type=profile.opening_type,
+                    opening_direction=profile.opening_direction,
+                    upper_excess=profile.upper_excess,
+                    lower_excess=profile.lower_excess,
+                    session_high=profile.session_high,
+                    session_low=profile.session_low,
+                    session_json=json.dumps(asdict(profile), default=str),
+                )
+            )
             db.commit()
             stored += 1
             current += timedelta(days=1)

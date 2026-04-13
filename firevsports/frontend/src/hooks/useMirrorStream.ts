@@ -17,6 +17,7 @@ export function useMirrorStream() {
     const eventTypes = [
       'play_started', 'provider_activated', 'provider_skipped', 'provider_complete',
       'login_waiting', 'login_detected',
+      'settling_pending', 'settling_done',
       'bet_navigated', 'bet_ready', 'bet_placed', 'bet_skipped', 'bet_failed',
       'play_complete', 'play_stopped',
       'pending_started', 'history_synced', 'settlements_detected', 'settlements_confirmed',
