@@ -946,6 +946,23 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("Live RL episode collector not available", exc_info=True)
 
+    # ── TopstepX candle poller (REST-based, no WebSocket session) ──
+    _topstepx_poller = None
+    if os.environ.get("TOPSTEPX_POLLER_ENABLED", "").lower() in ("1", "true", "yes"):
+        from ..db.models import get_market_session as _poller_db
+        from ..market_data.topstepx_poller import TopstepXPoller
+
+        _topstepx_poller = TopstepXPoller(db_session_factory=_poller_db)
+        app.state.topstepx_poller = _topstepx_poller
+
+        _poller_task = asyncio.create_task(_topstepx_poller.start())
+        _poller_task.set_name("topstepx-poller")
+        _background_tasks.add(_poller_task)
+        _poller_task.add_done_callback(_background_tasks.discard)
+        logger.info("[Startup] TopstepX candle poller enabled")
+    else:
+        logger.info("[Startup] TopstepX candle poller disabled (set TOPSTEPX_POLLER_ENABLED=true)")
+
     yield  # App is running
 
     # Graceful shutdown — flush live episodes before stopping
@@ -1097,12 +1114,16 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/health")
 async def health():
     """Basic health check endpoint with boot ID for restart detection."""
-    return {
+    result = {
         "status": "ok",
         "time": datetime.now(timezone.utc).isoformat(),
         "boot_id": _boot_id,
         "uptime": round(time.time() - _startup_time) if _startup_time else 0,
     }
+    poller = getattr(app.state, "topstepx_poller", None)
+    if poller:
+        result["market_data_poller"] = poller.get_status()
+    return result
 
 
 @app.get("/health/live")
