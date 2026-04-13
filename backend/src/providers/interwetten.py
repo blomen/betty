@@ -352,8 +352,11 @@ class InterwettenRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] League {league_slug} navigation: {e}")
             return [], {}
 
+        # Dismiss cookie banner on worker pages (Truendo uses localStorage — not shared across tabs)
+        await self._dismiss_cookie_banner(page)
+
         try:
-            await page.wait_for_selector(".s-event", timeout=3000)
+            await page.wait_for_selector(".s-event", timeout=5000, state="attached")
         except Exception:
             return [], {}
 
