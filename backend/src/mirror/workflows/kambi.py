@@ -126,11 +126,124 @@ class KambiWorkflow(ProviderWorkflow):
         return await self._fetch_graphql_balance(page)
 
     # ------------------------------------------------------------------
-    # History
+    # History — KSP betting API (api/v1/betting/bet-history)
+    #
+    # Discovery (2026-04-14): endpoint is sportsbook-feeds/betting-api/api/v1/betting/bet-history
+    # Returns 400 without auth, 200 with session cookies (logged-in user).
+    # betStatus param filters by OPEN / WON / LOST / VOID / CASHOUT.
     # ------------------------------------------------------------------
 
+    _BET_HISTORY_BASE = "sportsbook-feeds/betting-api/api/v1/betting/bet-history"
+
+    def _ksp_history_url(self, status: str, size: int = 50) -> str:
+        return f"https://www.{self.domain}/{self._BET_HISTORY_BASE}?betStatus={status}&page=0&size={size}"
+
+    def _parse_ksp_bets(self, data: dict, status_hint: str) -> list[HistoryEntry]:
+        """Parse KSP bet-history API response into HistoryEntry list."""
+        status_map = {
+            "WON": "won",
+            "WIN": "won",
+            "LOST": "lost",
+            "LOSS": "lost",
+            "VOID": "void",
+            "VOIDED": "void",
+            "CASHOUT": "cashout",
+            "CASH_OUT": "cashout",
+            "OPEN": "pending",
+            "PENDING": "pending",
+        }
+        bets = (
+            data.get("bets") or data.get("content") or data.get("items") or (data.get("data") or {}).get("bets") or []
+        )
+        if not isinstance(bets, list):
+            return []
+
+        entries: list[HistoryEntry] = []
+        for bet in bets:
+            if not isinstance(bet, dict):
+                continue
+            try:
+                raw_status = str(bet.get("status") or bet.get("betStatus") or status_hint).upper()
+                mapped = status_map.get(raw_status, "pending")
+
+                bet_id = str(bet.get("id") or bet.get("betId") or bet.get("couponId") or "")
+
+                selections = bet.get("selections") or bet.get("legs") or bet.get("betOffers") or []
+                event_name = outcome_name = market = ""
+                odds = 0.0
+                if isinstance(selections, list) and selections:
+                    sel = selections[0]
+                    home = sel.get("homeName") or sel.get("homeTeam") or ""
+                    away = sel.get("awayName") or sel.get("awayTeam") or ""
+                    event_name = (
+                        sel.get("eventName")
+                        or sel.get("event")
+                        or (f"{home} v {away}".strip(" v ") if home or away else "")
+                    )
+                    outcome_name = sel.get("outcomeName") or sel.get("outcome") or ""
+                    market = sel.get("marketName") or sel.get("market") or ""
+                    odds = float(sel.get("odds") or sel.get("price") or sel.get("oddsDecimal") or 0)
+
+                if not event_name:
+                    event_name = str(bet.get("eventName") or bet.get("description") or "")
+                if not odds:
+                    odds = float(bet.get("odds") or bet.get("totalOdds") or 0)
+
+                stake_raw = bet.get("stake") or {}
+                stake = float(
+                    (stake_raw.get("amount") if isinstance(stake_raw, dict) else stake_raw)
+                    or bet.get("stakeAmount")
+                    or 0
+                )
+
+                payout_raw = bet.get("payout") or bet.get("winnings") or {}
+                payout = (
+                    float(
+                        (payout_raw.get("amount") if isinstance(payout_raw, dict) else payout_raw)
+                        or bet.get("payoutAmount")
+                        or 0
+                    )
+                    or None
+                )
+
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=bet_id,
+                        event_name=event_name,
+                        market=market,
+                        outcome=outcome_name,
+                        odds=odds,
+                        stake=stake,
+                        status=mapped,
+                        payout=payout,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] _parse_ksp_bets: skipped bet: {e}")
+
+        return entries
+
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Navigate to bet history page — service.py SSR scraper handles parsing."""
+        """Fetch all bets (open + settled) from KSP betting API.
+
+        Tries the REST endpoint first; falls back to navigating bet history page
+        if the API is unreachable (no session / provider not wired).
+        """
+        all_entries: list[HistoryEntry] = []
+        for status in ("OPEN", "WON", "LOST", "VOID", "CASHOUT"):
+            try:
+                result = await self._evaluate_api(page, self._ksp_history_url(status))
+                if result and "__error" not in result:
+                    entries = self._parse_ksp_bets(result, status)
+                    all_entries.extend(entries)
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] sync_history {status}: {e}")
+
+        if all_entries:
+            logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} bets from API")
+            return all_entries
+
+        # Fallback: navigate to history page (pending_loop SSR path picks it up)
         hist_url = f"https://www.{self.domain}/betting/sports/bethistory"
         if "/bethistory" not in (page.url or ""):
             try:
@@ -139,6 +252,30 @@ class KambiWorkflow(ProviderWorkflow):
             except Exception as e:
                 logger.warning(f"[{self.provider_id}] Could not navigate to bet history: {e}")
         return []
+
+    async def fetch_positions(self, page: Page) -> list[PositionEntry]:
+        """Fetch open bets from KSP betting API."""
+        try:
+            result = await self._evaluate_api(page, self._ksp_history_url("OPEN"))
+            if not result or "__error" in result:
+                return []
+            history = self._parse_ksp_bets(result, "OPEN")
+            positions = [
+                PositionEntry(
+                    provider_bet_id=e.provider_bet_id,
+                    event_name=e.event_name,
+                    market=e.market,
+                    outcome=e.outcome,
+                    odds=e.odds,
+                    stake=e.stake,
+                )
+                for e in history
+            ]
+            logger.info(f"[{self.provider_id}] fetch_positions: {len(positions)} open bets")
+            return positions
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] fetch_positions failed: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Navigation
