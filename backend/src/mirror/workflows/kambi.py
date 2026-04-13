@@ -162,26 +162,121 @@ class KambiWorkflow(ProviderWorkflow):
             return False
 
     # ------------------------------------------------------------------
-    # Placement — Phase 2, filled after live discovery session
+    # Placement — two-phase: prep (auto-fill) then confirm (click submit)
+    #
+    # Discovery (2026-04-14, Unibet/Kambi):
+    #   - Add outcome:  window.isolatedBetslip.addOutcomeIds([outcomeId])
+    #   - Show betslip: window.isolatedBetslip.showBetslip()
+    #   - Stake input:  input.mod-KambiBC-js-stake-input  (main frame DOM, not iframe)
+    #   - Place button: button.mod-KambiBC-betslip__place-bet-btn
+    #   - KambiWidget.api is EMPTY — isolatedBetslip is the correct API
     # ------------------------------------------------------------------
 
+    _STAKE_SELECTOR = "input.mod-KambiBC-js-stake-input"
+    _PLACE_SELECTOR = "button.mod-KambiBC-betslip__place-bet-btn"
+
     async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Phase 2 placeholder — implemented after live discovery of Kambi Widget API."""
+        """Auto-select outcome + fill stake via Kambi isolatedBetslip API.
+
+        Calls addOutcomeIds([outcomeId]) to add the bet to the betslip, then
+        fills the stake input. The betslip renders in the main frame DOM.
+        """
+        bet_id = getattr(bet, "bet_id", 0) or 0
+        target_odds = getattr(bet, "odds", None)
+        outcome_id = getattr(bet, "kambi_outcome_id", "")
+
+        if not outcome_id:
+            logger.warning(f"[{self.provider_id}] prep_betslip: no kambi_outcome_id — manual placement")
+            return PlacementResult(
+                status="prepped",
+                bet_id=bet_id,
+                actual_odds=target_odds,
+                actual_stake=stake,
+                reason="no_outcome_id_manual",
+            )
+
+        # 1. Add outcome to betslip via Kambi JS API
+        try:
+            await page.evaluate(f"""
+                () => {{
+                    const ib = window.isolatedBetslip;
+                    if (ib) {{
+                        ib.addOutcomeIds([{int(outcome_id)}]);
+                        ib.showBetslip();
+                    }}
+                }}
+            """)
+            logger.info(
+                f"[{self.provider_id}] addOutcomeIds({outcome_id}) called — "
+                f"{getattr(bet, 'display_home', '?')} v {getattr(bet, 'display_away', '?')} "
+                f"{getattr(bet, 'outcome', '')} @ {target_odds}"
+            )
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] addOutcomeIds failed: {e}")
+            return PlacementResult(status="failed", bet_id=bet_id, reason=f"add_outcome_failed: {e}")
+
+        # 2. Wait for stake input to appear in DOM
+        try:
+            await page.wait_for_selector(self._STAKE_SELECTOR, timeout=10000)
+        except Exception:
+            logger.warning(f"[{self.provider_id}] prep_betslip: stake input not found after addOutcomeIds")
+            return PlacementResult(status="failed", bet_id=bet_id, reason="stake_input_not_found")
+
+        # 3. Fill stake — triple-click to clear existing value then fill
+        stake_str = str(int(stake)) if stake == int(stake) else f"{stake:.2f}"
+        try:
+            stake_el = page.locator(self._STAKE_SELECTOR).first
+            await stake_el.click(click_count=3, timeout=5000)
+            await stake_el.fill(stake_str, timeout=5000)
+            # Dispatch input/change so Kambi JS re-validates the value
+            await page.evaluate("""
+                () => {
+                    const inp = document.querySelector('input.mod-KambiBC-js-stake-input');
+                    if (inp) {
+                        inp.dispatchEvent(new Event('input', {bubbles: true}));
+                        inp.dispatchEvent(new Event('change', {bubbles: true}));
+                    }
+                }
+            """)
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] prep_betslip: stake fill failed: {e}")
+            return PlacementResult(status="failed", bet_id=bet_id, reason=f"stake_fill_failed: {e}")
+
+        logger.info(f"[{self.provider_id}] prep_betslip done — stake={stake_str}, outcomeId={outcome_id}")
         return PlacementResult(
-            status="no_prep",
-            bet_id=getattr(bet, "bet_id", 0),
-            reason="phase2_not_implemented",
+            status="prepped",
+            bet_id=bet_id,
+            actual_odds=target_odds,
+            actual_stake=stake,
+            reason="kambi_selected",
         )
 
     async def confirm_bet(self, page: Page) -> PlacementResult:
-        """Phase 2 placeholder — implemented after live discovery of Place button selector."""
-        return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
+        """Click the Place Bet button and wait for betslip to clear."""
+        try:
+            # Wait for button to be enabled (odds may need a moment to validate)
+            await page.wait_for_selector(f"{self._PLACE_SELECTOR}:not([disabled])", timeout=8000)
+            btn = page.locator(self._PLACE_SELECTOR).first
+            await btn.click(timeout=5000)
+            logger.info(f"[{self.provider_id}] confirm_bet: clicked place button")
+
+            # Wait up to 4s for betslip outcome to be removed (placement success indicator)
+            await asyncio.sleep(2)
+            outcome_gone = await page.evaluate(
+                "() => !document.querySelector('.mod-KambiBC-betslip-outcome__close-btn')"
+            )
+            if outcome_gone:
+                return PlacementResult(status="placed", bet_id=0, reason="betslip_cleared")
+
+            return PlacementResult(status="placed", bet_id=0, reason="clicked_place")
+
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] confirm_bet failed: {e}")
+            return PlacementResult(status="manual", bet_id=0, reason=f"confirm_failed: {e}")
 
     async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Manual placement fallback."""
-        return PlacementResult(
-            status="manual",
-            bet_id=getattr(bet, "bet_id", 0),
-            actual_stake=stake,
-            reason="manual_placement",
-        )
+        """Full two-phase placement (prep + confirm)."""
+        prep = await self.prep_betslip(page, bet, stake)
+        if prep.status != "prepped":
+            return prep
+        return await self.confirm_bet(page)
