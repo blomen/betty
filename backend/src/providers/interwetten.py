@@ -472,7 +472,7 @@ class InterwettenRetriever(BrowserRetriever):
             try:
                 async with sem:
                     url = f"{self.base_url}{href}"
-                    resp = await worker_page.goto(url, wait_until="domcontentloaded", timeout=8000)
+                    resp = await worker_page.goto(url, wait_until="domcontentloaded", timeout=20000)
                     if not resp or resp.status != 200:
                         errors += 1
                         return
