@@ -3,8 +3,9 @@
 Stake uses a GraphQL API at https://stake.com/_api/graphql.
 No authentication is required for odds data.
 """
-from typing import List, Optional, Any
+
 import logging
+from typing import Any
 
 from ..core.retriever import Retriever, StandardEvent
 from ..core.transport import HttpTransport
@@ -34,12 +35,13 @@ _DRAW_NAMES = {"draw", "x", "tie"}
 _SPORT_MAP = {
     "football": "football",
     "basketball": "basketball",
-    "ice-hockey": "ice-hockey",
+    "ice_hockey": "ice-hockey",
     "tennis": "tennis",
     "baseball": "baseball",
-    "american-football": "american-football",
+    "american_football": "american-football",
     "mma": "mma",
     "boxing": "boxing",
+    "esports": "esports",
 }
 
 # GraphQL query to fetch pre-match fixtures for a sport
@@ -73,7 +75,7 @@ def parse_outcomes_to_market(
     outcomes: list,
     group_name: str,
     sport: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Parse a Stake outcome list into a normalized market dict.
 
     Returns None if:
@@ -111,7 +113,7 @@ def parse_fixture(
     fixture: dict,
     sport: str,
     provider_id: str,
-) -> Optional[StandardEvent]:
+) -> StandardEvent | None:
     """Parse a single Stake fixture dict into a StandardEvent.
 
     Returns None for live/ended/cancelled/suspended events or fixtures
@@ -168,6 +170,7 @@ class StakeRetriever(Retriever):
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
             import os
+
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
@@ -179,11 +182,11 @@ class StakeRetriever(Retriever):
         """Not used — we override extract() with a POST request."""
         return ""
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — parsing is done inside extract()."""
         return []
 
-    async def extract(self, sport: str, limit: int = 200, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 200, **kwargs) -> list[StandardEvent]:
         """Extract pre-match fixtures for a sport from Stake GraphQL API."""
         sport_slug = _SPORT_MAP.get(sport)
         if not sport_slug:
@@ -205,11 +208,7 @@ class StakeRetriever(Retriever):
             logger.warning(f"[{self.provider_id}] No data returned for sport '{sport}'")
             return []
 
-        fixtures = (
-            data.get("data", {})
-            .get("sport", {})
-            .get("fixtures") or []
-        )
+        fixtures = data.get("data", {}).get("sport", {}).get("fixtures") or []
 
         events = []
         for fixture in fixtures:
@@ -218,7 +217,6 @@ class StakeRetriever(Retriever):
                 events.append(event)
 
         logger.debug(
-            f"[{self.provider_id}] Parsed {len(events)} events for sport '{sport}' "
-            f"from {len(fixtures)} fixtures"
+            f"[{self.provider_id}] Parsed {len(events)} events for sport '{sport}' from {len(fixtures)} fixtures"
         )
         return events
