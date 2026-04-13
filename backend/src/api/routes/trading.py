@@ -1,5 +1,8 @@
 """Trading API routes — thin handlers delegating to TradingService."""
 
+import asyncio
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
