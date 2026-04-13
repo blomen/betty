@@ -402,6 +402,70 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return {"trades": []}
 
+    @app.get("/api/broker-trades")
+    async def get_broker_trades(days: int = 30):
+        """Return completed trades from local broker_trades table."""
+        import asyncio
+        from functools import partial
+
+        def _query(days: int):
+            from datetime import datetime, timedelta, timezone
+
+            from sqlalchemy import create_engine, text
+
+            db_url = os.environ.get(
+                "MARKET_DATABASE_URL",
+                f"postgresql://firev:{os.environ.get('DB_PASSWORD', '')}@127.0.0.1:15432/market",
+            )
+            eng = create_engine(db_url, pool_pre_ping=True)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            with eng.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT id, ts, session_date, symbol, side, size, "
+                        "entry_price, stop_price, exit_price, pnl_dollars, pnl_r, "
+                        "signal_action, signal_confidence, signal_zone, closed_at "
+                        "FROM broker_trades WHERE ts >= :cutoff ORDER BY ts DESC"
+                    ),
+                    {"cutoff": cutoff},
+                ).fetchall()
+            return [dict(r._mapping) for r in rows]
+
+        loop = asyncio.get_event_loop()
+        try:
+            trades = await loop.run_in_executor(None, partial(_query, days))
+            return {"trades": trades}
+        except Exception:
+            log.exception("Failed to query broker_trades")
+            return {"trades": []}
+
+    @app.get("/api/model-status")
+    async def get_model_status():
+        """Return live model/adapter status."""
+        adapter = _state.get("adapter")
+        stats = _state["stats"]
+        result = {
+            "relay_connected": stats.get("relay_connected", False),
+            "stream_running": stats.get("stream_running", False),
+            "trade_count": stats.get("trade_count", 0),
+            "signal_count": stats.get("signal_count", 0),
+            "session_start": stats.get("session_start"),
+        }
+        if adapter:
+            tracker = adapter.tracker
+            result["halted"] = adapter._halted
+            result["halt_reason"] = adapter._halt_reason
+            result["session_pnl"] = tracker.session_pnl
+            result["peak_equity"] = tracker.peak_equity
+            result["trailing_dd"] = tracker.trailing_dd
+            result["consecutive_stops"] = tracker.consecutive_stops
+            result["is_flat"] = tracker.is_flat
+            result["position_side"] = tracker.side
+            result["position_size"] = tracker.size
+            result["entry_price"] = tracker.entry_price
+            result["stop_price"] = tracker.stop_price
+        return result
+
     @app.get("/api/account-info")
     async def get_account_info():
         client = _state.get("topstepx_client")
@@ -492,6 +556,11 @@ def record_signal(signal: dict) -> None:
     _state["signals"].append(signal)
     _state["stats"]["signal_count"] += 1
     _emit({"type": "signal", **signal})
+
+
+def record_dqn_inference(inference: dict) -> None:
+    """Called from pipeline when a DQN inference event arrives (for live viz)."""
+    _emit(inference)  # already has type: dqn_inference
 
 
 def record_fill(fill: dict) -> None:

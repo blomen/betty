@@ -39,11 +39,69 @@ const IB_DURATION = 60           // first 60 min of NY
 export function computeVP(candles: CandleData[]): VPData {
   if (!candles.length) return { levels: [], poc: 0, vah: 0, val: 0, timeframe: 'session' }
 
-  // Bucket volume by tick-snapped close price
+  // Distribute volume across the full bar range (low→high) at each tick level
+  // Matches backend _accumulate_bars_into_buckets logic
   const buckets = new Map<number, number>()
   for (const c of candles) {
-    const price = Math.round(c.c / TICK_SIZE) * TICK_SIZE
-    buckets.set(price, (buckets.get(price) ?? 0) + c.v)
+    const lowSnapped = Math.round(c.l / TICK_SIZE) * TICK_SIZE
+    const highSnapped = Math.round(c.h / TICK_SIZE) * TICK_SIZE
+    const volume = Math.max(c.v, 1)
+
+    if (highSnapped <= lowSnapped || volume <= 0) {
+      // Degenerate bar — all volume at close
+      const p = Math.round(c.c / TICK_SIZE) * TICK_SIZE
+      buckets.set(p, (buckets.get(p) ?? 0) + volume)
+      continue
+    }
+
+    const nLevels = Math.round((highSnapped - lowSnapped) / TICK_SIZE) + 1
+    const volPerLevel = Math.floor(volume / nLevels)
+
+    if (volPerLevel > 0) {
+      // Spread volume evenly across the range
+      let remainder = volume - volPerLevel * nLevels
+      for (let i = 0; i < nLevels; i++) {
+        const p = Math.round((lowSnapped + i * TICK_SIZE) * 1e10) / 1e10
+        buckets.set(p, (buckets.get(p) ?? 0) + volPerLevel)
+      }
+      // Distribute remainder near close
+      if (remainder > 0) {
+        const closeSnapped = Math.round(c.c / TICK_SIZE) * TICK_SIZE
+        let given = 0, offset = 0
+        while (given < remainder) {
+          for (const p of [
+            Math.round((closeSnapped + offset * TICK_SIZE) * 1e10) / 1e10,
+            Math.round((closeSnapped - offset * TICK_SIZE) * 1e10) / 1e10,
+          ]) {
+            if (given >= remainder) break
+            if (p >= lowSnapped && p <= highSnapped) {
+              buckets.set(p, (buckets.get(p) ?? 0) + 1)
+              given++
+            }
+          }
+          offset++
+          if (offset > nLevels) break
+        }
+      }
+    } else {
+      // TPO-style: volume < nLevels — place all near close
+      const closeSnapped = Math.round(c.c / TICK_SIZE) * TICK_SIZE
+      let given = 0, offset = 0
+      while (given < volume) {
+        for (const p of [
+          Math.round((closeSnapped + offset * TICK_SIZE) * 1e10) / 1e10,
+          Math.round((closeSnapped - offset * TICK_SIZE) * 1e10) / 1e10,
+        ]) {
+          if (given >= volume) break
+          if (p >= lowSnapped && p <= highSnapped) {
+            buckets.set(p, (buckets.get(p) ?? 0) + 1)
+            given++
+          }
+        }
+        offset++
+        if (offset > nLevels) break
+      }
+    }
   }
 
   if (buckets.size === 0) return { levels: [], poc: 0, vah: 0, val: 0, timeframe: 'session' }

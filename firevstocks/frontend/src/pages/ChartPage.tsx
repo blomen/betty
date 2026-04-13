@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CandleChart } from './CandleChart'
-import type { CandleData, ExpandedSession, Zone, Signal, Fill, ExitEvent } from '@/types'
+import { api } from '@/hooks/useApi'
+import type { CandleData, ExpandedSession, Zone, Signal, Fill, ExitEvent, ModelStatus } from '@/types'
 import type { TickEvent } from '@/hooks/useDashboardWS'
 
 interface Props {
@@ -28,6 +29,7 @@ const LEVEL_GROUPS: Record<string, string[]> = {
   daily_swing: ['daily_swing'],
   weekly_swing: ['weekly_swing'],
   zones: ['zones'],
+  fvg: ['fvg'],
 }
 
 // Display config for sidebar
@@ -37,6 +39,7 @@ const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label
     groups: [
       { key: 'vwap', label: 'VWAP', color: '#EAB308' },
       { key: 'zones', label: 'Zones', color: '#A78BFA' },
+      { key: 'fvg', label: 'FVG Confluence', color: '#10B981' },
     ],
   },
   {
@@ -110,6 +113,15 @@ export function ChartPage({ lastTick, session, zones, signals, fills, exits }: P
     const keys = LEVEL_GROUPS[group]
     return keys ? keys.every(k => hiddenLevels.has(k)) : false
   }
+
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null)
+
+  useEffect(() => {
+    const fetch = () => { api.getModelStatus().then(setModelStatus).catch(() => {}) }
+    fetch()
+    const iv = setInterval(fetch, 5_000)
+    return () => clearInterval(iv)
+  }, [])
 
   const [lastCandle, setLastCandle] = useState<CandleData | null>(null)
   const candleIntervalSec = interval === '1m' ? 60 : interval === '5m' ? 300 : 900
@@ -190,6 +202,7 @@ export function ChartPage({ lastTick, session, zones, signals, fills, exits }: P
             signals={signals}
             fills={fills}
             exits={exits}
+            modelStatus={modelStatus}
             interval={interval}
           />
         </div>

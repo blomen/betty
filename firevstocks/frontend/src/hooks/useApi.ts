@@ -54,6 +54,14 @@ export const api = {
     return fetchJson<import('@/types').Account>('/account-info')
   },
 
+  getBrokerTrades(days = 30) {
+    return fetchJson<{ trades: import('@/types').BrokerTrade[] }>(`/broker-trades?days=${days}`)
+  },
+
+  getModelStatus() {
+    return fetchJson<import('@/types').ModelStatus>('/model-status')
+  },
+
   getLevels(date?: string) {
     const params = date ? `?date=${date}` : ''
     return fetchJson<import('@/types').LevelEntry[]>(`/levels${params}`)

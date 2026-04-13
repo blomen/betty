@@ -73,10 +73,10 @@ export default function App() {
           />
         )}
         {activeTab === 'dqn' && (
-          <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} />
+          <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} dqnInference={ws.dqnInference} />
         )}
         {activeTab === 'bankroll' && (
-          <BankrollPage positions={ws.positions} fills={ws.fills} exits={ws.exits} lastPrice={ws.lastPrice} />
+          <BankrollPage positions={ws.positions} lastPrice={ws.lastPrice} />
         )}
         {activeTab === 'stats' && <StatsPage />}
       </div>

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
@@ -188,7 +189,12 @@ class TopstepXBrokerAdapter:
         is_long = "long" in action.lower()
         order_action = "Buy" if is_long else "Sell"
         stop_action = "Sell" if is_long else "Buy"
-        size = min(int(signal.get("size", 1) or 1), self.config.max_position)
+        raw_size = float(signal.get("size", 1) or 1)
+        # Model sends fractional Kelly sizing (e.g. 0.25 = 25% of max_position)
+        if raw_size < 1:
+            size = max(1, round(raw_size * self.config.max_position))
+        else:
+            size = min(int(raw_size), self.config.max_position)
         stop_price = float(signal.get("stop_price", 0) or 0)
 
         if not self.tracker.is_flat:

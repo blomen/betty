@@ -12,7 +12,7 @@ import {
 } from 'lightweight-charts';
 import { api } from '@/hooks/useApi';
 import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels, computeAllDayTPOs } from '@/lib/indicators';
-import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent } from '@/types';
+import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent, ModelStatus } from '@/types';
 
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
@@ -97,6 +97,7 @@ interface Props {
   signals?: Signal[];
   fills?: Fill[];
   exits?: ExitEvent[];
+  modelStatus?: ModelStatus | null;
   interval?: '1m' | '5m' | '15m';
 }
 
@@ -171,7 +172,7 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals, fills, exits, interval = '1m' }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals, fills, exits, modelStatus, interval = '1m' }: Props) {
   const CACHE_KEY = `firevstocks_candles_v2_${interval}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -201,9 +202,14 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   // Session levels overlay data (per-day IB, Tokyo, London, swing levels)
   const sessionLevelsRef = useRef<import('@/types').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
+  const [structLoaded, setStructLoaded] = useState(false);
 
   // Swing pivot levels from server (stored separately so client-side recompute doesn't clobber them)
   const swingPivotsRef = useRef<import('@/types').SwingPivot[]>([]);
+
+  // FVGs and order blocks from /levels endpoint
+  const fvgsRef = useRef<Array<{ low: number; high: number; direction: string }>>([]);
+  const obsRef = useRef<Array<{ low: number; high: number; direction: string }>>([]);
 
   // Per-day TPO data (date -> SessionTPOResponse)
   const sessionTPOMapRef = useRef<Map<string, SessionTPOResponse>>(new Map());
@@ -222,6 +228,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   useEffect(() => { fillsRef.current = fills ?? []; }, [fills]);
   const exitsRef = useRef<ExitEvent[]>([]);
   useEffect(() => { exitsRef.current = exits ?? []; }, [exits]);
+  const modelStatusRef = useRef<ModelStatus | null>(null);
+  useEffect(() => { modelStatusRef.current = modelStatus ?? null; }, [modelStatus]);
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -293,7 +301,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
     const hidden = hiddenRef.current;
 
     // Helper: draw a single VP histogram with pixel-bucketing for crisp rendering
-    const drawVPHistogram = (vp: VPData, color: [number, number, number], isDaily: boolean) => {
+    // showLabels: only draw POC/VAH/VAL text labels for today's daily VP (price lines handle the rest)
+    const drawVPHistogram = (vp: VPData, color: [number, number, number], isDaily: boolean, showLabels = false) => {
       const maxVol = Math.max(...vp.levels.map(l => l.volume));
       if (maxVol <= 0) return;
       const [r, g, b] = color;
@@ -347,8 +356,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         ctx.fillRect(xRight - barW, py - Math.floor(barH / 2), barW, barH);
       }
 
-      // POC label
-      if (pocY !== null && pocY >= 0 && pocY <= rect.height) {
+      // POC label — only for today's daily VP (price lines show dPOC/wPOC/mPOC for all others)
+      if (showLabels && pocY !== null && pocY >= 0 && pocY <= rect.height) {
         const pocPx = Math.round(pocY);
         const pocBucket = pixelBuckets.get(pocPx);
         const pocBarW = pocBucket ? (pocBucket.volume / bucketMax) * maxBarWidth : 0;
@@ -358,8 +367,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         ctx.fillText('POC', xRight - pocBarW - 3, pocPx + 3);
       }
 
-      // VAH/VAL dashed lines (only for daily VP to avoid clutter)
-      if (isDaily) {
+      // VAH/VAL dashed lines (only for today's daily VP — price lines handle the rest)
+      if (showLabels && isDaily) {
         for (const { price, label } of [
           { price: vp.vah, label: 'VAH' },
           { price: vp.val, label: 'VAL' },
@@ -401,10 +410,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
     if (!hidden?.has('vp_session')) {
       const dailyColor: [number, number, number] = [168, 85, 247]; // purple
 
-      // Today's session VP (from global fetch)
+      // Today's session VP (from global fetch) — only today gets canvas POC/VAH/VAL labels
       const todayVP = vpMap.get('session');
       if (todayVP && todayVP.levels.length) {
-        drawVPHistogram(todayVP, dailyColor, true);
+        drawVPHistogram(todayVP, dailyColor, true, true);
       }
 
       // Historical per-day VPs (lower opacity, reuse pixel-bucketing via drawVPHistogram)
@@ -694,16 +703,26 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // --- Zones overlay (dashed purple horizontal lines with member count) ---
+    // --- Zones overlay (dashed purple lines; cyan glow if FVG confluence) ---
     const currentZones = zonesRef.current;
+    const currentFvgs = fvgsRef.current;
     if (currentZones.length > 0 && !hidden?.has('zones')) {
       for (const zone of currentZones) {
         const y = pSeries.priceToCoordinate(zone.price);
         if (y === null || y < 0 || y > rect.height) continue;
 
+        // Check if this zone has FVG confluence
+        const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
+
         ctx.save();
-        ctx.strokeStyle = 'rgba(168, 85, 247, 0.7)';
-        ctx.lineWidth = 1;
+        if (hasFvg) {
+          // FVG confluence glow: wider band behind the zone line
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
+          ctx.fillRect(0, y - 6, rect.width - priceScaleWidth, 12);
+        }
+
+        ctx.strokeStyle = hasFvg ? 'rgba(16, 185, 129, 0.8)' : 'rgba(168, 85, 247, 0.7)';
+        ctx.lineWidth = hasFvg ? 1.5 : 1;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(0, y);
@@ -711,9 +730,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.font = '9px monospace';
-        ctx.fillStyle = 'rgba(168, 85, 247, 0.8)';
         ctx.textAlign = 'left';
-        ctx.fillText(`Z${zone.members}`, 3, y - 3);
+        const label = hasFvg ? `Z${zone.members} FVG` : `Z${zone.members}`;
+        ctx.fillStyle = hasFvg ? 'rgba(16, 185, 129, 0.9)' : 'rgba(168, 85, 247, 0.8)';
+        ctx.fillText(label, 3, y - 3);
         ctx.restore();
       }
     }
@@ -825,6 +845,90 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
           ctx.stroke();
         }
         ctx.restore();
+      }
+    }
+
+    // --- Live position overlay (entry + stop horizontal lines) ---
+    const ms = modelStatusRef.current;
+    if (ms && !ms.is_flat && ms.entry_price && ms.entry_price > 0) {
+      const isLong = ms.position_side === 'long';
+      const entryColor = isLong ? '#10B981' : '#EF4444'; // green long / red short
+      const stopColor = '#F59E0B'; // amber stop
+
+      // Entry line
+      const entryY = pSeries.priceToCoordinate(ms.entry_price);
+      if (entryY !== null && entryY >= 0 && entryY <= rect.height) {
+        ctx.save();
+        ctx.strokeStyle = entryColor;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, entryY);
+        ctx.lineTo(rect.width - priceScaleWidth, entryY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Entry label
+        ctx.font = 'bold 9px monospace';
+        ctx.fillStyle = entryColor;
+        ctx.textAlign = 'left';
+        const sideLabel = isLong ? 'LONG' : 'SHORT';
+        const sizeLabel = ms.position_size ? `${ms.position_size}ct` : '';
+        ctx.fillText(`▸ ${sideLabel} ${sizeLabel} @ ${ms.entry_price.toFixed(2)}`, 3, entryY - 4);
+
+        // P&L at entry line (unrealized)
+        const latestCandles = candlesRef.current;
+        const latestCandle = latestCandles.length > 0 ? latestCandles[latestCandles.length - 1] : null;
+        if (latestCandle) {
+          const currentPrice = latestCandle.c;
+          const pnlPts = isLong ? currentPrice - ms.entry_price : ms.entry_price - currentPrice;
+          const pnlDollars = pnlPts * 20 * (ms.position_size ?? 1);
+          const pnlColor = pnlDollars >= 0 ? '#10B981' : '#EF4444';
+          ctx.fillStyle = pnlColor;
+          ctx.textAlign = 'right';
+          ctx.fillText(
+            `${pnlDollars >= 0 ? '+' : ''}$${pnlDollars.toFixed(0)} (${pnlPts >= 0 ? '+' : ''}${pnlPts.toFixed(2)}pts)`,
+            rect.width - priceScaleWidth - 4, entryY - 4,
+          );
+        }
+        ctx.restore();
+      }
+
+      // Stop line
+      if (ms.stop_price && ms.stop_price > 0) {
+        const stopY = pSeries.priceToCoordinate(ms.stop_price);
+        if (stopY !== null && stopY >= 0 && stopY <= rect.height) {
+          ctx.save();
+          ctx.strokeStyle = stopColor;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, stopY);
+          ctx.lineTo(rect.width - priceScaleWidth, stopY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Stop label
+          ctx.font = 'bold 9px monospace';
+          ctx.fillStyle = stopColor;
+          ctx.textAlign = 'left';
+          const riskPts = Math.abs(ms.entry_price - ms.stop_price);
+          ctx.fillText(`✕ STOP @ ${ms.stop_price.toFixed(2)} (${riskPts.toFixed(2)}pts risk)`, 3, stopY - 4);
+          ctx.restore();
+        }
+      }
+
+      // Risk/reward shading between entry and stop
+      if (ms.stop_price && ms.stop_price > 0 && entryY !== null) {
+        const stopY = pSeries.priceToCoordinate(ms.stop_price);
+        if (stopY !== null) {
+          const top = Math.min(entryY, stopY);
+          const height = Math.abs(stopY - entryY);
+          ctx.save();
+          ctx.fillStyle = isLong ? 'rgba(239, 68, 68, 0.04)' : 'rgba(239, 68, 68, 0.04)';
+          ctx.fillRect(0, top, rect.width - priceScaleWidth, height);
+          ctx.restore();
+        }
       }
     }
   }, []);
@@ -1031,6 +1135,29 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       setSessionTPOLoaded(true);
     }
 
+    // FVG confluence markers: detect FVGs and mark which zones/levels they reinforce
+    // The model uses FVGs as binary confluence (fvg_overlap: 0/1), not as standalone levels.
+    // So we only show FVGs that overlap with an existing zone — as a glow on that zone.
+    const allFvgs: Array<{ low: number; high: number }> = [];
+    for (let i = 1; i < candles.length - 1; i++) {
+      const prev = candles[i - 1], next = candles[i + 1];
+      if (prev.h + 1 < next.l) allFvgs.push({ low: prev.h, high: next.l });
+      if (prev.l - 1 > next.h) allFvgs.push({ low: next.h, high: prev.l });
+    }
+    // Store FVGs that overlap with zones (for zone glow rendering)
+    const zoneFvgs: Array<{ low: number; high: number; direction: string }> = [];
+    for (const z of zonesRef.current) {
+      for (const fvg of allFvgs) {
+        if (fvg.low <= z.price && z.price <= fvg.high) {
+          zoneFvgs.push({ low: fvg.low, high: fvg.high, direction: z.price > (fvg.low + fvg.high) / 2 ? 'bullish' : 'bearish' });
+          break; // one FVG per zone is enough
+        }
+      }
+    }
+    fvgsRef.current = zoneFvgs;
+    obsRef.current = []; // OBs not used as standalone — confluence only
+    setStructLoaded(true);
+
     setVpLoaded(n => n + 1);
   }, []);
 
@@ -1122,7 +1249,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   // TPO is now computed client-side in recomputeIndicators()
 
   // Redraw when VP data loads, TPO changes, session/macro changes, signals/fills, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, zones, signals, fills, exits, session, drawOverlays]);
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, structLoaded, sessionTPOLoaded, hiddenLevels, zones, signals, fills, exits, modelStatus, session, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {

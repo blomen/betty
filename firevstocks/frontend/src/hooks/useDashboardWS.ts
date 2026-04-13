@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Signal, Zone, Fill, ExitEvent, Quote, Position } from '@/types'
+import type { Signal, Zone, Fill, ExitEvent, Quote, Position, DQNInferenceEvent } from '@/types'
 
 export interface DashboardState {
   connected: boolean
@@ -13,6 +13,7 @@ export interface DashboardState {
   exits: ExitEvent[]
   positions: Position[]
   quote: Quote | null
+  dqnInference: DQNInferenceEvent | null
 }
 
 export interface TickEvent {
@@ -38,6 +39,7 @@ export function useDashboardWS() {
     exits: [],
     positions: [],
     quote: null,
+    dqnInference: null,
   })
 
   const [lastTick, setLastTick] = useState<TickEvent | null>(null)
@@ -100,6 +102,9 @@ export function useDashboardWS() {
             relayConnected: msg.relay_connected,
             streamRunning: msg.stream_running,
           }))
+          break
+        case 'dqn_inference':
+          setState(s => ({ ...s, dqnInference: msg as DQNInferenceEvent }))
           break
         case 'fill':
           setState(s => ({

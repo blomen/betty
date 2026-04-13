@@ -140,7 +140,49 @@ export interface Signal {
   specialist?: string
   price?: number
   features?: number[]
+  model_type?: string
   ts?: number
+}
+
+export interface DQNConnection {
+  from_idx: number
+  to_idx: number
+  strength: number
+  sign: number
+}
+
+export interface DQNInferenceEvent {
+  type: 'dqn_inference'
+  trigger: 'approaching' | 'touched' | 'zone_entry'
+  price: number
+  zone_center?: number
+  zone_members?: number
+  zone_hierarchy?: number
+  inputs: number[]
+  activations: {
+    layer1: number[]
+    layer2: number[]
+    layer3: number[]
+    layer4: number[]
+  }
+  connections: {
+    input_l1: DQNConnection[]
+    l1_l2: DQNConnection[]
+    l2_l3: DQNConnection[]
+    l3_l4: DQNConnection[]
+    l4_output: DQNConnection[]
+  }
+  q_values: number[]
+  action: string
+  confidence?: number
+  cont_p?: number
+  rev_p?: number
+  cont_ev?: number
+  rev_ev?: number
+  stop_ticks?: number
+  sizing_signal?: number
+  model_type?: string
+  timestamp: number
 }
 
 export interface Zone {
@@ -193,6 +235,43 @@ export interface Trade {
   price: number
   timestamp: string
   [key: string]: unknown
+}
+
+export interface BrokerTrade {
+  id: number
+  ts: string
+  session_date: string
+  symbol: string
+  side: string
+  size: number
+  entry_price: number
+  stop_price: number | null
+  exit_price: number | null
+  pnl_dollars: number | null
+  pnl_r: number | null
+  signal_action: string | null
+  signal_confidence: number | null
+  signal_zone: number | null
+  closed_at: string | null
+}
+
+export interface ModelStatus {
+  relay_connected: boolean
+  stream_running: boolean
+  trade_count: number
+  signal_count: number
+  session_start: number | null
+  halted?: boolean
+  halt_reason?: string
+  session_pnl?: number
+  peak_equity?: number
+  trailing_dd?: number
+  consecutive_stops?: number
+  is_flat?: boolean
+  position_side?: string | null
+  position_size?: number
+  entry_price?: number
+  stop_price?: number
 }
 
 export interface LevelEntry {
