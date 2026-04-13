@@ -173,7 +173,7 @@ class TopstepXPoller:
                 ts_str = bar.get("t", "")
                 if not ts_str:
                     continue
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
                 v = int(bar.get("v", 0))
                 if v <= 0:
                     continue  # skip empty bars
