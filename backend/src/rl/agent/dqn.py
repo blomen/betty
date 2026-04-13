@@ -1,4 +1,5 @@
 """Double Dueling DQN agent with prioritized replay, Polyak updates, gradient clipping."""
+
 from __future__ import annotations
 
 import copy
@@ -17,12 +18,11 @@ from src.rl.config import (
     EPSILON_DECAY_STEPS,
     EPSILON_END,
     EPSILON_START,
-    GAMMA,
     LEARNING_RATE,
     NUM_ACTIONS,
     REPLAY_BUFFER_SIZE,
-    TAU,
     TARGET_NET_UPDATE_FREQ,
+    TAU,
 )
 
 GRAD_CLIP_NORM = 1.0
@@ -66,9 +66,7 @@ class DQNAgent:
 
         # Step counters and decay schedule
         self.train_steps: int = 0
-        self._epsilon_decay_rate: float = (EPSILON_START - EPSILON_END) / max(
-            EPSILON_DECAY_STEPS, 1
-        )
+        self._epsilon_decay_rate: float = (EPSILON_START - EPSILON_END) / max(EPSILON_DECAY_STEPS, 1)
 
     # ------------------------------------------------------------------
     # Public API
@@ -93,31 +91,30 @@ class DQNAgent:
         """
         batch = self.buffer.sample(BATCH_SIZE)
 
-        obs_t = torch.from_numpy(batch["observations"])          # (B, obs_dim)
+        obs_t = torch.from_numpy(batch["observations"])  # (B, obs_dim)
         act_t = torch.from_numpy(batch["actions"]).unsqueeze(1)  # (B, 1)
-        rew_t = torch.from_numpy(batch["rewards"])               # (B,)
-        stop_t = torch.from_numpy(batch["stop_targets"])         # (B,)
-        weights_t = torch.from_numpy(batch["weights"])           # (B,)
-        indices = batch["indices"]                                # (B,)
+        rew_t = torch.from_numpy(batch["rewards"])  # (B,)
+        stop_t = torch.from_numpy(batch["stop_targets"])  # (B,)
+        weights_t = torch.from_numpy(batch["weights"])  # (B,)
+        indices = batch["indices"]  # (B,)
 
         # Predicted Q-values and stop distance
         self.q_network.train()
         q_all, stop_pred = self.q_network.forward_full(obs_t)
         q_pred = q_all.gather(1, act_t).squeeze(1)  # (B,)
 
-        # Double DQN target
-        with torch.no_grad():
-            online_q_next = self.q_network(obs_t)
-            best_actions = online_q_next.argmax(dim=1, keepdim=True)
-            target_q_next = self.target_network(obs_t).gather(1, best_actions).squeeze(1)
-            target_q = rew_t + GAMMA * target_q_next
+        # Target Q-value.
+        # GAMMA=0 (each zone touch is an independent bandit problem — no future
+        # discounting), so target_q = reward directly.  The target network and
+        # Double DQN bootstrap are dead computation when GAMMA=0, so skip them.
+        target_q = rew_t.detach()
 
         # Q-value loss (Huber, weighted by IS)
         td_errors = q_pred - target_q
         q_loss = (weights_t * F.smooth_l1_loss(q_pred, target_q, reduction="none")).mean()
 
-        # Stop distance loss (MSE, weighted to improve stop predictions)
-        stop_loss = 0.5 * F.mse_loss(stop_pred.squeeze(1), stop_t)
+        # Stop distance loss (MSE, weighted by IS — consistent with Q-loss weighting)
+        stop_loss = (weights_t * 0.5 * F.mse_loss(stop_pred.squeeze(1), stop_t, reduction="none")).mean()
 
         loss = q_loss + stop_loss
 
@@ -140,9 +137,7 @@ class DQNAgent:
         # Polyak soft target update
         if self.train_steps % TARGET_NET_UPDATE_FREQ == 0:
             with torch.no_grad():
-                for p_online, p_target in zip(
-                    self.q_network.parameters(), self.target_network.parameters()
-                ):
+                for p_online, p_target in zip(self.q_network.parameters(), self.target_network.parameters()):
                     p_target.data.mul_(1.0 - TAU).add_(p_online.data * TAU)
 
         return loss.item()

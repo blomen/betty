@@ -147,15 +147,16 @@ class LiveInference:
             except ValueError:
                 state["level_type"] = LevelType.VWAP
 
-        obs = build_observation(state)
-        if self._normalizer is not None:
-            obs = self._normalizer.normalize(obs)
+        raw_obs = build_observation(state)
+        # DQN needs normalized obs; GBT has its own internal StandardScaler —
+        # passing normalized input to GBT would double-normalize.
+        norm_obs = self._normalizer.normalize(raw_obs) if self._normalizer is not None else raw_obs
 
-        result: dict = {"inputs": obs.tolist()}
+        result: dict = {"inputs": raw_obs.tolist()}
 
-        # DQN: always run for visualization if available
+        # DQN: always run for visualization if available (uses normalized obs)
         if self._dqn is not None:
-            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+            obs_tensor = torch.from_numpy(norm_obs).unsqueeze(0)
             with torch.no_grad():
                 activations = self._dqn.forward_with_activations(obs_tensor)
                 connections = self._dqn.extract_top_connections(activations, top_n=100)
@@ -172,10 +173,10 @@ class LiveInference:
             result["action"] = Action(int(np.argmax(dqn_q))).name
             result["model_type"] = "dqn"
 
-        # GBT: override decision if available (better accuracy)
+        # GBT: override decision if available (uses raw obs — GBT has internal scaler)
         if self._gbt is not None:
-            action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(obs)
-            stop_ticks = self._gbt.predict_stop(obs)
+            action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(raw_obs)
+            stop_ticks = self._gbt.predict_stop(raw_obs)
             result["q_values"] = [prob_cont, prob_rev, 0.0]
             result["action"] = Action(action_idx).name
             result["confidence"] = confidence

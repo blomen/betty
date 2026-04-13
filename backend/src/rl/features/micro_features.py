@@ -26,11 +26,17 @@ Feature layout (20 features):
   18 big_trade_skew        — big trade buy/sell imbalance
   19 last5_acceleration    — velocity change in final 5 ticks
 """
+
 from __future__ import annotations
 
 import numpy as np
 
 _N_FEATURES = 20
+
+
+def _ts_to_seconds(ts) -> float:
+    """Convert timestamp to float seconds (handles both datetime and numeric)."""
+    return float(ts.timestamp()) if hasattr(ts, "timestamp") else float(ts)
 
 
 def extract_micro_features(
@@ -55,18 +61,21 @@ def extract_micro_features(
 
     total_vol = sum(sizes) or 1
     avg_size = total_vol / n
-    elapsed_s = max(0.001, (timestamps[-1] - timestamps[0]).total_seconds())
+    t0_s = _ts_to_seconds(timestamps[0])
+    t_last_s = _ts_to_seconds(timestamps[-1])
+    elapsed_s = max(0.001, t_last_s - t0_s)
 
     # 0: approach_velocity (ticks/second, signed)
-    price_change = (prices[-1] - prices[0]) / max(0.25, 1)  # in price units
+    price_change = (prices[-1] - prices[0]) / TICK_SIZE  # convert price to ticks
     approach_vel = price_change / elapsed_s
     approach_vel = np.clip(approach_vel / 5.0, -1.0, 1.0)  # normalise
 
     # 1: approach_accel (velocity change)
     mid = n // 2
+    t_mid_s = _ts_to_seconds(timestamps[mid]) if mid > 0 else t0_s
     if mid > 0 and n > mid:
-        t1 = max(0.001, (timestamps[mid] - timestamps[0]).total_seconds())
-        t2 = max(0.001, (timestamps[-1] - timestamps[mid]).total_seconds())
+        t1 = max(0.001, t_mid_s - t0_s)
+        t2 = max(0.001, t_last_s - t_mid_s)
         v1 = (prices[mid] - prices[0]) / t1
         v2 = (prices[-1] - prices[mid]) / t2
         accel = np.clip((v2 - v1) / 5.0, -1.0, 1.0)
@@ -116,10 +125,7 @@ def extract_micro_features(
     consec_dir = max_run / max(n, 1)
 
     # 9: reversal_count_norm
-    reversals = sum(
-        1 for i in range(2, n)
-        if (prices[i] - prices[i - 1]) * (prices[i - 1] - prices[i - 2]) < 0
-    )
+    reversals = sum(1 for i in range(2, n) if (prices[i] - prices[i - 1]) * (prices[i - 1] - prices[i - 2]) < 0)
     reversal_norm = reversals / max(n - 2, 1)
 
     # 10: time_compression (activity density)
@@ -127,8 +133,8 @@ def extract_micro_features(
 
     # 11-12: last 5 ticks features
     last5 = ticks[-5:] if n >= 5 else ticks
-    l5_elapsed = max(0.001, (last5[-1]["ts"] - last5[0]["ts"]).total_seconds())
-    l5_vel = np.clip((last5[-1]["price"] - last5[0]["price"]) / l5_elapsed / 5.0, -1.0, 1.0)
+    l5_elapsed = max(0.001, _ts_to_seconds(last5[-1]["ts"]) - _ts_to_seconds(last5[0]["ts"]))
+    l5_vel = np.clip((last5[-1]["price"] - last5[0]["price"]) / TICK_SIZE / l5_elapsed / 5.0, -1.0, 1.0)
     l5_buy = sum(t["size"] for t in last5 if t.get("side") == "B")
     l5_sell = sum(t["size"] for t in last5 if t.get("side") == "A")
     l5_vol = max(l5_buy + l5_sell, 1)
@@ -143,7 +149,7 @@ def extract_micro_features(
 
     # 15: approach_linearity (R² of price vs time)
     if n >= 3:
-        t_arr = np.array([(ts - timestamps[0]).total_seconds() for ts in timestamps])
+        t_arr = np.array([_ts_to_seconds(ts) - t0_s for ts in timestamps])
         p_arr = np.array(prices)
         if t_arr[-1] > 0:
             t_norm = t_arr / t_arr[-1]
@@ -174,36 +180,39 @@ def extract_micro_features(
         l5_prices = prices[-5:]
         l5_ts = timestamps[-5:]
         l5_mid_idx = len(l5_prices) // 2
-        t_a = max(0.001, (l5_ts[l5_mid_idx] - l5_ts[0]).total_seconds())
-        t_b = max(0.001, (l5_ts[-1] - l5_ts[l5_mid_idx]).total_seconds())
+        t_a = max(0.001, _ts_to_seconds(l5_ts[l5_mid_idx]) - _ts_to_seconds(l5_ts[0]))
+        t_b = max(0.001, _ts_to_seconds(l5_ts[-1]) - _ts_to_seconds(l5_ts[l5_mid_idx]))
         va = (l5_prices[l5_mid_idx] - l5_prices[0]) / t_a
         vb = (l5_prices[-1] - l5_prices[l5_mid_idx]) / t_b
         _l5_accel = np.clip((vb - va) / 5.0, -1.0, 1.0)
     else:
         _l5_accel = 0.0
 
-    feats = np.array([
-        float(approach_vel),       # 0
-        float(accel),              # 1
-        float(net_delta_norm),     # 2
-        float(delta_trend),        # 3
-        float(max_trade_norm),     # 4
-        float(big_ratio),          # 5
-        float(buy_ratio),          # 6
-        float(spread_norm),        # 7
-        float(consec_dir),         # 8
-        float(reversal_norm),      # 9
-        float(time_comp),          # 10
-        float(l5_vel),             # 11
-        float(l5_delta),           # 12
-        float(bid_aggression),     # 13
-        float(touch_size_norm),    # 14
-        float(r_sq),               # 15
-        float(vol_surge),          # 16
-        float(_price_vs_midrange),  # 17: price vs midrange of recent ticks
-        float(_big_trade_skew),    # 18: big trade buy/sell imbalance
-        float(_l5_accel),          # 19: acceleration in last 5 ticks
-    ], dtype=np.float32)
+    feats = np.array(
+        [
+            float(approach_vel),  # 0
+            float(accel),  # 1
+            float(net_delta_norm),  # 2
+            float(delta_trend),  # 3
+            float(max_trade_norm),  # 4
+            float(big_ratio),  # 5
+            float(buy_ratio),  # 6
+            float(spread_norm),  # 7
+            float(consec_dir),  # 8
+            float(reversal_norm),  # 9
+            float(time_comp),  # 10
+            float(l5_vel),  # 11
+            float(l5_delta),  # 12
+            float(bid_aggression),  # 13
+            float(touch_size_norm),  # 14
+            float(r_sq),  # 15
+            float(vol_surge),  # 16
+            float(_price_vs_midrange),  # 17: price vs midrange of recent ticks
+            float(_big_trade_skew),  # 18: big trade buy/sell imbalance
+            float(_l5_accel),  # 19: acceleration in last 5 ticks
+        ],
+        dtype=np.float32,
+    )
 
     feats = np.clip(feats, -5.0, 5.0)
     return feats

@@ -11,6 +11,7 @@ that were identified as missing from the transcript audit:
 6. volume_anomaly: Outsized volume at the touch price level
 7. time_in_session: 0.0 at session open → 1.0 at session close
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -45,11 +46,10 @@ def extract_execution_features(
                 first_dir = first_half[-1] - first_half[0]
                 second_dir = second_half[-1] - second_half[0]
 
-                # Follow-through = first moved one direction, then reversed
-                # (reaction happened, now re-approaching)
+                # Follow-through = price continues in the same direction
+                # (momentum is sustained, not a one-and-done spike)
                 if first_dir != 0 and second_dir != 0:
-                    is_followthrough = (first_dir > 0 and second_dir < 0) or \
-                                       (first_dir < 0 and second_dir > 0)
+                    is_followthrough = (first_dir > 0 and second_dir > 0) or (first_dir < 0 and second_dir < 0)
                     out[0] = 1.0 if is_followthrough else 0.0
 
                     # Strength = magnitude of the second move relative to first

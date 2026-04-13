@@ -22,17 +22,13 @@ from threading import Lock
 
 import numpy as np
 
-from .config import STOP_TICKS, TICK_SIZE
+from .config import COST_PER_TRADE_TICKS, STOP_TICKS, TICK_SIZE
 from .features.observation import build_observation
 
 log = logging.getLogger(__name__)
 
-# Outcome measurement windows (seconds after touch)
-OUTCOME_WINDOWS = [10, 30, 60, 120, 300]
-OUTCOME_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
-
-# Cost per trade in R-multiples
-COST_R = 1.0 / STOP_TICKS  # 1 tick cost / 10 tick stop = 0.1R
+# Cost per trade in R-multiples — matches episode_builder.py
+COST_R = COST_PER_TRADE_TICKS / max(STOP_TICKS, 1)
 
 # Buffer config
 FLUSH_INTERVAL = 10  # Write to disk every N episodes
@@ -194,63 +190,58 @@ class LiveEpisodeCollector:
                 log.warning("Failed to measure outcome for episode at %.2f", ep.touch_price, exc_info=True)
 
     def _compute_reward(self, ep: PendingEpisode, trades: list[dict]) -> CompletedEpisode | None:
-        """Compute velocity-based reward from trade data after the touch."""
+        """Compute reward using the same velocity+stop lifecycle as episode_builder.
+
+        Converts raw trades to tick-dict format and calls _measure_movement /
+        _score_velocity directly so that live and historical episodes have the
+        same label distribution.  Trail bonus is omitted (no structural levels
+        available) but the base velocity score + cost matches exactly.
+        """
         touch_price = ep.touch_price
-        touch_ts = ep.touch_ts
+        touch_ts_epoch = ep.touch_ts
+        touch_ts_dt = datetime.fromtimestamp(touch_ts_epoch, tz=timezone.utc)
 
-        # Build price array at each outcome window
-        rewards_up = 0.0
-        rewards_down = 0.0
+        # Convert trades to the format expected by episode_builder helpers
+        tick_dicts = [{"ts": t["ts"], "price": float(t["price"])} for t in trades]
+        if not tick_dicts:
+            return None
 
-        for window, weight in zip(OUTCOME_WINDOWS, OUTCOME_WEIGHTS):
-            target_ts = touch_ts + window
-            # Find price closest to target time
-            closest = None
-            closest_dist = float("inf")
-            for t in trades:
-                ts = t["ts"].timestamp() if hasattr(t["ts"], "timestamp") else float(t["ts"])
-                dist = abs(ts - target_ts)
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest = t
+        # Velocity score for each direction (same logic as episode_builder)
+        long_profiles = _measure_movement(touch_price, tick_dicts, 0, len(tick_dicts), touch_ts_dt, direction=+1)
+        short_profiles = _measure_movement(touch_price, tick_dicts, 0, len(tick_dicts), touch_ts_dt, direction=-1)
+        base_long = _score_velocity(long_profiles)
+        base_short = _score_velocity(short_profiles)
 
-            if closest is None:
-                continue
+        # BE lifecycle (empty levels_ahead — just stop/breakeven, no trail)
+        cont_dir = 1 if ep.approach_direction == "up" else -1
+        _, be_cont = _count_levels_captured(
+            touch_price,
+            tick_dicts,
+            0,
+            len(tick_dicts),
+            touch_ts_dt,
+            direction=cont_dir,
+            levels_ahead=[],
+            be_trigger_r=_BE_TRIGGER_R,
+        )
 
-            price_at_window = float(closest["price"])
-            move_ticks = (price_at_window - touch_price) / TICK_SIZE
-
-            # Normalize to R-multiples
-            move_r = move_ticks / STOP_TICKS
-
-            # Cleanliness: how much of the move was favorable vs adverse
-            # (simplified — full version uses tick-by-tick MAE/MFE)
-            up_r = max(move_r, 0) * weight
-            down_r = max(-move_r, 0) * weight
-
-            rewards_up += up_r
-            rewards_down += down_r
-
-        # Apply approach direction to get continuation vs reversal
         if ep.approach_direction == "up":
-            reward_cont = rewards_up - COST_R
-            reward_rev = rewards_down - COST_R
+            reward_cont = base_long - COST_R
+            reward_rev = base_short - COST_R
         else:
-            reward_cont = rewards_down - COST_R
-            reward_rev = rewards_up - COST_R
+            reward_cont = base_short - COST_R
+            reward_rev = base_long - COST_R
 
-        # Simple stop estimate from max adverse excursion
-        prices = [float(t["price"]) for t in trades[:50]]  # first 50 trades
+        # Stop estimate from MAE (same conservative method as episode_builder)
+        prices = [float(t["price"]) for t in trades[:200]]
         if prices:
             if ep.approach_direction == "up":
-                mae = max(0, touch_price - min(prices)) / TICK_SIZE
+                mae = max(0.0, touch_price - min(prices)) / TICK_SIZE
             else:
-                mae = max(0, max(prices) - touch_price) / TICK_SIZE
-            stop_ticks = float(np.clip(mae + 2, 6, 40))
+                mae = max(0.0, max(prices) - touch_price) / TICK_SIZE
+            stop_ticks = float(np.clip(mae + 2.0, 6.0, 40.0))
         else:
-            stop_ticks = 10.0
-
-        breakeven = max(reward_cont, reward_rev) > 0
+            stop_ticks = float(STOP_TICKS)
 
         return CompletedEpisode(
             observation=ep.observation,
@@ -260,8 +251,8 @@ class LiveEpisodeCollector:
             level_type=ep.level_type,
             touch_price=touch_price,
             touch_ts=ep.touch_ts,
-            breakeven_reached=breakeven,
-            levels_captured=0,  # can't measure structural levels from raw trades
+            breakeven_reached=be_cont,  # actual BE lifecycle, not threshold heuristic
+            levels_captured=0,  # no structural levels available in live path
         )
 
     def _flush_to_disk(self) -> None:

@@ -3,12 +3,13 @@
 Extracts 38 features:
 10 per session (Tokyo/London/NY) + 2 POC migration deltas.
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from ..config import TICK_SIZE
 from ...market_data.tpo import SessionTPO, SessionTPOSet
+from ..config import TICK_SIZE
 
 _FEATURES_PER_SESSION = 12
 _N_SESSIONS = 3
@@ -50,14 +51,11 @@ def _extract_single_session(
         out[5] = np.clip((current_price - ib_mid) / TICK_SIZE / 200.0, -1.0, 1.0)
     # 6: poor_extreme signal (+1 poor high, -1 poor low, 0 neither/both)
     out[6] = float(session.poor_high) - float(session.poor_low)
-    # 7: price_position_in_va (continuous)
+    # 7: price_position_in_va (continuous, no discontinuity)
+    # Maps: val→-1, VA_mid→0, vah→+1, above vah→>1, below val→<-1
     if va_width > 0:
-        if current_price > vah:
-            out[7] = np.clip((current_price - vah) / va_width, 0.0, 2.0)
-        elif current_price < val:
-            out[7] = np.clip((current_price - val) / va_width, -2.0, 0.0)
-        else:
-            out[7] = (current_price - val) / va_width - 0.5
+        va_mid = (vah + val) / 2.0
+        out[7] = float(np.clip((current_price - va_mid) / (va_width / 2.0), -2.0, 2.0))
     # 8: rotation_factor (normalised to ~[-1, 1])
     out[8] = np.clip(session.rotation_factor / 20.0, -1.0, 1.0)
     # 9: opening_type ordinal (directional conviction)
@@ -94,10 +92,13 @@ def extract_session_tpo_features(
     london_feats = _extract_single_session(session_tpos.london, current_price)
     ny_feats = _extract_single_session(session_tpos.ny, current_price)
 
-    migrations = np.array([
-        np.clip(session_tpos.poc_migration_tokyo_london / 200.0, -1.0, 1.0),
-        np.clip(session_tpos.poc_migration_london_ny / 200.0, -1.0, 1.0),
-    ], dtype=np.float32)
+    migrations = np.array(
+        [
+            np.clip(session_tpos.poc_migration_tokyo_london / 200.0, -1.0, 1.0),
+            np.clip(session_tpos.poc_migration_london_ny / 200.0, -1.0, 1.0),
+        ],
+        dtype=np.float32,
+    )
 
     return np.concatenate([tokyo_feats, london_feats, ny_feats, migrations])
 

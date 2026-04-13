@@ -340,6 +340,208 @@ def verify_levels(
 
 
 # ---------------------------------------------------------------------------
+# analyze-be  — sweep breakeven trigger to find optimal R threshold
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("analyze-be")
+def analyze_be_trigger(
+    sample_files: int = typer.Option(10, help="Number of parquet files to sample (most recent first)"),
+    be_values: str = typer.Option("1.0,1.25,1.5,1.75,2.0,2.5", help="Comma-separated BE trigger R values to test"),
+) -> None:
+    """Find the optimal breakeven trigger by sweeping R values across real tick data.
+
+    For each level touch, runs the full stop lifecycle at every requested BE
+    trigger and computes mean reward, fraction stopped-at-BE, and fraction of
+    full losses.  Prints a comparison table so you can pick the value that
+    maximises reward.
+
+    Example::
+
+        python -m src.app rl analyze-be --sample-files 15
+        python -m src.app rl analyze-be --be-values "1.0,1.5,2.0,2.5"
+    """
+    import gc
+
+    import numpy as np
+    import pandas as pd
+
+    from src.rl.config import COST_PER_TRADE_TICKS, STOP_TICKS
+    from src.rl.data.episode_builder import (
+        _TRAIL_BONUS_PER_LEVEL,
+        _count_levels_captured,
+        _measure_movement,
+        _score_velocity,
+    )
+    from src.rl.data.fetcher import MACRO_DIR, TICKS_DIR
+    from src.rl.data.replay_engine import ReplayEngine
+    from src.rl.data.session_store import compute_precomputed_levels, load_summaries
+    from src.rl.data.tick_array import TickArray
+
+    triggers = [float(x.strip()) for x in be_values.split(",")]
+    cost_r = COST_PER_TRADE_TICKS / max(STOP_TICKS, 1)
+
+    # Load macro data for realistic replay context
+    macro_data: dict = {}
+    macro_path = MACRO_DIR / "macro_daily.parquet"
+    if macro_path.exists():
+        macro_df = pd.read_parquet(macro_path)
+        macro_data = _prepare_macro_data(macro_df)
+
+    summaries_path = _DATA_DIR / "session_summaries.json"
+    summaries = load_summaries(summaries_path)
+
+    # Pick files to sample (most recent first)
+    all_files = sorted(TICKS_DIR.glob("NQ_*.parquet"))
+    files = all_files[-sample_files:] if len(all_files) > sample_files else all_files
+    typer.echo(f"Analyzing {len(files)} file(s) across {len(triggers)} BE trigger values: {triggers}")
+
+    # Per-trigger accumulators: list of (reward, stopped_at_be, full_loss)
+    stats: dict[float, list[tuple[float, bool, bool]]] = {t: [] for t in triggers}
+
+    engine = ReplayEngine(macro_data=macro_data)
+    prior_levels = None
+
+    for pfile in files:
+        typer.echo(f"  {pfile.name} ...", nl=False)
+        df = pd.read_parquet(pfile)
+        if "timestamp" not in df.columns:
+            typer.echo(" skip (no timestamp)")
+            continue
+
+        df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+        df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+        df = df.dropna(subset=["_session_date"])
+
+        # Build raw_ticks once for the entire file (used by the BE sweep below)
+        raw_ticks_file = [
+            {"ts": row["_ts_et"], "price": float(row["price"])} for row in df[["_ts_et", "price"]].to_dict("records")
+        ]
+        # Index raw_ticks by position for O(1) session slicing
+        raw_ts_array = [t["ts"] for t in raw_ticks_file]
+
+        file_touches = 0
+        for session_date in sorted(df["_session_date"].unique()):
+            session_df = df[df["_session_date"] == session_date].drop(
+                columns=["_session_date", "_ts_et"], errors="ignore"
+            )
+            session_dt = datetime(
+                session_date.year,
+                session_date.month,
+                session_date.day,
+                12,
+                0,
+                0,
+                tzinfo=_ET,
+            )
+            date_str = str(session_date)
+            ticks = TickArray.from_dataframe(session_df)
+
+            precomputed = compute_precomputed_levels(summaries, date_str) if summaries else None
+
+            try:
+                episodes = engine.replay_session(
+                    ticks,
+                    session_dt,
+                    prior_session_levels=prior_levels,
+                    precomputed_levels=precomputed,
+                )
+            except Exception as exc:
+                typer.echo(f"\n    replay failed for {session_date}: {exc}", err=True)
+                continue
+            finally:
+                del ticks
+                gc.collect()
+
+            prior_levels = engine.get_prior_session_for_chaining()
+
+            if not episodes:
+                continue
+
+            for ep in episodes:
+                # Find the touch index in raw_ticks
+                touch_ts = ep.touch_ts
+                touch_price = ep.touch_price
+                approach = ep.approach_direction
+                direction = 1 if approach == "up" else -1
+
+                # Locate touch in file-level raw_ticks (nearest ts)
+                start = 0
+                for k, ts in enumerate(raw_ts_array):
+                    if ts >= touch_ts:
+                        start = k
+                        break
+                end = min(start + 50_000, len(raw_ticks_file))
+
+                # ep.state is None by default — use empty levels_ahead.
+                # _count_levels_captured now handles empty lists (early return removed)
+                # so the BE lifecycle still runs and at_be is correctly measured.
+                levels_ahead: list[float] = []
+
+                # Measure base velocity (same for all BE values)
+                profiles = _measure_movement(touch_price, raw_ticks_file, start, end, touch_ts, direction)
+                base_vel = _score_velocity(profiles)
+
+                for be_r in triggers:
+                    levels, at_be = _count_levels_captured(
+                        touch_price,
+                        raw_ticks_file,
+                        start,
+                        end,
+                        touch_ts,
+                        direction=direction,
+                        levels_ahead=levels_ahead,
+                        be_trigger_r=be_r,
+                    )
+                    reward = base_vel + levels * _TRAIL_BONUS_PER_LEVEL - cost_r
+
+                    # Full loss: reward < -0.5R and not stopped at BE
+                    # (proxy: reward ≈ base_vel - cost without BE protection)
+                    full_loss = reward < -0.5 and not at_be
+
+                    stats[be_r].append((reward, at_be, full_loss))
+
+                file_touches += 1
+
+        del df
+        gc.collect()
+        typer.echo(f" {file_touches} touches")
+
+    # --- Print results table ---
+    typer.echo(f"\n{'=' * 72}")
+    typer.echo(f"{'BE trigger':>12}  {'N':>7}  {'Mean reward':>12}  {'Stopped@BE':>11}  {'Full losses':>11}")
+    typer.echo(f"{'─' * 72}")
+
+    best_trigger = triggers[0]
+    best_reward = -999.0
+    for be_r in triggers:
+        entries = stats[be_r]
+        if not entries:
+            typer.echo(f"{be_r:>11.2f}R  {'—':>7}  {'no data':>12}")
+            continue
+        rewards = [e[0] for e in entries]
+        n_be = sum(1 for e in entries if e[1])
+        n_full = sum(1 for e in entries if e[2])
+        mean_r = float(np.mean(rewards))
+        pct_be = 100.0 * n_be / len(entries)
+        pct_full = 100.0 * n_full / len(entries)
+        marker = " ◄ best" if mean_r > best_reward else ""
+        typer.echo(
+            f"{be_r:>11.2f}R  {len(entries):>7,}  {mean_r:>+12.3f}R  {pct_be:>10.1f}%  {pct_full:>10.1f}%{marker}"
+        )
+        if mean_r > best_reward:
+            best_reward = mean_r
+            best_trigger = be_r
+
+    typer.echo(f"{'=' * 72}")
+    typer.echo(f"\nRecommended BE trigger: {best_trigger}R  (mean reward {best_reward:+.3f}R)")
+    typer.echo(
+        f"\nTo apply: set _BE_TRIGGER_R = {best_trigger} in episode_builder.py "
+        "then re-run 'rl replay --all --clean && rl train'"
+    )
+
+
+# ---------------------------------------------------------------------------
 # precompute
 # ---------------------------------------------------------------------------
 
@@ -499,7 +701,7 @@ def _replay_single_file(
     gc.collect()
 
     # --- Phase 2: replay each session using TickArray (not to_dict) ---
-    month_obs, month_rc, month_rr = [], [], []
+    month_obs, month_trig, month_rc, month_rr = [], [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
     session_count = 0
     prior_levels = None
@@ -555,41 +757,41 @@ def _replay_single_file(
 
         for ep in episodes:
             obs = ep.observation
+
+            # Build proper 144-dim trigger observation using stored state.
+            # extract_narrative_features and build_trigger_observation use the
+            # same state dict that produced ep.observation, so features are
+            # consistent between training (here) and live inference.
+            narrative = extract_narrative_features(ep.state)
+            narr_feats = np.concatenate(
+                [
+                    obs[52:116],  # structure (64)
+                    obs[116:154],  # tpo (38)
+                    obs[178:189],  # macro (11)
+                    obs[208:228],  # amt (20)
+                    obs[228:248],  # amt_dynamics (20)
+                ]
+            )
+            setup_probs_ep = (
+                narrative_gbt.predict_setup_probs(narr_feats)
+                if narrative_gbt is not None
+                else np.zeros(8, dtype=np.float32)
+            )
+            # trigger_obs without GBT forecast (zeros in trigger_gbt segment)
+            trigger_obs = build_trigger_observation(narrative, setup_probs_ep, ep.state, obs)
+
             if gbt_model is not None:
                 if gbt_is_trigger:
-                    from src.rl.features.passthrough_features import extract_passthrough
-
-                    narr_feats = np.concatenate(
-                        [
-                            obs[52:116],
-                            obs[116:154],
-                            obs[178:189],
-                            obs[208:228],
-                            obs[228:248],
-                        ]
-                    )
-                    setup_probs = np.zeros(8, dtype=np.float32)
-                    if narrative_gbt is not None:
-                        setup_probs = narrative_gbt.predict_setup_probs(narr_feats)
-                    passthrough = extract_passthrough(obs)
-                    trigger_raw = np.concatenate(
-                        [
-                            obs[0:31],
-                            obs[31:52],
-                            obs[154:169],
-                            obs[169:173],
-                            obs[173:178],
-                            obs[248:268],
-                            obs[268:269],
-                        ]
-                    )
-                    trigger_input = np.concatenate([trigger_raw, passthrough, setup_probs])
-                    gbt_forecast = gbt_model.predict_full(trigger_input)
+                    # Feed proper 144-dim obs → get GBT forecast → rebuild with forecast
+                    gbt_forecast = gbt_model.predict_full(trigger_obs)
+                    trigger_obs = build_trigger_observation(narrative, setup_probs_ep, ep.state, obs, gbt_forecast)
                 else:
                     gbt_forecast = gbt_model.predict_full(obs)
                 pos_state = build_position_state()
                 obs = augment_observation(obs, gbt_forecast, pos_state)
+
             month_obs.append(obs)
+            month_trig.append(trigger_obs)
             month_rc.append(ep.reward_continuation)
             month_rr.append(ep.reward_reversal)
             month_lt.append(ep.level_type)
@@ -605,6 +807,7 @@ def _replay_single_file(
     n_eps = len(month_obs)
     if n_eps > 0:
         np.save(out_dir / f"obs_{chunk_idx:04d}.npy", np.array(month_obs, dtype=np.float32))
+        np.save(out_dir / f"trig_{chunk_idx:04d}.npy", np.array(month_trig, dtype=np.float32))
         np.save(out_dir / f"rc_{chunk_idx:04d}.npy", np.array(month_rc, dtype=np.float32))
         np.save(out_dir / f"rr_{chunk_idx:04d}.npy", np.array(month_rr, dtype=np.float32))
         np.save(out_dir / f"lt_{chunk_idx:04d}.npy", np.array(month_lt))
@@ -830,6 +1033,15 @@ def replay(
 
     obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
     np.save(episodes_dir / "observations.npy", obs_array)
+
+    # Trigger observations (144-dim) — used by train-trigger-gbt
+    trig_chunks = [chunk_dir / f"trig_{i:04d}.npy" for i in chunk_indices]
+    if all(p.exists() for p in trig_chunks):
+        trig_array = np.concatenate([np.load(p) for p in trig_chunks])
+        np.save(episodes_dir / "trigger_observations.npy", trig_array)
+        typer.echo(f"Trigger observations shape: {trig_array.shape}")
+    else:
+        typer.echo("Warning: some trig_*.npy chunks missing — trigger_observations.npy not saved.")
 
     np.save(
         episodes_dir / "rewards_cont.npy",
@@ -2026,9 +2238,7 @@ def train_trigger_gbt(
     """Train the Trigger GBT on trigger-layer features -> direction/reward forecast."""
     import numpy as np
 
-    from src.rl.agent.narrative_gbt import NarrativeGBT
     from src.rl.agent.trigger_gbt import TriggerGBT
-    from src.rl.features.passthrough_features import extract_passthrough
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -2084,64 +2294,29 @@ def train_trigger_gbt(
         n = MAX_GBT_SAMPLES
         typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
 
-    # --- Narrative augment: setup_probs from NarrativeGBT if available ---
-    narrative_path = models_dir / f"narrative_gbt_{checkpoint}.joblib"
-    setup_probs = None
-    if narrative_path.exists():
-        typer.echo(f"Loading NarrativeGBT from {narrative_path}...")
-        narrative_model = NarrativeGBT.load(narrative_path)
-        # Extract the same narrative features used during training
-        narrative_feats = np.concatenate(
-            [
-                observations[:, 52:116],  # structure (64)
-                observations[:, 116:154],  # TPO (38)
-                observations[:, 178:189],  # macro (11)
-                observations[:, 208:228],  # AMT (20)
-                observations[:, 228:248],  # AMT dynamics (20)
-            ],
-            axis=1,
+    # --- Load trigger observations (144-dim, built during replay) ---
+    trig_path = episodes_dir / "trigger_observations.npy"
+    if not trig_path.exists():
+        typer.echo(
+            f"No trigger_observations.npy in {episodes_dir}.\n"
+            "Run 'rl replay --all --clean' to regenerate episodes with proper trigger features.",
+            err=True,
         )
-        setup_probs = narrative_model.predict_setup_probs_batch(narrative_feats)  # (N, 8)
-        typer.echo(f"  Setup probs shape: {setup_probs.shape}")
-    else:
-        typer.echo(f"No NarrativeGBT at {narrative_path} — training without narrative augment.")
-
-    # --- Build trigger feature vector ---
-    # Trigger-relevant raw features from observation:
-    #   zone_comp     0:31   (31)
-    #   orderflow    31:52   (21)
-    #   candles     154:169  (15)
-    #   zone_feat   169:173  (4)
-    #   zone_conf   173:178  (5)
-    #   micro       248:268  (20)
-    #   approach    268:269  (1)
-    # Total raw: 97 dims
-    raw_trigger = np.concatenate(
-        [
-            observations[:, 0:31],  # zone_comp (31)
-            observations[:, 31:52],  # orderflow (21)
-            observations[:, 154:169],  # candles (15)
-            observations[:, 169:173],  # zone_feat (4)
-            observations[:, 173:178],  # zone_conf (5)
-            observations[:, 248:268],  # micro (20)
-            observations[:, 268:269],  # approach (1)
-        ],
-        axis=1,
-    )
-
-    # Passthrough features (10 high-importance raw features)
-    passthrough = np.stack([extract_passthrough(obs) for obs in observations])
-
-    # Assemble full trigger feature vector
-    parts = [raw_trigger, passthrough]
-    if setup_probs is not None:
-        parts.append(setup_probs)
-    X = np.concatenate(parts, axis=1)
-    typer.echo(
-        f"Trigger features: {X.shape[1]} dims (raw={raw_trigger.shape[1]} + passthrough={passthrough.shape[1]}"
-        + (f" + narrative={setup_probs.shape[1]}" if setup_probs is not None else "")
-        + ")"
-    )
+        raise typer.Exit(1)
+    X = np.load(trig_path)
+    if len(X) != len(observations):
+        typer.echo(
+            f"trigger_observations.npy has {len(X)} rows but observations.npy has {len(observations)}.\n"
+            "Run 'rl replay --all --clean' to regenerate.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if n < len(X):
+        # Apply same subsampling as observations
+        rng_idx = np.random.RandomState(42).choice(len(X), n, replace=False)
+        rng_idx.sort()
+        X = X[rng_idx]
+    typer.echo(f"Trigger features: {X.shape[1]} dims (loaded from trigger_observations.npy)")
 
     # --- Labels ---
     y_direction = (rewards_cont > rewards_rev).astype(np.int32)

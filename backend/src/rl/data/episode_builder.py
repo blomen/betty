@@ -36,6 +36,10 @@ _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
 _MAX_TRAIL_LEVELS = 6  # cap at 6 levels (3.0R max trail bonus)
 _TRAIL_TIMEOUT_S = 600  # 10 min max to scan for levels
 _STOP_TICKS_TRAIL = 10  # initial stop distance in ticks
+_BE_TRIGGER_R = 1.5  # price must move this many R before stop moves to breakeven
+# 1.5R (not 1R) avoids premature BE stop-outs in choppy markets where price
+# pokes 1R then immediately reverses — that stops you at 0 instead of letting
+# the trade breathe.  The extra 0.5R gives noise room before locking risk.
 
 
 @dataclass
@@ -175,22 +179,24 @@ def _count_levels_captured(
     touch_ts: datetime,
     direction: int,
     levels_ahead: list[float],
-) -> int:
+    be_trigger_r: float = _BE_TRIGGER_R,
+) -> tuple[int, bool]:
     """Count levels captured with full stop lifecycle: initial → breakeven → trail.
 
     Stop lifecycle:
     1. INITIAL: stop at `initial_stop_ticks` behind entry
-    2. BREAKEVEN: once price moves 1R in favor, stop moves to entry (risk-free)
+    2. BREAKEVEN: once price moves be_trigger_r × R in favor, stop moves to entry
     3. TRAIL: each new level captured → stop moves to that level minus 2 ticks
 
-    Returns (levels_captured, exit_pnl_ticks) tuple.
-    """
-    if not levels_ahead:
-        return 0, False
+    Args:
+        be_trigger_r: R-multiple at which stop moves to breakeven. Default is
+            _BE_TRIGGER_R (1.5). Pass different values to sweep optimal threshold.
 
+    Returns (levels_captured, breakeven_reached) tuple.
+    """
     initial_stop_ticks = _STOP_TICKS_TRAIL
     stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
-    breakeven_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE  # 1R move
+    breakeven_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE * be_trigger_r
     at_breakeven = False
     captured = 0
     next_level_idx = 0
@@ -255,12 +261,15 @@ def label_outcome_from_array(
     approach_direction: str = "up",
     levels_above: list[float] | None = None,
     levels_below: list[float] | None = None,
+    be_trigger_r: float = _BE_TRIGGER_R,
 ) -> Episode:
     """Label a level-touch episode with multi-level trailing reward.
 
     Args:
         levels_above: Structural levels above touch_price, sorted ascending.
         levels_below: Structural levels below touch_price, sorted descending.
+        be_trigger_r: R-multiple at which stop moves to breakeven (default _BE_TRIGGER_R).
+            Pass different values to sweep the optimal threshold via analyze-be.
     """
     cost_r = COST_PER_TRADE_TICKS / max(STOP_TICKS, 1)
 
@@ -283,6 +292,7 @@ def label_outcome_from_array(
         touch_ts,
         direction=+1,
         levels_ahead=levels_up,
+        be_trigger_r=be_trigger_r,
     )
     short_levels, short_be = _count_levels_captured(
         touch_price,
@@ -292,6 +302,7 @@ def label_outcome_from_array(
         touch_ts,
         direction=-1,
         levels_ahead=levels_dn,
+        be_trigger_r=be_trigger_r,
     )
 
     # Measure breathing room (MAE) for each direction
