@@ -762,14 +762,13 @@ providers:
     sport_timeout: 1200                # Breadth over speed — football needs ~200s leagues + ~500s detail enrichment
     supported_sports:
       - football
-      - ice_hockey
-      - basketball
       - tennis
       - handball
       - volleyball
-      # Removed: rugby (0 events), cricket (0-1 events), boxing (0 events in Pinnacle markets),
-      # darts (0 events in Pinnacle markets), american_football (0 events), baseball (0-1 events),
-      # golf (0 events), cycling (0 events) — these waste 300s+ on sport timeout with near-zero yield
+      # Removed: ice_hockey (sport ID 40 returns Swedish/African football clubs — wrong ID),
+      # basketball (sport ID 15 returns 164 Argentine football leagues — wrong ID).
+      # These two wasted 800-1800s per run. Need to rediscover correct IDs from interwetten nav.
+      # Removed: rugby, cricket, boxing, darts, american_football, baseball, golf, cycling — 0 events
     bonus:
       type: bonusdeposit
       amount: 1000
