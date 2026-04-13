@@ -955,9 +955,9 @@ extraction_scheduling:
 
   signal_international:
     # International signal-only providers — read odds for consensus, no bet placement
-    # Stake.com: public GraphQL, no auth. Cloudbet: REST feed, affiliate API key.
+    # Cloudbet: REST feed, affiliate API key. Marathon: HTML scraping.
+    # Stake.com removed — Cloudflare blocks datacenter IPs, needs residential proxy.
     providers:
-      - stake
       - cloudbet
       - marathon
     interval_minutes: 5
