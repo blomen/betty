@@ -182,6 +182,8 @@ export interface DQNInferenceEvent {
   stop_ticks?: number
   sizing_signal?: number
   model_type?: string
+  level?: string
+  level_price?: number
   timestamp: number
 }
 
