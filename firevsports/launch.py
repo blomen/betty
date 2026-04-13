@@ -6,6 +6,7 @@ Kills any previous instance, opens SSH tunnel to production API,
 starts local server, and auto-opens browser.
 """
 
+import os
 import socket
 import subprocess
 import sys
@@ -47,6 +48,44 @@ def _kill_port(port: int, label: str):
     return False
 
 
+def _kill_old_chromium():
+    """Kill orphaned Chromium instances from previous Playwright sessions.
+
+    Targets only Chromium spawned by Playwright (identified by --disable-blink-features
+    flag we pass in browser.py). Does NOT kill regular Chrome windows.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "wmic",
+                "process",
+                "where",
+                "name='chromium.exe' or name='chrome.exe'",
+                "get",
+                "processid,commandline",
+                "/format:csv",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        killed = 0
+        for line in result.stdout.splitlines():
+            if "browser_profile" in line and "disable-blink-features" in line:
+                # This is a Playwright-managed Chromium from our profile
+                parts = line.strip().split(",")
+                if parts:
+                    pid = parts[-1].strip()
+                    if pid.isdigit():
+                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                        killed += 1
+        if killed:
+            print(f"[firevsports] Killed {killed} orphaned Chromium process(es)")
+            time.sleep(1)  # Let profile lock release
+    except Exception:
+        pass
+
+
 def _start_tunnel() -> bool:
     """Start SSH tunnel to production API. Returns True if ready."""
     if _port_in_use(TUNNEL_LOCAL_PORT):
@@ -59,24 +98,8 @@ def _start_tunnel() -> bool:
             _kill_port(TUNNEL_LOCAL_PORT, "stale tunnel")
             time.sleep(1)
 
-    # Backend runs inside Docker — resolve container IP
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "ConnectTimeout=5",
-                f"root@{SERVER}",
-                "docker inspect firev-backend-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        backend_ip = result.stdout.strip().strip("'") or "172.18.0.3"
-    except Exception:
-        backend_ip = "172.18.0.3"
-    print(f"[firevsports] Opening SSH tunnel to {SERVER} -> {backend_ip}:{TUNNEL_REMOTE_PORT}...")
+    # Backend publishes 127.0.0.1:8000 on the server — tunnel straight through
+    print(f"[firevsports] Opening SSH tunnel to {SERVER} -> localhost:{TUNNEL_REMOTE_PORT}...")
 
     proc = subprocess.Popen(
         [
@@ -85,9 +108,15 @@ def _start_tunnel() -> bool:
             "-o",
             "BatchMode=yes",
             "-o",
-            "ServerAliveInterval=30",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "TCPKeepAlive=yes",
             "-L",
-            f"{TUNNEL_LOCAL_PORT}:{backend_ip}:{TUNNEL_REMOTE_PORT}",
+            f"{TUNNEL_LOCAL_PORT}:localhost:{TUNNEL_REMOTE_PORT}",
             f"root@{SERVER}",
         ],
         stdout=subprocess.DEVNULL,
@@ -117,12 +146,23 @@ def _start_tunnel() -> bool:
     return False
 
 
+_LOCK_FILE = os.path.join(os.path.dirname(__file__), "data", ".running")
+
+
 def _open_browser_when_ready():
-    """Poll until local server is healthy, then open browser."""
+    """Poll until local server is healthy, then open browser on first launch only."""
+    is_restart = os.path.exists(_LOCK_FILE)
     for _ in range(60):
         time.sleep(1)
         try:
             urllib.request.urlopen(f"{LOCAL_URL}/health", timeout=2)
+            # Write lock file for future restarts
+            os.makedirs(os.path.dirname(_LOCK_FILE), exist_ok=True)
+            with open(_LOCK_FILE, "w") as f:
+                f.write(str(os.getpid()))
+            if is_restart:
+                print("[firevsports] Restart detected — skipping browser open")
+                return
             webbrowser.open(LOCAL_URL)
             return
         except Exception:
@@ -134,9 +174,10 @@ def main(open_browser: bool = True):
     print("[firevsports] FirevSports Launcher")
     print(f"[firevsports] Server: {SERVER}")
 
-    # Kill any previous instance
+    # Kill any previous instance (server, tunnel, and stale Chromium)
     _kill_port(LOCAL_PORT, "server")
     _kill_port(TUNNEL_LOCAL_PORT, "tunnel")
+    _kill_old_chromium()
 
     # Check SSH connectivity
     if not _port_in_use(TUNNEL_LOCAL_PORT):
@@ -159,11 +200,21 @@ def main(open_browser: bool = True):
             input("Press Enter to exit...")
             return
 
-    # Start SSH tunnel
+    # Start SSH tunnel + watchdog that auto-restarts on drop
     if not _start_tunnel():
         print("[firevsports] Cannot connect to production API. Check SSH key and server.")
         input("Press Enter to exit...")
         return
+
+    def _tunnel_watchdog():
+        """Check tunnel every 30s, restart if dead."""
+        while True:
+            time.sleep(30)
+            if not _port_in_use(TUNNEL_LOCAL_PORT):
+                print("[firevsports] Tunnel died — restarting...")
+                _start_tunnel()
+
+    threading.Thread(target=_tunnel_watchdog, daemon=True).start()
 
     if sys.platform == "win32":
         import asyncio
@@ -185,11 +236,10 @@ def main(open_browser: bool = True):
             host="127.0.0.1",
             port=LOCAL_PORT,
             timeout_keep_alive=120,
-            log_level="info",
+            log_level="warning",
         )
     finally:
-        print("\n[firevsports] Shutting down...")
-        print("[firevsports] Done.")
+        pass
 
 
 if __name__ == "__main__":
@@ -199,14 +249,7 @@ if __name__ == "__main__":
             main(open_browser=_first_start)
             break  # Clean exit (no Ctrl+C) — don't restart
         except KeyboardInterrupt:
-            print("\n[firevsports] Restarting in 2s... (Ctrl+C again to exit)")
-            _first_start = False
-            try:
-                time.sleep(2)
-            except KeyboardInterrupt:
-                print("\n[firevsports] Exiting.")
-                break
+            break
         except Exception as e:
-            print(f"\n[firevsports] Error: {e}")
-            input("Press Enter to exit...")
+            print(f"[firevsports] Error: {e}")
             break

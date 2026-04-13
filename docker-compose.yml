@@ -52,9 +52,9 @@ services:
       context: .
       args:
         - VITE_FIREV_API_KEY=${FIREV_API_KEY}
-    # No public port — only reachable by nginx via Docker network
-    expose:
-      - "8000"
+    # Localhost-only for SSH tunnel — not public (nginx handles external traffic)
+    ports:
+      - "127.0.0.1:8000:8000"
     volumes:
       - firev_data:/app/data
       - firev_logs:/app/logs
