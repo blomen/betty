@@ -759,7 +759,7 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
-    sport_timeout: 1200                # Breadth over speed — football needs ~200s leagues + ~500s detail enrichment
+    sport_timeout: 600                 # Football no longer needs detail pages; tennis+handball detail fits in ~600s
     supported_sports:
       - football
       - tennis

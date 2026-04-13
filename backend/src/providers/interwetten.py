@@ -62,15 +62,10 @@ class InterwettenRetriever(BrowserRetriever):
     OUTCOME_MAP = {"1": "home", "X": "draw", "2": "away"}
 
     DETAIL_SPORTS = {
-        "football",
-        "basketball",
-        "ice_hockey",
+        # football excluded: 440 events × detail pages = ~730s for ~32 spr + ~38 tot — poor ROI
+        # Other removed sports (wrong IDs / 0 events) also absent; only confirmed-correct below
         "tennis",
         "handball",
-        "volleyball",
-        "american_football",
-        "baseball",
-        "rugby",
     }
 
     SPREAD_LABELS = {"Asian Handicap", "Handicap", "Handicap Games"}

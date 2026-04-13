@@ -790,6 +790,8 @@ def _resolve_event_id(
 
 def _store_deferred_event(session, event: StandardEvent, provider: str):
     """Buffer an unmatched soft event for later Pinnacle matching."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     from ..matching.normalizer import normalize_team_name
 
     try:
@@ -802,36 +804,27 @@ def _store_deferred_event(session, event: StandardEvent, provider: str):
 
     normalized_home = normalize_team_name(event.home_team)
     normalized_away = normalize_team_name(event.away_team)
+    markets_json = json.dumps(event.markets)
 
-    existing = (
-        session.query(DeferredEvent)
-        .filter_by(
+    stmt = (
+        pg_insert(DeferredEvent)
+        .values(
             provider_id=provider,
             sport=event.sport,
+            league=event.league,
+            home_team=event.home_team,
+            away_team=event.away_team,
             normalized_home=normalized_home,
             normalized_away=normalized_away,
             start_time=start_time,
+            markets_json=markets_json,
         )
-        .first()
+        .on_conflict_do_update(
+            constraint="uq_deferred_provider_event",
+            set_={"markets_json": markets_json, "attempt_count": 0},
+        )
     )
-
-    if existing:
-        existing.markets_json = json.dumps(event.markets)
-        existing.attempt_count = 0  # Reset on fresh data
-    else:
-        session.add(
-            DeferredEvent(
-                provider_id=provider,
-                sport=event.sport,
-                league=event.league,
-                home_team=event.home_team,
-                away_team=event.away_team,
-                normalized_home=normalized_home,
-                normalized_away=normalized_away,
-                start_time=start_time,
-                markets_json=json.dumps(event.markets),
-            )
-        )
+    session.execute(stmt)
 
 
 def store_provider_event(
