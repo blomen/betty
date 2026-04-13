@@ -922,19 +922,20 @@ class LevelMonitor:
                     except Exception:
                         logger.warning("Broker execution failed", exc_info=True)
 
-            # Send via relay callback (for firevstocks local client)
-            callback = getattr(self, "_signal_callback", None)
-            if callback is not None and result is not None:
+            # Send via relay callbacks (trading service + firevstocks clients)
+            callbacks = getattr(self, "_signal_callbacks", set())
+            if callbacks and result is not None:
                 import asyncio
 
                 def _send(msg):
-                    try:
-                        if asyncio.iscoroutinefunction(callback):
-                            asyncio.create_task(callback(msg))
-                        else:
-                            callback(msg)
-                    except Exception:
-                        logger.warning("Signal callback failed", exc_info=True)
+                    for cb in list(callbacks):
+                        try:
+                            if asyncio.iscoroutinefunction(cb):
+                                asyncio.create_task(cb(msg))
+                            else:
+                                cb(msg)
+                        except Exception:
+                            logger.warning("Signal callback failed", exc_info=True)
 
                 # Always send full inference for DQN page visualization
                 _send(
@@ -989,9 +990,24 @@ class LevelMonitor:
         """Set broker adapter for automated execution."""
         self._broker_adapter = adapter
 
+    def add_signal_callback(self, fn) -> None:
+        """Add a callback for zone signals. Multiple clients supported."""
+        if not hasattr(self, "_signal_callbacks"):
+            self._signal_callbacks = set()
+        self._signal_callbacks.add(fn)
+        logger.info("Signal callback added (%d total)", len(self._signal_callbacks))
+
+    def remove_signal_callback(self, fn) -> None:
+        """Remove a signal callback."""
+        if hasattr(self, "_signal_callbacks"):
+            self._signal_callbacks.discard(fn)
+            logger.info("Signal callback removed (%d remaining)", len(self._signal_callbacks))
+
     def set_signal_callback(self, fn) -> None:
-        """Set callback for zone signals. Used by /ws/signals relay."""
-        self._signal_callback = fn
+        """Legacy single-callback API. Use add/remove for multi-client."""
+        if fn is not None:
+            self.add_signal_callback(fn)
+        # None means remove — but we don't know which one, handled by remove_signal_callback
 
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time

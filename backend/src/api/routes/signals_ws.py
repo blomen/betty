@@ -130,14 +130,14 @@ async def signal_relay(ws: WebSocket):
         await ws.close()
         return
 
-    # Register signal callback — sends specialist signals to local client
-    async def _on_signal(signal: dict):
+    # Register message callback — forwards signals + dqn_inference to local client
+    async def _on_signal(msg: dict):
         try:
-            await ws.send_json({"type": "signal", **signal})
+            await ws.send_json(msg)
         except Exception:
-            log.debug("Failed to send signal to relay client")
+            log.debug("Failed to send message to relay client")
 
-    level_monitor.set_signal_callback(_on_signal)
+    level_monitor.add_signal_callback(_on_signal)
 
     try:
         while True:
@@ -201,4 +201,4 @@ async def signal_relay(ws: WebSocket):
     except Exception:
         log.exception("Signal relay error")
     finally:
-        level_monitor.set_signal_callback(None)
+        level_monitor.remove_signal_callback(_on_signal)
