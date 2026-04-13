@@ -77,14 +77,15 @@ class InterwettenRetriever(BrowserRetriever):
     TOTAL_LABELS = {"How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål"}
 
     JS_EXTRACT_DETAIL_MARKETS = """() => {
-        const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games"]);
-        const TOTAL = new Set(["How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål"]);
-        const results = { spread: null, total: null, datetime: null };
+        const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games", "Asiatiskt Handikapp", "Handikapp"]);
+        const TOTAL = new Set(["How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål", "Över/Under", "Totalt antal mål"]);
+        const results = { spread: null, total: null, datetime: null, _debug: null };
 
         const timeEl = document.querySelector('[class*="gametime"]');
         if (timeEl) results.datetime = timeEl.textContent.trim();
 
         const allBetting = document.querySelectorAll('[data-betting]');
+        const marketLabels = [];
 
         for (const el of allBetting) {
             try {
@@ -92,6 +93,7 @@ class InterwettenRetriever(BrowserRetriever):
                 if (!Array.isArray(raw)) continue;
                 if (typeof raw[1] !== 'number' || raw[1] < 100000) continue;
                 const label = (raw[3] || '').trim();
+                if (label) marketLabels.push(label);
 
                 if (SPREAD.has(label) && !results.spread) {
                     const outcomes = [];
@@ -120,12 +122,16 @@ class InterwettenRetriever(BrowserRetriever):
                 if (results.spread && results.total) break;
             } catch(e) {}
         }
+
+        if (!results.spread && !results.total) {
+            results._debug = { betting_count: allBetting.length, labels: marketLabels.slice(0, 20) };
+        }
         return results;
     }"""
 
     CONCURRENT_LEAGUE_PAGES = 16
-    CONCURRENT_DETAIL_PAGES = 20
-    MAX_DETAIL_EVENTS = 250
+    CONCURRENT_DETAIL_PAGES = 8  # Reduced from 20 — only 5 browser slots, 20 tabs caused 19s/event
+    MAX_DETAIL_EVENTS = 150  # Reduced from 250 — focus on top events, save browser time
 
     def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         transport = transport or BrowserTransport(headless=True)
@@ -459,6 +465,15 @@ class InterwettenRetriever(BrowserRetriever):
                         return
 
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
+
+                    # Log diagnostic from first event to help fix selectors
+                    debug_info = detail.pop("_debug", None)
+                    if debug_info and enriched == 0 and errors < 3:
+                        logger.info(
+                            f"[{self.provider_id}] {sport} detail DOM: "
+                            f"{debug_info.get('betting_count', 0)} data-betting elements, "
+                            f"labels={debug_info.get('labels', [])}"
+                        )
 
                     dt_str = detail.get("datetime", "")
                     if dt_str:

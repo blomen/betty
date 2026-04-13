@@ -63,47 +63,71 @@ MARKET_TYPE_MAP: dict[str, str] = {
 
 
 JS_EXTRACT_DETAIL_MARKETS = """() => {
-    const result = {spread: null, total: null};
+    const result = {spread: null, total: null, _debug: null};
 
-    // Find Asian Handicap market (spread) - look for market containers
+    // Strategy 1: ta-MarketType containers (original Playtech/Mojito selectors)
     const allMarkets = document.querySelectorAll('[class*="ta-MarketType-"], [class*="ta-AggregatedMarket"]');
     for (const mkt of allMarkets) {
         const cls = Array.from(mkt.classList || []).join(' ');
 
-        // Asian Handicap (2-way spread)
-        if (!result.spread && (cls.includes('AHCP') || cls.includes('AsianHandicap'))) {
-            const outcomes = [];
+        if (!result.spread && (cls.includes('AHCP') || cls.includes('HCMR') || cls.includes('HCOT') || cls.includes('FHOT') || cls.includes('Handicap'))) {
             const prices = Array.from(mkt.querySelectorAll('[class*="ta-price_text"]')).map(p => p.textContent.trim());
             const infos = Array.from(mkt.querySelectorAll('[class*="ta-infoText"]')).map(t => t.textContent.trim());
             const names = Array.from(mkt.querySelectorAll('[class*="ta-participantName"]')).map(n => n.textContent.trim());
-
+            const outcomes = [];
             for (let i = 0; i < Math.min(prices.length, 2); i++) {
-                outcomes.push({
-                    name: names[i] || '',
-                    point: infos[i] || '',
-                    odds: prices[i]
-                });
+                outcomes.push({ name: names[i] || '', point: infos[i] || '', odds: prices[i] });
             }
             if (outcomes.length >= 2) result.spread = {outcomes};
         }
 
-        // Asian Total / Over-Under (total)
-        if (!result.total && (cls.includes('ATOT') || cls.includes('AsianTotal') || cls.includes('OverUnder') || cls.includes('ÖverUnder'))) {
-            const outcomes = [];
+        if (!result.total && (cls.includes('ATOT') || cls.includes('HCTG') || cls.includes('TPOT') || cls.includes('OUTG') || cls.includes('FTPO') || cls.includes('OverUnder') || cls.includes('Total'))) {
             const prices = Array.from(mkt.querySelectorAll('[class*="ta-price_text"]')).map(p => p.textContent.trim());
             const labels = Array.from(mkt.querySelectorAll('[class*="ta-participantName"], [class*="ta-label"]')).map(l => l.textContent.trim());
-
+            const outcomes = [];
             for (let i = 0; i < Math.min(prices.length, 2); i++) {
-                outcomes.push({
-                    name: labels[i] || (i === 0 ? 'Over' : 'Under'),
-                    odds: prices[i]
-                });
+                outcomes.push({ name: labels[i] || (i === 0 ? 'Over' : 'Under'), odds: prices[i] });
             }
             if (outcomes.length >= 2) result.total = {outcomes};
         }
 
         if (result.spread && result.total) break;
     }
+
+    // Strategy 2: text-based search if ta-MarketType didn't work
+    if (!result.spread || !result.total) {
+        const sections = document.querySelectorAll('[class*="ta-"], section, div[data-market], [class*="market"], [class*="Market"]');
+        for (const sec of sections) {
+            const text = sec.textContent || '';
+            const prices = Array.from(sec.querySelectorAll('[class*="ta-price_text"], [class*="price"]')).map(p => p.textContent.trim()).filter(p => /^\\d/.test(p));
+            if (prices.length < 2) continue;
+
+            if (!result.spread && /handicap|asian handicap|handikapp/i.test(text) && prices.length >= 2) {
+                const infos = Array.from(sec.querySelectorAll('[class*="ta-infoText"], [class*="info"]')).map(t => t.textContent.trim());
+                result.spread = {outcomes: [
+                    {name: '', point: infos[0] || '', odds: prices[0]},
+                    {name: '', point: infos[1] || '', odds: prices[1]}
+                ]};
+            }
+
+            if (!result.total && /over.?under|totalt|antal m.l/i.test(text) && prices.length >= 2) {
+                result.total = {outcomes: [
+                    {name: 'Over', odds: prices[0]},
+                    {name: 'Under', odds: prices[1]}
+                ]};
+            }
+        }
+    }
+
+    // Diagnostic: capture what's on the page (only if nothing found)
+    if (!result.spread && !result.total) {
+        const taClasses = new Set();
+        document.querySelectorAll('[class*="ta-"]').forEach(el => {
+            el.classList.forEach(c => { if (c.startsWith('ta-') && (c.includes('Market') || c.includes('price') || c.includes('info') || c.includes('Outcome'))) taClasses.add(c); });
+        });
+        result._debug = Array.from(taClasses).sort().join(', ');
+    }
+
     return result;
 }"""
 
@@ -230,9 +254,13 @@ class TenBetRetriever(BrowserRetriever):
             f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s"
         )
 
-        # Pass 2: Detail enrichment disabled — JS_EXTRACT_DETAIL_MARKETS has 0%
-        # success rate across all observed runs (class names don't match 10bet.se DOM).
-        # Skipping saves ~1500ms × N events per sport. Re-enable after fixing selectors.
+        # Pass 2: Detail enrichment for spread/total markets
+        if sport in self.DETAIL_SPORTS and all_events:
+            detail_count = await self._enrich_events_with_details(all_events, sport)
+            if detail_count > 0:
+                logger.info(
+                    f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} events with spread/total"
+                )
 
         return all_events
 
@@ -956,6 +984,11 @@ class TenBetRetriever(BrowserRetriever):
                         return
 
                     detail = await worker_page.evaluate(JS_EXTRACT_DETAIL_MARKETS)
+
+                    # Log diagnostic from first event to help fix selectors
+                    debug_info = detail.pop("_debug", None)
+                    if debug_info and enriched == 0 and errors < 3:
+                        logger.info(f"[{self.provider_id}] {sport} detail DOM classes: {debug_info}")
 
                     added = False
                     if detail.get("spread"):

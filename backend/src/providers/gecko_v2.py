@@ -224,10 +224,24 @@ class GeckoV2Retriever(BrowserRetriever):
                     break
                 await asyncio.sleep(0.5)
 
+            # Fallback: navigate to a sport page to force API calls
+            if not captured:
+                logger.warning(f"[{self.provider_id}] No headers after init page, trying sport page fallback...")
+                try:
+                    await page.goto(
+                        f"{self.site_url}{self._init_path}/fotboll", wait_until="domcontentloaded", timeout=30000
+                    )
+                    for _ in range(40):
+                        if captured:
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] Sport page fallback failed: {e}")
+
             await page.unroute("**/api/sb/**")
 
             if not captured:
-                logger.error(f"[{self.provider_id}] No API headers captured after page load")
+                logger.error(f"[{self.provider_id}] No API headers captured after page load + fallback")
                 return False
 
             # Extract only the custom headers needed for API calls
