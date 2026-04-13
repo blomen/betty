@@ -381,11 +381,12 @@ class LiveInferenceSpecialists:
 
     Preferred over single-model approaches. Each specialist answers
     its own question independently, then the ensemble picks the
-    higher-EV action.
+    higher-EV action. Also loads DQN for neural network visualization.
     """
 
     def __init__(self) -> None:
         self._ensemble = None
+        self._dqn: DQNetwork | None = None
         self._normalizer: RunningNormalizer | None = None
         self._loaded = False
 
@@ -416,15 +417,42 @@ class LiveInferenceSpecialists:
                                 break
 
                         self._loaded = True
-                        return True
                     except Exception:
                         log.exception("Failed to load specialists from %s", path)
+
+            # Also load DQN for visualization (activations + connections)
+            if self._dqn is None:
+                for dqn_path in [search_dir / "dqn_latest.pt"] + sorted(
+                    search_dir.glob("dqn_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True
+                ):
+                    if dqn_path.exists():
+                        try:
+                            checkpoint = torch.load(dqn_path, weights_only=False, map_location="cpu")
+                            first_weight = checkpoint["q_network"]["encoder.0.weight"]
+                            obs_dim = first_weight.shape[1]
+                            self._dqn = DQNetwork(input_dim=obs_dim)
+                            self._dqn.load_state_dict(checkpoint["q_network"])
+                            self._dqn.eval()
+                            log.info("DQN loaded for visualization from %s", dqn_path)
+                            break
+                        except Exception:
+                            log.debug("Could not load DQN from %s", dqn_path)
+
+            if self._loaded:
+                return True
         return False
 
     def infer(self, state: dict) -> dict | None:
-        """Run specialist inference at a zone touch."""
+        """Run specialist inference at a zone touch + DQN for visualization."""
         if self._ensemble is None:
             return None
+
+        lt = state.get("level_type")
+        if lt is not None and isinstance(lt, str):
+            try:
+                state["level_type"] = LevelType(lt)
+            except ValueError:
+                state["level_type"] = LevelType.VWAP
 
         obs = build_observation(state)
         if self._normalizer is not None:
@@ -436,7 +464,8 @@ class LiveInferenceSpecialists:
         action_map = {"continuation": Action.CONTINUATION, "reversal": Action.REVERSAL, "skip": Action.SKIP}
         action = action_map.get(decision["action"], Action.SKIP)
 
-        return {
+        result = {
+            "inputs": obs.tolist(),
             "action": action.name,
             "confidence": decision["confidence"],
             "cont_p": decision["cont_p"],
@@ -446,6 +475,27 @@ class LiveInferenceSpecialists:
             "sizing_signal": decision["sizing_signal"],
             "model_type": "specialists",
         }
+
+        # Run DQN forward pass for visualization (activations + connections)
+        if self._dqn is not None:
+            try:
+                obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+                with torch.no_grad():
+                    activations = self._dqn.forward_with_activations(obs_tensor)
+                    connections = self._dqn.extract_top_connections(activations, top_n=100)
+                result["activations"] = {
+                    "layer1": activations["layer1"][0].tolist(),
+                    "layer2": activations["layer2"][0].tolist(),
+                    "layer3": activations["layer3"][0].tolist(),
+                    "layer4": activations["features"][0].tolist(),
+                }
+                result["connections"] = connections
+                result["q_values"] = activations["q_values"][0].tolist()
+                result["model_type"] = "specialists+dqn"
+            except Exception:
+                log.debug("DQN visualization forward pass failed", exc_info=True)
+
+        return result
 
 
 # Keep backward-compatible alias

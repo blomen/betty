@@ -69,7 +69,8 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
   }, [])
 
   // ── Activations: real data or simulated ──
-  const hasReal = !!dqnInference?.activations
+  // Only use real data if activations actually have content (specialists model sends none)
+  const hasReal = !!dqnInference?.activations?.layer1?.length
 
   const segActs = useMemo(() =>
     DQN_SEGMENTS.map((seg, i) => {
