@@ -31,3 +31,28 @@ def test_bet_ns_kambi_fields_empty_when_no_provider_meta():
     ns = _bet_ns(bet)
     assert ns.kambi_event_id == ""
     assert ns.kambi_outcome_id == ""
+
+
+from firevsports.mirror.workflows.kambi import _parse_graphql_balance
+
+
+def test_parse_graphql_balance_standard():
+    data = {"data": {"viewer": {"user": {"balance": {"totalAmount": 1076.50, "currency": "SEK"}}}}}
+    assert _parse_graphql_balance(data) == 1076.50
+
+
+def test_parse_graphql_balance_array_wrapped():
+    """LeoVegas sometimes returns a list with one item."""
+    data = [{"data": {"viewer": {"user": {"balance": {"totalAmount": 250.0, "currency": "SEK"}}}}}]
+    assert _parse_graphql_balance(data) == 250.0
+
+
+def test_parse_graphql_balance_missing_returns_negative_one():
+    assert _parse_graphql_balance(None) == -1
+    assert _parse_graphql_balance({}) == -1
+    assert _parse_graphql_balance({"data": {}}) == -1
+
+
+def test_parse_graphql_balance_zero_balance():
+    data = {"data": {"viewer": {"user": {"balance": {"totalAmount": 0.0, "currency": "SEK"}}}}}
+    assert _parse_graphql_balance(data) == 0.0
