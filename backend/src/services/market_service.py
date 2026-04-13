@@ -380,16 +380,7 @@ class MarketService:
                 for r in db_rows
             ]
         else:
-            # No DB bars — try Databento as last resort (with timeout)
-            sym = config.get("symbol", "NQ.FUT")
-            try:
-                bars = await asyncio.wait_for(
-                    provider.get_bars(sym, "1m", globex_start, rth_close),
-                    timeout=30.0,
-                )
-            except Exception as e:
-                logger.warning("Databento get_bars failed: %s", e)
-                bars = []
+            bars = []
 
         if not bars:
             logger.info("No bars for %s on %s — returning cached/empty", symbol, target_date)
