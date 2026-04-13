@@ -651,7 +651,9 @@ def _replay_single_file(
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.session_store import compute_precomputed_levels
     from src.rl.data.tick_array import TickArray
+    from src.rl.features.narrative_features import extract_narrative_features
     from src.rl.features.observation import augment_observation, build_position_state
+    from src.rl.features.trigger_features import build_trigger_observation
 
     pfile = Path(pfile_path)
     out_dir = Path(chunk_dir)
