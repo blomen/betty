@@ -123,9 +123,11 @@ JS_EXTRACT_DETAIL_MARKETS = """() => {
     if (!result.spread && !result.total) {
         const taClasses = new Set();
         document.querySelectorAll('[class*="ta-"]').forEach(el => {
-            el.classList.forEach(c => { if (c.startsWith('ta-') && (c.includes('Market') || c.includes('price') || c.includes('info') || c.includes('Outcome'))) taClasses.add(c); });
+            el.classList.forEach(c => { if (c.startsWith('ta-')) taClasses.add(c); });
         });
-        result._debug = Array.from(taClasses).sort().join(', ');
+        // Also capture first 500 chars of page text for structure analysis
+        const bodyText = (document.body?.innerText || '').substring(0, 500).replace(/\\s+/g, ' ');
+        result._debug = Array.from(taClasses).sort().join(', ') + ' |TEXT| ' + bodyText;
     }
 
     return result;
