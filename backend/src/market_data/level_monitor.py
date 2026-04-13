@@ -991,11 +991,23 @@ class LevelMonitor:
         self._broker_adapter = adapter
 
     def add_signal_callback(self, fn) -> None:
-        """Add a callback for zone signals. Multiple clients supported."""
+        """Add a callback for zone signals. Multiple clients supported.
+
+        Resets the zone debounce on connect so that if price is already
+        inside a zone when the relay connects, the next tick fires fresh
+        (the zone touch may have fired before any callbacks were registered).
+        """
         if not hasattr(self, "_signal_callbacks"):
             self._signal_callbacks = set()
         self._signal_callbacks.add(fn)
-        logger.info("Signal callback added (%d total)", len(self._signal_callbacks))
+        # Clear debounce + last-fire history so zones re-evaluate immediately.
+        # Prevents the case where a touch fired while no callbacks were registered
+        # (e.g. server started before firevstocks connected) from silently locking
+        # the zone for 60 seconds.
+        self._zone_debounce = set()
+        if hasattr(self, "_zone_last_fire"):
+            self._zone_last_fire = {}
+        logger.info("Signal callback added (%d total) — zone debounce reset", len(self._signal_callbacks))
 
     def remove_signal_callback(self, fn) -> None:
         """Remove a signal callback."""

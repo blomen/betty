@@ -518,6 +518,16 @@ def create_dashboard_app() -> FastAPI:
                 return {"error": "flatten failed"}
         return {"error": "no client"}
 
+    @app.post("/api/resume")
+    async def resume_trading():
+        """Clear halt so the adapter can accept signals again."""
+        adapter = _state.get("adapter")
+        if not adapter:
+            return {"error": "no adapter"}
+        adapter.reset_session()
+        log.info("Trading resumed via /api/resume")
+        return {"resumed": True}
+
     @app.post("/api/cancel-order/{order_id}")
     async def cancel_order(order_id: int):
         """Cancel a specific order."""
