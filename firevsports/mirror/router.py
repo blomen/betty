@@ -7,6 +7,7 @@ import json
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.requests import Request
@@ -49,6 +50,7 @@ class OpenTabRequest(BaseModel):
 class PlayStartRequest(BaseModel):
     batch: list[dict[str, Any]]
     balances: dict[str, Any]
+    provider_id: str | None = None  # which skin to start on
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,39 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     router = APIRouter(prefix="/mirror", tags=["mirror"])
 
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
+
+    # Wire browser bet interception → play loop auto-record
+    # Chain with existing callback (broadcaster.publish set in server.py)
+    _prev_callback = browser._on_event
+
+    async def _post_balance_async(provider_id: str, balance: float):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{proxy_url}/api/bankroll/set/{provider_id}",
+                    json={"balance": balance},
+                    headers={"X-Nginx-Authenticated": "firevsports"},
+                )
+        except Exception:
+            pass
+
+    def _on_browser_event(event_type: str, data: dict):
+        if _prev_callback:
+            _prev_callback(event_type, data)
+        if event_type == "bet_intercepted":
+            play_loop.on_bet_intercepted(data.get("provider_id", ""), data.get("body", {}))
+        if event_type == "balance_intercepted":
+            pid = data.get("provider_id", "")
+            bal = data.get("balance")
+            if pid and bal is not None:
+                import asyncio
+
+                try:
+                    asyncio.ensure_future(_post_balance_async(pid, bal))
+                except RuntimeError:
+                    pass
+
+    browser.set_event_callback(_on_browser_event)
 
     @router.post("/open-provider-tab")
     async def open_provider_tab(request: Request):
@@ -133,6 +168,27 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "domain": workflow.domain,
         }
 
+    @router.get("/browser/test-settle/{provider_id}")
+    async def test_settle(provider_id: str):
+        """Debug: run sync_history and return results."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab"}
+        try:
+            history = await workflow.sync_history(page)
+            return {
+                "count": len(history),
+                "entries": [
+                    {"event": e.event_name, "status": e.status, "odds": e.odds, "stake": e.stake, "payout": e.payout}
+                    for e in history[:10]
+                ],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
     @router.get("/browser/screenshot/{provider_id}")
     async def browser_screenshot(provider_id: str):
         """Take screenshot of provider tab and check for balance text."""
@@ -150,6 +206,18 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         }""")
         await page.screenshot(path="debug_screenshot.png")
         return {"url": page.url, "balance_text": balance_text, "screenshot": "debug_screenshot.png"}
+
+    @router.post("/browser/eval/{provider_id}")
+    async def browser_eval(provider_id: str, body: dict[str, Any]):
+        """Evaluate JS in a provider's tab. Debug only."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab"}
+        result = await page.evaluate(body["js"])
+        return {"result": result}
 
     @router.get("/status")
     async def get_status():
@@ -248,14 +316,19 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     @router.post("/play/start")
     async def play_start(req: PlayStartRequest):
         """Load a batch of bets and start the play loop."""
-        play_loop.load_batch(req.batch, req.balances)
+        play_loop.load_batch(req.batch, req.balances, start_provider=req.provider_id)
         play_loop.start()
         return play_loop.get_status()
 
     @router.post("/play/confirm-settlements")
-    async def play_confirm_settlements():
-        """Confirm the settlement breakdown and proceed to bets."""
-        play_loop.confirm_settlements()
+    async def play_confirm_settlements(body: dict[str, Any] | None = None):
+        """Confirm the settlement breakdown and proceed to bets.
+
+        Body (optional): {confirmed: [{bet_id, result, payout}, ...]}
+        If provided, only confirmed settlements are recorded to DB.
+        """
+        confirmed = (body or {}).get("confirmed")
+        play_loop.confirm_settlements(confirmed)
         return play_loop.get_status()
 
     @router.post("/play/place")
@@ -439,6 +512,68 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             results["history"] = {"error": str(e)}
 
         return results
+
+    # -----------------------------------------------------------------------
+    # Debug: Playwright-native introspection (accessibility tree, locators)
+    # -----------------------------------------------------------------------
+
+    @router.post("/browser/click/{provider_id}")
+    async def browser_click(provider_id: str, body: dict[str, Any]):
+        """Click at element-relative offset on a provider's WASM widget.
+
+        body: {x, y} — offset relative to #STB_SPORTSBOOK > div
+        Tries multiple click methods: locator, mouse, and CDP.
+        """
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        wf = get_workflow(provider_id)
+        page = await wf.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab found"}
+
+        ox, oy = body.get("x", 0), body.get("y", 0)
+
+        # Get element position to convert offset to viewport coords
+        rect = await page.evaluate("""() => {
+            const el = document.querySelector('#STB_SPORTSBOOK > div');
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return {x: r.x, y: r.y, w: r.width, h: r.height};
+        }""")
+        if not rect:
+            return {"error": "STB_SPORTSBOOK div not found"}
+
+        vx = rect["x"] + ox
+        vy = rect["y"] + oy
+
+        method = body.get("method", "cdp")
+        result = {"ox": ox, "oy": oy, "vx": vx, "vy": vy, "method": method}
+
+        try:
+            if method == "locator":
+                await page.locator("#STB_SPORTSBOOK > div").click(position={"x": ox, "y": oy}, timeout=5000)
+            elif method == "mouse":
+                await page.mouse.click(vx, vy)
+            else:
+                # CDP: send raw input events at the browser level
+                cdp = await page.context.new_cdp_session(page)
+                for etype in ["mousePressed", "mouseReleased"]:
+                    await cdp.send(
+                        "Input.dispatchMouseEvent",
+                        {
+                            "type": etype,
+                            "x": vx,
+                            "y": vy,
+                            "button": "left",
+                            "clickCount": 1,
+                        },
+                    )
+                await cdp.detach()
+            result["clicked"] = True
+        except Exception as e:
+            result["error"] = str(e)[:200]
+
+        return result
 
     # -----------------------------------------------------------------------
     # SSE stream

@@ -18,6 +18,14 @@ from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
+
+def _g(obj, key, default=None):
+    """Get attribute from object or dict — handles both play loop dicts and BetProxy objects."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 logger = logging.getLogger(__name__)
 
 # Altenar market typeId → our canonical market type
@@ -88,48 +96,35 @@ class AltenarWorkflow(ProviderWorkflow):
         result = await self._evaluate_api(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
-        # Must have actual balance data — not just a non-error response
-        try:
-            float(result["cash"]["total"])
-            return True
-        except (KeyError, TypeError, ValueError):
+        # Navigate into result wrapper if present
+        data = result.get("result", result) if isinstance(result, dict) else result
+        if not isinstance(data, dict):
             return False
+        # Logged in if any wallet has balance data (cash, bonus, sport)
+        for wallet in ("cash", "bonus", "sport"):
+            try:
+                float(data[wallet]["total"])
+                return True
+            except (KeyError, TypeError, ValueError):
+                continue
+        return False
 
     async def sync_balance(self, page: Page) -> float:
-        """Read balance from DOM — API requires auth token we can't access.
-
-        Scrapes the smallest KR amount in header/nav area (the actual balance,
-        not promo/bonus numbers which are typically larger).
-        """
-        import re
-
-        try:
-            text = await page.evaluate(r"""() => {
-                // Only look in the top header/nav bar for the real balance
-                const els = document.querySelectorAll('header, nav, [class*="Header"], [class*="header"]');
-                const amounts = [];
-                for (const el of els) {
-                    const t = el.innerText || '';
-                    // Find all KR amounts
-                    const matches = t.matchAll(/(\d[\d\s,.]*\d)\s*KR/gi);
-                    for (const m of matches) {
-                        amounts.push(m[1]);
-                    }
-                }
-                // Return the smallest — that's the real balance, not promos
-                if (amounts.length === 0) return null;
-                return amounts.sort((a, b) => {
-                    const na = parseFloat(a.replace(/[\s\xa0]/g, '').replace(',', '.'));
-                    const nb = parseFloat(b.replace(/[\s\xa0]/g, '').replace(',', '.'));
-                    return na - nb;
-                })[0];
-            }""")
-            if text:
-                cleaned = re.sub(r"[\s\xa0]", "", text).replace(",", ".")
-                return float(cleaned)
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] DOM balance scrape failed: {e}")
-        return -1
+        """Read balance from the Altenar balance API (sum of cash + bonus wallets)."""
+        result = await self._evaluate_api(page, self._balance_url())
+        if result is None or "__error" in (result or {}):
+            return -1
+        data = result.get("result", result) if isinstance(result, dict) else result
+        if not isinstance(data, dict):
+            return -1
+        # Sum all wallet totals (cash, bonus, sport)
+        total = 0.0
+        for wallet in ("cash", "bonus", "sport"):
+            try:
+                total += float(data[wallet]["total"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return total if total > 0 else -1
 
     # ------------------------------------------------------------------
     # History + Positions — via account history page (NOT the sportsbook widget)
@@ -294,121 +289,199 @@ class AltenarWorkflow(ProviderWorkflow):
             logger.warning(f"[{self.provider_id}] Failed to navigate to sports history: {e}")
             return False
 
-    async def _set_date_and_show(self, page: Page, tab: str, days_back: int = 90) -> dict | None:
-        """Select tab (Settled/Open), set date range, click Show History, intercept response."""
+    async def _click_tab_and_show(self, page: Page, tab: str, days_back: int = 90) -> bool:
+        """Select tab (Settled/Open), set date range, click Show History, wait for DOM."""
         from datetime import datetime, timedelta
 
         try:
-            # Click the tab
-            tab_label = page.locator("div.search-filter__tabs label", has_text=tab)
-            if await tab_label.count() > 0:
-                await tab_label.first.click(timeout=3000)
-                await asyncio.sleep(0.5)
-
-            # Set start date
-            start_date = (datetime.now() - timedelta(days=days_back)).strftime("%d/%m/%Y")
-            date_input = page.locator("[data-testid='startDate']")
-            if await date_input.count() > 0:
-                await date_input.click()
-                await date_input.fill(start_date)
-                await asyncio.sleep(0.5)
-
-            # Click Show History + intercept
-            async with page.expect_response(
-                lambda r: self._is_bet_history_response(r.url) and r.status == 200,
-                timeout=15000,
-            ) as resp_info:
-                # Try multiple button text variants (EN/SV)
-                show_btn = None
-                for text in ["Show history", "SHOW HISTORY", "Visa historik", "VISA HISTORIK"]:
-                    loc = page.get_by_role("button", name=text)
+            # Click the tab (Settled/Open)
+            tab_el = None
+            tab_upper = tab.upper()
+            for selector in [
+                f"div.search-filter__tabs label:has-text('{tab}')",
+                f"[data-testid*='{tab.lower()}']",
+            ]:
+                loc = page.locator(selector)
+                if await loc.count() > 0:
+                    tab_el = loc.first
+                    break
+            if not tab_el:
+                for variant in [tab, tab_upper, tab.capitalize()]:
+                    loc = page.get_by_text(variant, exact=True)
                     if await loc.count() > 0:
-                        show_btn = loc.first
+                        tab_el = loc.first
                         break
-                if not show_btn:
-                    # Fallback: any button in main content
-                    show_btn = page.locator("main button").first
-                await show_btn.click(timeout=5000)
+            if tab_el:
+                await tab_el.click(timeout=3000)
+                await asyncio.sleep(0.5)
 
-            response = await resp_info.value
-            body = await response.text()
-            if not body:
-                return None
-            import json as _json
+            # Set start date via JS (input fields may be read-only in the UI)
+            start_date = (datetime.now() - timedelta(days=days_back)).strftime("%d/%m/%Y")
+            await page.evaluate(f"""() => {{
+                const inputs = document.querySelectorAll('input[type="text"], input[data-testid]');
+                for (const input of inputs) {{
+                    if (input.value && input.value.includes('/')) {{
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, '{start_date}');
+                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        break;
+                    }}
+                }}
+            }}""")
+            await asyncio.sleep(0.5)
 
-            result = _json.loads(body)
-            # Log response shape for debugging
-            if isinstance(result, dict):
-                keys = list(result.keys())
-                sample = ""
-                # Find the data array
-                for k in keys:
-                    v = result[k]
-                    if isinstance(v, list) and v:
-                        sample = (
-                            f" {k}[0]_keys={list(v[0].keys())[:10]}" if isinstance(v[0], dict) else f" {k}[0]={v[0]}"
-                        )
-                        break
-                print(f"[{self.provider_id}] API response: keys={keys}{sample} body_len={len(body)}", flush=True)
-            else:
-                print(f"[{self.provider_id}] API response: type={type(result).__name__} len={len(result)}", flush=True)
-            return result
+            # Click Show History
+            for text in ["Show history", "SHOW HISTORY", "Visa historik", "VISA HISTORIK"]:
+                loc = page.get_by_role("button", name=text)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=5000)
+                    break
+                loc = page.get_by_text(text, exact=True)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=5000)
+                    break
+
+            # Wait for results to appear in DOM
+            await asyncio.sleep(3)
+            return True
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] _set_date_and_show({tab}) failed: {e}")
-            return None
+            logger.warning(f"[{self.provider_id}] _click_tab_and_show({tab}) failed: {e}")
+            return False
 
-    async def _go_back_to_filter(self, page: Page) -> None:
-        """Click the back arrow to return to tab selection."""
-        try:
-            back = page.locator("div.history-page__header svg")
-            if await back.count() > 0:
-                await back.first.click(timeout=3000)
-                await asyncio.sleep(1)
-        except Exception:
-            pass
+    async def _scrape_history_dom(self, page: Page) -> list[HistoryEntry]:
+        """Scrape settled bet history from DOM (stb-sport-history-card elements)."""
+        import re as _re
+
+        raw = await page.evaluate("""() => {
+            const cards = document.querySelectorAll('stb-sport-history-card');
+            return Array.from(cards).map(el => {
+                const status = (el.querySelector('.status') || {}).textContent || '';
+                const title = (el.querySelector('.card-title') || {}).textContent || '';
+                const dds = el.querySelectorAll('dd');
+                const stake = dds[0] ? dds[0].textContent : '';
+                const win = dds[1] ? dds[1].textContent : '';
+                const footer = el.querySelector('.card-footer span, time');
+                const date = footer ? footer.textContent : '';
+                return {status: status.trim(), title: title.trim(),
+                        stake: stake.trim(), win: win.trim(), date: date.trim()};
+            });
+        }""")
+        if not raw:
+            return []
+
+        entries = []
+        for item in raw:
+            status_raw = item.get("status", "").lower()
+            status_map = {
+                "won": "won",
+                "win": "won",
+                "lost": "lost",
+                "lose": "lost",
+                "void": "void",
+                "voided": "void",
+                "cancelled": "void",
+                "refund": "void",
+                "cashout": "cashout",
+                "cashed out": "cashout",
+            }
+            status = status_map.get(status_raw)
+            if not status:
+                continue
+
+            def _parse_amount(s: str) -> float:
+                # Remove currency prefix + non-breaking spaces
+                cleaned = _re.sub(r"[^\d.,]", "", s.replace("\xa0", "").replace("\u00a0", ""))
+                return float(cleaned.replace(",", ".")) if cleaned else 0.0
+
+            stake = _parse_amount(item.get("stake", ""))
+            payout = _parse_amount(item.get("win", ""))
+            event_name = item.get("title", "")
+
+            entries.append(
+                HistoryEntry(
+                    provider_bet_id="",
+                    event_name=event_name,
+                    market="",
+                    outcome="",
+                    odds=round(payout / stake, 3) if status == "won" and stake > 0 and payout > 0 else 0,
+                    stake=stake,
+                    status=status,
+                    payout=payout,
+                )
+            )
+
+        logger.info(f"[{self.provider_id}] DOM scrape: {len(entries)} settled bets")
+        return entries
+
+    async def _scrape_positions_dom(self, page: Page) -> list[PositionEntry]:
+        """Scrape open bet positions from DOM."""
+        import re as _re
+
+        raw = await page.evaluate("""() => {
+            const cards = document.querySelectorAll('stb-sport-history-card');
+            return Array.from(cards).map(el => {
+                const title = (el.querySelector('.card-title') || {}).textContent || '';
+                const dds = el.querySelectorAll('dd');
+                const stake = dds[0] ? dds[0].textContent : '';
+                const footer = el.querySelector('.card-footer span, time');
+                const date = footer ? footer.textContent : '';
+                return {title: title.trim(), stake: stake.trim(), date: date.trim()};
+            });
+        }""")
+        if not raw:
+            return []
+
+        positions = []
+        for item in raw:
+
+            def _parse_amount(s: str) -> float:
+                cleaned = _re.sub(r"[^\d.,]", "", s.replace("\xa0", "").replace("\u00a0", ""))
+                return float(cleaned.replace(",", ".")) if cleaned else 0.0
+
+            positions.append(
+                PositionEntry(
+                    provider_bet_id="",
+                    event_name=item.get("title", ""),
+                    market="",
+                    outcome="",
+                    odds=0,
+                    stake=_parse_amount(item.get("stake", "")),
+                    placed_at=item.get("date"),
+                )
+            )
+        return positions
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Navigate to account sports history -> Settled -> Show History."""
+        """Navigate to sports history, click Show History, scrape settled bets from DOM."""
         try:
-            print(f"[{self.provider_id}] sync_history: starting", flush=True)
-            if not await self._navigate_to_sports_history(page):
-                print(f"[{self.provider_id}] sync_history: navigation failed", flush=True)
-                return []
+            logger.info(f"[{self.provider_id}] sync_history: starting")
 
-            result = None
-            for label in ["Settled", "settled", "SETTLED"]:
-                result = await self._set_date_and_show(page, label)
-                print(
-                    f"[{self.provider_id}] _set_date_and_show({label}) -> {type(result).__name__}, truthy={bool(result)}",
-                    flush=True,
-                )
-                if result:
+            # Go directly to settled history URL
+            url = f"https://{self.domain}/en/account/history/sport"
+            if "account/history" not in (page.url or ""):
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)
+
+            # Click "SHOW HISTORY" to load results
+            for text in ["Show history", "SHOW HISTORY", "Visa historik", "VISA HISTORIK"]:
+                loc = page.get_by_role("button", name=text)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=5000)
                     break
-            if not result:
+                loc = page.get_by_text(text, exact=True)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=5000)
+                    break
+
+            # Wait for cards to render
+            try:
+                await page.wait_for_selector("stb-sport-history-card", timeout=10000)
+            except Exception:
+                logger.warning(f"[{self.provider_id}] No history cards appeared after clicking Show History")
                 return []
 
-            await self._go_back_to_filter(page)
-
-            bets_data = self._parse_bets_data(result)
-            if bets_data:
-                print(
-                    f"[{self.provider_id}] bets_data: {len(bets_data)} items, first keys={list(bets_data[0].keys())[:15]}",
-                    flush=True,
-                )
-            else:
-                # Debug: show what 'result' contains
-                inner = result.get("result")
-                inner_type = type(inner).__name__
-                inner_keys = (
-                    list(inner.keys())[:10]
-                    if isinstance(inner, dict)
-                    else (f"len={len(inner)}" if isinstance(inner, list) else str(inner)[:100])
-                )
-                print(
-                    f"[{self.provider_id}] bets_data: EMPTY. result[result] type={inner_type} info={inner_keys}",
-                    flush=True,
-                )
-            entries = [e for b in bets_data if (e := self._parse_history_entry(b)) is not None]
+            entries = await self._scrape_history_dom(page)
             logger.info(f"[{self.provider_id}] sync_history: {len(entries)} settled bets")
             return entries
         except Exception as e:
@@ -416,20 +489,33 @@ class AltenarWorkflow(ProviderWorkflow):
             return []
 
     async def fetch_positions(self, page: Page) -> list[PositionEntry]:
-        """Navigate to account sports history -> Open -> Show History."""
+        """Fetch open bets via widgetBetHistory API (no DOM scraping)."""
         try:
-            if not await self._navigate_to_sports_history(page):
-                return []
-
-            result = await self._set_date_and_show(page, "Open")
+            url = (
+                f"https://sb2frontend-altenar2.biahosted.com/api/widget/"
+                f"widgetBetHistory?integration={self._integration}"
+                f"&status=open&page=1&pageSize=50"
+            )
+            result = await page.evaluate(
+                f"""async () => {{
+                try {{
+                    const r = await fetch("{url}", {{credentials: "include"}});
+                    return r.ok ? await r.json() : null;
+                }} catch(e) {{ return null; }}
+            }}"""
+            )
             if not result:
+                logger.warning(f"[{self.provider_id}] fetch_positions API returned null")
                 return []
-
-            await self._go_back_to_filter(page)
 
             bets_data = self._parse_bets_data(result)
-            positions = [p for b in bets_data if (p := self._parse_position_entry(b)) is not None]
-            logger.info(f"[{self.provider_id}] fetch_positions: {len(positions)} open bets")
+            positions = []
+            for bet in bets_data:
+                entry = self._parse_position_entry(bet)
+                if entry:
+                    positions.append(entry)
+
+            logger.info(f"[{self.provider_id}] fetch_positions: {len(positions)} open bets (API)")
             return positions
         except Exception as e:
             logger.warning(f"[{self.provider_id}] fetch_positions failed: {e}")
@@ -452,6 +538,30 @@ class AltenarWorkflow(ProviderWorkflow):
             pass
         return None
 
+    @staticmethod
+    def parse_placement_details(body: dict) -> dict:
+        """Extract actual stake/odds from Altenar placeWidget response."""
+        details: dict = {}
+        # Shape 1: {data: {betId, stake, odds, ...}}
+        data = body.get("data", {})
+        if isinstance(data, dict):
+            if "stake" in data:
+                details["actual_stake"] = float(data["stake"])
+            if "odds" in data:
+                details["actual_odds"] = float(data["odds"])
+            if "totalOdds" in data:
+                details["actual_odds"] = float(data["totalOdds"])
+        # Shape 2: {bets: [{id, stake, selections: [{odds}]}]}
+        bets = body.get("bets", [])
+        if bets and isinstance(bets, list):
+            bet = bets[0]
+            if "stake" in bet:
+                details["actual_stake"] = float(bet["stake"])
+            sels = bet.get("selections", [])
+            if sels and "odds" in sels[0]:
+                details["actual_odds"] = float(sels[0]["odds"])
+        return details
+
     # ------------------------------------------------------------------
     # Navigation — sportRoutingParams URL pattern
     # ------------------------------------------------------------------
@@ -462,14 +572,19 @@ class AltenarWorkflow(ProviderWorkflow):
         URL pattern: {domain}/sv/sport?sportRoutingParams=page~event__sportId~{s}__categoryIds~{c}__championshipIds~{ch}__eventId~{e}
         All IDs come from provider_meta stored during extraction.
         """
-        eid = getattr(bet, "altenar_event_id", None)
+        # Try direct attributes first (BetProxy), then provider_meta dict (batch path)
+        eid = _g(bet, "altenar_event_id", None)
+        if not eid:
+            meta = _g(bet, "provider_meta") or {}
+            eid = meta.get("event_id")
         if not eid:
             logger.warning(f"[{self.provider_id}] No altenar_event_id for navigation")
             return False
 
-        sid = getattr(bet, "altenar_sport_id", "")
-        cid = getattr(bet, "altenar_category_id", "")
-        chid = getattr(bet, "altenar_championship_id", "")
+        meta = _g(bet, "provider_meta") or {}
+        sid = _g(bet, "altenar_sport_id", "") or meta.get("sport_id", "")
+        cid = _g(bet, "altenar_category_id", "") or meta.get("category_id", "")
+        chid = _g(bet, "altenar_championship_id", "") or meta.get("championship_id", "")
 
         # Build sportRoutingParams
         params = f"page~event__eventId~{eid}"
@@ -505,8 +620,8 @@ class AltenarWorkflow(ProviderWorkflow):
         After navigate_to_event, the widget auto-fetches event details.
         """
 
-        eid = getattr(bet, "altenar_event_id", None)
-        fair_odds = getattr(bet, "fair_odds", None)
+        eid = _g(bet, "altenar_event_id", None) or (_g(bet, "provider_meta") or {}).get("event_id")
+        fair_odds = _g(bet, "fair_odds", None)
         if not eid or not fair_odds:
             return None
 
@@ -534,9 +649,9 @@ class AltenarWorkflow(ProviderWorkflow):
         """Match bet market/outcome against GetEventDetails response."""
         from ...analysis.value import compute_edge
 
-        target_market = getattr(bet, "market", "")
-        target_outcome = getattr(bet, "outcome", "")
-        target_point = getattr(bet, "point", None)
+        target_market = _g(bet, "market", "")
+        target_outcome = _g(bet, "outcome", "")
+        target_point = _g(bet, "point", None)
 
         markets = data.get("markets", [])
         odds_list = data.get("odds", [])
@@ -573,8 +688,8 @@ class AltenarWorkflow(ProviderWorkflow):
 
                 edge = compute_edge(self.provider_id, live_price, fair_odds)
                 logger.info(
-                    f"[{self.provider_id}] Live: {getattr(bet, 'display_home', '?')} vs "
-                    f"{getattr(bet, 'display_away', '?')} {target_outcome} @ {live_price:.2f} "
+                    f"[{self.provider_id}] Live: {_g(bet, 'display_home', '?')} vs "
+                    f"{_g(bet, 'display_away', '?')} {target_outcome} @ {live_price:.2f} "
                     f"(fair {fair_odds:.2f}) edge={edge:.1f}%"
                 )
                 return edge
@@ -592,124 +707,61 @@ class AltenarWorkflow(ProviderWorkflow):
         return None
 
     # ------------------------------------------------------------------
-    # Placement — auto-select outcome + fill stake, user confirms
+    # Placement — two-phase: prep (auto-fill) then confirm (click submit)
     # ------------------------------------------------------------------
 
-    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Auto-select outcome and fill stake in the Altenar betslip.
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Altenar WSDK renders via WASM — no DOM automation possible.
 
-        1. Find the matching odds button by price in shadow DOM
-        2. Click it to add to betslip
-        3. Clear and fill the stake input
-        4. Return 'manual' — user confirms by clicking 'Placera spel'
+        Navigation brings the user to the event page. They select the
+        outcome and place the bet manually. We just confirm we're on
+        the right page and return 'prepped' so the UI shows bet details.
         """
-        import asyncio
+        bet_id = _g(bet, "bet_id", 0) or 0
+        target_odds = _g(bet, "odds", 0)
 
-        target_odds = getattr(bet, "odds", 0)
-        stake_str = f"{stake:.2f}"
+        # Verify we're on the event page
+        meta = _g(bet, "provider_meta") or {}
+        eid = meta.get("event_id", "")
+        current_url = page.url or ""
+        on_event = f"eventId~{eid}" in current_url if eid else True
 
-        target_outcome = getattr(bet, "outcome", "")
-        display_home = (getattr(bet, "display_home", "") or "").lower()
-        display_away = (getattr(bet, "display_away", "") or "").lower()
-        target_market = getattr(bet, "market", "")
-        target_point = getattr(bet, "point", None)
+        if not on_event:
+            logger.warning(f"[{self.provider_id}] prep_betslip: not on event page")
+            return PlacementResult(status="failed", bet_id=bet_id, actual_stake=stake, reason="wrong_page")
 
-        # Step 1: Click the matching odds button by outcome position
-        # Altenar layout: first market group has home/away buttons in order
-        # For totals: "Över X.5" / "Under X.5"
-        clicked = await page.evaluate(
-            """
-            (args) => {
-                const stb = document.querySelector('STB-SPORTSBOOK');
-                if (!stb || !stb.firstElementChild) return { error: 'no_stb' };
-                const sr = stb.firstElementChild.shadowRoot;
-                if (!sr) return { error: 'no_shadow' };
-
-                // Find all clickable odd containers (parent of OddValue divs)
-                const oddValues = sr.querySelectorAll('div[class*="OddValue"]');
-                const outcome = args.outcome;
-                const market = args.market;
-                const home = args.home;
-                const away = args.away;
-
-                for (const odd of oddValues) {
-                    const container = odd.parentElement;
-                    const text = (container.textContent || '').toLowerCase();
-                    const price = parseFloat(odd.textContent.trim());
-                    if (!price || price <= 1) continue;
-
-                    let match = false;
-
-                    if (market === 'total' || market === 'totals') {
-                        // Match "över X.5" or "under X.5"
-                        if (outcome === 'over' && text.includes('över')) match = true;
-                        if (outcome === 'under' && text.includes('under')) match = true;
-                    } else {
-                        // moneyline/1x2: match by team name
-                        if (outcome === 'home' && home && text.includes(home.substring(0, 6))) match = true;
-                        if (outcome === 'away' && away && text.includes(away.substring(0, 6))) match = true;
-                        if (outcome === 'draw' && (text.includes('oavgjort') || text.includes('draw'))) match = true;
-                    }
-
-                    if (match) {
-                        container.click();
-                        return { clicked: true, text: text.substring(0, 50), price };
-                    }
-                }
-                return { clicked: false, count: oddValues.length };
-            }
-        """,
-            {"outcome": target_outcome, "market": target_market, "home": display_home, "away": display_away},
+        logger.info(
+            f"[{self.provider_id}] Event page ready — user places manually: "
+            f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
+            f"{_g(bet, 'outcome', '')} @ {target_odds}"
+        )
+        return PlacementResult(
+            status="prepped",
+            bet_id=bet_id,
+            actual_odds=target_odds,
+            actual_stake=stake,
+            reason="manual_placement",
         )
 
-        if not clicked or clicked.get("error"):
-            reason = clicked.get("error", "unknown") if clicked else "eval_failed"
-            logger.warning(f"[{self.provider_id}] Cannot auto-select: {reason}")
-            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason=reason)
+    async def confirm_bet(self, page: Page) -> PlacementResult:
+        """User places bet manually on the WASM betslip.
 
-        if not clicked.get("clicked"):
-            logger.warning(
-                f"[{self.provider_id}] Odds {target_odds} not found ({clicked.get('count', 0)} odds on page)"
-            )
-            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="odds_not_found")
+        We check localStorage for the placement confirmation
+        (the WSDK writes oddIds when a bet is placed).
+        """
+        logger.info(f"[{self.provider_id}] confirm_bet: user places on site")
+        return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
 
-        logger.info(f"[{self.provider_id}] Clicked: {clicked.get('text', '?')} @ {clicked.get('price')}")
-        await asyncio.sleep(1.5)  # Wait for betslip to appear
-
-        # Step 2: Fill stake input
-        filled = await page.evaluate(f"""
-            () => {{
-                const stb = document.querySelector('STB-SPORTSBOOK');
-                const sr = stb && stb.firstElementChild && stb.firstElementChild.shadowRoot;
-                if (!sr) return false;
-                const inputs = sr.querySelectorAll('input[type="tel"]');
-                for (const input of inputs) {{
-                    if (input.offsetHeight > 0) {{
-                        input.focus();
-                        // Use native setter to trigger React/Preact state update
-                        const setter = Object.getOwnPropertyDescriptor(
-                            HTMLInputElement.prototype, 'value'
-                        ).set;
-                        setter.call(input, '');
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        setter.call(input, '{stake_str}');
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                }}
-                return false;
-            }}
-        """)
-
-        if filled:
-            logger.info(f"[{self.provider_id}] Stake set to {stake_str} — user confirms")
-        else:
-            logger.warning(f"[{self.provider_id}] Could not fill stake input")
-
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Full placement (prep + confirm) — used when two-phase is not available."""
+        prep = await self.prep_betslip(page, bet, stake)
+        if prep.status != "prepped":
+            return prep
+        # Don't auto-confirm — return manual for user to click submit
         return PlacementResult(
             status="manual",
-            bet_id=bet.bet_id,
-            actual_stake=stake,
+            bet_id=prep.bet_id,
+            actual_odds=prep.actual_odds,
+            actual_stake=prep.actual_stake,
             reason="auto_selected_user_confirms",
         )

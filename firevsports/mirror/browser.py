@@ -30,15 +30,14 @@ _BALANCE_KEYWORDS = (
 _HISTORY_KEYWORDS = (
     "bethistory",
     "bet-history",
-    "betHistory",
     "mybets",
     "my-bets",
-    "widgetBetHistory",
+    "widgetbethistory",
     "coupon-history",
 )
 _BET_PLACEMENT_KEYWORDS = (
-    "placeWidget",
-    "placeBet",
+    "placewidget",
+    "placebet",
     "/coupons",
     "bets/straight",
     "bets/parlay",
@@ -49,7 +48,7 @@ _BET_PLACEMENT_KEYWORDS = (
 # Provider domain → provider_id mapping
 _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "betinia.se": "betinia",
-    "quickcasino.com": "quickcasino",
+    "quickcasino.se": "quickcasino",
     "campobet.se": "campobet",
     "comeon.com": "comeon",
     "unibet.se": "unibet",
@@ -130,6 +129,10 @@ class MirrorBrowser:
     async def start(self) -> BrowserContext:
         if self._running:
             return self._context
+
+        # Kill any orphaned Chromium holding the profile lock
+        await self._kill_orphaned_chromium()
+
         self._playwright = await async_playwright().start()
 
         # Persistent context = real Chrome profile on disk.
@@ -149,6 +152,19 @@ class MirrorBrowser:
                 "--start-maximized",
             ],
         )
+
+        # Close dead tabs from previous sessions (chrome-error, about:blank)
+        # Keep at least one page so the context stays alive
+        dead = [p for p in self._context.pages if "chrome-error" in (p.url or "") or p.url == "about:blank"]
+        alive = [p for p in self._context.pages if p not in dead]
+        if not alive and dead:
+            dead = dead[1:]  # keep one so context doesn't die
+        for page in dead:
+            try:
+                await page.close()
+                print(f"[browser] Closed dead tab: {page.url[:60]}", flush=True)
+            except Exception:
+                pass
 
         # Attach interception to ALL existing + future pages
         for page in self._context.pages:
@@ -178,6 +194,48 @@ class MirrorBrowser:
             self.provider_data.clear()
             logger.info("Mirror browser stopped")
 
+    @staticmethod
+    async def _kill_orphaned_chromium():
+        """Kill Chromium processes from previous sessions holding the profile lock."""
+        import subprocess
+        import sys
+
+        if sys.platform != "win32":
+            return
+        try:
+            result = subprocess.run(
+                [
+                    "wmic",
+                    "process",
+                    "where",
+                    "name='chromium.exe' or name='chrome.exe'",
+                    "get",
+                    "processid,commandline",
+                    "/format:csv",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            profile_str = str(_USER_DATA_DIR).replace("\\", "/")
+            profile_str_win = str(_USER_DATA_DIR)
+            killed = 0
+            for line in result.stdout.splitlines():
+                if (profile_str in line or profile_str_win in line or "browser_profile" in line) and (
+                    "disable-blink-features" in line
+                ):
+                    parts = line.strip().split(",")
+                    if parts:
+                        pid = parts[-1].strip()
+                        if pid.isdigit():
+                            subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                            killed += 1
+            if killed:
+                print(f"[browser] Killed {killed} orphaned Chromium process(es)", flush=True)
+                await asyncio.sleep(1)
+        except Exception:
+            pass
+
     async def open_tab(self, url: str) -> Page:
         if not self._context:
             raise RuntimeError("Browser not started")
@@ -185,7 +243,10 @@ class MirrorBrowser:
         # Attach interceptor BEFORE navigating so we catch all responses
         self._attach_page(page)
         print(f"[browser] Opening tab: {url}", flush=True)
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            print(f"[browser] Navigation slow/failed ({e}), tab still usable", flush=True)
         return page
 
     def get_status(self) -> dict:
@@ -417,11 +478,20 @@ class MirrorBrowser:
         """Extract balance from various response shapes."""
         if not isinstance(body, dict):
             return None
-        # Altenar: {cash: {total: 942.04}}
-        try:
-            return float(body["cash"]["total"])
-        except (KeyError, TypeError, ValueError):
-            pass
+        # Altenar: {result: {cash: {total: X}, bonus: {total: Y}}} — sum all wallets
+        data = body.get("result", body) if "result" in body else body
+        if isinstance(data, dict) and any(w in data for w in ("cash", "bonus", "sport")):
+            total = 0.0
+            for wallet in ("cash", "bonus", "sport"):
+                try:
+                    total += float(data[wallet]["total"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if total > 0:
+                return total
+            # If all wallets are 0, still return 0 (logged in with empty balance)
+            if any(w in data for w in ("cash", "bonus", "sport")):
+                return 0.0
         # Gecko: {Balances: {SEK: {Real: {Balance: 907.14}}}}
         try:
             return float(body["Balances"]["SEK"]["Real"]["Balance"])
