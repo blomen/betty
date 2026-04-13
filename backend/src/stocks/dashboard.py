@@ -488,6 +488,57 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return {}
 
+    @app.get("/api/orders")
+    async def get_orders():
+        """Return open orders from TopstepX."""
+        client = _state.get("topstepx_client")
+        if not client:
+            return {"orders": []}
+        try:
+            orders = await client.get_orders()
+            return {"orders": orders if isinstance(orders, list) else []}
+        except Exception:
+            log.exception("Failed to get orders")
+            return {"orders": []}
+
+    @app.post("/api/flatten")
+    async def flatten_position():
+        """Emergency flatten — cancel all orders and liquidate position."""
+        adapter = _state.get("adapter")
+        if adapter:
+            result = await adapter.flatten("manual_ui")
+            return result
+        client = _state.get("topstepx_client")
+        if client:
+            try:
+                await client.liquidate_position()
+                return {"action": "flatten", "reason": "manual_ui"}
+            except Exception:
+                log.exception("Failed to flatten")
+                return {"error": "flatten failed"}
+        return {"error": "no client"}
+
+    @app.post("/api/cancel-order/{order_id}")
+    async def cancel_order(order_id: int):
+        """Cancel a specific order."""
+        client = _state.get("topstepx_client")
+        if not client:
+            return {"error": "no client"}
+        try:
+            result = await client.cancel_order(order_id)
+            return result
+        except Exception:
+            log.exception("Failed to cancel order %s", order_id)
+            return {"error": "cancel failed"}
+
+    @app.get("/api/quote")
+    async def get_quote():
+        """Return latest quote from state."""
+        quotes = _state["quotes"]
+        if quotes:
+            return dict(quotes[-1]) if hasattr(quotes[-1], "__getitem__") else quotes[-1]
+        return {}
+
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(ws: WebSocket):
         await ws.accept()

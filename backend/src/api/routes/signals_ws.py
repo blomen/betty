@@ -139,6 +139,9 @@ async def signal_relay(ws: WebSocket):
 
     level_monitor.add_signal_callback(_on_signal)
 
+    # Store WS reference so trading routes can send commands to trading_service
+    ws.app.state._signals_ws_client = ws
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -194,6 +197,13 @@ async def signal_relay(ws: WebSocket):
                         exit_price=msg["price"],
                         was_stop=msg.get("was_stop", False),
                     )
+            elif msg_type == "command_result":
+                # Trading service reports result of a command we sent
+                cmd_id = msg.get("cmd_id")
+                if cmd_id and hasattr(ws.app.state, "_pending_commands"):
+                    fut = ws.app.state._pending_commands.pop(cmd_id, None)
+                    if fut and not fut.done():
+                        fut.set_result(msg.get("result", {}))
             elif msg_type == "ping":
                 await ws.send_json({"type": "pong", "ts": time.time()})
     except WebSocketDisconnect:
@@ -202,3 +212,5 @@ async def signal_relay(ws: WebSocket):
         log.exception("Signal relay error")
     finally:
         level_monitor.remove_signal_callback(_on_signal)
+        if getattr(ws.app.state, "_signals_ws_client", None) is ws:
+            ws.app.state._signals_ws_client = None

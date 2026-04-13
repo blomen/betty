@@ -62,6 +62,18 @@ export const api = {
     return fetchJson<import('@/types').ModelStatus>('/model-status')
   },
 
+  getOrders() {
+    return fetchJson<{ orders: import('@/types').Order[] }>('/orders')
+  },
+
+  flatten() {
+    return fetch(`${API_BASE}/flatten`, { method: 'POST' }).then(r => r.json())
+  },
+
+  cancelOrder(orderId: number) {
+    return fetch(`${API_BASE}/cancel-order/${orderId}`, { method: 'POST' }).then(r => r.json())
+  },
+
   getLevels(date?: string) {
     const params = date ? `?date=${date}` : ''
     return fetchJson<import('@/types').LevelEntry[]>(`/levels${params}`)

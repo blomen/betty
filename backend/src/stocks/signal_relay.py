@@ -142,6 +142,22 @@ class SignalRelayClient:
                         self.on_zone_update(msg)
                     except Exception:
                         log.exception("SignalRelay: on_zone_update callback failed")
+            elif msg_type == "command":
+                result = await self._handle_command(msg)
+                cmd_id = msg.get("cmd_id")
+                if cmd_id:
+                    try:
+                        await self._ws.send(
+                            json.dumps(
+                                {
+                                    "type": "command_result",
+                                    "cmd_id": cmd_id,
+                                    "result": result,
+                                }
+                            )
+                        )
+                    except Exception:
+                        log.warning("SignalRelay: failed to send command result")
             elif msg_type == "pong":
                 pass  # keepalive response
             else:
@@ -183,6 +199,31 @@ class SignalRelayClient:
             return
 
         await self.forward_fill(order_action, fill_price, size, stop_price)
+
+    async def _handle_command(self, msg: dict) -> dict:
+        """Execute a command from the server (flatten, get_orders, cancel_order)."""
+        cmd = msg.get("cmd", "")
+        log.info("SignalRelay: command received: %s", cmd)
+        try:
+            if cmd == "flatten":
+                if self._adapter:
+                    return await self._adapter.flatten("remote_ui")
+                await self._client.liquidate_position()
+                return {"action": "flatten", "reason": "remote_ui"}
+            elif cmd == "get_orders":
+                orders = await self._client.get_orders()
+                return {"orders": orders if isinstance(orders, list) else []}
+            elif cmd == "cancel_order":
+                order_id = msg.get("order_id")
+                if order_id:
+                    result = await self._client.cancel_order(order_id)
+                    return result if isinstance(result, dict) else {"ok": True}
+                return {"error": "no order_id"}
+            else:
+                return {"error": f"unknown command: {cmd}"}
+        except Exception as exc:
+            log.exception("SignalRelay: command %s failed", cmd)
+            return {"error": str(exc)}
 
     # ------------------------------------------------------------------
     # Message factories (static — easy to unit-test)

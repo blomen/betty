@@ -3,21 +3,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from ...config.trading_loader import get_routine_config, get_trading_config
+from ...services.trading_service import TradingService
 from ..deps import get_db
 from ..schemas import (
-    TradingAccountUpdate,
-    TradingBalanceAdjust,
+    AddPositionRequest,
+    CloseTradeRequest,
+    PartialExitRequest,
     RoutineUpdate,
     TradeCreate,
-    TradeTransition,
-    PartialExitRequest,
-    CloseTradeRequest,
-    TrailStopRequest,
-    AddPositionRequest,
     TradeReviewCreate,
+    TradeTransition,
+    TradingAccountUpdate,
+    TradingBalanceAdjust,
+    TrailStopRequest,
 )
-from ...services.trading_service import TradingService
-from ...config.trading_loader import get_trading_config, get_routine_config
 
 router = APIRouter(prefix="/api/trading", tags=["trading"])
 
@@ -27,6 +27,7 @@ def _svc(db=Depends(get_db)) -> TradingService:
 
 
 # ---- Config ----
+
 
 @router.get("/config")
 def get_config():
@@ -41,6 +42,7 @@ def get_routine_cfg():
 
 
 # ---- Accounts ----
+
 
 @router.get("/accounts")
 def list_accounts(svc: TradingService = Depends(_svc)):
@@ -70,6 +72,7 @@ def reset_weekly(account_id: int, svc: TradingService = Depends(_svc)):
 
 # ---- Routine ----
 
+
 @router.get("/routine/today")
 def get_today_routine(svc: TradingService = Depends(_svc)):
     return svc.get_or_create_routine()
@@ -87,6 +90,7 @@ def update_routine(date: str, data: RoutineUpdate, svc: TradingService = Depends
 
 # ---- Trades ----
 
+
 @router.post("/trades")
 def create_trade(data: TradeCreate, svc: TradingService = Depends(_svc)):
     return svc.create_trade(data.model_dump())
@@ -102,8 +106,11 @@ def list_trades(
     svc: TradingService = Depends(_svc),
 ):
     trades = svc.repo.list_trades(
-        account_id=account_id, instrument=instrument,
-        setup_type=setup_type, state=state, limit=limit,
+        account_id=account_id,
+        instrument=instrument,
+        setup_type=setup_type,
+        state=state,
+        limit=limit,
     )
     return {"trades": [svc.trade_dict(t) for t in trades], "count": len(trades)}
 
@@ -159,10 +166,12 @@ def submit_review(trade_id: int, data: TradeReviewCreate, svc: TradingService = 
 
 # ---- Quick Position Management (Level Monitor integration) ----
 
+
 @router.post("/trades/{trade_id}/scale")
 def scale_position(trade_id: int, pct: float = Query(default=50), db=Depends(get_db)):
     """Scale out of a position by percentage. Creates TradeEvent(partial_exit)."""
     from ...db.models import Trade, TradeEvent
+
     trade = db.query(Trade).get(trade_id)
     if not trade or trade.state == "closed":
         raise HTTPException(404, "Trade not found or closed")
@@ -190,8 +199,10 @@ def scale_position(trade_id: int, pct: float = Query(default=50), db=Depends(get
 @router.post("/trades/{trade_id}/quick-close")
 def quick_close_position(trade_id: int, db=Depends(get_db)):
     """Close entire position immediately (no exit price details)."""
-    from ...db.models import Trade, TradeEvent
     from datetime import datetime, timezone
+
+    from ...db.models import Trade, TradeEvent
+
     trade = db.query(Trade).get(trade_id)
     if not trade:
         raise HTTPException(404, "Trade not found")
@@ -208,6 +219,7 @@ def quick_close_position(trade_id: int, db=Depends(get_db)):
 def update_stop(trade_id: int, new_stop: float = Query(...), db=Depends(get_db)):
     """Update stop price for a trade."""
     from ...db.models import Trade, TradeEvent
+
     trade = db.query(Trade).get(trade_id)
     if not trade:
         raise HTTPException(404, "Trade not found")
@@ -220,6 +232,7 @@ def update_stop(trade_id: int, new_stop: float = Query(...), db=Depends(get_db))
 
 
 # ---- Analytics ----
+
 
 @router.get("/analytics")
 def get_analytics(
@@ -239,6 +252,7 @@ def get_analytics(
 
 
 # ---- CSV Export ----
+
 
 @router.get("/export/csv")
 def export_csv(
@@ -263,6 +277,7 @@ def export_csv(
 
 
 # ---- Auto-reset ----
+
 
 @router.post("/reset/daily")
 def auto_reset_daily(svc: TradingService = Depends(_svc)):
@@ -327,3 +342,39 @@ def broker_status(request: Request):
             "avg_slippage_ticks": round(t.slippage_ticks(), 2),
         },
     }
+
+
+async def _send_command(request: Request, cmd: str, **kwargs) -> dict:
+    """Send a command to the trading_service via the signals WS and wait for result."""
+    ws_client = getattr(request.app.state, "_signals_ws_client", None)
+    if ws_client is None:
+        raise HTTPException(503, "Trading service not connected")
+    cmd_id = str(uuid.uuid4())[:8]
+    if not hasattr(request.app.state, "_pending_commands"):
+        request.app.state._pending_commands = {}
+    fut = asyncio.get_event_loop().create_future()
+    request.app.state._pending_commands[cmd_id] = fut
+    try:
+        await ws_client.send_json({"type": "command", "cmd": cmd, "cmd_id": cmd_id, **kwargs})
+        return await asyncio.wait_for(fut, timeout=10.0)
+    except asyncio.TimeoutError:
+        request.app.state._pending_commands.pop(cmd_id, None)
+        raise HTTPException(504, "Trading service did not respond")
+
+
+@router.post("/broker/flatten")
+async def broker_flatten(request: Request):
+    """Emergency flatten — liquidate position and cancel all orders."""
+    return await _send_command(request, "flatten")
+
+
+@router.get("/broker/orders")
+async def broker_orders(request: Request):
+    """Get open orders from TopstepX."""
+    return await _send_command(request, "get_orders")
+
+
+@router.post("/broker/cancel-order/{order_id}")
+async def broker_cancel_order(request: Request, order_id: int):
+    """Cancel a specific order."""
+    return await _send_command(request, "cancel_order", order_id=order_id)

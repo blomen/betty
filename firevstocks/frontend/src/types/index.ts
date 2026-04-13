@@ -274,6 +274,19 @@ export interface ModelStatus {
   stop_price?: number
 }
 
+export interface Order {
+  orderId?: number
+  id?: number
+  action?: string
+  type?: string
+  size?: number
+  price?: number
+  stopPrice?: number
+  limitPrice?: number
+  status?: string
+  [key: string]: unknown
+}
+
 export interface LevelEntry {
   level_type: string
   price_low: number

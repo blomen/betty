@@ -55,6 +55,13 @@ export default function App() {
             NQ {ws.lastPrice.toFixed(2)}
           </span>
         )}
+        {ws.quote && (
+          <span className="text-[10px] font-mono text-zinc-500 ml-2">
+            <span className="text-emerald-400/70">{ws.quote.bid.toFixed(2)}</span>
+            <span className="text-zinc-700">/</span>
+            <span className="text-red-400/70">{ws.quote.ask.toFixed(2)}</span>
+          </span>
+        )}
         {ws.tickCount > 0 && (
           <span className="text-xs font-mono text-zinc-600 ml-2">
             {ws.tickCount.toLocaleString()} ticks
@@ -76,7 +83,7 @@ export default function App() {
           <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} dqnInference={ws.dqnInference} />
         )}
         {activeTab === 'bankroll' && (
-          <BankrollPage positions={ws.positions} lastPrice={ws.lastPrice} />
+          <BankrollPage positions={ws.positions} lastPrice={ws.lastPrice} quote={ws.quote} />
         )}
         {activeTab === 'stats' && <StatsPage />}
       </div>
