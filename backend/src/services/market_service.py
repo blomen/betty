@@ -1462,19 +1462,15 @@ class MarketService:
                 else json.loads(session_row.session_json)
             )
 
-        # Bars not in session_json — fetch from cache (with timeout)
-        try:
-            bars = await asyncio.wait_for(
-                self._fetch_bars_for_date(symbol, date.today().isoformat()),
-                timeout=10.0,
-            )
-        except (asyncio.TimeoutError, Exception):
-            bars = []
-        bar_dicts = (
-            [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars]
-            if bars
-            else []
-        )
+        # Bars from DB candles (no Databento — live data is in PostgreSQL via TopstepX poller)
+        from zoneinfo import ZoneInfo
+
+        _ET = ZoneInfo("America/New_York")
+        today_dt = datetime.now(_ET).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = today_dt.astimezone(timezone.utc)
+        end_utc = datetime.now(timezone.utc)
+        db_bars = self.repo.get_candles(symbol, "1m", start_utc, end_utc)
+        bar_dicts = [{"high": b["high"], "low": b["low"], "close": b["close"]} for b in db_bars] if db_bars else []
 
         # Direction from structure, not manual gates
         from ..market_data.levels import detect_swing_points
