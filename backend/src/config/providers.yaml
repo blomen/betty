@@ -764,10 +764,10 @@ providers:
       - football
       - tennis
       - handball
-      - volleyball
-      # Removed: ice_hockey (sport ID 40 returns Swedish/African football clubs — wrong ID),
+      # Removed: volleyball (sport ID 1012 returns Premier League football — wrong ID),
+      # ice_hockey (sport ID 40 returns Swedish/African football clubs — wrong ID),
       # basketball (sport ID 15 returns 164 Argentine football leagues — wrong ID).
-      # These two wasted 800-1800s per run. Need to rediscover correct IDs from interwetten nav.
+      # Only football (10), tennis (11), handball (1002) confirmed correct.
       # Removed: rugby, cricket, boxing, darts, american_football, baseball, golf, cycling — 0 events
     bonus:
       type: bonusdeposit
