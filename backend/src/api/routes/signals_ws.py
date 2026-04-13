@@ -6,8 +6,12 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+_CET = ZoneInfo("Europe/Stockholm")
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,7 +30,6 @@ def _get_market_db(app):
 
 def _persist_candle(app, candle: dict, interval: str) -> None:
     """Persist a closed candle to DB (background, non-blocking)."""
-    from datetime import datetime, timezone
 
     try:
         db = _get_market_db(app)()
@@ -118,6 +121,46 @@ def _do_flush(app, batch: list[dict]) -> None:
         log.debug("Failed to flush %d ticks to market_trades", len(batch))
 
 
+class _RunningVWAP:
+    """Developing VWAP anchored at midnight CET, resets daily."""
+
+    def __init__(self):
+        self._date: object = None  # CET date of current accumulation
+        self._cum_pv = 0.0
+        self._cum_vol = 0.0
+        self._cum_pv2 = 0.0
+
+    def update(self, candle: dict) -> dict | None:
+        """Ingest a closed 1m candle (keys: h, l, c, v, t). Returns VWAP band dict or None."""
+        ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
+        cet_date = ts.astimezone(_CET).date()
+        if cet_date != self._date:
+            self._cum_pv = self._cum_vol = self._cum_pv2 = 0.0
+            self._date = cet_date
+
+        tp = (candle["h"] + candle["l"] + candle["c"]) / 3
+        vol = candle["v"] or 1
+        self._cum_pv += tp * vol
+        self._cum_vol += vol
+        self._cum_pv2 += tp * tp * vol
+
+        if self._cum_vol == 0:
+            return None
+
+        vwap = self._cum_pv / self._cum_vol
+        variance = max(0.0, self._cum_pv2 / self._cum_vol - vwap * vwap)
+        sd = math.sqrt(variance)
+        return {
+            "vwap": round(vwap, 2),
+            "sd1_u": round(vwap + sd, 2),
+            "sd1_l": round(vwap - sd, 2),
+            "sd2_u": round(vwap + 2 * sd, 2),
+            "sd2_l": round(vwap - 2 * sd, 2),
+            "sd3_u": round(vwap + 3 * sd, 2),
+            "sd3_l": round(vwap - 3 * sd, 2),
+        }
+
+
 @router.websocket("/ws/signals")
 async def signal_relay(ws: WebSocket):
     """Accept ticks from local client, feed to LevelMonitor, send signals back."""
@@ -139,6 +182,37 @@ async def signal_relay(ws: WebSocket):
 
     level_monitor.add_signal_callback(_on_signal)
 
+    # Running VWAP tracker — anchored midnight CET, updated on every 1m candle close.
+    # Seed from DB so reconnects start with correct accumulated VWAP, not zero.
+    _vwap_tracker = _RunningVWAP()
+    try:
+        db_factory = _get_market_db(ws.app)
+        db = db_factory()
+        try:
+            from ...repositories.market_repo import MarketRepo
+
+            today_cet = datetime.now(timezone.utc).astimezone(_CET).date()
+            day_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
+            seed_rows = MarketRepo(db).get_candles("NQ", "1m", day_start, datetime.now(timezone.utc))
+            bands = None
+            for r in seed_rows:
+                bands = _vwap_tracker.update({"h": r.h, "l": r.l, "c": r.c, "v": r.v or 1, "t": r.ts.timestamp()})
+            if bands:
+                level_monitor.update_vwap(
+                    vwap=bands["vwap"],
+                    sd1_upper=bands["sd1_u"],
+                    sd1_lower=bands["sd1_l"],
+                    sd2_upper=bands["sd2_u"],
+                    sd2_lower=bands["sd2_l"],
+                    sd3_upper=bands["sd3_u"],
+                    sd3_lower=bands["sd3_l"],
+                )
+                log.info("VWAP seeded from %d DB candles: %.2f", len(seed_rows), bands["vwap"])
+        finally:
+            db.close()
+    except Exception:
+        log.warning("Failed to seed VWAP from DB — will accumulate from ticks", exc_info=True)
+
     # Store WS reference so trading routes can send commands to trading_service
     ws.app.state._signals_ws_client = ws
 
@@ -156,8 +230,6 @@ async def signal_relay(ws: WebSocket):
                 # Feed tick buffer for micro/orderflow features
                 tick_buffer = getattr(ws.app.state, "stocks_tick_buffer", None)
                 if tick_buffer:
-                    from datetime import datetime, timezone
-
                     tick_ts = datetime.fromtimestamp(ts, tz=timezone.utc)
                     side = msg.get("side", "B")  # A=sell aggressor, B=buy aggressor
                     tick_buffer.add(tick_ts, price, size, side)
@@ -177,6 +249,17 @@ async def signal_relay(ws: WebSocket):
                     _, closed = candle_1m.update(price, size, ts)
                     if closed:
                         threading.Thread(target=_persist_candle, args=(ws.app, closed, "1m"), daemon=True).start()
+                        bands = _vwap_tracker.update(closed)
+                        if bands:
+                            level_monitor.update_vwap(
+                                vwap=bands["vwap"],
+                                sd1_upper=bands["sd1_u"],
+                                sd1_lower=bands["sd1_l"],
+                                sd2_upper=bands["sd2_u"],
+                                sd2_lower=bands["sd2_l"],
+                                sd3_upper=bands["sd3_u"],
+                                sd3_lower=bands["sd3_l"],
+                            )
 
                 # Feed level monitor (triggers zone detection + inference)
                 level_monitor.on_tick(price, size, ts)

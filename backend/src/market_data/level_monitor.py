@@ -141,6 +141,46 @@ class LevelMonitor:
 
         self._rebuild_zones()
 
+    def update_vwap(
+        self,
+        vwap: float,
+        sd1_upper: float | None = None,
+        sd1_lower: float | None = None,
+        sd2_upper: float | None = None,
+        sd2_lower: float | None = None,
+        sd3_upper: float | None = None,
+        sd3_lower: float | None = None,
+    ) -> None:
+        """Update VWAP levels in real-time without a full reload.
+
+        Called on every 1m candle close from the signal relay WS handler so that
+        the developing VWAP (anchored midnight CET, daily reset) is always current.
+        """
+        # Remove stale VWAP/SD levels
+        self._levels = [lv for lv in self._levels if "vwap" not in lv.name.lower() and " sd" not in lv.name.lower()]
+
+        band_values = [
+            ("VWAP", vwap),
+            ("VWAP +1SD", sd1_upper),
+            ("VWAP -1SD", sd1_lower),
+            ("VWAP +2SD", sd2_upper),
+            ("VWAP -2SD", sd2_lower),
+            ("VWAP +3SD", sd3_upper),
+            ("VWAP -3SD", sd3_lower),
+        ]
+        for name, val in band_values:
+            if val is not None:
+                self._levels.append(
+                    MonitoredLevel(
+                        name=name,
+                        price=float(val),
+                        category="band",
+                    )
+                )
+
+        self._rebuild_zones()
+        logger.debug("VWAP updated: %.2f ±1SD=[%.2f, %.2f]", vwap, sd1_lower or 0, sd1_upper or 0)
+
     def _rebuild_zones(self) -> None:
         level_type_map = {
             "poc": RLLevelType.DAILY_POC,
