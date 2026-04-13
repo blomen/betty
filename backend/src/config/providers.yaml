@@ -597,7 +597,7 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
-    sport_timeout: 600                 # Football has 60+ leagues, 360s too tight under load
+    sport_timeout: 1200                # Breadth over speed — detail enrichment per event needs 8-13s
     supported_sports:
       # Fast/small sports first — ensures coverage even if provider timeout hits
       - mma
@@ -759,7 +759,7 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
-    sport_timeout: 600                 # Football needs ~200s for leagues + ~150s for detail enrichment
+    sport_timeout: 1200                # Breadth over speed — football needs ~200s leagues + ~500s detail enrichment
     supported_sports:
       - football
       - ice_hockey

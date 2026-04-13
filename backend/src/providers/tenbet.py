@@ -978,9 +978,16 @@ class TenBetRetriever(BrowserRetriever):
                 async with sem:
                     url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
                     try:
-                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                        # Wait briefly for markets to render
-                        await worker_page.wait_for_timeout(1500)
+                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        # Wait for skeleton to disappear and markets to render
+                        try:
+                            await worker_page.wait_for_selector(
+                                '[class*="ta-price_text"], [class*="price"], [data-betting]',
+                                timeout=8000,
+                            )
+                        except Exception:
+                            # Fallback: wait longer for SPA content
+                            await worker_page.wait_for_timeout(5000)
                     except Exception:
                         errors += 1
                         return

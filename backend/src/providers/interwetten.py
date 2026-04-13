@@ -77,8 +77,6 @@ class InterwettenRetriever(BrowserRetriever):
     TOTAL_LABELS = {"How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål"}
 
     JS_EXTRACT_DETAIL_MARKETS = """() => {
-        const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games", "Asiatiskt Handikapp", "Handikapp"]);
-        const TOTAL = new Set(["How many goals", "Over/Under", "How many games", "Antal mål", "Fler/Färre", "Fler/färre mål", "Över/Under", "Totalt antal mål"]);
         const results = { spread: null, total: null, datetime: null, _debug: null };
 
         const timeEl = document.querySelector('[class*="gametime"]');
@@ -86,6 +84,17 @@ class InterwettenRetriever(BrowserRetriever):
 
         const allBetting = document.querySelectorAll('[data-betting]');
         const marketLabels = [];
+
+        function isSpread(label) {
+            const l = label.toLowerCase();
+            return l.includes('handicap') || l.includes('handikapp') || l === 'spread';
+        }
+        function isTotal(label) {
+            const l = label.toLowerCase();
+            return l.includes('over') || l.includes('under') || l.includes('över')
+                || l.includes('antal') || l.includes('total') || l.includes('fler')
+                || l.includes('how many') || l.includes('goals');
+        }
 
         for (const el of allBetting) {
             try {
@@ -95,7 +104,7 @@ class InterwettenRetriever(BrowserRetriever):
                 const label = (raw[3] || '').trim();
                 if (label) marketLabels.push(label);
 
-                if (SPREAD.has(label) && !results.spread) {
+                if (isSpread(label) && !results.spread) {
                     const outcomes = [];
                     for (const oel of el.querySelectorAll('[data-betting]')) {
                         try {
@@ -107,7 +116,7 @@ class InterwettenRetriever(BrowserRetriever):
                     if (outcomes.length >= 2) results.spread = { label, outcomes };
                 }
 
-                if (TOTAL.has(label) && !results.total) {
+                if (isTotal(label) && !results.total) {
                     const outcomes = [];
                     for (const oel of el.querySelectorAll('[data-betting]')) {
                         try {
@@ -131,7 +140,7 @@ class InterwettenRetriever(BrowserRetriever):
 
     CONCURRENT_LEAGUE_PAGES = 16
     CONCURRENT_DETAIL_PAGES = 8  # Reduced from 20 — only 5 browser slots, 20 tabs caused 19s/event
-    MAX_DETAIL_EVENTS = 150  # Reduced from 250 — focus on top events, save browser time
+    MAX_DETAIL_EVENTS = 300  # Breadth over speed — enrich all events
 
     def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         transport = transport or BrowserTransport(headless=True)
@@ -571,16 +580,26 @@ class InterwettenRetriever(BrowserRetriever):
 
             outcomes.append({"name": outcome_name, "odds": odds})
 
-        if len(outcomes) >= 2 and point is not None:
-            for o in outcomes:
-                side = o["name"]
-                if side in point_by_side:
-                    o["point"] = point_by_side[side]
-                elif side == "away" and point is not None:
-                    o["point"] = -point
-                else:
-                    o["point"] = point
-            return {"type": "spread", "outcomes": outcomes}
+        if len(outcomes) >= 2:
+            # Try to extract point from outcome names if not found in parentheses
+            if point is None:
+                for out in raw_market.get("outcomes", []):
+                    name = out.get("name", "")
+                    m = re.search(r"([+-]?\d+\.?\d*)", name)
+                    if m:
+                        point = float(m.group(1))
+                        break
+
+            if point is not None:
+                for o in outcomes:
+                    side = o["name"]
+                    if side in point_by_side:
+                        o["point"] = point_by_side[side]
+                    elif side == "away":
+                        o["point"] = -point
+                    else:
+                        o["point"] = point
+                return {"type": "spread", "outcomes": outcomes}
         return None
 
     def _parse_total_market(self, raw_market: dict) -> dict | None:
@@ -616,8 +635,18 @@ class InterwettenRetriever(BrowserRetriever):
 
             outcomes.append({"name": outcome_name, "odds": odds, "point": outcome_point})
 
-        if len(outcomes) >= 2 and point is not None:
-            return {"type": "total", "outcomes": outcomes}
+        if len(outcomes) >= 2:
+            # Try extracting point from raw outcome data if not in name
+            if point is None:
+                for out in raw_market.get("outcomes", []):
+                    name = out.get("name", "")
+                    m = re.search(r"(\d+\.?\d*)", name)
+                    if m:
+                        point = float(m.group(1))
+                        break
+
+            if point is not None:
+                return {"type": "total", "outcomes": outcomes}
         return None
 
     def _parse_raw_event(

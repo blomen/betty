@@ -336,8 +336,8 @@ class GeckoV2Retriever(BrowserRetriever):
                 provider_id=self.provider_id,
             )
 
-        # Retry session init up to 2 times (header capture is timing-sensitive)
-        for attempt in range(2):
+        # Retry session init up to 3 times (header capture is timing-sensitive on betsson)
+        for attempt in range(3):
             try:
                 session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
                 if session_ok:
@@ -354,7 +354,7 @@ class GeckoV2Retriever(BrowserRetriever):
                 self._api_headers = None
                 self._api_base = None
                 self._session_ready = False
-                if attempt == 0:
+                if attempt < 2:
                     await self.transport.close()
                     await self.transport._ensure_browser()
                     continue
