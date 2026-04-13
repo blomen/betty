@@ -23,6 +23,15 @@ from threading import Lock
 import numpy as np
 
 from .config import COST_PER_TRADE_TICKS, STOP_TICKS, TICK_SIZE
+from .data.episode_builder import (
+    _BE_TRIGGER_R,
+    _count_levels_captured,
+    _measure_movement,
+    _score_velocity,
+)
+from .data.episode_builder import (
+    _WINDOWS as OUTCOME_WINDOWS,
+)
 from .features.observation import build_observation
 
 log = logging.getLogger(__name__)
