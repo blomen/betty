@@ -204,6 +204,9 @@ async def _run(config, topstepx_client, relay, stream, adapter):
         update_zones,
     )
     from src.stocks.dashboard import (
+        record_dqn_inference as dash_dqn_inference,
+    )
+    from src.stocks.dashboard import (
         record_fill as dash_fill,
     )
     from src.stocks.dashboard import (
@@ -218,6 +221,7 @@ async def _run(config, topstepx_client, relay, stream, adapter):
 
     dash_state["stats"]["session_start"] = time.time()
     dash_state["topstepx_client"] = topstepx_client
+    dash_state["adapter"] = adapter
     dash_app = create_dashboard_app()
 
     def _run_dashboard():
@@ -294,6 +298,7 @@ async def _run(config, topstepx_client, relay, stream, adapter):
 
     # Wire relay callbacks -> dashboard
     relay.on_signal = dash_signal
+    relay.on_dqn_inference = dash_dqn_inference
     relay.on_zone_update = lambda msg: update_zones(msg.get("zones", []))
 
     # Start stream (async websockets)
@@ -430,5 +435,11 @@ if __name__ == "__main__":
                 break
         except Exception as exc:
             print(f"\n[firevstocks] Error: {exc}")
-            input("Press Enter to exit...")
+            import traceback
+
+            traceback.print_exc()
+            try:
+                input("Press Enter to exit...")
+            except EOFError:
+                pass
             break
