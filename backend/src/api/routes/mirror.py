@@ -2,8 +2,9 @@
 
 import asyncio
 import logging
-import yaml
 from pathlib import Path
+
+import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -88,19 +89,23 @@ async def open_settle_tabs():
     if not mirror or not mirror.interceptor.context:
         raise HTTPException(400, "No mirror running")
 
-    from ...db.models import Bet, get_session
-    from ...repositories.profile_repo import ProfileRepo
-    from ...mirror.workflows import get_workflow
     from ...config.loader import load_config
+    from ...db.models import Bet, get_session
+    from ...mirror.workflows import get_workflow
+    from ...repositories.profile_repo import ProfileRepo
 
     db = get_session()
     try:
         profile = ProfileRepo(db).get_active()
         # Providers with any pending bets
-        pending = db.query(Bet).filter(
-            Bet.profile_id == profile.id,
-            Bet.result == "pending",
-        ).all()
+        pending = (
+            db.query(Bet)
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.result == "pending",
+            )
+            .all()
+        )
         pending_pids = {b.provider_id for b in pending}
         # Providers with real balance (from mirror login, not stale DB)
         balances = ProfileRepo(db).get_all_balances(profile.id)
@@ -154,8 +159,8 @@ async def open_settle_tabs():
 @router.post("/discover/{provider_id}")
 async def discover_provider(provider_id: str, force: bool = False):
     """Run DOM/API discovery for a provider and save intel JSON."""
-    from ...mirror.workflows.generic import load_intel
     from ...mirror.workflows.discovery import discover
+    from ...mirror.workflows.generic import load_intel
 
     existing = load_intel(provider_id)
     if existing and not force:
@@ -166,6 +171,7 @@ async def discover_provider(provider_id: str, force: bool = False):
         return {"status": "error", "message": "Mirror browser not running"}
 
     from ...mirror.workflows import get_workflow
+
     wf = get_workflow(provider_id)
     page = await wf.find_tab(mirror.interceptor.context) if mirror.interceptor.context else None
 
@@ -184,6 +190,7 @@ async def scrape_poly_portfolio():
     code path differences with the service method.
     """
     import re
+
     from rapidfuzz import fuzz
 
     mirror = _get_active_mirror()
@@ -198,24 +205,26 @@ async def scrape_poly_portfolio():
     page = None
     for p in context.pages:
         url = p.url or ""
-        if 'polymarket.com' in url and '/portfolio' in url:
+        if "polymarket.com" in url and "/portfolio" in url:
             page = p
             break
     if not page:
         for p in context.pages:
-            if 'polymarket.com' in (p.url or ''):
+            if "polymarket.com" in (p.url or ""):
                 page = p
                 break
     if not page:
         return {"error": "No polymarket page", "staged": 0, "settlements": []}
 
     # Navigate to portfolio if needed
-    if '/portfolio' not in (page.url or ''):
+    if "/portfolio" not in (page.url or ""):
         await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
         await asyncio.sleep(3)
 
     # Click History tab if needed
-    has_history = await page.evaluate("() => (document.body.innerText || '').includes('Claimed') || (document.body.innerText || '').includes('Lost')")
+    has_history = await page.evaluate(
+        "() => (document.body.innerText || '').includes('Claimed') || (document.body.innerText || '').includes('Lost')"
+    )
     if not has_history:
         await page.evaluate("""() => {
             for (const t of document.querySelectorAll('a, button, div[role="tab"]')) {
@@ -227,36 +236,36 @@ async def scrape_poly_portfolio():
 
     # Read full DOM
     raw = await page.evaluate("() => document.body.innerText")
-    lines = raw.split('\n')
+    lines = raw.split("\n")
 
     # Parse entries
     entries = []
     for i, line in enumerate(lines):
         a = line.strip()
-        if a not in ('Lost', 'Claimed'):
+        if a not in ("Lost", "Claimed"):
             continue
-        market = ''
+        market = ""
         value = 0.0
         for j in range(i + 1, min(i + 8, len(lines))):
             l = lines[j].strip()
-            if not l or l == '-':
+            if not l or l == "-":
                 continue
-            if re.match(r'\d+[hmd]\s*ago', l):
+            if re.match(r"\d+[hmd]\s*ago", l):
                 break
-            val_match = re.match(r'^[+-]?\$([\d,.]+)$', l)
+            val_match = re.match(r"^[+-]?\$([\d,.]+)$", l)
             if val_match:
-                value = float(val_match.group(1).replace(',', ''))
-                if l.startswith('-'):
+                value = float(val_match.group(1).replace(",", ""))
+                if l.startswith("-"):
                     value = -value
                 continue
-            if re.search(r'([\d.]+)\s*shares', l):
+            if re.search(r"([\d.]+)\s*shares", l):
                 continue
-            if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
+            if re.search(r"\d+\s*[¢c\xc2]", l) and len(l) < 40:
                 continue
             if not market and len(l) > 10:
                 market = l
         if market:
-            entries.append({'activity': a, 'market': market[:120], 'value': abs(value)})
+            entries.append({"activity": a, "market": market[:120], "value": abs(value)})
 
     if not entries:
         return {"staged": 0, "settlements": [], "page_url": page.url, "note": "no Lost/Claimed entries found"}
@@ -269,15 +278,15 @@ async def scrape_poly_portfolio():
     # Match
     staged = []
     for entry in entries:
-        activity = entry['activity']
-        market = entry['market']
-        value = entry['value']
+        activity = entry["activity"]
+        market = entry["market"]
+        value = entry["value"]
 
-        if activity == 'Lost':
-            result = 'lost'
+        if activity == "Lost":
+            result = "lost"
             payout = 0.0
-        elif activity == 'Claimed':
-            result = 'won'
+        elif activity == "Claimed":
+            result = "won"
             payout = value
         else:
             continue
@@ -285,10 +294,10 @@ async def scrape_poly_portfolio():
         best_match = None
         best_score = 0
         for pb in pending:
-            event_name = pb.get('event_name', '')
+            event_name = pb.get("event_name", "")
             s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
             s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
-            home = event_name.split(' vs ')[0].strip() if ' vs ' in event_name else ''
+            home = event_name.split(" vs ")[0].strip() if " vs " in event_name else ""
             s3 = fuzz.partial_ratio(home.lower(), market.lower()) if home and len(home) > 3 else 0
             score = max(s1, s2, s3)
             if score > best_score and score >= 55:
@@ -298,46 +307,57 @@ async def scrape_poly_portfolio():
         if not best_match:
             continue
 
-        if result == 'won' and best_match['stake'] > 0:
-            if 0.85 <= payout / best_match['stake'] <= 1.15:
-                result = 'void'
-                payout = best_match['stake']
+        if result == "won" and best_match["stake"] > 0:
+            if 0.85 <= payout / best_match["stake"] <= 1.15:
+                result = "void"
+                payout = best_match["stake"]
 
-        staged.append({
-            'bet_id': best_match['id'],
-            'provider': 'polymarket',
-            'event': market[:80],
-            'odds': best_match['odds'],
-            'stake': best_match['stake'],
-            'result': result,
-            'payout': round(payout, 2),
-        })
+        staged.append(
+            {
+                "bet_id": best_match["id"],
+                "provider": "polymarket",
+                "event": market[:80],
+                "odds": best_match["odds"],
+                "stake": best_match["stake"],
+                "result": result,
+                "payout": round(payout, 2),
+            }
+        )
         pending.remove(best_match)
 
     if staged:
         mirror._pending_settlements = staged
-        wins = [s for s in staged if s['result'] == 'won']
-        losses = [s for s in staged if s['result'] == 'lost']
-        total_staked = sum(s['stake'] for s in staged)
-        total_payout = sum(s['payout'] for s in staged)
-        mirror._notify('settlements_pending', {
-            'provider': 'polymarket',
-            'count': len(staged),
-            'wins': len(wins),
-            'losses': len(losses),
-            'total_staked': total_staked,
-            'total_payout': total_payout,
-            'net': total_payout - total_staked,
-            'settlements': staged,
-        })
+        wins = [s for s in staged if s["result"] == "won"]
+        losses = [s for s in staged if s["result"] == "lost"]
+        total_staked = sum(s["stake"] for s in staged)
+        total_payout = sum(s["payout"] for s in staged)
+        mirror._notify(
+            "settlements_pending",
+            {
+                "provider": "polymarket",
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": total_staked,
+                "total_payout": total_payout,
+                "net": total_payout - total_staked,
+                "settlements": staged,
+            },
+        )
 
-    return {"staged": len(staged), "settlements": staged, "entries_found": len(entries), "pending_count": len(pending) + len(staged)}
+    return {
+        "staged": len(staged),
+        "settlements": staged,
+        "entries_found": len(entries),
+        "pending_count": len(pending) + len(staged),
+    }
 
 
 @router.get("/debug-poly-dom")
 async def debug_poly_dom():
     """Debug: read Polymarket portfolio DOM and show parsed entries."""
     import re
+
     mirror = _get_active_mirror()
     if not mirror or not mirror.interceptor.context:
         raise HTTPException(400, "No mirror running")
@@ -346,47 +366,49 @@ async def debug_poly_dom():
     page = None
     for p in mirror.interceptor.context.pages:
         url = p.url or ""
-        if 'polymarket.com' in url and '/portfolio' in url:
+        if "polymarket.com" in url and "/portfolio" in url:
             page = p
             break
     if not page:
         for p in mirror.interceptor.context.pages:
-            if 'polymarket.com' in (p.url or ''):
+            if "polymarket.com" in (p.url or ""):
                 page = p
                 break
     if not page:
         return {"error": "No polymarket page"}
 
     raw = await page.evaluate("() => document.body.innerText")
-    lines = raw.split('\n')
+    lines = raw.split("\n")
 
     entries = []
     for i, line in enumerate(lines):
         a = line.strip()
-        if a not in ('Lost', 'Claimed'):
+        if a not in ("Lost", "Claimed"):
             continue
         context_lines = []
-        market = ''
+        market = ""
         for j in range(i + 1, min(i + 8, len(lines))):
             l = lines[j].strip()
             context_lines.append(l)
-            if not l or l == '-':
+            if not l or l == "-":
                 continue
-            if re.match(r'\d+[hmd]\s*ago', l):
+            if re.match(r"\d+[hmd]\s*ago", l):
                 break
-            if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
+            if re.search(r"\d+\s*[¢c\xc2]", l) and len(l) < 40:
                 continue
-            if re.search(r'([\d.]+)\s*shares', l):
+            if re.search(r"([\d.]+)\s*shares", l):
                 continue
-            if re.match(r'^[+-]?\$([\d,.]+)$', l):
+            if re.match(r"^[+-]?\$([\d,.]+)$", l):
                 continue
             if not market and len(l) > 10:
                 market = l
-        entries.append({
-            "activity": a,
-            "market": market[:80],
-            "context": context_lines[:6],
-        })
+        entries.append(
+            {
+                "activity": a,
+                "market": market[:80],
+                "context": context_lines[:6],
+            }
+        )
 
     return {
         "page_url": page.url[:100],
@@ -419,8 +441,8 @@ async def navigate_to_bet(req: NavigateBetRequest):
     if not mirror:
         raise HTTPException(400, "No mirror running")
 
-    from ...mirror.workflows import get_workflow
     from ...db.models import Odds, get_session
+    from ...mirror.workflows import get_workflow
 
     workflow = get_workflow(req.provider_id)
     context = mirror.interceptor.context
@@ -443,24 +465,31 @@ async def navigate_to_bet(req: NavigateBetRequest):
     provider_meta = {}
     db = get_session()
     try:
-        odds_row = db.query(Odds).filter(
-            Odds.event_id == req.event_id,
-            Odds.provider_id == req.provider_id,
-            Odds.market == req.market,
-            Odds.outcome == req.outcome,
-        ).first()
+        odds_row = (
+            db.query(Odds)
+            .filter(
+                Odds.event_id == req.event_id,
+                Odds.provider_id == req.provider_id,
+                Odds.market == req.market,
+                Odds.outcome == req.outcome,
+            )
+            .first()
+        )
         if odds_row and odds_row.provider_meta:
             provider_meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
             market_slug = provider_meta.get("event_slug", "")
             matchup_id = provider_meta.get("matchup_id", "")
             if req.provider_id == "polymarket":
-                poly_outcome = provider_meta.get("poly_home") if req.outcome == "home" else provider_meta.get("poly_away")
+                poly_outcome = (
+                    provider_meta.get("poly_home") if req.outcome == "home" else provider_meta.get("poly_away")
+                )
     finally:
         db.close()
 
     # Build a bet-like object for the workflow
     class BetProxy:
         pass
+
     bet = BetProxy()
     bet.bet_id = 0
     bet.event_id = req.event_id
@@ -475,6 +504,7 @@ async def navigate_to_bet(req: NavigateBetRequest):
     try:
         from ...repositories.profile_repo import ProfileRepo
         from ..deps import get_db as _get_db
+
         db = next(_get_db())
         profile = ProfileRepo(db).get_active()
         bal = ProfileRepo(db).get_balance(profile.id, req.provider_id)
@@ -493,6 +523,8 @@ async def navigate_to_bet(req: NavigateBetRequest):
     bet.altenar_sport_id = provider_meta.get("sport_id", "")
     bet.altenar_category_id = provider_meta.get("category_id", "")
     bet.altenar_championship_id = provider_meta.get("championship_id", "")
+    bet.kambi_event_id = provider_meta.get("event_id", "")
+    bet.kambi_outcome_id = provider_meta.get("outcome_id", "")
 
     # Navigate
     navigated = await workflow.navigate_to_event(page, bet)
@@ -527,9 +559,14 @@ async def navigate_to_bet(req: NavigateBetRequest):
 
 @router.get("/live-price/{provider_id}")
 async def get_live_price(
-    provider_id: str, event_id: str, market: str, outcome: str,
-    fair_odds: float, point: float | None = None,
-    display_home: str = "", display_away: str = "",
+    provider_id: str,
+    event_id: str,
+    market: str,
+    outcome: str,
+    fair_odds: float,
+    point: float | None = None,
+    display_home: str = "",
+    display_away: str = "",
 ):
     """Read live price from the current mirror page DOM. No navigation."""
     mirror = _get_active_mirror()
@@ -537,6 +574,7 @@ async def get_live_price(
         raise HTTPException(400, "No mirror running")
 
     from ...mirror.workflows import get_workflow
+
     workflow = get_workflow(provider_id)
     context = mirror.interceptor.context
     if not context:
@@ -548,6 +586,7 @@ async def get_live_price(
 
     class BetProxy:
         pass
+
     bet = BetProxy()
     bet.bet_id = 0
     bet.event_id = event_id
@@ -568,8 +607,11 @@ async def get_live_price(
             try:
                 btn_data = await mirror._read_btn_prices(page)
                 matched = mirror._find_btn_for_market(
-                    btn_data, outcome, market,
-                    home_name=display_home, away_name=display_away,
+                    btn_data,
+                    outcome,
+                    market,
+                    home_name=display_home,
+                    away_name=display_away,
                 )
                 if matched and matched.get("price") is not None:
                     live_cents = round(matched["price"] * 100, 1)
@@ -590,6 +632,7 @@ async def debug_buttons():
     if not mirror or not mirror.interceptor.context:
         return {"error": "no mirror"}
     from ...mirror.workflows import get_workflow
+
     wf = get_workflow("polymarket")
     page = await wf.find_tab(mirror.interceptor.context)
     if not page:
@@ -611,12 +654,13 @@ async def settle_provider(provider_id: str):
 
     if provider_id == "polymarket":
         from ...mirror.workflows.polymarket import PolymarketWorkflow
+
         context = mirror.interceptor.context
         if not context:
             raise HTTPException(400, "No browser context")
         page = None
         for p in context.pages:
-            if 'polymarket.com' in (p.url or ''):
+            if "polymarket.com" in (p.url or ""):
                 page = p
                 break
         if not page:
@@ -640,12 +684,13 @@ async def poly_positions():
         raise HTTPException(400, "No browser context")
     page = None
     for p in context.pages:
-        if 'polymarket.com' in (p.url or ''):
+        if "polymarket.com" in (p.url or ""):
             page = p
             break
     if not page:
         raise HTTPException(400, "No polymarket tab open")
     from ...mirror.workflows.polymarket import PolymarketWorkflow
+
     wf = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
     positions = await wf.scrape_portfolio(page)
     return {"positions": positions, "count": len(positions), "page_url": page.url}
@@ -659,6 +704,7 @@ async def debug_history(provider_id: str):
         raise HTTPException(400, "No mirror running")
 
     from ...mirror.workflows import get_workflow
+
     workflow = get_workflow(provider_id)
     context = mirror.interceptor.context
     if not context:
@@ -694,7 +740,8 @@ async def debug_history(provider_id: str):
     # Try API call directly to see error
     api_result = None
     try:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
+
         now = datetime.now(timezone.utc)
         start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -787,14 +834,14 @@ async def scrape_page_bets():
 
     # Parse bets: "Singel @ ODDS Result DATE • TIME Kupong-Id: ID ... Insats: STAKE kr Utbetalning: PAYOUT kr"
     bet_pattern = re.compile(
-        r'Singel\s*@\s*([\d.]+)\s+'
-        r'(Vinst|F.rlust|Oavgjord|Cashout)\s+'
-        r'(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+'
-        r'Kupong-Id:\s*(\d+)\s+'
-        r'(.*?)'
-        r'Insats:\s*([\d.,]+)\s*kr'
-        r'(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?',
-        re.DOTALL
+        r"Singel\s*@\s*([\d.]+)\s+"
+        r"(Vinst|F.rlust|Oavgjord|Cashout)\s+"
+        r"(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+"
+        r"Kupong-Id:\s*(\d+)\s+"
+        r"(.*?)"
+        r"Insats:\s*([\d.,]+)\s*kr"
+        r"(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?",
+        re.DOTALL,
     )
 
     bets = []
@@ -813,64 +860,75 @@ async def scrape_page_bets():
             result = "void"
         else:
             result = "cashout"
-        bets.append({
-            "odds": float(m.group(1)),
-            "result": result,
-            "date": m.group(3),
-            "time": m.group(4),
-            "coupon_id": cid,
-            "market_event": m.group(6).strip().replace("\n", " ")[:80],
-            "stake": float(m.group(7).replace(",", ".")),
-            "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
-        })
+        bets.append(
+            {
+                "odds": float(m.group(1)),
+                "result": result,
+                "date": m.group(3),
+                "time": m.group(4),
+                "coupon_id": cid,
+                "market_event": m.group(6).strip().replace("\n", " ")[:80],
+                "stake": float(m.group(7).replace(",", ".")),
+                "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
+            }
+        )
 
     if not bets:
         return {"url": url, "data": {"bets": [], "count": 0, "staged": 0}}
 
     # Match scraped bets against pending DB bets and stage settlements
-    from ..deps import get_db as _get_db
     from ...db.models import Bet
     from ...repositories import ProfileRepo
+    from ..deps import get_db as _get_db
 
     db = next(_get_db())
     try:
         profile = ProfileRepo(db).get_active()
         provider_id = "unibet"  # TODO: detect from URL
 
-        pending = db.query(Bet).filter(
-            Bet.profile_id == profile.id,
-            Bet.result == "pending",
-            Bet.provider_id == provider_id,
-        ).all()
+        pending = (
+            db.query(Bet)
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.result == "pending",
+                Bet.provider_id == provider_id,
+            )
+            .all()
+        )
 
         staged = []
         for pb in pending:
             for sb in bets:
                 if abs(sb["odds"] - pb.odds) < 0.02 and abs(sb["stake"] - pb.stake) < 0.02:
-                    staged.append({
-                        "bet_id": pb.id,
-                        "provider": provider_id,
-                        "event": sb["market_event"],
-                        "odds": sb["odds"],
-                        "stake": sb["stake"],
-                        "result": sb["result"],
-                        "payout": sb["payout"],
-                    })
+                    staged.append(
+                        {
+                            "bet_id": pb.id,
+                            "provider": provider_id,
+                            "event": sb["market_event"],
+                            "odds": sb["odds"],
+                            "stake": sb["stake"],
+                            "result": sb["result"],
+                            "payout": sb["payout"],
+                        }
+                    )
                     break
 
         # Stage in mirror service and notify via SSE
         if staged:
             mirror._pending_settlements = staged
-            mirror._notify("settlements_pending", {
-                "provider": provider_id,
-                "count": len(staged),
-                "wins": len([s for s in staged if s["result"] == "won"]),
-                "losses": len([s for s in staged if s["result"] == "lost"]),
-                "total_staked": sum(s["stake"] for s in staged),
-                "total_payout": sum(s["payout"] for s in staged),
-                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
-                "settlements": staged,
-            })
+            mirror._notify(
+                "settlements_pending",
+                {
+                    "provider": provider_id,
+                    "count": len(staged),
+                    "wins": len([s for s in staged if s["result"] == "won"]),
+                    "losses": len([s for s in staged if s["result"] == "lost"]),
+                    "total_staked": sum(s["stake"] for s in staged),
+                    "total_payout": sum(s["payout"] for s in staged),
+                    "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                    "settlements": staged,
+                },
+            )
 
     finally:
         db.close()
@@ -928,20 +986,24 @@ def _resolve_batch_bets(request: FireBatchRequest) -> dict:
 
     Returns {"bets": [...resolved...], "errors": [...]}
     """
-    from ..deps import get_db as _get_db
     from ...db.models import Odds
+    from ..deps import get_db as _get_db
 
     db = next(_get_db())
     resolved = []
     errors = []
     try:
         for i, bet in enumerate(request.bets):
-            odds_row = db.query(Odds).filter(
-                Odds.event_id == bet.event_id,
-                Odds.provider_id == "polymarket",
-                Odds.market == bet.market,
-                Odds.outcome == bet.outcome,
-            ).first()
+            odds_row = (
+                db.query(Odds)
+                .filter(
+                    Odds.event_id == bet.event_id,
+                    Odds.provider_id == "polymarket",
+                    Odds.market == bet.market,
+                    Odds.outcome == bet.outcome,
+                )
+                .first()
+            )
 
             if not odds_row or not odds_row.provider_meta:
                 errors.append({"event_id": bet.event_id, "reason": "No Polymarket odds found"})
@@ -957,19 +1019,21 @@ def _resolve_batch_bets(request: FireBatchRequest) -> dict:
             expected_price = round(1 / bet.odds, 4) if bet.odds > 1 else 0.5
             poly_outcome = _resolve_poly_outcome(bet.outcome, meta)
 
-            resolved.append({
-                "bet_id": i,
-                "market_slug": slug,
-                "token_id": "",
-                "outcome": poly_outcome,
-                "amount_usdc": amount_usdc,
-                "expected_price": expected_price,
-                "max_slippage_pct": request.max_slippage_pct,
-                "event_id": bet.event_id,
-                "original_odds": bet.odds,
-                "_original_outcome": bet.outcome,
-                "_market_type": bet.market,
-            })
+            resolved.append(
+                {
+                    "bet_id": i,
+                    "market_slug": slug,
+                    "token_id": "",
+                    "outcome": poly_outcome,
+                    "amount_usdc": amount_usdc,
+                    "expected_price": expected_price,
+                    "max_slippage_pct": request.max_slippage_pct,
+                    "event_id": bet.event_id,
+                    "original_odds": bet.odds,
+                    "_original_outcome": bet.outcome,
+                    "_market_type": bet.market,
+                }
+            )
     finally:
         db.close()
     return {"bets": resolved, "errors": errors}
@@ -1072,7 +1136,13 @@ async def fire_polymarket_batch(request: FireBatchRequest):
 
     resolved = await asyncio.to_thread(_resolve_batch_bets, request)
     if not resolved["bets"]:
-        return {"placed": [], "skipped": [], "failed": resolved["errors"], "total": 0, "resolve_errors": resolved["errors"]}
+        return {
+            "placed": [],
+            "skipped": [],
+            "failed": resolved["errors"],
+            "total": 0,
+            "resolve_errors": resolved["errors"],
+        }
 
     result = await mirror.place_polymarket_bets(resolved["bets"])
     result["resolve_errors"] = resolved["errors"]

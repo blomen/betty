@@ -37,6 +37,9 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
             setattr(ns, k, v)
     if not hasattr(ns, "bet_id"):
         ns.bet_id = 0
+    # Explicit Kambi fields — avoid collision with top-level event_id (canonical UUID)
+    ns.kambi_event_id = meta.get("event_id", "")
+    ns.kambi_outcome_id = meta.get("outcome_id", "")
     return ns
 
 
