@@ -50,7 +50,13 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
     for bet in db_pending:
         bet_id = bet.get("bet_id") or bet.get("id")
         bet_provider_id = str(bet.get("provider_bet_id") or "")
+        # Build event name from home_team/away_team if event_name not set
         bet_event = (bet.get("event_name") or "").lower().strip()
+        if not bet_event:
+            home = bet.get("home_team") or ""
+            away = bet.get("away_team") or ""
+            if home and away:
+                bet_event = f"{home} v {away}".lower().strip()
         bet_odds = float(bet.get("odds", 0) or 0)
         bet_stake = float(bet.get("stake", 0) or 0)
 
@@ -71,18 +77,27 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
                 method = "id"
                 break
 
-            # Tier 2: event name + tight odds match
+            # Tier 2: event name match (+ odds if available)
             h_event = (entry.get("event_name") or "").lower().strip()
+            # Normalize "vs." → "v" for comparison
+            h_norm = h_event.replace(" vs. ", " v ").replace(" vs ", " v ")
+            bet_norm = bet_event.replace(" vs. ", " v ").replace(" vs ", " v ")
             if (
-                bet_event
-                and h_event
-                and (bet_event in h_event or h_event in bet_event or _token_overlap(bet_event, h_event) > 0.7)
+                bet_norm
+                and h_norm
+                and (bet_norm in h_norm or h_norm in bet_norm or _token_overlap(bet_norm, h_norm) >= 0.5)
             ):
                 h_odds = float(entry.get("odds", 0) or 0)
-                if bet_odds > 0 and h_odds > 0 and abs(h_odds - bet_odds) / bet_odds <= _NAME_ODDS_TOL:
-                    matched = (idx, entry)
-                    method = "name"
-                    break
+                # If both have odds, check they're close; if history has no odds (lost bet), accept name match alone
+                if h_odds > 0 and bet_odds > 0 and abs(h_odds - bet_odds) / bet_odds > _NAME_ODDS_TOL:
+                    continue  # odds don't match, try next
+                # Also check stake is in the right ballpark (within 50%) to avoid false matches
+                h_stake = float(entry.get("stake", 0) or 0)
+                if h_stake > 0 and bet_stake > 0 and abs(h_stake - bet_stake) / bet_stake > 0.5:
+                    continue
+                matched = (idx, entry)
+                method = "name"
+                break
 
             # Tier 3: fuzzy odds+stake fallback
             h_odds = float(entry.get("odds", 0) or 0)
@@ -198,16 +213,18 @@ class PendingLoop:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
                 resp.raise_for_status()
-                data: list[dict] = resp.json()
+                data = resp.json()
         except Exception:
             logger.exception("[PendingLoop] failed to fetch pending bets")
             return {}
 
+        # API returns {providers: [{provider_id, bets: [...]}, ...]}
         grouped: dict[str, list[dict]] = {}
-        for bet in data:
-            pid = bet.get("provider_id")
-            if pid:
-                grouped.setdefault(pid, []).append(bet)
+        for prov in data.get("providers", []):
+            pid = prov.get("provider_id")
+            bets = prov.get("bets", [])
+            if pid and bets:
+                grouped[pid] = bets
         return grouped
 
     # ------------------------------------------------------------------
@@ -257,6 +274,8 @@ class PendingLoop:
                     "stake": e.stake,
                     "status": e.status,
                     "payout": e.payout,
+                    "provider_bet_id": e.provider_bet_id,
+                    "event_name": e.event_name,
                 }
                 for e in raw_history
             ]
@@ -276,7 +295,7 @@ class PendingLoop:
         self._status[pid]["settlements"] = settlements
         logger.info(f"[PendingLoop] {len(settlements)} settlements detected for {pid}")
 
-        # 5. Broadcast and wait for confirm
+        # 5. Broadcast detected settlements
         self._broadcaster.publish(
             "settlements_detected",
             {
@@ -285,17 +304,7 @@ class PendingLoop:
             },
         )
 
-        ev = asyncio.Event()
-        self._confirm_events[pid] = ev
-        try:
-            await asyncio.wait_for(ev.wait(), timeout=_CONFIRM_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning(f"[PendingLoop] confirm timeout for {pid} — skipping")
-            return
-        finally:
-            self._confirm_events.pop(pid, None)
-
-        # 6. Record settlements
+        # 6. Auto-record settlements immediately (background loop — no manual confirm needed)
         await self._record_settlements(pid, settlements)
         self._broadcaster.publish(
             "settlements_confirmed",
@@ -317,17 +326,25 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _record_settlements(self, pid: str, settlements: list[dict]) -> None:
-        url = f"{self._proxy_url}/api/opportunities/play/settle-confirm"
-        payload = {"provider_id": pid, "settlements": settlements}
+        url = f"{self._proxy_url}/api/opportunities/play/settle-batch"
+        batch = [
+            {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
+        ]
+        if not batch:
+            logger.info(f"[PendingLoop] no valid settlements to record for {pid}")
+            return
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     url,
-                    json=payload,
+                    json=batch,
                     headers={_AUTH_HEADER: _AUTH_VALUE},
                 )
                 resp.raise_for_status()
-            logger.info(f"[PendingLoop] settlements recorded for {pid}")
+                data = resp.json()
+            logger.info(
+                f"[PendingLoop] settlements recorded for {pid}: {data.get('settled', 0)}/{data.get('total', 0)}"
+            )
         except Exception:
             logger.exception(f"[PendingLoop] failed to record settlements for {pid}")
 

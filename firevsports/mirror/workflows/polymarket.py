@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from .base import ProviderWorkflow, WorkflowMode, PlacementResult, HistoryEntry
+from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -19,13 +19,13 @@ class PolymarketWorkflow(ProviderWorkflow):
 
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.AUTONOMOUS):
         super().__init__(provider_id, domain, mode)
-        self._tabs: dict[str, "Page"] = {}
+        self._tabs: dict[str, Page] = {}
 
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         """Check if logged in by looking for 'Cash $XXX' in the nav."""
         try:
             text = await page.evaluate("""() => {
@@ -41,7 +41,7 @@ class PolymarketWorkflow(ProviderWorkflow):
             logger.warning(f"[{self.provider_id}] check_login failed: {e}")
             return False
 
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         """Scrape USDC cash balance from DOM nav text ('Cash$101.51')."""
         try:
             amount = await page.evaluate("""() => {
@@ -60,7 +60,7 @@ class PolymarketWorkflow(ProviderWorkflow):
             logger.warning(f"[{self.provider_id}] sync_balance failed: {e}")
             return -1
 
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         """Sync full Polymarket bet history to DB.
 
         Navigates to History tab → scrapes all entries → reconciles with DB:
@@ -70,19 +70,21 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         This is the generic settle-first workflow: sync ALL history before playing.
         """
+        from rapidfuzz import fuzz
+
         from ...db.models import Bet, Event, get_session
         from ...repositories.profile_repo import ProfileRepo
         from ...services.bet_service import BetService
-        from rapidfuzz import fuzz
 
         # Navigate to History tab
-        if '/portfolio' not in (page.url or '') or 'tab=history' not in (page.url or ''):
+        if "/portfolio" not in (page.url or "") or "tab=history" not in (page.url or ""):
             await page.goto(
                 "https://polymarket.com/portfolio?tab=history",
-                wait_until="domcontentloaded", timeout=15000,
+                wait_until="domcontentloaded",
+                timeout=15000,
             )
             await asyncio.sleep(4)
-        elif 'tab=history' not in (page.url or ''):
+        elif "tab=history" not in (page.url or ""):
             # On portfolio but wrong tab — click History
             await page.evaluate("""() => {
                 const tabs = document.querySelectorAll('a, button, div[role="tab"]');
@@ -201,23 +203,24 @@ class PolymarketWorkflow(ProviderWorkflow):
                                 f"[polymarket] sync_history: settled bet #{best_match.id} "
                                 f"→ {result_str} (payout=${payout:.2f}) via {market[:50]}"
                             )
-                            history_results.append(HistoryEntry(
-                                provider_bet_id=str(best_match.id),
-                                event_name=market[:80],
-                                market=best_match.market or "1x2",
-                                outcome=best_match.outcome or "",
-                                odds=best_match.odds,
-                                stake=best_match.stake,
-                                status=result_str,
-                                payout=round(payout, 2),
-                            ))
+                            history_results.append(
+                                HistoryEntry(
+                                    provider_bet_id=str(best_match.id),
+                                    event_name=market[:80],
+                                    market=best_match.market or "1x2",
+                                    outcome=best_match.outcome or "",
+                                    odds=best_match.odds,
+                                    stake=best_match.stake,
+                                    status=result_str,
+                                    payout=round(payout, 2),
+                                )
+                            )
                         except Exception as e:
                             logger.warning(f"[polymarket] sync_history settle failed: {e}")
 
             db.commit()
             logger.info(
-                f"[polymarket] sync_history complete: "
-                f"{new_bets} new bets recorded, {settled_bets} bets settled"
+                f"[polymarket] sync_history complete: {new_bets} new bets recorded, {settled_bets} bets settled"
             )
 
         except Exception as e:
@@ -232,7 +235,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Navigation
     # ------------------------------------------------------------------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate to event AND prepare betslip (click outcome, fill amount).
 
         After this returns, the Polymarket tab shows the event with the
@@ -263,7 +266,7 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         # Wait for trading buttons
         try:
-            await page.wait_for_selector('button', timeout=10000)
+            await page.wait_for_selector("button", timeout=10000)
         except Exception:
             await asyncio.sleep(5)
 
@@ -279,7 +282,8 @@ class PolymarketWorkflow(ProviderWorkflow):
             target = outcome.lower()[:3]
 
         try:
-            clicked = await page.evaluate("""(target) => {
+            clicked = await page.evaluate(
+                """(target) => {
                 const btns = [...document.querySelectorAll('button')];
                 for (const btn of btns) {
                     const text = (btn.textContent || '').toLowerCase();
@@ -290,7 +294,9 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
                 return null;
-            }""", target)
+            }""",
+                target,
+            )
             if clicked:
                 logger.info(f"[polymarket] Clicked outcome: '{clicked}' (target='{target}')")
                 await asyncio.sleep(1)
@@ -329,7 +335,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Bet placement
     # ------------------------------------------------------------------
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         """Record bet as placed. User clicks Buy manually on Polymarket.
 
         navigate_to_event already prepared the betslip (outcome + amount).
@@ -342,47 +348,53 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Live price
     # ------------------------------------------------------------------
 
-    async def check_live_price(self, page: "Page", bet) -> float | None:
-        """Read live odds from DOM and compute edge vs fair odds."""
-        from ...api.routes.mirror import _get_active_mirror
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds from DOM and compute edge vs fair odds.
+
+        Returns (live_odds, live_edge) or (None, None).
+        """
         from ...analysis.value import compute_edge
+        from ...api.routes.mirror import _get_active_mirror
 
         mirror = _get_active_mirror()
         if mirror is None:
-            return None
+            return None, None
 
         original_outcome = getattr(bet, "original_outcome", getattr(bet, "outcome", ""))
         market_type = getattr(bet, "market", "1x2")
         fair_odds = getattr(bet, "fair_odds", None)
         if not fair_odds:
-            return None
+            return None, None
 
         try:
             btn_data = await mirror._read_btn_prices(page)
             home_name = getattr(bet, "display_home", "")
             away_name = getattr(bet, "display_away", "")
             matched = mirror._find_btn_for_market(
-                btn_data, original_outcome, market_type,
-                home_name=home_name, away_name=away_name,
+                btn_data,
+                original_outcome,
+                market_type,
+                home_name=home_name,
+                away_name=away_name,
             )
             if not matched or matched.get("price") is None:
-                return None
+                return None, None
 
             live_price = matched["price"]
             if live_price <= 0 or live_price >= 1:
-                return None
+                return None, None
 
             live_odds = 1.0 / live_price
-            return compute_edge("polymarket", live_odds, fair_odds)
+            return round(live_odds, 3), compute_edge("polymarket", live_odds, fair_odds)
         except Exception as e:
             logger.warning(f"[{self.provider_id}] check_live_price failed: {e}")
-            return None
+            return None, None
 
     # ------------------------------------------------------------------
     # Modal dismissal
     # ------------------------------------------------------------------
 
-    async def _dismiss_modal(self, page: "Page", max_attempts: int = 3) -> bool:
+    async def _dismiss_modal(self, page: Page, max_attempts: int = 3) -> bool:
         """Dismiss Share/overlay modals that appear after Claim/Redeem.
 
         Polymarket shows a "Share your winnings" modal with an X close button.
@@ -455,14 +467,14 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Portfolio scraping + settlement
     # ------------------------------------------------------------------
 
-    async def scrape_history(self, page: "Page") -> list[dict]:
+    async def scrape_history(self, page: Page) -> list[dict]:
         """Scrape the History tab at /portfolio?tab=history.
 
         Returns list of {activity, market, outcome_tag, shares, value, time_ago}.
         Activity is 'Bought', 'Lost', 'Claimed', 'Deposited', etc.
         """
-        current_url = page.url or ''
-        if 'tab=history' not in current_url:
+        current_url = page.url or ""
+        if "tab=history" not in current_url:
             logger.info(f"[polymarket] Not on history tab ({current_url[:60]}), skipping scrape")
             return []
 
@@ -567,16 +579,18 @@ class PolymarketWorkflow(ProviderWorkflow):
         logger.info(f"[polymarket] Scraped {len(rows)} history entries")
         return rows
 
-    async def scrape_portfolio(self, page: "Page") -> list[dict]:
+    async def scrape_portfolio(self, page: Page) -> list[dict]:
         """Scrape the portfolio/positions page and return each position.
 
         Navigates to polymarket.com/portfolio and scrapes all position rows.
         Returns list of {market, outcome_tag, avg_price, now_price, values, status, has_redeem, has_sell}.
         """
         # Navigate to portfolio positions tab
-        current_url = page.url or ''
-        if '/portfolio' not in current_url or 'tab=history' in current_url:
-            await page.goto("https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000)
+        current_url = page.url or ""
+        if "/portfolio" not in current_url or "tab=history" in current_url:
+            await page.goto(
+                "https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000
+            )
             await asyncio.sleep(4)  # Wait for client-side render
 
         # First, let's just dump what we can see to understand the DOM structure
@@ -612,57 +626,61 @@ class PolymarketWorkflow(ProviderWorkflow):
             return info;
         }""")
 
-        logger.info(f"[polymarket] Portfolio page: {debug_info.get('url')}, "
-                     f"buttons found: {len(debug_info.get('buttons', []))}")
-        for i, btn in enumerate(debug_info.get('buttons', [])):
+        logger.info(
+            f"[polymarket] Portfolio page: {debug_info.get('url')}, buttons found: {len(debug_info.get('buttons', []))}"
+        )
+        for i, btn in enumerate(debug_info.get("buttons", [])):
             logger.info(f"[polymarket] Button {i}: type={btn.get('type')} text={btn.get('row_text', '')[:120]}")
 
         # Now build positions from the button contexts
         positions = []
-        for btn_info in debug_info.get('buttons', []):
-            text = btn_info.get('row_text', '')
-            btn_type = btn_info.get('type', '')
+        for btn_info in debug_info.get("buttons", []):
+            text = btn_info.get("row_text", "")
+            btn_type = btn_info.get("type", "")
 
             # Determine status from text
-            status = 'open'
-            if 'WON' in text:
-                status = 'won'
-            elif 'LOST' in text:
-                status = 'lost'
+            status = "open"
+            if "WON" in text:
+                status = "won"
+            elif "LOST" in text:
+                status = "lost"
 
             import re
+
             # Extract cent prices — handle both ¢ and encoded variants (Â¢)
-            cent_prices = [float(m) for m in re.findall(r'([\d.]+)\s*(?:¢|\xc2\xa2|\u00a2)', text)]
+            cent_prices = [float(m) for m in re.findall(r"([\d.]+)\s*(?:¢|\xc2\xa2|\u00a2)", text)]
             avg_price = cent_prices[0] if len(cent_prices) >= 1 else None
             now_price = cent_prices[1] if len(cent_prices) >= 2 else None
 
             # Extract dollar values
-            dollar_values = [float(m.replace(',', '')) for m in re.findall(r'\$([\d,.]+)', text)]
+            dollar_values = [float(m.replace(",", "")) for m in re.findall(r"\$([\d,.]+)", text)]
 
             # Extract shares
-            shares_match = re.search(r'([\d.]+)\s*shares', text)
+            shares_match = re.search(r"([\d.]+)\s*shares", text)
             shares = float(shares_match.group(1)) if shares_match else None
 
             # Market name: text before the first price/number section
-            market = text[:60].split('\n')[0] if text else ''
-            market = re.sub(r'[\d¢$→\xc2\xa2].+', '', market).strip()
+            market = text[:60].split("\n")[0] if text else ""
+            market = re.sub(r"[\d¢$→\xc2\xa2].+", "", market).strip()
 
-            positions.append({
-                'market': market[:80],
-                'full_text': text[:200],
-                'avg_price': avg_price,
-                'now_price': now_price,
-                'values': dollar_values,
-                'shares': shares,
-                'status': status,
-                'has_redeem': btn_type == 'Redeem',
-                'has_sell': btn_type == 'Sell',
-            })
+            positions.append(
+                {
+                    "market": market[:80],
+                    "full_text": text[:200],
+                    "avg_price": avg_price,
+                    "now_price": now_price,
+                    "values": dollar_values,
+                    "shares": shares,
+                    "status": status,
+                    "has_redeem": btn_type == "Redeem",
+                    "has_sell": btn_type == "Sell",
+                }
+            )
 
         logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
         return positions
 
-    async def redeem_all(self, page: "Page") -> dict:
+    async def redeem_all(self, page: Page) -> dict:
         """Click Redeem buttons ONLY for finished positions (WON or LOST).
 
         NEVER clicks Sell on open positions — that would exit at market price.
@@ -670,8 +688,10 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         Returns {redeemed: count, skipped_open: count, errors: count}.
         """
-        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
-            await page.goto("https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000)
+        if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
+            await page.goto(
+                "https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000
+            )
             await asyncio.sleep(3)
 
         redeemed = 0
@@ -765,7 +785,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Claim banner
     # ------------------------------------------------------------------
 
-    async def claim_banner(self, page: "Page") -> dict:
+    async def claim_banner(self, page: Page) -> dict:
         """Click the top-level Claim banner if present (green 'Claim' button).
 
         This is the banner that appears when you have uncollected winnings,
@@ -832,7 +852,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Scan (preview only — no clicks)
     # ------------------------------------------------------------------
 
-    async def scan_portfolio_settlements(self, page: "Page") -> dict:
+    async def scan_portfolio_settlements(self, page: Page) -> dict:
         """Scrape positions and match against pending bets — NO clicking.
 
         Returns a preview of what settle_all would do:
@@ -847,10 +867,11 @@ class PolymarketWorkflow(ProviderWorkflow):
         from ...repositories.profile_repo import ProfileRepo
 
         # Navigate to portfolio positions
-        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
+        if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
             await page.goto(
                 "https://polymarket.com/portfolio?tab=positions",
-                wait_until="domcontentloaded", timeout=15000,
+                wait_until="domcontentloaded",
+                timeout=15000,
             )
             await asyncio.sleep(4)
 
@@ -930,17 +951,19 @@ class PolymarketWorkflow(ProviderWorkflow):
                     a = event.display_away or event.away_team or ""
                     event_name = f"{h} vs {a}" if h and a else h or a
 
-                matches.append({
-                    "bet_id": bet.id,
-                    "event": event_name,
-                    "market": bet.market,
-                    "outcome": bet.outcome,
-                    "odds": bet.odds,
-                    "stake": bet.stake,
-                    "result": status,
-                    "payout": round(payout, 2),
-                    "pl": round(payout - bet.stake, 2),
-                })
+                matches.append(
+                    {
+                        "bet_id": bet.id,
+                        "event": event_name,
+                        "market": bet.market,
+                        "outcome": bet.outcome,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": status,
+                        "payout": round(payout, 2),
+                        "pl": round(payout - bet.stake, 2),
+                    }
+                )
 
             total_staked = sum(m["stake"] for m in matches)
             total_payout = sum(m["payout"] for m in matches)
@@ -969,7 +992,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Full settle flow (execute after scan)
     # ------------------------------------------------------------------
 
-    async def settle_all(self, page: "Page") -> dict:
+    async def settle_all(self, page: Page) -> dict:
         """Full settlement: navigate → claim → redeem → settle DB → void ghosts.
 
         1. Navigate to portfolio positions page
@@ -988,10 +1011,11 @@ class PolymarketWorkflow(ProviderWorkflow):
         from ...services.bet_service import BetService
 
         # 1. Navigate to portfolio positions
-        if '/portfolio' not in (page.url or '') or 'tab=history' in (page.url or ''):
+        if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
             await page.goto(
                 "https://polymarket.com/portfolio?tab=positions",
-                wait_until="domcontentloaded", timeout=15000,
+                wait_until="domcontentloaded",
+                timeout=15000,
             )
             await asyncio.sleep(4)
 
@@ -1056,17 +1080,19 @@ class PolymarketWorkflow(ProviderWorkflow):
                     a = event.display_away or event.away_team or ""
                     event_name = f"{h} vs {a}" if h and a else h or a
 
-                matches.append({
-                    "bet_id": bet.id,
-                    "event": event_name,
-                    "market": bet.market,
-                    "outcome": bet.outcome,
-                    "odds": bet.odds,
-                    "stake": bet.stake,
-                    "result": status,
-                    "payout": round(payout, 2),
-                    "pl": round(payout - bet.stake, 2),
-                })
+                matches.append(
+                    {
+                        "bet_id": bet.id,
+                        "event": event_name,
+                        "market": bet.market,
+                        "outcome": bet.outcome,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": status,
+                        "payout": round(payout, 2),
+                        "pl": round(payout - bet.stake, 2),
+                    }
+                )
 
             # 5. Detect ghost bets — pending in DB but no position on Polymarket
             matched_ids = {m["bet_id"] for m in matches}
@@ -1089,20 +1115,21 @@ class PolymarketWorkflow(ProviderWorkflow):
                     h = event.display_home or event.home_team or ""
                     a = event.display_away or event.away_team or ""
                     event_name = f"{h} vs {a}" if h and a else h or a
-                ghost_bets.append({
-                    "bet_id": bet.id,
-                    "event": event_name,
-                    "market": bet.market,
-                    "outcome": bet.outcome,
-                    "odds": bet.odds,
-                    "stake": bet.stake,
-                    "result": "void",
-                    "payout": 0.0,
-                    "pl": round(-bet.stake, 2),
-                })
+                ghost_bets.append(
+                    {
+                        "bet_id": bet.id,
+                        "event": event_name,
+                        "market": bet.market,
+                        "outcome": bet.outcome,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": "void",
+                        "payout": 0.0,
+                        "pl": round(-bet.stake, 2),
+                    }
+                )
                 logger.info(
-                    f"[polymarket] Ghost bet #{bet.id} {event_name} — "
-                    f"no position found, voiding (stake=${bet.stake})"
+                    f"[polymarket] Ghost bet #{bet.id} {event_name} — no position found, voiding (stake=${bet.stake})"
                 )
 
             # 6. Click Redeem buttons (handles modal dismissal per redeem)
@@ -1115,8 +1142,7 @@ class PolymarketWorkflow(ProviderWorkflow):
                     bet_service.settle_bet(m["bet_id"], m["result"], m["payout"])
                     settled.append(m)
                     logger.info(
-                        f"[polymarket] Settled bet #{m['bet_id']} {m['event']} "
-                        f"→ {m['result']} (payout=${m['payout']})"
+                        f"[polymarket] Settled bet #{m['bet_id']} {m['event']} → {m['result']} (payout=${m['payout']})"
                     )
                 except Exception as e:
                     logger.warning(f"[polymarket] Failed to settle bet #{m['bet_id']}: {e}")
@@ -1170,9 +1196,10 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         Deduplicates by market name, only imports positions with has_sell=True (open).
         """
-        from ...services.bet_service import BetService
-        from ...db.models import Bet
         import re
+
+        from ...db.models import Bet
+        from ...services.bet_service import BetService
 
         # Get existing pending polymarket bets to avoid duplicates
         existing = (
@@ -1199,9 +1226,11 @@ class PolymarketWorkflow(ProviderWorkflow):
         svc = BetService(db)
         imported = []
         for pos in unique_positions:
-            logger.info(f"[polymarket] Position: market={pos.get('market')} sell={pos.get('has_sell')} "
-                        f"redeem={pos.get('has_redeem')} status={pos.get('status')} "
-                        f"avg={pos.get('avg_price')} shares={pos.get('shares')}")
+            logger.info(
+                f"[polymarket] Position: market={pos.get('market')} sell={pos.get('has_sell')} "
+                f"redeem={pos.get('has_redeem')} status={pos.get('status')} "
+                f"avg={pos.get('avg_price')} shares={pos.get('shares')}"
+            )
             if not pos.get("has_sell"):
                 continue  # Only open positions
             if pos.get("status") in ("won", "lost"):
@@ -1213,7 +1242,7 @@ class PolymarketWorkflow(ProviderWorkflow):
             values = pos.get("values", [])
 
             # Extract slug from market name
-            slug = re.sub(r'[^a-z0-9]+', '-', market.lower()).strip('-')
+            slug = re.sub(r"[^a-z0-9]+", "-", market.lower()).strip("-")
 
             # Skip if already tracked
             if slug.lower() in existing_markets:
@@ -1247,14 +1276,16 @@ class PolymarketWorkflow(ProviderWorkflow):
                     db_bet = db.query(Bet).filter(Bet.id == bet_id).first()
                     if db_bet:
                         db_bet.confirmation_id = slug
-                imported.append({
-                    "bet_id": bet_id,
-                    "market": market,
-                    "stake": stake,
-                    "odds": odds,
-                    "avg_price": avg_price,
-                    "shares": shares,
-                })
+                imported.append(
+                    {
+                        "bet_id": bet_id,
+                        "market": market,
+                        "stake": stake,
+                        "odds": odds,
+                        "avg_price": avg_price,
+                        "shares": shares,
+                    }
+                )
                 logger.info(f"[polymarket] Imported position: {market} stake=${stake} odds={odds}")
             else:
                 logger.warning(f"[polymarket] Failed to import position: {resp['error']}")
@@ -1269,7 +1300,7 @@ class PolymarketWorkflow(ProviderWorkflow):
     # Cleanup
     # ------------------------------------------------------------------
 
-    async def cleanup(self, page: "Page") -> None:
+    async def cleanup(self, page: Page) -> None:
         """Close persistent Polymarket tabs opened during placement."""
         for slug, tab in list(self._tabs.items()):
             try:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -20,6 +21,24 @@ from .workflows import get_workflow
 from .workflows.base import PlacementResult
 
 logger = logging.getLogger(__name__)
+
+
+def _bet_ns(bet: dict) -> SimpleNamespace:
+    """Wrap a bet dict as a SimpleNamespace for workflow method calls.
+
+    Flattens provider_meta fields (matchup_id, altenar_event_id, etc.) to
+    top-level attributes so workflow methods can use getattr(bet, ...) regardless
+    of whether bet is a dict (play loop) or a BetProxy object (direct API call).
+    """
+    meta = bet.get("provider_meta") or {}
+    ns = SimpleNamespace(**bet)
+    for k, v in meta.items():
+        if not hasattr(ns, k):
+            setattr(ns, k, v)
+    if not hasattr(ns, "bet_id"):
+        ns.bet_id = 0
+    return ns
+
 
 # Cluster membership — same odds across all siblings
 _CLUSTER_MEMBERS: dict[str, list[str]] = {
@@ -346,7 +365,8 @@ class PlayLoop:
                     self.provider_stats[provider_id]["skipped"] += 1
                     continue
 
-                nav_ok = await workflow.navigate_to_event(page, bet)
+                bet_ns = _bet_ns(bet)
+                nav_ok = await workflow.navigate_to_event(page, bet_ns)
                 if not nav_ok:
                     logger.warning(f"[PlayLoop] Navigation failed for {provider_id} — skipping bet")
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "navigation_failed"})
@@ -370,7 +390,8 @@ class PlayLoop:
                     )
                     stake = cached_bal
                     bet["stake"] = stake
-                prep_result = await workflow.prep_betslip(page, bet, stake)
+                    bet_ns.stake = stake  # keep in sync
+                prep_result = await workflow.prep_betslip(page, bet_ns, stake)
                 prep_ok = prep_result.status == "prepped"
 
                 # Check live price from intercepted event details
@@ -378,7 +399,7 @@ class PlayLoop:
                 live_edge = bet.get("edge_pct")
                 if hasattr(workflow, "check_live_price"):
                     try:
-                        lo, le = await workflow.check_live_price(page, bet)
+                        lo, le = await workflow.check_live_price(page, bet_ns)
                         if lo is not None:
                             live_odds = lo
                             live_edge = le
@@ -500,13 +521,38 @@ class PlayLoop:
                                     },
                                 )
 
-                        result = PlacementResult(
-                            status="placed",
-                            bet_id=provider_bet_id or 0,
-                            actual_odds=actual_odds,
-                            actual_stake=actual_stake,
-                            reason="intercepted" if self._intercepted_body else "manual",
-                        )
+                        # Autonomous placement (Pinnacle): call place_bet() via REST API
+                        _balance_synced = False
+                        if not self._intercepted_body and getattr(workflow, "autonomous_placement", False):
+                            api_result = await workflow.place_bet(page, bet_ns, stake)
+                            if api_result.status == "placed":
+                                result = api_result
+                                # Sync balance from Pinnacle API (interceptor cache is stale after REST call)
+                                try:
+                                    new_bal = await workflow.sync_balance(page)
+                                    if new_bal >= 0:
+                                        await self._post_balance(provider_id, new_bal)
+                                        _balance_synced = True
+                                except Exception:
+                                    logger.warning(f"[PlayLoop] Balance sync failed for {provider_id} after API bet")
+                            elif api_result.status == "skipped":
+                                logger.info(f"[PlayLoop] API bet skipped for {provider_id}: {api_result.reason}")
+                                self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": api_result.reason})
+                                self.provider_stats[provider_id]["skipped"] += 1
+                                continue
+                            else:
+                                logger.warning(f"[PlayLoop] API bet failed for {provider_id}: {api_result.reason}")
+                                self._broadcaster.publish("bet_failed", {"bet": bet, "reason": api_result.reason})
+                                self.provider_stats[provider_id]["skipped"] += 1
+                                continue
+                        else:
+                            result = PlacementResult(
+                                status="placed",
+                                bet_id=provider_bet_id or 0,
+                                actual_odds=actual_odds,
+                                actual_stake=actual_stake,
+                                reason="intercepted" if self._intercepted_body else "manual",
+                            )
                         placed_count = self._placed_today.get(provider_id, 0) + 1
                         self._broadcaster.publish(
                             "bet_placed",
@@ -523,10 +569,11 @@ class PlayLoop:
                         self._placed_today[provider_id] = self._placed_today.get(provider_id, 0) + 1
                         await self._record_bet(bet, result)
                         self._block_event_market(bet)
-                        # Sync balance from interceptor cache
-                        cached_bal = self._browser.provider_data.get(provider_id, {}).get("balance")
-                        if cached_bal is not None:
-                            await self._post_balance(provider_id, cached_bal)
+                        # Sync balance from interceptor cache (skip if autonomous placement already synced)
+                        if not _balance_synced:
+                            cached_bal = self._browser.provider_data.get(provider_id, {}).get("balance")
+                            if cached_bal is not None:
+                                await self._post_balance(provider_id, cached_bal)
                     except Exception:
                         logger.exception(f"[PlayLoop] Recording failed for {provider_id}")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})

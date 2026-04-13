@@ -13,21 +13,28 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from .base import ProviderWorkflow, WorkflowMode, PlacementResult, HistoryEntry
+from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
+
+def _g(obj, key, default=None):
+    """Get attribute from object or dict — handles both play-loop dicts and BetProxy objects."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 _API = "https://api.arcadia.pinnacle.se/0.1"
 
 # Map our canonical outcome to Pinnacle designation
-_DESIGNATION_MAP = {"home": "home", "away": "away", "draw": "draw",
-                    "over": "over", "under": "under"}
+_DESIGNATION_MAP = {"home": "home", "away": "away", "draw": "draw", "over": "over", "under": "under"}
 
 # Map our canonical market to Pinnacle market key prefix
 _MARKET_KEY_MAP = {
@@ -40,17 +47,20 @@ _MARKET_KEY_MAP = {
 
 class PinnacleWorkflow(ProviderWorkflow):
     platform = "pinnacle"
+    autonomous_placement = True  # place_bet() fires the Pinnacle REST API when user clicks Place
 
-    def __init__(self, provider_id: str = "pinnacle", domain: str = "pinnacle.se",
-                 mode: WorkflowMode = WorkflowMode.GUIDED):
+    def __init__(
+        self, provider_id: str = "pinnacle", domain: str = "pinnacle.se", mode: WorkflowMode = WorkflowMode.GUIDED
+    ):
         super().__init__(provider_id, domain, mode)
 
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         import asyncio
+
         # Wait for page to settle after navigation (redirects, cookie setup)
         await asyncio.sleep(3)
         # Retry up to 3 times — auth cookies may need a moment
@@ -63,7 +73,7 @@ class PinnacleWorkflow(ProviderWorkflow):
                 await asyncio.sleep(2)
         return False
 
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         result = await self._evaluate_api(page, f"{_API}/wallet/balance")
         if result and "amount" in result:
             return float(result["amount"])
@@ -73,7 +83,7 @@ class PinnacleWorkflow(ProviderWorkflow):
     # History
     # ------------------------------------------------------------------
 
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         """Scrape bet history from Pinnacle DOM + try API fallback.
 
         DOM format per bet card:
@@ -96,46 +106,46 @@ class PinnacleWorkflow(ProviderWorkflow):
 
         if raw:
             # Flatten newlines to spaces for easier regex
-            flat = raw.replace('\n', ' ').replace('\r', '')
+            flat = raw.replace("\n", " ").replace("\r", "")
 
             # Split by "Settled:" or "Rättat:"/"Rattat:" markers (EN/SV, handles encoding)
-            cards = re.split(r'(?=(?:Settled|R.ttat):\s)', flat)
+            cards = re.split(r"(?=(?:Settled|R.ttat):\s)", flat)
             for card in cards:
                 # Must have stake field (EN: "Stake:", SV: "Insats:")
-                if 'Stake:' not in card and 'Insats:' not in card:
+                if "Stake:" not in card and "Insats:" not in card:
                     continue
 
                 # Odds: "@ 7.420"
-                odds_match = re.search(r'@\s*([\d.]+)', card)
+                odds_match = re.search(r"@\s*([\d.]+)", card)
                 if not odds_match:
                     continue
                 odds = float(odds_match.group(1))
 
                 # Stake: EN "Stake: 90.00" or SV "Insats: 90,00"
-                stake_match = re.search(r'(?:Stake|Insats):\s*([\d.,]+)', card)
+                stake_match = re.search(r"(?:Stake|Insats):\s*([\d.,]+)", card)
                 if not stake_match:
                     continue
-                stake = float(stake_match.group(1).replace(',', '.'))
+                stake = float(stake_match.group(1).replace(",", "."))
 
                 # Result: EN "SETTLED – LOSS/WIN" or SV "RÄTTAT – FÖRLUST/VINST"
                 # Use encoding-safe patterns (.RLUST for FÖRLUST, etc.)
                 card_upper = card.upper()
-                if 'RLUST' in card_upper or 'LOSS' in card_upper:
+                if "RLUST" in card_upper or "LOSS" in card_upper:
                     status = "lost"
-                elif 'VOID' in card_upper or 'CANCEL' in card_upper or 'OGILTIG' in card_upper:
+                elif "VOID" in card_upper or "CANCEL" in card_upper or "OGILTIG" in card_upper:
                     status = "void"
-                elif 'SETTLED' in card_upper or 'TTAT' in card_upper:
+                elif "SETTLED" in card_upper or "TTAT" in card_upper:
                     # Has a settled marker but no LOSS/VOID — must be a win
                     status = "won"
                 else:
                     continue
 
                 # Event name: "Team A vs Team B" pattern
-                event_match = re.search(r'(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)', card)
+                event_match = re.search(r"(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)", card)
                 event_name = f"{event_match.group(1).strip()} vs {event_match.group(2).strip()}" if event_match else ""
 
                 # Outcome name: text before "@ ODDS"
-                outcome_match = re.search(r'(?:vs\s+\S.*?)\s+(.+?)\s*@\s*[\d.]+', card)
+                outcome_match = re.search(r"(?:vs\s+\S.*?)\s+(.+?)\s*@\s*[\d.]+", card)
                 outcome_name = outcome_match.group(1).strip() if outcome_match else ""
 
                 # Payout: 0 for losses, actual payout for wins
@@ -147,20 +157,22 @@ class PinnacleWorkflow(ProviderWorkflow):
                     payout = stake
 
                 # Bet ID: "#2220898232"
-                bet_id_match = re.search(r'#(\d+)', card)
+                bet_id_match = re.search(r"#(\d+)", card)
                 bet_id = bet_id_match.group(1) if bet_id_match else ""
 
                 if stake > 0 and odds > 0:
-                    entries.append(HistoryEntry(
-                        provider_bet_id=bet_id,
-                        event_name=event_name,
-                        market="",
-                        outcome=outcome_name,
-                        odds=odds,
-                        stake=stake,
-                        status=status,
-                        payout=payout,
-                    ))
+                    entries.append(
+                        HistoryEntry(
+                            provider_bet_id=bet_id,
+                            event_name=event_name,
+                            market="",
+                            outcome=outcome_name,
+                            odds=odds,
+                            stake=stake,
+                            status=status,
+                            payout=payout,
+                        )
+                    )
 
         logger.info(f"[pinnacle] DOM scrape: {len(entries)} bet(s) from history page")
 
@@ -172,9 +184,10 @@ class PinnacleWorkflow(ProviderWorkflow):
             for status_filter in ("settled",):
                 url = f"{_API}/bets?status={status_filter}&startDate={start}&endDate={end}"
                 result = await self._evaluate_api(page, url)
-                if not result or "__error" in (result or {}):
+                if not result or (isinstance(result, dict) and "__error" in result):
                     continue
-                for b in result.get("bets", []):
+                bets_raw = result if isinstance(result, list) else result.get("bets", [])
+                for b in bets_raw:
                     risk = float(b.get("stake", 0))
                     price = float(b.get("price", 0))
                     outcome_str = b.get("outcome", "none")
@@ -192,13 +205,18 @@ class PinnacleWorkflow(ProviderWorkflow):
                     parts = matchup.get("participants", [])
                     home = next((p["name"] for p in parts if p.get("alignment") == "home"), "")
                     away = next((p["name"] for p in parts if p.get("alignment") == "away"), "")
-                    entries.append(HistoryEntry(
-                        provider_bet_id=str(b.get("id", "")),
-                        event_name=f"{home} vs {away}" if home else "",
-                        market=sel.get("market", {}).get("type", ""),
-                        outcome=sel.get("designation", ""),
-                        odds=price, stake=risk, status=st, payout=pay,
-                    ))
+                    entries.append(
+                        HistoryEntry(
+                            provider_bet_id=str(b.get("id", "")),
+                            event_name=f"{home} vs {away}" if home else "",
+                            market=sel.get("market", {}).get("type", ""),
+                            outcome=sel.get("designation", ""),
+                            odds=price,
+                            stake=risk,
+                            status=st,
+                            payout=pay,
+                        )
+                    )
 
         return entries
 
@@ -206,9 +224,9 @@ class PinnacleWorkflow(ProviderWorkflow):
     # Navigation — show the event on the Pinnacle page
     # ------------------------------------------------------------------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate to the event page so the user can see it before confirming."""
-        matchup_id = getattr(bet, "matchup_id", None)
+        matchup_id = _g(bet, "matchup_id") or (_g(bet, "provider_meta") or {}).get("matchup_id")
         if not matchup_id:
             return False
         # Pinnacle event URL: /sv/matchup/{matchupId}
@@ -228,33 +246,36 @@ class PinnacleWorkflow(ProviderWorkflow):
     # Bet placement — full API automation
     # ------------------------------------------------------------------
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         """Place bet via Pinnacle REST API: fetch markets → quote → place."""
-        matchup_id = getattr(bet, "matchup_id", None)
+        matchup_id = _g(bet, "matchup_id") or (_g(bet, "provider_meta") or {}).get("matchup_id")
         if not matchup_id:
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason="no_matchup_id")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason="no_matchup_id")
 
-        outcome = getattr(bet, "outcome", "")
-        market = getattr(bet, "market", "")
-        point = getattr(bet, "point", None)
+        outcome = _g(bet, "outcome", "")
+        market = _g(bet, "market", "")
+        point = _g(bet, "point", None)
+        expected_odds = _g(bet, "odds", 0)
         designation = _DESIGNATION_MAP.get(outcome)
         if not designation:
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"unknown_outcome:{outcome}")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason=f"unknown_outcome:{outcome}")
 
         # Step 1: Fetch current markets for this matchup
         markets = await self._evaluate_api(page, f"{_API}/matchups/{matchup_id}/markets/straight")
         if not markets or "__error" in (markets if isinstance(markets, dict) else {}):
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason="markets_fetch_failed")
 
         # Step 2: Find the right market line
         target_market = self._find_market(markets, market, point)
         if not target_market:
-            return PlacementResult(status="failed", bet_id=bet.bet_id,
-                                   reason=f"market_not_found:{market}")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason=f"market_not_found:{market}")
 
         if target_market.get("status") != "open":
-            return PlacementResult(status="skipped", bet_id=bet.bet_id,
-                                   reason=f"market_closed:{target_market.get('status')}")
+            return PlacementResult(
+                status="skipped",
+                bet_id=_g(bet, "bet_id", 0),
+                reason=f"market_closed:{target_market.get('status')}",
+            )
 
         # Step 3: Find the price for our designation
         price_entry = next(
@@ -262,8 +283,9 @@ class PinnacleWorkflow(ProviderWorkflow):
             None,
         )
         if not price_entry:
-            return PlacementResult(status="failed", bet_id=bet.bet_id,
-                                   reason=f"designation_not_found:{designation}")
+            return PlacementResult(
+                status="failed", bet_id=_g(bet, "bet_id", 0), reason=f"designation_not_found:{designation}"
+            )
 
         american_price = price_entry["price"]
         # Convert American odds to decimal for slippage check
@@ -273,11 +295,12 @@ class PinnacleWorkflow(ProviderWorkflow):
             decimal_odds = 1 + 100 / abs(american_price)
 
         # Step 4: Slippage check — abort if odds dropped > 5% below expected
-        if bet.odds > 0 and decimal_odds < bet.odds * 0.95:
+        if expected_odds > 0 and decimal_odds < expected_odds * 0.95:
             return PlacementResult(
-                status="skipped", bet_id=bet.bet_id,
+                status="skipped",
+                bet_id=_g(bet, "bet_id", 0),
                 actual_odds=round(decimal_odds, 3),
-                reason=f"slippage:{decimal_odds:.2f}_vs_{bet.odds:.2f}",
+                reason=f"slippage:{decimal_odds:.2f}_vs_{expected_odds:.2f}",
             )
 
         market_key = target_market["key"]
@@ -291,23 +314,25 @@ class PinnacleWorkflow(ProviderWorkflow):
             "acceptBetterPrices": True,
             "acceptBetterPrice": True,
             "class": "Straight",
-            "selections": [{
-                "marketId": market_id,
-                "matchupId": int(matchup_id),
-                "marketKey": market_key,
-                "designation": designation,
-                "price": round(decimal_odds, 2),
-            }],
+            "selections": [
+                {
+                    "marketId": market_id,
+                    "matchupId": int(matchup_id),
+                    "marketKey": market_key,
+                    "designation": designation,
+                    "price": round(decimal_odds, 2),
+                }
+            ],
             "stake": round(stake, 2),
             "originTag": "ps:bsd",
         }
 
         result = await self._post_api(page, f"{_API}/bets/straight", body)
         if not result:
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason="api_call_failed")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason="api_call_failed")
         if "__error" in result:
             error_detail = result.get("detail", result.get("title", str(result["__error"])))
-            return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"api_error:{error_detail}")
+            return PlacementResult(status="failed", bet_id=_g(bet, "bet_id", 0), reason=f"api_error:{error_detail}")
 
         # Success
         confirmed_price = float(result.get("price", decimal_odds))
@@ -316,19 +341,19 @@ class PinnacleWorkflow(ProviderWorkflow):
 
         logger.info(
             f"[pinnacle] PLACED bet {pinnacle_bet_id}: "
-            f"{bet.display_home} vs {bet.display_away} {market} {outcome} "
+            f"{_g(bet, 'display_home', '')} vs {_g(bet, 'display_away', '')} {market} {outcome} "
             f"@ {confirmed_price} stake={confirmed_stake}"
         )
 
         return PlacementResult(
             status="placed",
-            bet_id=bet.bet_id,
+            bet_id=_g(bet, "bet_id", 0),
             actual_odds=confirmed_price,
             actual_stake=confirmed_stake,
             raw_response=result,
         )
 
-    async def settle_all(self, page: "Page") -> dict:
+    async def settle_all(self, page: Page) -> dict:
         """Full automated Pinnacle settlement via API.
 
         1. Fetch unsettled bets → record any missing in DB
@@ -397,8 +422,10 @@ class PinnacleWorkflow(ProviderWorkflow):
                     # Try to find matching event in DB
                     event_id = None
                     if home and away:
-                        from ...db.models import Event as EventModel
                         from sqlalchemy import or_
+
+                        from ...db.models import Event as EventModel
+
                         event = (
                             db.query(EventModel)
                             .filter(
@@ -471,9 +498,7 @@ class PinnacleWorkflow(ProviderWorkflow):
                     matched_bet = None
                     matched_event = None
                     for bet, event in pending:
-                        if (abs(bet.odds - price) < 0.01
-                                and abs(bet.stake - risk) < 0.01
-                                and bet.result == "pending"):
+                        if abs(bet.odds - price) < 0.01 and abs(bet.stake - risk) < 0.01 and bet.result == "pending":
                             matched_bet = bet
                             matched_event = event
                             break
@@ -488,23 +513,24 @@ class PinnacleWorkflow(ProviderWorkflow):
                         event_name = f"{h} vs {a}" if h and a else h or a
 
                     svc.settle_bet(matched_bet.id, status, round(payout, 2))
-                    settled.append({
-                        "bet_id": matched_bet.id,
-                        "event": event_name,
-                        "market": matched_bet.market,
-                        "outcome": matched_bet.outcome,
-                        "odds": matched_bet.odds,
-                        "stake": matched_bet.stake,
-                        "result": status,
-                        "payout": round(payout, 2),
-                        "pl": round(payout - matched_bet.stake, 2),
-                    })
+                    settled.append(
+                        {
+                            "bet_id": matched_bet.id,
+                            "event": event_name,
+                            "market": matched_bet.market,
+                            "outcome": matched_bet.outcome,
+                            "odds": matched_bet.odds,
+                            "stake": matched_bet.stake,
+                            "result": status,
+                            "payout": round(payout, 2),
+                            "pl": round(payout - matched_bet.stake, 2),
+                        }
+                    )
                     # Remove from pending list so we don't double-match
                     pending = [(b, e) for b, e in pending if b.id != matched_bet.id]
 
                     logger.info(
-                        f"[pinnacle] Settled bet #{matched_bet.id} {event_name} "
-                        f"→ {status} (payout={payout:.2f})"
+                        f"[pinnacle] Settled bet #{matched_bet.id} {event_name} → {status} (payout={payout:.2f})"
                     )
 
                 db.commit()
@@ -539,33 +565,36 @@ class PinnacleWorkflow(ProviderWorkflow):
             "new_balance": new_balance,
         }
 
-    async def check_live_price(self, page: "Page", bet) -> float | None:
-        """Read live odds from Pinnacle markets API and compute edge."""
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds from Pinnacle markets API.
+
+        Returns (live_odds, live_edge) or (None, None).
+        """
         from ...analysis.value import compute_edge
 
-        matchup_id = getattr(bet, "matchup_id", None)
-        fair_odds = getattr(bet, "fair_odds", None)
+        matchup_id = _g(bet, "matchup_id") or (_g(bet, "provider_meta") or {}).get("matchup_id")
+        fair_odds = _g(bet, "fair_odds", None)
         if not matchup_id or not fair_odds:
-            return None
+            return None, None
 
         markets = await self._evaluate_api(page, f"{_API}/matchups/{matchup_id}/markets/straight")
         if not markets or not isinstance(markets, list):
-            return None
+            return None, None
 
-        market = getattr(bet, "market", "")
-        point = getattr(bet, "point", None)
+        market = _g(bet, "market", "")
+        point = _g(bet, "point", None)
         target = self._find_market(markets, market, point)
         if not target:
-            return None
+            return None, None
 
-        outcome = getattr(bet, "outcome", "")
+        outcome = _g(bet, "outcome", "")
         designation = _DESIGNATION_MAP.get(outcome)
         price_entry = next(
             (p for p in target.get("prices", []) if p.get("designation") == designation),
             None,
         )
         if not price_entry:
-            return None
+            return None, None
 
         american = price_entry["price"]
         if american > 0:
@@ -575,10 +604,10 @@ class PinnacleWorkflow(ProviderWorkflow):
 
         edge = compute_edge("pinnacle", decimal_odds, fair_odds)
         logger.info(
-            f"[pinnacle] Live: {bet.display_home} vs {bet.display_away} "
+            f"[pinnacle] Live: {_g(bet, 'display_home', '')} vs {_g(bet, 'display_away', '')} "
             f"{outcome} @ {decimal_odds:.2f} (fair {fair_odds:.2f}) edge={edge:.1f}%"
         )
-        return edge
+        return round(decimal_odds, 3), edge
 
     # ------------------------------------------------------------------
     # Helpers
@@ -623,7 +652,7 @@ class PinnacleWorkflow(ProviderWorkflow):
                         return m  # First non-alternate total
         return None
 
-    async def _post_api(self, page: "Page", url: str, body: dict) -> dict | None:
+    async def _post_api(self, page: Page, url: str, body: dict) -> dict | None:
         """POST JSON to Pinnacle API from the page's session."""
         try:
             body_json = json.dumps(body)

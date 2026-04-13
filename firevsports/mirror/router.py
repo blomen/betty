@@ -64,6 +64,8 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     router = APIRouter(prefix="/mirror", tags=["mirror"])
 
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
+    pending_loop = PendingLoop(browser, broadcaster, proxy_url)
+    pending_loop.start()
 
     # Wire browser bet interception → play loop auto-record
     # Chain with existing callback (broadcaster.publish set in server.py)
@@ -404,6 +406,11 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             return {"provider_id": provider_id, "running": False}
         stream.stop()
         return {"provider_id": provider_id, "running": False}
+
+    @router.get("/pending/status")
+    async def pending_status():
+        """Return status of the background pending settlement loop."""
+        return pending_loop.get_status()
 
     @router.get("/data-stream/status")
     async def data_stream_status():

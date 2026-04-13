@@ -89,7 +89,7 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "polymarket": "polymarket.com",
     "pinnacle": "pinnacle.se",
     "betinia": "betinia.se",
-    "quickcasino": "quickcasino.com",
+    "quickcasino": "quickcasino.se",
     "campobet": "campobet.se",
     "comeon": "comeon.com",
     "swiper": "swiper.bet",

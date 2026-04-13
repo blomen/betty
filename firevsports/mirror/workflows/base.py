@@ -64,6 +64,7 @@ class ProviderWorkflow(ABC):
     """
 
     platform: str  # "altenar", "gecko", "kambi", "pinnacle", "polymarket"
+    autonomous_placement: bool = False  # True for API-based providers (Pinnacle) — place_bet() called on user confirm
 
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         self.provider_id = provider_id
@@ -110,10 +111,27 @@ class ProviderWorkflow(ABC):
     async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         """Place a bet: select outcome, enter stake, submit."""
 
-    async def check_live_price(self, page: Page, bet) -> float | None:
-        """Read live odds and return edge %. Override for providers with DOM/API price reads.
-        Returns None if not supported or price unavailable."""
-        return None
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Phase 1: auto-select outcome + fill stake. Called before bet_ready.
+
+        Returns PlacementResult with status="prepped" on success.
+        Default: falls back to place_bet (no two-phase support).
+        """
+        return PlacementResult(status="no_prep", bet_id=0, reason="not_implemented")
+
+    async def confirm_bet(self, page: Page) -> PlacementResult:
+        """Phase 2: click submit button after user confirms. Called on Place.
+
+        Default: no-op (for workflows where prep_betslip does everything).
+        """
+        return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
+
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds and return (live_odds, live_edge) or (None, None).
+
+        Override for providers with DOM/API price reads.
+        """
+        return None, None
 
     async def await_confirmation(self, page: Page, timeout_s: float = 15.0) -> PlacementResult | None:
         """Wait for placement confirmation. Default: no-op (API response IS confirmation).
@@ -128,6 +146,18 @@ class ProviderWorkflow(ABC):
     def parse_placement_response(body: dict) -> str | None:
         """Extract provider_bet_id from placement confirmation. Override per platform."""
         return None
+
+    @staticmethod
+    def parse_placement_status(body: dict) -> dict:
+        """Check if placement response indicates success, error, or stake limit.
+
+        Returns dict with:
+          - success: bool
+          - error: str | None
+          - max_stake: float | None
+        Override per platform for provider-specific error detection.
+        """
+        return {"success": True, "error": None, "max_stake": None}
 
     async def cleanup(self, page: Page) -> None:
         """Called after all bets for this provider are done. Override to close extra tabs etc."""
