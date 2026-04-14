@@ -68,6 +68,9 @@ scrape = [
     "patchright>=1.48.0",
     "playwright>=1.40.0",
 ]
+poly = [
+    "py-clob-client>=0.18.0",
+]
 ml = [
     "torch>=2.0.0",
 ]

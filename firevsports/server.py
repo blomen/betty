@@ -2,14 +2,22 @@
 
 import logging
 import os
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from mirror import stream_registry
-from mirror.browser import MirrorBrowser
-from mirror.router import create_mirror_router
-from mirror.sse import mirror_broadcaster
-from proxy import create_proxy_router
+from dotenv import load_dotenv
+
+# Load local env (Polymarket wallet credentials etc.) — .env.local is gitignored
+_env_local = Path(__file__).parent / ".env.local"
+if _env_local.exists():
+    load_dotenv(_env_local)
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from mirror import stream_registry  # noqa: E402
+from mirror.browser import MirrorBrowser  # noqa: E402
+from mirror.router import create_mirror_router  # noqa: E402
+from mirror.sse import mirror_broadcaster  # noqa: E402
+from proxy import create_proxy_router  # noqa: E402
 
 # Quiet noisy loggers — only warnings+
 for _name in ("httpx", "httpcore", "playwright", "urllib3", "asyncio"):

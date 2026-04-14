@@ -1,50 +1,489 @@
-"""PolymarketWorkflow — full DOM automation for Polymarket."""
+"""PolymarketWorkflow — API-first automation for Polymarket via py-clob-client SDK.
+
+Uses CLOB API for: balance, prices, order placement, positions.
+Uses DOM for: navigation (visual context), redeem/claim (on-chain tx).
+Falls back to DOM for all methods if POLY_PRIVATE_KEY not configured.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
-from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
+from .base import HistoryEntry, PlacementResult, PositionEntry, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
+# Lazy-loaded SDK types (only available if py-clob-client installed)
+_ClobClient = None
+_OrderArgs = None
+_ApiCreds = None
+_BalanceAllowanceParams = None
+_AssetType = None
+_BUY = None
+_OrderType = None
+
+
+def _load_sdk():
+    """Lazy-load py-clob-client SDK types. Returns True if available."""
+    global _ClobClient, _OrderArgs, _ApiCreds
+    global _BalanceAllowanceParams, _AssetType, _BUY, _OrderType
+    if _ClobClient is not None:
+        return True
+    try:
+        from py_clob_client.client import ClobClient as _CC
+        from py_clob_client.clob_types import (
+            ApiCreds as _AC,
+        )
+        from py_clob_client.clob_types import (
+            AssetType as _AT,
+        )
+        from py_clob_client.clob_types import (
+            BalanceAllowanceParams as _BAP,
+        )
+        from py_clob_client.clob_types import (
+            OrderArgs as _OA,
+        )
+        from py_clob_client.clob_types import (
+            OrderType as _OT,
+        )
+        from py_clob_client.order_builder.constants import BUY as _B
+
+        _ClobClient = _CC
+        _OrderArgs = _OA
+        _ApiCreds = _AC
+        _BalanceAllowanceParams = _BAP
+        _AssetType = _AT
+        _BUY = _B
+        _OrderType = _OT
+        return True
+    except ImportError:
+        logger.warning("[polymarket] py-clob-client not installed — API features disabled")
+        return False
+
 
 class PolymarketWorkflow(ProviderWorkflow):
     platform = "polymarket"
+    autonomous_placement = True  # place_bet() submits order via SDK on user confirm
 
-    def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.AUTONOMOUS):
+    def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         super().__init__(provider_id, domain, mode)
+        self._client = None  # ClobClient instance (None if no key)
+        self._pending_order = None  # Signed order awaiting submission
+        self._pending_price: float = 0.0
+        self._pending_size: float = 0.0
         self._tabs: dict[str, Page] = {}
+        self._init_client()
+
+    def _init_client(self):
+        """Initialize CLOB client from env vars. No-op if key missing."""
+        key = os.getenv("POLY_PRIVATE_KEY")
+        funder = os.getenv("POLY_FUNDER_ADDRESS")
+        if not key:
+            logger.info("[polymarket] No POLY_PRIVATE_KEY — DOM-only mode")
+            return
+        if not _load_sdk():
+            return
+        try:
+            sig_type = int(os.getenv("POLY_SIGNATURE_TYPE", "1"))
+            self._client = _ClobClient(
+                host="https://clob.polymarket.com",
+                key=key,
+                chain_id=137,
+                signature_type=sig_type,
+                funder=funder,
+            )
+            self._client.set_api_creds(self._client.create_or_derive_api_creds())
+            logger.info("[polymarket] CLOB client initialized (API mode)")
+        except Exception as e:
+            logger.error(f"[polymarket] CLOB client init failed: {e}")
+            self._client = None
+
+    @property
+    def has_api(self) -> bool:
+        """True if CLOB client is initialized and ready."""
+        return self._client is not None
 
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
     async def check_login(self, page: Page) -> bool:
+        """Check login: API balance check if available, else DOM scrape."""
+        if not self.has_api:
+            return await self._check_login_dom(page)
+        try:
+            result = self._client.get_balance_allowance(
+                params=_BalanceAllowanceParams(asset_type=_AssetType.COLLATERAL)
+            )
+            return result is not None and "balance" in result
+        except Exception as e:
+            logger.warning(f"[polymarket] API check_login failed, trying DOM: {e}")
+            return await self._check_login_dom(page)
+
+    async def sync_balance(self, page: Page) -> float:
+        """Read USDC balance: API if available, else DOM scrape."""
+        if not self.has_api:
+            return await self._sync_balance_dom(page)
+        try:
+            result = self._client.get_balance_allowance(
+                params=_BalanceAllowanceParams(asset_type=_AssetType.COLLATERAL)
+            )
+            balance = float(result.get("balance", 0))
+            # If balance looks like raw wei (> 1M), convert from 6 decimals
+            if balance > 1_000_000:
+                balance = balance / 1e6
+            logger.info(f"[polymarket] API balance: ${balance:.2f}")
+            return balance
+        except Exception as e:
+            logger.warning(f"[polymarket] API sync_balance failed, trying DOM: {e}")
+            return await self._sync_balance_dom(page)
+
+    # ------------------------------------------------------------------
+    # History sync
+    # ------------------------------------------------------------------
+
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
+        """Sync trade history: API if available, else DOM scrape + fuzzy match."""
+        if not self.has_api:
+            return await self._sync_history_dom(page)
+
+        import requests as req
+        from rapidfuzz import fuzz
+
+        from ...db.models import Bet, Event, get_session
+        from ...repositories.profile_repo import ProfileRepo
+        from ...services.bet_service import BetService
+
+        address = os.getenv("POLY_FUNDER_ADDRESS", "")
+        if not address:
+            return await self._sync_history_dom(page)
+
+        # Fetch trades from Data API
+        try:
+            resp = req.get(
+                "https://data-api.polymarket.com/trades",
+                params={"user": address.lower()},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            trades = resp.json()
+        except Exception as e:
+            logger.warning(f"[polymarket] API trades failed, falling back to DOM: {e}")
+            return await self._sync_history_dom(page)
+
+        if not trades:
+            logger.info("[polymarket] API: no trades found")
+            return []
+
+        logger.info(f"[polymarket] API: {len(trades)} trades fetched")
+
+        db = get_session()
+        history_results: list[HistoryEntry] = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            if not profile:
+                return []
+
+            pending = (
+                db.query(Bet, Event)
+                .join(Event, Bet.event_id == Event.id, isouter=True)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                )
+                .all()
+            )
+
+            bet_service = BetService(db)
+            settled_ids: set[int] = set()
+
+            for trade in trades:
+                trade_market = trade.get("market", "") or trade.get("title", "")
+                trade_status = trade.get("status", "")
+                trade_outcome = trade.get("outcome", "")
+
+                if not trade_market:
+                    continue
+
+                for bet, event in pending:
+                    if bet.id in settled_ids:
+                        continue
+                    event_name = ""
+                    if event:
+                        h = event.display_home or event.home_team or ""
+                        a = event.display_away or event.away_team or ""
+                        event_name = f"{h} vs {a}" if h and a else h or a
+
+                    score = fuzz.token_set_ratio(trade_market.lower(), event_name.lower())
+                    if score < 60:
+                        continue
+
+                    if trade_status in ("RESOLVED", "REDEEMED"):
+                        payout = float(trade.get("payout", 0))
+                        result_str = "won" if payout > 0 else "lost"
+
+                        try:
+                            bet_service.settle_bet(bet.id, result_str, round(payout, 2))
+                            settled_ids.add(bet.id)
+                            history_results.append(
+                                HistoryEntry(
+                                    provider_bet_id=str(bet.id),
+                                    event_name=trade_market[:80],
+                                    market=bet.market or "1x2",
+                                    outcome=bet.outcome or trade_outcome,
+                                    odds=bet.odds,
+                                    stake=bet.stake,
+                                    status=result_str,
+                                    payout=round(payout, 2),
+                                )
+                            )
+                            logger.info(f"[polymarket] API settled bet #{bet.id} → {result_str} (payout=${payout:.2f})")
+                        except Exception as e:
+                            logger.warning(f"[polymarket] settle failed for bet #{bet.id}: {e}")
+                        break
+
+            db.commit()
+            logger.info(f"[polymarket] API sync_history: {len(history_results)} settled")
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[polymarket] sync_history error: {e}", exc_info=True)
+        finally:
+            db.close()
+
+        return history_results
+
+    # ------------------------------------------------------------------
+    # Navigation
+    # ------------------------------------------------------------------
+
+    async def navigate_to_event(self, page: Page, bet) -> bool:
+        """Navigate to market page. API mode: visual only. DOM mode: full fill."""
+        if not self.has_api:
+            return await self._navigate_and_fill_dom(page, bet)
+
+        slug = getattr(bet, "event_slug", None) or getattr(bet, "market_slug", None)
+        if not slug:
+            logger.warning(f"[{self.provider_id}] No slug on bet")
+            return False
+
+        url = f"https://polymarket.com/event/{slug}"
+        logger.info(f"[polymarket] navigate_to_event: {url}")
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_selector("button", timeout=10000)
+            return True
+        except Exception as e:
+            logger.warning(f"[polymarket] navigate failed: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Bet preparation + placement
+    # ------------------------------------------------------------------
+
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Phase 1: Build and sign order. API mode: SDK. DOM mode: click buttons."""
+        if not self.has_api:
+            return PlacementResult(status="prepped", bet_id=0, actual_stake=stake)
+
+        token_id = getattr(bet, "token_id", None)
+        if not token_id:
+            logger.warning("[polymarket] No token_id — cannot prep via API")
+            return PlacementResult(status="failed", bet_id=0, reason="no token_id in provider_meta")
+
+        try:
+            book = self._client.get_order_book(token_id)
+            asks = book.asks if hasattr(book, "asks") else book.get("asks", [])
+            if not asks:
+                return PlacementResult(status="failed", bet_id=0, reason="empty orderbook (no asks)")
+
+            best_ask = float(asks[0].price if hasattr(asks[0], "price") else asks[0]["price"])
+            if best_ask <= 0 or best_ask >= 1:
+                return PlacementResult(status="failed", bet_id=0, reason=f"invalid ask price: {best_ask}")
+
+            size = round(stake / best_ask, 2)
+
+            order_args = _OrderArgs(
+                price=best_ask,
+                size=size,
+                side=_BUY,
+                token_id=token_id,
+            )
+            self._pending_order = self._client.create_order(order_args)
+            self._pending_price = best_ask
+            self._pending_size = size
+
+            live_odds = round(1.0 / best_ask, 3)
+            logger.info(f"[polymarket] Order signed: {size} shares @ {best_ask:.4f} (${stake:.2f}, odds={live_odds})")
+            return PlacementResult(
+                status="prepped",
+                bet_id=0,
+                actual_odds=live_odds,
+                actual_stake=stake,
+                reason=f"{size:.1f} shares @ {best_ask:.4f}",
+            )
+        except Exception as e:
+            logger.error(f"[polymarket] prep_betslip failed: {e}", exc_info=True)
+            return PlacementResult(status="failed", bet_id=0, reason=str(e))
+
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Submit the pre-signed order to CLOB. Called by play loop on user confirm."""
+        if not self.has_api or not self._pending_order:
+            logger.info(f"[polymarket] Manual placement: bet {getattr(bet, 'bet_id', '?')} stake=${stake}")
+            return PlacementResult(status="placed", bet_id=0, actual_stake=stake)
+
+        try:
+            resp = self._client.post_order(self._pending_order, _OrderType.GTC)
+
+            if isinstance(resp, dict):
+                order_id = resp.get("orderID") or resp.get("id", "")
+                success = resp.get("success", False)
+                error_msg = resp.get("errorMsg", "")
+            else:
+                order_id = getattr(resp, "orderID", "") or getattr(resp, "id", "")
+                success = getattr(resp, "success", False)
+                error_msg = getattr(resp, "errorMsg", "")
+
+            if success:
+                actual_stake = round(self._pending_size * self._pending_price, 2)
+                actual_odds = round(1.0 / self._pending_price, 3)
+                logger.info(f"[polymarket] Order placed: id={order_id} stake=${actual_stake} odds={actual_odds}")
+                return PlacementResult(
+                    status="placed",
+                    bet_id=order_id or 0,
+                    actual_odds=actual_odds,
+                    actual_stake=actual_stake,
+                )
+            else:
+                logger.warning(f"[polymarket] Order rejected: {error_msg}")
+                return PlacementResult(status="failed", bet_id=0, reason=error_msg or "order rejected")
+        except Exception as e:
+            logger.error(f"[polymarket] place_bet failed: {e}", exc_info=True)
+            return PlacementResult(status="failed", bet_id=0, reason=str(e))
+        finally:
+            self._pending_order = None
+            self._pending_price = 0.0
+            self._pending_size = 0.0
+
+    # ------------------------------------------------------------------
+    # Live price
+    # ------------------------------------------------------------------
+
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds from CLOB orderbook. Falls back to DOM if no API."""
+        if not self.has_api:
+            return await self._check_live_price_dom(page, bet)
+
+        token_id = getattr(bet, "token_id", None)
+        fair_odds = getattr(bet, "fair_odds", None)
+        if not token_id or not fair_odds:
+            return None, None
+
+        try:
+            book = self._client.get_order_book(token_id)
+            asks = book.asks if hasattr(book, "asks") else book.get("asks", [])
+            if not asks:
+                return None, None
+
+            best_ask = float(asks[0].price if hasattr(asks[0], "price") else asks[0]["price"])
+            if best_ask <= 0 or best_ask >= 1:
+                return None, None
+
+            live_odds = round(1.0 / best_ask, 3)
+
+            from ...analysis.value import compute_edge
+
+            edge = compute_edge("polymarket", live_odds, fair_odds)
+            return live_odds, edge
+        except Exception as e:
+            logger.warning(f"[polymarket] API check_live_price failed: {e}")
+            return None, None
+
+    # ------------------------------------------------------------------
+    # Positions (Data API)
+    # ------------------------------------------------------------------
+
+    async def fetch_positions(self, page: Page) -> list[PositionEntry]:
+        """Fetch open positions from Data API. Falls back to empty if no API."""
+        if not self.has_api:
+            return []
+
+        import requests as req
+
+        address = os.getenv("POLY_FUNDER_ADDRESS", "")
+        if not address:
+            return []
+
+        try:
+            resp = req.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": address.lower()},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            positions = []
+            for p in data:
+                size = float(p.get("size", 0))
+                if size <= 0:
+                    continue
+                avg_price = float(p.get("avgPrice", 0))
+                title = p.get("title", "") or p.get("market", "")
+                outcome = p.get("outcome", "")
+
+                positions.append(
+                    PositionEntry(
+                        provider_bet_id=p.get("asset", ""),
+                        event_name=title[:80],
+                        market="1x2",
+                        outcome=outcome,
+                        odds=round(1.0 / avg_price, 3) if avg_price > 0 else 2.0,
+                        stake=round(size * avg_price, 2),
+                        potential_payout=round(size, 2),
+                    )
+                )
+
+            logger.info(f"[polymarket] API: {len(positions)} open positions")
+            return positions
+        except Exception as e:
+            logger.warning(f"[polymarket] fetch_positions API failed: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # DOM fallback methods (existing implementations)
+    # ------------------------------------------------------------------
+
+    async def _check_login_dom(self, page: Page) -> bool:
         """Check if logged in by looking for 'Cash $XXX' in the nav."""
         try:
-            text = await page.evaluate("""() => {
+            text = await page.evaluate(
+                """() => {
                 const els = document.querySelectorAll('nav *');
                 for (const el of els) {
                     const t = (el.textContent || '').trim();
                     if (t.startsWith('Cash') && t.includes('$')) return t;
                 }
                 return null;
-            }""")
+            }"""
+            )
             return text is not None
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] check_login failed: {e}")
+            logger.warning(f"[{self.provider_id}] check_login DOM failed: {e}")
             return False
 
-    async def sync_balance(self, page: Page) -> float:
+    async def _sync_balance_dom(self, page: Page) -> float:
         """Scrape USDC cash balance from DOM nav text ('Cash$101.51')."""
         try:
-            amount = await page.evaluate("""() => {
+            amount = await page.evaluate(
+                """() => {
                 const els = document.querySelectorAll('nav *');
                 for (const el of els) {
                     const t = (el.textContent || '').trim();
@@ -54,22 +493,137 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
                 return null;
-            }""")
+            }"""
+            )
             return amount if amount is not None else -1
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] sync_balance failed: {e}")
+            logger.warning(f"[{self.provider_id}] sync_balance DOM failed: {e}")
             return -1
 
-    async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Sync full Polymarket bet history to DB.
+    async def _check_live_price_dom(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """DOM fallback: read prices from button text via mirror service."""
+        from ...analysis.value import compute_edge
 
-        Navigates to History tab → scrapes all entries → reconciles with DB:
-        1. "Bought" entries → create missing bets (ones not already in DB)
-        2. "Lost"/"Claimed" entries → settle matching pending bets
-        3. Returns HistoryEntry list for settled bets
+        fair_odds = getattr(bet, "fair_odds", None)
+        if not fair_odds:
+            return None, None
 
-        This is the generic settle-first workflow: sync ALL history before playing.
-        """
+        try:
+            from ...api.routes.mirror import _get_active_mirror
+
+            mirror = _get_active_mirror()
+            if mirror is None:
+                return None, None
+
+            original_outcome = getattr(bet, "original_outcome", getattr(bet, "outcome", ""))
+            market_type = getattr(bet, "market", "1x2")
+            btn_data = await mirror._read_btn_prices(page)
+            matched = mirror._find_btn_for_market(
+                btn_data,
+                original_outcome,
+                market_type,
+                home_name=getattr(bet, "display_home", ""),
+                away_name=getattr(bet, "display_away", ""),
+            )
+            if not matched or matched.get("price") is None:
+                return None, None
+
+            live_price = matched["price"]
+            if live_price <= 0 or live_price >= 1:
+                return None, None
+
+            live_odds = 1.0 / live_price
+            return round(live_odds, 3), compute_edge("polymarket", live_odds, fair_odds)
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] DOM check_live_price failed: {e}")
+            return None, None
+
+    async def _navigate_and_fill_dom(self, page: Page, bet) -> bool:
+        """DOM fallback: navigate + click outcome + fill stake via quick-add buttons."""
+        slug = getattr(bet, "market_slug", None) or getattr(bet, "event_slug", None)
+        if not slug:
+            logger.warning(f"[{self.provider_id}] No slug on bet {getattr(bet, 'bet_id', '?')}")
+            return False
+
+        outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
+        original_outcome = getattr(bet, "original_outcome", outcome)
+        stake = int(getattr(bet, "stake", 0))
+        home_name = getattr(bet, "display_home", "") or ""
+        away_name = getattr(bet, "display_away", "") or ""
+
+        url = f"https://polymarket.com/event/{slug}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] navigate failed: {e}")
+            return False
+
+        try:
+            await page.wait_for_selector("button", timeout=10000)
+        except Exception:
+            await asyncio.sleep(5)
+
+        # Click outcome button
+        outcome_lower = (original_outcome or outcome).lower()
+        if outcome_lower in ("home", "over"):
+            target = home_name.lower()[:3] if home_name else ""
+        elif outcome_lower in ("away", "under"):
+            target = away_name.lower()[:3] if away_name else ""
+        elif outcome_lower == "draw":
+            target = "draw"
+        else:
+            target = outcome.lower()[:3]
+
+        try:
+            clicked = await page.evaluate(
+                """(target) => {
+                const btns = [...document.querySelectorAll('button')];
+                for (const btn of btns) {
+                    const text = (btn.textContent || '').toLowerCase();
+                    if (target && text.includes(target) && text.includes('¢')) {
+                        btn.scrollIntoView({block: 'center'});
+                        btn.click();
+                        return btn.textContent.trim().slice(0, 40);
+                    }
+                }
+                return null;
+            }""",
+                target,
+            )
+            if clicked:
+                logger.info(f"[polymarket] DOM: Clicked outcome '{clicked}'")
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning(f"[polymarket] DOM: Could not click outcome: {e}")
+
+        # Fill stake via quick-add buttons
+        if stake > 0:
+            remaining = stake
+            for btn_val in [100, 10, 5, 1]:
+                while remaining >= btn_val:
+                    ok = await page.evaluate(
+                        f"""() => {{
+                        const btns = document.querySelectorAll('button');
+                        for (const btn of btns) {{
+                            if (btn.textContent.trim() === '+${btn_val}') {{
+                                btn.click(); return true;
+                            }}
+                        }}
+                        return false;
+                    }}"""
+                    )
+                    if ok:
+                        remaining -= btn_val
+                        await asyncio.sleep(0.15)
+                    else:
+                        break
+            if remaining > 0:
+                logger.warning(f"[polymarket] DOM: Partial fill ${stake - remaining}/${stake}")
+
+        return True
+
+    async def _sync_history_dom(self, page: Page) -> list[HistoryEntry]:
+        """DOM fallback: scrape History tab and reconcile with DB via fuzzy match."""
         from rapidfuzz import fuzz
 
         from ...db.models import Bet, Event, get_session
@@ -85,23 +639,23 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
             await asyncio.sleep(4)
         elif "tab=history" not in (page.url or ""):
-            # On portfolio but wrong tab — click History
-            await page.evaluate("""() => {
+            await page.evaluate(
+                """() => {
                 const tabs = document.querySelectorAll('a, button, div[role="tab"]');
                 for (const t of tabs) {
                     if ((t.textContent || '').trim() === 'History') { t.click(); return true; }
                 }
                 return false;
-            }""")
+            }"""
+            )
             await asyncio.sleep(3)
 
-        # Scrape history entries
         entries = await self.scrape_history(page)
         if not entries:
             logger.info("[polymarket] No history entries found")
             return []
 
-        logger.info(f"[polymarket] sync_history: {len(entries)} entries scraped")
+        logger.info(f"[polymarket] sync_history DOM: {len(entries)} entries scraped")
 
         db = get_session()
         history_results: list[HistoryEntry] = []
@@ -111,7 +665,6 @@ class PolymarketWorkflow(ProviderWorkflow):
                 logger.warning("[polymarket] sync_history: no active profile")
                 return []
 
-            # Get ALL polymarket bets (pending + settled) for dedup
             all_bets = (
                 db.query(Bet, Event)
                 .join(Event, Bet.event_id == Event.id, isouter=True)
@@ -139,10 +692,8 @@ class PolymarketWorkflow(ProviderWorkflow):
                     continue
 
                 if activity == "Bought":
-                    # Check if this buy is already in DB (by fuzzy matching market name + shares/stake)
-                    # Stake ≈ shares * avg_price_cents / 100
                     already_exists = False
-                    for bet, event in all_bets:
+                    for _bet, event in all_bets:
                         event_name = ""
                         if event:
                             h = event.display_home or event.home_team or ""
@@ -153,17 +704,14 @@ class PolymarketWorkflow(ProviderWorkflow):
                             already_exists = True
                             break
                     if not already_exists and value > 0:
-                        # Record as unknown bet — we only know market name, stake, shares
-                        # Can't match to an event_id since we only have the display name
                         logger.info(
                             f"[polymarket] sync_history: new bet from history — "
                             f"{market[:60]} stake=${value} shares={shares}"
                         )
-                        # Create a minimal bet record
                         result = bet_service.create_bet(
                             event_id=None,
                             provider_id="polymarket",
-                            market="1x2",  # Default — history doesn't tell us
+                            market="1x2",
                             outcome=entry.get("outcomeTag", "unknown"),
                             odds=round(1.0 / (value / shares), 4) if shares > 0 and value > 0 else 2.0,
                             stake=round(value, 2),
@@ -173,7 +721,6 @@ class PolymarketWorkflow(ProviderWorkflow):
                             new_bets += 1
 
                 elif activity in ("Lost", "Claimed"):
-                    # Find matching pending bet and settle it
                     result_str = "lost" if activity == "Lost" else "won"
                     payout = abs(value) if activity == "Claimed" else 0.0
 
@@ -220,7 +767,7 @@ class PolymarketWorkflow(ProviderWorkflow):
 
             db.commit()
             logger.info(
-                f"[polymarket] sync_history complete: {new_bets} new bets recorded, {settled_bets} bets settled"
+                f"[polymarket] sync_history DOM complete: {new_bets} new bets recorded, {settled_bets} bets settled"
             )
 
         except Exception as e:
@@ -232,177 +779,14 @@ class PolymarketWorkflow(ProviderWorkflow):
         return history_results
 
     # ------------------------------------------------------------------
-    # Navigation
-    # ------------------------------------------------------------------
-
-    async def navigate_to_event(self, page: Page, bet) -> bool:
-        """Navigate to event AND prepare betslip (click outcome, fill amount).
-
-        After this returns, the Polymarket tab shows the event with the
-        correct outcome selected and amount filled. User can visually verify
-        before clicking Confirm, which calls place_bet → just clicks Buy.
-
-        Works standalone — no mirror service dependency.
-        """
-        slug = getattr(bet, "market_slug", None)
-        if not slug:
-            logger.warning(f"[{self.provider_id}] No market_slug on bet {bet.bet_id}")
-            return False
-
-        outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
-        original_outcome = getattr(bet, "original_outcome", outcome)
-        stake = int(getattr(bet, "stake", 0))
-        home_name = getattr(bet, "display_home", "") or ""
-        away_name = getattr(bet, "display_away", "") or ""
-
-        # 1. Navigate to market page
-        url = f"https://polymarket.com/event/{slug}"
-        logger.info(f"[polymarket] navigate_to_event: {url} outcome={outcome} stake=${stake}")
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] navigate failed: {e}")
-            return False
-
-        # Wait for trading buttons
-        try:
-            await page.wait_for_selector("button", timeout=10000)
-        except Exception:
-            await asyncio.sleep(5)
-
-        # 2. Click the correct outcome button
-        outcome_lower = (original_outcome or outcome).lower()
-        if outcome_lower in ("home", "over"):
-            target = home_name.lower()[:3] if home_name else ""
-        elif outcome_lower in ("away", "under"):
-            target = away_name.lower()[:3] if away_name else ""
-        elif outcome_lower == "draw":
-            target = "draw"
-        else:
-            target = outcome.lower()[:3]
-
-        try:
-            clicked = await page.evaluate(
-                """(target) => {
-                const btns = [...document.querySelectorAll('button')];
-                for (const btn of btns) {
-                    const text = (btn.textContent || '').toLowerCase();
-                    if (target && text.includes(target) && text.includes('¢')) {
-                        btn.scrollIntoView({block: 'center'});
-                        btn.click();
-                        return btn.textContent.trim().slice(0, 40);
-                    }
-                }
-                return null;
-            }""",
-                target,
-            )
-            if clicked:
-                logger.info(f"[polymarket] Clicked outcome: '{clicked}' (target='{target}')")
-                await asyncio.sleep(1)
-            else:
-                logger.warning(f"[polymarket] No outcome button matching '{target}'")
-        except Exception as e:
-            logger.warning(f"[polymarket] Could not click outcome: {e}")
-
-        # 3. Fill amount via quick-add buttons (+$1, +$5, +$10, +$100)
-        if stake > 0:
-            remaining = stake
-            for btn_val in [100, 10, 5, 1]:
-                while remaining >= btn_val:
-                    ok = await page.evaluate(f"""() => {{
-                        const btns = document.querySelectorAll('button');
-                        for (const btn of btns) {{
-                            if (btn.textContent.trim() === '+${btn_val}') {{
-                                btn.click(); return true;
-                            }}
-                        }}
-                        return false;
-                    }}""")
-                    if ok:
-                        remaining -= btn_val
-                        await asyncio.sleep(0.15)
-                    else:
-                        break
-            if remaining > 0:
-                logger.warning(f"[polymarket] Partial fill: ${stake - remaining}/${stake}")
-            else:
-                logger.info(f"[polymarket] Filled ${stake} via quick-add buttons")
-
-        return True
-
-    # ------------------------------------------------------------------
-    # Bet placement
-    # ------------------------------------------------------------------
-
-    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Record bet as placed. User clicks Buy manually on Polymarket.
-
-        navigate_to_event already prepared the betslip (outcome + amount).
-        This just records the placement — never auto-clicks Buy.
-        """
-        logger.info(f"[polymarket] Recording manual placement: bet {bet.bet_id} stake=${stake}")
-        return PlacementResult(status="placed", bet_id=bet.bet_id, actual_stake=stake)
-
-    # ------------------------------------------------------------------
-    # Live price
-    # ------------------------------------------------------------------
-
-    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
-        """Read live odds from DOM and compute edge vs fair odds.
-
-        Returns (live_odds, live_edge) or (None, None).
-        """
-        from ...analysis.value import compute_edge
-        from ...api.routes.mirror import _get_active_mirror
-
-        mirror = _get_active_mirror()
-        if mirror is None:
-            return None, None
-
-        original_outcome = getattr(bet, "original_outcome", getattr(bet, "outcome", ""))
-        market_type = getattr(bet, "market", "1x2")
-        fair_odds = getattr(bet, "fair_odds", None)
-        if not fair_odds:
-            return None, None
-
-        try:
-            btn_data = await mirror._read_btn_prices(page)
-            home_name = getattr(bet, "display_home", "")
-            away_name = getattr(bet, "display_away", "")
-            matched = mirror._find_btn_for_market(
-                btn_data,
-                original_outcome,
-                market_type,
-                home_name=home_name,
-                away_name=away_name,
-            )
-            if not matched or matched.get("price") is None:
-                return None, None
-
-            live_price = matched["price"]
-            if live_price <= 0 or live_price >= 1:
-                return None, None
-
-            live_odds = 1.0 / live_price
-            return round(live_odds, 3), compute_edge("polymarket", live_odds, fair_odds)
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] check_live_price failed: {e}")
-            return None, None
-
-    # ------------------------------------------------------------------
     # Modal dismissal
     # ------------------------------------------------------------------
 
     async def _dismiss_modal(self, page: Page, max_attempts: int = 3) -> bool:
-        """Dismiss Share/overlay modals that appear after Claim/Redeem.
-
-        Polymarket shows a "Share your winnings" modal with an X close button.
-        Tries multiple strategies: X button, click outside, Escape key.
-        """
-        for attempt in range(max_attempts):
-            dismissed = await page.evaluate("""() => {
-                // Strategy 1: X/close button (SVG inside button, aria-label, class)
+        """Dismiss Share/overlay modals that appear after Claim/Redeem."""
+        for _attempt in range(max_attempts):
+            dismissed = await page.evaluate(
+                """() => {
                 const closeSelectors = [
                     'button[aria-label="Close"]',
                     'button[aria-label="close"]',
@@ -416,16 +800,13 @@ class PolymarketWorkflow(ProviderWorkflow):
                         return 'close_button';
                     }
                 }
-                // Strategy 2: Find any small clickable element near top-right of a modal
                 const modals = document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [class*="dialog" i], [role="dialog"]');
                 for (const modal of modals) {
                     if (!modal.offsetParent) continue;
-                    // Look for X/close inside the modal
                     const btns = modal.querySelectorAll('button, [role="button"], svg');
                     for (const btn of btns) {
                         const rect = btn.getBoundingClientRect();
                         const modalRect = modal.getBoundingClientRect();
-                        // Top-right corner = close button
                         if (rect.right > modalRect.right - 80 && rect.top < modalRect.top + 80 && rect.width < 60) {
                             btn.click();
                             return 'modal_x';
@@ -433,25 +814,26 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
                 return null;
-            }""")
+            }"""
+            )
 
             if dismissed:
                 logger.info(f"[polymarket] Dismissed modal via {dismissed}")
                 await asyncio.sleep(1)
                 return True
 
-            # Strategy 3: Escape key
             try:
                 await page.keyboard.press("Escape")
                 await asyncio.sleep(0.5)
-                # Check if modal is gone
-                still_open = await page.evaluate("""() => {
+                still_open = await page.evaluate(
+                    """() => {
                     const modals = document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [role="dialog"]');
                     for (const m of modals) {
                         if (m.offsetParent !== null && m.offsetWidth > 200) return true;
                     }
                     return false;
-                }""")
+                }"""
+                )
                 if not still_open:
                     logger.info("[polymarket] Dismissed modal via Escape")
                     return True
@@ -464,56 +846,41 @@ class PolymarketWorkflow(ProviderWorkflow):
         return False
 
     # ------------------------------------------------------------------
-    # Portfolio scraping + settlement
+    # Portfolio scraping + settlement (DOM-based — on-chain tx)
     # ------------------------------------------------------------------
 
     async def scrape_history(self, page: Page) -> list[dict]:
-        """Scrape the History tab at /portfolio?tab=history.
-
-        Returns list of {activity, market, outcome_tag, shares, value, time_ago}.
-        Activity is 'Bought', 'Lost', 'Claimed', 'Deposited', etc.
-        """
+        """Scrape the History tab at /portfolio?tab=history."""
         current_url = page.url or ""
         if "tab=history" not in current_url:
             logger.info(f"[polymarket] Not on history tab ({current_url[:60]}), skipping scrape")
             return []
 
-        rows = await page.evaluate("""() => {
+        rows = await page.evaluate(
+            """() => {
             const results = [];
-            // Each history row is a container with Activity, Market info, Value, Time
-            // Walk all rows by looking for activity labels
             const activityLabels = ['Bought', 'Lost', 'Claimed', 'Sold', 'Deposited', 'Withdrawn'];
             const allElements = document.querySelectorAll('div, span, p');
 
-            // Strategy: find elements that contain exactly an activity label,
-            // then walk up to the row container and extract siblings
             const seen = new Set();
             for (const el of allElements) {
                 const text = (el.textContent || '').trim();
                 if (!activityLabels.includes(text)) continue;
-                // Must be a leaf-ish element (not a huge container)
                 if (el.children.length > 2) continue;
 
-                // Walk up to find the row container
                 let row = el.parentElement;
                 for (let i = 0; i < 6 && row; i++) {
-                    // Row usually has multiple columns and is wide
                     if (row.offsetWidth > 500 && row.children.length >= 3) break;
                     row = row.parentElement;
                 }
                 if (!row) continue;
 
-                // Dedup by row element
                 const rowId = row.textContent.slice(0, 100);
                 if (seen.has(rowId)) continue;
                 seen.add(rowId);
 
-                const rowText = row.textContent || '';
-
-                // Extract activity
                 const activity = text;
 
-                // Extract market name — usually the longest text chunk
                 let market = '';
                 const links = row.querySelectorAll('a, [href]');
                 for (const a of links) {
@@ -523,7 +890,6 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
                 if (!market) {
-                    // Fallback: grab text that's not the activity or value
                     for (const child of row.querySelectorAll('span, p, div')) {
                         const t = (child.textContent || '').trim();
                         if (t.length > 20 && !t.includes('$') && !activityLabels.includes(t) && t.length > market.length) {
@@ -532,24 +898,20 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
 
-                // Extract outcome tag (colored badge like "Team Solid 26¢")
                 let outcomeTag = '';
                 let shares = 0;
                 for (const child of row.querySelectorAll('span, div, p')) {
                     const t = (child.textContent || '').trim();
-                    // Outcome tag pattern: "Name XX¢"
                     const tagMatch = t.match(/^(.+?)\\s+(\\d+)¢$/);
                     if (tagMatch && t.length < 50) {
                         outcomeTag = tagMatch[1];
                     }
-                    // Shares pattern: "XX.X shares"
                     const sharesMatch = t.match(/([\\d.]+)\\s*shares/);
                     if (sharesMatch) {
                         shares = parseFloat(sharesMatch[1]);
                     }
                 }
 
-                // Extract value ($XX.XX) — look for elements with $ sign
                 let value = 0;
                 for (const child of row.querySelectorAll('span, p, div')) {
                     const t = (child.textContent || '').trim();
@@ -561,7 +923,6 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
 
-                // Time
                 let timeAgo = '';
                 for (const child of row.querySelectorAll('span, p, div')) {
                     const t = (child.textContent || '').trim();
@@ -574,45 +935,39 @@ class PolymarketWorkflow(ProviderWorkflow):
                 results.push({ activity, market: market.slice(0, 120), outcomeTag, shares, value, timeAgo });
             }
             return results;
-        }""")
+        }"""
+        )
 
         logger.info(f"[polymarket] Scraped {len(rows)} history entries")
         return rows
 
     async def scrape_portfolio(self, page: Page) -> list[dict]:
-        """Scrape the portfolio/positions page and return each position.
-
-        Navigates to polymarket.com/portfolio and scrapes all position rows.
-        Returns list of {market, outcome_tag, avg_price, now_price, values, status, has_redeem, has_sell}.
-        """
-        # Navigate to portfolio positions tab
+        """Scrape the portfolio/positions page and return each position."""
         current_url = page.url or ""
         if "/portfolio" not in current_url or "tab=history" in current_url:
             await page.goto(
-                "https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000
+                "https://polymarket.com/portfolio?tab=positions",
+                wait_until="domcontentloaded",
+                timeout=15000,
             )
-            await asyncio.sleep(4)  # Wait for client-side render
+            await asyncio.sleep(4)
 
-        # First, let's just dump what we can see to understand the DOM structure
-        debug_info = await page.evaluate("""() => {
+        debug_info = await page.evaluate(
+            """() => {
             const info = {
                 url: window.location.href,
                 title: document.title,
                 buttons: [],
-                text_samples: [],
             };
 
-            // Find all buttons
             const btns = document.querySelectorAll('button');
             for (const btn of btns) {
                 const t = (btn.textContent || '').trim();
                 if (t === 'Redeem' || t === 'Sell') {
-                    // Walk up to find the row container
                     let parent = btn.parentElement;
                     let rowText = '';
                     for (let i = 0; i < 8 && parent; i++) {
                         rowText = (parent.textContent || '').trim();
-                        // Stop when we have enough context (market name + prices)
                         if (rowText.length > 50 && rowText.includes('$')) break;
                         parent = parent.parentElement;
                     }
@@ -624,7 +979,8 @@ class PolymarketWorkflow(ProviderWorkflow):
             }
 
             return info;
-        }""")
+        }"""
+        )
 
         logger.info(
             f"[polymarket] Portfolio page: {debug_info.get('url')}, buttons found: {len(debug_info.get('buttons', []))}"
@@ -632,34 +988,28 @@ class PolymarketWorkflow(ProviderWorkflow):
         for i, btn in enumerate(debug_info.get("buttons", [])):
             logger.info(f"[polymarket] Button {i}: type={btn.get('type')} text={btn.get('row_text', '')[:120]}")
 
-        # Now build positions from the button contexts
+        import re
+
         positions = []
         for btn_info in debug_info.get("buttons", []):
             text = btn_info.get("row_text", "")
             btn_type = btn_info.get("type", "")
 
-            # Determine status from text
             status = "open"
             if "WON" in text:
                 status = "won"
             elif "LOST" in text:
                 status = "lost"
 
-            import re
-
-            # Extract cent prices — handle both ¢ and encoded variants (Â¢)
             cent_prices = [float(m) for m in re.findall(r"([\d.]+)\s*(?:¢|\xc2\xa2|\u00a2)", text)]
             avg_price = cent_prices[0] if len(cent_prices) >= 1 else None
             now_price = cent_prices[1] if len(cent_prices) >= 2 else None
 
-            # Extract dollar values
             dollar_values = [float(m.replace(",", "")) for m in re.findall(r"\$([\d,.]+)", text)]
 
-            # Extract shares
             shares_match = re.search(r"([\d.]+)\s*shares", text)
             shares = float(shares_match.group(1)) if shares_match else None
 
-            # Market name: text before the first price/number section
             market = text[:60].split("\n")[0] if text else ""
             market = re.sub(r"[\d¢$→\xc2\xa2].+", "", market).strip()
 
@@ -684,13 +1034,12 @@ class PolymarketWorkflow(ProviderWorkflow):
         """Click Redeem buttons ONLY for finished positions (WON or LOST).
 
         NEVER clicks Sell on open positions — that would exit at market price.
-        Only redeems positions where the row text contains 'Won' or 'Lost'.
-
-        Returns {redeemed: count, skipped_open: count, errors: count}.
         """
         if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
             await page.goto(
-                "https://polymarket.com/portfolio?tab=positions", wait_until="domcontentloaded", timeout=15000
+                "https://polymarket.com/portfolio?tab=positions",
+                wait_until="domcontentloaded",
+                timeout=15000,
             )
             await asyncio.sleep(3)
 
@@ -698,13 +1047,12 @@ class PolymarketWorkflow(ProviderWorkflow):
         skipped_open = 0
         errors = 0
 
-        # Count ONLY Redeem buttons that are in finished (Won/Lost) rows
-        count = await page.evaluate("""() => {
+        count = await page.evaluate(
+            """() => {
             const btns = document.querySelectorAll('button');
             let n = 0;
             for (const btn of btns) {
                 if (btn.textContent.trim() !== 'Redeem') continue;
-                // Walk up to find the row and check for Won/Lost text
                 let parent = btn.parentElement;
                 for (let i = 0; i < 8 && parent; i++) {
                     const text = parent.textContent || '';
@@ -717,18 +1065,18 @@ class PolymarketWorkflow(ProviderWorkflow):
                 }
             }
             return n;
-        }""")
+        }"""
+        )
 
         logger.info(f"[polymarket] Found {count} redeemable finished positions")
 
         for i in range(count):
             try:
-                # Click the first Redeem button that's in a finished (Won/Lost) row
-                clicked = await page.evaluate("""() => {
+                clicked = await page.evaluate(
+                    """() => {
                     const btns = document.querySelectorAll('button');
                     for (const btn of btns) {
                         if (btn.textContent.trim() !== 'Redeem') continue;
-                        // Verify this is a finished position
                         let parent = btn.parentElement;
                         let isFinished = false;
                         for (let i = 0; i < 8 && parent; i++) {
@@ -746,28 +1094,28 @@ class PolymarketWorkflow(ProviderWorkflow):
                         }
                     }
                     return false;
-                }""")
+                }"""
+                )
                 if not clicked:
                     break
 
-                # Wait for the confirmation modal to appear
                 await asyncio.sleep(2)
 
-                # Click the confirmation button in the modal ("Redeem $X.XX")
-                confirmed = await page.evaluate("""() => {
+                confirmed = await page.evaluate(
+                    """() => {
                     const btns = document.querySelectorAll('button');
                     for (const btn of btns) {
                         const t = (btn.textContent || '').trim();
-                        if (t.startsWith('Redeem $') || t.startsWith('Redeem $')) {
+                        if (t.startsWith('Redeem $')) {
                             btn.click();
                             return t;
                         }
                     }
                     return null;
-                }""")
+                }"""
+                )
                 if confirmed:
-                    await asyncio.sleep(3)  # Wait for blockchain transaction
-                    # Dismiss "Share your winnings" modal that appears after redeem
+                    await asyncio.sleep(3)
                     await self._dismiss_modal(page)
                     redeemed += 1
                     logger.info(f"[polymarket] Redeemed {i + 1}/{count}: {confirmed}")
@@ -786,23 +1134,15 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def claim_banner(self, page: Page) -> dict:
-        """Click the top-level Claim banner if present (green 'Claim' button).
-
-        This is the banner that appears when you have uncollected winnings,
-        separate from per-row Redeem buttons.
-
-        Returns {claimed: bool, amount: str | None}.
-        """
+        """Click the top-level Claim banner if present."""
         try:
-            result = await page.evaluate("""() => {
+            result = await page.evaluate(
+                """() => {
                 const btns = document.querySelectorAll('button');
                 for (const btn of btns) {
                     const t = (btn.textContent || '').trim();
-                    // Match "Claim" button (not "Claimed" or other variants)
                     if (t === 'Claim' || t.startsWith('Claim')) {
-                        // Verify it's in a banner/header area (not deep in a table row)
                         const rect = btn.getBoundingClientRect();
-                        // Banner buttons are typically near the top of the page
                         if (rect.top < 400) {
                             btn.click();
                             return {found: true, text: t};
@@ -810,37 +1150,36 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 }
                 return {found: false};
-            }""")
+            }"""
+            )
 
             if not result.get("found"):
                 logger.info("[polymarket] No Claim banner found")
                 return {"claimed": False, "amount": None}
 
             logger.info(f"[polymarket] Clicked Claim banner: {result.get('text')}")
-            await asyncio.sleep(3)  # Wait for blockchain transaction
+            await asyncio.sleep(3)
 
-            # Check for a confirmation modal button (e.g. "Claim $47.33")
-            confirmed = await page.evaluate("""() => {
+            confirmed = await page.evaluate(
+                """() => {
                 const btns = document.querySelectorAll('button');
                 for (const btn of btns) {
                     const t = (btn.textContent || '').trim();
-                    if (t.startsWith('Claim $') || t.startsWith('Claim $')) {
+                    if (t.startsWith('Claim $')) {
                         btn.click();
                         return t;
                     }
                 }
                 return null;
-            }""")
+            }"""
+            )
 
             if confirmed:
-                await asyncio.sleep(3)  # Wait for blockchain tx
+                await asyncio.sleep(3)
                 logger.info(f"[polymarket] Claim confirmed: {confirmed}")
-                # Dismiss "Share your winnings" modal
                 await self._dismiss_modal(page)
                 return {"claimed": True, "amount": confirmed}
 
-            # Banner click may have been sufficient (no modal)
-            # Still try to dismiss any modal that appeared
             await self._dismiss_modal(page)
             return {"claimed": True, "amount": result.get("text")}
 
@@ -853,20 +1192,10 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def scan_portfolio_settlements(self, page: Page) -> dict:
-        """Scrape positions and match against pending bets — NO clicking.
-
-        Returns a preview of what settle_all would do:
-        - positions scraped
-        - matched settlements (bet_id, event, result, payout, pl)
-        - claim banner detected
-        - redeemable count
-
-        The user reviews this before confirming execution.
-        """
+        """Scrape positions and match against pending bets — NO clicking."""
         from ...db.models import Bet, Event, get_session
         from ...repositories.profile_repo import ProfileRepo
 
-        # Navigate to portfolio positions
         if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
             await page.goto(
                 "https://polymarket.com/portfolio?tab=positions",
@@ -875,8 +1204,8 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
             await asyncio.sleep(4)
 
-        # Check for Claim banner (don't click)
-        has_claim = await page.evaluate("""() => {
+        has_claim = await page.evaluate(
+            """() => {
             const btns = document.querySelectorAll('button');
             for (const btn of btns) {
                 const t = (btn.textContent || '').trim();
@@ -885,10 +1214,11 @@ class PolymarketWorkflow(ProviderWorkflow):
                 }
             }
             return null;
-        }""")
+        }"""
+        )
 
-        # Count redeemable positions (don't click)
-        redeem_count = await page.evaluate("""() => {
+        redeem_count = await page.evaluate(
+            """() => {
             const btns = document.querySelectorAll('button');
             let n = 0;
             for (const btn of btns) {
@@ -905,12 +1235,11 @@ class PolymarketWorkflow(ProviderWorkflow):
                 }
             }
             return n;
-        }""")
+        }"""
+        )
 
-        # Scrape positions
         positions = await self.scrape_portfolio(page)
 
-        # Match against pending bets
         db = get_session()
         try:
             profile = ProfileRepo(db).get_active()
@@ -993,24 +1322,11 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def settle_all(self, page: Page) -> dict:
-        """Full settlement: navigate → claim → redeem → settle DB → void ghosts.
-
-        1. Navigate to portfolio positions page
-        2. Click Claim banner if present (dismiss share modal)
-        3. Scrape all positions
-        4. Match against pending bets in DB
-        5. Detect ghost bets (pending in DB, no position on Polymarket) → void
-        6. Click Redeem buttons for WON/LOST positions (dismiss share modals)
-        7. Settle matched bets + void ghosts in DB
-        8. Re-scrape balance
-
-        Returns full summary with P&L breakdown.
-        """
+        """Full settlement: navigate → claim → redeem → settle DB → void ghosts."""
         from ...db.models import Bet, Event, get_session
         from ...repositories.profile_repo import ProfileRepo
         from ...services.bet_service import BetService
 
-        # 1. Navigate to portfolio positions
         if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
             await page.goto(
                 "https://polymarket.com/portfolio?tab=positions",
@@ -1019,16 +1335,13 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
             await asyncio.sleep(4)
 
-        # 2. Click Claim banner (handles modal dismissal)
         claim_result = await self.claim_banner(page)
 
-        # 3. Wait for page to settle after claim, then scrape
         if claim_result.get("claimed"):
             await asyncio.sleep(2)
 
         positions = await self.scrape_portfolio(page)
 
-        # 4. Match against pending bets in DB
         db = get_session()
         settled = []
         try:
@@ -1048,7 +1361,6 @@ class PolymarketWorkflow(ProviderWorkflow):
             )
 
             if not pending:
-                # Import open positions as pending bets
                 imported = self._import_open_positions(db, profile, positions)
                 return {
                     "claim": claim_result,
@@ -1094,9 +1406,8 @@ class PolymarketWorkflow(ProviderWorkflow):
                     }
                 )
 
-            # 5. Detect ghost bets — pending in DB but no position on Polymarket
+            # Detect ghost bets
             matched_ids = {m["bet_id"] for m in matches}
-            # Bets with a position still open (not won/lost) are live, not ghosts
             open_ids = set()
             for bet, event in pending:
                 if bet.id in matched_ids:
@@ -1109,7 +1420,6 @@ class PolymarketWorkflow(ProviderWorkflow):
             for bet, event in pending:
                 if bet.id in matched_ids or bet.id in open_ids:
                     continue
-                # No position at all → ghost bet (never placed or already redeemed)
                 event_name = ""
                 if event:
                     h = event.display_home or event.home_team or ""
@@ -1132,10 +1442,8 @@ class PolymarketWorkflow(ProviderWorkflow):
                     f"[polymarket] Ghost bet #{bet.id} {event_name} — no position found, voiding (stake=${bet.stake})"
                 )
 
-            # 6. Click Redeem buttons (handles modal dismissal per redeem)
             redeem_result = await self.redeem_all(page)
 
-            # 7. Settle in DB (matched + ghosts)
             bet_service = BetService(db)
             for m in matches:
                 try:
@@ -1161,7 +1469,6 @@ class PolymarketWorkflow(ProviderWorkflow):
         finally:
             db.close()
 
-        # 8. Re-scrape balance
         new_balance = await self.sync_balance(page)
 
         total_staked = sum(s["stake"] for s in settled if s["result"] != "void")
@@ -1192,16 +1499,12 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     def _import_open_positions(self, db, profile, positions: list[dict]) -> list[dict]:
-        """Import open Polymarket positions that aren't in our DB as pending bets.
-
-        Deduplicates by market name, only imports positions with has_sell=True (open).
-        """
+        """Import open Polymarket positions that aren't in our DB as pending bets."""
         import re
 
         from ...db.models import Bet
         from ...services.bet_service import BetService
 
-        # Get existing pending polymarket bets to avoid duplicates
         existing = (
             db.query(Bet)
             .filter(
@@ -1213,7 +1516,6 @@ class PolymarketWorkflow(ProviderWorkflow):
         )
         existing_markets = {(b.confirmation_id or "").lower() for b in existing}
 
-        # Deduplicate positions (scraper returns collapsed + expanded)
         seen_markets: set[str] = set()
         unique_positions = []
         for pos in positions:
@@ -1232,7 +1534,7 @@ class PolymarketWorkflow(ProviderWorkflow):
                 f"avg={pos.get('avg_price')} shares={pos.get('shares')}"
             )
             if not pos.get("has_sell"):
-                continue  # Only open positions
+                continue
             if pos.get("status") in ("won", "lost"):
                 continue
 
@@ -1241,18 +1543,15 @@ class PolymarketWorkflow(ProviderWorkflow):
             shares = pos.get("shares")
             values = pos.get("values", [])
 
-            # Extract slug from market name
             slug = re.sub(r"[^a-z0-9]+", "-", market.lower()).strip("-")
 
-            # Skip if already tracked
             if slug.lower() in existing_markets:
                 continue
 
-            # Calculate stake: prefer avg_price * shares, fallback to first dollar value
             if shares and avg_price:
                 stake = round(shares * avg_price / 100, 2)
             elif values:
-                stake = round(values[0], 2)  # First $ value is typically cost basis
+                stake = round(values[0], 2)
             else:
                 stake = 0
             odds = round(100 / avg_price, 4) if avg_price and avg_price > 0 else 2.0
@@ -1270,7 +1569,6 @@ class PolymarketWorkflow(ProviderWorkflow):
                 bet_type="value",
             )
             if "error" not in resp:
-                # Save slug as confirmation_id
                 bet_id = resp.get("id")
                 if bet_id:
                     db_bet = db.query(Bet).filter(Bet.id == bet_id).first()
@@ -1302,7 +1600,7 @@ class PolymarketWorkflow(ProviderWorkflow):
 
     async def cleanup(self, page: Page) -> None:
         """Close persistent Polymarket tabs opened during placement."""
-        for slug, tab in list(self._tabs.items()):
+        for _slug, tab in list(self._tabs.items()):
             try:
                 if not tab.is_closed():
                     await tab.close()

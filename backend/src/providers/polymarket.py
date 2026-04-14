@@ -1,8 +1,9 @@
-from typing import List, Any, Optional
-from datetime import datetime, timezone, timedelta
-import logging
 import json
+import logging
 import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
 from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
@@ -12,93 +13,93 @@ logger = logging.getLogger(__name__)
 # The _get_sport_league method handles these via prefix matching
 SERIES_TO_SPORT = {
     # Football (Soccer)
-    'premier-league': 'football',
-    'la-liga': 'football',
-    'bundesliga': 'football',
-    'serie-a': 'football',
-    'ligue-1': 'football',
-    'eredivisie': 'football',
-    'mls': 'football',
-    'efl-championship': 'football',
-    'fa-cup': 'football',
-    'dfb-pokal': 'football',
-    'copa-del-rey': 'football',
-    'coppa-italia': 'football',
-    'coupe-de-france': 'football',
-    'champions-league': 'football',
-    'europa-league': 'football',
-    'conference-league': 'football',
-    'saudi-professional-league': 'football',
-    'primera-divisin-argentina': 'football',
-    'brazil-serie-a': 'football',
-    'mex-2025': 'football',
-    'liga-mx': 'football',
-    'a-league-soccer': 'football',
-    'denmark-superliga': 'football',
-    'scottish-premiership': 'football',
-    'ligue-2': 'football',
-    'bundesliga-2': 'football',
-    'la-liga-2': 'football',
-    'serie-b': 'football',
-    'copa-libertadores': 'football',
-    'efl-cup': 'football',
-    'ere-2025': 'football',  # Eredivisie 2025
+    "premier-league": "football",
+    "la-liga": "football",
+    "bundesliga": "football",
+    "serie-a": "football",
+    "ligue-1": "football",
+    "eredivisie": "football",
+    "mls": "football",
+    "efl-championship": "football",
+    "fa-cup": "football",
+    "dfb-pokal": "football",
+    "copa-del-rey": "football",
+    "coppa-italia": "football",
+    "coupe-de-france": "football",
+    "champions-league": "football",
+    "europa-league": "football",
+    "conference-league": "football",
+    "saudi-professional-league": "football",
+    "primera-divisin-argentina": "football",
+    "brazil-serie-a": "football",
+    "mex-2025": "football",
+    "liga-mx": "football",
+    "a-league-soccer": "football",
+    "denmark-superliga": "football",
+    "scottish-premiership": "football",
+    "ligue-2": "football",
+    "bundesliga-2": "football",
+    "la-liga-2": "football",
+    "serie-b": "football",
+    "copa-libertadores": "football",
+    "efl-cup": "football",
+    "ere-2025": "football",  # Eredivisie 2025
     # Basketball
-    'nba': 'basketball',
-    'nba-2026': 'basketball',
-    'ncaa-cbb': 'basketball',
-    'ncaa-cbb-2026': 'basketball',
-    'cwbb': 'basketball',
-    'euroleague': 'basketball',
-    'euroleague-basketball': 'basketball',
+    "nba": "basketball",
+    "nba-2026": "basketball",
+    "ncaa-cbb": "basketball",
+    "ncaa-cbb-2026": "basketball",
+    "cwbb": "basketball",
+    "euroleague": "basketball",
+    "euroleague-basketball": "basketball",
     # Ice Hockey
-    'nhl': 'ice_hockey',
-    'nhl-2026': 'ice_hockey',
-    'khl': 'ice_hockey',
-    'khl-2026': 'ice_hockey',
-    'shl': 'ice_hockey',
-    'shl-2026': 'ice_hockey',
-    'snhl': 'ice_hockey',       # Swiss National League
-    'snhl-2026': 'ice_hockey',
-    'ahl': 'ice_hockey',
-    'ahl-2026': 'ice_hockey',
-    'cehl': 'ice_hockey',       # Czech Extraliga
-    'cehl-2026': 'ice_hockey',
-    'del': 'ice_hockey',        # German DEL
-    'del-2026': 'ice_hockey',
-    'liiga': 'ice_hockey',      # Finnish Liiga
-    'liiga-2026': 'ice_hockey',
+    "nhl": "ice_hockey",
+    "nhl-2026": "ice_hockey",
+    "khl": "ice_hockey",
+    "khl-2026": "ice_hockey",
+    "shl": "ice_hockey",
+    "shl-2026": "ice_hockey",
+    "snhl": "ice_hockey",  # Swiss National League
+    "snhl-2026": "ice_hockey",
+    "ahl": "ice_hockey",
+    "ahl-2026": "ice_hockey",
+    "cehl": "ice_hockey",  # Czech Extraliga
+    "cehl-2026": "ice_hockey",
+    "del": "ice_hockey",  # German DEL
+    "del-2026": "ice_hockey",
+    "liiga": "ice_hockey",  # Finnish Liiga
+    "liiga-2026": "ice_hockey",
     # American Football
-    'nfl': 'american_football',
-    'nfl-2026': 'american_football',
-    'ncaa-football': 'american_football',
-    'ncaa-football-2026': 'american_football',
+    "nfl": "american_football",
+    "nfl-2026": "american_football",
+    "ncaa-football": "american_football",
+    "ncaa-football-2026": "american_football",
     # Baseball
-    'mlb': 'baseball',
-    'mlb-2026': 'baseball',
-    'npb': 'baseball',
-    'kbo': 'baseball',
+    "mlb": "baseball",
+    "mlb-2026": "baseball",
+    "npb": "baseball",
+    "kbo": "baseball",
     # Tennis
-    'atp': 'tennis',
-    'wta': 'tennis',
-    'australian-open': 'tennis',
+    "atp": "tennis",
+    "wta": "tennis",
+    "australian-open": "tennis",
     # MMA
-    'ufc': 'mma',
+    "ufc": "mma",
     # Esports
-    'league-of-legends': 'esports',
-    'valorant': 'esports',
-    'counter-strike': 'esports',
-    'cs2': 'esports',
-    'dota-2': 'esports',
+    "league-of-legends": "esports",
+    "valorant": "esports",
+    "counter-strike": "esports",
+    "cs2": "esports",
+    "dota-2": "esports",
     # Rugby
-    'rugby-top-14': 'rugby',
-    'united-rugby-championship': 'rugby',
-    'rugby-six-nations': 'rugby',
-    'super-rugby-pacific': 'rugby',
+    "rugby-top-14": "rugby",
+    "united-rugby-championship": "rugby",
+    "rugby-six-nations": "rugby",
+    "super-rugby-pacific": "rugby",
     # Cricket
-    'ipl': 'cricket',
-    'big-bash': 'cricket',
-    't20': 'cricket',
+    "ipl": "cricket",
+    "big-bash": "cricket",
+    "t20": "cricket",
 }
 
 
@@ -128,6 +129,7 @@ class PolymarketRetriever(Retriever):
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
             from ..core import HttpTransport
+
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
@@ -147,8 +149,8 @@ class PolymarketRetriever(Retriever):
         self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
         self._clob_prices: dict = {}  # token_id -> depth-adjusted VWAP (populated during extraction)
         self._clob_depth: dict = {}  # token_id -> available depth in USD on ask side
-        self._clob_bids: dict = {}   # token_id -> best bid price (highest bid)
-        self._clob_asks: dict = {}   # token_id -> best ask price (lowest ask)
+        self._clob_bids: dict = {}  # token_id -> best bid price (highest bid)
+        self._clob_asks: dict = {}  # token_id -> best ask price (lowest ask)
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
@@ -199,6 +201,8 @@ class PolymarketRetriever(Retriever):
                 outcome["ask"] = ask
             if depth is not None:
                 outcome["depth_usd"] = depth
+            # Persist token_id in provider_meta for play loop API access
+            outcome["provider_meta"] = {"token_id": token_id}
         outcome.update(extra)
         return outcome
 
@@ -255,8 +259,9 @@ class PolymarketRetriever(Retriever):
         - self._clob_prices: token_id -> VWAP price (depth-adjusted)
         - self._clob_depth: token_id -> total ask-side depth in USD
         """
-        import aiohttp
         import asyncio
+
+        import aiohttp
 
         if not token_ids or not self.use_clob_prices:
             return
@@ -299,7 +304,9 @@ class PolymarketRetriever(Retriever):
                                 except (ValueError, TypeError, KeyError):
                                     pass
                         elif resp.status != 404:
-                            logger.debug(f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}...")
+                            logger.debug(
+                                f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}..."
+                            )
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] CLOB /book failed for {token_id[:12]}...: {e}")
 
@@ -308,7 +315,7 @@ class PolymarketRetriever(Retriever):
                 # Process in chunks to avoid overwhelming the connection pool
                 CHUNK_SIZE = 50
                 for i in range(0, len(unique_tokens), CHUNK_SIZE):
-                    chunk = unique_tokens[i:i + CHUNK_SIZE]
+                    chunk = unique_tokens[i : i + CHUNK_SIZE]
                     await asyncio.gather(*[fetch_book(session, tid) for tid in chunk], return_exceptions=True)
 
             thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
@@ -319,11 +326,11 @@ class PolymarketRetriever(Retriever):
         except Exception as e:
             logger.warning(f"[{self.provider_id}] CLOB book fetch failed, falling back to Gamma prices: {e}")
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Parse API response - delegates to _parse_all."""
         return self._parse_all(data) if data else []
 
-    async def extract_all(self, limit: int = 500) -> List[StandardEvent]:
+    async def extract_all(self, limit: int = 500) -> list[StandardEvent]:
         """
         Fetch ALL game events from Polymarket using tag_id with pagination.
 
@@ -351,7 +358,7 @@ class PolymarketRetriever(Retriever):
                 "order": "startTime",
                 "ascending": "true",
                 "limit": page_limit,
-                "offset": offset
+                "offset": offset,
             }
 
             url = f"{self.base_url}/events"
@@ -401,9 +408,7 @@ class PolymarketRetriever(Retriever):
                 break
             closed_offset += page_limit
         if closed_count:
-            logger.info(
-                f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events"
-            )
+            logger.info(f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events")
 
         # Phase 2: Collect CLOB token IDs from markets that pass basic filters
         # Pre-filtering avoids fetching prices for markets we'll discard anyway
@@ -451,7 +456,7 @@ class PolymarketRetriever(Retriever):
         )
         return all_events
 
-    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> list[StandardEvent]:
         """
         Extract events for a specific sport/league.
 
@@ -483,7 +488,7 @@ class PolymarketRetriever(Retriever):
         # Return only events for requested sport
         return self._events_by_sport.get(sport, [])
 
-    def _parse_all(self, data: List[dict]) -> List[StandardEvent]:
+    def _parse_all(self, data: list[dict]) -> list[StandardEvent]:
         """Parse all events, determining sport from series info."""
         events = []
 
@@ -497,7 +502,7 @@ class PolymarketRetriever(Retriever):
 
         return events
 
-    def _parse_event(self, item: dict) -> Optional[StandardEvent]:
+    def _parse_event(self, item: dict) -> StandardEvent | None:
         """Parse a single Polymarket event."""
         title = item.get("title", "")
         event_id = str(item.get("id", ""))
@@ -508,6 +513,7 @@ class PolymarketRetriever(Retriever):
         # instead of ISO string. Convert to ISO so canonical ID date matching works.
         if isinstance(start_time, (int, float)):
             from datetime import datetime, timezone
+
             # Handle millisecond vs second timestamps
             ts = start_time / 1000 if start_time > 1e10 else start_time
             start_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -521,7 +527,7 @@ class PolymarketRetriever(Retriever):
         # if stored under the same canonical event. Map-level markets are handled
         # as child_moneyline sub-markets within the main series event instead.
         title_lower = title.lower()
-        if re.search(r'[\(\-:]\s*(?:game|map)\s*\d', title_lower):
+        if re.search(r"[\(\-:]\s*(?:game|map)\s*\d", title_lower):
             return None
 
         # Parse teams from title
@@ -557,7 +563,7 @@ class PolymarketRetriever(Retriever):
                 if len(ml_candidates) > 1:
                     logger.debug(
                         f"[polymarket] {title}: picked moneyline with vol=${ml_candidates[0][1]:.0f}, "
-                        f"skipped {len(ml_candidates)-1} lower-volume moneyline markets"
+                        f"skipped {len(ml_candidates) - 1} lower-volume moneyline markets"
                     )
 
         # Collect esports map winner markets (child_moneyline → moneyline_m{N})
@@ -838,7 +844,7 @@ class PolymarketRetriever(Retriever):
 
                     # Total market: "Team vs Team: O/U 226.5"
                     if " O/U " in q and "1H O/U" not in q:
-                        point_match = re.search(r'O/U\s+(\d+\.?\d*)', q)
+                        point_match = re.search(r"O/U\s+(\d+\.?\d*)", q)
                         if point_match:
                             pt = float(point_match.group(1))
                             winner_name = outcomes[winner_idx].lower().strip()
@@ -849,12 +855,13 @@ class PolymarketRetriever(Retriever):
 
                     # Spread market: "Spread: TeamName (-2.5)"
                     elif q.startswith("Spread:") and not q.startswith("1H Spread"):
-                        point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', q)
-                        team_match = re.search(r'Spread:\s*(.+?)\s*\(', q)
+                        point_match = re.search(r"\(([+-]?\d+\.?\d*)\)", q)
+                        team_match = re.search(r"Spread:\s*(.+?)\s*\(", q)
                         if point_match and team_match:
                             favored_point = float(point_match.group(1))
                             favored_team = team_match.group(1).strip()
                             from ..matching import normalize_outcome
+
                             favored_side = normalize_outcome(favored_team, home, away)
                             winner_outcome = outcomes[winner_idx]
                             winner_side = normalize_outcome(winner_outcome, home, away)
@@ -869,21 +876,23 @@ class PolymarketRetriever(Retriever):
                 except (json.JSONDecodeError, ValueError, TypeError, StopIteration):
                     pass
 
-            resolved.append({
-                "polymarket_id": str(item.get("id", "")),
-                "slug": item.get("slug", ""),
-                "title": title,
-                "home_team": home,
-                "away_team": away,
-                "sport": sport,
-                "league": league,
-                "start_time": item.get("startTime"),
-                "home_score": live_state.get("home_score"),
-                "away_score": live_state.get("away_score"),
-                "match_status": "finished",
-                "winner_team": winner_team,
-                "resolved_markets": resolved_markets or None,
-            })
+            resolved.append(
+                {
+                    "polymarket_id": str(item.get("id", "")),
+                    "slug": item.get("slug", ""),
+                    "title": title,
+                    "home_team": home,
+                    "away_team": away,
+                    "sport": sport,
+                    "league": league,
+                    "start_time": item.get("startTime"),
+                    "home_score": live_state.get("home_score"),
+                    "away_score": live_state.get("away_score"),
+                    "match_status": "finished",
+                    "winner_team": winner_team,
+                    "resolved_markets": resolved_markets or None,
+                }
+            )
 
         logger.info(f"[{self.provider_id}] Fetched {len(resolved)} resolved events (from {len(all_raw)} closed)")
         return resolved
@@ -901,43 +910,97 @@ class PolymarketRetriever(Retriever):
         # Order matters - check longer prefixes first
         prefixes_to_strip = [
             # Esports - full names and abbreviations
-            "Counter-Strike: ", "Counter-Strike:", "CS2: ", "CS2:", "CS: ", "CS:",
-            "League of Legends: ", "League of Legends:", "LoL: ", "LoL:",
-            "Valorant: ", "Valorant:", "Dota 2: ", "Dota 2:", "Dota2: ", "Dota2:",
-            "Call of Duty: ", "Call of Duty:", "CoD: ", "CoD:",
-            "Rainbow Six: ", "Rainbow Six:", "R6: ", "R6:",
-            "Overwatch: ", "Overwatch:", "OW: ", "OW:",
-            "Rocket League: ", "Rocket League:", "RL: ", "RL:",
-            "StarCraft II: ", "StarCraft II:", "StarCraft: ", "StarCraft:", "SC2: ", "SC2:",
-            "Fortnite: ", "Fortnite:", "PUBG: ", "PUBG:",
+            "Counter-Strike: ",
+            "Counter-Strike:",
+            "CS2: ",
+            "CS2:",
+            "CS: ",
+            "CS:",
+            "League of Legends: ",
+            "League of Legends:",
+            "LoL: ",
+            "LoL:",
+            "Valorant: ",
+            "Valorant:",
+            "Dota 2: ",
+            "Dota 2:",
+            "Dota2: ",
+            "Dota2:",
+            "Call of Duty: ",
+            "Call of Duty:",
+            "CoD: ",
+            "CoD:",
+            "Rainbow Six: ",
+            "Rainbow Six:",
+            "R6: ",
+            "R6:",
+            "Overwatch: ",
+            "Overwatch:",
+            "OW: ",
+            "OW:",
+            "Rocket League: ",
+            "Rocket League:",
+            "RL: ",
+            "RL:",
+            "StarCraft II: ",
+            "StarCraft II:",
+            "StarCraft: ",
+            "StarCraft:",
+            "SC2: ",
+            "SC2:",
+            "Fortnite: ",
+            "Fortnite:",
+            "PUBG: ",
+            "PUBG:",
             # Tennis - tournaments
-            "Australian Open Men's: ", "Australian Open Men's:",
-            "Australian Open Women's: ", "Australian Open Women's:",
-            "US Open Men's: ", "US Open Men's:",
-            "US Open Women's: ", "US Open Women's:",
-            "Wimbledon Men's: ", "Wimbledon Men's:",
-            "Wimbledon Women's: ", "Wimbledon Women's:",
-            "French Open Men's: ", "French Open Men's:",
-            "French Open Women's: ", "French Open Women's:",
-            "ATP: ", "ATP:", "WTA: ", "WTA:",
+            "Australian Open Men's: ",
+            "Australian Open Men's:",
+            "Australian Open Women's: ",
+            "Australian Open Women's:",
+            "US Open Men's: ",
+            "US Open Men's:",
+            "US Open Women's: ",
+            "US Open Women's:",
+            "Wimbledon Men's: ",
+            "Wimbledon Men's:",
+            "Wimbledon Women's: ",
+            "Wimbledon Women's:",
+            "French Open Men's: ",
+            "French Open Men's:",
+            "French Open Women's: ",
+            "French Open Women's:",
+            "ATP: ",
+            "ATP:",
+            "WTA: ",
+            "WTA:",
             # Cricket
-            "International T20 Series: ", "Sheffield Shield: ",
-            "BPL: ", "Ranji Trophy: ", "WNCL: ", "WNCL:",
-            "IPL: ", "IPL:", "BBL: ", "BBL:", "CPL: ", "CPL:",
+            "International T20 Series: ",
+            "Sheffield Shield: ",
+            "BPL: ",
+            "Ranji Trophy: ",
+            "WNCL: ",
+            "WNCL:",
+            "IPL: ",
+            "IPL:",
+            "BBL: ",
+            "BBL:",
+            "CPL: ",
+            "CPL:",
             # General
-            "Men's: ", "Women's: ",
+            "Men's: ",
+            "Women's: ",
         ]
         for prefix in prefixes_to_strip:
             if clean_title.startswith(prefix):
-                clean_title = clean_title[len(prefix):]
+                clean_title = clean_title[len(prefix) :]
                 break  # Only strip one prefix
 
         # MMA: Strip "UFC Fight Night: ", "UFC 315: ", "Bellator 300: ", etc.
-        clean_title = re.sub(r'^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*', '', clean_title)
+        clean_title = re.sub(r"^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*", "", clean_title)
 
         # Strip match format indicators: (BO1), (BO3), (BO5), etc.
         # and trailing parenthetical metadata (weight class, card position, etc.)
-        clean_title = re.sub(r'\s*\([^)]+\)\s*', '', clean_title)
+        clean_title = re.sub(r"\s*\([^)]+\)\s*", "", clean_title)
 
         # Strip tournament/league info after " - " (but preserve "vs" split)
         # Do this AFTER splitting on "vs" to avoid removing team names
@@ -978,8 +1041,8 @@ class PolymarketRetriever(Retriever):
 
         # If no exact match, try without year suffix (e.g., "nhl-2026" -> "nhl")
         # This handles future year variants automatically
-        if not sport and '-20' in series_slug:
-            base_slug = series_slug.rsplit('-20', 1)[0]
+        if not sport and "-20" in series_slug:
+            base_slug = series_slug.rsplit("-20", 1)[0]
             sport = SERIES_TO_SPORT.get(base_slug)
             if sport:
                 logger.debug(f"[{self.provider_id}] Matched '{series_slug}' via base slug '{base_slug}'")
@@ -990,7 +1053,7 @@ class PolymarketRetriever(Retriever):
 
         return sport or "unknown", league
 
-    def _infer_sport_from_tags(self, item: dict) -> Optional[str]:
+    def _infer_sport_from_tags(self, item: dict) -> str | None:
         """Infer sport from event tags as a fallback."""
         tags = [t.get("slug", "") for t in item.get("tags", [])]
 
@@ -1026,7 +1089,7 @@ class PolymarketRetriever(Retriever):
         except (json.JSONDecodeError, TypeError):
             return []
 
-    def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
+    def _parse_market(self, data: dict, home: str = "", away: str = "") -> dict | None:
         """Parse a single market (series/match moneyline only - skips totals/spreads/maps)."""
         try:
             # Skip child_moneyline markets — these are map/game-level winners
@@ -1038,29 +1101,75 @@ class PolymarketRetriever(Retriever):
             # Skip non-moneyline markets based on question text
             question = data.get("question", "")
             question_lower = question.lower()
-            if any(kw in question_lower for kw in [
-                "over", "under", "total", "spread", "handicap",
-                "points", "goals scored", "combined",
-                # Esports sub-markets (map/game-level lines are NOT match moneyline)
-                "map 1", "map 2", "map 3", "map 4", "map 5",
-                "game 1", "game 2", "game 3", "game 4", "game 5",
-                "first map", "second map", "third map",
-                "first game", "second game", "third game",
-                "map winner", "game winner",
-                "1st map", "2nd map", "3rd map",
-                "pistol round", "first blood",
-                # Esports exotic prop markets (e.g., "Series: Most drakes?")
-                "most kills", "most towers", "most drakes", "most nashors",
-                "most inhibitors", "most barons",
-                # Cross-sport sub-markets (halves, quarters, periods, sets, rounds)
-                "1st half", "2nd half", "first half", "second half",
-                "1st quarter", "2nd quarter", "3rd quarter", "4th quarter",
-                "1st period", "2nd period", "3rd period",
-                "1st set", "2nd set", "3rd set", "set 1", "set 2", "set 3",
-                # UFC sub-markets
-                "method of victory", "by ko", "by tko", "by submission",
-                "by decision", "round betting",
-            ]):
+            if any(
+                kw in question_lower
+                for kw in [
+                    "over",
+                    "under",
+                    "total",
+                    "spread",
+                    "handicap",
+                    "points",
+                    "goals scored",
+                    "combined",
+                    # Esports sub-markets (map/game-level lines are NOT match moneyline)
+                    "map 1",
+                    "map 2",
+                    "map 3",
+                    "map 4",
+                    "map 5",
+                    "game 1",
+                    "game 2",
+                    "game 3",
+                    "game 4",
+                    "game 5",
+                    "first map",
+                    "second map",
+                    "third map",
+                    "first game",
+                    "second game",
+                    "third game",
+                    "map winner",
+                    "game winner",
+                    "1st map",
+                    "2nd map",
+                    "3rd map",
+                    "pistol round",
+                    "first blood",
+                    # Esports exotic prop markets (e.g., "Series: Most drakes?")
+                    "most kills",
+                    "most towers",
+                    "most drakes",
+                    "most nashors",
+                    "most inhibitors",
+                    "most barons",
+                    # Cross-sport sub-markets (halves, quarters, periods, sets, rounds)
+                    "1st half",
+                    "2nd half",
+                    "first half",
+                    "second half",
+                    "1st quarter",
+                    "2nd quarter",
+                    "3rd quarter",
+                    "4th quarter",
+                    "1st period",
+                    "2nd period",
+                    "3rd period",
+                    "1st set",
+                    "2nd set",
+                    "3rd set",
+                    "set 1",
+                    "set 2",
+                    "set 3",
+                    # UFC sub-markets
+                    "method of victory",
+                    "by ko",
+                    "by tko",
+                    "by submission",
+                    "by decision",
+                    "round betting",
+                ]
+            ):
                 return None
 
             # Volume filter: Skip low-volume markets (no real trading activity)
@@ -1127,7 +1236,9 @@ class PolymarketRetriever(Retriever):
                             # Skip if either side has insufficient depth
                             if not self._is_liquid(yes_token) or not self._is_liquid(no_token):
                                 return None
-                            yes_price = self._get_clob_price(yes_token, prices[yes_idx]) if yes_token else prices[yes_idx]
+                            yes_price = (
+                                self._get_clob_price(yes_token, prices[yes_idx]) if yes_token else prices[yes_idx]
+                            )
                             no_price = self._get_clob_price(no_token, prices[no_idx]) if no_token else prices[no_idx]
                             # Re-check after CLOB — VWAP can push price outside valid range
                             if not (0.02 < yes_price < 0.98) or not (0.02 < no_price < 0.98):
@@ -1137,7 +1248,7 @@ class PolymarketRetriever(Retriever):
                                 "outcomes": [
                                     self._build_outcome(matched_team, yes_price, yes_token),
                                     self._build_outcome(other_team, no_price, no_token),
-                                ]
+                                ],
                             }
 
                 # Couldn't parse team from question - skip this Yes/No market
@@ -1169,14 +1280,11 @@ class PolymarketRetriever(Retriever):
             if len(formatted_outcomes) != 2:
                 return None
 
-            return {
-                "type": "moneyline",
-                "outcomes": formatted_outcomes
-            }
+            return {"type": "moneyline", "outcomes": formatted_outcomes}
         except Exception:
             return None
 
-    def _parse_spread_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+    def _parse_spread_market(self, data: dict, home: str, away: str) -> dict | None:
         """Parse a spread/handicap market.
 
         Detection: question starts with "Spread:" but NOT "1H Spread".
@@ -1197,13 +1305,13 @@ class PolymarketRetriever(Retriever):
                 return None
 
             # Extract point value from question: "Spread: TeamName (-2.5)"
-            point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', question)
+            point_match = re.search(r"\(([+-]?\d+\.?\d*)\)", question)
             if not point_match:
                 return None
             favored_point = float(point_match.group(1))
 
             # Extract favored team name from question: "Spread: TeamName (-2.5)"
-            team_match = re.search(r'Spread:\s*(.+?)\s*\(', question)
+            team_match = re.search(r"Spread:\s*(.+?)\s*\(", question)
             if not team_match:
                 return None
             favored_team = team_match.group(1).strip()
@@ -1227,6 +1335,7 @@ class PolymarketRetriever(Retriever):
 
             # Determine which outcome is the favored team
             from ..matching import normalize_outcome
+
             favored_norm = normalize_outcome(favored_team, home, away)
 
             clob_ids = self._parse_clob_token_ids(data)
@@ -1247,7 +1356,7 @@ class PolymarketRetriever(Retriever):
                     norm = other_norm
                 else:
                     norm = normalize_outcome(name, home, away)
-                if norm not in ('home', 'away'):
+                if norm not in ("home", "away"):
                     continue
                 # Favored team gets the point from the question, other gets opposite
                 if norm == favored_norm:
@@ -1269,7 +1378,7 @@ class PolymarketRetriever(Retriever):
         except Exception:
             return None
 
-    def _parse_total_market(self, data: dict) -> Optional[dict]:
+    def _parse_total_market(self, data: dict) -> dict | None:
         """Parse a total (over/under) market.
 
         Detection: question contains " O/U " but NOT "1H O/U" and NOT player props.
@@ -1291,7 +1400,7 @@ class PolymarketRetriever(Retriever):
             # Player props have "Stat O/U" (e.g., "Points O/U", "Rebounds O/U")
             colon_idx = question.find(":")
             if colon_idx >= 0:
-                after_colon = question[colon_idx + 1:].strip()
+                after_colon = question[colon_idx + 1 :].strip()
                 # Event totals start directly with "O/U", player props have "stat O/U"
                 if not after_colon.startswith("O/U"):
                     return None
@@ -1302,7 +1411,7 @@ class PolymarketRetriever(Retriever):
                 return None
 
             # Extract point value: "O/U 222.5"
-            point_match = re.search(r'O/U\s+(\d+\.?\d*)', question)
+            point_match = re.search(r"O/U\s+(\d+\.?\d*)", question)
             if not point_match:
                 return None
             point = float(point_match.group(1))
@@ -1353,11 +1462,19 @@ class PolymarketRetriever(Retriever):
 
     # Map number extraction from question text for child_moneyline
     _MAP_PATTERNS = {
-        "map 1": 1, "map 2": 2, "map 3": 3, "map 4": 4, "map 5": 5,
-        "game 1": 1, "game 2": 2, "game 3": 3, "game 4": 4, "game 5": 5,
+        "map 1": 1,
+        "map 2": 2,
+        "map 3": 3,
+        "map 4": 4,
+        "map 5": 5,
+        "game 1": 1,
+        "game 2": 2,
+        "game 3": 3,
+        "game 4": 4,
+        "game 5": 5,
     }
 
-    def _parse_map_winner_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+    def _parse_map_winner_market(self, data: dict, home: str, away: str) -> dict | None:
         """Parse an esports map/game winner market (child_moneyline).
 
         Detection: sportsMarketType == 'child_moneyline' or question contains
@@ -1405,12 +1522,13 @@ class PolymarketRetriever(Retriever):
 
             clob_ids = self._parse_clob_token_ids(data)
             from ..matching import normalize_outcome
+
             formatted_outcomes = []
             for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
                 norm = normalize_outcome(name, home, away)
-                if norm not in ('home', 'away'):
+                if norm not in ("home", "away"):
                     continue
                 token_id = clob_ids[i] if i < len(clob_ids) else None
                 if not self._is_liquid(token_id):
@@ -1427,7 +1545,7 @@ class PolymarketRetriever(Retriever):
         except Exception:
             return None
 
-    def _parse_map_handicap_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+    def _parse_map_handicap_market(self, data: dict, home: str, away: str) -> dict | None:
         """Parse an esports map handicap market.
 
         Detection: sportsMarketType == 'map_handicap'.
@@ -1449,7 +1567,7 @@ class PolymarketRetriever(Retriever):
                 return None
 
             # Extract the first point value (favored team's handicap)
-            point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', question)
+            point_match = re.search(r"\(([+-]?\d+\.?\d*)\)", question)
             if not point_match:
                 return None
             favored_point = float(point_match.group(1))
@@ -1472,13 +1590,14 @@ class PolymarketRetriever(Retriever):
 
             # Normalize outcome team names to home/away
             from ..matching import normalize_outcome
+
             clob_ids = self._parse_clob_token_ids(data)
             result_outcomes = []
             for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
                 norm = normalize_outcome(name, home, away)
-                if norm not in ('home', 'away'):
+                if norm not in ("home", "away"):
                     continue
                 # First outcome in question gets favored_point, second gets opposite
                 # Determine from position: outcome[0] = favored team (listed first in question)
@@ -1604,9 +1723,6 @@ class PolymarketRetriever(Retriever):
                 outcomes.append(self._build_outcome("Draw", draw_price, draw_token))
             outcomes.append(self._build_outcome(away, away_price, away_token))
 
-            return [{
-                "type": "1x2",
-                "outcomes": outcomes
-            }]
+            return [{"type": "1x2", "outcomes": outcomes}]
 
         return []
