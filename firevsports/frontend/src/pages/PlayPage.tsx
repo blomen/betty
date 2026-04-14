@@ -59,37 +59,34 @@ export default function PlayPage() {
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
 
-  const toggleProvider = (pid: string) => {
-    if (loopRunning) return // Don't toggle while running
-    setActiveProviders(prev => {
-      const next = new Set(prev)
-      if (next.has(pid)) next.delete(pid)
-      else next.add(pid)
-      return next
-    })
-  }
-
-  const startAll = async () => {
-    if (activeProviders.size === 0) return
-    if (loopRunning) {
-      api.stopPlayLoop()
-      setLoopRunning(false)
-      setCurrentBetReady(null)
-      setToasts([])
-      setConfirmedSettlements([])
-      setSettleWaiting(false)
-      setLoopStatus(null)
-      setLoopProviderStatus(null)
+  const startSkin = async (pid: string) => {
+    // Deselect — click active provider to remove it
+    if (activeProviders.has(pid)) {
+      setActiveProviders(prev => {
+        const next = new Set(prev)
+        next.delete(pid)
+        // If last provider removed, stop everything
+        if (next.size === 0 && loopRunning) {
+          api.stopPlayLoop()
+          setLoopRunning(false)
+          setCurrentBetReady(null)
+          setLoopStatus(null)
+          setLoopProviderStatus(null)
+        }
+        return next
+      })
       return
     }
-    // Open tabs for all selected providers
+    // Add provider — open tab and start/add to loop
+    setActiveProviders(prev => new Set(prev).add(pid))
     try { await api.startMirror() } catch { /* */ }
-    await Promise.all([...activeProviders].map(pid => api.openTab(pid).catch(() => {})))
-    // Collect bets from all selected clusters
-    const selectedClusters = new Set([...activeProviders].map(pid => providerToCluster[pid] || pid))
+    try { await api.openTab(pid) } catch { /* */ }
+    // Collect bets from all active clusters (current + new)
+    const allPids = [...activeProviders, pid]
+    const selectedClusters = new Set(allPids.map(p => providerToCluster[p] || p))
     const allBets = bets.filter(b => selectedClusters.has(b.cluster || b.provider_id))
     setLoopRunning(true)
-    await api.startPlayLoop(allBets, providerBalances, [...activeProviders])
+    await api.startPlayLoop(allBets, providerBalances, allPids)
   }
 
   const load = useCallback(async () => {
@@ -210,7 +207,6 @@ export default function PlayPage() {
     if (type === 'play_complete' || type === 'play_stopped') {
       setLoopRunning(false)
       setCurrentBetReady(null)
-      setActiveProviders(new Set())
       setLoopProviderStatus(null)
       setToasts([])
       setSettleWaiting(false)
@@ -415,23 +411,6 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Control bar */}
-      {activeProviders.size > 0 && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/80">
-          <button
-            onClick={startAll}
-            className={`px-3 py-1 text-xs font-semibold rounded ${
-              loopRunning
-                ? 'bg-red-700/50 text-red-300 hover:bg-red-700/70'
-                : 'bg-green-700/50 text-green-300 hover:bg-green-700/70'
-            }`}
-          >
-            {loopRunning ? 'Stop' : `Start ${activeProviders.size} providers`}
-          </button>
-          <span className="text-[10px] text-zinc-500">{[...activeProviders].join(', ')}</span>
-        </div>
-      )}
-
       {/* Per-provider status rows */}
       {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
         <div className="border-b border-zinc-800">
@@ -488,7 +467,7 @@ export default function PlayPage() {
                     const disabled = bal <= 0 && pending === 0
                     return (
                       <button key={pid}
-                        onClick={() => !disabled && toggleProvider(pid)}
+                        onClick={() => !disabled && startSkin(pid)}
                         disabled={disabled}
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled

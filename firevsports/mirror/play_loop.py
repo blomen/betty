@@ -147,28 +147,35 @@ class PlayLoop:
         filtered = [b for b in batch if _is_funded(b)]
         filtered.sort(key=lambda b: -b.get("edge_pct", 0.0))
 
-        # Partition into cluster queues
-        self._cluster_queues.clear()
+        # Partition into cluster queues (merge, don't clear — supports adding mid-session)
         for bet in filtered:
             bet_pid = bet.get("provider_id", "")
             cluster = _PROVIDER_TO_CLUSTER.get(bet_pid, bet_pid)
             if cluster not in self._cluster_queues:
                 self._cluster_queues[cluster] = []
-            self._cluster_queues[cluster].append(bet)
+            # Avoid duplicates when re-loading for added providers
+            existing_keys = {
+                (b.get("event_id"), b.get("market"), b.get("outcome")) for b in self._cluster_queues[cluster]
+            }
+            if (bet.get("event_id"), bet.get("market"), bet.get("outcome")) not in existing_keys:
+                self._cluster_queues[cluster].append(bet)
 
-        self._queue_total = len(filtered)
+        self._queue_total = sum(len(q) for q in self._cluster_queues.values())
         self._provider_ids = provider_ids
-        self._blocked.clear()
-        self.provider_stats.clear()
         logger.info(
             f"[PlayCoordinator] Loaded {self._queue_total} bets into "
             f"{len(self._cluster_queues)} cluster queues for providers {provider_ids}"
         )
 
     def start(self) -> None:
-        """Spawn ProviderRunners for all selected providers."""
+        """Spawn ProviderRunners for all selected providers.
+
+        If already running, adds runners for any new provider_ids that don't
+        already have an active runner (supports adding providers mid-session).
+        """
         if self._coordinator_task and not self._coordinator_task.done():
-            logger.warning("[PlayCoordinator] Already running")
+            # Already running — add new providers dynamically
+            self._add_new_runners()
             return
         self._coordinator_task = asyncio.create_task(self._run_coordinator(), name="play_coordinator")
 
@@ -222,13 +229,42 @@ class PlayLoop:
     # ------------------------------------------------------------------
 
     async def _run_coordinator(self) -> None:
-        """Spawn runners and wait for all to complete."""
+        """Spawn runners and wait for all to complete.
+
+        Polls periodically so dynamically-added runners are picked up.
+        """
         self.state = STATE_RUNNING
         self._runners.clear()
+        self._spawn_runners(self._provider_ids)
 
+        # Poll until all runners are done (supports dynamically added runners)
+        while True:
+            active = [r for r in self._runners.values() if r.running]
+            if not active:
+                break
+            # Wait for any active runner to finish, then re-check
+            tasks = [r._task for r in active if r._task]
+            if tasks:
+                _done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            else:
+                await asyncio.sleep(1)
+
+        # Collect stats
+        for pid, runner in self._runners.items():
+            self.provider_stats[pid] = runner.stats
+
+        self._broadcaster.publish("play_complete", {"provider_stats": self.provider_stats})
+        logger.info("[PlayCoordinator] All runners complete")
+        self.state = STATE_IDLE
+
+    def _spawn_runners(self, provider_ids: list[str]) -> None:
+        """Create and start runners for providers that don't have one yet."""
         from .provider_runner import ProviderRunner
 
-        for pid in self._provider_ids:
+        for pid in provider_ids:
+            if pid in self._runners and self._runners[pid].running:
+                continue  # Already has an active runner
+
             cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
             if cluster not in self._cluster_queues:
                 self._cluster_queues[cluster] = []
@@ -245,19 +281,11 @@ class PlayLoop:
             )
             self._runners[pid] = runner
             runner.start()
+            logger.info(f"[PlayCoordinator] Spawned runner for {pid}")
 
-        # Wait for all runners to finish
-        tasks = [r._task for r in self._runners.values() if r._task]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Collect stats
-        for pid, runner in self._runners.items():
-            self.provider_stats[pid] = runner.stats
-
-        self._broadcaster.publish("play_complete", {"provider_stats": self.provider_stats})
-        logger.info("[PlayCoordinator] All runners complete")
-        self.state = STATE_IDLE
+    def _add_new_runners(self) -> None:
+        """Add runners for newly-selected providers while coordinator is running."""
+        self._spawn_runners(self._provider_ids)
 
     # ------------------------------------------------------------------
     # Queue helpers
