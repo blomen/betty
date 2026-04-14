@@ -75,11 +75,13 @@ class GeckoWorkflow(ProviderWorkflow):
         if not gecko_eid:
             return True  # No ID — user navigates manually
 
-        if f"eventId=f-{gecko_eid}" in (page.url or ""):
+        if f"eventId={gecko_eid}" in (page.url or "") or f"eventId=f-{gecko_eid}" in (page.url or ""):
             return True  # Already on this event
 
         init_path = _INIT_PATHS.get(self.provider_id, "/sv/odds")
-        url = f"https://www.{self.domain}{init_path}?eventId=f-{gecko_eid}"
+        # Event IDs from the Gecko API already include the f- prefix
+        eid_param = gecko_eid if gecko_eid.startswith("f-") else f"f-{gecko_eid}"
+        url = f"https://www.{self.domain}{init_path}?eventId={eid_param}"
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(1)
