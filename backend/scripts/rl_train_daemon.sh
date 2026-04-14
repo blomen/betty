@@ -24,11 +24,17 @@ PIPELINE=/app/backend/scripts/rl_train_pipeline.sh
 HEARTBEAT=/app/data/rl/daemon_heartbeat
 PID_FILE=/app/data/rl/daemon.pid
 
-renice -n 19 $$ >/dev/null 2>&1 || true
-
-# Pin to physical cores 0-1 (threads 0,1,4,5 on i7-7700 HT) — leaves cores 2-3
-# for extraction browsers. All child processes (pipeline, python workers) inherit.
-taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
+# Turbo mode: touch /app/data/rl/turbo to use all cores at normal priority.
+# Default (no turbo): nice 19, pinned to cores 0-1, leaving cores 2-3 for extraction.
+TURBO_FLAG=/app/data/rl/turbo
+if [ -f "$TURBO_FLAG" ]; then
+    echo "[Daemon] TURBO MODE — all cores, normal priority, 2 workers"
+    export RL_WORKERS=2
+else
+    renice -n 19 $$ >/dev/null 2>&1 || true
+    taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
+    export RL_WORKERS=1
+fi
 
 # Write PID for external monitoring
 # Check for disable flag (touch /app/data/rl/daemon_disabled to prevent auto-start)

@@ -27,10 +27,16 @@ LOG=/app/data/rl/pipeline.log
 PROGRESS=/app/data/rl/pipeline_progress
 exec > >(tee -a "$LOG") 2>&1
 
-renice -n 19 $$ >/dev/null 2>&1 || true
-
-# Pin to cores 0-1 (threads 0,1,4,5) — fallback for manual runs (daemon sets this too)
-taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
+# Turbo mode inherited from daemon; fallback for manual runs
+TURBO_FLAG=/app/data/rl/turbo
+WORKERS=${RL_WORKERS:-1}
+if [ -f "$TURBO_FLAG" ]; then
+    WORKERS=${RL_WORKERS:-2}
+    echo "TURBO MODE: $WORKERS workers, all cores, normal priority"
+else
+    renice -n 19 $$ >/dev/null 2>&1 || true
+    taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
+fi
 
 FAILED=0
 
@@ -93,7 +99,7 @@ step_run "0/8" "Merging live episodes" "optional" \
 # Step 1: Parallel replay → base episodes (CRITICAL)
 # Internally resume-safe: skips parquet files that already have chunks
 step_run "1/8" "Replaying historical ticks → base episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --workers 1
+    nice -n 19 python -m src.app rl replay --all --workers $WORKERS
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 2: Label setups (optional — pipeline can continue without labels)
@@ -122,7 +128,7 @@ else
     touch "$STEP5_STARTED"
 fi
 step_run "5/8" "Re-replaying with GBT augmentation → hybrid trigger episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers 1 $STEP5_CLEAN
+    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers $WORKERS $STEP5_CLEAN
 rm -f "$STEP5_STARTED"  # clean up marker after success
 [ $FAILED -eq 1 ] && exit 1
 
