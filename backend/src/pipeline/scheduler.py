@@ -327,8 +327,18 @@ class ExtractionScheduler:
                 break
             except Exception as e:
                 schedule.last_error = str(e)
-                schedule.consecutive_failures += 1
-                logger.exception(f"[Scheduler:{schedule.provider_id}] Extraction failed: {e}")
+                err_lower = str(e).lower()
+                is_transient_db = "deadlock" in err_lower or "unique" in err_lower or "database is locked" in err_lower
+                if is_transient_db:
+                    # Transient DB conflicts (deadlocks, autoflush unique violations)
+                    # should not accumulate toward permanent failure — they resolve
+                    # on the next run when concurrent transactions no longer collide.
+                    logger.warning(
+                        f"[Scheduler:{schedule.provider_id}] Transient DB error (not counting toward failure): {e}"
+                    )
+                else:
+                    schedule.consecutive_failures += 1
+                    logger.exception(f"[Scheduler:{schedule.provider_id}] Extraction failed: {e}")
             finally:
                 update_provider_state(
                     schedule.provider_id,

@@ -75,75 +75,114 @@ class ExtractionPipeline:
 
         Called after Pinnacle extraction + cache warm-up. Attempts to match
         buffered soft provider events that previously had no Pinnacle match.
+
+        Uses a dedicated session to avoid deadlocks with concurrent soft
+        provider extractions that also write to deferred_events. The main
+        pipeline session accumulates dirty Odds/Event objects; if autoflush
+        fires during a deferred_events UPDATE, it deadlocks with soft
+        provider threads doing ON CONFLICT upserts on the same rows.
         """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC to match SQLite stored datetimes
+        import time as _time
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
             return 0, 0
 
-        deferred = (
-            self.session.query(DeferredEvent)
-            .filter(
-                DeferredEvent.start_time > now,
-                DeferredEvent.sport.in_(sharp_sports),
-            )
-            .all()
-        )
+        # Dedicated session — isolates deferred_events writes from the main
+        # pipeline session's dirty state, preventing autoflush deadlocks.
+        deferred_session = get_session()
+        deferred_session.autoflush = False
 
-        if not deferred:
-            # Cleanup expired only
+        try:
+            deferred = (
+                deferred_session.query(DeferredEvent)
+                .filter(
+                    DeferredEvent.start_time > now,
+                    DeferredEvent.sport.in_(sharp_sports),
+                )
+                .all()
+            )
+
+            if not deferred:
+                expired = (
+                    deferred_session.query(DeferredEvent)
+                    .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
+                    .delete()
+                )
+                if expired:
+                    deferred_session.commit()
+                return 0, expired
+
+            recovered = 0
+            fm = self.orchestrator_config.fuzzy_match
+
+            for de in deferred:
+                event = de.to_standard_event()
+                is_new, odds_processed, _ = store_provider_event(
+                    deferred_session,
+                    event,
+                    de.provider_id,
+                    event_cache=self.event_cache,
+                    fuzzy_threshold=fm.threshold,
+                    min_individual_score=fm.min_individual_score,
+                    prefix_filter_length=fm.prefix_filter_length,
+                    require_match=True,
+                    sharp_odds_cache=self._sharp_odds_cache,
+                    max_asymmetry_diff=fm.max_asymmetry_diff,
+                    min_for_asymmetry_check=fm.min_for_asymmetry_check,
+                    date_index=self.event_cache_by_date,
+                )
+
+                if is_new or odds_processed > 0:
+                    deferred_session.delete(de)
+                    recovered += 1
+                else:
+                    de.attempt_count += 1
+
+            # Cleanup expired or stale (>6 hours)
             expired = (
-                self.session.query(DeferredEvent)
+                deferred_session.query(DeferredEvent)
                 .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
                 .delete()
             )
-            if expired:
-                self.session.commit()
-            return 0, expired
 
-        recovered = 0
-        fm = self.orchestrator_config.fuzzy_match
+            # Commit with deadlock retry — soft providers may be writing
+            # deferred_events concurrently via _store_deferred_event().
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    deferred_session.commit()
+                    break
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if ("deadlock" in err_str or "unique" in err_str) and attempt < max_retries - 1:
+                        wait = 0.1 * (2**attempt)
+                        logger.warning(
+                            f"[Deferred] Commit retry {attempt + 1}/{max_retries} "
+                            f"({'deadlock' if 'deadlock' in err_str else 'conflict'}), "
+                            f"waiting {wait:.1f}s..."
+                        )
+                        deferred_session.rollback()
+                        _time.sleep(wait)
+                    else:
+                        deferred_session.rollback()
+                        raise
 
-        for de in deferred:
-            event = de.to_standard_event()
-            is_new, odds_processed, _ = store_provider_event(
-                self.session,
-                event,
-                de.provider_id,
-                event_cache=self.event_cache,
-                fuzzy_threshold=fm.threshold,
-                min_individual_score=fm.min_individual_score,
-                prefix_filter_length=fm.prefix_filter_length,
-                require_match=True,
-                sharp_odds_cache=self._sharp_odds_cache,
-                max_asymmetry_diff=fm.max_asymmetry_diff,
-                min_for_asymmetry_check=fm.min_for_asymmetry_check,
-                date_index=self.event_cache_by_date,
-            )
+            if recovered or expired:
+                logger.info(
+                    f"Deferred resolution: {recovered} recovered, "
+                    f"{expired} expired, {len(deferred) - recovered} still pending"
+                )
 
-            if is_new or odds_processed > 0:
-                self.session.delete(de)
-                recovered += 1
-            else:
-                de.attempt_count += 1
+            return recovered, expired
 
-        # Cleanup expired or stale (>6 hours)
-        expired = (
-            self.session.query(DeferredEvent)
-            .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
-            .delete()
-        )
-
-        self.session.commit()
-
-        if recovered or expired:
-            logger.info(
-                f"Deferred resolution: {recovered} recovered, "
-                f"{expired} expired, {len(deferred) - recovered} still pending"
-            )
-
-        return recovered, expired
+        except Exception:
+            deferred_session.rollback()
+            raise
+        finally:
+            deferred_session.close()
 
     async def clear_cache(self):
         """Clear the event cache (thread-safe)."""
