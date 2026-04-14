@@ -1,15 +1,22 @@
 """
-Provider Health Checking
+Provider Health Checking and Extraction Health Assessment.
 
 On-demand health checks with caching to avoid redundant checks.
+Extraction health: detects sharp source outage, consecutive failures,
+provider staleness, DB integrity errors, opportunity volume drops.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Dict, Optional
+
+import yaml
+
+from ..paths import get_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +24,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class HealthStatus:
     """Health check result."""
+
     healthy: bool
     response_time_ms: float
-    error: Optional[str] = None
+    error: str | None = None
     checked_at: float = None
 
     def __post_init__(self):
@@ -37,11 +45,7 @@ class HealthChecker:
     - Configurable timeout per check
     """
 
-    def __init__(
-        self,
-        timeout_seconds: float = 10.0,
-        cache_ttl_seconds: int = 60
-    ):
+    def __init__(self, timeout_seconds: float = 10.0, cache_ttl_seconds: int = 60):
         """
         Initialize health checker.
 
@@ -53,9 +57,9 @@ class HealthChecker:
         self.cache_ttl_seconds = cache_ttl_seconds
 
         self._lock = Lock()
-        self._cache: Dict[str, HealthStatus] = {}
+        self._cache: dict[str, HealthStatus] = {}
 
-    def _get_cached_status(self, provider_id: str) -> Optional[HealthStatus]:
+    def _get_cached_status(self, provider_id: str) -> HealthStatus | None:
         """
         Get cached health status if still valid.
 
@@ -78,12 +82,7 @@ class HealthChecker:
 
         return status
 
-    async def check_provider(
-        self,
-        provider_id: str,
-        extractor,
-        force: bool = False
-    ) -> HealthStatus:
+    async def check_provider(self, provider_id: str, extractor, force: bool = False) -> HealthStatus:
         """
         Check provider health.
 
@@ -112,41 +111,25 @@ class HealthChecker:
             test_sport = "football"  # Most providers support football
 
             # Run with timeout
-            events = await asyncio.wait_for(
-                extractor.extract(test_sport, limit=1),
-                timeout=self.timeout_seconds
-            )
+            events = await asyncio.wait_for(extractor.extract(test_sport, limit=1), timeout=self.timeout_seconds)
 
             response_time_ms = (time.time() - start_time) * 1000
 
             # Success if we got any data (even empty list is success)
-            status = HealthStatus(
-                healthy=True,
-                response_time_ms=response_time_ms,
-                error=None
-            )
+            status = HealthStatus(healthy=True, response_time_ms=response_time_ms, error=None)
 
-            logger.info(
-                f"[HealthCheck] {provider_id}: HEALTHY "
-                f"({response_time_ms:.0f}ms, {len(events)} events)"
-            )
+            logger.info(f"[HealthCheck] {provider_id}: HEALTHY ({response_time_ms:.0f}ms, {len(events)} events)")
 
         except asyncio.TimeoutError:
             response_time_ms = (time.time() - start_time) * 1000
             status = HealthStatus(
-                healthy=False,
-                response_time_ms=response_time_ms,
-                error=f"Timeout after {self.timeout_seconds}s"
+                healthy=False, response_time_ms=response_time_ms, error=f"Timeout after {self.timeout_seconds}s"
             )
             logger.warning(f"[HealthCheck] {provider_id}: TIMEOUT")
 
         except Exception as e:
             response_time_ms = (time.time() - start_time) * 1000
-            status = HealthStatus(
-                healthy=False,
-                response_time_ms=response_time_ms,
-                error=str(e)
-            )
+            status = HealthStatus(healthy=False, response_time_ms=response_time_ms, error=str(e))
             logger.warning(f"[HealthCheck] {provider_id}: FAILED - {e}")
 
         # Cache result
@@ -155,7 +138,7 @@ class HealthChecker:
 
         return status
 
-    def get_cached_status(self, provider_id: str) -> Optional[HealthStatus]:
+    def get_cached_status(self, provider_id: str) -> HealthStatus | None:
         """
         Get cached health status (public method).
 
@@ -168,7 +151,7 @@ class HealthChecker:
         with self._lock:
             return self._get_cached_status(provider_id)
 
-    def clear_cache(self, provider_id: Optional[str] = None):
+    def clear_cache(self, provider_id: str | None = None):
         """
         Clear health check cache.
 
@@ -184,7 +167,7 @@ class HealthChecker:
                     del self._cache[provider_id]
                     logger.info(f"Health check cache cleared: {provider_id}")
 
-    def get_all_statuses(self) -> Dict[str, HealthStatus]:
+    def get_all_statuses(self) -> dict[str, HealthStatus]:
         """
         Get all cached health statuses.
 
@@ -193,3 +176,25 @@ class HealthChecker:
         """
         with self._lock:
             return dict(self._cache)
+
+
+def get_provider_intervals() -> dict[str, int]:
+    """Load provider → interval_minutes mapping from providers.yaml.
+
+    Only includes providers that are both in a scheduling tier AND in the active list.
+    """
+    config_path = get_config_path("providers.yaml")
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    active = set(config.get("active", []))
+    tiers = config.get("extraction_scheduling", {})
+
+    intervals: dict[str, int] = {}
+    for tier_cfg in tiers.values():
+        interval = tier_cfg.get("interval_minutes", 10)
+        for provider in tier_cfg.get("providers", []):
+            if provider in active:
+                intervals[provider] = interval
+
+    return intervals
