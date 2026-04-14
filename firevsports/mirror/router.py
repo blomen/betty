@@ -51,7 +51,8 @@ class OpenTabRequest(BaseModel):
 class PlayStartRequest(BaseModel):
     batch: list[dict[str, Any]]
     balances: dict[str, Any]
-    provider_id: str | None = None  # which skin to start on
+    provider_id: str | None = None  # backward compat: single provider
+    provider_ids: list[str] | None = None  # multi-provider: list of providers to start
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +116,29 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     browser.set_event_callback(_on_browser_event)
 
+    @router.post("/close-all-tabs")
+    async def close_all_tabs():
+        """Close all browser tabs (keeps browser running). Leaves one blank tab."""
+        if not browser.running or not browser.context:
+            return {"closed": 0}
+        pages = list(browser.context.pages)
+        closed = 0
+        for i, page in enumerate(pages):
+            if i == 0:
+                # Navigate first tab to blank instead of closing (keeps context alive)
+                try:
+                    await page.goto("about:blank")
+                except Exception:
+                    pass
+                continue
+            try:
+                await page.close()
+                closed += 1
+            except Exception:
+                pass
+        browser.provider_data.clear()
+        return {"closed": closed}
+
     @router.post("/open-provider-tab")
     async def open_provider_tab(request: Request):
         """Open a provider's site in a new tab (starts browser if needed)."""
@@ -168,7 +192,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 break
         if not tab_url:
             return {"found": False, "logged_in": False, "balance": None, "domain": workflow.domain}
-        # Use intercepted data, fallback to DOM scrape (no new tabs opened)
+        # Use intercepted data, fallback to DOM scrape, then workflow API
         intercepted = browser.provider_data.get(provider_id, {})
         logged_in = intercepted.get("logged_in", False)
         balance = intercepted.get("balance")
@@ -176,6 +200,24 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             dom = await browser.check_login_dom(provider_id)
             logged_in = dom.get("logged_in", False)
             balance = dom.get("balance") or balance
+        if not logged_in:
+            # Workflow API fallback (e.g. GraphQL relay for LeoVegas)
+            page = None
+            for p in browser.context.pages:
+                if workflow.domain and workflow.domain in p.url:
+                    page = p
+                    break
+            if page:
+                try:
+                    bal = await workflow.sync_balance(page)
+                    if bal >= 0:
+                        logged_in = True
+                        balance = bal
+                        browser.provider_data.setdefault(provider_id, {}).update(
+                            {"logged_in": True, "balance": bal, "source": "workflow_api"}
+                        )
+                except Exception:
+                    pass
         return {
             "found": True,
             "provider_id": provider_id,
@@ -333,7 +375,8 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     @router.post("/play/start")
     async def play_start(req: PlayStartRequest):
         """Load a batch of bets and start the play loop."""
-        play_loop.load_batch(req.batch, req.balances, start_provider=req.provider_id)
+        pids = req.provider_ids or ([req.provider_id] if req.provider_id else [])
+        play_loop.load_batch(req.batch, req.balances, provider_ids=pids)
         play_loop.start()
         return play_loop.get_status()
 
@@ -349,15 +392,17 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         return play_loop.get_status()
 
     @router.post("/play/place")
-    async def play_place():
+    async def play_place(body: dict[str, Any] | None = None):
         """Confirm placement of the current bet in the play loop."""
-        play_loop.place()
+        pid = (body or {}).get("provider_id")
+        play_loop.place(provider_id=pid)
         return play_loop.get_status()
 
     @router.post("/play/skip")
-    async def play_skip():
+    async def play_skip(body: dict[str, Any] | None = None):
         """Skip the current bet in the play loop."""
-        play_loop.skip()
+        pid = (body or {}).get("provider_id")
+        play_loop.skip(provider_id=pid)
         return play_loop.get_status()
 
     @router.post("/play/stop")
