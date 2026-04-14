@@ -40,6 +40,8 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
     # Explicit Kambi fields — avoid collision with top-level event_id (canonical UUID)
     ns.kambi_event_id = meta.get("event_id", "")
     ns.kambi_outcome_id = meta.get("outcome_id", "")
+    # Gecko V2 fields — same event_id key in provider_meta, different prefix
+    ns.gecko_event_id = meta.get("event_id", "")
     return ns
 
 
@@ -285,32 +287,28 @@ class PlayLoop:
                     current_provider = provider_id
                     workflow = get_workflow(provider_id)
 
-                    # Find existing tab or open new one
+                    # Find existing tab (frontend opens it before starting loop)
                     self.state = STATE_PROVIDER_OPENING
                     self._broadcaster.publish("provider_opening", {"provider_id": provider_id})
-                    await asyncio.sleep(1)
-                    page = await workflow.find_tab(self._browser.context) if self._browser.context else None
-
-                    if page is None and self._browser.context:
-                        domain = workflow.domain
-                        for p in self._browser.context.pages:
-                            if domain and domain in p.url:
-                                page = p
-                                break
+                    # Wait for tab to finish loading (frontend opens it just before)
+                    page = None
+                    for attempt in range(10):
+                        if self._browser.context:
+                            page = await workflow.find_tab(self._browser.context)
+                            if page is None:
+                                for p in self._browser.context.pages:
+                                    if workflow.domain and workflow.domain in p.url:
+                                        page = p
+                                        break
+                        if page:
+                            break
+                        await asyncio.sleep(1)
 
                     if page is None:
-                        domain = workflow.domain
-                        url = workflow.home_url if domain else None
-                        if url and self._browser.context:
-                            logger.info(f"[PlayLoop] Opening tab for {provider_id}: {url}")
-                            page = await self._browser.open_tab(url)
-                        else:
-                            logger.warning(
-                                f"[PlayLoop] No domain for {provider_id}, cannot open tab — skipping provider"
-                            )
-                            self._skip_provider(provider_id)
-                            current_provider = None
-                            continue
+                        logger.warning(f"[PlayLoop] No tab found for {provider_id} — skipping provider")
+                        self._skip_provider(provider_id)
+                        current_provider = None
+                        continue
 
                     # Wait for login
                     self.state = STATE_LOGIN_WAITING
