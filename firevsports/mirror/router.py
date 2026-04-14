@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from .browser import MirrorBrowser
+from .pending_loop import PendingLoop
 from .play_loop import PlayLoop
 from .sse import MirrorBroadcaster
 from .workflows import get_workflow
