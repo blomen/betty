@@ -103,6 +103,36 @@ class LevelMonitor:
                 )
             )
 
+        # Extract structural levels from session dict (POC, VAH, VAL, PDH, PDL, etc.)
+        # Tuples: (session_dict_key, level_name, category)
+        _SESSION_LEVELS = [
+            ("poc", "poc", "session"),
+            ("vah", "vah", "session"),
+            ("val", "val", "session"),
+            ("pdh", "pdh", "prior"),
+            ("pdl", "pdl", "prior"),
+            ("tokyo_high", "tokyo_high", "session"),
+            ("tokyo_low", "tokyo_low", "session"),
+            ("london_high", "london_high", "session"),
+            ("london_low", "london_low", "session"),
+            ("tpo_poc", "tpoc", "session"),
+            ("tpo_vah", "tvah", "session"),
+            ("tpo_val", "tval", "session"),
+        ]
+        for session_key, name, category in _SESSION_LEVELS:
+            val = session.get(session_key)
+            if val is not None:
+                if not any(l.name == name and abs(l.price - val) < TICK_SIZE for l in self._levels):
+                    self._levels.append(MonitoredLevel(name=name, price=float(val), category=category))
+
+        # Extract IB levels
+        ib_high = session.get("ib_high")
+        ib_low = session.get("ib_low")
+        if ib_high is not None:
+            self._levels.append(MonitoredLevel(name="nyib_high", price=float(ib_high), category="session"))
+        if ib_low is not None:
+            self._levels.append(MonitoredLevel(name="nyib_low", price=float(ib_low), category="session"))
+
         for band_name, key in [
             ("VWAP", "vwap"),
             ("VWAP +1SD", "vwap_1sd_upper"),
@@ -123,7 +153,13 @@ class LevelMonitor:
                         )
                     )
 
-        logger.info("LevelMonitor loaded %d levels", len(self._levels))
+        logger.info(
+            "LevelMonitor loaded %d levels (from session: %d structural + %d bands, from DB: %d)",
+            len(self._levels),
+            sum(1 for l in self._levels if l.category in ("session", "prior")),
+            sum(1 for l in self._levels if l.category == "band"),
+            len(levels_list),
+        )
 
         # Set wider approach zones for swing levels
         _SWING_ZONES = {

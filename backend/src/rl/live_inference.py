@@ -516,17 +516,15 @@ _instance = None
 
 
 def get_dqn_inference():
-    """Get the global inference singleton. Prefers v5 > specialists > GBT > DQN."""
+    """Get the global inference singleton. Prefers specialists > GBT > DQN.
+
+    V5 (narrative + trigger) is disabled — the trained model has a feature
+    dimension mismatch (18 vs 153 narrative features) causing IndexError
+    at inference time. Re-enable after retraining with current feature set.
+    """
     global _instance
     if _instance is None:
-        # Try v5 two-stage inference first (narrative + trigger GBTs)
-        v5 = LiveInferenceV5()
-        if v5.try_load():
-            _instance = v5
-            log.info("Using V5 two-stage inference for live inference")
-            return _instance
-
-        # Try specialists
+        # Try specialists first (best working model)
         spec = LiveInferenceSpecialists()
         if spec.try_load():
             _instance = spec
