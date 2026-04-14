@@ -54,12 +54,23 @@ export default function PlayPage() {
   const [toasts, setToasts] = useState<SettleToast[]>([])
   const [confirmedSettlements, setConfirmedSettlements] = useState<any[]>([])
   const [settleWaiting, setSettleWaiting] = useState(false)
-  const [activeCluster, setActiveCluster] = useState<string | null>(null)
-  const [activeSkin, setActiveSkin] = useState<string | null>(null)
+  const [activeProviders, setActiveProviders] = useState<Set<string>>(new Set())
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
+  const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
 
-  const startSkin = async (pid: string, clusterId: string) => {
+  const toggleProvider = (pid: string) => {
+    if (loopRunning) return // Don't toggle while running
+    setActiveProviders(prev => {
+      const next = new Set(prev)
+      if (next.has(pid)) next.delete(pid)
+      else next.add(pid)
+      return next
+    })
+  }
+
+  const startAll = async () => {
+    if (activeProviders.size === 0) return
     if (loopRunning) {
       api.stopPlayLoop()
       setLoopRunning(false)
@@ -68,20 +79,17 @@ export default function PlayPage() {
       setConfirmedSettlements([])
       setSettleWaiting(false)
       setLoopStatus(null)
-    }
-    if (activeCluster === clusterId && activeSkin === pid) {
-      setActiveCluster(null)
-      setActiveSkin(null)
+      setLoopProviderStatus(null)
       return
     }
-    setActiveCluster(clusterId)
-    setActiveSkin(pid)
-    // Ensure mirror browser is running, then open provider tab
+    // Open tabs for all selected providers
     try { await api.startMirror() } catch { /* */ }
-    try { await api.openTab(pid) } catch { /* */ }
-    const clusterBets = bets.filter(b => (b.cluster || b.provider_id) === clusterId)
+    await Promise.all([...activeProviders].map(pid => api.openTab(pid).catch(() => {})))
+    // Collect bets from all selected clusters
+    const selectedClusters = new Set([...activeProviders].map(pid => providerToCluster[pid] || pid))
+    const allBets = bets.filter(b => selectedClusters.has(b.cluster || b.provider_id))
     setLoopRunning(true)
-    await api.startPlayLoop(clusterBets, providerBalances, pid)
+    await api.startPlayLoop(allBets, providerBalances, [...activeProviders])
   }
 
   const load = useCallback(async () => {
@@ -158,7 +166,7 @@ export default function PlayPage() {
     if (type === 'bet_placed') {
       setCurrentBetReady(null)
       const bet = data.bet
-      const pid = bet?.provider_id || activeSkin || ''
+      const pid = bet?.provider_id || ''
       const currentPending = (pendingByProvider[pid] ?? []).length + 1
       const placedCount = data.placed_today ?? 1
       setPlacementToast({ bet, count: currentPending, cap: 10 })
@@ -171,13 +179,13 @@ export default function PlayPage() {
         setBatch(prev => prev.filter(b =>
           !(b.event_id === bet.event_id && b.market === bet.market && b.outcome === bet.outcome)
         ))
-        const pid = bet.provider_id || activeSkin || ''
+        const bpid = bet.provider_id || ''
         setPendingByProvider(prev => ({
           ...prev,
-          [pid]: [...(prev[pid] ?? []), {
+          [bpid]: [...(prev[bpid] ?? []), {
             id: Date.now(),
             event_id: bet.event_id,
-            provider_id: pid,
+            provider_id: bpid,
             market: bet.market,
             outcome: bet.outcome,
             point: bet.point,
@@ -191,15 +199,40 @@ export default function PlayPage() {
       setTimeout(load, 3000) // Delayed refresh — let server record the bet first
     }
     if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null) }
-    if (type === 'provider_complete') setLoopStatus(`${data.provider_id} done — next skin`)
+    if (type === 'provider_complete') {
+      setLoopProviderStatus(prev => {
+        if (!prev) return prev
+        const next = { ...prev }
+        delete next[data.provider_id]
+        return Object.keys(next).length > 0 ? next : null
+      })
+    }
     if (type === 'play_complete' || type === 'play_stopped') {
       setLoopRunning(false)
       setCurrentBetReady(null)
-      setActiveCluster(null)
-      setActiveSkin(null)
+      setActiveProviders(new Set())
+      setLoopProviderStatus(null)
       setToasts([])
       setSettleWaiting(false)
       setLoopStatus(null)
+    }
+    // Update per-provider status from individual events
+    if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
+        type === 'settling_pending' || type === 'settling_done' ||
+        type === 'bet_ready' || type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed') {
+      const epid = data.provider_id || data.bet?.provider_id
+      if (epid) {
+        setLoopProviderStatus(prev => ({
+          ...prev,
+          [epid]: {
+            state: type === 'bet_ready' ? 'ready' :
+                   type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed' ? 'navigating' :
+                   type.includes('login') ? 'login_waiting' :
+                   type.includes('settl') ? 'settling' : 'opening',
+            current_bet: data.bet || null,
+          }
+        }))
+      }
     }
   }, [mirror.lastEvent])
 
@@ -382,6 +415,49 @@ export default function PlayPage() {
         </div>
       )}
 
+      {/* Control bar */}
+      {activeProviders.size > 0 && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-zinc-900/80">
+          <button
+            onClick={startAll}
+            className={`px-3 py-1 text-xs font-semibold rounded ${
+              loopRunning
+                ? 'bg-red-700/50 text-red-300 hover:bg-red-700/70'
+                : 'bg-green-700/50 text-green-300 hover:bg-green-700/70'
+            }`}
+          >
+            {loopRunning ? 'Stop' : `Start ${activeProviders.size} providers`}
+          </button>
+          <span className="text-[10px] text-zinc-500">{[...activeProviders].join(', ')}</span>
+        </div>
+      )}
+
+      {/* Per-provider status rows */}
+      {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
+        <div className="border-b border-zinc-800">
+          {Object.entries(loopProviderStatus).map(([pid, status]: [string, any]) => (
+            <div key={pid} className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
+              <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">{pid}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                status.state === 'ready' ? 'bg-green-900/40 text-green-400' :
+                status.state === 'navigating' ? 'bg-blue-900/40 text-blue-400' :
+                status.state === 'placing' ? 'bg-amber-900/40 text-amber-400' :
+                status.state === 'settling' ? 'bg-purple-900/40 text-purple-400' :
+                'bg-zinc-800 text-zinc-500'
+              }`}>{status.state}</span>
+              {status.current_bet && (
+                <span className="text-[10px] text-zinc-300 truncate">
+                  {status.current_bet.display_home} v {status.current_bet.display_away} — {status.current_bet.outcome} @ {status.current_bet.odds?.toFixed(2)}
+                </span>
+              )}
+              {status.state === 'ready' && (
+                <button onClick={() => api.skipCurrent(pid)} className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto">skip</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Main content — flat list per cluster */}
       <div className="flex-1 overflow-y-auto">
         {clusterIds.length === 0 && batch.length > 0 && (
@@ -391,7 +467,7 @@ export default function PlayPage() {
         {clusterIds.map(clusterId => {
           const cb = byCluster[clusterId] || []
           const stats = clusterStats(clusterId)
-          const isActive = activeCluster === clusterId
+          const isActive = stats.providers.some(p => activeProviders.has(p))
 
           return (
             <div key={clusterId}>
@@ -406,13 +482,13 @@ export default function PlayPage() {
                     const bal = providerBalances[pid] ?? 0
                     const placed = placedToday[pid] ?? 0
                     const pending = pendingByProvider[pid]?.length ?? 0
-                    const isSkinActive = activeSkin === pid
+                    const isSkinActive = activeProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
                     const atCap = !uncapped && placed >= 10
                     const disabled = bal <= 0 && pending === 0
                     return (
                       <button key={pid}
-                        onClick={() => !disabled && startSkin(pid, clusterId)}
+                        onClick={() => !disabled && toggleProvider(pid)}
                         disabled={disabled}
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
