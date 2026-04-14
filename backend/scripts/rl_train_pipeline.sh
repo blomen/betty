@@ -111,9 +111,19 @@ step_run "4/8" "Training Trigger GBT v5" "critical" \
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 5: Re-replay with GBT augmentation → hybrid trigger episodes (critical)
-# --clean: must wipe base chunks since augmented obs have different dims
+# --clean on first entry wipes step-1 chunks; on resume, skip --clean so partial
+# progress from an interrupted step-5 replay is preserved.
+STEP5_STARTED=/app/data/rl/step5_started
+if [ -f "$STEP5_STARTED" ]; then
+    STEP5_CLEAN=""
+    echo "[5/8] Resuming step 5 (no --clean, preserving existing chunks)."
+else
+    STEP5_CLEAN="--clean"
+    touch "$STEP5_STARTED"
+fi
 step_run "5/8" "Re-replaying with GBT augmentation → hybrid trigger episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers 1 --clean
+    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers 1 $STEP5_CLEAN
+rm -f "$STEP5_STARTED"  # clean up marker after success
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 6: Train Trigger DQN (critical)
