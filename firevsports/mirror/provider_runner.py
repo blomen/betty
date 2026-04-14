@@ -179,6 +179,7 @@ class ProviderRunner:
                     return
 
             # 5. Process bets from shared queue
+            logger.info(f"[Runner:{pid}] Entering bet loop")
             while True:
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
@@ -191,9 +192,11 @@ class ProviderRunner:
 
                 bet = self._pop_bet()
                 if bet is None:
+                    logger.info(f"[Runner:{pid}] Queue empty — done")
                     break
 
                 if self._is_blocked(bet):
+                    logger.debug(f"[Runner:{pid}] Skipping blocked bet: {bet.get('event_id')} {bet.get('market')}")
                     continue
 
                 self.stats["total"] += 1
@@ -413,11 +416,13 @@ class ProviderRunner:
         await asyncio.sleep(2)
         elapsed = 2.0
         while elapsed < LOGIN_TIMEOUT:
+            # 1. Check intercepted data
             if self._browser.is_logged_in(workflow.provider_id):
                 bal = self._browser.get_balance(workflow.provider_id)
                 self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id, "balance": bal})
                 logger.info(f"[Runner:{self.provider_id}] Login detected (balance: {bal})")
                 return True
+            # 2. DOM scrape fallback
             try:
                 dom_result = await self._browser.check_login_dom(workflow.provider_id)
                 if dom_result.get("logged_in"):
@@ -425,6 +430,18 @@ class ProviderRunner:
                         "login_detected",
                         {"provider_id": workflow.provider_id, "balance": dom_result.get("balance")},
                     )
+                    return True
+            except Exception:
+                pass
+            # 3. Workflow API fallback (e.g. GraphQL relay for LeoVegas)
+            try:
+                bal = await workflow.sync_balance(page)
+                if bal >= 0:
+                    self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
+                        {"logged_in": True, "balance": bal, "source": "workflow_api"}
+                    )
+                    self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id, "balance": bal})
+                    logger.info(f"[Runner:{self.provider_id}] Login detected via workflow API (balance: {bal})")
                     return True
             except Exception:
                 pass
@@ -463,12 +480,17 @@ class ProviderRunner:
 
     async def _settle_pending(self, provider_id: str, workflow, page) -> None:
         """Settle pending bets — auto-confirm for parallel play."""
+        # Check pending count first — skip entirely if none
+        pending_bets = await self._fetch_pending(provider_id)
+        if not pending_bets:
+            logger.info(f"[Runner:{provider_id}] No pending bets — skipping settle")
+            return
+
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
 
         await self._reconcile_open_bets(provider_id, workflow, page)
 
-        pending_bets = await self._fetch_pending(provider_id)
         if not pending_bets:
             self._broadcaster.publish(
                 "settling_done", {"provider_id": provider_id, "pending_count": 0, "settlements": []}
