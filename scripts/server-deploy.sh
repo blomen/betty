@@ -80,6 +80,40 @@ record_deploy_time() {
     date +%s > "$DEPLOY_COOLDOWN_FILE"
 }
 
+# RL training protection — wait for active pipeline to finish before killing container
+RL_PROGRESS="/opt/firev/data/rl/pipeline_progress"
+RL_MAX_WAIT=7200  # 2 hours max wait
+
+wait_for_rl_training() {
+    # Check if RL pipeline is running inside the container
+    local rl_running
+    rl_running=$(docker compose exec -T backend bash -c 'ps aux | grep -c "[r]l_train_pipeline"' 2>/dev/null || echo "0")
+    if [ "$rl_running" -gt 0 ]; then
+        echo ""
+        echo ">>> RL TRAINING ACTIVE — waiting for pipeline to finish before restart."
+        echo "    (The RL pipeline has never completed in 12 days due to deploy interruptions.)"
+        echo "    Max wait: ${RL_MAX_WAIT}s. Progress file: pipeline_progress"
+        echo ""
+        local elapsed=0
+        while [ "$elapsed" -lt "$RL_MAX_WAIT" ]; do
+            rl_running=$(docker compose exec -T backend bash -c 'ps aux | grep -c "[r]l_train_pipeline"' 2>/dev/null || echo "0")
+            if [ "$rl_running" -eq 0 ]; then
+                echo ">>> RL pipeline finished. Proceeding with deploy."
+                return 0
+            fi
+            # Show progress
+            local progress
+            progress=$(docker compose exec -T backend cat /app/data/rl/pipeline_progress 2>/dev/null || echo "step 1")
+            local chunks
+            chunks=$(docker compose exec -T backend bash -c 'ls /app/data/rl/episodes/_chunks/obs_*.npy 2>/dev/null | wc -l' 2>/dev/null || echo "?")
+            echo "    ... RL training in progress (${elapsed}s, chunks: ${chunks}/38, steps done: ${progress})"
+            sleep 30
+            elapsed=$(( elapsed + 30 ))
+        done
+        echo ">>> WARNING: RL training still running after ${RL_MAX_WAIT}s — proceeding with deploy."
+    fi
+}
+
 # Health check — verify container is healthy after deploy
 wait_for_health() {
     local svc="$1"
@@ -145,7 +179,11 @@ case "$action" in
         check_cooldown
         echo ">>> git pull + rebuild $service"
         git pull
-        docker compose up -d --build "$service"
+        # Build image first (doesn't affect running container)
+        docker compose build "$service"
+        # Wait for RL training before swapping container
+        wait_for_rl_training
+        docker compose up -d "$service"
         echo ">>> Cleaning up old images..."
         docker image prune -f
         record_deploy_time
@@ -159,6 +197,7 @@ case "$action" in
         check_cooldown
         echo ">>> git pull + restart $service"
         git pull
+        wait_for_rl_training
         docker compose restart "$service"
         record_deploy_time
         if ! wait_for_health "$service"; then
