@@ -2282,23 +2282,6 @@ def train_trigger_gbt(
 
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
-    # Subsample to fit in memory (LightGBM duplicates data per thread)
-    MAX_GBT_SAMPLES = 250_000
-    if n > MAX_GBT_SAMPLES:
-        rng = np.random.RandomState(42)
-        idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
-        idx.sort()  # preserve chronological order
-        observations = observations[idx]
-        rewards_cont = rewards_cont[idx]
-        rewards_rev = rewards_rev[idx]
-        stop_targets = stop_targets[idx]
-        if breakeven_reached is not None:
-            breakeven_reached = breakeven_reached[idx]
-        if levels_captured is not None:
-            levels_captured = levels_captured[idx]
-        n = MAX_GBT_SAMPLES
-        typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
-
     # --- Load trigger observations (144-dim, built during replay) ---
     trig_path = episodes_dir / "trigger_observations.npy"
     if not trig_path.exists():
@@ -2309,18 +2292,31 @@ def train_trigger_gbt(
         )
         raise typer.Exit(1)
     X = np.load(trig_path)
-    if len(X) != len(observations):
+    if len(X) != n:
         typer.echo(
-            f"trigger_observations.npy has {len(X)} rows but observations.npy has {len(observations)}.\n"
+            f"trigger_observations.npy has {len(X)} rows but observations.npy has {n}.\n"
             "Run 'rl replay --all --clean' to regenerate.",
             err=True,
         )
         raise typer.Exit(1)
-    if n < len(X):
-        # Apply same subsampling as observations
-        rng_idx = np.random.RandomState(42).choice(len(X), n, replace=False)
-        rng_idx.sort()
-        X = X[rng_idx]
+
+    # Subsample to fit in memory (LightGBM duplicates data per thread)
+    MAX_GBT_SAMPLES = 250_000
+    if n > MAX_GBT_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
+        idx.sort()  # preserve chronological order
+        observations = observations[idx]
+        rewards_cont = rewards_cont[idx]
+        rewards_rev = rewards_rev[idx]
+        stop_targets = stop_targets[idx]
+        X = X[idx]
+        if breakeven_reached is not None:
+            breakeven_reached = breakeven_reached[idx]
+        if levels_captured is not None:
+            levels_captured = levels_captured[idx]
+        n = MAX_GBT_SAMPLES
+        typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
     typer.echo(f"Trigger features: {X.shape[1]} dims (loaded from trigger_observations.npy)")
 
     # --- Labels ---
