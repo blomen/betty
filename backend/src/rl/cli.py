@@ -789,8 +789,8 @@ def _replay_single_file(
                     trigger_obs = build_trigger_observation(narrative, setup_probs_ep, ep.state, obs, gbt_forecast)
                 else:
                     gbt_forecast = gbt_model.predict_full(obs)
-                pos_state = build_position_state()
-                obs = augment_observation(obs, gbt_forecast, pos_state)
+                    pos_state = build_position_state()
+                    obs = augment_observation(obs, gbt_forecast, pos_state)
 
             ep.state = None  # free large state dict — not needed after trigger_obs built
 

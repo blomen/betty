@@ -1,6 +1,11 @@
 #!/bin/bash
 # Full RL training pipeline v5 — hierarchical observation architecture.
 #
+# RESUME-SAFE: Each completed step is recorded in a progress file.
+# If the container restarts mid-pipeline, re-running picks up where it
+# left off instead of starting from scratch.  Step 1 (replay) is also
+# internally resume-safe via per-file chunks.
+#
 # Pipeline:
 #   0. Merge live episodes
 #   1. Replay historical ticks → base episodes (parallel)
@@ -14,11 +19,12 @@
 #
 # Error handling:
 #   - Each step checks exit code and logs failure
-#   - Critical failures (step 1) abort the pipeline with non-zero exit
-#   - Non-critical failures (step 2, 7) log warning and continue
+#   - Critical failures abort the pipeline with non-zero exit
+#   - Non-critical failures log warning and continue
 #   - Pipeline returns 0 only if all critical steps succeed
 
 LOG=/app/data/rl/pipeline.log
+PROGRESS=/app/data/rl/pipeline_progress
 exec > >(tee -a "$LOG") 2>&1
 
 renice -n 19 $$ >/dev/null 2>&1 || true
@@ -28,16 +34,33 @@ taskset -cp 0,1,4,5 $$ >/dev/null 2>&1 || true
 
 FAILED=0
 
+step_done() {
+    # Check if step $1 was already completed in a previous run
+    [ -f "$PROGRESS" ] && grep -qx "$1" "$PROGRESS"
+}
+
+step_mark() {
+    # Record step $1 as completed
+    echo "$1" >> "$PROGRESS"
+}
+
 step_run() {
     local step_num="$1"
     local step_name="$2"
     local critical="$3"  # "critical" or "optional"
     shift 3
 
+    if step_done "$step_num"; then
+        echo ""
+        echo "[$step_num] $step_name — already done, skipping."
+        return 0
+    fi
+
     echo ""
     echo "[$step_num] $step_name..."
     if "$@"; then
         echo "[$step_num] Done."
+        step_mark "$step_num"
     else
         local ec=$?
         echo "[$step_num] FAILED (exit code $ec)."
@@ -47,6 +70,7 @@ step_run() {
             return 1
         else
             echo "  (non-critical — continuing)"
+            step_mark "$step_num"  # skip on next resume
         fi
     fi
     return 0
@@ -55,6 +79,9 @@ step_run() {
 echo "=========================================="
 echo "  RL TRAINING PIPELINE v5 — $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "  PID: $$ (nice 19 — low priority)"
+if [ -f "$PROGRESS" ]; then
+    echo "  RESUMING from: $(cat "$PROGRESS" | tr '\n' ' ')"
+fi
 echo "=========================================="
 
 cd /app/backend
@@ -64,6 +91,7 @@ step_run "0/8" "Merging live episodes" "optional" \
     python -m src.app rl merge-live
 
 # Step 1: Parallel replay → base episodes (CRITICAL)
+# Internally resume-safe: skips parquet files that already have chunks
 step_run "1/8" "Replaying historical ticks → base episodes" "critical" \
     nice -n 19 python -m src.app rl replay --all --workers 1
 [ $FAILED -eq 1 ] && exit 1
@@ -98,12 +126,18 @@ step_run "7/8" "Evaluating DQN v5" "optional" \
     python -m src.app rl eval --checkpoint v5 --skip-threshold 0.15
 
 # Step 8: Deploy
-echo ""
-echo "[8/8] Deploying v5 models..."
-cp -f /app/backend/data/rl/models/narrative_gbt_v5.joblib /app/backend/data/rl/models/narrative_gbt_latest.joblib 2>/dev/null || true
-cp -f /app/backend/data/rl/models/trigger_gbt_v5.joblib /app/backend/data/rl/models/trigger_gbt_latest.joblib 2>/dev/null || true
-cp -f /app/backend/data/rl/models/dqn_v5.pt /app/backend/data/rl/models/dqn_latest.pt 2>/dev/null || true
-echo "[8/8] Models deployed."
+if ! step_done "8/8"; then
+    echo ""
+    echo "[8/8] Deploying v5 models..."
+    cp -f /app/backend/data/rl/models/narrative_gbt_v5.joblib /app/backend/data/rl/models/narrative_gbt_latest.joblib 2>/dev/null || true
+    cp -f /app/backend/data/rl/models/trigger_gbt_v5.joblib /app/backend/data/rl/models/trigger_gbt_latest.joblib 2>/dev/null || true
+    cp -f /app/backend/data/rl/models/dqn_v5.pt /app/backend/data/rl/models/dqn_latest.pt 2>/dev/null || true
+    echo "[8/8] Models deployed."
+    step_mark "8/8"
+fi
+
+# Pipeline complete — remove progress file so next run starts fresh
+rm -f "$PROGRESS"
 
 echo ""
 echo "=========================================="

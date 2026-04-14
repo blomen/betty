@@ -20,19 +20,20 @@ Feature layout (141 dims):
  ─────────────────────────────────────────────────────────────────────────────
           total                  141
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from .narrative_features import NARRATIVE_DIM, extract_narrative_features
-from .passthrough_features import PASSTHROUGH_DIM, extract_passthrough
-from .micro_features import extract_micro_features
-from .orderflow_features import extract_orderflow_features
 from .level_features import (
     encode_zone_composition,
-    encode_zone_features,
     encode_zone_confluence,
+    encode_zone_features,
 )
+from .micro_features import extract_micro_features
+from .narrative_features import NARRATIVE_DIM
+from .orderflow_features import extract_orderflow_features
+from .passthrough_features import PASSTHROUGH_DIM, extract_passthrough
 
 # ---------------------------------------------------------------------------
 # Segment dimensions
@@ -43,43 +44,43 @@ EXEC_PASSTHROUGH_DIM: int = 3
 
 _MICRO_DIM: int = 20
 _ORDERFLOW_DIM: int = 21
-_CANDLE_DIM: int = 15   # 5 candles x 3 features
+_CANDLE_DIM: int = 15  # 5 candles x 3 features
 _ZONE_FEATS_DIM: int = 4
 _ZONE_CONF_DIM: int = 5
 _ZONE_COMP_DIM: int = 31
 _APPROACH_DIM: int = 1
 
 TRIGGER_DIM: int = (
-    NARRATIVE_DIM         # 15
-    + SETUP_PROB_DIM      #  8
-    + PASSTHROUGH_DIM     # 10
-    + _MICRO_DIM          # 20
-    + _ORDERFLOW_DIM      # 21
-    + _CANDLE_DIM         # 15
-    + _ZONE_FEATS_DIM     #  4
-    + _ZONE_CONF_DIM      #  5
-    + _ZONE_COMP_DIM      # 31
-    + _APPROACH_DIM       #  1
-    + TRIGGER_GBT_DIM     #  8
-    + EXEC_PASSTHROUGH_DIM#  3
+    NARRATIVE_DIM  # 18
+    + SETUP_PROB_DIM  #  8
+    + PASSTHROUGH_DIM  # 10
+    + _MICRO_DIM  # 20
+    + _ORDERFLOW_DIM  # 21
+    + _CANDLE_DIM  # 15
+    + _ZONE_FEATS_DIM  #  4
+    + _ZONE_CONF_DIM  #  5
+    + _ZONE_COMP_DIM  # 31
+    + _APPROACH_DIM  #  1
+    + TRIGGER_GBT_DIM  #  8
+    + EXEC_PASSTHROUGH_DIM  #  3
 )  # 144 (18 narrative + 8 setup + 10 passthrough + 20 micro + 21 orderflow + 15 candles + 4 zone + 5 conf + 31 comp + 1 approach + 8 gbt + 3 exec)
 
 assert TRIGGER_DIM == 144, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
 
 # Ordered segment map — (name: dim) preserving layout order
 TRIGGER_SEGMENTS: dict[str, int] = {
-    "narrative":            NARRATIVE_DIM,
-    "setup_probs":          SETUP_PROB_DIM,
+    "narrative": NARRATIVE_DIM,
+    "setup_probs": SETUP_PROB_DIM,
     "structural_passthrough": PASSTHROUGH_DIM,
-    "micro":                _MICRO_DIM,
-    "orderflow":            _ORDERFLOW_DIM,
-    "candles":              _CANDLE_DIM,
-    "zone_features":        _ZONE_FEATS_DIM,
-    "zone_confluence":      _ZONE_CONF_DIM,
-    "zone_composition":     _ZONE_COMP_DIM,
-    "approach_direction":   _APPROACH_DIM,
+    "micro": _MICRO_DIM,
+    "orderflow": _ORDERFLOW_DIM,
+    "candles": _CANDLE_DIM,
+    "zone_features": _ZONE_FEATS_DIM,
+    "zone_confluence": _ZONE_CONF_DIM,
+    "zone_composition": _ZONE_COMP_DIM,
+    "approach_direction": _APPROACH_DIM,
     "trigger_gbt_forecast": TRIGGER_GBT_DIM,
-    "exec_passthrough":     EXEC_PASSTHROUGH_DIM,
+    "exec_passthrough": EXEC_PASSTHROUGH_DIM,
 }
 
 assert sum(TRIGGER_SEGMENTS.values()) == TRIGGER_DIM, "TRIGGER_SEGMENTS sum mismatch"
@@ -108,6 +109,7 @@ def _build_candle_window(candles: list, avg_vol: float) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Public assembler
 # ---------------------------------------------------------------------------
+
 
 def build_trigger_observation(
     narrative: np.ndarray,
@@ -216,34 +218,38 @@ def build_trigger_observation(
     if trigger_gbt_forecast is not None:
         if trigger_gbt_forecast.shape != (TRIGGER_GBT_DIM,):
             raise ValueError(
-                f"trigger_gbt_forecast must be shape ({TRIGGER_GBT_DIM},), "
-                f"got {trigger_gbt_forecast.shape}"
+                f"trigger_gbt_forecast must be shape ({TRIGGER_GBT_DIM},), got {trigger_gbt_forecast.shape}"
             )
         seg_gbt = trigger_gbt_forecast.astype(np.float32, copy=False)
     else:
         seg_gbt = np.zeros(TRIGGER_GBT_DIM, dtype=np.float32)
 
     # 12. Execution passthrough (3)
-    seg_exec = np.array([
-        float(np.clip(trades_today / 10.0, 0.0, 1.0)),   # trades_today norm [0,10]→[0,1]
-        float(np.clip(time_to_close / 390.0, 0.0, 1.0)), # time_to_close (minutes) norm
-        float(np.clip(session_pnl / 10.0, -1.0, 1.0)),   # session_pnl in R, clipped
-    ], dtype=np.float32)
+    seg_exec = np.array(
+        [
+            float(np.clip(trades_today / 10.0, 0.0, 1.0)),  # trades_today norm [0,10]→[0,1]
+            float(np.clip(time_to_close / 390.0, 0.0, 1.0)),  # time_to_close (minutes) norm
+            float(np.clip(session_pnl / 10.0, -1.0, 1.0)),  # session_pnl in R, clipped
+        ],
+        dtype=np.float32,
+    )
 
-    obs = np.concatenate([
-        seg_narrative,    # 15
-        seg_setup_probs,  #  8
-        seg_passthrough,  # 10
-        seg_micro,        # 20
-        seg_orderflow,    # 21
-        seg_candles,      # 15
-        seg_zone_feats,   #  4
-        seg_zone_conf,    #  5
-        seg_zone_comp,    # 31
-        seg_approach,     #  1
-        seg_gbt,          #  8
-        seg_exec,         #  3
-    ])
+    obs = np.concatenate(
+        [
+            seg_narrative,  # 15
+            seg_setup_probs,  #  8
+            seg_passthrough,  # 10
+            seg_micro,  # 20
+            seg_orderflow,  # 21
+            seg_candles,  # 15
+            seg_zone_feats,  #  4
+            seg_zone_conf,  #  5
+            seg_zone_comp,  # 31
+            seg_approach,  #  1
+            seg_gbt,  #  8
+            seg_exec,  #  3
+        ]
+    )
 
     # Sanitise
     obs = np.where(np.isfinite(obs), obs, np.float32(0.0))

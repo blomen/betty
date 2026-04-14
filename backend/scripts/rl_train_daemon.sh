@@ -56,9 +56,13 @@ run_pipeline_with_retry() {
         log "Pipeline attempt $attempt/$MAX_RETRIES..."
         heartbeat
 
-        # Run pipeline WITHOUT set -e so failures don't kill the daemon
-        bash "$PIPELINE" 2>&1 | tee -a "$LOG"
-        local exit_code=${PIPESTATUS[0]}
+        # Run pipeline WITHOUT set -e so failures don't kill the daemon.
+        # Pipeline has its own tee to pipeline.log; also append to daemon log.
+        bash "$PIPELINE" >> "$LOG" 2>&1 &
+        PIPELINE_PID=$!
+        wait "$PIPELINE_PID" 2>/dev/null
+        local exit_code=$?
+        PIPELINE_PID=""
 
         if [ "$exit_code" -eq 0 ]; then
             log "Pipeline completed successfully."
@@ -79,8 +83,9 @@ run_pipeline_with_retry() {
     return 1
 }
 
-# Cleanup on exit
-trap 'log "Daemon shutting down (PID $$)."; rm -f "$PID_FILE"' EXIT
+# Cleanup on exit — kill pipeline subprocess if running
+PIPELINE_PID=""
+trap 'log "Daemon shutting down (PID $$)."; [ -n "$PIPELINE_PID" ] && kill "$PIPELINE_PID" 2>/dev/null; rm -f "$PID_FILE"' EXIT SIGTERM SIGINT
 
 log "RL training daemon started (PID: $$, interval: ${RETRAIN_INTERVAL}s, min_episodes: ${MIN_NEW_EPISODES}, max_retries: ${MAX_RETRIES})"
 

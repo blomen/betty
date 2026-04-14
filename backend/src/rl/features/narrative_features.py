@@ -1,4 +1,4 @@
-"""Narrative feature extractor — 15 slow-moving signals for the hierarchical RL observation.
+"""Narrative feature extractor — 18 slow-moving signals for the hierarchical RL observation.
 
 These signals summarise market regime, session context, and structural position.
 All outputs are bounded in [-1, 1] (float32).
@@ -25,11 +25,12 @@ Feature layout:
    13  trend_alignment     — daily/weekly/monthly alignment (-1=all down, +1=all up)
    14  excess_nearby       — proximity to single-print/excess zone (-1=no excess, +1=at excess)
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from ...market_data.levels import SessionLevels, VolumeProfile, VWAPBands, SwingStructure
+from ...market_data.levels import SessionLevels, SwingStructure, VolumeProfile, VWAPBands
 from ..config import TICK_SIZE
 
 NARRATIVE_DIM: int = 18
@@ -54,9 +55,9 @@ NARRATIVE_NAMES: list[str] = [
     "trend_alignment",
     "excess_nearby",
     # Breakout Likelihood (distinguishes CONT vs REV scenarios)
-    "breakout_score",       # composite: trend_day × initiative × outside_value × post_ib
-    "ib_extension_ready",   # post-IB + price at IB edge + initiative flow
-    "trend_conviction",     # htf_trend × day_type × initiative alignment
+    "breakout_score",  # composite: trend_day × initiative × outside_value × post_ib
+    "ib_extension_ready",  # post-IB + price at IB edge + initiative flow
+    "trend_conviction",  # htf_trend × day_type × initiative alignment
 ]
 
 assert len(NARRATIVE_NAMES) == NARRATIVE_DIM, "NARRATIVE_NAMES length mismatch"
@@ -85,7 +86,7 @@ _OPENING_TYPE_ORDINAL: dict[str, float] = {
 
 
 def extract_narrative_features(state: dict) -> np.ndarray:
-    """Extract 15 narrative (slow-layer) signals from the RL state dict.
+    """Extract 18 narrative (slow-layer) signals from the RL state dict.
 
     Args:
         state: Dict with keys including ``macro``, ``swing_structure``,
@@ -94,7 +95,7 @@ def extract_narrative_features(state: dict) -> np.ndarray:
                ``price``.  All keys are optional; missing data yields 0.
 
     Returns:
-        np.ndarray of shape ``(15,)`` with dtype ``float32``, values in [-1, 1].
+        np.ndarray of shape ``(18,)`` with dtype ``float32``, values in [-1, 1].
     """
     out = np.zeros(NARRATIVE_DIM, dtype=np.float32)
 
@@ -122,8 +123,11 @@ def extract_narrative_features(state: dict) -> np.ndarray:
     # -------------------------------------------------------------------------
     if swing is not None:
         trend_map = {
-            "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
-            "reversing_down": -0.5, "downtrend": -1.0,
+            "uptrend": 1.0,
+            "reversing_up": 0.5,
+            "ranging": 0.0,
+            "reversing_down": -0.5,
+            "downtrend": -1.0,
         }
         # Weight daily more than weekly, weekly more than monthly
         d = trend_map.get(swing.daily.structure, 0.0)
@@ -344,9 +348,9 @@ def extract_narrative_features(state: dict) -> np.ndarray:
     # 17: trend_conviction — do all narrative layers agree on direction?
     # htf_trend × day_type × initiative — all same sign = strong conviction
     # -------------------------------------------------------------------------
-    htf = out[1]       # htf_trend
-    dt = out[3]        # day_type
-    init = out[8]      # initiative_direction
+    htf = out[1]  # htf_trend
+    dt = out[3]  # day_type
+    init = out[8]  # initiative_direction
     if abs(htf) > 0.1 and abs(dt) > 0.1 and abs(init) > 0.1:
         # All three have a direction — check if they agree
         signs_agree = (htf > 0) == (dt > 0) == (init > 0)

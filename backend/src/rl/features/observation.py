@@ -41,29 +41,30 @@ Legacy mode (state["level_type"] present, no zone):
     ---
     total               275
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from ..config import LevelType, TICK_SIZE
-from .level_features import (
-    encode_level_type,
-    encode_confluence,
-    encode_zone_composition,
-    encode_zone_features,
-    encode_zone_confluence,
-)
-from .orderflow_features import extract_orderflow_features
-from .tpo_features import extract_session_tpo_features
-from .structure_features import extract_structure_features
-from .macro_features import extract_macro_features
-from .setup_features import extract_setup_features
-from .micro_features import extract_micro_features
-from .execution_features import extract_execution_features
-from .amt_features import extract_amt_features
-from .amt_dynamics_features import extract_amt_dynamics_features
-from .exchange_stats_features import extract_exchange_stats_features
+from ..config import TICK_SIZE, LevelType
 from ..zone_builder import Zone, ZoneMember
+from .amt_dynamics_features import extract_amt_dynamics_features
+from .amt_features import extract_amt_features
+from .exchange_stats_features import extract_exchange_stats_features
+from .execution_features import extract_execution_features
+from .level_features import (
+    encode_confluence,
+    encode_level_type,
+    encode_zone_composition,
+    encode_zone_confluence,
+    encode_zone_features,
+)
+from .macro_features import extract_macro_features
+from .micro_features import extract_micro_features
+from .orderflow_features import extract_orderflow_features
+from .setup_features import extract_setup_features
+from .structure_features import extract_structure_features
+from .tpo_features import extract_session_tpo_features
 
 # Candle window: last 5 candles x 3 features each
 _CANDLE_WINDOW = 5
@@ -128,7 +129,11 @@ def build_observation(state: dict) -> np.ndarray:
     # 3. Dow Theory + session + PDH/PDL (64)
     swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
-        price, vwap_bands, volume_profile, session_levels, session_context,
+        price,
+        vwap_bands,
+        volume_profile,
+        session_levels,
+        session_context,
         swing_structure=swing_structure,
     )
 
@@ -159,19 +164,25 @@ def build_observation(state: dict) -> np.ndarray:
         )
     else:
         conf = encode_confluence(
-            price, all_levels, tick_size=TICK_SIZE,
-            fvgs=fvgs, single_print_zones=single_print_zones,
+            price,
+            all_levels,
+            tick_size=TICK_SIZE,
+            fvgs=fvgs,
+            single_print_zones=single_print_zones,
         )
-        seg_confluence = np.array([
-            conf["levels_within_5_ticks"] / 10.0,
-            conf["strongest_cluster_score"],
-            conf["nearest_higher_level_dist"] / 50.0,
-            conf["nearest_lower_level_dist"] / 50.0,
-            conf["touched_level_hierarchy_rank"],
-            conf["fvg_overlap"],
-            conf["fvg_width_ticks"],
-            conf["single_print_overlap"],
-        ], dtype=np.float32)
+        seg_confluence = np.array(
+            [
+                conf["levels_within_5_ticks"] / 10.0,
+                conf["strongest_cluster_score"],
+                conf["nearest_higher_level_dist"] / 50.0,
+                conf["nearest_lower_level_dist"] / 50.0,
+                conf["touched_level_hierarchy_rank"],
+                conf["fvg_overlap"],
+                conf["fvg_width_ticks"],
+                conf["single_print_overlap"],
+            ],
+            dtype=np.float32,
+        )
 
     # 8. Macro (11) — VIX, DXY, yields, COT, news proximity
     seg_macro = extract_macro_features(macro)
@@ -194,30 +205,35 @@ def build_observation(state: dict) -> np.ndarray:
 
     # 12. Approach direction (1)
     approach = state.get("approach_direction", "up")
-    seg_approach = np.array([
-        1.0 if approach == "up" else -1.0,
-    ], dtype=np.float32)
+    seg_approach = np.array(
+        [
+            1.0 if approach == "up" else -1.0,
+        ],
+        dtype=np.float32,
+    )
 
     # 13. Execution context (7) — Fabio's timing/auction rules
     seg_execution = extract_execution_features(state, recent_ticks, candles, price)
 
-    obs = np.concatenate([
-        seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
-        seg_orderflow,    # 21
-        seg_structure,    # 64
-        seg_tpo,          # 38
-        seg_candles,      # 15
-        seg_zone_feats,   # 4 (zone) or 0 (legacy)
-        seg_confluence,   # 5 (zone) or 8 (legacy)
-        seg_macro,        # 11
-        seg_exchange,     # 5
-        seg_setup,        # 14
-        seg_amt,          # 20
-        seg_amt_dynamics, # 20
-        seg_micro,        # 20
-        seg_approach,     # 1
-        seg_execution,    # 7
-    ])
+    obs = np.concatenate(
+        [
+            seg_level,  # len(LevelType) — multi-hot (zone) or one-hot (legacy)
+            seg_orderflow,  # 21
+            seg_structure,  # 64
+            seg_tpo,  # 38
+            seg_candles,  # 15
+            seg_zone_feats,  # 4 (zone) or 0 (legacy)
+            seg_confluence,  # 5 (zone) or 8 (legacy)
+            seg_macro,  # 11
+            seg_exchange,  # 5
+            seg_setup,  # 14
+            seg_amt,  # 20
+            seg_amt_dynamics,  # 20
+            seg_micro,  # 20
+            seg_approach,  # 1
+            seg_execution,  # 7
+        ]
+    )
 
     # Sanitise
     obs = np.where(np.isfinite(obs), obs, 0.0)
@@ -262,7 +278,7 @@ OBSERVATION_DIM: int = int(build_observation(_dummy_state).shape[0])
 CONTEXT_DIM: int | None = None
 
 # --- Hybrid GBT+DQN augmentation ---
-GBT_FORECAST_DIM: int = 8   # prob_cont, prob_rev, confidence, best_r, worst_r, breakeven, levels, stop
+GBT_FORECAST_DIM: int = 8  # prob_cont, prob_rev, confidence, best_r, worst_r, breakeven, levels, stop
 POSITION_STATE_DIM: int = 8  # pos_flat/long/short, unrealized_pnl, time_in_trade, session_pnl, consec_losses, progress
 AUGMENTED_OBSERVATION_DIM: int = OBSERVATION_DIM + GBT_FORECAST_DIM + POSITION_STATE_DIM
 
@@ -322,20 +338,27 @@ def build_position_state(
     # Session progress (trade count / 20)
     progress = min(trade_count / 20.0, 1.0)
 
-    return np.array([
-        pos_flat, pos_long, pos_short,
-        unrealized_r, time_in_trade,
-        session_pnl_norm, consec_norm, progress,
-    ], dtype=np.float32)
+    return np.array(
+        [
+            pos_flat,
+            pos_long,
+            pos_short,
+            unrealized_r,
+            time_in_trade,
+            session_pnl_norm,
+            consec_norm,
+            progress,
+        ],
+        dtype=np.float32,
+    )
 
 
-from .narrative_features import extract_narrative_features, NARRATIVE_DIM
-from .trigger_features import build_trigger_observation, TRIGGER_DIM
-from .passthrough_features import PASSTHROUGH_DIM
+from .narrative_features import NARRATIVE_DIM, extract_narrative_features
+from .trigger_features import TRIGGER_DIM, build_trigger_observation
 
 # V5 dimensions
-NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 15
-TRIGGER_OBSERVATION_DIM = TRIGGER_DIM     # 141
+NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 18
+TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 144
 
 
 def build_narrative(state: dict) -> np.ndarray:
@@ -352,5 +375,9 @@ def build_trigger(
     """Build the trigger observation (Stage 2 input)."""
     base_obs = build_observation(state)
     return build_trigger_observation(
-        narrative, setup_probs, state, base_obs, trigger_gbt_forecast,
+        narrative,
+        setup_probs,
+        state,
+        base_obs,
+        trigger_gbt_forecast,
     )

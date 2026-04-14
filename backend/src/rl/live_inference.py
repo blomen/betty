@@ -201,6 +201,11 @@ class LiveInferenceV5:
         self._trigger_gbt = None
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
+        self._loaded = False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
 
     def try_load(self) -> bool:
         """Load v5 models (narrative + trigger GBTs)."""
@@ -248,6 +253,7 @@ class LiveInferenceV5:
                     )
 
         if narrative_loaded and trigger_loaded:
+            self._loaded = True
             log.info("LiveInferenceV5: both models loaded successfully")
         else:
             log.info(
@@ -255,7 +261,7 @@ class LiveInferenceV5:
                 narrative_loaded,
                 trigger_loaded,
             )
-        return narrative_loaded and trigger_loaded
+        return self._loaded
 
     def update_narrative(self, state: dict) -> None:
         """Update narrative signals. Call every 30min or on structural events."""
@@ -366,13 +372,17 @@ class LiveInferenceV5:
         )
 
         return {
+            "inputs": base_obs.tolist(),
             "action": Action(action_idx).name,
             "confidence": float(confidence),
+            "q_values": [prob_cont, prob_rev, 0.0],
             "stop_ticks": float(stop_ticks),
             "setup_probs": setup_probs_dict,
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_multiplier(composite),
+            "activations": {},
+            "connections": [],
             "model_type": "v5_hierarchical",
         }
 
@@ -506,10 +516,17 @@ _instance = None
 
 
 def get_dqn_inference():
-    """Get the global inference singleton. Prefers specialists > GBT > DQN."""
+    """Get the global inference singleton. Prefers v5 > specialists > GBT > DQN."""
     global _instance
     if _instance is None:
-        # Try specialists first (best model)
+        # Try v5 two-stage inference first (narrative + trigger GBTs)
+        v5 = LiveInferenceV5()
+        if v5.try_load():
+            _instance = v5
+            log.info("Using V5 two-stage inference for live inference")
+            return _instance
+
+        # Try specialists
         spec = LiveInferenceSpecialists()
         if spec.try_load():
             _instance = spec
