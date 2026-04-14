@@ -92,9 +92,10 @@ echo "=========================================="
 
 cd /app/backend
 
-# Step 0: Merge live episodes (optional — may have none)
-step_run "0/8" "Merging live episodes" "optional" \
-    python -m src.app rl merge-live
+# Step 0: Merge live episodes (always runs — new episodes accumulate between cycles)
+echo ""
+echo "[0/8] Merging live episodes..."
+python -m src.app rl merge-live || echo "[0/8] No live episodes to merge (non-critical)."
 
 # Step 1: Parallel replay → base episodes (CRITICAL)
 # Internally resume-safe: skips parquet files that already have chunks
@@ -152,8 +153,12 @@ if ! step_done "8/8"; then
     step_mark "8/8"
 fi
 
-# Pipeline complete — remove progress file so next run starts fresh
+# Pipeline complete — clean up
 rm -f "$PROGRESS"
+rm -f "$STEP5_STARTED"
+# Clear merged live episodes so they aren't double-counted next cycle
+rm -f /app/backend/data/rl/live_episodes/*.npy 2>/dev/null
+echo "Cleared live episode buffer (merged into training data)."
 
 echo ""
 echo "=========================================="
