@@ -211,7 +211,13 @@ class LiveEpisodeCollector:
         touch_ts_dt = datetime.fromtimestamp(touch_ts_epoch, tz=timezone.utc)
 
         # Convert trades to the format expected by episode_builder helpers
-        tick_dicts = [{"ts": t["ts"], "price": float(t["price"])} for t in trades]
+        # Ensure timestamps are tz-aware (DB may return naive datetimes)
+        tick_dicts = []
+        for t in trades:
+            ts = t["ts"]
+            if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            tick_dicts.append({"ts": ts, "price": float(t["price"])})
         if not tick_dicts:
             return None
 

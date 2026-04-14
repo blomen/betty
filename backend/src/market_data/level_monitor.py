@@ -267,6 +267,34 @@ class LevelMonitor:
             len(self._levels),
             reset_debounce,
         )
+        self._broadcast_zones()
+
+    def _broadcast_zones(self) -> None:
+        """Send current zones to all relay clients so the chart can render them."""
+        callbacks = getattr(self, "_signal_callbacks", set())
+        if not callbacks or not self._zones:
+            return
+        payload = {
+            "type": "zone_update",
+            "zones": [
+                {
+                    "price": round(z.center_price, 2),
+                    "members": z.member_count,
+                    "upper": round(z.upper_bound, 2),
+                    "lower": round(z.lower_bound, 2),
+                    "hierarchy": round(z.hierarchy_score, 3),
+                }
+                for z in self._zones
+            ],
+        }
+        for cb in list(callbacks):
+            try:
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(payload))
+                else:
+                    cb(payload)
+            except Exception:
+                logger.debug("Failed to broadcast zones to callback", exc_info=True)
 
     def set_async_context(self, loop, db_session_factory) -> None:
         self._level_context_lock = asyncio.Lock()
@@ -361,21 +389,21 @@ class LevelMonitor:
             self._last_orderflow_emit = now
 
         # Zone entry detection for DQN inference (with 60s cooldown per zone)
+        # Use quantized center price as stable key (survives zone rebuilds)
         newly_entered_zones = []
-        still_in_zones: set[int] = set()
+        still_in_zones: set[float] = set()
         _ZONE_COOLDOWN_S = 60.0
         for zone in self._zones:
             if zone.lower_bound <= price <= zone.upper_bound:
-                zid = id(zone)
-                still_in_zones.add(zid)
-                if zid not in self._zone_debounce:
-                    # Check time cooldown
-                    last_fire = getattr(self, "_zone_last_fire", {}).get(zid, 0)
+                zkey = round(zone.center_price / TICK_SIZE) * TICK_SIZE
+                still_in_zones.add(zkey)
+                if zkey not in self._zone_debounce:
+                    last_fire = getattr(self, "_zone_last_fire", {}).get(zkey, 0)
                     if (now - last_fire) >= _ZONE_COOLDOWN_S:
-                        self._zone_debounce.add(zid)
+                        self._zone_debounce.add(zkey)
                         if not hasattr(self, "_zone_last_fire"):
                             self._zone_last_fire = {}
-                        self._zone_last_fire[zid] = now
+                        self._zone_last_fire[zkey] = now
                         newly_entered_zones.append(zone)
         self._zone_debounce &= still_in_zones
 
