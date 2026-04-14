@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import (
+    ABSOLUTE_MIN_STAKE,
     OPTIMAL_MAX_KELLY,
     OPTIMAL_SINGLE_BET_CAP,
     calculate_stake,
