@@ -583,7 +583,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
         # Parse markets
         event_markets = markets_by_event.get(event_id, [])
-        markets = self._parse_markets(event_markets, selections_by_market, sport)
+        markets = self._parse_markets(event_markets, selections_by_market, sport, event_id)
         if not markets:
             return None
 
@@ -609,6 +609,7 @@ class GeckoV2Retriever(BrowserRetriever):
         markets_raw: list[dict],
         selections_by_market: dict[str, list[dict]],
         sport: str = "",
+        event_id: str = "",
     ) -> list[dict]:
         """Parse markets and their selections."""
         markets = []
@@ -679,13 +680,25 @@ class GeckoV2Retriever(BrowserRetriever):
                 outcome_dict: dict[str, Any] = {
                     "name": outcome_name,
                     "odds": round(float(odds), 3),
+                    "provider_meta": {
+                        "selection_id": str(sel.get("id", "")),
+                    },
                 }
                 if point is not None:
                     outcome_dict["point"] = point
                 outcomes.append(outcome_dict)
 
             if outcomes:
-                markets.append({"type": market_type, "outcomes": outcomes})
+                markets.append(
+                    {
+                        "type": market_type,
+                        "outcomes": outcomes,
+                        "provider_meta": {
+                            "event_id": event_id,
+                            "market_template": template_id,
+                        },
+                    }
+                )
                 seen_types.add(market_type)
 
         # Dedup: prefer 1x2 over moneyline
