@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 import yaml
+from sqlalchemy import text
 
 from ..paths import get_config_path
 
@@ -198,3 +202,138 @@ def get_provider_intervals() -> dict[str, int]:
                 intervals[provider] = interval
 
     return intervals
+
+
+# ── Extraction Health Assessment ─────────────────────────────────────────────
+
+SHARP_STALE_MINUTES = 10
+CONSECUTIVE_FAILURE_CRITICAL = 3
+CONSECUTIVE_FAILURE_WARNING = 2
+STALENESS_MULTIPLIER = 3
+VOLUME_DROP_THRESHOLD = 0.50
+VOLUME_MIN_BASELINE = 50
+
+INTEGRITY_PATTERNS = re.compile(r"UniqueViolation|IntegrityError|duplicate key|sequence", re.IGNORECASE)
+
+
+def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[str]]:
+    """Run 5 deep health checks on extraction state.
+
+    Returns (status, issues) where status is "ok"/"warning"/"critical".
+    """
+    now = datetime.now(timezone.utc)
+    one_hour_ago = now - timedelta(hours=1)
+    issues: list[str] = []
+
+    # ── Fetch recent provider run metrics (last hour) ──
+    rows = db.execute(
+        text(
+            "SELECT provider_id, status, start_time, error_message "
+            "FROM provider_run_metrics "
+            "WHERE start_time > :since "
+            "ORDER BY start_time DESC"
+        ),
+        {"since": one_hour_ago},
+    ).fetchall()
+
+    by_provider: dict[str, list[tuple]] = defaultdict(list)
+    for r in rows:
+        by_provider[r[0]].append((r[1], r[2], r[3]))
+
+    # ── Check 1: Sharp source down ──
+    if "pinnacle" in intervals:
+        pinnacle_runs = by_provider.get("pinnacle", [])
+        last_pinnacle_success = None
+        for status, start_time, _ in pinnacle_runs:
+            if status == "success":
+                last_pinnacle_success = start_time
+                break
+
+        if last_pinnacle_success is None:
+            issues.append("CRITICAL: pinnacle has not completed successfully in 60+ minutes")
+        else:
+            age_min = (now - last_pinnacle_success.replace(tzinfo=timezone.utc)).total_seconds() / 60
+            if age_min > SHARP_STALE_MINUTES:
+                issues.append(f"CRITICAL: pinnacle has not completed successfully in {int(age_min)} minutes")
+
+    # ── Check 2: Consecutive provider failures ──
+    for provider_id, runs in by_provider.items():
+        consecutive = 0
+        last_error = ""
+        for status, _, error_msg in runs:
+            if status != "success":
+                consecutive += 1
+                if not last_error and error_msg:
+                    last_error = error_msg[:100]
+            else:
+                break
+        if consecutive >= CONSECUTIVE_FAILURE_CRITICAL:
+            issues.append(
+                f"CRITICAL: {provider_id} has failed {consecutive} consecutive runs"
+                + (f" — {last_error}" if last_error else "")
+            )
+        elif consecutive >= CONSECUTIVE_FAILURE_WARNING:
+            issues.append(
+                f"WARNING: {provider_id} has failed {consecutive} consecutive runs"
+                + (f" — {last_error}" if last_error else "")
+            )
+
+    # ── Check 3: Provider staleness ──
+    for provider_id, expected_interval in intervals.items():
+        if provider_id == "pinnacle":
+            continue  # covered by check 1
+        threshold_min = expected_interval * STALENESS_MULTIPLIER
+        runs = by_provider.get(provider_id, [])
+        last_success = None
+        for status, start_time, _ in runs:
+            if status == "success":
+                last_success = start_time
+                break
+        if last_success is None:
+            issues.append(
+                f"WARNING: {provider_id} has no successful run in the last hour (threshold: {threshold_min} min)"
+            )
+        else:
+            age_min = (now - last_success.replace(tzinfo=timezone.utc)).total_seconds() / 60
+            if age_min > threshold_min:
+                issues.append(
+                    f"WARNING: {provider_id} is stale — last succeeded {int(age_min)} min ago "
+                    f"(threshold: {threshold_min} min)"
+                )
+
+    # ── Check 4: Database integrity errors ──
+    integrity_providers: set[str] = set()
+    for provider_id, runs in by_provider.items():
+        for _, _, error_msg in runs:
+            if error_msg and INTEGRITY_PATTERNS.search(error_msg):
+                integrity_providers.add(provider_id)
+                break
+    if integrity_providers:
+        issues.append("CRITICAL: database integrity errors detected in: " + ", ".join(sorted(integrity_providers)))
+
+    # ── Check 5: Opportunity volume drop ──
+    result = db.execute(
+        text(
+            "SELECT "
+            "COUNT(*) FILTER (WHERE detected_at > :one_h_ago) AS opp_current, "
+            "COUNT(*) FILTER (WHERE detected_at > :two_h_ago AND detected_at <= :one_h_ago) AS opp_previous "
+            "FROM opportunities "
+            "WHERE detected_at > :two_h_ago"
+        ),
+        {"one_h_ago": one_hour_ago, "two_h_ago": now - timedelta(hours=2)},
+    ).fetchone()
+    opp_current, opp_previous = result[0], result[1]
+    if opp_previous >= VOLUME_MIN_BASELINE and opp_current < opp_previous * (1 - VOLUME_DROP_THRESHOLD):
+        drop_pct = int((1 - opp_current / opp_previous) * 100)
+        issues.append(f"WARNING: opportunity volume dropped {drop_pct}% ({opp_previous} → {opp_current}) in last hour")
+
+    # ── Determine overall status ──
+    status = "ok"
+    for issue in issues:
+        if issue.startswith("CRITICAL:"):
+            status = "critical"
+            break
+        if issue.startswith("WARNING:"):
+            status = "warning"
+
+    return status, issues
