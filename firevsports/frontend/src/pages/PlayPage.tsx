@@ -233,7 +233,6 @@ export default function PlayPage() {
   }, [mirror.lastEvent])
 
   const handlePlace = () => api.placeCurrent()
-  const handleSkip = () => api.skipCurrent()
 
   const handleToastConfirm = (toast: SettleToast) => {
     setConfirmedSettlements(prev => [...prev, { bet_id: toast.bet_id, result: toast.result, payout: toast.payout }])
@@ -376,28 +375,6 @@ export default function PlayPage() {
         {!error && batch.length === 0 && <span className="text-zinc-500">Loading...</span>}
       </div>
 
-      {/* Bet ready bar — placement auto-detected via interceptor */}
-      {currentBetReady && (
-        <div className="flex items-center gap-3 px-3 py-2 border-b bg-amber-900/20 border-amber-700/50">
-          <span className="text-xs text-zinc-500 uppercase">{currentBetReady.provider_id}</span>
-          <span className="text-xs text-zinc-200 font-medium truncate">
-            {currentBetReady.display_home} v {currentBetReady.display_away}
-          </span>
-          <span className="text-xs text-amber-400 font-medium">{resolveOutcome(currentBetReady)}</span>
-          <span className="text-xs font-mono text-zinc-200">
-            @ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}
-          </span>
-          <span className="text-xs text-green-400">+{(currentBetReady.live_edge ?? currentBetReady.edge_pct)?.toFixed(1)}%</span>
-          <span className="text-xs font-mono text-zinc-400">{Math.round(currentBetReady.stake ?? 0)} kr</span>
-          <div className="ml-auto flex gap-2">
-            <button onClick={handleSkip}
-              className="px-3 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded">
-              Skip
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Placement toast */}
       {placementToast && (
         <div className="flex items-center gap-3 px-3 py-2 border-b bg-green-900/30 border-green-700/50 animate-pulse">
@@ -425,12 +402,18 @@ export default function PlayPage() {
                 'bg-zinc-800 text-zinc-500'
               }`}>{status.state}</span>
               {status.current_bet && (
-                <span className="text-[10px] text-zinc-300 truncate">
-                  {status.current_bet.display_home} v {status.current_bet.display_away} — {status.current_bet.outcome} @ {status.current_bet.odds?.toFixed(2)}
-                </span>
+                <>
+                  <span className="text-[10px] text-zinc-300 truncate">
+                    {status.current_bet.display_home} v {status.current_bet.display_away}
+                  </span>
+                  <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
+                  <span className="text-[10px] font-mono text-zinc-200">@ {(status.current_bet.live_odds ?? status.current_bet.odds)?.toFixed(2)}</span>
+                  {status.current_bet.edge_pct != null && <span className="text-[10px] text-green-400">+{status.current_bet.edge_pct?.toFixed(1)}%</span>}
+                  <span className="text-[10px] font-mono text-zinc-500">{Math.round(status.current_bet.stake ?? 0)} kr</span>
+                </>
               )}
               {status.state === 'ready' && (
-                <button onClick={() => api.skipCurrent(pid)} className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto">skip</button>
+                <button onClick={() => api.skipCurrent(pid)} className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto">Skip</button>
               )}
             </div>
           ))}
@@ -464,7 +447,7 @@ export default function PlayPage() {
                     const isSkinActive = activeProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
                     const atCap = !uncapped && placed >= 10
-                    const disabled = bal <= 0 && pending === 0
+                    const disabled = bal <= 0 && pending === 0 && !uncapped
                     return (
                       <button key={pid}
                         onClick={() => !disabled && startSkin(pid)}
