@@ -21,17 +21,31 @@ def _utcnow():
     """Timezone-aware UTC now for column defaults."""
     return datetime.now(timezone.utc)
 
+
 from sqlalchemy import (
-    create_engine, event, text, Column, Integer, String, Float,
-    DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    event,
+    text,
 )
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
 
 
 class RiskLevel(str, Enum):
     """Risk level classification for providers."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -40,6 +54,7 @@ class RiskLevel(str, Enum):
 
 class LimitRisk(str, Enum):
     """How aggressively a provider is known to limit winners."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -48,13 +63,16 @@ class LimitRisk(str, Enum):
 
 class LimitType(str, Enum):
     """Type of limit imposed by a bookmaker."""
+
     STAKE_LIMITED = "stake_limited"
     MARKET_RESTRICTED = "market_restricted"
     ODDS_RESTRICTED = "odds_restricted"
     FULLY_BANNED = "fully_banned"
 
+
 # Database file location (SQLite only — not used in Postgres mode)
 from ..paths import get_db_path
+
 try:
     DB_PATH = get_db_path()
 except Exception:
@@ -65,6 +83,7 @@ Base = declarative_base()
 
 # ============ Core Models ============
 
+
 class Event(Base):
     """
     A canonical sporting event.
@@ -72,6 +91,7 @@ class Event(Base):
     Events are provider-agnostic - the same match has ONE event row,
     with odds from multiple providers stored in the Odds table.
     """
+
     __tablename__ = "events"
 
     # Canonical ID: "{sport}:{home_normalized}:{away_normalized}:{date}"
@@ -86,23 +106,23 @@ class Event(Base):
     start_time = Column(DateTime)
 
     # Live score tracking (populated from Pinnacle live data)
-    home_score = Column(Integer, nullable=True)   # Current/final home score
-    away_score = Column(Integer, nullable=True)   # Current/final away score
+    home_score = Column(Integer, nullable=True)  # Current/final home score
+    away_score = Column(Integer, nullable=True)  # Current/final away score
     match_status = Column(String, nullable=True)  # "prematch", "live", "finished"
     match_minute = Column(Integer, nullable=True)  # Current match minute
     match_period = Column(Integer, nullable=True)  # Period ID (1=1st half, 2=2nd half, etc.)
-    stats_json = Column(Text, nullable=True)       # JSON blob: corners, cards, scoreByQuarter, etc.
+    stats_json = Column(Text, nullable=True)  # JSON blob: corners, cards, scoreByQuarter, etc.
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         # Pipeline cache warming: filter by sport + upcoming start_time
-        Index('ix_events_sport_start_time', 'sport', 'start_time'),
+        Index("ix_events_sport_start_time", "sport", "start_time"),
         # Finished event detection: filter by match_status
-        Index('ix_events_match_status', 'match_status'),
+        Index("ix_events_match_status", "match_status"),
         # League-based queries (soft provider filtering, sports.yaml lookups)
-        Index('ix_events_league', 'league'),
+        Index("ix_events_league", "league"),
     )
 
     # Relationships
@@ -116,17 +136,18 @@ class Provider(Base):
 
     Stores runtime state only - extraction logic lives in code.
     """
+
     __tablename__ = "providers"
 
-    id = Column(String, primary_key=True)       # "unibet"
-    name = Column(String, nullable=False)       # "Unibet"
-    url = Column(String)                        # "unibet.se"
+    id = Column(String, primary_key=True)  # "unibet"
+    name = Column(String, nullable=False)  # "Unibet"
+    url = Column(String)  # "unibet.se"
 
     is_enabled = Column(Boolean, default=True)  # Can toggle off
 
     # Limit risk (global — how aggressively this provider limits winners)
-    limit_risk = Column(String, default="low")      # LimitRisk enum value
-    limit_notes = Column(Text, nullable=True)        # Free-form context
+    limit_risk = Column(String, default="low")  # LimitRisk enum value
+    limit_notes = Column(Text, nullable=True)  # Free-form context
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -139,51 +160,64 @@ class Provider(Base):
 class Odds(Base):
     """
     Odds for an event outcome from a specific provider.
-    
+
     Multiple providers can have odds for the same event.
     """
+
     __tablename__ = "odds"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    
+
     event_id = Column(String, ForeignKey("events.id"), nullable=False)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
-    
-    market = Column(String, nullable=False)     # "1x2", "moneyline"
-    outcome = Column(String, nullable=False)    # "home", "away", "draw"
-    odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
-    point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
+
+    market = Column(String, nullable=False)  # "1x2", "moneyline"
+    outcome = Column(String, nullable=False)  # "home", "away", "draw"
+    odds = Column(Float, nullable=False)  # Decimal odds (e.g., 2.10)
+    point = Column(Float, nullable=True)  # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
-    provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
-    bid = Column(Float, nullable=True)        # Best bid price (probability 0-1, CLOB only)
-    ask = Column(Float, nullable=True)        # Best ask price (probability 0-1, CLOB only)
+    provider_meta = Column(
+        JSON, nullable=True
+    )  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    bid = Column(Float, nullable=True)  # Best bid price (probability 0-1, CLOB only)
+    ask = Column(Float, nullable=True)  # Best ask price (probability 0-1, CLOB only)
     depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
 
     updated_at = Column(DateTime, default=_utcnow)
-    
+
     # Unique constraint: one odds per event/provider/market/outcome/point combo
     # Includes point to allow multiple lines per market (e.g., over 2.5 vs over 3.0)
     __table_args__ = (
-        UniqueConstraint('event_id', 'provider_id', 'market', 'outcome', 'point', name='uq_odds_with_point'),
+        # NULLS NOT DISTINCT so (event_id, provider_id, market, outcome, NULL) is unique
+        UniqueConstraint(
+            "event_id",
+            "provider_id",
+            "market",
+            "outcome",
+            "point",
+            name="uq_odds_with_point_nd",
+            postgresql_nulls_not_distinct=True,
+        ),
         # Performance index for common query patterns (arbitrage/value detection)
-        Index('ix_odds_event_provider_outcome', 'event_id', 'provider_id', 'outcome'),
+        Index("ix_odds_event_provider_outcome", "event_id", "provider_id", "outcome"),
         # Index for scanner queries: provider + market filtering
-        Index('ix_odds_provider_market', 'provider_id', 'market'),
+        Index("ix_odds_provider_market", "provider_id", "market"),
         # Index for staleness checks and batch operations
-        Index('ix_odds_updated_at', 'updated_at'),
+        Index("ix_odds_updated_at", "updated_at"),
         # Index for event-level market grouping (scanner.group_odds)
-        Index('ix_odds_event_market_outcome', 'event_id', 'market', 'outcome'),
-        Index('ix_odds_event_market_point', 'event_id', 'market', 'point'),
+        Index("ix_odds_event_market_outcome", "event_id", "market", "outcome"),
+        Index("ix_odds_event_market_point", "event_id", "market", "point"),
         # Composite key for OddsBatchProcessor flush lookups
-        Index('ix_odds_composite_key', 'event_id', 'provider_id', 'market', 'outcome', 'point'),
+        Index("ix_odds_composite_key", "event_id", "provider_id", "market", "outcome", "point"),
     )
-    
+
     # Relationships
     event = relationship("Event", back_populates="odds")
     provider = relationship("Provider", back_populates="odds")
 
 
 # ============ Bet Tracking ============
+
 
 class Bet(Base):
     """
@@ -192,6 +226,7 @@ class Bet(Base):
     User enters bets manually, system auto-calculates profit/ROI.
     Extended with behavioral tracking for risk management.
     """
+
     __tablename__ = "bets"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -202,71 +237,71 @@ class Bet(Base):
     # What you bet on
     event_id = Column(String, ForeignKey("events.id"))
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
-    market = Column(String)                     # "1x2"
-    outcome = Column(String)                    # "home"
-    odds = Column(Float, nullable=False)        # 2.10
-    point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
-    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost", "mirror"
+    market = Column(String)  # "1x2"
+    outcome = Column(String)  # "home"
+    odds = Column(Float, nullable=False)  # 2.10
+    point = Column(Float, nullable=True)  # Spread/total line (e.g., -1.5, 2.5)
+    bet_type = Column(String, nullable=True)  # "value", "dutch", "reverse", "polymarket", "boost", "mirror"
 
     # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
-    stake = Column(Float, nullable=False)       # 100.00
-    currency = Column(String, default="SEK")    # "SEK" or "USD" — determines stake/payout units
+    stake = Column(Float, nullable=False)  # 100.00
+    currency = Column(String, default="SEK")  # "SEK" or "USD" — determines stake/payout units
 
     # Bonus tracking
     is_bonus = Column(Boolean, default=False)
-    bonus_type = Column(String)                 # "free_bet", "deposit_match", "risk_free"
+    bonus_type = Column(String)  # "free_bet", "deposit_match", "risk_free"
 
     # Result (updated when settled)
     result = Column(String, default="pending")  # "pending", "won", "lost", "void"
-    payout = Column(Float, default=0.0)         # What you got back
+    payout = Column(Float, default=0.0)  # What you got back
 
     # Timestamps
     placed_at = Column(DateTime, default=_utcnow)
     settled_at = Column(DateTime)
     settlement_source = Column(String, nullable=True)  # "manual", "auto_tsdb"
-    start_time = Column(DateTime, nullable=True)        # Event start time (persisted at placement)
+    start_time = Column(DateTime, nullable=True)  # Event start time (persisted at placement)
 
     # === BEHAVIORAL TRACKING (for risk management) ===
     # Timing patterns
-    hour_of_day = Column(Integer, nullable=True)      # 0-23
-    day_of_week = Column(Integer, nullable=True)      # 0=Monday, 6=Sunday
+    hour_of_day = Column(Integer, nullable=True)  # 0-23
+    day_of_week = Column(Integer, nullable=True)  # 0=Monday, 6=Sunday
 
     # Stake patterns
-    stake_rounded = Column(Boolean, nullable=True)    # Was stake a round number?
+    stake_rounded = Column(Boolean, nullable=True)  # Was stake a round number?
     stake_noise_applied = Column(Float, nullable=True)  # Noise amount added
 
     # Risk metrics at bet time
     risk_score_at_bet = Column(Float, nullable=True)  # Provider risk score (0-1)
-    utility_score = Column(Float, nullable=True)      # EV - λ*RiskPenalty
+    utility_score = Column(Float, nullable=True)  # EV - λ*RiskPenalty
     selection_probability = Column(Float, nullable=True)  # Softmax selection prob
 
     # Bet confirmation
-    confirmation_id = Column(String, nullable=True)          # Provider's bet reference
-    placement_status = Column(String, default="manual")      # Legacy — always "manual"
+    confirmation_id = Column(String, nullable=True)  # Provider's bet reference
+    placement_status = Column(String, default="manual")  # Legacy — always "manual"
     actual_odds_at_placement = Column(Float, nullable=True)  # Odds user confirmed at placement
-    placement_latency_ms = Column(Float, nullable=True)      # Legacy — no longer populated
+    placement_latency_ms = Column(Float, nullable=True)  # Legacy — no longer populated
 
     # Edge tracking (filled at bet entry)
     fair_odds_at_placement = Column(Float, nullable=True)  # De-vigged Pinnacle fair odds when bet placed
 
     # Boost metadata (filled at placement for boost bets)
-    boost_event = Column(String, nullable=True)   # "Arsenal vs Sunderland" — event name at placement
-    boost_title = Column(String, nullable=True)    # LLM-simplified English title at placement
+    boost_event = Column(String, nullable=True)  # "Arsenal vs Sunderland" — event name at placement
+    boost_title = Column(String, nullable=True)  # LLM-simplified English title at placement
 
     # CLV tracking (filled post-event)
-    closing_odds = Column(Float, nullable=True)       # Odds at event start
-    clv_pct = Column(Float, nullable=True)            # Closing line value %
+    closing_odds = Column(Float, nullable=True)  # Odds at event start
+    clv_pct = Column(Float, nullable=True)  # Closing line value %
 
     # Provider-specific CLV (e.g., Polymarket closing price — true same-market CLV)
     provider_closing_odds = Column(Float, nullable=True)  # Same-provider odds at event start
-    provider_clv_pct = Column(Float, nullable=True)       # (bet.odds / provider_closing_odds - 1) * 100
+    provider_clv_pct = Column(Float, nullable=True)  # (bet.odds / provider_closing_odds - 1) * 100
 
     __table_args__ = (
-        Index('ix_bet_profile_result', 'profile_id', 'result'),
-        Index('ix_bet_event_id', 'event_id'),
-        Index('ix_bet_provider_id', 'provider_id'),
-        Index('ix_bet_profile_provider_result', 'profile_id', 'provider_id', 'result'),
-        Index('ix_bet_result_placed_at', 'result', 'placed_at'),
+        Index("ix_bet_profile_result", "profile_id", "result"),
+        Index("ix_bet_event_id", "event_id"),
+        Index("ix_bet_provider_id", "provider_id"),
+        Index("ix_bet_profile_provider_result", "profile_id", "provider_id", "result"),
+        Index("ix_bet_result_placed_at", "result", "placed_at"),
     )
 
     # Relationships
@@ -295,14 +330,15 @@ class Bet(Base):
 
 class BetTrace(Base):
     """Raw API trace from intercepted bet placement. Append-only."""
+
     __tablename__ = "bet_traces"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, nullable=False)
     provider_id = Column(String, nullable=False)
     request_url = Column(String, nullable=False)
-    request_body = Column(String, nullable=True)   # JSON string
-    response_body = Column(String, nullable=True)   # JSON string
+    request_body = Column(String, nullable=True)  # JSON string
+    response_body = Column(String, nullable=True)  # JSON string
     bet_id = Column(Integer, ForeignKey("bets.id"), nullable=True)
     provider_bet_id = Column(String, nullable=True, index=True)
     parse_status = Column(String, nullable=False)  # "ok", "failed", "unmatched", "rejected"
@@ -312,10 +348,13 @@ class BetTrace(Base):
 
 class BetPostmortem(Base):
     """Post-settlement classification for a bet. One row per settled bet."""
+
     __tablename__ = "bet_postmortems"
 
     bet_id = Column(Integer, ForeignKey("bets.id"), primary_key=True)
-    classification = Column(String, nullable=False)  # expected_loss, edge_erosion, false_edge, sizing_error, expected_win, bonus_win
+    classification = Column(
+        String, nullable=False
+    )  # expected_loss, edge_erosion, false_edge, sizing_error, expected_win, bonus_win
     edge_at_placement = Column(Float, nullable=True)  # Derived: (odds / fair_odds_at_placement - 1) * 100
     clv_pct = Column(Float, nullable=True)  # Copied from bet.clv_pct
     clv_confirmed = Column(Boolean, default=False)  # True if (start_time - placed_at) <= 12h
@@ -329,15 +368,15 @@ class BetPostmortem(Base):
 
     bet = relationship("Bet")
 
-    __table_args__ = (
-        Index("ix_bet_pm_classification_version", "classification", "version"),
-    )
+    __table_args__ = (Index("ix_bet_pm_classification_version", "classification", "version"),)
 
 
 # ============ Mirror Infrastructure ============
 
+
 class BalanceLog(Base):
     """Append-only balance log from intercepted provider API responses."""
+
     __tablename__ = "balance_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -347,13 +386,12 @@ class BalanceLog(Base):
     source = Column(String, nullable=False)  # 'intercepted' | 'api_fetch'
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index('ix_balance_log_provider_created', 'provider_id', 'created_at'),
-    )
+    __table_args__ = (Index("ix_balance_log_provider_created", "provider_id", "created_at"),)
 
 
 class SettlementQueue(Base):
     """Persistent settlement queue — survives restarts, user confirms before bankroll update."""
+
     __tablename__ = "settlement_queue"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -365,13 +403,12 @@ class SettlementQueue(Base):
     detected_at = Column(DateTime, default=_utcnow)
     confirmed_at = Column(DateTime, nullable=True)
 
-    __table_args__ = (
-        Index('ix_settlement_queue_provider_status', 'provider_id', 'status'),
-    )
+    __table_args__ = (Index("ix_settlement_queue_provider_status", "provider_id", "status"),)
 
 
 class PriceCache(Base):
     """Live price ticks from intercepted odds responses."""
+
     __tablename__ = "price_cache"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -384,15 +421,17 @@ class PriceCache(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('provider_id', 'event_id', 'market', 'outcome', name='uq_price_cache_key'),
-        Index('ix_price_cache_provider_event', 'provider_id', 'event_id'),
+        UniqueConstraint("provider_id", "event_id", "market", "outcome", name="uq_price_cache_key"),
+        Index("ix_price_cache_provider_event", "provider_id", "event_id"),
     )
 
 
 # ============ User Settings ============
 
+
 class Profile(Base):
     """User settings for stake calculation and filtering."""
+
     __tablename__ = "profiles"
 
     id = Column(Integer, primary_key=True)
@@ -404,27 +443,27 @@ class Profile(Base):
     liquid_balance = Column(Float, default=0.0)  # Cash in bank (not at any provider)
 
     # Kelly criterion
-    kelly_fraction = Column(Float, default=0.75)    # Dynamic Kelly scales 0.25-0.75 based on edge
+    kelly_fraction = Column(Float, default=0.75)  # Dynamic Kelly scales 0.25-0.75 based on edge
 
     # Opportunity thresholds
-    min_edge_pct = Column(Float, default=2.0)       # Min edge for value bets
-    min_arb_pct = Column(Float, default=0.5)        # Min profit for arbs
+    min_edge_pct = Column(Float, default=2.0)  # Min edge for value bets
+    min_arb_pct = Column(Float, default=0.5)  # Min profit for arbs
 
     # Risk limits
-    max_stake_pct = Column(Float, default=5.0)      # Max % of bankroll per bet
+    max_stake_pct = Column(Float, default=5.0)  # Max % of bankroll per bet
 
     # Bonus settings
     min_retention_pct = Column(Float, default=80.0)  # Min % for free bet value
-    preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
+    preferred_counterparts = Column(String)  # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
-    bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
-    total_deposited = Column(Float, default=0.0)     # Cumulative real money deposited (for ROI calc)
-    total_withdrawn = Column(Float, default=0.0)     # Cumulative real money withdrawn (for ROI calc)
+    bonus_deposit = Column(Float, default=0.0)  # Max deposit match (0 = none)
+    total_deposited = Column(Float, default=0.0)  # Cumulative real money deposited (for ROI calc)
+    total_withdrawn = Column(Float, default=0.0)  # Cumulative real money withdrawn (for ROI calc)
 
     # Profile state
-    is_active = Column(Boolean, default=False)      # Currently selected profile
-    chrome_port = Column(Integer, nullable=True)     # CDP port (default: 9221 + id)
-    color = Column(String, nullable=True)            # Hex color for Chrome border (auto-assigned)
+    is_active = Column(Boolean, default=False)  # Currently selected profile
+    chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
+    color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -450,6 +489,7 @@ class ProfileProviderBonus(Base):
     - min_odds: Per-provider minimum odds for wagering qualification (from providers.yaml)
     - When wagered_amount >= wagering_requirement: bonus is "completed"
     """
+
     __tablename__ = "profile_provider_bonuses"
 
     id = Column(Integer, primary_key=True)
@@ -463,28 +503,28 @@ class ProfileProviderBonus(Base):
     # 'completed' = bonus fully wagered/used, no more min odds restriction
     # 'claimed' = bonus already used (e.g., from previous account), skip in workflows
     bonus_status = Column(String, default="available")
-    bonus_type = Column(String, nullable=True)          # "freebet" or "bonusdeposit"
+    bonus_type = Column(String, nullable=True)  # "freebet" or "bonusdeposit"
 
     # Bonus wagering tracking
-    bonus_amount = Column(Float, default=0.0)           # Bonus received
-    wagering_multiplier = Column(Float, default=10.0)   # Wagering requirement multiplier (default 10x)
-    wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
-    wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
-    min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
-    main_min_odds = Column(Float, nullable=True)        # Main wagering min_odds (used after trigger phase completes)
-    deposit_amount = Column(Float, nullable=True)       # Original deposit (for trigger→main phase wagering calc)
+    bonus_amount = Column(Float, default=0.0)  # Bonus received
+    wagering_multiplier = Column(Float, default=10.0)  # Wagering requirement multiplier (default 10x)
+    wagering_requirement = Column(Float, default=0.0)  # Total wagering required (bonus_amount * multiplier)
+    wagered_amount = Column(Float, default=0.0)  # Amount wagered so far (odds >= min_odds only)
+    min_odds = Column(Float, default=1.80)  # Minimum odds for wagering qualification (per-provider)
+    main_min_odds = Column(Float, nullable=True)  # Main wagering min_odds (used after trigger phase completes)
+    deposit_amount = Column(Float, nullable=True)  # Original deposit (for trigger→main phase wagering calc)
     trigger_mode = Column(String, default="cumulative")  # "single" or "cumulative"
 
     # Timer tracking
-    claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
-    expires_at = Column(DateTime, nullable=True)        # Deadline to complete wagering (claimed_at + 60 days)
+    claimed_at = Column(DateTime, nullable=True)  # When bonus was claimed/wagering started
+    expires_at = Column(DateTime, nullable=True)  # Deadline to complete wagering (claimed_at + 60 days)
 
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
-        Index('ix_bonus_profile_status', 'profile_id', 'bonus_status'),
-        Index('ix_bonus_profile_provider', 'profile_id', 'provider_id'),
+        UniqueConstraint("profile_id", "provider_id", name="uq_profile_provider_bonus"),
+        Index("ix_bonus_profile_status", "profile_id", "bonus_status"),
+        Index("ix_bonus_profile_provider", "profile_id", "provider_id"),
     )
 
     # Relationships
@@ -500,6 +540,7 @@ class ProfileProviderBalance(Base):
     This allows multiple profiles (e.g., different identity contexts)
     to have separate bankrolls.
     """
+
     __tablename__ = "profile_provider_balances"
 
     id = Column(Integer, primary_key=True)
@@ -516,8 +557,8 @@ class ProfileProviderBalance(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
-        Index('ix_balance_profile_id', 'profile_id'),
+        UniqueConstraint("profile_id", "provider_id", name="uq_profile_provider_balance"),
+        Index("ix_balance_profile_id", "profile_id"),
     )
 
     # Relationships
@@ -532,14 +573,15 @@ class ProfileProviderLimit(Base):
     Records when a bookmaker limits an account, with an immutable
     snapshot of betting stats at detection time for correlation analysis.
     """
+
     __tablename__ = "profile_provider_limits"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
 
-    limit_type = Column(String, nullable=False)     # LimitType enum value
-    limit_level = Column(Integer, nullable=False)   # 1=minor, 2=moderate, 3=severe, 4=gutted, 5=closed
+    limit_type = Column(String, nullable=False)  # LimitType enum value
+    limit_level = Column(Integer, nullable=False)  # 1=minor, 2=moderate, 3=severe, 4=gutted, 5=closed
     detected_at = Column(DateTime, nullable=False, default=_utcnow)
     notes = Column(Text, nullable=True)
 
@@ -550,8 +592,8 @@ class ProfileProviderLimit(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', 'limit_type', name='uq_profile_provider_limit_type'),
-        Index('ix_limit_profile_provider', 'profile_id', 'provider_id'),
+        UniqueConstraint("profile_id", "provider_id", "limit_type", name="uq_profile_provider_limit_type"),
+        Index("ix_limit_profile_provider", "profile_id", "provider_id"),
     )
 
     # Relationships
@@ -561,6 +603,7 @@ class ProfileProviderLimit(Base):
 
 # ============ Opportunities ============
 
+
 class Opportunity(Base):
     """
     Detected opportunities (arbitrage, value bets, bonus matches).
@@ -569,6 +612,7 @@ class Opportunity(Base):
     Can be marked inactive when odds change.
     One row per (event, market, outcome, provider) combination.
     """
+
     __tablename__ = "opportunities"
     __table_args__ = (
         Index("ix_opp_upsert_unique", "event_id", "market", "outcome1", "provider1_id", "type", unique=True),
@@ -609,7 +653,7 @@ class Opportunity(Base):
 
     # Calculated metrics
     profit_pct = Column(Float, nullable=True)  # For arbitrage
-    edge_pct = Column(Float, nullable=True)     # For value bets
+    edge_pct = Column(Float, nullable=True)  # For value bets
 
     # Status
     is_active = Column(Boolean, default=True)
@@ -636,8 +680,10 @@ class Opportunity(Base):
 
 # ============ Extraction Monitoring ============
 
+
 class ExtractionRun(Base):
     """Historical extraction run tracking."""
+
     __tablename__ = "extraction_runs"
 
     id = Column(String, primary_key=True)  # UUID
@@ -666,6 +712,7 @@ class ExtractionRun(Base):
 
 class ProviderRunMetrics(Base):
     """Per-provider metrics for each extraction run."""
+
     __tablename__ = "provider_run_metrics"
 
     id = Column(Integer, primary_key=True)
@@ -690,9 +737,9 @@ class ProviderRunMetrics(Base):
     events_unmatched = Column(Integer, default=0)
 
     # Market breakdown (actionable: shows spread/total gaps)
-    ml_count = Column(Integer, default=0)      # 1x2 + moneyline odds
-    spread_count = Column(Integer, default=0)   # spread/handicap odds
-    total_count = Column(Integer, default=0)    # over/under odds
+    ml_count = Column(Integer, default=0)  # 1x2 + moneyline odds
+    spread_count = Column(Integer, default=0)  # spread/handicap odds
+    total_count = Column(Integer, default=0)  # over/under odds
 
     # Performance
     retries = Column(Integer, default=0)
@@ -712,6 +759,7 @@ class ProviderRunMetrics(Base):
 
 class SportRunMetrics(Base):
     """Per-sport metrics for troubleshooting."""
+
     __tablename__ = "sport_run_metrics"
 
     id = Column(Integer, primary_key=True)
@@ -748,8 +796,10 @@ class SportRunMetrics(Base):
 
 # ============ Deferred Matching ============
 
+
 class DeferredEvent(Base):
     """Buffer for soft provider events that couldn't match Pinnacle on first attempt."""
+
     __tablename__ = "deferred_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -767,7 +817,11 @@ class DeferredEvent(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "provider_id", "sport", "normalized_home", "normalized_away", "start_time",
+            "provider_id",
+            "sport",
+            "normalized_home",
+            "normalized_away",
+            "start_time",
             name="uq_deferred_provider_event",
         ),
         Index("idx_deferred_start", "start_time"),
@@ -777,7 +831,9 @@ class DeferredEvent(Base):
     def to_standard_event(self):
         """Reconstruct StandardEvent from deferred data. Sets _from_deferred to prevent re-deferral."""
         import json
+
         from src.core.retriever import StandardEvent
+
         event = StandardEvent(
             id="",
             name=f"{self.home_team} vs {self.away_team}",
@@ -795,16 +851,18 @@ class DeferredEvent(Base):
 
 # ============ Boost Extraction Logging ============
 
+
 class BoostExtractionLog(Base):
     """Per-provider metrics for each oddsboost scrape run."""
+
     __tablename__ = "boost_extraction_logs"
 
     id = Column(Integer, primary_key=True)
-    run_id = Column(String, nullable=False)        # Groups providers from same run
+    run_id = Column(String, nullable=False)  # Groups providers from same run
     scraped_at = Column(DateTime, nullable=False)
     provider_id = Column(String, nullable=False)
-    scraper_type = Column(String)                   # kambi, altenar, gecko_v2, etc.
-    status = Column(String, nullable=False)         # success, failed, skipped
+    scraper_type = Column(String)  # kambi, altenar, gecko_v2, etc.
+    status = Column(String, nullable=False)  # success, failed, skipped
     duration_seconds = Column(Float, default=0.0)
     boosts_found = Column(Integer, default=0)
     error_message = Column(Text)
@@ -816,26 +874,27 @@ class BoostExtractionLog(Base):
 
 class SpecialOdds(Base):
     """Odds boosts / specials stored from provider scrapes with pre-computed EV."""
+
     __tablename__ = "specials"
 
     id = Column(Integer, primary_key=True)
 
     # Core boost data (from Special dataclass in scrape_specials.py)
     provider = Column(String, nullable=False)
-    title = Column(String, nullable=False)        # "market_label: selection_label"
+    title = Column(String, nullable=False)  # "market_label: selection_label"
     description = Column(Text, default="")
-    original_odds = Column(Float, nullable=True)   # Pre-boost odds (if available)
+    original_odds = Column(Float, nullable=True)  # Pre-boost odds (if available)
     boosted_odds = Column(Float, nullable=True)
-    boost_pct = Column(Float, nullable=True)       # ((boosted / original) - 1) * 100
+    boost_pct = Column(Float, nullable=True)  # ((boosted / original) - 1) * 100
     max_stake = Column(Float, nullable=True)
-    category = Column(String, default="boost")     # "boost" or "superboost"
+    category = Column(String, default="boost")  # "boost" or "superboost"
 
     # Event context
     sport = Column(String, default="unknown")
     league = Column(String, default="")
-    event = Column(String, default="")              # "Arsenal vs Sunderland"
-    event_time = Column(String, nullable=True)      # ISO datetime string
-    expires_at = Column(String, nullable=True)      # ISO datetime string
+    event = Column(String, default="")  # "Arsenal vs Sunderland"
+    event_time = Column(String, nullable=True)  # ISO datetime string
+    expires_at = Column(String, nullable=True)  # ISO datetime string
 
     # Source metadata
     url = Column(String, default="")
@@ -844,7 +903,7 @@ class SpecialOdds(Base):
     shared_providers = Column(JSON, nullable=True)  # list of provider IDs
 
     # Scrape tracking
-    scraped_at = Column(String, nullable=False)     # ISO datetime string
+    scraped_at = Column(String, nullable=False)  # ISO datetime string
 
     # Boost edge (simple: boosted_odds / original_odds - 1)
     edge_pct = Column(Float, nullable=True)
@@ -859,12 +918,12 @@ class SpecialOdds(Base):
     enrichment_method = Column(String, nullable=True)
 
     # LLM enrichment (AI-estimated probability from Claude Haiku + Brave Search)
-    llm_title = Column(String, nullable=True)         # Simplified English title
-    llm_probability = Column(Float, nullable=True)    # 0.01-0.99
-    llm_fair_odds = Column(Float, nullable=True)      # 1 / llm_probability
-    llm_edge_pct = Column(Float, nullable=True)       # (boosted / llm_fair - 1) * 100
-    llm_reasoning = Column(Text, nullable=True)       # AI reasoning text
-    llm_confidence = Column(String, nullable=True)    # "low", "medium", "high"
+    llm_title = Column(String, nullable=True)  # Simplified English title
+    llm_probability = Column(Float, nullable=True)  # 0.01-0.99
+    llm_fair_odds = Column(Float, nullable=True)  # 1 / llm_probability
+    llm_edge_pct = Column(Float, nullable=True)  # (boosted / llm_fair - 1) * 100
+    llm_reasoning = Column(Text, nullable=True)  # AI reasoning text
+    llm_confidence = Column(String, nullable=True)  # "low", "medium", "high"
 
     __table_args__ = (
         Index("ix_specials_provider", "provider"),
@@ -881,9 +940,10 @@ class LlmBoostCache(Base):
     Survives backend restarts and specials table purges.
     Once a boost is researched, it's never re-researched (until expired).
     """
+
     __tablename__ = "llm_boost_cache"
 
-    cache_key = Column(String, primary_key=True)    # md5 hash
+    cache_key = Column(String, primary_key=True)  # md5 hash
 
     # Original boost identity (for debugging / human lookup)
     title = Column(String, nullable=False)
@@ -895,14 +955,15 @@ class LlmBoostCache(Base):
     llm_fair_odds = Column(Float, nullable=True)
     llm_confidence = Column(String, default="low")
     llm_reasoning = Column(Text, nullable=True)
-    llm_event_time = Column(String, nullable=True)     # ISO datetime — event start time from LLM
+    llm_event_time = Column(String, nullable=True)  # ISO datetime — event start time from LLM
 
     # Metadata
-    created_at = Column(String, nullable=False)       # ISO datetime
-    last_used_at = Column(String, nullable=False)      # ISO datetime — updated on carry-forward
+    created_at = Column(String, nullable=False)  # ISO datetime
+    last_used_at = Column(String, nullable=False)  # ISO datetime — updated on carry-forward
 
 
 # ============ Risk Management ============
+
 
 class ProviderRiskProfile(Base):
     """
@@ -911,6 +972,7 @@ class ProviderRiskProfile(Base):
     Risk scores are computed from betting patterns that may trigger
     bookmaker detection algorithms.
     """
+
     __tablename__ = "provider_risk_profiles"
 
     id = Column(Integer, primary_key=True)
@@ -921,20 +983,20 @@ class ProviderRiskProfile(Base):
     risk_level = Column(String, default="low")  # "low", "medium", "high", "critical"
 
     # Individual feature scores (0.0-1.0, higher = more suspicious)
-    stake_entropy = Column(Float, default=0.0)        # CV of stakes + round number ratio
-    market_diversity = Column(Float, default=0.0)     # Sports/leagues spread
-    timing_regularity = Column(Float, default=0.0)    # Hour/day concentration
+    stake_entropy = Column(Float, default=0.0)  # CV of stakes + round number ratio
+    market_diversity = Column(Float, default=0.0)  # Sports/leagues spread
+    timing_regularity = Column(Float, default=0.0)  # Hour/day concentration
     outcome_correlation = Column(Float, default=0.0)  # Hedge detection
-    bonus_usage_ratio = Column(Float, default=0.0)    # Bonus bet percentage
-    clv_score = Column(Float, default=0.0)            # Average closing line value
-    win_rate_deviation = Column(Float, default=0.0)   # Actual vs expected
+    bonus_usage_ratio = Column(Float, default=0.0)  # Bonus bet percentage
+    clv_score = Column(Float, default=0.0)  # Average closing line value
+    win_rate_deviation = Column(Float, default=0.0)  # Actual vs expected
 
     # Brier score for calibration tracking (lower = better)
     brier_score = Column(Float, nullable=True)
 
     # Account tracking
     first_bet_date = Column(DateTime, nullable=True)  # Date of first bet on this provider
-    total_bets_placed = Column(Integer, default=0)    # All-time bet count
+    total_bets_placed = Column(Integer, default=0)  # All-time bet count
 
     # Cooldown tracking
     is_on_cooldown = Column(Boolean, default=False)
@@ -955,15 +1017,16 @@ class RiskConfig(Base):
 
     These control how aggressively the system penalizes risky behavior.
     """
+
     __tablename__ = "risk_configs"
 
     id = Column(Integer, primary_key=True)
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False, unique=True)
 
     # Core parameters
-    lambda_coefficient = Column(Float, default=0.3)      # Risk aversion (0=ignore, 1=very conservative)
-    stake_noise_pct = Column(Float, default=5.0)         # Max % noise on stakes
-    softmax_temperature = Column(Float, default=1.0)     # Selection randomness (T=0 deterministic)
+    lambda_coefficient = Column(Float, default=0.3)  # Risk aversion (0=ignore, 1=very conservative)
+    stake_noise_pct = Column(Float, default=5.0)  # Max % noise on stakes
+    softmax_temperature = Column(Float, default=1.0)  # Selection randomness (T=0 deterministic)
 
     # Feature weights (must sum to 1.0 for normalized scoring)
     weight_stake_entropy = Column(Float, default=0.12)
@@ -975,14 +1038,14 @@ class RiskConfig(Base):
     weight_win_rate = Column(Float, default=0.10)
 
     # Risk level thresholds
-    threshold_low = Column(Float, default=0.3)           # < this = low risk
-    threshold_medium = Column(Float, default=0.5)        # < this = medium risk
-    threshold_high = Column(Float, default=0.7)          # < this = high risk
+    threshold_low = Column(Float, default=0.3)  # < this = low risk
+    threshold_medium = Column(Float, default=0.5)  # < this = medium risk
+    threshold_high = Column(Float, default=0.7)  # < this = high risk
     # >= threshold_high = critical
 
     # Behavioral parameters
-    rolling_window_days = Column(Integer, default=30)    # Feature calculation window
-    cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
+    rolling_window_days = Column(Integer, default=30)  # Feature calculation window
+    cooldown_trigger_score = Column(Float, default=0.75)  # Auto-cooldown threshold
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
 
     # Provider allocation
@@ -997,8 +1060,10 @@ class RiskConfig(Base):
 
 # ============ Trading Models ============
 
+
 class TradingAccount(Base):
     """Sub-account for trading (intraday, swing, hodl)."""
+
     __tablename__ = "trading_accounts"
 
     id = Column(Integer, primary_key=True)
@@ -1034,6 +1099,7 @@ class TradingAccount(Base):
 
 class DailyRoutine(Base):
     """One per trading day — checklist, bias, psych gate."""
+
     __tablename__ = "daily_routines"
 
     id = Column(Integer, primary_key=True)
@@ -1073,6 +1139,7 @@ class DailyRoutine(Base):
 
 class Trade(Base):
     """A single trade with full lifecycle tracking."""
+
     __tablename__ = "trades"
 
     id = Column(Integer, primary_key=True)
@@ -1131,12 +1198,15 @@ class Trade(Base):
 
 class TradeEvent(Base):
     """Timeline entry for a trade (state transitions, notes, partial exits)."""
+
     __tablename__ = "trade_events"
 
     id = Column(Integer, primary_key=True)
     trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
 
-    event_type = Column(String, nullable=False)  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
+    event_type = Column(
+        String, nullable=False
+    )  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
     from_state = Column(String, nullable=True)
     to_state = Column(String, nullable=True)
     details = Column(JSON, nullable=True)  # Flexible payload
@@ -1150,6 +1220,7 @@ class TradeEvent(Base):
 
 class TradeReview(Base):
     """Post-close journal review for a trade."""
+
     __tablename__ = "trade_reviews"
 
     id = Column(Integer, primary_key=True)
@@ -1168,10 +1239,13 @@ class TradeReview(Base):
 
 class TradePostmortem(Base):
     """Post-close classification for a trade. One row per closed trade."""
+
     __tablename__ = "trade_postmortems"
 
     trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
-    classification = Column(String, nullable=False)  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
+    classification = Column(
+        String, nullable=False
+    )  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
     r_multiple = Column(Float, nullable=True)
     setup_avg_r = Column(Float, nullable=True)
     setup_win_rate = Column(Float, nullable=True)
@@ -1185,13 +1259,12 @@ class TradePostmortem(Base):
 
     trade = relationship("Trade")
 
-    __table_args__ = (
-        Index("ix_trade_pm_classification_version", "classification", "version"),
-    )
+    __table_args__ = (Index("ix_trade_pm_classification_version", "classification", "version"),)
 
 
 class MarketSession(Base):
     """Computed AMT session data for a symbol/date."""
+
     __tablename__ = "market_sessions"
 
     id = Column(Integer, primary_key=True)
@@ -1254,13 +1327,12 @@ class MarketSession(Base):
     # Relationships
     signals = relationship("TradingSignal", back_populates="session")
 
-    __table_args__ = (
-        UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),)
 
 
 class TradingSignal(Base):
     """Scanner-generated trading signal with quality score."""
+
     __tablename__ = "trading_signals"
 
     id = Column(Integer, primary_key=True)
@@ -1319,6 +1391,7 @@ class TradingSignal(Base):
 
 class MarketTrade(Base):
     """Raw tick data from Databento live stream."""
+
     __tablename__ = "market_trades"
 
     id = Column(Integer, primary_key=True)
@@ -1328,19 +1401,18 @@ class MarketTrade(Base):
     size = Column(Integer, nullable=False)
     side = Column(String, nullable=False)  # "B" (bid aggressor) | "A" (ask aggressor)
 
-    __table_args__ = (
-        Index("ix_market_trades_symbol_ts", "symbol", "ts"),
-    )
+    __table_args__ = (Index("ix_market_trades_symbol_ts", "symbol", "ts"),)
 
 
 class MarketCandle(Base):
     """Persisted OHLCV candle bars — backfilled from Databento + appended live."""
+
     __tablename__ = "market_candles"
 
     id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False)
-    interval = Column(String, nullable=False)   # "1m" | "5m" | "15m"
-    ts = Column(DateTime, nullable=False)        # bucket-start UTC
+    interval = Column(String, nullable=False)  # "1m" | "5m" | "15m"
+    ts = Column(DateTime, nullable=False)  # bucket-start UTC
     o = Column(Float, nullable=False)
     h = Column(Float, nullable=False)
     l = Column(Float, nullable=False)
@@ -1355,12 +1427,15 @@ class MarketCandle(Base):
 
 class MarketLevel(Base):
     """Computed structural level for a session."""
+
     __tablename__ = "market_levels"
 
     id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False)
     date = Column(String, nullable=False)
-    level_type = Column(String, nullable=False)  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
+    level_type = Column(
+        String, nullable=False
+    )  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
     session = Column(String, nullable=True)  # "tokyo", "london", "ny", null
     price_low = Column(Float, nullable=False)
     price_high = Column(Float, nullable=False)  # = price_low for single-price levels
@@ -1368,13 +1443,12 @@ class MarketLevel(Base):
     is_filled = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),
-    )
+    __table_args__ = (Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),)
 
 
 class MarketTPOSession(Base):
     """Pre-computed TPO profile for a Globex session."""
+
     __tablename__ = "market_tpo_sessions"
 
     id = Column(Integer, primary_key=True)
@@ -1404,6 +1478,7 @@ class MarketTPOSession(Base):
 
 class MarketContext(Base):
     """Manual context gate persistence (Layer A gates)."""
+
     __tablename__ = "market_context"
 
     id = Column(Integer, primary_key=True)
@@ -1411,12 +1486,12 @@ class MarketContext(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     # Gate 1: Macro
     macro_bias = Column(String, nullable=True)  # "bull", "bear", "neutral"
-    risk_mode = Column(String, nullable=True)   # "risk_on", "risk_off", "mixed"
-    cycle_phase = Column(String, nullable=True) # "early", "mid", "late", "recession"
+    risk_mode = Column(String, nullable=True)  # "risk_on", "risk_off", "mixed"
+    cycle_phase = Column(String, nullable=True)  # "early", "mid", "late", "recession"
     # Gate 2: Structure
-    structure = Column(String, nullable=True)     # "uptrend", "downtrend", "ranging"
-    structure_hl = Column(Float, nullable=True)   # Last confirmed HL (long invalidation below)
-    structure_lh = Column(Float, nullable=True)   # Last confirmed LH (short invalidation above)
+    structure = Column(String, nullable=True)  # "uptrend", "downtrend", "ranging"
+    structure_hl = Column(Float, nullable=True)  # Last confirmed HL (long invalidation below)
+    structure_lh = Column(Float, nullable=True)  # Last confirmed LH (short invalidation above)
     # Gate 3: Day type
     day_type = Column(String, nullable=True)  # "trend", "normal", "normal_variation", "neutral", "composite"
     # VP anchors (Unix timestamps)
@@ -1432,13 +1507,12 @@ class MarketContext(Base):
     def vp_current_start(self, value):
         self.vp_old_macro_start = value
 
-    __table_args__ = (
-        UniqueConstraint("symbol", name="uq_market_context_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("symbol", name="uq_market_context_symbol"),)
 
 
 class SessionMetric(Base):
     """Permanent session metrics history for ASPR/RF baselines."""
+
     __tablename__ = "session_metrics"
 
     id = Column(Integer, primary_key=True)
@@ -1459,6 +1533,7 @@ class ProviderExtractionSetting(Base):
     If a row exists with enabled=False, the provider is excluded for that profile.
     If no row exists, the provider is enabled by default (YAML active list).
     """
+
     __tablename__ = "provider_extraction_settings"
 
     profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)
@@ -1473,6 +1548,7 @@ class BetBlacklist(Base):
     When a user removes a bet, the event+provider+market+outcome is persisted
     here so it doesn't reappear after re-extraction.
     """
+
     __tablename__ = "bet_blacklist"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -1515,6 +1591,7 @@ def get_engine():
         else:
             # SQLite fallback (local dev without Docker)
             from ..paths import get_db_path
+
             db_path = get_db_path()
             db_path.parent.mkdir(parents=True, exist_ok=True)
             _engine = create_engine(
@@ -1551,6 +1628,7 @@ def get_async_engine():
         else:
             # SQLite async fallback
             from ..paths import get_db_path
+
             db_path = get_db_path()
             _async_engine = create_async_engine(
                 f"sqlite+aiosqlite:///{db_path}",
@@ -1574,6 +1652,7 @@ def get_async_session_factory():
 def _run_migrations(engine):
     """Add new columns to existing tables (safe for fresh DBs too)."""
     import sqlite3
+
     with engine.connect() as conn:
         raw = conn.connection.connection  # Get raw sqlite3 connection
         cursor = raw.cursor()
@@ -1823,6 +1902,7 @@ def _run_migrations(engine):
 
 # ============ ML Feature Store ============
 
+
 class MlFeature(Base):
     """
     Generic feature store for ML training and inference.
@@ -1830,6 +1910,7 @@ class MlFeature(Base):
     Stores feature vectors keyed by domain + source, with optional outcome
     labels populated after the fact for supervised learning.
     """
+
     __tablename__ = "ml_features"
     __table_args__ = (
         Index("idx_ml_features_domain", "domain"),
@@ -1837,12 +1918,12 @@ class MlFeature(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    domain = Column(String, nullable=False)          # e.g. "betting", "trading"
-    source_id = Column(String, nullable=False)       # FK-like ref to source row
-    source_type = Column(String, nullable=False)     # e.g. "opportunity", "signal"
-    features = Column(JSON, nullable=False)          # serialised feature dict
+    domain = Column(String, nullable=False)  # e.g. "betting", "trading"
+    source_id = Column(String, nullable=False)  # FK-like ref to source row
+    source_type = Column(String, nullable=False)  # e.g. "opportunity", "signal"
+    features = Column(JSON, nullable=False)  # serialised feature dict
     feature_version = Column(Integer, default=1)
-    outcome = Column(Float, nullable=True)           # continuous label (e.g. CLV)
+    outcome = Column(Float, nullable=True)  # continuous label (e.g. CLV)
     outcome_binary = Column(Integer, nullable=True)  # 0/1 classification label
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
@@ -1852,11 +1933,12 @@ class CandleSnapshot(Base):
     """
     Stores OHLCV candle arrays associated with a trading signal for ML use.
     """
+
     __tablename__ = "candle_snapshots"
 
     id = Column(Integer, primary_key=True)
     signal_id = Column(Integer, ForeignKey("trading_signals.id"), nullable=True)
-    candles = Column(JSON, nullable=False)           # list of candle dicts
+    candles = Column(JSON, nullable=False)  # list of candle dicts
     timeframe = Column(String, default="1m")
     created_at = Column(DateTime, default=_utcnow)
 
@@ -1867,19 +1949,18 @@ class EconomicEvent(Base):
     """
     Scheduled macro economic events (e.g. CPI, NFP, FOMC) with consensus data.
     """
+
     __tablename__ = "economic_events"
-    __table_args__ = (
-        Index("idx_econ_events_datetime", "event_datetime"),
-    )
+    __table_args__ = (Index("idx_econ_events_datetime", "event_datetime"),)
 
     id = Column(Integer, primary_key=True)
     event_name = Column(String, nullable=False)
     event_datetime = Column(DateTime, nullable=False)
-    importance = Column(Integer, nullable=True)      # 1=low, 2=medium, 3=high
+    importance = Column(Integer, nullable=True)  # 1=low, 2=medium, 3=high
     forecast = Column(Float, nullable=True)
     actual = Column(Float, nullable=True)
     previous = Column(Float, nullable=True)
-    surprise = Column(Float, nullable=True)          # actual - forecast
+    surprise = Column(Float, nullable=True)  # actual - forecast
     created_at = Column(DateTime, default=_utcnow)
 
     impacts = relationship("NewsImpact", back_populates="economic_event")
@@ -1889,6 +1970,7 @@ class NewsImpact(Base):
     """
     Price-impact measurements for economic events, used as ML training labels.
     """
+
     __tablename__ = "news_impact"
 
     id = Column(Integer, primary_key=True)
@@ -1915,10 +1997,9 @@ class OptionsFlow(Base):
     """
     Daily options market microstructure data (GEX, put/call, VIX, DXY, yields).
     """
+
     __tablename__ = "options_flow"
-    __table_args__ = (
-        UniqueConstraint("date", "symbol", name="idx_options_flow_date"),
-    )
+    __table_args__ = (UniqueConstraint("date", "symbol", name="idx_options_flow_date"),)
 
     id = Column(Integer, primary_key=True)
     date = Column(String, nullable=False)
@@ -1945,10 +2026,9 @@ class CotData(Base):
     """
     CFTC Commitment of Traders report data for futures positioning analysis.
     """
+
     __tablename__ = "cot_data"
-    __table_args__ = (
-        UniqueConstraint("report_date", "symbol", name="idx_cot_date"),
-    )
+    __table_args__ = (UniqueConstraint("report_date", "symbol", name="idx_cot_date"),)
 
     id = Column(Integer, primary_key=True)
     report_date = Column(String, nullable=False)
@@ -1966,6 +2046,7 @@ class MlModelRegistry(Base):
     """
     Registry of trained ML model artifacts with versioning and performance metrics.
     """
+
     __tablename__ = "ml_model_registry"
 
     id = Column(Integer, primary_key=True)
@@ -1981,6 +2062,7 @@ class MlModelRegistry(Base):
 
 class ExtractionFeature(Base):
     """Per-extraction-run feature snapshot for M10 optimization."""
+
     __tablename__ = "extraction_features"
 
     id = Column(Integer, primary_key=True)
@@ -2008,13 +2090,12 @@ class ExtractionFeature(Base):
     avg_clv_from_run = Column(Float, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("idx_extraction_features_run", "run_id"),
-    )
+    __table_args__ = (Index("idx_extraction_features_run", "run_id"),)
 
 
 class ProviderValueLog(Base):
     """Per-provider-per-run attribution — connects extraction to value outcomes."""
+
     __tablename__ = "provider_value_log"
 
     id = Column(Integer, primary_key=True)
@@ -2032,13 +2113,12 @@ class ProviderValueLog(Base):
     clv_avg_from_provider = Column(Float, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("idx_provider_value_run", "run_id", "provider_id"),
-    )
+    __table_args__ = (Index("idx_provider_value_run", "run_id", "provider_id"),)
 
 
 class PinnacleCoverageLog(Base):
     """Per-provider per-sport Pinnacle coverage delta."""
+
     __tablename__ = "pinnacle_coverage_log"
 
     id = Column(Integer, primary_key=True)
@@ -2070,12 +2150,13 @@ class PinnacleCoverageLog(Base):
 
 class ProviderRecommendation(Base):
     """Diagnostic recommendation for a provider with lifecycle tracking."""
+
     __tablename__ = "provider_recommendations"
 
     id = Column(Integer, primary_key=True)
     provider_id = Column(String, nullable=False)
-    category = Column(String, nullable=False)      # match_rate, coverage, timing, roi, market_gap
-    severity = Column(String, nullable=False)       # critical, warning, info
+    category = Column(String, nullable=False)  # match_rate, coverage, timing, roi, market_gap
+    severity = Column(String, nullable=False)  # critical, warning, info
     message = Column(String, nullable=False)
     diagnostic_data = Column(JSON, nullable=True)
     status = Column(String, nullable=False, default="open")  # open, acted_on, resolved, wont_fix
@@ -2083,7 +2164,7 @@ class ProviderRecommendation(Base):
     resolved_at = Column(DateTime, nullable=True)
     before_metric = Column(Float, nullable=True)
     after_metric = Column(Float, nullable=True)
-    source = Column(String, default="rules")        # rules or ml
+    source = Column(String, default="rules")  # rules or ml
     created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
@@ -2177,6 +2258,7 @@ def get_market_engine():
             _market_engine = create_engine(sync_url)
         else:
             from ..paths import get_market_db_path
+
             market_path = get_market_db_path()
             market_path.parent.mkdir(parents=True, exist_ok=True)
             _market_engine = create_engine(
@@ -2228,6 +2310,7 @@ BONUS_MIN_ODDS = 1.80
 
 class BrokerTrade(Base):
     """Automated trade execution log."""
+
     __tablename__ = "broker_trades"
 
     id = Column(Integer, primary_key=True)

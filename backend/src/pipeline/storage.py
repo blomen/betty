@@ -9,6 +9,8 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import literal_column
+
 from ..constants import (
     ALLOWED_MARKETS,
     ENRICHMENT_MARKETS,
@@ -1270,76 +1272,67 @@ class OddsBatchProcessor:
                     raise
 
     def _flush_inner(self):
-        """Inner flush logic — separated for retry wrapper."""
+        """Inner flush logic — uses PostgreSQL ON CONFLICT upsert for atomicity."""
         now = datetime.now(timezone.utc)
 
-        # Fetch existing records in one query using 5-column key
-        from sqlalchemy import and_, or_
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        existing_records = {}
-        keys = list(self._pending.keys())
+        records = list(self._pending.values())
+        if not records:
+            self._pending.clear()
+            return
 
-        if keys:
-            # Query in batches to avoid SQLite limits
-            for i in range(0, len(keys), 500):
-                batch_keys = keys[i : i + 500]
-                # Build filter for 5-column key including point (handles NULL)
-                conditions = []
-                for event_id, provider_id, market, outcome, point in batch_keys:
-                    if point is None:
-                        conditions.append(
-                            and_(
-                                Odds.event_id == event_id,
-                                Odds.provider_id == provider_id,
-                                Odds.market == market,
-                                Odds.outcome == outcome,
-                                Odds.point.is_(None),
-                            )
-                        )
-                    else:
-                        conditions.append(
-                            and_(
-                                Odds.event_id == event_id,
-                                Odds.provider_id == provider_id,
-                                Odds.market == market,
-                                Odds.outcome == outcome,
-                                Odds.point == point,
-                            )
-                        )
+        # Process in batches of 500
+        for i in range(0, len(records), 500):
+            batch = records[i : i + 500]
+            rows = [
+                {
+                    "event_id": r["event_id"],
+                    "provider_id": r["provider_id"],
+                    "market": r["market"],
+                    "outcome": r["outcome"],
+                    "odds": r["odds"],
+                    "point": r.get("point"),
+                    "provider_meta": r.get("provider_meta"),
+                    "bid": r.get("bid"),
+                    "ask": r.get("ask"),
+                    "depth_usd": r.get("depth_usd"),
+                    "updated_at": now,
+                }
+                for r in batch
+            ]
 
-                if conditions:
-                    existing = self.session.query(Odds).filter(or_(*conditions)).all()
-                    for rec in existing:
-                        key = (rec.event_id, rec.provider_id, rec.market, rec.outcome, rec.point)
-                        existing_records[key] = rec
+            stmt = pg_insert(Odds.__table__).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_odds_with_point_nd",
+                set_={
+                    "odds": stmt.excluded.odds,
+                    "updated_at": stmt.excluded.updated_at,
+                    "provider_meta": stmt.excluded.provider_meta,
+                    "bid": stmt.excluded.bid,
+                    "ask": stmt.excluded.ask,
+                    "depth_usd": stmt.excluded.depth_usd,
+                },
+            ).returning(
+                Odds.__table__.c.event_id,
+                Odds.__table__.c.odds,
+                # xmax != 0 means row existed before (update), xmax == 0 means new insert
+                literal_column("xmax").label("xmax"),
+            )
 
-        # Separate inserts from updates
-        to_insert = []
-        for key, record in self._pending.items():
-            if key in existing_records:
-                # Update existing
-                existing = existing_records[key]
-                # Before overwriting, detect if odds actually changed
-                if abs(existing.odds - record["odds"]) >= 0.01:
-                    self.changed_event_ids.add(record["event_id"])
-                    self._changed_records.append({**record, "prev_odds": existing.odds})
-                existing.odds = record["odds"]
-                existing.updated_at = now
-                if record.get("provider_meta"):
-                    existing.provider_meta = record["provider_meta"]
-                existing.bid = record.get("bid")
-                existing.ask = record.get("ask")
-                existing.depth_usd = record.get("depth_usd")
-                self._update_count += 1
-            else:
-                # New record
-                self.changed_event_ids.add(record["event_id"])
-                to_insert.append({**record, "updated_at": now})
+            result = self.session.execute(stmt)
+            for row in result:
+                event_id = row.event_id
+                is_update = row.xmax != 0
+                if is_update:
+                    self._update_count += 1
+                else:
+                    self._insert_count += 1
+                    self.changed_event_ids.add(event_id)
 
-        # Bulk insert new records
-        if to_insert:
-            self.session.bulk_insert_mappings(Odds, to_insert)
-            self._insert_count += len(to_insert)
+            # Track all events in batch as potentially changed for analyzer
+            for r in batch:
+                self.changed_event_ids.add(r["event_id"])
 
         self._pending.clear()
 
