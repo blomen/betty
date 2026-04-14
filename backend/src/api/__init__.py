@@ -1265,7 +1265,7 @@ async def health_extraction():
                 db.close()
 
     try:
-        data = await asyncio.wait_for(asyncio.to_thread(_query), timeout=10.0)
+        data = await asyncio.wait_for(asyncio.to_thread(_query), timeout=15.0)
     except asyncio.TimeoutError:
         return {"status": "error", "message": "Database query timed out"}
 
