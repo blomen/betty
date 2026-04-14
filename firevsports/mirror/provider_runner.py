@@ -163,8 +163,8 @@ class ProviderRunner:
                 self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "login_timeout"})
                 return
 
-            # 3. Settle pending
-            await self._settle_pending(pid, workflow, page)
+            # 3. Detect settlements (broadcast only — user confirms from UI)
+            await self._detect_pending(pid, workflow, page)
 
             # 4. Check daily cap
             if pid not in UNCAPPED_PROVIDERS:
@@ -205,6 +205,13 @@ class ProviderRunner:
                 # Navigate
                 self.state = STATE_NAVIGATING
                 self.current_bet = bet
+                bet_ns = _bet_ns(bet)
+                logger.info(
+                    f"[Runner:{pid}] Next bet: {bet.get('display_home')} v {bet.get('display_away')} "
+                    f"{bet.get('outcome')} @ {bet.get('odds')} | "
+                    f"gecko_eid={getattr(bet_ns, 'gecko_event_id', '')} "
+                    f"meta={bet.get('provider_meta')}"
+                )
 
                 workflow = get_workflow(pid)
                 page = await workflow.find_tab(self._browser.context) if self._browser.context else None
@@ -478,36 +485,85 @@ class ProviderRunner:
         except Exception:
             return False
 
-    async def _settle_pending(self, provider_id: str, workflow, page) -> None:
-        """Settle pending bets — auto-confirm for parallel play."""
-        # Check pending count first — skip entirely if none
+    async def _detect_pending(self, provider_id: str, workflow, page) -> None:
+        """Detect settled bets and broadcast to UI — does NOT auto-record."""
         pending_bets = await self._fetch_pending(provider_id)
+
+        # Polymarket: DOM-based claim + redeem + match positions against pending
+        # bets via API proxy. settle_all can't be used — it does direct DB ops.
+        if hasattr(workflow, "claim_banner") and hasattr(workflow, "redeem_all"):
+            self.state = STATE_SETTLING
+            self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
+            try:
+                # Navigate to portfolio positions page
+                if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
+                    await page.goto(
+                        "https://polymarket.com/portfolio?tab=positions",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    await asyncio.sleep(4)
+
+                # Scrape positions BEFORE redeeming (status visible: WON/LOST)
+                positions = []
+                if hasattr(workflow, "scrape_portfolio"):
+                    positions = await workflow.scrape_portfolio(page)
+                    logger.info(f"[Runner:{provider_id}] Scraped {len(positions)} positions")
+
+                # Match scraped positions against pending bets to build settlements
+                settlements = []
+                if pending_bets and positions:
+                    settlements = self._match_polymarket_settlements(pending_bets, positions)
+                    logger.info(f"[Runner:{provider_id}] Matched {len(settlements)} settlements")
+
+                # Click Claim banner if present
+                claim_result = await workflow.claim_banner(page)
+                if claim_result.get("claimed"):
+                    logger.info(f"[Runner:{provider_id}] Claimed: {claim_result.get('amount')}")
+                    await asyncio.sleep(2)
+
+                # Click Redeem buttons for finished positions
+                redeem_result = await workflow.redeem_all(page)
+                logger.info(f"[Runner:{provider_id}] Redeem: {redeem_result}")
+
+                # Record settlements to DB via API proxy
+                if settlements:
+                    await self._record_settlements(provider_id, settlements)
+                    logger.info(f"[Runner:{provider_id}] Recorded {len(settlements)} settlements to DB")
+                    self._broadcaster.publish(
+                        "settlements_confirmed",
+                        {"provider_id": provider_id, "settlements": settlements},
+                    )
+
+                # Sync balance after claim/redeem
+                try:
+                    balance = await workflow.sync_balance(page)
+                    if balance >= 0:
+                        await self._post_balance(provider_id, balance)
+                        logger.info(f"[Runner:{provider_id}] Balance synced: ${balance:.2f}")
+                except Exception:
+                    pass
+
+                self._broadcaster.publish(
+                    "settling_done",
+                    {
+                        "provider_id": provider_id,
+                        "pending_count": len(pending_bets),
+                        "settled_count": len(settlements),
+                        "claim": claim_result,
+                        "redeem": redeem_result,
+                    },
+                )
+            except Exception:
+                logger.exception(f"[Runner:{provider_id}] DOM settlement failed")
+            return
+
         if not pending_bets:
-            logger.info(f"[Runner:{provider_id}] No pending bets — skipping settle")
+            logger.info(f"[Runner:{provider_id}] No pending bets — skipping detect")
             return
 
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
-
-        await self._reconcile_open_bets(provider_id, workflow, page)
-
-        if not pending_bets:
-            self._broadcaster.publish(
-                "settling_done", {"provider_id": provider_id, "pending_count": 0, "settlements": []}
-            )
-            return
-
-        try:
-            positions = await workflow.fetch_positions(page) if hasattr(workflow, "fetch_positions") else None
-        except Exception:
-            positions = None
-
-        if positions is not None and len(positions) >= len(pending_bets):
-            self._broadcaster.publish(
-                "settling_done",
-                {"provider_id": provider_id, "pending_count": len(pending_bets), "settlements": []},
-            )
-            return
 
         from . import stream_registry
 
@@ -518,10 +574,7 @@ class ProviderRunner:
             try:
                 raw_history = await workflow.sync_history(page)
             except Exception:
-                self._broadcaster.publish(
-                    "settling_done",
-                    {"provider_id": provider_id, "pending_count": len(pending_bets), "settlements": []},
-                )
+                logger.exception(f"[Runner:{provider_id}] sync_history failed")
                 return
 
         history = [
@@ -537,25 +590,70 @@ class ProviderRunner:
         ]
         settlements = _detect_settlements(pending_bets, history)
 
-        self._broadcaster.publish(
-            "settling_done",
-            {
-                "provider_id": provider_id,
-                "pending_count": len(pending_bets),
-                "pending_bets": pending_bets,
-                "settlements": settlements,
-            },
-        )
-
-        # Auto-confirm for parallel play (no blocking wait)
         if settlements:
-            await self._record_settlements(provider_id, settlements)
-            self._broadcaster.publish("settlements_confirmed", {"provider_id": provider_id, "settlements": settlements})
-            try:
-                balance = await workflow.sync_balance(page)
-                await self._post_balance(provider_id, balance)
-            except Exception:
-                pass
+            logger.info(f"[Runner:{provider_id}] {len(settlements)} settlements detected — broadcasting")
+            self._broadcaster.publish(
+                "settlements_detected",
+                {"provider_id": provider_id, "settlements": settlements},
+            )
+        else:
+            logger.info(f"[Runner:{provider_id}] {len(pending_bets)} pending — all open")
+
+    @staticmethod
+    def _match_polymarket_settlements(pending_bets: list[dict], positions: list[dict]) -> list[dict]:
+        """Match scraped portfolio positions against pending bets by fuzzy name.
+
+        Returns list of {bet_id, result} dicts for _record_settlements.
+        Uses the same fuzzy matching as settle_all but without DB imports.
+        """
+        from rapidfuzz import fuzz
+
+        settlements = []
+        matched_ids: set[int] = set()
+
+        for pos in positions:
+            status = pos.get("status", "open")
+            if status not in ("won", "lost"):
+                continue
+
+            pos_text = pos.get("full_text", "") or pos.get("market", "")
+            if not pos_text:
+                continue
+
+            best_match = None
+            best_score = 0
+            for bet in pending_bets:
+                bet_id = bet.get("bet_id") or bet.get("id")
+                if not bet_id or bet_id in matched_ids:
+                    continue
+
+                event_name = bet.get("event_name", "") or bet.get("event", "")
+                if not event_name:
+                    # Build from home/away
+                    h = bet.get("home_team", "") or bet.get("display_home", "")
+                    a = bet.get("away_team", "") or bet.get("display_away", "")
+                    event_name = f"{h} vs {a}" if h and a else h or a
+
+                if not event_name:
+                    continue
+
+                score = max(
+                    fuzz.partial_ratio(pos_text.lower(), event_name.lower()),
+                    fuzz.token_set_ratio(pos_text.lower(), event_name.lower()),
+                )
+                if score > best_score and score >= 55:
+                    best_score = score
+                    best_match = bet
+
+            if best_match:
+                bet_id = best_match.get("bet_id") or best_match.get("id")
+                matched_ids.add(bet_id)
+                settlements.append({"bet_id": bet_id, "result": status})
+                logger.info(
+                    f"[Polymarket] Matched position '{pos_text[:50]}' → bet #{bet_id} ({status}, score={best_score})"
+                )
+
+        return settlements
 
     async def _reconcile_open_bets(self, provider_id: str, workflow, page) -> int:
         if not hasattr(workflow, "fetch_positions"):
