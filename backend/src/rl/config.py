@@ -5,6 +5,7 @@ from enum import Enum
 
 class LevelType(str, Enum):
     """All level types the agent can encounter (31 total)."""
+
     # Volume profile — daily
     DAILY_POC = "daily_poc"
     DAILY_VAH = "daily_vah"
@@ -48,13 +49,14 @@ class LevelType(str, Enum):
 
 class Action(int, Enum):
     """Agent actions — AMT semantics relative to approach direction."""
+
     CONTINUATION = 0  # Trade in approach direction (momentum through level)
-    REVERSAL = 1      # Trade against approach direction (bounce off level)
-    SKIP = 2          # Don't trade
+    REVERSAL = 1  # Trade against approach direction (bounce off level)
+    SKIP = 2  # Don't trade
 
 
 # --- Risk Parameters ---
-STOP_TICKS = 10       # Used for cost normalisation (R-multiple denominator)
+STOP_TICKS = 10  # Used for cost normalisation (R-multiple denominator)
 TICK_SIZE = 0.25
 
 # --- DQN Hyperparameters ---
@@ -84,16 +86,16 @@ OBSERVATION_DIM = None  # Computed dynamically in observation.py
 AT_LEVEL_TICKS = 5
 
 # --- Zone Consolidation ---
-ATR_FRACTION = 0.05          # zone radius as fraction of session ATR
-ATR_PERIOD = 14              # ATR lookback (30m candles)
-MIN_ZONE_RADIUS_TICKS = 4    # floor: never merge tighter than 1 point
-MAX_ZONE_RADIUS_TICKS = 20   # cap: never merge wider than 5 points
+ATR_FRACTION = 0.08  # zone radius as fraction of session ATR
+ATR_PERIOD = 14  # ATR lookback (30m candles)
+MIN_ZONE_RADIUS_TICKS = 4  # floor: never merge tighter than 1 point
+MAX_ZONE_RADIUS_TICKS = 20  # cap: never merge wider than 5 points
 
 # --- Reward (velocity-based, computed in episode_builder) ---
 # No fixed target/stop/timeout — rewards are continuous movement quality scores
 
 # --- Trading Costs (round-trip per trade, in ticks) ---
-SLIPPAGE_TICKS = 0.5   # 0.5 tick each side = 1 tick RT
+SLIPPAGE_TICKS = 0.5  # 0.5 tick each side = 1 tick RT
 COMMISSION_TICKS = 0.5  # ~$1.04 per side on NQ ≈ 0.5 tick each side
 COST_PER_TRADE_TICKS = (SLIPPAGE_TICKS + COMMISSION_TICKS) * 2  # round-trip
 

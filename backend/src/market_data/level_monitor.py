@@ -178,10 +178,10 @@ class LevelMonitor:
                     )
                 )
 
-        self._rebuild_zones()
+        self._rebuild_zones(reset_debounce=False)
         logger.debug("VWAP updated: %.2f ±1SD=[%.2f, %.2f]", vwap, sd1_lower or 0, sd1_upper or 0)
 
-    def _rebuild_zones(self) -> None:
+    def _rebuild_zones(self, reset_debounce: bool = True) -> None:
         level_type_map = {
             "poc": RLLevelType.DAILY_POC,
             "daily_poc": RLLevelType.DAILY_POC,
@@ -221,8 +221,16 @@ class LevelMonitor:
             lt = level_type_map.get(name_key, RLLevelType.VWAP)
             level_tuples.append((lv.name, lt, lv.price))
         self._zones = build_zones(level_tuples, self._session_atr)
-        self._zone_debounce.clear()
-        logger.info("LevelMonitor rebuilt %d zones from %d levels", len(self._zones), len(self._levels))
+        if reset_debounce:
+            self._zone_debounce.clear()
+            if hasattr(self, "_zone_last_fire"):
+                self._zone_last_fire = {}
+        logger.info(
+            "LevelMonitor rebuilt %d zones from %d levels (debounce_reset=%s)",
+            len(self._zones),
+            len(self._levels),
+            reset_debounce,
+        )
 
     def set_async_context(self, loop, db_session_factory) -> None:
         self._level_context_lock = asyncio.Lock()
@@ -964,6 +972,15 @@ class LevelMonitor:
 
             # Send via relay callbacks (trading service + firevstocks clients)
             callbacks = getattr(self, "_signal_callbacks", set())
+            if not callbacks and result is not None:
+                action = result.get("action", "SKIP")
+                if action not in ("SKIP", "skip"):
+                    logger.warning(
+                        "Signal %s (conf=%.3f) at zone %.2f but NO relay clients connected — signal lost",
+                        action,
+                        result.get("confidence", 0),
+                        zone.center_price,
+                    )
             if callbacks and result is not None:
                 import asyncio
 
