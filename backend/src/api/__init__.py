@@ -1201,18 +1201,26 @@ async def health_ready():
 async def health_extraction():
     """Public extraction health endpoint — no auth required.
 
-    Returns last 3 extraction runs with per-provider status,
-    designed for remote monitoring agents and dashboards.
+    Deep health assessment: checks sharp source freshness, consecutive
+    provider failures, staleness vs expected intervals, DB integrity
+    errors, and opportunity volume drops.
     """
     from ..db.models import ExtractionRun, ProviderRunMetrics
+    from ..pipeline.health import assess_extraction_health, get_provider_intervals
     from .deps import get_db
 
     def _query():
         db = None
         try:
             db = next(get_db())
+
+            # ── Deep health assessment ──
+            intervals = get_provider_intervals()
+            health_status, issues = assess_extraction_health(db, intervals)
+
+            # ── Last 3 runs for the response body ──
             runs = db.query(ExtractionRun).order_by(ExtractionRun.start_time.desc()).limit(3).all()
-            result = []
+            run_data = []
             for run in runs:
                 providers = db.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == run.id).all()
                 failed = [
@@ -1233,7 +1241,7 @@ async def health_extraction():
                     if (p.events_matched or 0) + (p.events_unmatched or 0) > 0
                     and (p.events_matched or 0) / max((p.events_matched or 0) + (p.events_unmatched or 0), 1) < 0.3
                 ]
-                result.append(
+                run_data.append(
                     {
                         "id": run.id,
                         "start_time": run.start_time.isoformat() if run.start_time else None,
@@ -1248,7 +1256,8 @@ async def health_extraction():
                         "low_match_rate": low_match,
                     }
                 )
-            return result
+
+            return {"status": health_status, "issues": issues, "runs": run_data}
         except Exception as e:
             return {"error": str(e)}
         finally:
@@ -1263,44 +1272,8 @@ async def health_extraction():
     if isinstance(data, dict) and "error" in data:
         return {"status": "error", "message": data["error"]}
 
-    # Determine overall status
-    status = "ok"
-    issues = []
-    if not data:
-        status = "unknown"
-        issues.append("No extraction runs found")
-    else:
-        latest = data[0]
-        if latest.get("providers_failed", 0) > 0:
-            status = "warning"
-            issues.append(f"{latest['providers_failed']} provider(s) failed")
-        if latest.get("failed_providers"):
-            for fp in latest["failed_providers"]:
-                issues.append(f"{fp['provider']}: {fp['error'][:100]}")
-        if latest.get("low_match_rate"):
-            status = "warning"
-            for lm in latest["low_match_rate"]:
-                issues.append(f"{lm['provider']} match rate {lm['match_rate']}%")
-        if latest.get("start_time"):
-            from datetime import datetime as dt
-
-            try:
-                last_run = dt.fromisoformat(latest["start_time"])
-                age_minutes = (datetime.now(timezone.utc) - last_run.replace(tzinfo=timezone.utc)).total_seconds() / 60
-                if age_minutes > 30:
-                    status = "warning"
-                    issues.append(f"Last extraction was {int(age_minutes)}m ago")
-                if age_minutes > 120:
-                    status = "critical"
-            except (ValueError, TypeError):
-                pass
-
-    return {
-        "status": status,
-        "issues": issues,
-        "runs": data,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-    }
+    data["checked_at"] = datetime.now(timezone.utc).isoformat()
+    return data
 
 
 # Include routers
