@@ -226,6 +226,116 @@ def fetch(
 
 
 # ---------------------------------------------------------------------------
+# export-trades — dump market_trades from DB to parquet files for replay
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("export-trades")
+def export_trades(
+    symbol: str = typer.Option("NQ", help="Symbol to export"),
+) -> None:
+    """Export market_trades from DB to monthly parquet files for RL replay.
+
+    Reads trades from the market database (TopstepX live data) and writes
+    them as NQ_YYYY-MM.parquet files in the ticks directory.  Existing
+    parquet files for a month are skipped unless the DB has newer data.
+    """
+    import calendar
+
+    import pandas as pd
+    from sqlalchemy import create_engine, text
+
+    ticks_dir = _TICKS_DIR
+    ticks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Connect to market DB
+    import os
+
+    pw = os.environ.get("DB_PASSWORD", "")
+    db_url = f"postgresql://firev:{pw}@postgres:5432/market"
+    try:
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            # Get date range of available trades
+            row = conn.execute(
+                text("SELECT MIN(ts), MAX(ts), COUNT(*) FROM market_trades WHERE ts > '2020-01-01'")
+            ).fetchone()
+            if not row or row[2] == 0:
+                typer.echo("No trades in market_trades table.")
+                return
+            min_ts, max_ts, total = row
+            typer.echo(f"Market trades: {total:,} rows, {min_ts} → {max_ts}")
+
+            # Build month list
+            from datetime import datetime
+
+            current = datetime(min_ts.year, min_ts.month, 1)
+            end = datetime(max_ts.year, max_ts.month, 1)
+            months = []
+            while current <= end:
+                months.append(current)
+                if current.month == 12:
+                    current = datetime(current.year + 1, 1, 1)
+                else:
+                    current = datetime(current.year, current.month + 1, 1)
+
+            exported = 0
+            for month_start in months:
+                label = month_start.strftime("%Y-%m")
+                pfile = ticks_dir / f"{symbol}_{label}.parquet"
+                _, last_day = calendar.monthrange(month_start.year, month_start.month)
+                month_end = datetime(month_start.year, month_start.month, last_day, 23, 59, 59)
+
+                # Skip if parquet exists and is newer than the month end
+                # (means we already have complete data for this month)
+                if pfile.exists():
+                    # Check if DB has newer data than the parquet file
+                    pfile_mtime = datetime.fromtimestamp(pfile.stat().st_mtime)
+                    if month_end < datetime.now() and pfile_mtime > month_end:
+                        typer.echo(f"  {label}: exists (complete month), skipping.")
+                        continue
+
+                # Query trades for this month
+                df = pd.read_sql(
+                    text(
+                        "SELECT ts AS timestamp, price, size, side "
+                        "FROM market_trades "
+                        "WHERE ts >= :start AND ts < :end "
+                        "ORDER BY ts"
+                    ),
+                    conn,
+                    params={"start": month_start, "end": month_end},
+                )
+                if df.empty:
+                    typer.echo(f"  {label}: no trades, skipping.")
+                    continue
+
+                # Ensure timestamp is UTC
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+
+                if pfile.exists():
+                    # Merge with existing parquet (Databento + TopstepX)
+                    existing = pd.read_parquet(pfile)
+                    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
+                    merged = (
+                        pd.concat([existing, df])
+                        .drop_duplicates(subset=["timestamp", "price", "size"], keep="first")
+                        .sort_values("timestamp")
+                        .reset_index(drop=True)
+                    )
+                    typer.echo(f"  {label}: merged {len(existing):,} existing + {len(df):,} DB → {len(merged):,} ticks")
+                    merged.to_parquet(pfile, index=False)
+                else:
+                    df.to_parquet(pfile, index=False)
+                    typer.echo(f"  {label}: exported {len(df):,} ticks")
+                exported += 1
+
+            typer.echo(f"\nExported/updated {exported} month(s).")
+    except Exception as exc:
+        typer.echo(f"Failed to export trades: {exc}", err=True)
+
+
+# ---------------------------------------------------------------------------
 # verify-levels
 # ---------------------------------------------------------------------------
 

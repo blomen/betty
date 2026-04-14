@@ -92,7 +92,12 @@ echo "=========================================="
 
 cd /app/backend
 
-# Step 0: Merge live episodes (always runs — new episodes accumulate between cycles)
+# Step 0a: Export TopstepX trades from DB to parquet (always runs — new trades accumulate)
+echo ""
+echo "[0/8] Exporting DB trades to parquet..."
+python -m src.app rl export-trades || echo "[0/8] Trade export failed (non-critical)."
+
+# Step 0b: Merge live episodes (always runs — new episodes accumulate between cycles)
 echo ""
 echo "[0/8] Merging live episodes..."
 python -m src.app rl merge-live || echo "[0/8] No live episodes to merge (non-critical)."
