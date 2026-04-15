@@ -22,6 +22,25 @@ _INIT_PATHS: dict[str, str] = {
     "bethard": "/sv/sports",
 }
 
+# API base URLs per provider — OBG providers use different API domains
+_API_BASES_OVERRIDE: dict[str, list[str]] = {
+    "spelklubben": [
+        "https://cloud-api.spelklubben.se",
+        "https://d-cf.spelklubbenplayground.net",
+    ],
+    "bethard": [
+        "https://cloud-api.bethard.com",
+        "https://d-cf.bethardplayground.net",
+    ],
+}
+
+
+def _api_bases(provider_id: str, domain: str) -> list[str]:
+    override = _API_BASES_OVERRIDE.get(provider_id)
+    if override:
+        return override
+    return [f"https://cloud-api.{domain}"]
+
 
 class GeckoWorkflow(ProviderWorkflow):
     platform = "gecko_v2"
@@ -29,54 +48,130 @@ class GeckoWorkflow(ProviderWorkflow):
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         super().__init__(provider_id, domain, mode)
 
-    def _wallets_url(self) -> str:
-        return f"https://cloud-api.{self.domain}/wallets"
-
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
+    async def _fetch_wallets(self, page: Page) -> dict | None:
+        for base in _api_bases(self.provider_id, self.domain):
+            result = await self._evaluate_api(page, f"{base}/wallets")
+            if result and "__error" not in result:
+                return result
+        return None
+
     async def check_login(self, page: Page) -> bool:
-        """Check login via Gecko wallets API."""
-        result = await self._evaluate_api(page, self._wallets_url())
-        if result is None or "__error" in (result or {}):
+        result = await self._fetch_wallets(page)
+        if result is None:
             return False
-        return True
+        try:
+            balances = result.get("Balances", {})
+            if isinstance(balances, dict):
+                for _currency, wallet in balances.items():
+                    if isinstance(wallet, dict) and "Real" in wallet:
+                        float(wallet["Real"]["Balance"])
+                        return True
+        except (KeyError, TypeError, ValueError):
+            pass
+        return False
 
     async def sync_balance(self, page: Page) -> float:
-        """Read balance from Gecko wallets API — Balances.SEK.Real.Balance."""
-        result = await self._evaluate_api(page, self._wallets_url())
-        if result is None or "__error" in (result or {}):
+        result = await self._fetch_wallets(page)
+        if result is None:
             return -1
         try:
-            return float(result["Balances"]["SEK"]["Real"]["Balance"])
+            balances = result.get("Balances", {})
+            if isinstance(balances, dict):
+                for _currency, wallet in balances.items():
+                    if isinstance(wallet, dict) and "Real" in wallet:
+                        try:
+                            return float(wallet["Real"]["Balance"])
+                        except (TypeError, ValueError):
+                            continue
         except (KeyError, TypeError, ValueError):
-            logger.warning(f"[{self.provider_id}] Unexpected wallets response: {result}")
-            return -1
+            pass
+        return -1
 
     # ------------------------------------------------------------------
-    # History / navigation / placement — interceptor handles
+    # History
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """No-op — interceptor handles history."""
+        for base in _api_bases(self.provider_id, self.domain):
+            url = f"{base}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50"
+            result = await self._evaluate_api(page, url)
+            if result and "__error" not in result:
+                return self._parse_coupon_history(result)
         return []
 
-    async def navigate_to_event(self, page: Page, bet) -> bool:
-        """Navigate to Gecko V2 event page using gecko_event_id from provider_meta.
+    def _parse_coupon_history(self, data: dict) -> list[HistoryEntry]:
+        coupons = data.get("data", {}).get("coupons", [])
+        if not coupons:
+            return []
 
-        URL pattern: {site_url}{init_path}?eventId=f-{gecko_event_id}
-        Verified: the main site passes eventId to the sportsbook iframe automatically.
-        """
+        status_map = {
+            "won": "won",
+            "lost": "lost",
+            "void": "void",
+            "cancelled": "void",
+            "cashedout": "cashout",
+            "open": "pending",
+            "pending": "pending",
+        }
+        entries: list[HistoryEntry] = []
+        for coupon in coupons:
+            try:
+                bets_status = coupon.get("betsStatus", {})
+                raw_status = coupon.get("couponStatus", "open").lower()
+                for key in ("won", "lost", "void", "cancelled", "cashedOut"):
+                    if key.lower() in bets_status or key in bets_status:
+                        raw_status = key.lower()
+                        break
+                mapped = status_map.get(raw_status, "pending")
+
+                event_names = coupon.get("eventNames", [])
+                event_name = event_names[0].replace(" - ", " vs ") if event_names else ""
+                odds = float(coupon.get("totalOdds", 0))
+                stake = float(coupon.get("stake", 0))
+                payout = float(coupon.get("totalPayout", 0)) if mapped != "pending" else None
+                coupon_id = str(coupon.get("couponId") or coupon.get("id") or "")
+
+                selections = coupon.get("selections", coupon.get("legs", []))
+                outcome = ""
+                market = ""
+                if isinstance(selections, list) and selections:
+                    sel = selections[0]
+                    outcome = sel.get("outcomeLabel", sel.get("selectionName", ""))
+                    market = sel.get("marketName", sel.get("marketTemplate", ""))
+
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=coupon_id,
+                        event_name=event_name,
+                        market=market,
+                        outcome=outcome,
+                        odds=odds,
+                        stake=stake,
+                        status=mapped,
+                        payout=payout,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] _parse_coupon_history: skipped: {e}")
+        return entries
+
+    # ------------------------------------------------------------------
+    # Navigation / placement
+    # ------------------------------------------------------------------
+
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         gecko_eid = getattr(bet, "gecko_event_id", "")
         if not gecko_eid:
-            return True  # No ID — user navigates manually
+            return True
 
         if f"eventId={gecko_eid}" in (page.url or "") or f"eventId=f-{gecko_eid}" in (page.url or ""):
-            return True  # Already on this event
+            return True
 
         init_path = _INIT_PATHS.get(self.provider_id, "/sv/odds")
-        # Event IDs from the Gecko API already include the f- prefix
         eid_param = gecko_eid if gecko_eid.startswith("f-") else f"f-{gecko_eid}"
         url = f"https://www.{self.domain}{init_path}?eventId={eid_param}"
         try:
@@ -89,10 +184,4 @@ class GeckoWorkflow(ProviderWorkflow):
             return False
 
     async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Manual placement — user places via provider UI."""
-        return PlacementResult(
-            status="manual",
-            bet_id=bet.bet_id,
-            actual_stake=stake,
-            reason="manual_placement",
-        )
+        return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="manual_placement")

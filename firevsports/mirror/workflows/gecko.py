@@ -22,9 +22,9 @@ _INIT_PATHS: dict[str, str] = {
     "bethard": "/sv/sports",
 }
 
-# Wallets API base per provider — OBG providers use different API domains
+# API base URLs per provider — OBG providers use different API domains
 # Format: cloud-api.{domain} for most, but some use {brand}playground.net
-_WALLETS_BASES: dict[str, list[str]] = {
+_API_BASES_OVERRIDE: dict[str, list[str]] = {
     "spelklubben": [
         "https://cloud-api.spelklubben.se",
         "https://d-cf.spelklubbenplayground.net",
@@ -36,12 +36,17 @@ _WALLETS_BASES: dict[str, list[str]] = {
 }
 
 
+def _api_bases(provider_id: str, domain: str) -> list[str]:
+    """Return API base URLs to try, in priority order."""
+    override = _API_BASES_OVERRIDE.get(provider_id)
+    if override:
+        return override
+    return [f"https://cloud-api.{domain}"]
+
+
 def _wallets_urls(provider_id: str, domain: str) -> list[str]:
     """Return wallets API URLs to try, in priority order."""
-    bases = _WALLETS_BASES.get(provider_id)
-    if bases:
-        return [f"{base}/wallets" for base in bases]
-    return [f"https://cloud-api.{domain}/wallets"]
+    return [f"{base}/wallets" for base in _api_bases(provider_id, domain)]
 
 
 class GeckoWorkflow(ProviderWorkflow):
@@ -117,8 +122,83 @@ class GeckoWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """No-op — interceptor handles history."""
+        """Fetch bet history from Gecko coupon-history API.
+
+        Tries each API base URL. The coupon-history endpoint returns
+        {data: {coupons: [...]}} with couponStatus, stake, totalOdds, etc.
+        """
+        for base_url in _api_bases(self.provider_id, self.domain):
+            url = f"{base_url}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50"
+            result = await self._evaluate_api(page, url)
+            if result and "__error" not in result:
+                return self._parse_coupon_history(result)
         return []
+
+    def _parse_coupon_history(self, data: dict) -> list[HistoryEntry]:
+        """Parse Gecko V2 coupon-history response into HistoryEntry list."""
+        coupons = data.get("data", {}).get("coupons", [])
+        if not coupons:
+            return []
+
+        status_map = {
+            "won": "won",
+            "lost": "lost",
+            "void": "void",
+            "cancelled": "void",
+            "cashedout": "cashout",
+            "cashedOut": "cashout",
+            "open": "pending",
+            "pending": "pending",
+        }
+
+        entries: list[HistoryEntry] = []
+        for coupon in coupons:
+            try:
+                # Status from betsStatus dict: {"won": N} or {"lost": N}
+                bets_status = coupon.get("betsStatus", {})
+                raw_status = coupon.get("couponStatus", "open").lower()
+                # Override with betsStatus if available
+                for key in ("won", "lost", "void", "cancelled", "cashedOut"):
+                    if key.lower() in bets_status or key in bets_status:
+                        raw_status = key.lower()
+                        break
+                mapped = status_map.get(raw_status, "pending")
+
+                event_names = coupon.get("eventNames", [])
+                event_name = event_names[0].replace(" - ", " vs ") if event_names else ""
+
+                odds = float(coupon.get("totalOdds", 0))
+                stake = float(coupon.get("stake", 0))
+                payout = float(coupon.get("totalPayout", 0)) if mapped != "pending" else None
+
+                coupon_id = str(coupon.get("couponId") or coupon.get("id") or "")
+
+                # Try to extract market/outcome from selections
+                selections = coupon.get("selections", coupon.get("legs", []))
+                outcome = ""
+                market = ""
+                if isinstance(selections, list) and selections:
+                    sel = selections[0]
+                    outcome = sel.get("outcomeLabel", sel.get("selectionName", ""))
+                    market = sel.get("marketName", sel.get("marketTemplate", ""))
+
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=coupon_id,
+                        event_name=event_name,
+                        market=market,
+                        outcome=outcome,
+                        odds=odds,
+                        stake=stake,
+                        status=mapped,
+                        payout=payout,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] _parse_coupon_history: skipped coupon: {e}")
+
+        logger.info(f"[{self.provider_id}] sync_history: {len(entries)} bets from coupon-history API")
+        return entries
 
     async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate to Gecko V2 event page using gecko_event_id from provider_meta.
