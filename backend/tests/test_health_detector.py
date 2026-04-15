@@ -91,7 +91,7 @@ def _mock_db(metric_rows, opp_current=100, opp_previous=100):
 def test_sharp_source_down_detected():
     intervals = {"pinnacle": 1, "unibet": 2}
     metrics = [
-        _row("pinnacle", "success", _utcnow() - timedelta(minutes=20)),
+        _row("pinnacle", "success", _utcnow() - timedelta(minutes=35)),
         _row("unibet", "success", _utcnow() - timedelta(minutes=1)),
     ]
     status, issues = assess_extraction_health(_mock_db(metrics), intervals)

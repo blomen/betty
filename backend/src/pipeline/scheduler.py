@@ -328,7 +328,12 @@ class ExtractionScheduler:
             except Exception as e:
                 schedule.last_error = str(e)
                 err_lower = str(e).lower()
-                is_transient_db = "deadlock" in err_lower or "unique" in err_lower or "database is locked" in err_lower
+                is_transient_db = (
+                    "deadlock" in err_lower
+                    or "unique" in err_lower
+                    or "database is locked" in err_lower
+                    or ("expected to update" in err_lower and "0 were matched" in err_lower)
+                )
                 if is_transient_db:
                     # Transient DB conflicts (deadlocks, autoflush unique violations)
                     # should not accumulate toward permanent failure — they resolve

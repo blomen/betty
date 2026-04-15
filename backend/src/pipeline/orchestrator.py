@@ -21,6 +21,15 @@ from .storage import OddsBatchProcessor, store_polymarket_event, store_provider_
 
 logger = logging.getLogger(__name__)
 
+# Serialize opportunity analysis across concurrent pipeline cycles.
+# Multiple tiers (sharp, api_soft, browser_soft) run concurrently, each
+# calling analyzer.run() which UPDATEs the opportunities table. Without
+# serialization, PostgreSQL deadlocks on overlapping rows and the analyzer
+# skips analysis entirely — causing undetected value bets.
+import threading
+
+_analysis_lock = threading.Lock()
+
 
 class ExtractionPipeline:
     """
@@ -1100,25 +1109,35 @@ class ExtractionPipeline:
 
                         log_progress(f"[{provider_id}] {ev} ev, {odds} odds (r={ratio}), {status}{match_str}{mkt_str}")
 
-            self.session.commit()
+            try:
+                self.session.commit()
+            except Exception as e:
+                self.session.rollback()
+                if "expected to update" in str(e) and "0 were matched" in str(e):
+                    logger.warning(f"[Pipeline] StaleDataError on commit (cleanup race): {e}")
+                else:
+                    raise
 
-            # Run opportunity analysis (with deadlock resilience)
+            # Run opportunity analysis — serialized to prevent deadlocks.
+            # Multiple concurrent pipeline cycles all UPDATE the opportunities
+            # table; without the lock they deadlock and skip analysis entirely.
             log_progress("Running opportunity analysis...")
             from .analyzer import OpportunityAnalyzer
 
-            analyzer = OpportunityAnalyzer(self.session)
-            changed_ids = self._changed_event_ids if self._changed_event_ids else None
-            try:
-                analysis_results = analyzer.run(changed_event_ids=changed_ids)
-                results["analysis"] = analysis_results
-                log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
-            except Exception as e:
-                err_lower = str(e).lower()
-                if "deadlock" in err_lower:
-                    logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
-                    self.session.rollback()
-                else:
-                    raise
+            with _analysis_lock:
+                analyzer = OpportunityAnalyzer(self.session)
+                changed_ids = self._changed_event_ids if self._changed_event_ids else None
+                try:
+                    analysis_results = analyzer.run(changed_event_ids=changed_ids)
+                    results["analysis"] = analysis_results
+                    log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
+                except Exception as e:
+                    err_lower = str(e).lower()
+                    if "deadlock" in err_lower:
+                        logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
+                        self.session.rollback()
+                    else:
+                        raise
 
             # Broadcast opportunity deltas to SSE clients
             if odds_broadcaster.client_count > 0 and analysis_results:
