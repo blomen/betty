@@ -205,11 +205,18 @@ class TopstepXStream:
 
     def _on_user_msg(self, target: str, args: list) -> None:
         """Dispatch user hub events."""
-        if target == "GatewayUserTrade":
+        # Log all user hub messages for diagnostics
+        if target not in ("GatewayUserPosition",):  # positions are noisy
+            log.info("TopstepXStream [user] event: target=%s args_len=%d", target, len(args))
+            if args:
+                first = args[0] if isinstance(args[0], dict) else str(args[0])[:200]
+                log.info("TopstepXStream [user] payload: %s", first)
+
+        if target in ("GatewayUserTrade", "GotUserTrade", "UserTrade"):
             self._handle_user_trade(args)
-        elif target == "GatewayUserPosition":
+        elif target in ("GatewayUserPosition", "GotUserPosition"):
             self._handle_position(args)
-        elif target == "GatewayUserOrder":
+        elif target in ("GatewayUserOrder", "GotUserOrder", "UserOrder"):
             self._handle_order(args)
 
     # ------------------------------------------------------------------
@@ -260,18 +267,23 @@ class TopstepXStream:
 
     def _handle_user_trade(self, args: list) -> None:
         """Parse GatewayUserTrade fill."""
+        log.info("TopstepXStream: FILL received: %r", args[:2] if len(args) > 1 else args)
         if not args or not self.on_fill:
+            log.warning("TopstepXStream: fill dropped — on_fill=%s args=%d", self.on_fill is not None, len(args))
             return
         try:
             fill = args[0] if isinstance(args[0], dict) else args[0]
+            log.info("TopstepXStream: forwarding fill to adapter: %s", fill)
             self.on_fill(fill)
         except Exception:
-            log.debug("TopstepXStream: bad fill: %r", args)
+            log.exception("TopstepXStream: fill handler error: %r", args)
 
     def _handle_position(self, args: list) -> None:
         """Log GatewayUserPosition updates."""
         pos = args[0] if args else {}
-        log.info("TopstepXStream: position update: %s", pos)
+        qty = pos.get("qty", pos.get("quantity", pos.get("netQuantity", "?")))
+        avg_price = pos.get("averagePrice", pos.get("avgPrice", "?"))
+        log.info("TopstepXStream: POSITION update: qty=%s avg_price=%s raw=%s", qty, avg_price, pos)
 
     def _handle_order(self, args: list) -> None:
         """Log GatewayUserOrder updates."""

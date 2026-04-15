@@ -74,6 +74,19 @@ class TopstepXBrokerAdapter:
             log.info("Signal rejected — low confidence: %.3f < %.2f", confidence, MIN_CONFIDENCE)
             return {"rejected": True, "reason": "low_confidence"}
 
+        # Don't enter new trade while position is open (prevents blind flipping)
+        if not self.tracker.is_flat and action in ("enter_long", "enter_short"):
+            same_side = (action == "enter_long" and self.tracker.side == "long") or (
+                action == "enter_short" and self.tracker.side == "short"
+            )
+            if same_side:
+                log.info("Signal rejected — already in %s position", self.tracker.side)
+                return {"rejected": True, "reason": "already_in_position"}
+            # Opposite side = flip — only allow if we have confirmed entry price
+            if self.tracker.entry_price == 0.0:
+                log.info("Signal rejected — waiting for entry fill confirmation before flipping")
+                return {"rejected": True, "reason": "awaiting_fill"}
+
         # Zone cooldown — don't re-enter the same zone too quickly
         zone_price = float(signal.get("zone", 0) or 0)
         if zone_price > 0:
