@@ -106,9 +106,10 @@ class ProviderRunner:
         self._skip_event.set()
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
-        if self.state != STATE_READY:
+        if self.state not in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
+            logger.debug(f"[Runner:{self.provider_id}] Bet intercepted but state={self.state} — ignoring")
             return
-        logger.info(f"[Runner:{self.provider_id}] Bet intercepted — auto-recording")
+        logger.info(f"[Runner:{self.provider_id}] Bet intercepted (state={self.state}) — auto-recording")
         self._intercepted_body = body
         self._intercepted_request_body = request_body
         self._bet_intercepted_event.set()
@@ -423,13 +424,42 @@ class ProviderRunner:
         await asyncio.sleep(2)
         elapsed = 2.0
         while elapsed < LOGIN_TIMEOUT:
-            # 1. Check intercepted data
+            # 0. Workflow check_login is authoritative — always try it first
+            try:
+                wf_login = await workflow.check_login(page)
+                if wf_login:
+                    bal = await workflow.sync_balance(page)
+                    self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
+                        {"logged_in": True, "balance": bal if bal >= 0 else None, "source": "workflow_check"}
+                    )
+                    self._broadcaster.publish(
+                        "login_detected", {"provider_id": workflow.provider_id, "balance": bal if bal >= 0 else None}
+                    )
+                    logger.info(f"[Runner:{self.provider_id}] Login detected via workflow (balance: {bal})")
+                    return True
+            except Exception:
+                pass
+            # 1. Check intercepted data (but verify with DOM to avoid stale state)
             if self._browser.is_logged_in(workflow.provider_id):
-                bal = self._browser.get_balance(workflow.provider_id)
-                self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id, "balance": bal})
-                logger.info(f"[Runner:{self.provider_id}] Login detected (balance: {bal})")
-                return True
-            # 2. DOM scrape fallback
+                # Double-check with DOM to avoid false positives from stale interceptor data
+                try:
+                    dom_result = await self._browser.check_login_dom(workflow.provider_id)
+                    if dom_result.get("logged_in"):
+                        bal = self._browser.get_balance(workflow.provider_id) or dom_result.get("balance")
+                        self._broadcaster.publish(
+                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
+                        )
+                        logger.info(f"[Runner:{self.provider_id}] Login confirmed (interceptor + DOM, balance: {bal})")
+                        return True
+                except Exception:
+                    # DOM check failed but interceptor says logged in — trust interceptor for non-polymarket
+                    if workflow.provider_id != "polymarket":
+                        bal = self._browser.get_balance(workflow.provider_id)
+                        self._broadcaster.publish(
+                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
+                        )
+                        return True
+            # 2. DOM scrape fallback (browser-level, different from workflow check_login)
             try:
                 dom_result = await self._browser.check_login_dom(workflow.provider_id)
                 if dom_result.get("logged_in"):
@@ -437,18 +467,6 @@ class ProviderRunner:
                         "login_detected",
                         {"provider_id": workflow.provider_id, "balance": dom_result.get("balance")},
                     )
-                    return True
-            except Exception:
-                pass
-            # 3. Workflow API fallback (e.g. GraphQL relay for LeoVegas)
-            try:
-                bal = await workflow.sync_balance(page)
-                if bal >= 0:
-                    self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
-                        {"logged_in": True, "balance": bal, "source": "workflow_api"}
-                    )
-                    self._broadcaster.publish("login_detected", {"provider_id": workflow.provider_id, "balance": bal})
-                    logger.info(f"[Runner:{self.provider_id}] Login detected via workflow API (balance: {bal})")
                     return True
             except Exception:
                 pass

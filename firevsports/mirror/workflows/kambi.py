@@ -484,3 +484,71 @@ class KambiWorkflow(ProviderWorkflow):
             actual_stake=prep.actual_stake,
             reason="auto_selected_user_confirms",
         )
+
+    # ------------------------------------------------------------------
+    # Placement parsing — for intercepted HTTP/WS responses
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def parse_placement_response(body: dict) -> str | None:
+        """Extract provider_bet_id from Kambi placement confirmation."""
+        # WS frame: {"couponId": "...", ...} or nested in data/result
+        for key in ("couponId", "betId", "id", "receiptId"):
+            val = body.get(key)
+            if val:
+                return str(val)
+        # Nested: {data: {couponId: ...}} or {result: {couponId: ...}}
+        for wrapper in ("data", "result", "coupon", "placeBetResult"):
+            inner = body.get(wrapper)
+            if isinstance(inner, dict):
+                for key in ("couponId", "betId", "id"):
+                    val = inner.get(key)
+                    if val:
+                        return str(val)
+        return None
+
+    @staticmethod
+    def parse_placement_status(body: dict) -> dict:
+        """Check if Kambi placement response indicates success."""
+        # Kambi WS uses status field or couponStatus
+        status = body.get("status") or body.get("couponStatus") or ""
+        if isinstance(status, str):
+            status_upper = status.upper()
+            if status_upper in ("REJECTED", "FAILED", "ERROR", "DECLINED"):
+                error = body.get("error") or body.get("message") or body.get("reason") or status
+                return {"success": False, "error": str(error), "max_stake": None}
+        # Nested errors
+        for wrapper in ("data", "result", "placeBetResult"):
+            inner = body.get(wrapper)
+            if isinstance(inner, dict):
+                inner_status = (inner.get("status") or inner.get("couponStatus") or "").upper()
+                if inner_status in ("REJECTED", "FAILED", "ERROR", "DECLINED"):
+                    error = inner.get("error") or inner.get("message") or inner_status
+                    return {"success": False, "error": str(error), "max_stake": None}
+        return {"success": True, "error": None, "max_stake": None}
+
+    @staticmethod
+    def parse_placement_details(body: dict) -> dict:
+        """Extract actual odds/stake from Kambi placement response."""
+        details: dict = {}
+        # Look in top-level and nested structures
+        for src in (body, body.get("data", {}), body.get("result", {}), body.get("coupon", {})):
+            if not isinstance(src, dict):
+                continue
+            if not details.get("actual_stake"):
+                for key in ("stake", "totalStake", "amount"):
+                    val = src.get(key)
+                    if val:
+                        try:
+                            details["actual_stake"] = float(val)
+                        except (TypeError, ValueError):
+                            pass
+            if not details.get("actual_odds"):
+                for key in ("odds", "totalOdds", "price", "oddsDecimal"):
+                    val = src.get(key)
+                    if val:
+                        try:
+                            details["actual_odds"] = float(val)
+                        except (TypeError, ValueError):
+                            pass
+        return details

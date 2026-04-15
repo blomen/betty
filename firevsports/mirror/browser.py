@@ -45,6 +45,22 @@ _BET_PLACEMENT_KEYWORDS = (
     "clob.polymarket.com/order",
 )
 
+# WebSocket URLs to monitor for bet placement frames (Kambi uses WS, not HTTP)
+_WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
+
+# Keywords in WS frames that indicate a bet was placed (server → client)
+_WS_BET_RECEIVED_KEYWORDS = (
+    '"couponId"',
+    '"placeBetResult"',
+    '"couponStatus"',
+    '"couponResponse"',
+    '"betPlaced"',
+    '"PLACED"',
+)
+
+# Keywords in WS frames for bet requests (client → server)
+_WS_BET_SENT_KEYWORDS = ('"placeBet"', '"placeCoupon"', '"stake"')
+
 # Provider domain → provider_id mapping
 _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "betinia.se": "betinia",
@@ -353,13 +369,14 @@ class MirrorBrowser:
     # ------------------------------------------------------------------
 
     def _attach_page(self, page: Page):
-        """Attach response listener to a page."""
+        """Attach response + WebSocket listeners to a page."""
         print(f"[browser] ATTACHING interceptor to page: {page.url[:80]}", flush=True)
 
         async def handle_response(resp):
             await self._safe_on_response(resp)
 
         page.on("response", lambda resp: asyncio.ensure_future(handle_response(resp)))
+        page.on("websocket", lambda ws: self._on_websocket(ws, page))
 
     async def _safe_on_response(self, response: Response):
         """Wrapper to catch all errors in response handler."""
@@ -528,6 +545,59 @@ class MirrorBrowser:
             except Exception:
                 pass
             return
+
+    def _on_websocket(self, ws: WebSocket, page: Page):
+        """Monitor WebSocket connections for Kambi bet placement frames."""
+        url = ws.url
+        if not any(kw in url.lower() for kw in _WS_MONITOR_KEYWORDS):
+            return
+
+        provider_id = self._detect_provider(page.url)
+        logger.info(f"[browser] WS connected: {url[:80]} (provider={provider_id})")
+
+        def _on_frame_received(payload: str | bytes):
+            try:
+                if not isinstance(payload, str):
+                    return
+                if not any(kw in payload for kw in _WS_BET_RECEIVED_KEYWORDS):
+                    return
+
+                pid = provider_id or self._detect_provider(page.url)
+                if not pid:
+                    return
+
+                logger.info(f"[browser] {pid} WS BET PLACED ({len(payload)} bytes)")
+                body = json.loads(payload)
+
+                if self._on_event:
+                    self._on_event(
+                        "bet_intercepted",
+                        {
+                            "provider_id": pid,
+                            "url": url,
+                            "body": body,
+                            "request_body": None,
+                            "source": "websocket",
+                        },
+                    )
+                if self._on_stream_callback:
+                    self._on_stream_callback(pid, "bet_intercepted", {"body": body})
+            except Exception:
+                pass
+
+        def _on_frame_sent(payload: str | bytes):
+            try:
+                if not isinstance(payload, str):
+                    return
+                if not any(kw in payload for kw in _WS_BET_SENT_KEYWORDS):
+                    return
+                pid = provider_id or self._detect_provider(page.url)
+                logger.info(f"[browser] {pid} WS bet request sent ({len(payload)} bytes)")
+            except Exception:
+                pass
+
+        ws.on("framereceived", _on_frame_received)
+        ws.on("framesent", _on_frame_sent)
 
     def _detect_provider(self, page_url: str) -> str | None:
         """Detect provider_id from a page URL."""

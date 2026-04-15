@@ -462,19 +462,29 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def _check_login_dom(self, page: Page) -> bool:
-        """Check if logged in by looking for 'Cash $XXX' in the nav."""
+        """Check if logged in: look for 'Cash $' (positive) and absence of 'Log In'/'Sign Up' (negative)."""
         try:
-            text = await page.evaluate(
+            result = await page.evaluate(
                 """() => {
-                const els = document.querySelectorAll('nav *');
+                // Negative check: if Log In / Sign Up buttons visible → NOT logged in
+                const btns = document.querySelectorAll('button, a');
+                for (const btn of btns) {
+                    const t = (btn.textContent || '').trim();
+                    if (t === 'Log In' || t === 'Sign Up') return {logged_in: false};
+                }
+                // Positive check: Cash $ in nav means logged in
+                const els = document.querySelectorAll('nav *, header *');
                 for (const el of els) {
                     const t = (el.textContent || '').trim();
-                    if (t.startsWith('Cash') && t.includes('$')) return t;
+                    if (t.startsWith('Cash') && t.includes('$')) return {logged_in: true, text: t};
                 }
-                return null;
+                // Also check for portfolio value (visible on portfolio page when logged in)
+                const body = document.body.innerText || '';
+                if (body.includes('Portfolio') && body.includes('Deposit')) return {logged_in: true};
+                return {logged_in: false};
             }"""
             )
-            return text is not None
+            return result.get("logged_in", False) if isinstance(result, dict) else False
         except Exception as e:
             logger.warning(f"[{self.provider_id}] check_login DOM failed: {e}")
             return False
