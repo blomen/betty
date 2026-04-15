@@ -372,38 +372,115 @@ class InterwettenWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def navigate_to_event(self, page: Page, bet) -> bool:
-        """Navigate to the event page via /en/sportsbook/e/{event_id}/{slug}."""
+        """Navigate to the event page via /en/sportsbook/e/{event_id}/{slug}.
+
+        Falls back to search-by-team-name if no interwetten_event_id available
+        (e.g. odds extracted before provider_meta was added).
+        """
         try:
             event_id = _g(bet, "interwetten_event_id") or _g(bet, "provider_event_id")
-            if not event_id:
-                logger.warning(f"[{self.provider_id}] No event_id for bet {_g(bet, 'id')}")
-                return False
-
-            # Build slug from team names
             home = _g(bet, "display_home") or _g(bet, "home_team") or ""
             away = _g(bet, "display_away") or _g(bet, "away_team") or ""
-            slug_raw = f"{home}-vs-{away}" if home and away else "event"
-            slug = re.sub(r"[^a-zA-Z0-9-]", "-", slug_raw).lower().strip("-")
-            slug = re.sub(r"-+", "-", slug)
 
-            url = f"https://{self.domain}/en/sportsbook/e/{event_id}/{slug}"
-            logger.info(f"[{self.provider_id}] Navigating to event: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            if event_id:
+                # Direct navigation by event ID
+                slug_raw = f"{home}-{away}" if home and away else "event"
+                slug = re.sub(r"[^a-zA-Z0-9-]", "-", slug_raw).lower().strip("-")
+                slug = re.sub(r"-+", "-", slug)
+                url = f"https://{self.domain}/en/sportsbook/e/{event_id}/{slug}"
+                logger.info(f"[{self.provider_id}] Navigating to event: {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            elif home:
+                # Fallback: search by home team name
+                logger.info(f"[{self.provider_id}] No event_id — searching by team: {home}")
+                found = await self._search_and_navigate(page, home, away)
+                if not found:
+                    return False
+            else:
+                logger.warning(f"[{self.provider_id}] No event_id or team names for navigation")
+                return False
 
             try:
                 await page.wait_for_selector(".s-market-grid", timeout=10_000)
-                logger.info(f"[{self.provider_id}] Market grid loaded for event {event_id}")
+                logger.info(f"[{self.provider_id}] Market grid loaded")
                 return True
             except Exception:
-                # Check if we're on the page even without market grid
                 current_url = page.url
-                if str(event_id) in current_url:
+                if "/sportsbook/e/" in current_url:
                     logger.info(f"[{self.provider_id}] On event page but no market grid yet: {current_url}")
                     return True
-                logger.warning(f"[{self.provider_id}] Market grid not found for event {event_id}")
+                logger.warning(f"[{self.provider_id}] Market grid not found")
                 return False
         except Exception as e:
             logger.error(f"[{self.provider_id}] navigate_to_event failed: {e}")
+            return False
+
+    async def _search_and_navigate(self, page: Page, home: str, away: str) -> bool:
+        """Search for event by team name and click the first matching result."""
+        try:
+            search_url = f"https://{self.domain}/en/sportsbook"
+            if "/sportsbook" not in page.url:
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=15_000)
+
+            # Use the search bar — click the search icon, type team name, click result
+            result = await page.evaluate(
+                """
+                async (args) => {
+                    const { home, away } = args;
+
+                    // Find all event links on the page matching team names
+                    const links = document.querySelectorAll('a[href*="/sportsbook/e/"]');
+                    const homeLower = home.toLowerCase();
+                    const awayLower = away ? away.toLowerCase() : '';
+
+                    for (const link of links) {
+                        const text = (link.textContent || '').toLowerCase();
+                        if (text.includes(homeLower)) {
+                            if (!awayLower || text.includes(awayLower)) {
+                                link.click();
+                                return { found: true, href: link.getAttribute('href') };
+                            }
+                        }
+                    }
+
+                    // Try search bar
+                    const searchBtn = document.querySelector('button[class*="search"], [data-action*="search"]');
+                    if (searchBtn) {
+                        searchBtn.click();
+                        await new Promise(r => setTimeout(r, 500));
+                        const searchInput = document.querySelector('input[type="search"], input[placeholder*="Search"], input[placeholder*="search"]');
+                        if (searchInput) {
+                            searchInput.focus();
+                            searchInput.value = home;
+                            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            await new Promise(r => setTimeout(r, 1500));
+
+                            // Click first result
+                            const results = document.querySelectorAll('a[href*="/sportsbook/e/"]');
+                            for (const r of results) {
+                                const t = (r.textContent || '').toLowerCase();
+                                if (t.includes(homeLower)) {
+                                    r.click();
+                                    return { found: true, href: r.getAttribute('href') };
+                                }
+                            }
+                        }
+                    }
+                    return { found: false };
+                }
+            """,
+                {"home": home, "away": away},
+            )
+
+            if result and result.get("found"):
+                logger.info(f"[{self.provider_id}] Found event via search: {result.get('href')}")
+                await page.wait_for_timeout(1000)
+                return True
+
+            logger.warning(f"[{self.provider_id}] Event not found via search: {home} vs {away}")
+            return False
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] _search_and_navigate error: {e}")
             return False
 
     # ------------------------------------------------------------------
