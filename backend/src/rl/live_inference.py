@@ -290,11 +290,22 @@ class LiveInferenceV5:
         if self._normalizer is not None:
             base_obs = self._normalizer.normalize(base_obs)
 
-        # 3. Get narrative features for setup prob prediction
+        # 3. Get narrative features for trigger observation
         narrative = self._narrative_cache
 
         # 4. Get setup_probs from narrative GBT
-        setup_probs_arr = self._narrative_gbt.predict_setup_probs(narrative)
+        # NarrativeGBT was trained on 153-dim narr_feats (structure+tpo+macro+amt),
+        # NOT the 18-dim narrative array.
+        narr_feats = np.concatenate(
+            [
+                base_obs[52:116],  # structure (64)
+                base_obs[116:154],  # tpo (38)
+                base_obs[178:189],  # macro (11)
+                base_obs[208:228],  # amt (20)
+                base_obs[228:248],  # amt_dynamics (20)
+            ]
+        )  # 153-dim
+        setup_probs_arr = self._narrative_gbt.predict_setup_probs(narr_feats)
 
         # 5. Build trigger observation without GBT forecast
         from .features.trigger_features import build_trigger_observation
@@ -516,15 +527,17 @@ _instance = None
 
 
 def get_dqn_inference():
-    """Get the global inference singleton. Prefers specialists > GBT > DQN.
-
-    V5 (narrative + trigger) is disabled — the trained model has a feature
-    dimension mismatch (18 vs 153 narrative features) causing IndexError
-    at inference time. Re-enable after retraining with current feature set.
-    """
+    """Get the global inference singleton. Prefers v5 > specialists > GBT > DQN."""
     global _instance
     if _instance is None:
-        # Try specialists first (best working model)
+        # Try V5 two-stage inference first (narrative + trigger GBTs)
+        v5 = LiveInferenceV5()
+        if v5.try_load():
+            _instance = v5
+            log.info("Using V5 two-stage inference for live inference")
+            return _instance
+
+        # Try specialists
         spec = LiveInferenceSpecialists()
         if spec.try_load():
             _instance = spec
