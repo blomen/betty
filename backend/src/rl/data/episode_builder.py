@@ -34,12 +34,12 @@ _WINDOW_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
 # Trailing reward params
 _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
 _MAX_TRAIL_LEVELS = 6  # cap at 6 levels (3.0R max trail bonus)
-_TRAIL_TIMEOUT_S = 600  # 10 min max to scan for levels
-_STOP_TICKS_TRAIL = 10  # initial stop distance in ticks
-_BE_TRIGGER_R = 1.5  # price must move this many R before stop moves to breakeven
-# 1.5R (not 1R) avoids premature BE stop-outs in choppy markets where price
-# pokes 1R then immediately reverses — that stops you at 0 instead of letting
-# the trade breathe.  The extra 0.5R gives noise room before locking risk.
+_TRAIL_TIMEOUT_S = 1200  # 20 min max to scan for levels (was 10 min — missed slow moves)
+_STOP_TICKS_TRAIL = 20  # initial stop distance in ticks (was 10 — too tight, got stopped before moves)
+_BE_TRIGGER_R = 1.0  # price must move this many R before stop moves to breakeven (was 1.5)
+# 1.0R is more aggressive but matches live trading: once you're 1R in profit,
+# lock it. With 20-tick initial stop the 1R breakeven trigger = 20 ticks = 5 pts,
+# giving enough room for NQ noise while protecting capital.
 
 
 @dataclass

@@ -1,9 +1,12 @@
-"""TopstepX broker adapter — risk-checked order execution.
+"""TopstepX broker adapter — dynamic stop management with model signals.
 
-Wraps TopstepXClient with the same interface as the server-side
-BrokerAdapter (Tradovate/Rithmic), adding risk checks, position
-tracking, and EOD flatten support. Persists every trade to the
-broker_trades table for stats/bankroll.
+Instead of flattening on every new signal, manages the position:
+- Same direction signal at new zone → trail stop to previous zone (let winners ride)
+- Opposite direction signal → exit and flip
+- SKIP → hold current position
+
+This implements the hybrid design: GBT decides at each level whether to
+hold, tighten, or exit.
 """
 
 from __future__ import annotations
@@ -30,8 +33,13 @@ RISK_PCT_BASE = 0.015  # 1.5% of drawdown for normal signals (conf 0.30-0.70)
 RISK_PCT_HIGH = 0.02  # 2% for high confidence (conf > 0.70)
 
 
+def _round_tick(price: float) -> float:
+    """Round price to NQ tick increment (0.25 points)."""
+    return round(price * 4) / 4
+
+
 def _log_broker_trade(**kwargs) -> None:
-    """Log completed trade. Server records trades via the relay — no local DB needed."""
+    """Log completed trade."""
     log.info(
         "Trade closed: %s %s %dx @ %.2f → %.2f  PnL=$%.2f (%.2fR)",
         kwargs.get("symbol"),
@@ -45,7 +53,7 @@ def _log_broker_trade(**kwargs) -> None:
 
 
 class TopstepXBrokerAdapter:
-    """Risk-enforced order execution for TopstepX."""
+    """Risk-enforced order execution with dynamic stop management."""
 
     def __init__(self, client, config) -> None:
         from ..broker.position_tracker import PositionTracker
@@ -57,9 +65,15 @@ class TopstepXBrokerAdapter:
         self._halt_reason = ""
         self._pending_trade: dict | None = None
         self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
+        self._trail_count = 0  # how many times we've trailed the stop
 
     async def on_signal(self, signal: dict) -> dict | None:
-        """Risk check then execute. Returns result dict or None if skipped."""
+        """Handle signal with dynamic position management.
+
+        - Flat + signal → enter position
+        - In position + same direction → trail stop to this zone (let it ride)
+        - In position + opposite direction → exit and flip
+        """
         action = signal.get("action", "")
         if action.lower() in ("skip", "hold", ""):
             return None
@@ -68,55 +82,103 @@ class TopstepXBrokerAdapter:
             log.warning("Signal rejected — halted: %s", self._halt_reason)
             return {"rejected": True, "reason": self._halt_reason}
 
-        # Confidence filter — don't trade garbage signals
+        # Confidence filter
         confidence = float(signal.get("confidence", 0) or 0)
         if confidence < MIN_CONFIDENCE:
-            log.info("Signal rejected — low confidence: %.3f < %.2f", confidence, MIN_CONFIDENCE)
-            return {"rejected": True, "reason": "low_confidence"}
-
-        # Don't enter new trade while position is open (prevents blind flipping)
-        if not self.tracker.is_flat and action in ("enter_long", "enter_short"):
-            same_side = (action == "enter_long" and self.tracker.side == "long") or (
-                action == "enter_short" and self.tracker.side == "short"
-            )
-            if same_side:
-                log.info("Signal rejected — already in %s position", self.tracker.side)
-                return {"rejected": True, "reason": "already_in_position"}
-            # Opposite side = flip — only allow if we have confirmed entry price
-            if self.tracker.entry_price == 0.0:
-                log.info("Signal rejected — waiting for entry fill confirmation before flipping")
-                return {"rejected": True, "reason": "awaiting_fill"}
-
-        # Zone cooldown — don't re-enter the same zone too quickly
-        zone_price = float(signal.get("zone", 0) or 0)
-        if zone_price > 0:
-            last_entry = self._zone_last_entry.get(zone_price, 0)
-            if time.time() - last_entry < ZONE_COOLDOWN_S:
-                log.info(
-                    "Signal rejected — zone %.2f cooldown (%.0fs < %.0fs)",
-                    zone_price,
-                    time.time() - last_entry,
-                    ZONE_COOLDOWN_S,
-                )
-                return {"rejected": True, "reason": "zone_cooldown"}
+            return None  # silent skip for low confidence
 
         rejection = self._check_risk()
         if rejection:
             return rejection
 
-        if action in ("enter_long", "enter_short"):
+        is_long_signal = "long" in action.lower()
+        signal_side = "long" if is_long_signal else "short"
+        price = float(signal.get("price", 0) or 0)
+        zone_price = float(signal.get("zone", 0) or 0)
+
+        # --- FLAT: enter new position ---
+        if self.tracker.is_flat:
+            # Zone cooldown only applies to new entries
+            if zone_price > 0:
+                last_entry = self._zone_last_entry.get(zone_price, 0)
+                if time.time() - last_entry < ZONE_COOLDOWN_S:
+                    log.info("Signal rejected — zone %.2f cooldown", zone_price)
+                    return {"rejected": True, "reason": "zone_cooldown"}
+
             result = await self._execute_entry(signal)
-            # Track zone entry time on success
             if result and not result.get("rejected") and zone_price > 0:
                 self._zone_last_entry[zone_price] = time.time()
+                self._trail_count = 0
             return result
-        elif action in ("flatten", "exit"):
-            return await self.flatten(action)
-        elif action == "trail_stop":
-            return await self._trail_stop(signal)
 
-        log.warning("Unknown signal action: %s", action)
-        return None
+        # --- IN POSITION: same direction → trail stop ---
+        if signal_side == self.tracker.side:
+            if self.tracker.entry_price == 0.0:
+                log.info("Signal skipped — awaiting entry fill confirmation")
+                return None
+
+            # Move stop to this zone (lock in profit at the level we just passed)
+            new_stop = _round_tick(zone_price if zone_price > 0 else price)
+
+            # Validate: stop must be in the right direction
+            if self.tracker.side == "long" and new_stop <= self.tracker.entry_price:
+                # Only trail if we'd be locking in profit (stop above entry)
+                if self._trail_count == 0:
+                    # First trail: move to breakeven (entry price)
+                    new_stop = _round_tick(self.tracker.entry_price + 0.25)
+                    log.info(
+                        "CONT signal at %.2f — moving stop to breakeven %.2f (trail #%d)",
+                        price,
+                        new_stop,
+                        self._trail_count + 1,
+                    )
+                else:
+                    log.info("CONT signal at %.2f — stop already above entry, holding", price)
+                    return None
+            elif self.tracker.side == "short" and new_stop >= self.tracker.entry_price:
+                if self._trail_count == 0:
+                    new_stop = _round_tick(self.tracker.entry_price - 0.25)
+                    log.info(
+                        "CONT signal at %.2f — moving stop to breakeven %.2f (trail #%d)",
+                        price,
+                        new_stop,
+                        self._trail_count + 1,
+                    )
+                else:
+                    log.info("CONT signal at %.2f — stop already above entry, holding", price)
+                    return None
+            else:
+                log.info(
+                    "CONT signal at %.2f — trailing stop to %.2f (trail #%d, locking %.1fR profit)",
+                    price,
+                    new_stop,
+                    self._trail_count + 1,
+                    abs(new_stop - self.tracker.entry_price)
+                    / (abs(self.tracker.stop_price - self.tracker.entry_price) or 1),
+                )
+
+            self._trail_count += 1
+            return await self.modify_stop(new_stop)
+
+        # --- IN POSITION: opposite direction → exit and flip ---
+        if self.tracker.entry_price == 0.0:
+            log.info("REV signal — awaiting entry fill confirmation before flipping")
+            return None
+
+        log.info(
+            "REV signal at %.2f (conf=%.3f) — exiting %s and flipping to %s",
+            price,
+            confidence,
+            self.tracker.side,
+            signal_side,
+        )
+        await self.flatten("flip_on_reversal")
+        self._trail_count = 0
+
+        # Now enter the opposite direction
+        if zone_price > 0:
+            self._zone_last_entry[zone_price] = time.time()
+        return await self._execute_entry(signal)
 
     async def flatten(self, reason: str = "manual") -> dict:
         """Cancel stop order and liquidate position."""
@@ -140,8 +202,19 @@ class TopstepXBrokerAdapter:
 
     async def modify_stop(self, new_stop_price: float) -> dict | None:
         """Move existing stop order to new price."""
+        new_stop_price = _round_tick(new_stop_price)
         if not self.tracker.stop_order_id:
-            return None
+            # No existing stop — place a new one
+            try:
+                stop_action = "Sell" if self.tracker.side == "long" else "Buy"
+                result = await self.client.place_stop_order(stop_action, self.tracker.size or 1, new_stop_price)
+                self.tracker.stop_order_id = result.get("orderId") if isinstance(result, dict) else None
+                self.tracker.stop_price = new_stop_price
+                log.info("New stop placed at %.2f", new_stop_price)
+                return {"action": "new_stop", "stop_price": new_stop_price}
+            except Exception:
+                log.exception("Failed to place stop order")
+                return None
         try:
             await self.client.modify_order(self.tracker.stop_order_id, new_stop_price)
             self.tracker.stop_price = new_stop_price
@@ -152,12 +225,7 @@ class TopstepXBrokerAdapter:
             return None
 
     def on_stream_fill(self, fill: dict) -> None:
-        """Update tracker from real TopstepX fill (GatewayUserTrade).
-
-        TopstepX sends fills as: {"action": 0, "data": {"price": ..., "side": ..., "size": ...}}
-        The actual fill data is nested under "data".
-        """
-        # Unwrap nested data envelope
+        """Update tracker from real TopstepX fill (GatewayUserTrade)."""
         data = fill.get("data", fill)
         price = float(data.get("price", 0))
         if price == 0:
@@ -175,9 +243,10 @@ class TopstepXBrokerAdapter:
             entry_px = self.tracker.entry_price
             self.tracker.on_exit(exit_price=price, was_stop=is_stop)
             log.info(
-                "Stream fill (exit): %.2f stop=%s session_pnl=$%.2f",
+                "Stream fill (exit): %.2f stop=%s trails=%d session_pnl=$%.2f",
                 price,
                 is_stop,
+                self._trail_count,
                 self.tracker.session_pnl,
             )
 
@@ -212,11 +281,12 @@ class TopstepXBrokerAdapter:
         self._halted = False
         self._halt_reason = ""
         self._zone_last_entry.clear()
+        self._trail_count = 0
         self.tracker.reset_session()
         log.info("Session reset")
 
     def _check_risk(self) -> dict | None:
-        """Run risk checks. Returns rejection dict or None if OK."""
+        """Run risk checks."""
         if self.tracker.exceeds_daily_loss(self.config.max_daily_loss):
             self._halt(f"daily loss limit ${self.config.max_daily_loss}")
             return {"rejected": True, "reason": self._halt_reason}
@@ -230,21 +300,12 @@ class TopstepXBrokerAdapter:
             return {"rejected": True, "reason": self._halt_reason}
 
         if time.time() - self.tracker.last_trade_ts < MIN_TRADE_INTERVAL_S:
-            log.info(
-                "Signal rejected — too soon (%.0fs < %.0fs)",
-                time.time() - self.tracker.last_trade_ts,
-                MIN_TRADE_INTERVAL_S,
-            )
             return {"rejected": True, "reason": "min_interval"}
 
         return None
 
     async def _execute_entry(self, signal: dict) -> dict:
-        """Place market + stop orders with risk-based position sizing.
-
-        Size = risk_dollars / (stop_ticks × $5/tick), clamped to max_position.
-        Risk is 1.5% of max trailing drawdown for normal signals, 2% for high confidence.
-        """
+        """Place market + stop orders with risk-based sizing."""
         action = signal["action"]
         is_long = "long" in action.lower()
         order_action = "Buy" if is_long else "Sell"
@@ -260,11 +321,9 @@ class TopstepXBrokerAdapter:
             stop_dist_ticks = DEFAULT_STOP_TICKS
         stop_dist_ticks = int(max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks)))
         offset = stop_dist_ticks * 0.25
-        stop_price = price - offset if is_long else price + offset
-        # Round to NQ tick increment (0.25 points)
-        stop_price = round(stop_price * 4) / 4
+        stop_price = _round_tick(price - offset if is_long else price + offset)
 
-        # Risk-based sizing: risk = % of max drawdown
+        # Risk-based sizing
         risk_pct = RISK_PCT_HIGH if confidence > 0.70 else RISK_PCT_BASE
         risk_dollars = self.config.max_trailing_dd * risk_pct
         risk_per_contract = stop_dist_ticks * _NQ_TICK_VALUE
@@ -288,13 +347,7 @@ class TopstepXBrokerAdapter:
         if not self.tracker.is_flat:
             await self.flatten("flip")
 
-        log.info(
-            "Executing: %s size=%d stop=%.2f conf=%.3f",
-            action,
-            size,
-            stop_price,
-            float(signal.get("confidence", 0) or 0),
-        )
+        log.info("Executing: %s size=%d stop=%.2f conf=%.3f", action, size, stop_price, confidence)
 
         try:
             result = await self.client.place_market_order(order_action, size)
@@ -306,7 +359,6 @@ class TopstepXBrokerAdapter:
             err = result.get("errorMessage", "order_rejected")
             err_code = result.get("errorCode")
             log.warning("Market order rejected (errorCode=%s): %s", err_code, err)
-            # Permanent violation = account blown — halt all trading
             if err_code == 2 or "permanent violation" in str(err).lower():
                 self._halt(f"account permanent violation: {err}")
             return {"rejected": True, "reason": err}
@@ -316,6 +368,8 @@ class TopstepXBrokerAdapter:
             try:
                 stop_result = await self.client.place_stop_order(stop_action, size, stop_price)
                 stop_order_id = stop_result.get("orderId") if isinstance(stop_result, dict) else None
+                if isinstance(stop_result, dict) and not stop_result.get("success", True):
+                    log.warning("Stop order failed: %s", stop_result.get("errorMessage"))
             except Exception:
                 log.exception("Stop order failed (market order was placed)")
 
@@ -352,11 +406,10 @@ class TopstepXBrokerAdapter:
         return None
 
     def halt(self, reason: str) -> None:
-        """Halt trading for the rest of the session (public, for EOD/external callers)."""
+        """Halt trading for the rest of the session."""
         self._halt(reason)
 
     def _halt(self, reason: str) -> None:
-        """Halt trading for the session."""
         self._halted = True
         self._halt_reason = reason
         log.warning("HALTED: %s (session_pnl=$%.2f)", reason, self.tracker.session_pnl)
