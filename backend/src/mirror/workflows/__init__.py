@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import ProviderWorkflow, WorkflowMode, PlacementResult, HistoryEntry
+from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     pass
@@ -17,12 +17,14 @@ _WORKFLOW_CACHE: dict[str, ProviderWorkflow] = {}  # Cached instances per provid
 
 
 def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
-    from .polymarket import PolymarketWorkflow
-    from .pinnacle import PinnacleWorkflow
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
-    from .kambi import KambiWorkflow
     from .generic import GenericWorkflow
+    from .interwetten import InterwettenWorkflow
+    from .kambi import KambiWorkflow
+    from .pinnacle import PinnacleWorkflow
+    from .polymarket import PolymarketWorkflow
+
     return {
         "polymarket": PolymarketWorkflow,
         "pinnacle": PinnacleWorkflow,
@@ -34,7 +36,7 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "snabbare": GenericWorkflow,
         "custom": GenericWorkflow,
         "betconstruct": GenericWorkflow,
-        "interwetten": GenericWorkflow,
+        "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
     }
@@ -67,6 +69,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         _PLATFORM_MAP = _load_platform_map()
 
     from ...config.loader import load_config
+
     cfg = load_config()
     provider = cfg.get_provider(provider_id)
 
@@ -77,6 +80,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
         from .generic import GenericWorkflow
+
         instance = GenericWorkflow(provider_id=provider_id, domain="")
         _WORKFLOW_CACHE[provider_id] = instance
         return instance
@@ -85,6 +89,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     cls = _PLATFORM_MAP.get(platform)
     if cls is None:
         from .generic import GenericWorkflow
+
         cls = GenericWorkflow
 
     domain = provider.domain or ""
@@ -97,6 +102,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
 
 
 __all__ = [
-    "ProviderWorkflow", "WorkflowMode", "PlacementResult", "HistoryEntry",
+    "ProviderWorkflow",
+    "WorkflowMode",
+    "PlacementResult",
+    "HistoryEntry",
     "get_workflow",
 ]
