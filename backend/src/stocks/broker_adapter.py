@@ -15,22 +15,28 @@ from datetime import datetime, timezone
 log = logging.getLogger(__name__)
 
 MIN_TRADE_INTERVAL_S = 30.0
+MIN_CONFIDENCE = 0.30  # reject signals below this confidence
+ZONE_COOLDOWN_S = 120.0  # don't re-enter same zone within 2 minutes
+DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
+MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
+MAX_STOP_TICKS = 40  # maximum stop distance
 
 # NQ tick value: $5 per tick (0.25 point), $20 per point
 _NQ_POINT_VALUE = 20.0
 
 
-def _save_broker_trade(**kwargs) -> None:
-    """Persist a trade row to broker_trades (fire-and-forget, never blocks)."""
-    try:
-        from ..db.models import BrokerTrade, get_session
-
-        session = get_session()
-        trade = BrokerTrade(**kwargs)
-        session.add(trade)
-        session.commit()
-    except Exception:
-        log.exception("Failed to save broker trade")
+def _log_broker_trade(**kwargs) -> None:
+    """Log completed trade. Server records trades via the relay — no local DB needed."""
+    log.info(
+        "Trade closed: %s %s %dx @ %.2f → %.2f  PnL=$%.2f (%.2fR)",
+        kwargs.get("symbol"),
+        kwargs.get("side"),
+        kwargs.get("size", 1),
+        kwargs.get("entry_price", 0),
+        kwargs.get("exit_price", 0),
+        kwargs.get("pnl_dollars", 0),
+        kwargs.get("pnl_r", 0),
+    )
 
 
 class TopstepXBrokerAdapter:
@@ -44,7 +50,8 @@ class TopstepXBrokerAdapter:
         self.tracker = PositionTracker()
         self._halted = False
         self._halt_reason = ""
-        self._pending_trade: dict | None = None  # tracks open entry for DB persistence
+        self._pending_trade: dict | None = None
+        self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
 
     async def on_signal(self, signal: dict) -> dict | None:
         """Risk check then execute. Returns result dict or None if skipped."""
@@ -56,12 +63,35 @@ class TopstepXBrokerAdapter:
             log.warning("Signal rejected — halted: %s", self._halt_reason)
             return {"rejected": True, "reason": self._halt_reason}
 
+        # Confidence filter — don't trade garbage signals
+        confidence = float(signal.get("confidence", 0) or 0)
+        if confidence < MIN_CONFIDENCE:
+            log.info("Signal rejected — low confidence: %.3f < %.2f", confidence, MIN_CONFIDENCE)
+            return {"rejected": True, "reason": "low_confidence"}
+
+        # Zone cooldown — don't re-enter the same zone too quickly
+        zone_price = float(signal.get("zone", 0) or 0)
+        if zone_price > 0:
+            last_entry = self._zone_last_entry.get(zone_price, 0)
+            if time.time() - last_entry < ZONE_COOLDOWN_S:
+                log.info(
+                    "Signal rejected — zone %.2f cooldown (%.0fs < %.0fs)",
+                    zone_price,
+                    time.time() - last_entry,
+                    ZONE_COOLDOWN_S,
+                )
+                return {"rejected": True, "reason": "zone_cooldown"}
+
         rejection = self._check_risk()
         if rejection:
             return rejection
 
         if action in ("enter_long", "enter_short"):
-            return await self._execute_entry(signal)
+            result = await self._execute_entry(signal)
+            # Track zone entry time on success
+            if result and not result.get("rejected") and zone_price > 0:
+                self._zone_last_entry[zone_price] = time.time()
+            return result
         elif action in ("flatten", "exit"):
             return await self.flatten(action)
         elif action == "trail_stop":
@@ -83,8 +113,6 @@ class TopstepXBrokerAdapter:
                 await self.client.liquidate_position()
             except Exception:
                 log.exception("Failed to liquidate position")
-            # If the order was never actually filled (entry_price=0), no fill will arrive —
-            # force tracker to flat now so the flatten scheduler doesn't loop forever.
             if self.tracker.entry_price == 0.0:
                 self.tracker.on_exit(0.0)
                 self._pending_trade = None
@@ -106,25 +134,18 @@ class TopstepXBrokerAdapter:
             return None
 
     def on_stream_fill(self, fill: dict) -> None:
-        """Update tracker from real TopstepX fill (GatewayUserTrade).
-
-        A stream fill can be either an entry confirmation or an exit.
-        We distinguish by checking entry_price: if it's still 0.0, the
-        market order just got filled (entry); otherwise it's an exit fill.
-        """
+        """Update tracker from real TopstepX fill (GatewayUserTrade)."""
         price = float(fill.get("price", 0))
         if price == 0:
             return
 
         if not self.tracker.is_flat and self.tracker.entry_price == 0.0:
-            # Entry fill arriving — market order confirmed at actual price
             self.tracker.entry_price = price
             if self._pending_trade:
                 self._pending_trade["entry_price"] = price
             log.info("Stream fill (entry confirmed): %.2f", price)
 
         elif not self.tracker.is_flat:
-            # Exit fill — position was closed (stop hit, manual flatten, etc.)
             is_stop = abs(price - self.tracker.stop_price) < 1.0 if self.tracker.stop_price else False
             entry_px = self.tracker.entry_price
             self.tracker.on_exit(exit_price=price, was_stop=is_stop)
@@ -135,7 +156,6 @@ class TopstepXBrokerAdapter:
                 self.tracker.session_pnl,
             )
 
-            # Persist completed trade to DB
             if self._pending_trade and entry_px:
                 side = self._pending_trade["side"]
                 direction = 1.0 if side == "long" else -1.0
@@ -144,7 +164,7 @@ class TopstepXBrokerAdapter:
                 stop_dist = self._pending_trade.get("stop_price", 0)
                 risk_pts = abs(entry_px - stop_dist) if stop_dist else 10.0 * 0.25
                 pnl_r = pnl_pts / max(risk_pts, 0.25)
-                _save_broker_trade(
+                _log_broker_trade(
                     ts=self._pending_trade["ts"],
                     session_date=self._pending_trade["session_date"],
                     symbol=self._pending_trade["symbol"],
@@ -166,6 +186,7 @@ class TopstepXBrokerAdapter:
         """Daily midnight reset."""
         self._halted = False
         self._halt_reason = ""
+        self._zone_last_entry.clear()
         self.tracker.reset_session()
         log.info("Session reset")
 
@@ -205,12 +226,29 @@ class TopstepXBrokerAdapter:
             size = max(1, round(raw_size * self.config.max_position))
         else:
             size = min(int(raw_size), self.config.max_position)
+
         stop_price = float(signal.get("stop_price", 0) or 0)
+
+        # Validate stop distance — reject if missing or too tight
+        if stop_price > 0:
+            stop_dist_pts = abs(stop_price - float(signal.get("price", 0) or 0))
+            stop_dist_ticks = stop_dist_pts / 0.25
+            if stop_dist_ticks < MIN_STOP_TICKS:
+                log.warning("Stop too tight (%.0f ticks) — adjusting to %d", stop_dist_ticks, MIN_STOP_TICKS)
+                offset = MIN_STOP_TICKS * 0.25
+                price = float(signal.get("price", 0) or 0)
+                stop_price = price - offset if is_long else price + offset
 
         if not self.tracker.is_flat:
             await self.flatten("flip")
 
-        log.info("Executing: %s size=%d stop=%.2f", action, size, stop_price)
+        log.info(
+            "Executing: %s size=%d stop=%.2f conf=%.3f",
+            action,
+            size,
+            stop_price,
+            float(signal.get("confidence", 0) or 0),
+        )
 
         try:
             result = await self.client.place_market_order(order_action, size)
@@ -220,7 +258,11 @@ class TopstepXBrokerAdapter:
 
         if isinstance(result, dict) and not result.get("success", True):
             err = result.get("errorMessage", "order_rejected")
-            log.warning("Market order rejected (errorCode=%s): %s", result.get("errorCode"), err)
+            err_code = result.get("errorCode")
+            log.warning("Market order rejected (errorCode=%s): %s", err_code, err)
+            # Permanent violation = account blown — halt all trading
+            if err_code == 2 or "permanent violation" in str(err).lower():
+                self._halt(f"account permanent violation: {err}")
             return {"rejected": True, "reason": err}
 
         stop_order_id = None
@@ -235,7 +277,6 @@ class TopstepXBrokerAdapter:
         self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
         self.tracker.stop_order_id = stop_order_id
 
-        # Track pending trade for DB persistence (closed on_stream_fill)
         now = datetime.now(timezone.utc)
         self._pending_trade = {
             "ts": now,
@@ -246,7 +287,7 @@ class TopstepXBrokerAdapter:
             "stop_price": stop_price,
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),
-            "signal_zone": float(signal.get("zone_price", 0) or 0),
+            "signal_zone": float(signal.get("zone", signal.get("zone_price", 0)) or 0),
         }
 
         return {

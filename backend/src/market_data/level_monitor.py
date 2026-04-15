@@ -1014,21 +1014,30 @@ class LevelMonitor:
             except Exception:
                 pass  # Never block inference for collection
 
-            # Execute via broker if enabled
+            # Execute via broker if enabled (server-side Rithmic/Tradovate path)
+            # Note: the relay callback path above handles TopstepX via trading_service
             broker = getattr(self, "_broker_adapter", None)
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
-                if action not in ("SKIP", "skip"):
+                confidence = result.get("confidence", 0.0)
+                if action not in ("SKIP", "skip") and confidence >= 0.30:
                     import asyncio
 
                     try:
+                        approach = "up" if price < zone.center_price else "down"
+                        if action == "CONTINUATION":
+                            sig_action = "enter_long" if approach == "up" else "enter_short"
+                        else:
+                            sig_action = "enter_short" if approach == "up" else "enter_long"
+                        is_long = "long" in sig_action
+                        stop_ticks = max(15, min(40, result.get("stop_ticks") or 25))
+                        stop_offset = stop_ticks * 0.25
                         broker_signal = {
-                            "action": "enter_long" if action == "CONTINUATION" else "enter_short",
+                            "action": sig_action,
                             "price": price,
-                            "stop_price": price - result.get("stop_ticks", 15) * 0.25
-                            if action == "CONTINUATION"
-                            else price + result.get("stop_ticks", 15) * 0.25,
-                            "size": result.get("sizing_signal", 1.0),
+                            "stop_price": price - stop_offset if is_long else price + stop_offset,
+                            "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
+                            "confidence": confidence,
                         }
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:
@@ -1072,16 +1081,41 @@ class LevelMonitor:
                     }
                 )
 
-                # Send trading signal for non-SKIP actions
+                # Send trading signal — filter low confidence + fix stop calculation
                 action = result.get("action", "SKIP")
-                if action not in ("SKIP", "skip"):
-                    sig_action = "enter_long" if action == "CONTINUATION" else "enter_short"
-                    confidence = result.get("confidence", 0.0)
+                confidence = result.get("confidence", 0.0)
+                MIN_SIGNAL_CONFIDENCE = 0.30
+
+                if action in ("SKIP", "skip"):
+                    logger.debug("SKIP for zone %.2f (conf=%.3f)", zone.center_price, confidence)
+                elif confidence < MIN_SIGNAL_CONFIDENCE:
                     logger.info(
-                        "Dispatching signal via callback: %s conf=%.3f price=%.2f zone=%.2f",
+                        "Signal filtered: %s conf=%.3f < %.2f at zone %.2f",
+                        action,
+                        confidence,
+                        MIN_SIGNAL_CONFIDENCE,
+                        zone.center_price,
+                    )
+                else:
+                    approach = "up" if price < zone.center_price else "down"
+                    if action == "CONTINUATION":
+                        sig_action = "enter_long" if approach == "up" else "enter_short"
+                    else:  # REVERSAL
+                        sig_action = "enter_short" if approach == "up" else "enter_long"
+                    is_long = "long" in sig_action
+
+                    stop_ticks = result.get("stop_ticks") or 25  # default 25 ticks if None
+                    stop_ticks = max(15, min(40, stop_ticks))  # clamp to 15-40 range
+                    stop_offset = stop_ticks * 0.25  # NQ tick = 0.25 points
+                    stop_price = price - stop_offset if is_long else price + stop_offset
+
+                    logger.info(
+                        "Dispatching signal: %s conf=%.3f price=%.2f stop=%.2f (%d ticks) zone=%.2f",
                         sig_action,
                         confidence,
                         price,
+                        stop_price,
+                        stop_ticks,
                         zone.center_price,
                     )
                     _send(
@@ -1089,22 +1123,18 @@ class LevelMonitor:
                             "type": "signal",
                             "action": sig_action,
                             "price": price,
-                            "stop_price": price - result.get("stop_ticks", 15) * 0.25
-                            if action == "CONTINUATION"
-                            else price + result.get("stop_ticks", 15) * 0.25,
-                            "size": result.get("sizing_signal", 1.0),
+                            "stop_price": stop_price,
+                            "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
                             "confidence": confidence,
                             "cont_p": result.get("cont_p"),
                             "rev_p": result.get("rev_p"),
-                            "stop_ticks": result.get("stop_ticks"),
+                            "stop_ticks": stop_ticks,
                             "model_type": result.get("model_type"),
                             "zone": zone.center_price,
                             "zone_members": zone.member_count,
                             "ts": time.time(),
                         }
                     )
-                else:
-                    logger.debug("DQN action=SKIP for zone %.2f, not sending signal", zone.center_price)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
 
