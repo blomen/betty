@@ -416,68 +416,50 @@ class InterwettenWorkflow(ProviderWorkflow):
             return False
 
     async def _search_and_navigate(self, page: Page, home: str, away: str) -> bool:
-        """Search for event by team name and click the first matching result."""
+        """Search for event by team name using Interwetten's search page."""
         try:
-            search_url = f"https://{self.domain}/en/sportsbook"
-            if "/sportsbook" not in page.url:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=15_000)
+            import asyncio
 
-            # Use the search bar — click the search icon, type team name, click result
+            # Use Interwetten's search URL pattern
+            query = home.split()[-1] if home else ""  # Use last word (surname) for best match
+            if not query:
+                return False
+            search_url = f"https://{self.domain}/en/sportsbook?search={query}"
+            logger.info(f"[{self.provider_id}] Searching: {search_url}")
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=15_000)
+            await asyncio.sleep(2)
+
+            # Click first matching event link
+            home_lower = home.lower()
+            away_lower = away.lower() if away else ""
             result = await page.evaluate(
                 """
-                async (args) => {
-                    const { home, away } = args;
-
-                    // Find all event links on the page matching team names
+                (args) => {
+                    const { homeLower, awayLower } = args;
                     const links = document.querySelectorAll('a[href*="/sportsbook/e/"]');
-                    const homeLower = home.toLowerCase();
-                    const awayLower = away ? away.toLowerCase() : '';
-
                     for (const link of links) {
                         const text = (link.textContent || '').toLowerCase();
-                        if (text.includes(homeLower)) {
-                            if (!awayLower || text.includes(awayLower)) {
-                                link.click();
-                                return { found: true, href: link.getAttribute('href') };
-                            }
+                        if (text.includes(homeLower) || (awayLower && text.includes(awayLower))) {
+                            const href = link.getAttribute('href');
+                            link.click();
+                            return { found: true, href };
                         }
                     }
-
-                    // Try search bar
-                    const searchBtn = document.querySelector('button[class*="search"], [data-action*="search"]');
-                    if (searchBtn) {
-                        searchBtn.click();
-                        await new Promise(r => setTimeout(r, 500));
-                        const searchInput = document.querySelector('input[type="search"], input[placeholder*="Search"], input[placeholder*="search"]');
-                        if (searchInput) {
-                            searchInput.focus();
-                            searchInput.value = home;
-                            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-                            await new Promise(r => setTimeout(r, 1500));
-
-                            // Click first result
-                            const results = document.querySelectorAll('a[href*="/sportsbook/e/"]');
-                            for (const r of results) {
-                                const t = (r.textContent || '').toLowerCase();
-                                if (t.includes(homeLower)) {
-                                    r.click();
-                                    return { found: true, href: r.getAttribute('href') };
-                                }
-                            }
-                        }
-                    }
-                    return { found: false };
+                    return { found: false, count: links.length };
                 }
             """,
-                {"home": home, "away": away},
+                {"homeLower": home_lower, "awayLower": away_lower},
             )
 
             if result and result.get("found"):
                 logger.info(f"[{self.provider_id}] Found event via search: {result.get('href')}")
-                await page.wait_for_timeout(1000)
+                await asyncio.sleep(1)
                 return True
 
-            logger.warning(f"[{self.provider_id}] Event not found via search: {home} vs {away}")
+            logger.warning(
+                f"[{self.provider_id}] Event not found via search: {home} vs {away} "
+                f"({result.get('count', 0)} links on page)"
+            )
             return False
         except Exception as e:
             logger.warning(f"[{self.provider_id}] _search_and_navigate error: {e}")
