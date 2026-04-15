@@ -152,10 +152,17 @@ class TopstepXBrokerAdapter:
             return None
 
     def on_stream_fill(self, fill: dict) -> None:
-        """Update tracker from real TopstepX fill (GatewayUserTrade)."""
-        price = float(fill.get("price", 0))
+        """Update tracker from real TopstepX fill (GatewayUserTrade).
+
+        TopstepX sends fills as: {"action": 0, "data": {"price": ..., "side": ..., "size": ...}}
+        The actual fill data is nested under "data".
+        """
+        # Unwrap nested data envelope
+        data = fill.get("data", fill)
+        price = float(data.get("price", 0))
         if price == 0:
             return
+        log.info("Fill processing: price=%.2f side=%s size=%s", price, data.get("side"), data.get("size"))
 
         if not self.tracker.is_flat and self.tracker.entry_price == 0.0:
             self.tracker.entry_price = price
