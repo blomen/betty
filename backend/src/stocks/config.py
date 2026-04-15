@@ -17,8 +17,8 @@ class TopstepXConfig:
     server_ws_url: str = "ws://127.0.0.1:18000/ws/signals"
     account_id: int = 0  # 0 = auto-select (prefers PRAC accounts)
     max_position: int = 2
-    max_daily_loss: float = 1000.0
-    max_trailing_dd: float = 2000.0
+    max_daily_loss: float = 1500.0  # TopstepX 50k: $2000 daily, we use tighter
+    max_trailing_dd: float = 5000.0  # TopstepX 50k trailing drawdown
     flatten_et: str = "15:55"
 
     @property

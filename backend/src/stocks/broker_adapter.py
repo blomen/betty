@@ -22,7 +22,12 @@ MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
 MAX_STOP_TICKS = 40  # maximum stop distance
 
 # NQ tick value: $5 per tick (0.25 point), $20 per point
+_NQ_TICK_VALUE = 5.0
 _NQ_POINT_VALUE = 20.0
+
+# Risk-based sizing: risk 1-2% of max drawdown per trade
+RISK_PCT_BASE = 0.015  # 1.5% of drawdown for normal signals (conf 0.30-0.70)
+RISK_PCT_HIGH = 0.02  # 2% for high confidence (conf > 0.70)
 
 
 def _log_broker_trade(**kwargs) -> None:
@@ -215,29 +220,48 @@ class TopstepXBrokerAdapter:
         return None
 
     async def _execute_entry(self, signal: dict) -> dict:
-        """Place market + stop orders with position management."""
+        """Place market + stop orders with risk-based position sizing.
+
+        Size = risk_dollars / (stop_ticks × $5/tick), clamped to max_position.
+        Risk is 1.5% of max trailing drawdown for normal signals, 2% for high confidence.
+        """
         action = signal["action"]
         is_long = "long" in action.lower()
         order_action = "Buy" if is_long else "Sell"
         stop_action = "Sell" if is_long else "Buy"
-        raw_size = float(signal.get("size", 1) or 1)
-        # Model sends fractional Kelly sizing (e.g. 0.25 = 25% of max_position)
-        if raw_size < 1:
-            size = max(1, round(raw_size * self.config.max_position))
-        else:
-            size = min(int(raw_size), self.config.max_position)
-
+        price = float(signal.get("price", 0) or 0)
         stop_price = float(signal.get("stop_price", 0) or 0)
+        confidence = float(signal.get("confidence", 0) or 0)
 
-        # Validate stop distance — reject if missing or too tight
+        # Validate/adjust stop distance
         if stop_price > 0:
-            stop_dist_pts = abs(stop_price - float(signal.get("price", 0) or 0))
-            stop_dist_ticks = stop_dist_pts / 0.25
-            if stop_dist_ticks < MIN_STOP_TICKS:
-                log.warning("Stop too tight (%.0f ticks) — adjusting to %d", stop_dist_ticks, MIN_STOP_TICKS)
-                offset = MIN_STOP_TICKS * 0.25
-                price = float(signal.get("price", 0) or 0)
-                stop_price = price - offset if is_long else price + offset
+            stop_dist_ticks = abs(stop_price - price) / 0.25
+        else:
+            stop_dist_ticks = DEFAULT_STOP_TICKS
+        stop_dist_ticks = max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks))
+        offset = stop_dist_ticks * 0.25
+        stop_price = price - offset if is_long else price + offset
+
+        # Risk-based sizing: risk = % of max drawdown
+        risk_pct = RISK_PCT_HIGH if confidence > 0.70 else RISK_PCT_BASE
+        risk_dollars = self.config.max_trailing_dd * risk_pct
+        risk_per_contract = stop_dist_ticks * _NQ_TICK_VALUE
+        size = max(
+            1,
+            min(
+                int(risk_dollars / risk_per_contract),
+                self.config.max_position,
+            ),
+        )
+        log.info(
+            "Sizing: risk=$%.0f (%.1f%% of $%.0f DD), stop=%d ticks ($%.0f/contract) → %d contracts",
+            risk_dollars,
+            risk_pct * 100,
+            self.config.max_trailing_dd,
+            stop_dist_ticks,
+            risk_per_contract,
+            size,
+        )
 
         if not self.tracker.is_flat:
             await self.flatten("flip")
