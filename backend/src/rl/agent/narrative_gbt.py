@@ -7,6 +7,7 @@ features to produce:
 
 These outputs feed into the Trigger GBT as contextual priors.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,9 +20,11 @@ from sklearn.preprocessing import StandardScaler
 # Prefer LightGBM (10-50x faster, multi-threaded) with sklearn fallback
 try:
     from lightgbm import LGBMClassifier as _Classifier
+
     _ENGINE = "lightgbm"
 except ImportError:
     from sklearn.ensemble import GradientBoostingClassifier as _Classifier  # type: ignore[assignment]
+
     _ENGINE = "sklearn"
 
 from src.rl.labeling.setup_types import NUM_SETUP_TYPES, SetupType
@@ -80,33 +83,40 @@ class NarrativeGBT:
             Dict with training metrics (alive_features, day_type_accuracy,
             trained_setups, skipped_setups, engine).
         """
-        # Remove dead features (zero variance)
-        stds = np.std(X, axis=0)
+        n = len(X)
+        # Chronological split: train on first 80%, validate on last 20%
+        val_split = int(n * 0.80)
+
+        # Remove dead features (computed on training set only)
+        stds = np.std(X[:val_split], axis=0)
         self._alive_mask = stds > 1e-8
         alive_count = int(self._alive_mask.sum())
-        X_alive = X[:, self._alive_mask]
 
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_alive)
+        X_train = self.scaler.fit_transform(X[:val_split, self._alive_mask])
+        X_val = self.scaler.transform(X[val_split:, self._alive_mask])
+        y_dt_train, y_dt_val = day_type_labels[:val_split], day_type_labels[val_split:]
 
         if _ENGINE == "lightgbm":
             base_params = dict(
                 n_estimators=n_estimators,
-                max_depth=max_depth,
+                max_depth=min(max_depth, 4),
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_child_samples=50,
-                colsample_bytree=0.7,
-                n_jobs=2,  # limit threads to avoid OOM (LightGBM duplicates data per thread)
+                min_child_samples=100,
+                colsample_bytree=0.5,
+                reg_alpha=0.1,
+                reg_lambda=1.0,
+                n_jobs=2,
                 verbose=-1,
             )
         else:
             base_params = dict(
                 n_estimators=n_estimators,
-                max_depth=max_depth,
+                max_depth=min(max_depth, 4),
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_samples_leaf=50,
+                min_samples_leaf=100,
                 max_features="sqrt",
                 validation_fraction=0.1,
                 n_iter_no_change=20,
@@ -117,69 +127,99 @@ class NarrativeGBT:
             "alive_features": alive_count,
             "total_features": int(X.shape[1]),
             "engine": _ENGINE,
+            "train_size": val_split,
+            "val_size": n - val_split,
         }
 
-        # --- Day-type classifier ---
+        # --- Day-type classifier with early stopping ---
         log.info(
-            "Training day_type head: %d samples, %d features, %d classes",
-            len(X_scaled), alive_count, len(np.unique(day_type_labels)),
+            "Training day_type head: %d train / %d val, %d features, %d classes",
+            val_split,
+            n - val_split,
+            alive_count,
+            len(np.unique(day_type_labels)),
         )
         self.day_type_model = _Classifier(**base_params)
-        self.day_type_model.fit(X_scaled, day_type_labels)
-        metrics["day_type_accuracy"] = round(
-            self.day_type_model.score(X_scaled, day_type_labels) * 100, 1
-        )
-        metrics["day_type_classes"] = int(len(np.unique(day_type_labels)))
+        if _ENGINE == "lightgbm":
+            self.day_type_model.fit(
+                X_train,
+                y_dt_train,
+                eval_set=[(X_val, y_dt_val)],
+                callbacks=[
+                    __import__("lightgbm").early_stopping(50, verbose=False),
+                    __import__("lightgbm").log_evaluation(0),
+                ],
+            )
+        else:
+            self.day_type_model.fit(X_train, y_dt_train)
 
-        # --- Per-setup binary classifiers ---
+        train_acc = round(self.day_type_model.score(X_train, y_dt_train) * 100, 1)
+        val_acc = round(self.day_type_model.score(X_val, y_dt_val) * 100, 1)
+        metrics["day_type_accuracy_train"] = train_acc
+        metrics["day_type_accuracy"] = val_acc  # report val as the real accuracy
+        metrics["day_type_classes"] = int(len(np.unique(day_type_labels)))
+        log.info("Day type: train=%.1f%% val=%.1f%%", train_acc, val_acc)
+
+        # --- Per-setup binary classifiers with early stopping ---
         setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
         trained, skipped = [], []
         self.setup_models = [None] * NUM_SETUP_TYPES
 
         for i in range(NUM_SETUP_TYPES):
             col = setup_labels[:, i].astype(np.int32)
-            pos_count = int(col.sum())
+            col_train, col_val = col[:val_split], col[val_split:]
+            pos_count = int(col_train.sum())
 
             if pos_count < _MIN_POSITIVE:
                 log.debug(
                     "Skipping setup[%d] %s: only %d positive samples (need %d)",
-                    i, setup_names[i], pos_count, _MIN_POSITIVE,
+                    i,
+                    setup_names[i],
+                    pos_count,
+                    _MIN_POSITIVE,
                 )
                 skipped.append(setup_names[i])
                 continue
 
-            # Imbalance weight: up-weight positive class
-            neg_count = len(col) - pos_count
+            neg_count = len(col_train) - pos_count
             scale_pos_weight = neg_count / max(pos_count, 1)
 
             if _ENGINE == "lightgbm":
                 params = {**base_params, "scale_pos_weight": scale_pos_weight}
+                clf = _Classifier(**params)
+                clf.fit(
+                    X_train,
+                    col_train,
+                    eval_set=[(X_val, col_val)],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
             else:
-                # sklearn GradientBoosting doesn't support scale_pos_weight directly;
-                # use sample weights instead
                 params = {**base_params}
-
-            clf = _Classifier(**params)
-
-            if _ENGINE == "sklearn":
-                sample_weight = np.where(col == 1, scale_pos_weight, 1.0)
-                clf.fit(X_scaled, col, sample_weight=sample_weight)
-            else:
-                clf.fit(X_scaled, col)
+                clf = _Classifier(**params)
+                sample_weight = np.where(col_train == 1, scale_pos_weight, 1.0)
+                clf.fit(X_train, col_train, sample_weight=sample_weight)
 
             self.setup_models[i] = clf
             self._trained_setup_indices.append(i)
             trained.append(setup_names[i])
             log.info(
-                "Trained setup[%d] %s: %d pos / %d neg (scale_pos_weight=%.2f)",
-                i, setup_names[i], pos_count, neg_count, scale_pos_weight,
+                "Trained setup[%d] %s: %d pos / %d neg, val_acc=%.1f%%",
+                i,
+                setup_names[i],
+                pos_count,
+                neg_count,
+                round(clf.score(X_val, col_val) * 100, 1),
             )
 
         metrics["trained_setups"] = trained
         metrics["skipped_setups"] = skipped
         log.info(
             "NarrativeGBT training complete: %d setup models trained, %d skipped",
-            len(trained), len(skipped),
+            len(trained),
+            len(skipped),
         )
         return metrics
 

@@ -79,66 +79,67 @@ class TriggerGBT:
         learning_rate: float = 0.05,
         subsample: float = 0.8,
     ) -> dict:
-        """Train all trigger GBT heads on trigger-layer feature vectors.
+        """Train all trigger GBT heads with chronological train/val split.
 
-        Args:
-            X: Trigger feature matrix of shape (N, F).
-            y_direction: Binary direction labels (0=cont, 1=rev) of shape (N,).
-            rewards_cont: Continuation rewards of shape (N,).
-            rewards_rev: Reversal rewards of shape (N,).
-            stop_targets: Optimal stop distances in ticks of shape (N,).
-            breakeven_reached: Binary — did price reach 1R? Shape (N,).
-            levels_captured: Structural levels captured by best action, shape (N,).
-            reward_gap: |reward_cont - reward_rev| for direction sample weighting.
-            n_estimators: Trees per model.
-            max_depth: Max tree depth.
-            learning_rate: Boosting learning rate.
-            subsample: Row subsampling fraction.
-
-        Returns:
-            Dict with per-head training metrics.
+        Uses the last 20% of data (chronologically) as validation set for
+        early stopping and out-of-sample evaluation. This prevents overfitting
+        on historical patterns that don't generalize.
         """
-        # Remove dead features
-        stds = np.std(X, axis=0)
+        n = len(X)
+        # Chronological split: train on first 80%, validate on last 20%
+        val_split = int(n * 0.80)
+        X_train_raw, X_val_raw = X[:val_split], X[val_split:]
+        y_dir_train, y_dir_val = y_direction[:val_split], y_direction[val_split:]
+
+        # Remove dead features (computed on training set only)
+        stds = np.std(X_train_raw, axis=0)
         self._alive_mask = stds > 1e-8
         alive_count = int(self._alive_mask.sum())
-        X_alive = X[:, self._alive_mask]
 
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_alive)
+        X_train = self.scaler.fit_transform(X_train_raw[:, self._alive_mask])
+        X_val = self.scaler.transform(X_val_raw[:, self._alive_mask])
 
-        # Sample weights for direction head (larger gap = higher confidence label)
+        # Sample weights for direction head
         sample_weight = None
+        sw_val = None
         if reward_gap is not None:
-            sample_weight = np.clip(np.abs(reward_gap), 0.1, 5.0)
+            sw_all = np.clip(np.abs(reward_gap), 0.1, 5.0)
+            sample_weight = sw_all[:val_split]
+            sw_val = sw_all[val_split:]
 
         if _ENGINE == "lightgbm":
+            # Regularized params — prevent overfitting with early stopping
             clf_params = dict(
                 n_estimators=n_estimators,
-                max_depth=max_depth,
+                max_depth=min(max_depth, 4),  # cap depth to prevent memorization
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_child_samples=50,
-                colsample_bytree=0.7,
+                min_child_samples=100,  # was 50 — higher = more regularized
+                colsample_bytree=0.5,  # was 0.7 — more feature dropout
+                reg_alpha=0.1,  # L1 regularization
+                reg_lambda=1.0,  # L2 regularization
                 n_jobs=2,
                 verbose=-1,
             )
             reg_params = dict(
                 n_estimators=min(300, n_estimators),
-                max_depth=min(4, max_depth),
+                max_depth=min(3, max_depth),  # shallower for regressors
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_child_samples=50,
+                min_child_samples=100,
+                reg_alpha=0.1,
+                reg_lambda=1.0,
                 n_jobs=2,
                 verbose=-1,
             )
         else:
             clf_params = dict(
                 n_estimators=n_estimators,
-                max_depth=max_depth,
+                max_depth=min(max_depth, 4),
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_samples_leaf=50,
+                min_samples_leaf=100,
                 max_features="sqrt",
                 validation_fraction=0.1,
                 n_iter_no_change=20,
@@ -146,63 +147,154 @@ class TriggerGBT:
             )
             reg_params = dict(
                 n_estimators=min(300, n_estimators),
-                max_depth=min(4, max_depth),
+                max_depth=min(3, max_depth),
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_samples_leaf=50,
+                min_samples_leaf=100,
             )
 
         metrics: dict = {
             "alive_features": alive_count,
             "total_features": int(X.shape[1]),
             "engine": _ENGINE,
+            "train_size": val_split,
+            "val_size": n - val_split,
         }
 
-        # Head 1: Direction classifier (prob_cont, prob_rev, confidence)
+        # Head 1: Direction classifier with early stopping on validation set
         log.info(
-            "Training direction head: %d samples, %d features",
-            len(X_scaled),
+            "Training direction head: %d train / %d val, %d features",
+            val_split,
+            n - val_split,
             alive_count,
         )
         self.direction_model = _Classifier(**clf_params)
-        self.direction_model.fit(X_scaled, y_direction, sample_weight=sample_weight)
-        metrics["direction_trees"] = int(getattr(self.direction_model, "n_estimators_", n_estimators))
-        metrics["direction_accuracy"] = round(self.direction_model.score(X_scaled, y_direction) * 100, 1)
+        fit_kwargs = {"sample_weight": sample_weight}
+        if _ENGINE == "lightgbm":
+            fit_kwargs["eval_set"] = [(X_val, y_dir_val)]
+            fit_kwargs["eval_sample_weight"] = [sw_val] if sw_val is not None else None
+            fit_kwargs["callbacks"] = [
+                __import__("lightgbm").early_stopping(50, verbose=False),
+                __import__("lightgbm").log_evaluation(0),
+            ]
+        self.direction_model.fit(X_train, y_dir_train, **fit_kwargs)
 
-        # Head 2: Expected best/worst R (magnitude of best and worst action reward)
+        # Report BOTH in-sample and out-of-sample accuracy
+        train_acc = round(self.direction_model.score(X_train, y_dir_train) * 100, 1)
+        val_acc = round(self.direction_model.score(X_val, y_dir_val) * 100, 1)
+        best_iter = getattr(self.direction_model, "best_iteration_", n_estimators)
+        metrics["direction_accuracy_train"] = train_acc
+        metrics["direction_accuracy_val"] = val_acc
+        metrics["direction_accuracy"] = val_acc  # report val as the real accuracy
+        metrics["direction_trees"] = int(best_iter)
+        log.info(
+            "Direction head: train=%.1f%% val=%.1f%% (trees=%d, early_stop=%s)",
+            train_acc,
+            val_acc,
+            best_iter,
+            best_iter < n_estimators,
+        )
+
+        # Confidence calibration check on validation set
+        val_probs = self.direction_model.predict_proba(X_val)
+        val_conf = np.maximum(val_probs[:, 0], val_probs[:, 1])
+        val_pred_cont = val_probs[:, 0] > val_probs[:, 1]
+        val_true_cont = y_dir_val == 0
+        for lo, hi in [(0.50, 0.55), (0.55, 0.60), (0.60, 0.70), (0.70, 1.0)]:
+            mask = (val_conf >= lo) & (val_conf < hi)
+            if mask.sum() > 0:
+                bucket_acc = (val_pred_cont[mask] == val_true_cont[mask]).mean() * 100
+                log.info("  conf %.2f-%.2f: %d samples, val_acc=%.1f%%", lo, hi, mask.sum(), bucket_acc)
+
+        # Head 2: Expected best/worst R
         if rewards_cont is not None and rewards_rev is not None:
             best_r = np.maximum(rewards_cont, rewards_rev)
             worst_r = np.minimum(rewards_cont, rewards_rev)
 
             log.info("Training expected_best_r head")
             self.expected_best_r_model = _Regressor(**reg_params)
-            self.expected_best_r_model.fit(X_scaled, best_r)
+            if _ENGINE == "lightgbm":
+                self.expected_best_r_model.fit(
+                    X_train,
+                    best_r[:val_split],
+                    eval_set=[(X_val, best_r[val_split:])],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
+            else:
+                self.expected_best_r_model.fit(X_train, best_r[:val_split])
 
             log.info("Training expected_worst_r head")
             self.expected_worst_r_model = _Regressor(**reg_params)
-            self.expected_worst_r_model.fit(X_scaled, worst_r)
+            if _ENGINE == "lightgbm":
+                self.expected_worst_r_model.fit(
+                    X_train,
+                    worst_r[:val_split],
+                    eval_set=[(X_val, worst_r[val_split:])],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
+            else:
+                self.expected_worst_r_model.fit(X_train, worst_r[:val_split])
 
         # Head 3: Breakeven probability
         if breakeven_reached is not None:
+            be_train = breakeven_reached[:val_split].astype(np.int32)
+            be_val = breakeven_reached[val_split:].astype(np.int32)
             log.info("Training breakeven head")
             self.breakeven_model = _Classifier(**clf_params)
-            self.breakeven_model.fit(X_scaled, breakeven_reached.astype(np.int32))
-            metrics["breakeven_accuracy"] = round(
-                self.breakeven_model.score(X_scaled, breakeven_reached.astype(np.int32)) * 100,
-                1,
-            )
+            if _ENGINE == "lightgbm":
+                self.breakeven_model.fit(
+                    X_train,
+                    be_train,
+                    eval_set=[(X_val, be_val)],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
+            else:
+                self.breakeven_model.fit(X_train, be_train)
+            metrics["breakeven_accuracy"] = round(self.breakeven_model.score(X_val, be_val) * 100, 1)
 
         # Head 4: Predicted levels captured
         if levels_captured is not None:
             log.info("Training levels head")
             self.levels_model = _Regressor(**reg_params)
-            self.levels_model.fit(X_scaled, np.clip(levels_captured, 0, 6))
+            lc_clipped = np.clip(levels_captured, 0, 6)
+            if _ENGINE == "lightgbm":
+                self.levels_model.fit(
+                    X_train,
+                    lc_clipped[:val_split],
+                    eval_set=[(X_val, lc_clipped[val_split:])],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
+            else:
+                self.levels_model.fit(X_train, lc_clipped[:val_split])
 
         # Head 5: Stop distance
         if stop_targets is not None:
             log.info("Training stop head")
             self.stop_model = _Regressor(**reg_params)
-            self.stop_model.fit(X_scaled, stop_targets)
+            if _ENGINE == "lightgbm":
+                self.stop_model.fit(
+                    X_train,
+                    stop_targets[:val_split],
+                    eval_set=[(X_val, stop_targets[val_split:])],
+                    callbacks=[
+                        __import__("lightgbm").early_stopping(50, verbose=False),
+                        __import__("lightgbm").log_evaluation(0),
+                    ],
+                )
+            else:
+                self.stop_model.fit(X_train, stop_targets[:val_split])
 
         return metrics
 
