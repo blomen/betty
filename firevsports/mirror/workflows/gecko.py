@@ -22,6 +22,27 @@ _INIT_PATHS: dict[str, str] = {
     "bethard": "/sv/sports",
 }
 
+# Wallets API base per provider — OBG providers use different API domains
+# Format: cloud-api.{domain} for most, but some use {brand}playground.net
+_WALLETS_BASES: dict[str, list[str]] = {
+    "spelklubben": [
+        "https://cloud-api.spelklubben.se",
+        "https://d-cf.spelklubbenplayground.net",
+    ],
+    "bethard": [
+        "https://cloud-api.bethard.com",
+        "https://d-cf.bethardplayground.net",
+    ],
+}
+
+
+def _wallets_urls(provider_id: str, domain: str) -> list[str]:
+    """Return wallets API URLs to try, in priority order."""
+    bases = _WALLETS_BASES.get(provider_id)
+    if bases:
+        return [f"{base}/wallets" for base in bases]
+    return [f"https://cloud-api.{domain}/wallets"]
+
 
 class GeckoWorkflow(ProviderWorkflow):
     platform = "gecko_v2"
@@ -29,34 +50,67 @@ class GeckoWorkflow(ProviderWorkflow):
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         super().__init__(provider_id, domain, mode)
 
-    def _wallets_url(self) -> str:
-        return f"https://cloud-api.{self.domain}/wallets"
-
     # ------------------------------------------------------------------
     # Login / balance
     # ------------------------------------------------------------------
 
+    async def _fetch_wallets(self, page: Page) -> dict | None:
+        """Try wallets API URLs until one works."""
+        for url in _wallets_urls(self.provider_id, self.domain):
+            result = await self._evaluate_api(page, url)
+            if result and "__error" not in result:
+                return result
+        return None
+
     async def check_login(self, page: Page) -> bool:
         """Check login via Gecko wallets API — must have actual balance data."""
-        result = await self._evaluate_api(page, self._wallets_url())
-        if result is None or "__error" in (result or {}):
+        result = await self._fetch_wallets(page)
+        if result is None:
             return False
         try:
-            float(result["Balances"]["SEK"]["Real"]["Balance"])
-            return True
+            # Try SEK first (Swedish providers), then any currency
+            for currency in ("SEK", "EUR", "USD"):
+                try:
+                    float(result["Balances"][currency]["Real"]["Balance"])
+                    return True
+                except (KeyError, TypeError, ValueError):
+                    continue
+            # Try first available currency
+            balances = result.get("Balances", {})
+            if isinstance(balances, dict):
+                for _currency, wallet in balances.items():
+                    if isinstance(wallet, dict) and "Real" in wallet:
+                        float(wallet["Real"]["Balance"])
+                        return True
         except (KeyError, TypeError, ValueError):
-            return False
+            pass
+        return False
 
     async def sync_balance(self, page: Page) -> float:
-        """Read balance from Gecko wallets API — Balances.SEK.Real.Balance."""
-        result = await self._evaluate_api(page, self._wallets_url())
-        if result is None or "__error" in (result or {}):
+        """Read balance from Gecko wallets API."""
+        result = await self._fetch_wallets(page)
+        if result is None:
             return -1
         try:
-            return float(result["Balances"]["SEK"]["Real"]["Balance"])
+            # Try SEK first, then any currency
+            for currency in ("SEK", "EUR", "USD"):
+                try:
+                    return float(result["Balances"][currency]["Real"]["Balance"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            # Try first available currency
+            balances = result.get("Balances", {})
+            if isinstance(balances, dict):
+                for _currency, wallet in balances.items():
+                    if isinstance(wallet, dict) and "Real" in wallet:
+                        try:
+                            return float(wallet["Real"]["Balance"])
+                        except (TypeError, ValueError):
+                            continue
         except (KeyError, TypeError, ValueError):
-            logger.warning(f"[{self.provider_id}] Unexpected wallets response: {result}")
-            return -1
+            pass
+        logger.warning(f"[{self.provider_id}] Unexpected wallets response: {result}")
+        return -1
 
     # ------------------------------------------------------------------
     # History / navigation / placement — interceptor handles
@@ -69,12 +123,13 @@ class GeckoWorkflow(ProviderWorkflow):
     async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate to Gecko V2 event page using gecko_event_id from provider_meta.
 
-        URL pattern: {site_url}{init_path}?eventId=f-{gecko_event_id}
+        URL pattern: {site_url}{init_path}?eventId={gecko_event_id}
         Verified: the main site passes eventId to the sportsbook iframe automatically.
         """
         gecko_eid = getattr(bet, "gecko_event_id", "")
         if not gecko_eid:
-            return True  # No ID — user navigates manually
+            logger.info(f"[{self.provider_id}] No gecko_event_id — user navigates manually")
+            return True
 
         if f"eventId={gecko_eid}" in (page.url or "") or f"eventId=f-{gecko_eid}" in (page.url or ""):
             return True  # Already on this event
