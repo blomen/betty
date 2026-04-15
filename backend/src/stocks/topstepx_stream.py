@@ -135,6 +135,7 @@ class TopstepXStream:
                     await subscribe_fn(ws)
 
                     # Listen
+                    msg_count = 0
                     async for raw in ws:
                         for part in raw.split(_SEPARATOR):
                             part = part.strip()
@@ -147,8 +148,21 @@ class TopstepXStream:
                             msg_type = msg.get("type")
                             if msg_type == 1:  # Invocation
                                 msg_handler(msg.get("target", ""), msg.get("arguments", []))
+                            elif msg_type == 3:  # Completion (subscription response)
+                                inv_id = msg.get("invocationId", "?")
+                                error = msg.get("error")
+                                if error:
+                                    log.warning(
+                                        "TopstepXStream [%s]: subscription error (id=%s): %s", name, inv_id, error
+                                    )
+                                else:
+                                    log.info("TopstepXStream [%s]: subscription confirmed (id=%s)", name, inv_id)
                             elif msg_type == 6:  # Ping
                                 await ws.send(json.dumps({"type": 6}) + _SEPARATOR)
+                            # Log first 5 raw messages per hub for diagnostics
+                            msg_count += 1
+                            if msg_count <= 5 and name == "user":
+                                log.info("TopstepXStream [user] raw msg #%d: %s", msg_count, part[:300])
 
             except asyncio.CancelledError:
                 return
@@ -177,10 +191,11 @@ class TopstepXStream:
 
     async def _user_subs(self, ws) -> None:
         """Subscribe to user event channels."""
-        for target in ("SubscribeToPositions", "SubscribeToOrders", "SubscribeToUserTrades"):
+        for i, target in enumerate(("SubscribeToPositions", "SubscribeToOrders", "SubscribeToUserTrades")):
             await ws.send(
                 json.dumps(
                     {
+                        "invocationId": str(i + 1),
                         "type": 1,
                         "target": target,
                         "arguments": [self._account_id],
