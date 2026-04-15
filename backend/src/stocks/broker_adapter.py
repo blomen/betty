@@ -251,9 +251,11 @@ class TopstepXBrokerAdapter:
             stop_dist_ticks = abs(stop_price - price) / 0.25
         else:
             stop_dist_ticks = DEFAULT_STOP_TICKS
-        stop_dist_ticks = max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks))
+        stop_dist_ticks = int(max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks)))
         offset = stop_dist_ticks * 0.25
         stop_price = price - offset if is_long else price + offset
+        # Round to NQ tick increment (0.25 points)
+        stop_price = round(stop_price * 4) / 4
 
         # Risk-based sizing: risk = % of max drawdown
         risk_pct = RISK_PCT_HIGH if confidence > 0.70 else RISK_PCT_BASE

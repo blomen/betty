@@ -1030,12 +1030,13 @@ class LevelMonitor:
                         else:
                             sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
-                        stop_ticks = max(15, min(40, result.get("stop_ticks") or 25))
+                        stop_ticks = int(max(15, min(40, result.get("stop_ticks") or 25)))
                         stop_offset = stop_ticks * 0.25
+                        raw_stop = price - stop_offset if is_long else price + stop_offset
                         broker_signal = {
                             "action": sig_action,
                             "price": price,
-                            "stop_price": price - stop_offset if is_long else price + stop_offset,
+                            "stop_price": round(raw_stop * 4) / 4,  # NQ tick = 0.25
                             "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
                             "confidence": confidence,
                         }
@@ -1105,9 +1106,11 @@ class LevelMonitor:
                     is_long = "long" in sig_action
 
                     stop_ticks = result.get("stop_ticks") or 25  # default 25 ticks if None
-                    stop_ticks = max(15, min(40, stop_ticks))  # clamp to 15-40 range
+                    stop_ticks = int(max(15, min(40, stop_ticks)))  # clamp + round to whole ticks
                     stop_offset = stop_ticks * 0.25  # NQ tick = 0.25 points
                     stop_price = price - stop_offset if is_long else price + stop_offset
+                    # Round to NQ tick increment (0.25)
+                    stop_price = round(stop_price * 4) / 4
 
                     logger.info(
                         "Dispatching signal: %s conf=%.3f price=%.2f stop=%.2f (%d ticks) zone=%.2f",
