@@ -168,7 +168,9 @@ class PlayLoop:
         self._provider_ids = provider_ids
         logger.info(
             f"[PlayCoordinator] Loaded {self._queue_total} bets into "
-            f"{len(self._cluster_queues)} cluster queues for providers {provider_ids}"
+            f"{len(self._cluster_queues)} cluster queues for providers {provider_ids} "
+            f"| batch_size={len(batch)} filtered={len(filtered)} "
+            f"| queues={{{', '.join(f'{k}: {len(v)}' for k, v in self._cluster_queues.items())}}}"
         )
 
     def start(self) -> None:
