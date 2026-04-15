@@ -191,7 +191,7 @@ class TopstepXStream:
 
     async def _user_subs(self, ws) -> None:
         """Subscribe to user event channels."""
-        for i, target in enumerate(("SubscribeToPositions", "SubscribeToOrders", "SubscribeToUserTrades")):
+        for i, target in enumerate(("SubscribePositions", "SubscribeOrders", "SubscribeTrades")):
             await ws.send(
                 json.dumps(
                     {
