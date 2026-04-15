@@ -1,13 +1,14 @@
 """Live episode collector — captures zone touches and measures outcomes.
 
 Hooks into LevelMonitor zone touches. For each touch:
-1. Builds 276-dim observation at touch time
+1. Builds 276-dim observation + 144-dim trigger observation at touch time
 2. Schedules outcome measurement after OUTCOME_DELAY seconds
 3. Queries market_trades for price movement to compute reward
-4. Appends completed episode to the live episode buffer on disk
+4. Computes full trailing reward with structural levels (same as replay engine)
+5. Appends completed episode to the live episode buffer on disk
 
-Episodes accumulate in data/rl/live_episodes/. The training scheduler
-merges these with historical episodes for periodic retraining.
+Episodes accumulate in data/rl/live_episodes/. The training pipeline
+merges these with historical episodes for retraining.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
@@ -26,8 +27,12 @@ from .config import COST_PER_TRADE_TICKS, STOP_TICKS, TICK_SIZE
 from .data.episode_builder import (
     _BE_TRIGGER_R,
     _count_levels_captured,
+    _measure_mae,
     _measure_movement,
     _score_velocity,
+)
+from .data.episode_builder import (
+    _TRAIL_BONUS_PER_LEVEL as TRAIL_BONUS,
 )
 from .data.episode_builder import (
     _WINDOWS as OUTCOME_WINDOWS,
@@ -50,10 +55,13 @@ class PendingEpisode:
     """Episode waiting for outcome measurement."""
 
     observation: np.ndarray
+    trigger_observation: np.ndarray | None
     touch_price: float
     touch_ts: float  # epoch seconds
     approach_direction: str
     level_type: str
+    levels_above: list[float] = field(default_factory=list)
+    levels_below: list[float] = field(default_factory=list)
     zone_members: int = 1
 
 
@@ -62,6 +70,7 @@ class CompletedEpisode:
     """Episode with measured outcome."""
 
     observation: np.ndarray
+    trigger_observation: np.ndarray | None
     reward_continuation: float
     reward_reversal: float
     optimal_stop_ticks: float
@@ -98,7 +107,67 @@ class LiveEpisodeCollector:
         # Load existing count
         self._chunk_idx = len(list(self._live_dir.glob("obs_*.npy")))
 
+        # Lazy-load models for trigger observation building
+        self._narrative_gbt = None
+        self._trigger_gbt = None
+        self._models_loaded = False
+
         log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d", self._live_dir, self._chunk_idx)
+
+    def _ensure_models(self) -> None:
+        """Lazy-load GBT models for trigger observation building."""
+        if self._models_loaded:
+            return
+        self._models_loaded = True
+        try:
+            from .agent.narrative_gbt import NarrativeGBT
+            from .agent.trigger_gbt import TriggerGBT
+
+            models_dir = self._data_dir / "models"
+            ngbt_path = models_dir / "narrative_gbt_latest.joblib"
+            tgbt_path = models_dir / "trigger_gbt_latest.joblib"
+
+            if ngbt_path.exists():
+                self._narrative_gbt = NarrativeGBT.load(ngbt_path)
+                log.info("Live collector loaded NarrativeGBT from %s", ngbt_path)
+            if tgbt_path.exists():
+                self._trigger_gbt = TriggerGBT.load(tgbt_path)
+                log.info("Live collector loaded TriggerGBT from %s", tgbt_path)
+        except Exception:
+            log.warning("Failed to load GBT models for live trigger obs", exc_info=True)
+
+    def _build_trigger_obs(self, rl_state: dict, base_obs: np.ndarray) -> np.ndarray | None:
+        """Build 144-dim trigger observation matching the training pipeline."""
+        self._ensure_models()
+        if self._narrative_gbt is None or self._trigger_gbt is None:
+            return None
+        try:
+            from .features.narrative_features import extract_narrative_features
+            from .features.trigger_features import build_trigger_observation
+
+            narrative = extract_narrative_features(rl_state)
+
+            # Narrative features for setup prob prediction (same slice as cli.py)
+            narr_feats = np.concatenate(
+                [
+                    base_obs[52:116],  # structure (64)
+                    base_obs[116:154],  # tpo (38)
+                    base_obs[178:189],  # macro (11)
+                    base_obs[208:228],  # amt (20)
+                    base_obs[228:248],  # amt_dynamics (20)
+                ]
+            )
+            setup_probs = self._narrative_gbt.predict_setup_probs(narr_feats)
+
+            # Two-pass trigger construction (same as LiveInferenceV5)
+            trigger_no_gbt = build_trigger_observation(narrative, setup_probs, rl_state, base_obs)
+            gbt_forecast = self._trigger_gbt.predict_full(trigger_no_gbt)
+            trigger_obs = build_trigger_observation(narrative, setup_probs, rl_state, base_obs, gbt_forecast)
+
+            return trigger_obs
+        except Exception:
+            log.debug("Failed to build trigger obs for live episode", exc_info=True)
+            return None
 
     def on_zone_touch(
         self, rl_state: dict, price: float, approach: str, level_type: str, zone_members: int = 1
@@ -109,21 +178,34 @@ class LiveEpisodeCollector:
         """
         try:
             obs = build_observation(rl_state)
+            trigger_obs = self._build_trigger_obs(rl_state, obs)
+
+            # Extract structural levels for trailing reward
+            all_levels = rl_state.get("all_levels", [])
+            levels_above = sorted([lv for lv in all_levels if lv > price + TICK_SIZE])
+            levels_below = sorted([lv for lv in all_levels if lv < price - TICK_SIZE], reverse=True)
+
             pending = PendingEpisode(
                 observation=obs,
+                trigger_observation=trigger_obs,
                 touch_price=price,
                 touch_ts=time.time(),
                 approach_direction=approach,
                 level_type=level_type,
+                levels_above=levels_above[:6],  # max 6 levels each direction
+                levels_below=levels_below[:6],
                 zone_members=zone_members,
             )
             with self._lock:
                 self._pending.append(pending)
             log.info(
-                "Queued live episode: %s @ %.2f (%s) [pending=%d]",
+                "Queued live episode: %s @ %.2f (%s) levels_up=%d levels_dn=%d trig=%s [pending=%d]",
                 level_type,
                 price,
                 approach,
+                len(levels_above),
+                len(levels_below),
+                "yes" if trigger_obs is not None else "no",
                 len(self._pending),
             )
         except Exception:
@@ -184,12 +266,13 @@ class LiveEpisodeCollector:
                         self._completed.append(completed)
                         self.total_collected += 1
                     log.info(
-                        "Episode measured: %.2f rc=%.3f rr=%.3f [collected=%d, buffered=%d]",
+                        "Episode measured: %.2f rc=%.3f rr=%.3f levels=%d be=%s [collected=%d]",
                         ep.touch_price,
                         completed.reward_continuation,
                         completed.reward_reversal,
+                        completed.levels_captured,
+                        completed.breakeven_reached,
                         self.total_collected,
-                        len(self._completed),
                     )
 
                     if len(self._completed) >= FLUSH_INTERVAL:
@@ -199,19 +282,15 @@ class LiveEpisodeCollector:
                 log.warning("Failed to measure outcome for episode at %.2f", ep.touch_price, exc_info=True)
 
     def _compute_reward(self, ep: PendingEpisode, trades: list[dict]) -> CompletedEpisode | None:
-        """Compute reward using the same velocity+stop lifecycle as episode_builder.
+        """Compute reward with full trailing bonus — same fidelity as replay engine.
 
-        Converts raw trades to tick-dict format and calls _measure_movement /
-        _score_velocity directly so that live and historical episodes have the
-        same label distribution.  Trail bonus is omitted (no structural levels
-        available) but the base velocity score + cost matches exactly.
+        Uses structural levels for trailing reward, stop lifecycle with breakeven,
+        and MAE-based optimal stop. Matches episode_builder.build_episode() exactly.
         """
         touch_price = ep.touch_price
-        touch_ts_epoch = ep.touch_ts
-        touch_ts_dt = datetime.fromtimestamp(touch_ts_epoch, tz=timezone.utc)
+        touch_ts_dt = datetime.fromtimestamp(ep.touch_ts, tz=timezone.utc)
 
-        # Convert trades to the format expected by episode_builder helpers
-        # Ensure timestamps are tz-aware (DB may return naive datetimes)
+        # Convert trades to tick-dict format
         tick_dicts = []
         for t in trades:
             ts = t["ts"]
@@ -221,53 +300,83 @@ class LiveEpisodeCollector:
         if not tick_dicts:
             return None
 
-        # Velocity score for each direction (same logic as episode_builder)
-        long_profiles = _measure_movement(touch_price, tick_dicts, 0, len(tick_dicts), touch_ts_dt, direction=+1)
-        short_profiles = _measure_movement(touch_price, tick_dicts, 0, len(tick_dicts), touch_ts_dt, direction=-1)
+        start, end = 0, len(tick_dicts)
+
+        # Velocity score for each direction
+        long_profiles = _measure_movement(touch_price, tick_dicts, start, end, touch_ts_dt, direction=+1)
+        short_profiles = _measure_movement(touch_price, tick_dicts, start, end, touch_ts_dt, direction=-1)
         base_long = _score_velocity(long_profiles)
         base_short = _score_velocity(short_profiles)
 
-        # BE lifecycle (empty levels_ahead — just stop/breakeven, no trail)
-        cont_dir = 1 if ep.approach_direction == "up" else -1
-        _, be_cont = _count_levels_captured(
+        # Trailing reward with structural levels (same as episode_builder)
+        long_levels, be_long = _count_levels_captured(
             touch_price,
             tick_dicts,
-            0,
-            len(tick_dicts),
+            start,
+            end,
             touch_ts_dt,
-            direction=cont_dir,
-            levels_ahead=[],
+            direction=+1,
+            levels_ahead=ep.levels_above,
+            be_trigger_r=_BE_TRIGGER_R,
+        )
+        short_levels, be_short = _count_levels_captured(
+            touch_price,
+            tick_dicts,
+            start,
+            end,
+            touch_ts_dt,
+            direction=-1,
+            levels_ahead=ep.levels_below,
             be_trigger_r=_BE_TRIGGER_R,
         )
 
-        if ep.approach_direction == "up":
-            reward_cont = base_long - COST_R
-            reward_rev = base_short - COST_R
-        else:
-            reward_cont = base_short - COST_R
-            reward_rev = base_long - COST_R
+        reward_long = base_long + long_levels * TRAIL_BONUS - COST_R
+        reward_short = base_short + short_levels * TRAIL_BONUS - COST_R
 
-        # Stop estimate from MAE (same conservative method as episode_builder)
-        prices = [float(t["price"]) for t in trades[:200]]
-        if prices:
-            if ep.approach_direction == "up":
-                mae = max(0.0, touch_price - min(prices)) / TICK_SIZE
-            else:
-                mae = max(0.0, max(prices) - touch_price) / TICK_SIZE
+        # Map to continuation/reversal based on approach direction
+        if ep.approach_direction == "up":
+            reward_cont = reward_long
+            reward_rev = reward_short
+            be_cont = be_long
+            levels_best = long_levels if reward_long >= reward_short else short_levels
+        else:
+            reward_cont = reward_short
+            reward_rev = reward_long
+            be_cont = be_short
+            levels_best = short_levels if reward_short >= reward_long else long_levels
+
+        # Optimal stop from MAE (same as episode_builder)
+        best_action_dir = 1 if reward_cont >= reward_rev else -1
+        if ep.approach_direction == "down":
+            best_action_dir = -best_action_dir
+        long_mae = _measure_mae(touch_price, tick_dicts, start, end, touch_ts_dt, direction=+1)
+        short_mae = _measure_mae(touch_price, tick_dicts, start, end, touch_ts_dt, direction=-1)
+        mae = long_mae if best_action_dir == 1 else short_mae
+
+        # Structural stop: nearest level behind + 2 tick buffer
+        if best_action_dir == 1:
+            behind = ep.levels_below
+        else:
+            behind = ep.levels_above
+        if behind:
+            struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0
+            stop_ticks = float(max(6.0, min(40.0, struct_dist)))
+        elif mae > 0:
             stop_ticks = float(np.clip(mae + 2.0, 6.0, 40.0))
         else:
             stop_ticks = float(STOP_TICKS)
 
         return CompletedEpisode(
             observation=ep.observation,
+            trigger_observation=ep.trigger_observation,
             reward_continuation=float(np.clip(reward_cont, -2.0, 4.0)),
             reward_reversal=float(np.clip(reward_rev, -2.0, 4.0)),
             optimal_stop_ticks=stop_ticks,
             level_type=ep.level_type,
             touch_price=touch_price,
             touch_ts=ep.touch_ts,
-            breakeven_reached=be_cont,  # actual BE lifecycle, not threshold heuristic
-            levels_captured=0,  # no structural levels available in live path
+            breakeven_reached=be_cont,
+            levels_captured=levels_best,
         )
 
     def _flush_to_disk(self) -> None:
@@ -295,9 +404,21 @@ class LiveEpisodeCollector:
         np.save(self._live_dir / f"be_{idx:04d}.npy", be)
         np.save(self._live_dir / f"lc_{idx:04d}.npy", lc)
 
+        # Save trigger observations if available
+        has_trig = all(e.trigger_observation is not None for e in episodes)
+        if has_trig:
+            trig = np.array([e.trigger_observation for e in episodes], dtype=np.float32)
+            np.save(self._live_dir / f"trig_{idx:04d}.npy", trig)
+
         self._chunk_idx += 1
         self.total_flushed += len(episodes)
-        log.info("Flushed %d live episodes to chunk %04d (total: %d)", len(episodes), idx, self.total_flushed)
+        log.info(
+            "Flushed %d live episodes to chunk %04d (trig=%s, total: %d)",
+            len(episodes),
+            idx,
+            "yes" if has_trig else "no",
+            self.total_flushed,
+        )
 
     def flush(self) -> None:
         """Force flush any buffered episodes to disk."""

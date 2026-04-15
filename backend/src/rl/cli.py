@@ -1225,14 +1225,30 @@ def merge_live() -> None:
 
     # Load live episodes
     live_obs = np.concatenate([np.load(f) for f in live_chunks])
-    live_rc = np.concatenate([np.load(live_dir / f"rc_{f.stem.split('_')[1]}.npy") for f in live_chunks])
-    live_rr = np.concatenate([np.load(live_dir / f"rr_{f.stem.split('_')[1]}.npy") for f in live_chunks])
-    live_lt = np.concatenate(
-        [np.load(live_dir / f"lt_{f.stem.split('_')[1]}.npy", allow_pickle=True) for f in live_chunks]
+    chunk_ids = [f.stem.split("_")[1] for f in live_chunks]
+    live_rc = np.concatenate([np.load(live_dir / f"rc_{cid}.npy") for cid in chunk_ids])
+    live_rr = np.concatenate([np.load(live_dir / f"rr_{cid}.npy") for cid in chunk_ids])
+    live_lt = np.concatenate([np.load(live_dir / f"lt_{cid}.npy", allow_pickle=True) for cid in chunk_ids])
+    live_st = np.concatenate([np.load(live_dir / f"st_{cid}.npy") for cid in chunk_ids])
+    # Optional arrays (breakeven, levels_captured, trigger_obs)
+    live_be = (
+        np.concatenate([np.load(live_dir / f"be_{cid}.npy") for cid in chunk_ids])
+        if all((live_dir / f"be_{cid}.npy").exists() for cid in chunk_ids)
+        else None
     )
-    live_st = np.concatenate([np.load(live_dir / f"st_{f.stem.split('_')[1]}.npy") for f in live_chunks])
+    live_lc = (
+        np.concatenate([np.load(live_dir / f"lc_{cid}.npy") for cid in chunk_ids])
+        if all((live_dir / f"lc_{cid}.npy").exists() for cid in chunk_ids)
+        else None
+    )
+    live_trig_chunks = [live_dir / f"trig_{cid}.npy" for cid in chunk_ids]
+    live_trig = (
+        np.concatenate([np.load(f) for f in live_trig_chunks]) if all(f.exists() for f in live_trig_chunks) else None
+    )
 
-    typer.echo(f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim)")
+    typer.echo(
+        f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim, trig={'yes' if live_trig is not None else 'no'})"
+    )
 
     # Load existing main episodes
     main_obs_path = episodes_dir / "observations.npy"
@@ -1242,6 +1258,12 @@ def merge_live() -> None:
         main_rr = np.load(episodes_dir / "rewards_rev.npy")
         main_lt = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
         main_st = np.load(episodes_dir / "stop_targets.npy")
+        main_be_path = episodes_dir / "breakeven_reached.npy"
+        main_be = np.load(main_be_path) if main_be_path.exists() else None
+        main_lc_path = episodes_dir / "levels_captured.npy"
+        main_lc = np.load(main_lc_path) if main_lc_path.exists() else None
+        main_trig_path = episodes_dir / "trigger_observations.npy"
+        main_trig = np.load(main_trig_path) if main_trig_path.exists() else None
         typer.echo(f"Main episodes: {len(main_obs)} ({main_obs.shape[1]}-dim)")
 
         # Check dim compatibility
@@ -1251,20 +1273,45 @@ def merge_live() -> None:
             )
             raise typer.Exit(1)
 
-        # Concatenate
+        # Concatenate core arrays
         merged_obs = np.concatenate([main_obs, live_obs])
         merged_rc = np.concatenate([main_rc, live_rc])
         merged_rr = np.concatenate([main_rr, live_rr])
         merged_lt = np.concatenate([main_lt, live_lt])
         merged_st = np.concatenate([main_st, live_st])
+
+        # Merge optional arrays (pad with defaults if one side is missing)
+        n_main, n_live = len(main_obs), len(live_obs)
+        if live_be is not None or main_be is not None:
+            m_be = main_be if main_be is not None else np.zeros(n_main, dtype=np.float32)
+            l_be = live_be if live_be is not None else np.zeros(n_live, dtype=np.float32)
+            np.save(episodes_dir / "breakeven_reached.npy", np.concatenate([m_be, l_be]))
+        if live_lc is not None or main_lc is not None:
+            m_lc = main_lc if main_lc is not None else np.zeros(n_main, dtype=np.float32)
+            l_lc = live_lc if live_lc is not None else np.zeros(n_live, dtype=np.float32)
+            np.save(episodes_dir / "levels_captured.npy", np.concatenate([m_lc, l_lc]))
+        if live_trig is not None and main_trig is not None:
+            if live_trig.shape[1] == main_trig.shape[1]:
+                np.save(episodes_dir / "trigger_observations.npy", np.concatenate([main_trig, live_trig]))
+                typer.echo(f"Trigger observations merged: {n_main + n_live} × {main_trig.shape[1]}-dim")
+            else:
+                typer.echo(
+                    f"Trigger dim mismatch: main={main_trig.shape[1]} vs live={live_trig.shape[1]}, skipping trigger merge."
+                )
     else:
         merged_obs = live_obs
         merged_rc = live_rc
         merged_rr = live_rr
         merged_lt = live_lt
         merged_st = live_st
+        if live_be is not None:
+            np.save(episodes_dir / "breakeven_reached.npy", live_be)
+        if live_lc is not None:
+            np.save(episodes_dir / "levels_captured.npy", live_lc)
+        if live_trig is not None:
+            np.save(episodes_dir / "trigger_observations.npy", live_trig)
 
-    # Save merged
+    # Save merged core arrays
     np.save(episodes_dir / "observations.npy", merged_obs)
     np.save(episodes_dir / "rewards_cont.npy", merged_rc)
     np.save(episodes_dir / "rewards_rev.npy", merged_rr)
