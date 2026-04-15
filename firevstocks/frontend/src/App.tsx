@@ -91,7 +91,7 @@ export default function App() {
         )}
       </div>
       <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden p-2">
-        {activeTab === 'chart' && (
+        <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'chart' ? '' : 'hidden'}`}>
           <ChartPage
             lastTick={lastTick}
             session={session}
@@ -100,14 +100,16 @@ export default function App() {
             fills={ws.fills}
             exits={ws.exits}
           />
-        )}
-        {activeTab === 'dqn' && (
-          <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} dqnInference={ws.dqnInference} />
-        )}
-        {activeTab === 'bankroll' && (
+        </div>
+        <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'dqn' ? '' : 'hidden'}`}>
+          <DQNPage signals={ws.signals} zones={ws.zones} lastPrice={ws.lastPrice} dqnInference={ws.dqnInference} dqnInferenceAt={ws.dqnInferenceAt} />
+        </div>
+        <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'bankroll' ? '' : 'hidden'}`}>
           <BankrollPage positions={ws.positions} lastPrice={ws.lastPrice} quote={ws.quote} />
-        )}
-        {activeTab === 'stats' && <StatsPage />}
+        </div>
+        <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'stats' ? '' : 'hidden'}`}>
+          <StatsPage />
+        </div>
       </div>
     </div>
     </ErrorBoundary>

@@ -9,12 +9,20 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
+from .base import HistoryEntry, PlacementResult, PositionEntry, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
+
+
+def _g(obj, key, default=None):
+    """Get attribute from object or dict — handles both play loop dicts and BetProxy objects."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
 
 # REST balance endpoint paths per Kambi operator
 _BALANCE_ENDPOINTS: dict[str, str] = {
@@ -52,7 +60,7 @@ class KambiWorkflow(ProviderWorkflow):
     def _balance_rest_url(self) -> str | None:
         path = _BALANCE_ENDPOINTS.get(self.provider_id)
         if path and self.domain:
-            return f"https://www.{self.domain}{path}"
+            return f"https://{self.domain}{path}"
         return None
 
     def _balance_graphql_url(self) -> str | None:
@@ -136,7 +144,7 @@ class KambiWorkflow(ProviderWorkflow):
     _BET_HISTORY_BASE = "sportsbook-feeds/betting-api/api/v1/betting/bet-history"
 
     def _ksp_history_url(self, status: str, size: int = 50) -> str:
-        return f"https://www.{self.domain}/{self._BET_HISTORY_BASE}?betStatus={status}&page=0&size={size}"
+        return f"https://{self.domain}/{self._BET_HISTORY_BASE}?betStatus={status}&page=0&size={size}"
 
     def _parse_ksp_bets(self, data: dict, status_hint: str) -> list[HistoryEntry]:
         """Parse KSP bet-history API response into HistoryEntry list."""
@@ -244,7 +252,7 @@ class KambiWorkflow(ProviderWorkflow):
             return all_entries
 
         # Fallback: navigate to history page (pending_loop SSR path picks it up)
-        hist_url = f"https://www.{self.domain}/betting/sports/bethistory"
+        hist_url = f"https://{self.domain}/betting/sports/bethistory"
         if "/bethistory" not in (page.url or ""):
             try:
                 await page.goto(hist_url, wait_until="networkidle", timeout=15000)
@@ -281,139 +289,198 @@ class KambiWorkflow(ProviderWorkflow):
     # Navigation
     # ------------------------------------------------------------------
 
+    # Provider-specific betting page paths (some use /betting, others /betting/sports)
+    _BETTING_PATHS: dict[str, str] = {
+        "leovegas": "/sv-se/betting",
+        "unibet": "/betting/sports",
+    }
+
+    def _betting_url(self) -> str:
+        path = self._BETTING_PATHS.get(self.provider_id, "/betting/sports")
+        return f"https://{self.domain}{path}"
+
     async def navigate_to_event(self, page: Page, bet) -> bool:
-        """Navigate to Kambi event page using kambi_event_id from provider_meta."""
-        kambi_eid = getattr(bet, "kambi_event_id", "") or getattr(bet, "altenar_event_id", "")
+        """Navigate to Kambi event via widget navigateClient API.
+
+        First ensures we're on the betting page, then uses the Kambi widget
+        JS API to navigate to the event. This works across all white-labels
+        regardless of their URL structure.
+        """
+        kambi_eid = _g(bet, "kambi_event_id", "")
         if not kambi_eid:
-            return True  # No ID — user navigates manually, still counts as success
-        if kambi_eid in (page.url or ""):
-            return True  # Already on the right page
-        url = f"https://www.{self.domain}/betting/sports/event/{kambi_eid}"
+            meta = _g(bet, "provider_meta") or {}
+            kambi_eid = meta.get("event_id", "")
+        if not kambi_eid:
+            logger.warning(f"[{self.provider_id}] No kambi event_id for navigation")
+            return False
+
+        # Check if already on this event (URL or widget state)
+        current = page.url or ""
+        if kambi_eid in current:
+            return True
+
+        # Ensure we're on the betting page first
+        betting_url = self._betting_url()
+        if "/betting" not in current:
+            try:
+                await page.goto(betting_url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] Could not navigate to betting page: {e}")
+                return False
+
+        # Use Kambi widget API to navigate to the event
+        try:
+            result = await page.evaluate(f"""
+                async () => {{
+                    // Try navigateClient (standard Kambi widget API)
+                    if (window.KambiWidget && window.KambiWidget.navigateClient) {{
+                        window.KambiWidget.navigateClient('#/event/{kambi_eid}');
+                        return 'kambi_widget';
+                    }}
+                    // Try hash navigation (some sites use hash-based routing)
+                    if (window.location.hash !== undefined) {{
+                        window.location.hash = '#/event/{kambi_eid}';
+                        return 'hash';
+                    }}
+                    return null;
+                }}
+            """)
+            if result:
+                await asyncio.sleep(2)
+                logger.info(f"[{self.provider_id}] Navigated to event {kambi_eid} via {result}")
+                return True
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Widget navigation failed: {e}")
+
+        # Fallback: try direct URL (works on unibet-style sites)
+        url = f"{betting_url}/event/{kambi_eid}"
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(1)
-            logger.info(f"[{self.provider_id}] Navigated to event {kambi_eid}")
+            logger.info(f"[{self.provider_id}] Navigated to event {kambi_eid} via direct URL")
             return True
         except Exception as e:
             logger.warning(f"[{self.provider_id}] navigate_to_event failed: {e}")
             return False
 
     # ------------------------------------------------------------------
-    # Placement — two-phase: prep (auto-fill) then confirm (click submit)
+    # Live price — read odds from Kambi betslip DOM after outcome is selected
+    # ------------------------------------------------------------------
+
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds from Kambi betslip DOM.
+
+        Uses .mod-KambiBC-betslip-outcome__odds selector (confirmed working).
+        Returns (live_odds, live_edge) or (None, None).
+        """
+        fair_odds = _g(bet, "fair_odds", None)
+        try:
+            odds_text = await page.evaluate(
+                "() => document.querySelector('.mod-KambiBC-betslip-outcome__odds')?.textContent?.trim()"
+            )
+            if not odds_text:
+                return None, None
+            live_odds = float(odds_text.replace(",", "."))
+            if live_odds <= 1:
+                return None, None
+            edge = None
+            if fair_odds and fair_odds > 1:
+                edge = round((live_odds / fair_odds - 1) * 100, 1)
+            logger.info(
+                f"[{self.provider_id}] Live: {_g(bet, 'display_home', '?')} v "
+                f"{_g(bet, 'display_away', '?')} {_g(bet, 'outcome', '')} "
+                f"@ {live_odds:.2f} (fair {fair_odds or 0:.2f}) edge={edge}%"
+            )
+            return live_odds, edge
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] check_live_price failed: {e}")
+            return None, None
+
+    # ------------------------------------------------------------------
+    # Placement — semi-auto: navigate + auto-select outcome, user confirms
     #
     # Discovery (2026-04-14, Unibet/Kambi):
     #   - Add outcome:  window.isolatedBetslip.addOutcomeIds([outcomeId])
     #   - Show betslip: window.isolatedBetslip.showBetslip()
-    #   - Stake input:  input.mod-KambiBC-js-stake-input  (main frame DOM, not iframe)
-    #   - Place button: button.mod-KambiBC-betslip__place-bet-btn
-    #   - KambiWidget.api is EMPTY — isolatedBetslip is the correct API
+    #   - User fills stake and clicks Place Bet manually
+    #   - Placement detected via network interception (placebet/coupons)
     # ------------------------------------------------------------------
 
-    _STAKE_SELECTOR = "input.mod-KambiBC-js-stake-input"
-    _PLACE_SELECTOR = "button.mod-KambiBC-betslip__place-bet-btn"
-
     async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Auto-select outcome + fill stake via Kambi isolatedBetslip API.
+        """Auto-select outcome via Kambi isolatedBetslip API.
 
-        Calls addOutcomeIds([outcomeId]) to add the bet to the betslip, then
-        fills the stake input. The betslip renders in the main frame DOM.
+        Calls addOutcomeIds([outcomeId]) to add the bet to the betslip.
+        User fills stake and clicks Place Bet manually (semi-auto).
         """
-        bet_id = getattr(bet, "bet_id", 0) or 0
-        target_odds = getattr(bet, "odds", None)
-        outcome_id = getattr(bet, "kambi_outcome_id", "")
+        bet_id = _g(bet, "bet_id", 0) or 0
+        target_odds = _g(bet, "odds", None)
+        outcome_id = _g(bet, "kambi_outcome_id", "")
+        if not outcome_id:
+            meta = _g(bet, "provider_meta") or {}
+            outcome_id = meta.get("outcome_id", "")
 
         if not outcome_id:
-            logger.warning(f"[{self.provider_id}] prep_betslip: no kambi_outcome_id — manual placement")
+            logger.info(
+                f"[{self.provider_id}] Event page ready (no auto-select) — "
+                f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
+                f"{_g(bet, 'outcome', '')} @ {target_odds}"
+            )
             return PlacementResult(
                 status="prepped",
                 bet_id=bet_id,
                 actual_odds=target_odds,
                 actual_stake=stake,
-                reason="no_outcome_id_manual",
+                reason="manual_placement",
             )
 
-        # 1. Add outcome to betslip via Kambi JS API
+        # Add outcome to betslip via Kambi JS API
         try:
-            await page.evaluate(f"""
-                () => {{
+            result = await page.evaluate(f"""
+                async () => {{
                     const ib = window.isolatedBetslip;
-                    if (ib) {{
-                        ib.addOutcomeIds([{int(outcome_id)}]);
-                        ib.showBetslip();
+                    if (!ib) {{
+                        await new Promise(r => setTimeout(r, 3000));
                     }}
+                    if (!window.isolatedBetslip) return false;
+                    window.isolatedBetslip.addOutcomeIds([{int(outcome_id)}]);
+                    window.isolatedBetslip.showBetslip();
+                    return true;
                 }}
             """)
-            logger.info(
-                f"[{self.provider_id}] addOutcomeIds({outcome_id}) called — "
-                f"{getattr(bet, 'display_home', '?')} v {getattr(bet, 'display_away', '?')} "
-                f"{getattr(bet, 'outcome', '')} @ {target_odds}"
-            )
+            if result:
+                logger.info(
+                    f"[{self.provider_id}] addOutcomeIds({outcome_id}) — "
+                    f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
+                    f"{_g(bet, 'outcome', '')} @ {target_odds}"
+                )
+            else:
+                logger.warning(f"[{self.provider_id}] isolatedBetslip not available")
         except Exception as e:
             logger.warning(f"[{self.provider_id}] addOutcomeIds failed: {e}")
-            return PlacementResult(status="failed", bet_id=bet_id, reason=f"add_outcome_failed: {e}")
 
-        # 2. Wait for stake input to appear in DOM
-        try:
-            await page.wait_for_selector(self._STAKE_SELECTOR, timeout=10000)
-        except Exception:
-            logger.warning(f"[{self.provider_id}] prep_betslip: stake input not found after addOutcomeIds")
-            return PlacementResult(status="failed", bet_id=bet_id, reason="stake_input_not_found")
-
-        # 3. Fill stake — triple-click to clear existing value then fill
-        stake_str = str(int(stake)) if stake == int(stake) else f"{stake:.2f}"
-        try:
-            stake_el = page.locator(self._STAKE_SELECTOR).first
-            await stake_el.click(click_count=3, timeout=5000)
-            await stake_el.fill(stake_str, timeout=5000)
-            # Dispatch input/change so Kambi JS re-validates the value
-            await page.evaluate("""
-                () => {
-                    const inp = document.querySelector('input.mod-KambiBC-js-stake-input');
-                    if (inp) {
-                        inp.dispatchEvent(new Event('input', {bubbles: true}));
-                        inp.dispatchEvent(new Event('change', {bubbles: true}));
-                    }
-                }
-            """)
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] prep_betslip: stake fill failed: {e}")
-            return PlacementResult(status="failed", bet_id=bet_id, reason=f"stake_fill_failed: {e}")
-
-        logger.info(f"[{self.provider_id}] prep_betslip done — stake={stake_str}, outcomeId={outcome_id}")
         return PlacementResult(
             status="prepped",
             bet_id=bet_id,
             actual_odds=target_odds,
             actual_stake=stake,
-            reason="kambi_selected",
+            reason="kambi_selected" if outcome_id else "manual_placement",
         )
 
     async def confirm_bet(self, page: Page) -> PlacementResult:
-        """Click the Place Bet button and wait for betslip to clear."""
-        try:
-            # Wait for button to be enabled (odds may need a moment to validate)
-            await page.wait_for_selector(f"{self._PLACE_SELECTOR}:not([disabled])", timeout=8000)
-            btn = page.locator(self._PLACE_SELECTOR).first
-            await btn.click(timeout=5000)
-            logger.info(f"[{self.provider_id}] confirm_bet: clicked place button")
-
-            # Wait up to 4s for betslip outcome to be removed (placement success indicator)
-            await asyncio.sleep(2)
-            outcome_gone = await page.evaluate(
-                "() => !document.querySelector('.mod-KambiBC-betslip-outcome__close-btn')"
-            )
-            if outcome_gone:
-                return PlacementResult(status="placed", bet_id=0, reason="betslip_cleared")
-
-            return PlacementResult(status="placed", bet_id=0, reason="clicked_place")
-
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] confirm_bet failed: {e}")
-            return PlacementResult(status="manual", bet_id=0, reason=f"confirm_failed: {e}")
+        """User places bet manually on the Kambi betslip."""
+        logger.info(f"[{self.provider_id}] confirm_bet: user places on site")
+        return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
 
     async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Full two-phase placement (prep + confirm)."""
+        """Semi-auto: prep (auto-select) + manual confirm."""
         prep = await self.prep_betslip(page, bet, stake)
         if prep.status != "prepped":
             return prep
-        return await self.confirm_bet(page)
+        return PlacementResult(
+            status="manual",
+            bet_id=prep.bet_id,
+            actual_odds=prep.actual_odds,
+            actual_stake=prep.actual_stake,
+            reason="auto_selected_user_confirms",
+        )

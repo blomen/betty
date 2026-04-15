@@ -184,8 +184,10 @@ case "$action" in
         # Wait for RL training before swapping container
         wait_for_rl_training
         docker compose up -d "$service"
-        echo ">>> Cleaning up old images..."
+        echo ">>> Cleaning up old images and build cache..."
         docker image prune -f
+        # Keep only recent build cache (current rebuild just populated fresh layers)
+        docker builder prune -f --filter "until=24h" 2>/dev/null || true
         record_deploy_time
         if ! wait_for_health "$service"; then
             echo "DEPLOY FAILED: $service is unhealthy after rebuild"

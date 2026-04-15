@@ -14,6 +14,7 @@ export interface DashboardState {
   positions: Position[]
   quote: Quote | null
   dqnInference: DQNInferenceEvent | null
+  dqnInferenceAt: number | null  // Date.now() when last inference arrived
 }
 
 export interface TickEvent {
@@ -40,6 +41,7 @@ export function useDashboardWS() {
     positions: [],
     quote: null,
     dqnInference: null,
+    dqnInferenceAt: null,
   })
 
   const [lastTick, setLastTick] = useState<TickEvent | null>(null)
@@ -104,7 +106,7 @@ export function useDashboardWS() {
           }))
           break
         case 'dqn_inference':
-          setState(s => ({ ...s, dqnInference: msg as DQNInferenceEvent }))
+          setState(s => ({ ...s, dqnInference: msg as DQNInferenceEvent, dqnInferenceAt: Date.now() }))
           break
         case 'fill':
           setState(s => ({

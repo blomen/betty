@@ -248,6 +248,21 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         except Exception as e:
             return {"error": str(e)}
 
+    @router.get("/browser/debug-eval/{provider_id}")
+    async def debug_eval(provider_id: str, js: str = "document.title"):
+        """Debug: evaluate JS on provider tab."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab"}
+        try:
+            result = await page.evaluate(js)
+            return {"result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
     @router.get("/browser/screenshot/{provider_id}")
     async def browser_screenshot(provider_id: str):
         """Take screenshot of provider tab and check for balance text."""

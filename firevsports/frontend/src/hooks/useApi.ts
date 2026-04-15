@@ -42,4 +42,6 @@ export const api = {
     apiFetch<any>('/mirror/play/skip', { method: 'POST', body: JSON.stringify({ provider_id: providerId }) }),
   stopPlayLoop: () => apiFetch<any>('/mirror/play/stop', { method: 'POST' }),
   getPlayStatus: () => apiFetch<any>('/mirror/play/status'),
+  settleBatch: (batch: { bet_id: number; result: string }[]) =>
+    apiFetch<any>('/api/opportunities/play/settle-batch', { method: 'POST', body: JSON.stringify(batch) }),
 };

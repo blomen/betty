@@ -14,17 +14,12 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
-from .recorder import NetworkRecorder
 from .event_router import EventRouter
+from .recorder import NetworkRecorder
 
 logger = logging.getLogger(__name__)
-
-
-
-
-
 
 
 class BetInterceptor:
@@ -51,9 +46,16 @@ class BetInterceptor:
     _WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
 
     # Bet history / settlement patterns (Altenar + Gecko + generic)
-    _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets",
-                             "widgetBetHistory", "coupon-history",
-                             "arcadia.pinnacle.se/0.1/bets")
+    _BET_HISTORY_KEYWORDS = (
+        "bethistory",
+        "bet-history",
+        "betHistory",
+        "mybets",
+        "my-bets",
+        "widgetBetHistory",
+        "coupon-history",
+        "arcadia.pinnacle.se/0.1/bets",
+    )
     # Gecko V2 bet history — same URL as placement but GET method (exclude /count)
     _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns
@@ -63,35 +65,59 @@ class BetInterceptor:
 
     # Polymarket-specific URL patterns
     _POLYMARKET_FINANCIAL_PATTERNS = (
-        "data-api.polymarket.com/value",    # Portfolio value (USDC)
+        "data-api.polymarket.com/value",  # Portfolio value (USDC)
         "clob.polymarket.com/data/orders",  # Open orders
         "widget.swapped.com/api/v1/order",  # Deposit via Swapped
     )
 
     # Notification / preference settings patterns
     _NOTIFICATION_KEYWORDS = (
-        "preferences", "notifications", "communication", "consent",
-        "marketing", "subscriptions", "gdpr", "contact-settings",
+        "preferences",
+        "notifications",
+        "communication",
+        "consent",
+        "marketing",
+        "subscriptions",
+        "gdpr",
+        "contact-settings",
     )
     _NOTIFICATION_METHODS = {"PUT", "POST", "PATCH"}
 
     # Known provider domains → provider ID
     _PROVIDER_DOMAINS = {
-        "campobet.se": "campobet", "quickcasino.se": "quickcasino",
-        "betinia.se": "betinia", "swiper.se": "swiper", "lodur.se": "lodur",
-        "dbet.com": "dbet", "spelklubben.se": "spelklubben",
-        "betsson.com": "betsson", "betsafe.com": "betsafe",
-        "nordicbet.com": "nordicbet", "bethard.com": "bethard",
-        "unibet.se": "unibet", "leovegas.com": "leovegas",
-        "expekt.se": "expekt", "888sport.se": "888sport",
-        "speedybet.com": "speedybet", "x3000.com": "x3000",
-        "goldenbull.se": "goldenbull", "1x2.se": "1x2",
-        "comeon.com": "comeon", "hajper.com": "hajper",
-        "lyllocasino.com": "lyllo", "snabbare.com": "snabbare",
-        "10bet.se": "10bet", "mrgreen.se": "mrgreen",
-        "betmgm.se": "betmgm", "vbet.se": "vbet",
-        "interwetten.se": "interwetten", "coolbet.com": "coolbet",
-        "tipwin.se": "tipwin", "pinnacle.com": "pinnacle", "pinnacle.se": "pinnacle",
+        "campobet.se": "campobet",
+        "quickcasino.se": "quickcasino",
+        "betinia.se": "betinia",
+        "swiper.se": "swiper",
+        "lodur.se": "lodur",
+        "dbet.com": "dbet",
+        "spelklubben.se": "spelklubben",
+        "betsson.com": "betsson",
+        "betsafe.com": "betsafe",
+        "nordicbet.com": "nordicbet",
+        "bethard.com": "bethard",
+        "unibet.se": "unibet",
+        "leovegas.se": "leovegas",
+        "leovegas.com": "leovegas",
+        "expekt.se": "expekt",
+        "888sport.se": "888sport",
+        "speedybet.com": "speedybet",
+        "x3000.com": "x3000",
+        "goldenbull.se": "goldenbull",
+        "1x2.se": "1x2",
+        "comeon.com": "comeon",
+        "hajper.com": "hajper",
+        "lyllocasino.com": "lyllo",
+        "snabbare.com": "snabbare",
+        "10bet.se": "10bet",
+        "mrgreen.se": "mrgreen",
+        "betmgm.se": "betmgm",
+        "vbet.se": "vbet",
+        "interwetten.se": "interwetten",
+        "coolbet.com": "coolbet",
+        "tipwin.se": "tipwin",
+        "pinnacle.com": "pinnacle",
+        "pinnacle.se": "pinnacle",
         "polymarket.com": "polymarket",
     }
 
@@ -121,6 +147,7 @@ class BetInterceptor:
         self.event_router = EventRouter()
 
         from ..paths import get_data_dir
+
         self.user_data_dir = get_data_dir() / "mirror_profiles" / "default"
 
     async def start(self):
@@ -143,15 +170,20 @@ class BetInterceptor:
         # Chromium in headless mode (Docker / server).
         import shutil
         from pathlib import Path
+
         has_chrome = (
             shutil.which("google-chrome")
             or Path("/opt/google/chrome/chrome").exists()
-            or (sys.platform == "win32" and any(
-                Path(p).exists() for p in [
-                    Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
-                    Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
-                ]
-            ))
+            or (
+                sys.platform == "win32"
+                and any(
+                    Path(p).exists()
+                    for p in [
+                        Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
+                        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+                    ]
+                )
+            )
         )
 
         launch_kwargs: dict = {
@@ -230,6 +262,7 @@ class BetInterceptor:
                 return
             try:
                 import json as _json
+
                 data = _json.loads(text)
                 event_type = data.pop("__firev", "unknown")
                 self.recorder.record_dom_event(event_type, data)
@@ -265,6 +298,7 @@ class BetInterceptor:
         """Derive provider_id from a request URL using the known domain map."""
         try:
             from urllib.parse import urlparse
+
             hostname = urlparse(url).hostname or ""
             clean = hostname.removeprefix("www.")
             for domain, provider_id in self._PROVIDER_DOMAINS.items():
@@ -289,12 +323,14 @@ class BetInterceptor:
                     body = await response.text()
                 except Exception:
                     body = ""
-                asyncio.ensure_future(self.event_router.route(
-                    provider_id=self._detect_provider_from_url(url) or "unknown",
-                    category=category,
-                    url=url,
-                    response_body=body,
-                ))
+                asyncio.ensure_future(
+                    self.event_router.route(
+                        provider_id=self._detect_provider_from_url(url) or "unknown",
+                        category=category,
+                        url=url,
+                        response_body=body,
+                    )
+                )
 
             method = response.request.method
 
@@ -317,7 +353,12 @@ class BetInterceptor:
             # Intercept bet history / settlement responses
             _is_bet_history = any(kw in url for kw in self._BET_HISTORY_KEYWORDS)
             # Gecko V2: GET to coupons endpoint = bet history (POST = placement)
-            if not _is_bet_history and method == "GET" and "/count" not in url and any(kw in url for kw in self._GECKO_COUPON_HISTORY_PATTERNS):
+            if (
+                not _is_bet_history
+                and method == "GET"
+                and "/count" not in url
+                and any(kw in url for kw in self._GECKO_COUPON_HISTORY_PATTERNS)
+            ):
                 _is_bet_history = True
             if self.on_bet_history and _is_bet_history:
                 try:
@@ -419,17 +460,25 @@ class BetInterceptor:
                 if not isinstance(payload, str):
                     return
                 # Kambi WS frames are JSON — look for coupon/bet placement responses
-                if not any(kw in payload for kw in ('"couponId"', '"placeBetResult"', '"couponStatus"',
-                                                      '"couponResponse"', '"betPlaced"', '"PLACED"')):
+                if not any(
+                    kw in payload
+                    for kw in (
+                        '"couponId"',
+                        '"placeBetResult"',
+                        '"couponStatus"',
+                        '"couponResponse"',
+                        '"betPlaced"',
+                        '"PLACED"',
+                    )
+                ):
                     return
 
                 logger.info(f"[mirror] WS bet frame received ({len(payload)} bytes)")
 
                 if self.on_bet_response:
                     import asyncio
-                    asyncio.ensure_future(
-                        self.on_bet_response(url, None, payload, None)
-                    )
+
+                    asyncio.ensure_future(self.on_bet_response(url, None, payload, None))
             except Exception as e:
                 logger.debug(f"[mirror] WS frame error: {e}")
 
@@ -447,9 +496,8 @@ class BetInterceptor:
                 # The response frame handler above will capture the confirmation
                 if self.on_bet_response:
                     import asyncio
-                    asyncio.ensure_future(
-                        self.on_bet_response(url, payload, "{}", None)
-                    )
+
+                    asyncio.ensure_future(self.on_bet_response(url, payload, "{}", None))
             except Exception as e:
                 logger.debug(f"[mirror] WS frame send error: {e}")
 
@@ -471,11 +519,13 @@ class BetInterceptor:
             # URL callback (every navigation — for history tab detection etc.)
             if self.on_page_navigated:
                 from urllib.parse import urlparse
+
                 hostname = urlparse(url).hostname or ""
                 clean = hostname.removeprefix("www.")
                 for domain, provider_id in self._PROVIDER_DOMAINS.items():
                     if clean == domain or clean.endswith("." + domain):
                         import asyncio
+
                         asyncio.ensure_future(self.on_page_navigated(provider_id, url))
                         return
         except Exception as e:
@@ -490,6 +540,7 @@ class BetInterceptor:
             if not url or url.startswith("about:") or url.startswith("chrome:"):
                 return
             from urllib.parse import urlparse
+
             hostname = urlparse(url).hostname or ""
             # Match against known domains (strip www.)
             clean = hostname.removeprefix("www.").removeprefix("d-cf.").removeprefix("cloud-api.")
@@ -500,6 +551,7 @@ class BetInterceptor:
                         logger.info(f"[mirror] Provider detected: {provider_id} ({url[:80]})")
                         if self.on_provider_detected:
                             import asyncio
+
                             asyncio.ensure_future(self.on_provider_detected(provider_id))
                     return
         except Exception as e:

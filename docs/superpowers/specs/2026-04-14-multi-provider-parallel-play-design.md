@@ -1,4 +1,4 @@
-# Multi-Provider Parallel Play
+ # Multi-Provider Parallel Play
 
 **Date**: 2026-04-14
 **Scope**: FirevSports Play tab — enable opening and playing multiple providers simultaneously

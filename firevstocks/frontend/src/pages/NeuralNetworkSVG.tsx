@@ -7,6 +7,7 @@ import type { DQNInferenceEvent } from '@/types'
 
 interface Props {
   dqnInference: DQNInferenceEvent | null
+  staleFactor: number  // 0 = fresh, 1 = fully stale
 }
 
 const W = 1000
@@ -52,7 +53,7 @@ function dotColor(segColor: string, value: number, opacity: number): string {
   return `rgba(${red},${green},${blue},${opacity})`
 }
 
-export function NeuralNetworkSVG({ dqnInference }: Props) {
+export function NeuralNetworkSVG({ dqnInference, staleFactor }: Props) {
   // Separate flags: inputs always real; activations need DQN loaded
   const hasRealInputs = !!dqnInference?.inputs?.length
   const hasRealActivations = !!dqnInference?.activations?.layer1?.length
@@ -147,7 +148,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
     >
       {/* Input segment dots */}
       {DQN_SEGMENTS.map((seg, si) => (
-        <g key={seg.name}>
+        <g key={seg.name} opacity={1 - staleFactor * 0.8}>
           {segDots[si].map((dot, di) => (
             <circle
               key={di}
@@ -173,7 +174,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
 
       {/* Hidden layer dots */}
       {HIDDEN_LAYERS.map((size, li) => (
-        <g key={`hidden-${li}`}>
+        <g key={`hidden-${li}`} opacity={hasRealActivations ? 1 - staleFactor * 0.8 : 1}>
           <text
             x={HIDDEN_XS[li]}
             y={12}

@@ -58,6 +58,7 @@ export default function PlayPage() {
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
+  const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -153,7 +154,13 @@ export default function PlayPage() {
         setLoopStatus(data.pending_count > 0 ? `${data.pending_count} pending — all open` : null)
       }
     }
-    if (type === 'settlements_confirmed') { setToasts([]); setSettleWaiting(false); setLoopStatus(null); load() }
+    if (type === 'settlements_detected') {
+      const setts = data.settlements ?? []
+      const map: Record<number, { result: string; payout: number; match_method: string }> = {}
+      for (const s of setts) map[s.bet_id] = { result: s.result, payout: s.payout ?? 0, match_method: s.match_method ?? '' }
+      setDetectedSettlements(prev => ({ ...prev, ...map }))
+    }
+    if (type === 'settlements_confirmed') { setToasts([]); setSettleWaiting(false); setDetectedSettlements({}); setLoopStatus(null); load() }
     if (type === 'provider_skipped') setLoopStatus(`Skipped ${data.provider_id}: ${data.reason}`)
     if (type === 'bet_ready') {
       const bet = data.bet ?? data
@@ -240,6 +247,29 @@ export default function PlayPage() {
   }
   const handleToastReject = (toast: SettleToast) => {
     setToasts(prev => prev.filter(t => t.id !== toast.id))
+  }
+
+  const handleConfirmSettlements = async () => {
+    const batch = Object.entries(detectedSettlements).map(([betId, s]) => ({
+      bet_id: Number(betId),
+      result: s.result,
+    }))
+    if (batch.length === 0) return
+    try {
+      await api.settleBatch(batch)
+      setDetectedSettlements({})
+      load()
+    } catch (e: any) {
+      console.error('settle failed', e)
+    }
+  }
+
+  const handleDismissSettlement = (betId: number) => {
+    setDetectedSettlements(prev => {
+      const next = { ...prev }
+      delete next[betId]
+      return next
+    })
   }
 
   useEffect(() => {
@@ -478,23 +508,58 @@ export default function PlayPage() {
                   (pendingByProvider[pid] ?? []).map((p: any) => ({ ...p, _pid: pid }))
                 )
                 if (clusterPending.length === 0) return null
+                const clusterSettled = clusterPending.filter((p: any) => detectedSettlements[p.bet_id ?? p.id])
+                const clusterPnl = clusterSettled.reduce((s: number, p: any) => {
+                  const det = detectedSettlements[p.bet_id ?? p.id]
+                  return s + ((det?.payout ?? 0) - (p.stake ?? 0))
+                }, 0)
                 return (
                   <div className="border-b border-zinc-800 bg-amber-900/5">
                     <div className="flex items-center gap-2 px-3 py-0.5 border-b border-zinc-800/30">
                       <span className="text-[10px] text-amber-500 uppercase font-medium">Pending</span>
                       <span className="text-[10px] text-zinc-600">{clusterPending.length} bets · {Math.round(clusterPending.reduce((s: number, p: any) => s + (p.stake ?? 0), 0))} kr</span>
+                      {clusterSettled.length > 0 && (
+                        <>
+                          <span className={`text-[10px] font-mono font-semibold ${clusterPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {clusterPnl >= 0 ? '+' : ''}{Math.round(clusterPnl)} kr
+                          </span>
+                          <button onClick={handleConfirmSettlements}
+                            className="ml-auto px-2 py-0.5 text-[10px] font-semibold bg-green-900/40 text-green-400 border border-green-700/50 rounded hover:bg-green-900/60 transition-colors">
+                            Confirm {clusterSettled.length}
+                          </button>
+                        </>
+                      )}
                     </div>
                     {clusterPending.map((p: any) => {
+                      const betId = p.bet_id ?? p.id
+                      const det = detectedSettlements[betId]
                       const eventLabel = p.home_team && p.away_team
                         ? `${p.home_team} v ${p.away_team}`
                         : p.event_id?.split(':').slice(1, 3).join(' v ') ?? p.event_id
+                      const profit = det ? (det.payout - (p.stake ?? 0)) : 0
                       return (
-                        <div key={`pending-${p.id}`} className="flex items-center gap-2 px-3 pl-6 py-0.5 border-b border-zinc-800/20 text-xs">
+                        <div key={`pending-${p.id}`} className={`flex items-center gap-2 px-3 pl-6 py-0.5 border-b border-zinc-800/20 text-xs ${
+                          det ? (det.result === 'won' ? 'bg-green-900/10' : det.result === 'lost' ? 'bg-red-900/10' : 'bg-zinc-800/20') : ''
+                        }`}>
                           <span className="text-[10px] text-zinc-600 uppercase w-[80px]">{p._pid}</span>
-                          <span className="text-amber-300/70 truncate flex-1">{eventLabel}</span>
+                          <span className={`truncate flex-1 ${det ? 'text-zinc-400' : 'text-amber-300/70'}`}>{eventLabel}</span>
                           <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
                           <span className="text-zinc-500 font-mono text-[10px]">@ {(p.odds ?? 0).toFixed(2)}</span>
                           <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(p.stake ?? 0)} kr</span>
+                          {det && (
+                            <>
+                              <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
+                                det.result === 'won' ? 'text-green-400 bg-green-900/30' :
+                                det.result === 'lost' ? 'text-red-400 bg-red-900/30' :
+                                'text-zinc-400 bg-zinc-800'
+                              }`}>{det.result}</span>
+                              <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
+                              </span>
+                              <button onClick={() => handleDismissSettlement(betId)}
+                                className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
+                            </>
+                          )}
                         </div>
                       )
                     })}

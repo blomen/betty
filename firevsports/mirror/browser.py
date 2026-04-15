@@ -53,6 +53,7 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "comeon.com": "comeon",
     "unibet.se": "unibet",
     "leovegas.se": "leovegas",
+    "leovegas.com": "leovegas",
     "expekt.se": "expekt",
     "spelklubben.com": "spelklubben",
     "betsson.se": "betsson",
@@ -138,6 +139,18 @@ class MirrorBrowser:
         # Persistent context = real Chrome profile on disk.
         # Cookies, localStorage, service workers all survive restarts.
         _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Disable Chrome session restore — prevent old tabs from reopening
+        prefs_file = _USER_DATA_DIR / "Default" / "Preferences"
+        if prefs_file.exists():
+            try:
+                prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
+                prefs.setdefault("session", {})["restore_on_startup"] = 5  # 5 = open blank
+                prefs.get("profile", {}).pop("exit_type", None)  # clear "Crashed" flag
+                prefs_file.write_text(json.dumps(prefs), encoding="utf-8")
+            except Exception:
+                pass
+
         print(f"[browser] Using profile: {_USER_DATA_DIR}", flush=True)
 
         self._context = await self._playwright.chromium.launch_persistent_context(
@@ -150,21 +163,27 @@ class MirrorBrowser:
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--start-maximized",
+                "--disable-session-crashed-bubble",
+                "--no-restore-state",
             ],
+            ignore_default_args=["--enable-automation"],
         )
 
-        # Close dead tabs from previous sessions (chrome-error, about:blank)
-        # Keep at least one page so the context stays alive
-        dead = [p for p in self._context.pages if "chrome-error" in (p.url or "") or p.url == "about:blank"]
-        alive = [p for p in self._context.pages if p not in dead]
-        if not alive and dead:
-            dead = dead[1:]  # keep one so context doesn't die
-        for page in dead:
+        # Close ALL tabs from previous sessions — only open what user clicks.
+        # Keep one tab (navigated to blank) so the context stays alive.
+        pages = list(self._context.pages)
+        if pages:
+            # Navigate first tab to blank, close the rest
             try:
-                await page.close()
-                print(f"[browser] Closed dead tab: {page.url[:60]}", flush=True)
+                await pages[0].goto("about:blank")
             except Exception:
                 pass
+            for page in pages[1:]:
+                try:
+                    await page.close()
+                    print(f"[browser] Closed old tab: {page.url[:60]}", flush=True)
+                except Exception:
+                    pass
 
         # Attach interception to ALL existing + future pages
         for page in self._context.pages:
@@ -239,7 +258,14 @@ class MirrorBrowser:
     async def open_tab(self, url: str) -> Page:
         if not self._context:
             raise RuntimeError("Browser not started")
-        page = await self._context.new_page()
+        # Reuse an about:blank tab if one exists instead of creating a new one
+        page = None
+        for p in self._context.pages:
+            if p.url in ("about:blank", "chrome://newtab/"):
+                page = p
+                break
+        if page is None:
+            page = await self._context.new_page()
         # Attach interceptor BEFORE navigating so we catch all responses
         self._attach_page(page)
         print(f"[browser] Opening tab: {url}", flush=True)
@@ -546,6 +572,18 @@ class MirrorBrowser:
                     return float(val) if not isinstance(val, dict) else float(val.get("amount", val.get("total", -1)))
                 except (TypeError, ValueError):
                     pass
+        # GraphQL relay: {data: {viewer: {user: {balance: {totalAmount: X}}}}}
+        # Also handles list wrapper: [{data: {viewer: ...}}]
+        relay = body
+        if isinstance(body, list) and body:
+            relay = body[0]
+        if isinstance(relay, dict):
+            try:
+                bal = relay.get("data", {}).get("viewer", {}).get("user", {}).get("balance", {})
+                if isinstance(bal, dict) and "totalAmount" in bal:
+                    return float(bal["totalAmount"])
+            except (TypeError, ValueError, AttributeError):
+                pass
         # Wallets array: [{balance: 123}]
         if "wallets" in body and isinstance(body["wallets"], list) and body["wallets"]:
             try:

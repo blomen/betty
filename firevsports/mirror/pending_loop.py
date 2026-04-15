@@ -244,11 +244,8 @@ class PendingLoop:
             page = await workflow.find_tab(self._browser.context)
 
             if page is None:
-                try:
-                    page = await self._browser.open_tab(workflow.home_url)
-                except Exception:
-                    logger.warning(f"[PendingLoop] could not open tab for {pid}")
-                    return
+                logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
+                return
 
             # 2. Check login
             try:
@@ -304,22 +301,7 @@ class PendingLoop:
             },
         )
 
-        # 6. Auto-record settlements immediately (background loop — no manual confirm needed)
-        await self._record_settlements(pid, settlements)
-        self._broadcaster.publish(
-            "settlements_confirmed",
-            {
-                "provider_id": pid,
-                "settlements": settlements,
-            },
-        )
-
-        # 7. Sync balance
-        try:
-            balance = await workflow.sync_balance(page)
-            await self._post_balance(pid, balance)
-        except Exception:
-            logger.warning(f"[PendingLoop] balance sync failed for {pid}")
+        # 6. Don't auto-record — let the user confirm from the Pending UI
 
     # ------------------------------------------------------------------
     # HTTP helpers

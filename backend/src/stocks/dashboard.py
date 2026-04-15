@@ -122,66 +122,29 @@ def create_dashboard_app() -> FastAPI:
 
     @app.get("/api/candles")
     async def get_candles(interval: str = "5m", days: int = 3, date: str | None = None):
-        """Serve candles from local DB (via SSH tunnel to postgres) — no server API dependency."""
-        import asyncio
+        """Fetch 1m candles from server and aggregate locally (same as old DB path)."""
+        params = {"symbol": "NQ", "interval": "1m", "days": str(days)}
+        if date:
+            params["date"] = date
+        raw = await _proxy("/api/trading/market/candles", params, cache_ttl=15)
+        candles = raw.get("candles", [])
 
-        def _query():
-            from datetime import datetime, timedelta, timezone
+        if interval != "1m" and candles:
+            secs = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600}.get(interval, 300)
+            agg: dict[int, dict] = {}
+            for c in candles:
+                bucket = (c["t"] // secs) * secs
+                if bucket not in agg:
+                    agg[bucket] = {"t": bucket, "o": c["o"], "h": c["h"], "l": c["l"], "c": c["c"], "v": c["v"]}
+                else:
+                    b = agg[bucket]
+                    b["h"] = max(b["h"], c["h"])
+                    b["l"] = min(b["l"], c["l"])
+                    b["c"] = c["c"]
+                    b["v"] += c["v"]
+            candles = sorted(agg.values(), key=lambda x: x["t"])
 
-            from sqlalchemy import create_engine, text
-
-            db_url = os.environ.get(
-                "MARKET_DATABASE_URL",
-                f"postgresql://firev:{os.environ.get('DB_PASSWORD', '')}@127.0.0.1:15432/market",
-            )
-            eng = create_engine(db_url, pool_pre_ping=True)
-            # Use trading days, not calendar days — add buffer for weekends/holidays
-            calendar_days = int(days * 7 / 5) + 2  # convert trading days to calendar days
-            now = datetime.now(timezone.utc)
-            start = now - timedelta(days=calendar_days)
-            # Always query 1m and aggregate — 5m table may be incomplete
-            with eng.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT ts, o, h, l, c, v FROM market_candles "
-                        "WHERE symbol = :sym AND interval = '1m' AND ts >= :start "
-                        "ORDER BY ts"
-                    ),
-                    {"sym": "NQ", "start": start},
-                ).fetchall()
-
-            candles = [
-                {
-                    "t": int(r[0].replace(tzinfo=timezone.utc).timestamp()),
-                    "o": r[1],
-                    "h": r[2],
-                    "l": r[3],
-                    "c": r[4],
-                    "v": r[5],
-                }
-                for r in rows
-            ]
-
-            # Aggregate 1m to target interval
-            if interval != "1m" and candles:
-                secs = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600}.get(interval, 300)
-                agg: dict[int, dict] = {}
-                for c in candles:
-                    bucket = (c["t"] // secs) * secs
-                    if bucket not in agg:
-                        agg[bucket] = {"t": bucket, "o": c["o"], "h": c["h"], "l": c["l"], "c": c["c"], "v": c["v"]}
-                    else:
-                        b = agg[bucket]
-                        b["h"] = max(b["h"], c["h"])
-                        b["l"] = min(b["l"], c["l"])
-                        b["c"] = c["c"]
-                        b["v"] += c["v"]
-                candles = sorted(agg.values(), key=lambda x: x["t"])
-
-            return {"candles": candles}
-
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _query)
+        return {"candles": candles}
 
     @app.get("/api/session")
     async def proxy_session():
@@ -202,105 +165,82 @@ def create_dashboard_app() -> FastAPI:
 
     @app.get("/api/vwap")
     async def local_vwap(days: int = 3, interval: str = "5m"):
-        """Compute developing VWAP from local DB 1m candles, daily reset at 00:00 CET."""
-        import asyncio
+        """Compute developing VWAP from server 1m candles, daily reset at 00:00 CET."""
+        raw = await _proxy(
+            "/api/trading/market/candles", {"symbol": "NQ", "interval": "1m", "days": str(days)}, cache_ttl=15
+        )
+        candles = raw.get("candles", [])
+        if not candles:
+            return {"vwap_days": [], "symbol": "NQ", "count": 0}
 
-        def _compute():
-            import math
-            from datetime import datetime, timedelta, timezone
-            from zoneinfo import ZoneInfo
+        import math
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
 
-            from sqlalchemy import create_engine, text
+        _CET = ZoneInfo("Europe/Stockholm")
 
-            _CET = ZoneInfo("Europe/Stockholm")
-            db_url = os.environ.get("MARKET_DATABASE_URL", "")
-            if not db_url:
-                return {"vwap": [], "symbol": "NQ", "count": 0}
+        series: list[dict] = []
+        cum_pv = cum_vol = cum_pv2 = 0.0
+        current_cet_date = None
 
-            eng = create_engine(db_url, pool_pre_ping=True)
-            calendar_days = int(days * 7 / 5) + 2
-            now = datetime.now(timezone.utc)
-            start = now - timedelta(days=calendar_days)
+        for c in candles:
+            ts_utc = datetime.fromtimestamp(c["t"], tz=timezone.utc)
+            cet_date = ts_utc.astimezone(_CET).date()
 
-            with eng.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT ts, h, l, c, v FROM market_candles "
-                        "WHERE symbol = :sym AND interval = '1m' AND ts >= :start "
-                        "ORDER BY ts"
-                    ),
-                    {"sym": "NQ", "start": start},
-                ).fetchall()
+            if cet_date != current_cet_date:
+                cum_pv = cum_vol = cum_pv2 = 0.0
+                current_cet_date = cet_date
 
-            if not rows:
-                return {"vwap": [], "symbol": "NQ", "count": 0}
+            tp = (c["h"] + c["l"] + c["c"]) / 3
+            vol = c["v"] or 1
+            cum_pv += tp * vol
+            cum_vol += vol
+            cum_pv2 += tp * tp * vol
 
-            series = []
-            cum_pv = cum_vol = cum_pv2 = 0.0
-            current_cet_date = None
+            if cum_vol == 0:
+                continue
 
-            for ts_val, h, l, c, v in rows:
-                if ts_val.tzinfo is None:
-                    ts_val = ts_val.replace(tzinfo=timezone.utc)
-                cet_date = ts_val.astimezone(_CET).date()
+            vwap = cum_pv / cum_vol
+            variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
+            sd = math.sqrt(variance)
 
-                if cet_date != current_cet_date:
-                    cum_pv = cum_vol = cum_pv2 = 0.0
-                    current_cet_date = cet_date
+            series.append(
+                {
+                    "t": c["t"],
+                    "vwap": round(vwap, 2),
+                    "sd1_u": round(vwap + sd, 2),
+                    "sd1_l": round(vwap - sd, 2),
+                    "sd2_u": round(vwap + 2 * sd, 2),
+                    "sd2_l": round(vwap - 2 * sd, 2),
+                    "sd3_u": round(vwap + 3 * sd, 2),
+                    "sd3_l": round(vwap - 3 * sd, 2),
+                }
+            )
 
-                tp = (h + l + c) / 3
-                vol = v or 1
-                cum_pv += tp * vol
-                cum_vol += vol
-                cum_pv2 += tp * tp * vol
-
-                if cum_vol == 0:
-                    continue
-
-                vwap = cum_pv / cum_vol
-                variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
-                sd = math.sqrt(variance)
-
-                series.append(
-                    {
-                        "t": int(ts_val.timestamp()),
-                        "vwap": round(vwap, 2),
-                        "sd1_u": round(vwap + sd, 2),
-                        "sd1_l": round(vwap - sd, 2),
-                        "sd2_u": round(vwap + 2 * sd, 2),
-                        "sd2_l": round(vwap - 2 * sd, 2),
-                        "sd3_u": round(vwap + 3 * sd, 2),
-                        "sd3_l": round(vwap - 3 * sd, 2),
-                    }
-                )
-
-            # Downsample to match chart interval (keep last VWAP per bucket)
-            secs = {"1m": 60, "5m": 300, "15m": 900}.get(interval, 300)
-            if secs > 60 and series:
-                sampled: dict[int, dict] = {}
-                for p in series:
-                    bucket = (p["t"] // secs) * secs
-                    sampled[bucket] = p
-                series = [sampled[k] for k in sorted(sampled)]
-
-            # Split into per-day segments so frontend doesn't connect lines across resets
-            segments: list[list[dict]] = []
-            current_seg: list[dict] = []
-            prev_cet = None
+        # Downsample to chart interval
+        secs = {"1m": 60, "5m": 300, "15m": 900}.get(interval, 300)
+        if secs > 60 and series:
+            sampled: dict[int, dict] = {}
             for p in series:
-                cet = datetime.fromtimestamp(p["t"], tz=timezone.utc).astimezone(_CET).date()
-                if prev_cet and cet != prev_cet and current_seg:
-                    segments.append(current_seg)
-                    current_seg = []
-                current_seg.append(p)
-                prev_cet = cet
-            if current_seg:
+                bucket = (p["t"] // secs) * secs
+                sampled[bucket] = p
+            series = [sampled[k] for k in sorted(sampled)]
+
+        # Split into per-day segments
+        segments: list[list[dict]] = []
+        current_seg: list[dict] = []
+        prev_cet = None
+        for p in series:
+            cet = datetime.fromtimestamp(p["t"], tz=timezone.utc).astimezone(_CET).date()
+            if prev_cet and cet != prev_cet and current_seg:
                 segments.append(current_seg)
+                current_seg = []
+            current_seg.append(p)
+            prev_cet = cet
+        if current_seg:
+            segments.append(current_seg)
 
-            return {"vwap_days": segments, "symbol": "NQ", "count": sum(len(s) for s in segments)}
-
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _compute)
+        return {"vwap_days": segments, "symbol": "NQ", "count": sum(len(s) for s in segments)}
 
     @app.get("/api/session-tpo")
     async def proxy_session_tpo():
@@ -404,40 +344,8 @@ def create_dashboard_app() -> FastAPI:
 
     @app.get("/api/broker-trades")
     async def get_broker_trades(days: int = 30):
-        """Return completed trades from local broker_trades table."""
-        import asyncio
-        from functools import partial
-
-        def _query(days: int):
-            from datetime import datetime, timedelta, timezone
-
-            from sqlalchemy import create_engine, text
-
-            db_url = os.environ.get(
-                "MARKET_DATABASE_URL",
-                f"postgresql://firev:{os.environ.get('DB_PASSWORD', '')}@127.0.0.1:15432/market",
-            )
-            eng = create_engine(db_url, pool_pre_ping=True)
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            with eng.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT id, ts, session_date, symbol, side, size, "
-                        "entry_price, stop_price, exit_price, pnl_dollars, pnl_r, "
-                        "signal_action, signal_confidence, signal_zone, closed_at "
-                        "FROM broker_trades WHERE ts >= :cutoff ORDER BY ts DESC"
-                    ),
-                    {"cutoff": cutoff},
-                ).fetchall()
-            return [dict(r._mapping) for r in rows]
-
-        loop = asyncio.get_event_loop()
-        try:
-            trades = await loop.run_in_executor(None, partial(_query, days))
-            return {"trades": trades}
-        except Exception:
-            log.exception("Failed to query broker_trades")
-            return {"trades": []}
+        """Return completed trades — not yet available via server API."""
+        return {"trades": []}
 
     @app.get("/api/model-status")
     async def get_model_status():
