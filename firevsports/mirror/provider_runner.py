@@ -106,13 +106,87 @@ class ProviderRunner:
         self._skip_event.set()
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
-        if self.state not in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
-            logger.debug(f"[Runner:{self.provider_id}] Bet intercepted but state={self.state} — ignoring")
-            return
-        logger.info(f"[Runner:{self.provider_id}] Bet intercepted (state={self.state}) — auto-recording")
-        self._intercepted_body = body
-        self._intercepted_request_body = request_body
-        self._bet_intercepted_event.set()
+        if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
+            logger.info(f"[Runner:{self.provider_id}] Bet intercepted (state={self.state})")
+            self._intercepted_body = body
+            self._intercepted_request_body = request_body
+            self._bet_intercepted_event.set()
+        else:
+            # Runner busy (settling/login/idle) — record asynchronously so the bet isn't lost
+            logger.warning(f"[Runner:{self.provider_id}] Bet intercepted in state={self.state} — recording async")
+            asyncio.create_task(
+                self._record_async_interception(body, request_body),
+                name=f"async_bet_{self.provider_id}",
+            )
+
+    async def _record_async_interception(self, body: dict, request_body: dict | None) -> None:
+        """Record a bet intercepted while the runner wasn't in READY state."""
+        from .workflows import get_workflow
+
+        pid = self.provider_id
+        workflow = get_workflow(pid)
+
+        # Validate placement succeeded
+        if hasattr(workflow, "parse_placement_status"):
+            try:
+                pstatus = workflow.parse_placement_status(body)
+                if not pstatus["success"]:
+                    logger.info(f"[Runner:{pid}] Async interception was a failed placement — ignoring")
+                    return
+            except Exception:
+                pass
+
+        # Extract details from response
+        provider_bet_id = None
+        actual_odds = None
+        actual_stake = None
+        try:
+            provider_bet_id = workflow.parse_placement_response(body)
+        except Exception:
+            pass
+        if hasattr(workflow, "parse_placement_details"):
+            try:
+                details = workflow.parse_placement_details(body)
+                actual_odds = details.get("actual_odds")
+                actual_stake = details.get("actual_stake")
+            except Exception:
+                pass
+        if not actual_stake and request_body and hasattr(workflow, "parse_placement_request_stake"):
+            try:
+                actual_stake = workflow.parse_placement_request_stake(request_body)
+            except Exception:
+                pass
+
+        # Try to match against current bet context
+        bet = self.current_bet
+        if bet:
+            result = PlacementResult(
+                status="placed",
+                bet_id=provider_bet_id or 0,
+                actual_odds=actual_odds or bet.get("odds", 0),
+                actual_stake=actual_stake or bet.get("stake", 0),
+                reason="async_interception",
+            )
+            await self._record_bet(bet, result)
+            self._block_event_market(bet)
+            self._placed_today[pid] = self._placed_today.get(pid, 0) + 1
+            self._broadcaster.publish(
+                "bet_placed",
+                {
+                    "bet": bet,
+                    "status": "placed",
+                    "actual_odds": result.actual_odds,
+                    "actual_stake": result.actual_stake,
+                    "placed_today": self._placed_today.get(pid, 0),
+                    "daily_cap": DAILY_BET_CAP,
+                },
+            )
+        else:
+            logger.warning(
+                f"[Runner:{pid}] Async interception but no current bet context — "
+                f"bet_id={provider_bet_id} odds={actual_odds} stake={actual_stake}. "
+                f"Will be picked up by settlement sync."
+            )
 
     def get_status(self) -> dict:
         return {
@@ -198,6 +272,21 @@ class ProviderRunner:
 
                 if self._is_blocked(bet):
                     logger.debug(f"[Runner:{pid}] Skipping blocked bet: {bet.get('event_id')} {bet.get('market')}")
+                    continue
+
+                # Skip events where provider already has an open position
+                meta = bet.get("provider_meta") or {}
+                provider_eid = str(meta.get("event_id", ""))
+                if provider_eid and hasattr(workflow, "_open_kambi_eids") and provider_eid in workflow._open_kambi_eids:
+                    logger.info(
+                        f"[Runner:{pid}] Skipping — already have open bet on event {provider_eid} "
+                        f"({bet.get('display_home')} v {bet.get('display_away')})"
+                    )
+                    self._broadcaster.publish(
+                        "bet_skipped",
+                        {"bet": bet, "reason": f"existing open position on event {provider_eid}"},
+                    )
+                    self.stats["skipped"] += 1
                     continue
 
                 self.stats["total"] += 1
@@ -576,10 +665,8 @@ class ProviderRunner:
                 logger.exception(f"[Runner:{provider_id}] DOM settlement failed")
             return
 
-        if not pending_bets:
-            logger.info(f"[Runner:{provider_id}] No pending bets — skipping detect")
-            return
-
+        # Always sync history — provider is source of truth.
+        # DB may have fewer bets (manual bets, bets placed before mirror existed).
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
 
@@ -603,19 +690,30 @@ class ProviderRunner:
                 "payout": e.payout,
                 "provider_bet_id": e.provider_bet_id,
                 "event_name": e.event_name,
+                "market": e.market,
+                "outcome": e.outcome,
             }
             for e in raw_history
         ]
-        settlements = _detect_settlements(pending_bets, history)
 
-        if settlements:
-            logger.info(f"[Runner:{provider_id}] {len(settlements)} settlements detected — broadcasting")
-            self._broadcaster.publish(
-                "settlements_detected",
-                {"provider_id": provider_id, "settlements": settlements},
-            )
-        else:
-            logger.info(f"[Runner:{provider_id}] {len(pending_bets)} pending — all open")
+        # Detect settlements — broadcast to UI for user review, don't auto-record
+        if pending_bets:
+            settlements = _detect_settlements(pending_bets, history)
+            if settlements:
+                logger.info(f"[Runner:{provider_id}] {len(settlements)} settlements detected — broadcasting for review")
+                self._broadcaster.publish(
+                    "settlements_detected",
+                    {
+                        "provider_id": provider_id,
+                        "pending_bets": pending_bets,
+                        "settlements": settlements,
+                    },
+                )
+            else:
+                logger.info(f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open")
+
+        # Record unknown open bets from provider that aren't in DB
+        await self._record_unknown_open_bets(provider_id, history, pending_bets)
 
     @staticmethod
     def _match_polymarket_settlements(pending_bets: list[dict], positions: list[dict]) -> list[dict]:
@@ -716,6 +814,73 @@ class ProviderRunner:
                 known_keys.discard(key)
         return new_count
 
+    async def _record_unknown_open_bets(self, provider_id: str, history: list[dict], db_pending: list[dict]) -> None:
+        """Record open bets from provider history that aren't in the DB.
+
+        Provider is source of truth — DB may be missing bets placed manually
+        or before the mirror existed. Records them so settlement works later.
+        """
+        # Build set of known (odds, stake) pairs from DB pending (including cluster siblings)
+        known_keys: set[tuple[float, float]] = set()
+        for b in db_pending:
+            known_keys.add((round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1)))
+
+        cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
+        if cluster:
+            for sibling in _CLUSTER_MEMBERS.get(cluster, []):
+                if sibling != provider_id:
+                    sib_pending = await self._fetch_pending(sibling)
+                    for b in sib_pending:
+                        known_keys.add(
+                            (round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1))
+                        )
+
+        recorded = 0
+        for entry in history:
+            if entry.get("status") != "pending":
+                continue
+            key = (round(float(entry.get("odds", 0) or 0), 2), round(float(entry.get("stake", 0) or 0), 1))
+            if key in known_keys:
+                known_keys.discard(key)
+                continue
+
+            # Unknown open bet — record to DB
+            payload = {
+                "event_id": "",
+                "provider_id": provider_id,
+                "market": entry.get("market", ""),
+                "outcome": entry.get("outcome", ""),
+                "odds": entry.get("odds", 0),
+                "stake": entry.get("stake", 0),
+                "is_bonus": False,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        f"{self._proxy_url}/api/bets",
+                        json=payload,
+                        headers={_AUTH_HEADER: _AUTH_VALUE},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    logger.info(
+                        f"[Runner:{provider_id}] Recorded unknown open bet: "
+                        f"{entry.get('event_name')} {entry.get('outcome')} "
+                        f"@ {entry.get('odds')} stake={entry.get('stake')} → bet #{data.get('bet_id', '?')}"
+                    )
+                    recorded += 1
+            except Exception:
+                logger.warning(
+                    f"[Runner:{provider_id}] Failed to record unknown bet: "
+                    f"{entry.get('event_name')} @ {entry.get('odds')}"
+                )
+
+        if recorded:
+            self._broadcaster.publish(
+                "unknown_bets_recorded",
+                {"provider_id": provider_id, "count": recorded},
+            )
+
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
         url = f"{self._proxy_url}/api/opportunities/play/pending-bets"
         try:
@@ -778,11 +943,16 @@ class ProviderRunner:
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
         }
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, json=payload, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
-                logger.info(f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}")
-        except Exception:
-            logger.exception(f"[Runner:{self.provider_id}] Failed to record bet")
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json=payload, headers={_AUTH_HEADER: _AUTH_VALUE})
+                    resp.raise_for_status()
+                    data = resp.json()
+                    logger.info(f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}")
+                    return
+            except Exception:
+                logger.exception(f"[Runner:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+        logger.error(f"[Runner:{self.provider_id}] Bet lost after 3 attempts: {payload}")

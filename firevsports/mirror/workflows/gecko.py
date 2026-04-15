@@ -122,17 +122,49 @@ class GeckoWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Fetch bet history from Gecko coupon-history API.
+        """Fetch bet history by navigating to the bet history pages.
 
-        Tries each API base URL. The coupon-history endpoint returns
-        {data: {coupons: [...]}} with couponStatus, stake, totalOdds, etc.
+        Gecko V2 sites require visiting the history page to load coupon data.
+        We visit both Open and Settled views, which triggers coupon-history
+        API calls that the interceptor captures. We also try fetching the
+        API directly as a fallback.
         """
-        for base_url in _api_bases(self.provider_id, self.domain):
-            url = f"{base_url}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50"
+        init_path = _INIT_PATHS.get(self.provider_id, "/sv/odds")
+        base_url = f"https://www.{self.domain}{init_path}"
+        all_entries: list[HistoryEntry] = []
+
+        # Navigate to Open bets page, then Settled
+        for view in ("Open", "Settled"):
+            history_url = f"{base_url}/spelhistorik?betHistoryView={view}"
+            try:
+                await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(3)  # Wait for iframe to load coupon data
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] Failed to navigate to {view} history: {e}")
+
+        # Now try the coupon-history API (session should be warm from page visits)
+        for base in _api_bases(self.provider_id, self.domain):
+            url = f"{base}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50"
             result = await self._evaluate_api(page, url)
             if result and "__error" not in result:
-                return self._parse_coupon_history(result)
-        return []
+                entries = self._parse_coupon_history(result)
+                if entries:
+                    all_entries.extend(entries)
+                    break
+
+        # If API didn't work, try fetching open and settled separately
+        if not all_entries:
+            for status_filter in ("open", "settled"):
+                for base in _api_bases(self.provider_id, self.domain):
+                    url = f"{base}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50&status={status_filter}"
+                    result = await self._evaluate_api(page, url)
+                    if result and "__error" not in result:
+                        entries = self._parse_coupon_history(result)
+                        all_entries.extend(entries)
+                        break
+
+        logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} bets total")
+        return all_entries
 
     def _parse_coupon_history(self, data: dict) -> list[HistoryEntry]:
         """Parse Gecko V2 coupon-history response into HistoryEntry list."""
