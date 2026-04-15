@@ -118,16 +118,16 @@ class TopstepXBrokerAdapter:
                 return None
 
             # Move stop to this zone (lock in profit at the level we just passed)
+            entry = self.tracker.entry_price
+            stop_dist = abs(entry - self.tracker.stop_price) if self.tracker.stop_price else DEFAULT_STOP_TICKS * 0.25
             new_stop = _round_tick(zone_price if zone_price > 0 else price)
 
-            # Validate: stop must be in the right direction
-            if self.tracker.side == "long" and new_stop <= self.tracker.entry_price:
-                # Only trail if we'd be locking in profit (stop above entry)
+            # First trail: lock +0.5R profit (covers $14 fees + $36 profit)
+            if self.tracker.side == "long" and new_stop <= entry:
                 if self._trail_count == 0:
-                    # First trail: move to breakeven (entry price)
-                    new_stop = _round_tick(self.tracker.entry_price + 0.25)
+                    new_stop = _round_tick(entry + stop_dist * 0.5)
                     log.info(
-                        "CONT signal at %.2f — moving stop to breakeven %.2f (trail #%d)",
+                        "CONT signal at %.2f — locking +0.5R profit, stop → %.2f (trail #%d)",
                         price,
                         new_stop,
                         self._trail_count + 1,
@@ -135,11 +135,11 @@ class TopstepXBrokerAdapter:
                 else:
                     log.info("CONT signal at %.2f — stop already above entry, holding", price)
                     return None
-            elif self.tracker.side == "short" and new_stop >= self.tracker.entry_price:
+            elif self.tracker.side == "short" and new_stop >= entry:
                 if self._trail_count == 0:
-                    new_stop = _round_tick(self.tracker.entry_price - 0.25)
+                    new_stop = _round_tick(entry - stop_dist * 0.5)
                     log.info(
-                        "CONT signal at %.2f — moving stop to breakeven %.2f (trail #%d)",
+                        "CONT signal at %.2f — locking +0.5R profit, stop → %.2f (trail #%d)",
                         price,
                         new_stop,
                         self._trail_count + 1,

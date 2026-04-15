@@ -36,10 +36,11 @@ _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
 _MAX_TRAIL_LEVELS = 6  # cap at 6 levels (3.0R max trail bonus)
 _TRAIL_TIMEOUT_S = 1200  # 20 min max to scan for levels (was 10 min — missed slow moves)
 _STOP_TICKS_TRAIL = 20  # initial stop distance in ticks (was 10 — too tight, got stopped before moves)
-_BE_TRIGGER_R = 1.0  # price must move this many R before stop moves to breakeven (was 1.5)
-# 1.0R is more aggressive but matches live trading: once you're 1R in profit,
-# lock it. With 20-tick initial stop the 1R breakeven trigger = 20 ticks = 5 pts,
-# giving enough room for NQ noise while protecting capital.
+_BE_TRIGGER_R = 1.0  # price must move this many R before stop moves to +0.5R
+# At 1R: stop moves to entry + 0.5R (not breakeven). This locks $36 profit
+# per contract after fees ($14 RT cost). No winner turns into a loser.
+# With 20-tick stop: 1R trigger = 20 ticks (5 pts), stop moves to +10 ticks (2.5 pts).
+_BE_LOCK_R = 0.5  # R-multiple to lock when BE trigger fires (profit lock, not just breakeven)
 
 
 @dataclass
@@ -181,23 +182,20 @@ def _count_levels_captured(
     levels_ahead: list[float],
     be_trigger_r: float = _BE_TRIGGER_R,
 ) -> tuple[int, bool]:
-    """Count levels captured with full stop lifecycle: initial → breakeven → trail.
+    """Count levels captured with full stop lifecycle: initial → profit lock → trail.
 
     Stop lifecycle:
     1. INITIAL: stop at `initial_stop_ticks` behind entry
-    2. BREAKEVEN: once price moves be_trigger_r × R in favor, stop moves to entry
+    2. PROFIT LOCK: at be_trigger_r (1R), stop moves to entry + _BE_LOCK_R (0.5R)
+       This locks a small profit ($36 after fees) — no winner turns into a loser
     3. TRAIL: each new level captured → stop moves to that level minus 2 ticks
 
-    Args:
-        be_trigger_r: R-multiple at which stop moves to breakeven. Default is
-            _BE_TRIGGER_R (1.5). Pass different values to sweep optimal threshold.
-
-    Returns (levels_captured, breakeven_reached) tuple.
+    Returns (levels_captured, profit_locked) tuple.
     """
     initial_stop_ticks = _STOP_TICKS_TRAIL
     stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
-    breakeven_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE * be_trigger_r
-    at_breakeven = False
+    profit_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE * be_trigger_r
+    profit_locked = False
     captured = 0
     next_level_idx = 0
 
@@ -210,14 +208,17 @@ def _count_levels_captured(
 
         price = tick["price"]
 
-        # Phase 1→2: Move to breakeven once price reaches 1R in favor
-        if not at_breakeven:
-            if direction == 1 and price >= breakeven_trigger:
-                stop_price = touch_price + direction * 1 * TICK_SIZE  # 1 tick above entry
-                at_breakeven = True
-            elif direction == -1 and price <= breakeven_trigger:
-                stop_price = touch_price - direction * 1 * TICK_SIZE
-                at_breakeven = True
+        # Phase 1→2: Lock profit once price reaches trigger R in favor
+        if not profit_locked:
+            if direction == 1 and price >= profit_trigger:
+                # Move stop to entry + 0.5R (lock small profit, cover fees)
+                lock_distance = initial_stop_ticks * TICK_SIZE * _BE_LOCK_R
+                stop_price = touch_price + direction * lock_distance
+                profit_locked = True
+            elif direction == -1 and price <= profit_trigger:
+                lock_distance = initial_stop_ticks * TICK_SIZE * _BE_LOCK_R
+                stop_price = touch_price + direction * lock_distance
+                profit_locked = True
 
         # Check stop hit
         if direction == 1 and price <= stop_price or direction == -1 and price >= stop_price:
@@ -234,7 +235,7 @@ def _count_levels_captured(
                 if captured >= _MAX_TRAIL_LEVELS:
                     break
 
-    return captured, at_breakeven
+    return captured, profit_locked
 
 
 def _compute_rewards(
