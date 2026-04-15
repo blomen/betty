@@ -495,7 +495,7 @@ class InterwettenRetriever(BrowserRetriever):
                         if spread_market:
                             added_markets.append(spread_market)
                     if detail.get("total"):
-                        total_market = self._parse_total_market(detail["total"])
+                        total_market = self._parse_total_market(detail["total"], event)
                         if total_market:
                             added_markets.append(total_market)
 
@@ -593,6 +593,7 @@ class InterwettenRetriever(BrowserRetriever):
                         break
 
             if point is not None:
+                event_id = str(event.id).replace("interwetten_", "")
                 for o in outcomes:
                     side = o["name"]
                     if side in point_by_side:
@@ -601,10 +602,11 @@ class InterwettenRetriever(BrowserRetriever):
                         o["point"] = -point
                     else:
                         o["point"] = point
+                    o["provider_meta"] = {"event_id": event_id}
                 return {"type": "spread", "outcomes": outcomes}
         return None
 
-    def _parse_total_market(self, raw_market: dict) -> dict | None:
+    def _parse_total_market(self, raw_market: dict, event: "StandardEvent | None" = None) -> dict | None:
         """Parse How many goals / Over/Under market into total format."""
         outcomes = []
         point = None
@@ -648,6 +650,10 @@ class InterwettenRetriever(BrowserRetriever):
                         break
 
             if point is not None:
+                if event is not None:
+                    event_id = str(event.id).replace("interwetten_", "")
+                    for o in outcomes:
+                        o["provider_meta"] = {"event_id": event_id}
                 return {"type": "total", "outcomes": outcomes}
         return None
 
@@ -703,6 +709,8 @@ class InterwettenRetriever(BrowserRetriever):
 
             has_draw = any(o["name"] == "draw" for o in outcomes)
             market_type = "1x2" if has_draw else "moneyline"
+            for o in outcomes:
+                o["provider_meta"] = {"event_id": str(event_id)}
             markets = [{"type": market_type, "outcomes": outcomes}]
 
             return StandardEvent(
