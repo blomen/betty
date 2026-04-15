@@ -525,6 +525,7 @@ async def navigate_to_bet(req: NavigateBetRequest):
     bet.altenar_championship_id = provider_meta.get("championship_id", "")
     bet.kambi_event_id = provider_meta.get("event_id", "")
     bet.kambi_outcome_id = provider_meta.get("outcome_id", "")
+    bet.interwetten_event_id = provider_meta.get("event_id", "")
 
     # Navigate
     navigated = await workflow.navigate_to_event(page, bet)

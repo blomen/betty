@@ -38,6 +38,8 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
     ns.kambi_outcome_id = meta.get("outcome_id", "")
     # Gecko V2 fields — same event_id key in provider_meta, different prefix
     ns.gecko_event_id = meta.get("event_id", "")
+    # Interwetten fields
+    ns.interwetten_event_id = meta.get("event_id", "")
     return ns
 
 
@@ -141,6 +143,8 @@ class PlayLoop:
 
         def _is_funded(b: dict) -> bool:
             pid = b.get("provider_id", "")
+            if pid in UNCAPPED_PROVIDERS:
+                return True  # Uncapped providers (pinnacle, polymarket, cloudbet) always eligible
             cluster = _PROVIDER_TO_CLUSTER.get(pid)
             return pid in funded_clusters or (cluster is not None and cluster in funded_clusters)
 
