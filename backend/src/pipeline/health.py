@@ -206,7 +206,7 @@ def get_provider_intervals() -> dict[str, int]:
 
 # ── Extraction Health Assessment ─────────────────────────────────────────────
 
-SHARP_STALE_MINUTES = 20  # Metrics persist after full pipeline cycle, not when Pinnacle finishes
+SHARP_STALE_MINUTES = 30  # Metrics persist after full pipeline cycle (browser cycles take 5-15min)
 CONSECUTIVE_FAILURE_CRITICAL = 3
 CONSECUTIVE_FAILURE_WARNING = 2
 STALENESS_MULTIPLIER = 3
