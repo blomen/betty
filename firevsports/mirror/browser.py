@@ -13,6 +13,7 @@ from playwright.async_api import (
     Page,
     Playwright,
     Response,
+    WebSocket,
     async_playwright,
 )
 
@@ -71,10 +72,10 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "leovegas.se": "leovegas",
     "leovegas.com": "leovegas",
     "expekt.se": "expekt",
-    "spelklubben.com": "spelklubben",
-    "betsson.se": "betsson",
+    "spelklubben.se": "spelklubben",
+    "betsson.com": "betsson",
     "nordicbet.com": "nordicbet",
-    "betsafe.se": "betsafe",
+    "betsafe.com": "betsafe",
     "pinnacle.se": "pinnacle",
     "interwetten.se": "interwetten",
     "coolbet.com": "coolbet",

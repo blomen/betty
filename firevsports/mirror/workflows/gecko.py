@@ -5,6 +5,7 @@ Covers: spelklubben, betsson, betsafe, nordicbet, bethard.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
