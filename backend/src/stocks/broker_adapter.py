@@ -39,17 +39,40 @@ def _round_tick(price: float) -> float:
 
 
 def _log_broker_trade(**kwargs) -> None:
-    """Log completed trade."""
+    """Log completed trade with full context and persist to dashboard."""
+    result = "WIN" if kwargs.get("pnl_dollars", 0) > 0 else "LOSS"
+    exit_reason = "STOP" if kwargs.get("was_stop") else "SIGNAL"
+    if kwargs.get("trail_count", 0) > 0:
+        exit_reason = f"TRAILED({kwargs['trail_count']})"
+
     log.info(
-        "Trade closed: %s %s %dx @ %.2f → %.2f  PnL=$%.2f (%.2fR)",
+        "=== TRADE %s === %s %s %dx | entry=%.2f exit=%.2f stop=%.2f | "
+        "PnL=$%.2f (%.2fR) | exit=%s trails=%d | "
+        "signal=%s conf=%.3f cont_p=%.3f rev_p=%.3f zone=%.2f | "
+        "stop_ticks=%s session_pnl=$%.2f",
+        result,
         kwargs.get("symbol"),
         kwargs.get("side"),
         kwargs.get("size", 1),
         kwargs.get("entry_price", 0),
         kwargs.get("exit_price", 0),
+        kwargs.get("stop_price", 0),
         kwargs.get("pnl_dollars", 0),
         kwargs.get("pnl_r", 0),
+        exit_reason,
+        kwargs.get("trail_count", 0),
+        kwargs.get("signal_action", "?"),
+        kwargs.get("signal_confidence", 0),
+        kwargs.get("signal_cont_p", 0),
+        kwargs.get("signal_rev_p", 0),
+        kwargs.get("signal_zone", 0),
+        kwargs.get("stop_ticks", "?"),
+        kwargs.get("session_pnl", 0),
     )
+    # Add session_pnl to kwargs for dashboard
+    from . import dashboard
+
+    dashboard.record_trade(kwargs)
 
 
 class TopstepXBrokerAdapter:
@@ -158,6 +181,8 @@ class TopstepXBrokerAdapter:
                 )
 
             self._trail_count += 1
+            if self._pending_trade:
+                self._pending_trade["trail_count"] = self._trail_count
             return await self.modify_stop(new_stop)
 
         # --- IN POSITION: opposite direction → exit and flip ---
@@ -255,10 +280,11 @@ class TopstepXBrokerAdapter:
                 direction = 1.0 if side == "long" else -1.0
                 pnl_pts = direction * (price - entry_px)
                 pnl_dollars = pnl_pts * _NQ_POINT_VALUE * self._pending_trade["size"]
-                stop_dist = self._pending_trade.get("stop_price", 0)
-                risk_pts = abs(entry_px - stop_dist) if stop_dist else 10.0 * 0.25
+                stop_price = self._pending_trade.get("stop_price", 0)
+                risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
                 pnl_r = pnl_pts / max(risk_pts, 0.25)
                 _log_broker_trade(
+                    session_pnl=round(self.tracker.session_pnl, 2),
                     ts=self._pending_trade["ts"],
                     session_date=self._pending_trade["session_date"],
                     symbol=self._pending_trade["symbol"],
@@ -266,12 +292,19 @@ class TopstepXBrokerAdapter:
                     size=self._pending_trade["size"],
                     entry_price=entry_px,
                     stop_price=stop_dist,
+                    tp_price=self._pending_trade.get("tp_price"),
                     exit_price=price,
                     pnl_dollars=round(pnl_dollars, 2),
                     pnl_r=round(pnl_r, 3),
+                    was_stop=is_stop,
+                    trail_count=self._pending_trade.get("trail_count", 0),
+                    stop_ticks=self._pending_trade.get("stop_ticks"),
                     signal_action=self._pending_trade.get("signal_action"),
                     signal_confidence=self._pending_trade.get("signal_confidence"),
                     signal_zone=self._pending_trade.get("signal_zone"),
+                    signal_trigger=self._pending_trade.get("signal_trigger"),
+                    signal_cont_p=self._pending_trade.get("signal_cont_p"),
+                    signal_rev_p=self._pending_trade.get("signal_rev_p"),
                     closed_at=datetime.now(timezone.utc),
                 )
                 self._pending_trade = None
@@ -347,7 +380,17 @@ class TopstepXBrokerAdapter:
         if not self.tracker.is_flat:
             await self.flatten("flip")
 
-        log.info("Executing: %s size=%d stop=%.2f conf=%.3f", action, size, stop_price, confidence)
+        log.info(
+            "=== ENTRY === %s size=%d stop=%.2f (%d ticks) conf=%.3f cont_p=%.3f rev_p=%.3f zone=%.2f",
+            action,
+            size,
+            stop_price,
+            stop_dist_ticks,
+            confidence,
+            float(signal.get("cont_p", 0) or 0),
+            float(signal.get("rev_p", 0) or 0),
+            float(signal.get("zone", 0) or 0),
+        )
 
         try:
             result = await self.client.place_market_order(order_action, size)
@@ -378,6 +421,8 @@ class TopstepXBrokerAdapter:
         self.tracker.stop_order_id = stop_order_id
 
         now = datetime.now(timezone.utc)
+        # TP = 2R from entry
+        tp_price = _round_tick(price + offset * 2 if is_long else price - offset * 2)
         self._pending_trade = {
             "ts": now,
             "session_date": now.strftime("%Y-%m-%d"),
@@ -385,9 +430,15 @@ class TopstepXBrokerAdapter:
             "side": side,
             "size": size,
             "stop_price": stop_price,
+            "tp_price": tp_price,
+            "stop_ticks": stop_dist_ticks,
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),
             "signal_zone": float(signal.get("zone", signal.get("zone_price", 0)) or 0),
+            "signal_trigger": str(signal.get("trigger", "")),
+            "signal_cont_p": float(signal.get("cont_p", 0) or 0),
+            "signal_rev_p": float(signal.get("rev_p", 0) or 0),
+            "trail_count": 0,
         }
 
         return {
