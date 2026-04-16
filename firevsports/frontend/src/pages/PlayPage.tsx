@@ -59,6 +59,7 @@ export default function PlayPage() {
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
+  const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -165,6 +166,10 @@ export default function PlayPage() {
     if (type === 'bet_ready') {
       const bet = data.bet ?? data
       setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge, prep_reason: data.prep_reason })
+      if (data.live_odds != null && bet.event_id) {
+        const key = `${bet.event_id}:${bet.market}:${bet.outcome}`
+        setLivePrices(prev => ({ ...prev, [key]: { odds: data.live_odds, edge: data.live_edge } }))
+      }
       setLoopStatus(null)
     }
     if (type === 'bet_placed') {
@@ -201,6 +206,10 @@ export default function PlayPage() {
         }))
       }
       setTimeout(load, 3000) // Delayed refresh — let server record the bet first
+    }
+    if (type === 'live_price') {
+      const key = `${data.event_id}:${data.market}:${data.outcome}`
+      setLivePrices(prev => ({ ...prev, [key]: { odds: data.live_odds, edge: data.live_edge } }))
     }
     if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null) }
     if (type === 'provider_complete') {
@@ -575,7 +584,12 @@ export default function PlayPage() {
                 <tbody>
                   {cb.map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
+                    const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
+                    const live = livePrices[liveKey]
                     const isCurrent = currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome
+                    const displayOdds = live?.odds ?? b.odds
+                    const displayEdge = live?.edge ?? b.edge_pct
+                    const oddsChanged = live && Math.abs(live.odds - b.odds) >= 0.01
                     return (
                       <tr key={key}
                         className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 transition-colors ${
@@ -585,9 +599,14 @@ export default function PlayPage() {
                         <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">{b.cluster && b.cluster !== b.provider_id ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '') : b.provider_id}</td>
                         <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
                         <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-200">{b.odds.toFixed(2)}</td>
+                        <td className={`px-2 py-1 text-right font-mono ${oddsChanged ? (live!.odds > b.odds ? 'text-green-400' : 'text-red-400') : 'text-zinc-200'}`}>
+                          {displayOdds.toFixed(2)}
+                          {oddsChanged && <span className="text-zinc-600 text-[9px] ml-0.5">({b.odds.toFixed(2)})</span>}
+                        </td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-500">{b.fair_odds.toFixed(2)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-green-400">+{b.edge_pct.toFixed(1)}%</td>
+                        <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
+                        </td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
                         <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>

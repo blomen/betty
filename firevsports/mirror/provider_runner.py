@@ -359,7 +359,7 @@ class ProviderRunner:
                     self.stats["skipped"] += 1
                     continue
 
-                # Ready — wait for interceptor or skip
+                # Ready — wait for interceptor or skip, polling live price
                 self.state = STATE_READY
                 self._bet_intercepted_event.clear()
                 self._skip_event.clear()
@@ -377,13 +377,49 @@ class ProviderRunner:
                     },
                 )
 
-                done, _ = await asyncio.wait(
-                    [
-                        asyncio.ensure_future(self._bet_intercepted_event.wait()),
-                        asyncio.ensure_future(self._skip_event.wait()),
-                    ],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                # Poll live price every 3s while waiting for placement/skip
+                _PRICE_POLL_INTERVAL = 3.0
+                _last_live_odds = live_odds
+                while not self._bet_intercepted_event.is_set() and not self._skip_event.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(
+                                asyncio.wait(
+                                    [
+                                        asyncio.ensure_future(self._bet_intercepted_event.wait()),
+                                        asyncio.ensure_future(self._skip_event.wait()),
+                                    ],
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            ),
+                            timeout=_PRICE_POLL_INTERVAL,
+                        )
+                        break  # One of the events fired
+                    except asyncio.TimeoutError:
+                        pass  # Poll live price below
+
+                    # Poll live price
+                    if hasattr(workflow, "check_live_price"):
+                        try:
+                            lo, le = await workflow.check_live_price(page, bet_ns)
+                            if lo is not None and lo != _last_live_odds:
+                                _last_live_odds = lo
+                                live_odds = lo
+                                live_edge = le
+                                self._broadcaster.publish(
+                                    "live_price",
+                                    {
+                                        "event_id": bet.get("event_id", ""),
+                                        "market": bet.get("market", ""),
+                                        "outcome": bet.get("outcome", ""),
+                                        "provider_id": pid,
+                                        "live_odds": lo,
+                                        "live_edge": le,
+                                        "fair_odds": bet.get("fair_odds"),
+                                    },
+                                )
+                        except Exception:
+                            pass
 
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING

@@ -40,6 +40,7 @@ _BET_PLACEMENT_KEYWORDS = (
     "placewidget",
     "placebet",
     "/coupons",
+    "/coupon.json",  # Kambi CDN placement (LeoVegas)
     "bets/straight",
     "bets/parlay",
     "bets/place",

@@ -22,7 +22,7 @@ export function useMirrorStream() {
       'play_complete', 'play_stopped',
       'pending_started', 'history_synced', 'settlements_detected', 'settlements_confirmed',
       'balance_updated', 'balance_intercepted', 'history_intercepted', 'bet_intercepted',
-      'pending_stopped',
+      'pending_stopped', 'live_price',
     ];
 
     for (const type of eventTypes) {

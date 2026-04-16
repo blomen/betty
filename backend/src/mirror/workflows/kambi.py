@@ -407,10 +407,92 @@ class KambiWorkflow(ProviderWorkflow):
     #   - Placement detected via network interception (placebet/coupons)
     # ------------------------------------------------------------------
 
-    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Auto-select outcome via Kambi isolatedBetslip API.
+    async def _select_outcome_via_api(self, page: Page, outcome_id: str) -> bool:
+        """Try isolatedBetslip JS API (works on Unibet, not on LeoVegas micro-frontend)."""
+        try:
+            result = await page.evaluate(f"""
+                async () => {{
+                    const ib = window.isolatedBetslip;
+                    if (!ib) await new Promise(r => setTimeout(r, 2000));
+                    if (!window.isolatedBetslip) return false;
+                    window.isolatedBetslip.addOutcomeIds([{int(outcome_id)}]);
+                    window.isolatedBetslip.showBetslip();
+                    return true;
+                }}
+            """)
+            return bool(result)
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] isolatedBetslip API failed: {e}")
+            return False
 
-        Calls addOutcomeIds([outcomeId]) to add the bet to the betslip.
+    async def _select_outcome_via_dom(self, page: Page, bet) -> bool:
+        """Click the Kambi outcome button by matching label text.
+
+        Fallback for micro-frontend sites (LeoVegas) where isolatedBetslip
+        is not exposed. Matches .KambiBC-betty-outcome buttons by outcome
+        label (team name / Over / Under / Draw).
+        """
+        outcome = _g(bet, "outcome", "")
+        market = _g(bet, "market", "")
+        home = _g(bet, "display_home", "")
+        away = _g(bet, "display_away", "")
+        point = _g(bet, "point", None)
+
+        # Build search terms: the button text is "LabelOdds" (e.g. "Pontedera5.60")
+        # We match on the label portion (case-insensitive substring)
+        search_terms: list[str] = []
+        if outcome == "home":
+            if home:
+                search_terms.append(home)
+            search_terms.append("1")
+        elif outcome == "away":
+            if away:
+                search_terms.append(away)
+            search_terms.append("2")
+        elif outcome == "draw":
+            search_terms.extend(["Oavgjort", "Draw", "draw"])
+        elif outcome == "over":
+            label = f"Över {point}" if point else "Över"
+            search_terms.append(label)
+            label_en = f"Over {point}" if point else "Over"
+            search_terms.append(label_en)
+        elif outcome == "under":
+            label = f"Under {point}" if point else "Under"
+            search_terms.append(label)
+
+        if not search_terms:
+            return False
+
+        try:
+            result = await page.evaluate(
+                """(terms) => {
+                const btns = document.querySelectorAll(".KambiBC-betty-outcome");
+                for (const term of terms) {
+                    const lower = term.toLowerCase();
+                    for (const btn of btns) {
+                        const txt = (btn.textContent || "").toLowerCase();
+                        if (txt.startsWith(lower) || txt.includes(lower)) {
+                            btn.click();
+                            return btn.textContent.trim();
+                        }
+                    }
+                }
+                return null;
+            }""",
+                search_terms,
+            )
+            if result:
+                logger.info(f"[{self.provider_id}] DOM click fallback: clicked '{result}'")
+                return True
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] DOM click fallback failed: {e}")
+        return False
+
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Auto-select outcome via Kambi JS API or DOM click fallback.
+
+        Tries isolatedBetslip.addOutcomeIds first (Unibet), then falls back
+        to clicking .KambiBC-betty-outcome DOM buttons (LeoVegas micro-frontend).
         User fills stake and clicks Place Bet manually (semi-auto).
         """
         bet_id = _g(bet, "bet_id", 0) or 0
@@ -420,51 +502,41 @@ class KambiWorkflow(ProviderWorkflow):
             meta = _g(bet, "provider_meta") or {}
             outcome_id = meta.get("outcome_id", "")
 
-        if not outcome_id:
+        selected = False
+        method = "manual_placement"
+
+        # Strategy 1: isolatedBetslip JS API
+        if outcome_id:
+            selected = await self._select_outcome_via_api(page, outcome_id)
+            if selected:
+                method = "kambi_api"
+
+        # Strategy 2: DOM click fallback (micro-frontend sites like LeoVegas)
+        if not selected:
+            await asyncio.sleep(1)  # Let event page render
+            selected = await self._select_outcome_via_dom(page, bet)
+            if selected:
+                method = "dom_click"
+
+        if selected:
+            logger.info(
+                f"[{self.provider_id}] prep_betslip ({method}): "
+                f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
+                f"{_g(bet, 'outcome', '')} @ {target_odds}"
+            )
+        else:
             logger.info(
                 f"[{self.provider_id}] Event page ready (no auto-select) — "
                 f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
                 f"{_g(bet, 'outcome', '')} @ {target_odds}"
             )
-            return PlacementResult(
-                status="prepped",
-                bet_id=bet_id,
-                actual_odds=target_odds,
-                actual_stake=stake,
-                reason="manual_placement",
-            )
-
-        # Add outcome to betslip via Kambi JS API
-        try:
-            result = await page.evaluate(f"""
-                async () => {{
-                    const ib = window.isolatedBetslip;
-                    if (!ib) {{
-                        await new Promise(r => setTimeout(r, 3000));
-                    }}
-                    if (!window.isolatedBetslip) return false;
-                    window.isolatedBetslip.addOutcomeIds([{int(outcome_id)}]);
-                    window.isolatedBetslip.showBetslip();
-                    return true;
-                }}
-            """)
-            if result:
-                logger.info(
-                    f"[{self.provider_id}] addOutcomeIds({outcome_id}) — "
-                    f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
-                    f"{_g(bet, 'outcome', '')} @ {target_odds}"
-                )
-            else:
-                logger.warning(f"[{self.provider_id}] isolatedBetslip not available")
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] addOutcomeIds failed: {e}")
 
         return PlacementResult(
             status="prepped",
             bet_id=bet_id,
             actual_odds=target_odds,
             actual_stake=stake,
-            reason="kambi_selected" if outcome_id else "manual_placement",
+            reason=method,
         )
 
     async def confirm_bet(self, page: Page) -> PlacementResult:

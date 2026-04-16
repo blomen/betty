@@ -56,6 +56,8 @@ class KambiWorkflow(ProviderWorkflow):
 
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         super().__init__(provider_id, domain, mode)
+        # Kambi event IDs of open bets — populated by sync_history, checked by runner
+        self._open_kambi_eids: set[str] = set()
 
     def _balance_rest_url(self) -> str | None:
         path = _BALANCE_ENDPOINTS.get(self.provider_id)
@@ -134,32 +136,225 @@ class KambiWorkflow(ProviderWorkflow):
         return await self._fetch_graphql_balance(page)
 
     # ------------------------------------------------------------------
-    # History — KSP betting API (api/v1/betting/bet-history)
+    # History — Kambi CDN player API + KSP fallback
     #
-    # Discovery (2026-04-14): endpoint is sportsbook-feeds/betting-api/api/v1/betting/bet-history
-    # Returns 400 without auth, 200 with session cookies (logged-in user).
-    # betStatus param filters by OPEN / WON / LOST / VOID / CASHOUT.
+    # Discovery (2026-04-15): LeoVegas uses Kambi CDN player API at
+    # cf-mt-auth-api.kambicdn.com/player/api/v2019/{brand}/coupon/history.json
+    # Auth: Bearer token from Kambi widget (captured by intercepting fetch).
+    # Odds/stake in millis (divide by 1000). KSP API works for Unibet but
+    # returns HTML on LeoVegas.
     # ------------------------------------------------------------------
+
+    # Kambi brand IDs (from providers.yaml)
+    _KAMBI_BRANDS: dict[str, str] = {
+        "leovegas": "leose",
+        "unibet": "ubse",
+        "expekt": "expektse",
+        "betmgm": "betmgmse",
+        "speedybet": "speedybetse",
+        "x3000": "speedyspelse",
+        "goldenbull": "pafgoldense",
+        "1x2": "pafpre1x2se",
+        "888sport": "888se",
+        "mrgreen": "mrgreense",
+    }
 
     _BET_HISTORY_BASE = "sportsbook-feeds/betting-api/api/v1/betting/bet-history"
 
+    _STATUS_MAP = {
+        "WON": "won",
+        "WIN": "won",
+        "LOST": "lost",
+        "LOSS": "lost",
+        "VOID": "void",
+        "VOIDED": "void",
+        "CASHOUT": "cashout",
+        "CASH_OUT": "cashout",
+        "OPEN": "pending",
+        "PENDING": "pending",
+    }
+
+    # Kambi betOffer type → market name
+    _BO_TYPE_MAP: dict[str, str] = {
+        "Match": "1x2",
+        "Handicap": "spread",
+        "Over/Under": "total",
+    }
+
+    def _kambi_brand(self) -> str:
+        return self._KAMBI_BRANDS.get(self.provider_id, self.provider_id)
+
     def _ksp_history_url(self, status: str, size: int = 50) -> str:
-        return f"https://{self.domain}/{self._BET_HISTORY_BASE}?betStatus={status}&page=0&size={size}"
+        domain = f"www.{self.domain}" if not self.domain.startswith("www.") else self.domain
+        return f"https://{domain}/{self._BET_HISTORY_BASE}?betStatus={status}&page=0&size={size}"
+
+    def _parse_kambi_cdn_coupons(self, coupons: list[dict]) -> list[HistoryEntry]:
+        """Parse Kambi CDN coupon/history.json response into HistoryEntry list.
+
+        Kambi CDN format: odds and stake in millis (÷1000).
+        """
+        entries: list[HistoryEntry] = []
+        for coupon in coupons:
+            if not isinstance(coupon, dict):
+                continue
+            try:
+                bets = coupon.get("bets") or []
+                if not bets:
+                    continue
+                bet = bets[0]
+
+                raw_status = str(bet.get("betStatus") or "OPEN").upper()
+                mapped = self._STATUS_MAP.get(raw_status, "pending")
+
+                # playedOdds persists after settlement; betOdds gets zeroed
+                odds_millis = bet.get("playedOdds") or bet.get("betOdds") or 0
+                odds = odds_millis / 1000.0 if odds_millis else 0.0
+                stake = (bet.get("stake") or 0) / 1000.0
+                payout_millis = bet.get("payout") or 0
+                payout = payout_millis / 1000.0 if payout_millis else None
+
+                events = coupon.get("events") or []
+                event = events[0] if events else {}
+                event_name = event.get("eventName") or ""
+                if not event_name:
+                    home = event.get("homeName") or ""
+                    away = event.get("awayName") or ""
+                    if home and away:
+                        event_name = f"{home} v {away}"
+
+                outcomes = coupon.get("outcomes") or []
+                outcome_label = outcomes[0].get("label", "") if outcomes else ""
+
+                bet_offers = coupon.get("betOffers") or []
+                bo_type = bet_offers[0].get("boType", "") if bet_offers else ""
+                market = self._BO_TYPE_MAP.get(bo_type, bo_type.lower() if bo_type else "")
+
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=str(coupon.get("couponRef") or ""),
+                        event_name=event_name,
+                        market=market,
+                        outcome=outcome_label,
+                        odds=odds,
+                        stake=stake,
+                        status=mapped,
+                        payout=payout,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] _parse_kambi_cdn_coupons: skipped coupon: {e}")
+
+        return entries
+
+    async def _sync_history_kambi_cdn(self, page: Page) -> list[HistoryEntry]:
+        """Fetch bet history via Kambi CDN player API.
+
+        Intercepts the auth token from the Kambi widget's own fetch calls,
+        then uses it to query coupon/history.json directly.
+        """
+        brand = self._kambi_brand()
+
+        # Step 1: Navigate to #bethistory and intercept the Bearer token
+        result = await page.evaluate(
+            """async (brand) => {
+            const orig = window.fetch;
+            let token = null;
+            let historyData = null;
+            window.fetch = async function(input, init) {
+                const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+                if (url.indexOf("kambicdn") > -1 && url.indexOf("player") > -1 && !token) {
+                    if (init && init.headers) {
+                        const h = init.headers;
+                        if (typeof h.get === "function") {
+                            token = h.get("Authorization") || h.get("authorization");
+                        } else if (typeof h === "object") {
+                            token = h["Authorization"] || h["authorization"];
+                        }
+                    }
+                }
+                const resp = await orig.apply(this, arguments);
+                if (url.indexOf("coupon/history") > -1 && !historyData) {
+                    try {
+                        const clone = resp.clone();
+                        historyData = await clone.json();
+                    } catch(e) {}
+                }
+                return resp;
+            };
+
+            // Navigate to bet history to trigger the widget's fetch
+            const prevHash = location.hash;
+            if (location.hash !== "#bethistory") {
+                location.hash = "#bethistory";
+            } else {
+                location.hash = "#featured";
+                await new Promise(r => setTimeout(r, 1000));
+                location.hash = "#bethistory";
+            }
+
+            // Wait for the response (up to 8s)
+            for (let i = 0; i < 16; i++) {
+                await new Promise(r => setTimeout(r, 500));
+                if (historyData) break;
+            }
+
+            // Restore fetch
+            window.fetch = orig;
+
+            if (historyData) {
+                return { ok: true, data: historyData, token: token };
+            }
+
+            // If interception missed it (widget cached?), try direct fetch with token
+            if (token) {
+                const base = "https://cf-mt-auth-api.kambicdn.com/player/api/v2019/" + brand;
+                const params = "lang=sv_SE&market=SE&client_id=200&channel_id=1";
+                try {
+                    const r = await orig(
+                        base + "/coupon/history.json?" + params + "&range_size=100&range_start=0",
+                        { headers: { "Authorization": token, "Accept": "application/json" } }
+                    );
+                    if (r.ok) {
+                        const d = await r.json();
+                        return { ok: true, data: d, token: token, method: "direct" };
+                    }
+                } catch(e) {}
+            }
+
+            return { ok: false, token: token };
+        }""",
+            brand,
+        )
+
+        if not result or not result.get("ok"):
+            logger.warning(
+                f"[{self.provider_id}] Kambi CDN history fetch failed (token={bool(result and result.get('token'))})"
+            )
+            return []
+
+        data = result.get("data", {})
+        coupons = data.get("historyCoupons") or []
+        entries = self._parse_kambi_cdn_coupons(coupons)
+
+        # Cache Kambi event IDs of open bets — runner checks before navigating
+        self._open_kambi_eids.clear()
+        for coupon in coupons:
+            bet = (coupon.get("bets") or [{}])[0]
+            if (bet.get("betStatus") or "").upper() == "OPEN":
+                for event in coupon.get("events") or []:
+                    eid = event.get("eventId")
+                    if eid:
+                        self._open_kambi_eids.add(str(eid))
+
+        method = result.get("method", "intercept")
+        logger.info(
+            f"[{self.provider_id}] Kambi CDN history: {len(entries)} bets via {method}"
+            f" | {len(self._open_kambi_eids)} open positions"
+        )
+        return entries
 
     def _parse_ksp_bets(self, data: dict, status_hint: str) -> list[HistoryEntry]:
         """Parse KSP bet-history API response into HistoryEntry list."""
-        status_map = {
-            "WON": "won",
-            "WIN": "won",
-            "LOST": "lost",
-            "LOSS": "lost",
-            "VOID": "void",
-            "VOIDED": "void",
-            "CASHOUT": "cashout",
-            "CASH_OUT": "cashout",
-            "OPEN": "pending",
-            "PENDING": "pending",
-        }
         bets = (
             data.get("bets") or data.get("content") or data.get("items") or (data.get("data") or {}).get("bets") or []
         )
@@ -172,7 +367,7 @@ class KambiWorkflow(ProviderWorkflow):
                 continue
             try:
                 raw_status = str(bet.get("status") or bet.get("betStatus") or status_hint).upper()
-                mapped = status_map.get(raw_status, "pending")
+                mapped = self._STATUS_MAP.get(raw_status, "pending")
 
                 bet_id = str(bet.get("id") or bet.get("betId") or bet.get("couponId") or "")
 
@@ -231,12 +426,8 @@ class KambiWorkflow(ProviderWorkflow):
 
         return entries
 
-    async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Fetch all bets (open + settled) from KSP betting API.
-
-        Tries the REST endpoint first; falls back to navigating bet history page
-        if the API is unreachable (no session / provider not wired).
-        """
+    async def _sync_history_ksp(self, page: Page) -> list[HistoryEntry]:
+        """Fetch bet history via KSP betting API (works on Unibet)."""
         all_entries: list[HistoryEntry] = []
         for status in ("OPEN", "WON", "LOST", "VOID", "CASHOUT"):
             try:
@@ -245,29 +436,41 @@ class KambiWorkflow(ProviderWorkflow):
                     entries = self._parse_ksp_bets(result, status)
                     all_entries.extend(entries)
             except Exception as e:
-                logger.debug(f"[{self.provider_id}] sync_history {status}: {e}")
+                logger.debug(f"[{self.provider_id}] _sync_history_ksp {status}: {e}")
+        return all_entries
 
-        if all_entries:
-            logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} bets from API")
-            return all_entries
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
+        """Fetch all bets (open + settled) from Kambi.
 
-        # Fallback: navigate to history page (pending_loop SSR path picks it up)
-        hist_url = f"https://{self.domain}/betting/sports/bethistory"
-        if "/bethistory" not in (page.url or ""):
+        Tries Kambi CDN player API first (intercepts widget's auth token),
+        then KSP betting API fallback, then DOM navigation fallback.
+        """
+        # Try Kambi CDN (works for LeoVegas and other Kambi operators)
+        entries = await self._sync_history_kambi_cdn(page)
+        if entries:
+            return entries
+
+        # Fallback: KSP betting API (works for Unibet)
+        entries = await self._sync_history_ksp(page)
+        if entries:
+            logger.info(f"[{self.provider_id}] sync_history: {len(entries)} bets from KSP API")
+            return entries
+
+        # Last resort: navigate to bet history page
+        betting_path = self._BETTING_PATHS.get(self.provider_id, "/betting/sports")
+        hist_url = f"https://www.{self.domain}{betting_path}#bethistory"
+        if "#bethistory" not in (page.url or ""):
             try:
-                await page.goto(hist_url, wait_until="networkidle", timeout=15000)
+                await page.goto(hist_url, wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(3)
             except Exception as e:
                 logger.warning(f"[{self.provider_id}] Could not navigate to bet history: {e}")
         return []
 
     async def fetch_positions(self, page: Page) -> list[PositionEntry]:
-        """Fetch open bets from KSP betting API."""
+        """Fetch open bets — from Kambi CDN history (filter OPEN) or KSP API."""
         try:
-            result = await self._evaluate_api(page, self._ksp_history_url("OPEN"))
-            if not result or "__error" in result:
-                return []
-            history = self._parse_ksp_bets(result, "OPEN")
+            entries = await self.sync_history(page)
             positions = [
                 PositionEntry(
                     provider_bet_id=e.provider_bet_id,
@@ -277,7 +480,8 @@ class KambiWorkflow(ProviderWorkflow):
                     odds=e.odds,
                     stake=e.stake,
                 )
-                for e in history
+                for e in entries
+                if e.status == "pending"
             ]
             logger.info(f"[{self.provider_id}] fetch_positions: {len(positions)} open bets")
             return positions
@@ -407,10 +611,92 @@ class KambiWorkflow(ProviderWorkflow):
     #   - Placement detected via network interception (placebet/coupons)
     # ------------------------------------------------------------------
 
-    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Auto-select outcome via Kambi isolatedBetslip API.
+    async def _select_outcome_via_api(self, page: Page, outcome_id: str) -> bool:
+        """Try isolatedBetslip JS API (works on Unibet, not on LeoVegas micro-frontend)."""
+        try:
+            result = await page.evaluate(f"""
+                async () => {{
+                    const ib = window.isolatedBetslip;
+                    if (!ib) await new Promise(r => setTimeout(r, 2000));
+                    if (!window.isolatedBetslip) return false;
+                    window.isolatedBetslip.addOutcomeIds([{int(outcome_id)}]);
+                    window.isolatedBetslip.showBetslip();
+                    return true;
+                }}
+            """)
+            return bool(result)
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] isolatedBetslip API failed: {e}")
+            return False
 
-        Calls addOutcomeIds([outcomeId]) to add the bet to the betslip.
+    async def _select_outcome_via_dom(self, page: Page, bet) -> bool:
+        """Click the Kambi outcome button by matching label text.
+
+        Fallback for micro-frontend sites (LeoVegas) where isolatedBetslip
+        is not exposed. Matches .KambiBC-betty-outcome buttons by outcome
+        label (team name / Over / Under / Draw).
+        """
+        outcome = _g(bet, "outcome", "")
+        market = _g(bet, "market", "")
+        home = _g(bet, "display_home", "")
+        away = _g(bet, "display_away", "")
+        point = _g(bet, "point", None)
+
+        # Build search terms: the button text is "LabelOdds" (e.g. "Pontedera5.60")
+        # We match on the label portion (case-insensitive substring)
+        search_terms: list[str] = []
+        if outcome == "home":
+            if home:
+                search_terms.append(home)
+            search_terms.append("1")
+        elif outcome == "away":
+            if away:
+                search_terms.append(away)
+            search_terms.append("2")
+        elif outcome == "draw":
+            search_terms.extend(["Oavgjort", "Draw", "draw"])
+        elif outcome == "over":
+            label = f"Över {point}" if point else "Över"
+            search_terms.append(label)
+            label_en = f"Over {point}" if point else "Over"
+            search_terms.append(label_en)
+        elif outcome == "under":
+            label = f"Under {point}" if point else "Under"
+            search_terms.append(label)
+
+        if not search_terms:
+            return False
+
+        try:
+            result = await page.evaluate(
+                """(terms) => {
+                const btns = document.querySelectorAll(".KambiBC-betty-outcome");
+                for (const term of terms) {
+                    const lower = term.toLowerCase();
+                    for (const btn of btns) {
+                        const txt = (btn.textContent || "").toLowerCase();
+                        if (txt.startsWith(lower) || txt.includes(lower)) {
+                            btn.click();
+                            return btn.textContent.trim();
+                        }
+                    }
+                }
+                return null;
+            }""",
+                search_terms,
+            )
+            if result:
+                logger.info(f"[{self.provider_id}] DOM click fallback: clicked '{result}'")
+                return True
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] DOM click fallback failed: {e}")
+        return False
+
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Auto-select outcome via Kambi JS API or DOM click fallback.
+
+        Tries isolatedBetslip.addOutcomeIds first (Unibet), then falls back
+        to clicking .KambiBC-betty-outcome DOM buttons (LeoVegas micro-frontend).
         User fills stake and clicks Place Bet manually (semi-auto).
         """
         bet_id = _g(bet, "bet_id", 0) or 0
@@ -420,51 +706,41 @@ class KambiWorkflow(ProviderWorkflow):
             meta = _g(bet, "provider_meta") or {}
             outcome_id = meta.get("outcome_id", "")
 
-        if not outcome_id:
+        selected = False
+        method = "manual_placement"
+
+        # Strategy 1: isolatedBetslip JS API
+        if outcome_id:
+            selected = await self._select_outcome_via_api(page, outcome_id)
+            if selected:
+                method = "kambi_api"
+
+        # Strategy 2: DOM click fallback (micro-frontend sites like LeoVegas)
+        if not selected:
+            await asyncio.sleep(1)  # Let event page render
+            selected = await self._select_outcome_via_dom(page, bet)
+            if selected:
+                method = "dom_click"
+
+        if selected:
+            logger.info(
+                f"[{self.provider_id}] prep_betslip ({method}): "
+                f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
+                f"{_g(bet, 'outcome', '')} @ {target_odds}"
+            )
+        else:
             logger.info(
                 f"[{self.provider_id}] Event page ready (no auto-select) — "
                 f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
                 f"{_g(bet, 'outcome', '')} @ {target_odds}"
             )
-            return PlacementResult(
-                status="prepped",
-                bet_id=bet_id,
-                actual_odds=target_odds,
-                actual_stake=stake,
-                reason="manual_placement",
-            )
-
-        # Add outcome to betslip via Kambi JS API
-        try:
-            result = await page.evaluate(f"""
-                async () => {{
-                    const ib = window.isolatedBetslip;
-                    if (!ib) {{
-                        await new Promise(r => setTimeout(r, 3000));
-                    }}
-                    if (!window.isolatedBetslip) return false;
-                    window.isolatedBetslip.addOutcomeIds([{int(outcome_id)}]);
-                    window.isolatedBetslip.showBetslip();
-                    return true;
-                }}
-            """)
-            if result:
-                logger.info(
-                    f"[{self.provider_id}] addOutcomeIds({outcome_id}) — "
-                    f"{_g(bet, 'display_home', '?')} v {_g(bet, 'display_away', '?')} "
-                    f"{_g(bet, 'outcome', '')} @ {target_odds}"
-                )
-            else:
-                logger.warning(f"[{self.provider_id}] isolatedBetslip not available")
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] addOutcomeIds failed: {e}")
 
         return PlacementResult(
             status="prepped",
             bet_id=bet_id,
             actual_odds=target_odds,
             actual_stake=stake,
-            reason="kambi_selected" if outcome_id else "manual_placement",
+            reason=method,
         )
 
     async def confirm_bet(self, page: Page) -> PlacementResult:
