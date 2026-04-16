@@ -191,6 +191,11 @@ async def lifespan(app: FastAPI):
         scheduler = get_scheduler()
 
         async def _start_scheduler():
+            # Skip extraction when RL turbo mode is active (training needs all resources)
+            turbo_flag = Path("/app/data/rl/turbo")
+            if turbo_flag.exists():
+                logger.info("[Startup] Extraction SKIPPED — RL turbo mode active (remove %s to re-enable)", turbo_flag)
+                return
             try:
                 await scheduler.start_continuous(interval_seconds=300)
                 logger.info("[Startup] Scheduler started successfully")
