@@ -241,7 +241,7 @@ class TopstepXBrokerAdapter:
                 log.exception("Failed to place stop order")
                 return None
         try:
-            await self.client.modify_order(self.tracker.stop_order_id, new_stop_price)
+            await self.client.modify_order(self.tracker.stop_order_id, stop_price=new_stop_price)
             self.tracker.stop_price = new_stop_price
             log.info("Stop moved to %.2f", new_stop_price)
             return {"action": "modify_stop", "stop_price": new_stop_price}
