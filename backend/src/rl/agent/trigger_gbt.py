@@ -113,10 +113,12 @@ class TriggerGBT:
             clf_params = dict(
                 n_estimators=n_estimators,
                 max_depth=min(max_depth, 4),  # cap depth to prevent memorization
+                num_leaves=15,  # explicit cap — prevents complex splits at depth 4
                 learning_rate=learning_rate,
                 subsample=subsample,
-                min_child_samples=100,  # was 50 — higher = more regularized
-                colsample_bytree=0.5,  # was 0.7 — more feature dropout
+                min_child_samples=100,  # high = more regularized
+                colsample_bytree=0.5,  # aggressive feature dropout
+                min_split_gain=0.01,  # prevent tiny splits on noise
                 reg_alpha=0.1,  # L1 regularization
                 reg_lambda=1.0,  # L2 regularization
                 n_jobs=2,
@@ -124,10 +126,12 @@ class TriggerGBT:
             )
             reg_params = dict(
                 n_estimators=min(300, n_estimators),
-                max_depth=min(3, max_depth),  # shallower for regressors
+                max_depth=min(3, max_depth),
+                num_leaves=10,
                 learning_rate=learning_rate,
                 subsample=subsample,
                 min_child_samples=100,
+                min_split_gain=0.01,
                 reg_alpha=0.1,
                 reg_lambda=1.0,
                 n_jobs=2,
@@ -195,16 +199,35 @@ class TriggerGBT:
             best_iter < n_estimators,
         )
 
-        # Confidence calibration check on validation set
+        # Isotonic calibration — makes P(continuation) match actual probability
+        # LightGBM outputs are NOT calibrated: 60% confidence ≠ 60% accuracy.
+        # Isotonic regression on validation set fixes this non-parametrically.
+        from sklearn.isotonic import IsotonicRegression
+
         val_probs = self.direction_model.predict_proba(X_val)
-        val_conf = np.maximum(val_probs[:, 0], val_probs[:, 1])
-        val_pred_cont = val_probs[:, 0] > val_probs[:, 1]
-        val_true_cont = y_dir_val == 0
+        val_p_cont = val_probs[:, 0]  # raw P(continuation)
+        val_true_cont = (y_dir_val == 0).astype(np.float64)
+
+        self.calibrator = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+        self.calibrator.fit(val_p_cont, val_true_cont)
+        cal_probs = self.calibrator.predict(val_p_cont)
+        log.info(
+            "Isotonic calibration fitted on %d val samples (raw range: %.3f-%.3f → cal range: %.3f-%.3f)",
+            len(val_p_cont),
+            val_p_cont.min(),
+            val_p_cont.max(),
+            cal_probs.min(),
+            cal_probs.max(),
+        )
+
+        # Confidence calibration check on validation set (using calibrated probs)
+        val_conf = np.maximum(cal_probs, 1 - cal_probs)
+        val_pred_cont = cal_probs > 0.5
         for lo, hi in [(0.50, 0.55), (0.55, 0.60), (0.60, 0.70), (0.70, 1.0)]:
             mask = (val_conf >= lo) & (val_conf < hi)
             if mask.sum() > 0:
-                bucket_acc = (val_pred_cont[mask] == val_true_cont[mask]).mean() * 100
-                log.info("  conf %.2f-%.2f: %d samples, val_acc=%.1f%%", lo, hi, mask.sum(), bucket_acc)
+                bucket_acc = (val_pred_cont[mask] == val_true_cont[mask].astype(bool)).mean() * 100
+                log.info("  conf %.2f-%.2f: %d samples, val_acc=%.1f%% (calibrated)", lo, hi, mask.sum(), bucket_acc)
 
         # Head 2: Expected best/worst R
         if rewards_cont is not None and rewards_rev is not None:
@@ -310,6 +333,17 @@ class TriggerGBT:
     # Single-observation prediction
     # ------------------------------------------------------------------
 
+    def _calibrate(self, raw_p_cont: float) -> tuple[float, float]:
+        """Apply isotonic calibration to raw P(continuation).
+
+        Returns calibrated (prob_cont, prob_rev).
+        """
+        cal = getattr(self, "calibrator", None)
+        if cal is not None:
+            p_cont = float(np.clip(cal.predict([raw_p_cont])[0], 0.01, 0.99))
+            return p_cont, 1.0 - p_cont
+        return raw_p_cont, 1.0 - raw_p_cont
+
     def predict_full(self, obs: np.ndarray) -> np.ndarray:
         """Produce full 8-dim forecast vector for a single observation.
 
@@ -320,10 +354,9 @@ class TriggerGBT:
         """
         x = self._scale_single(obs)
 
-        # Direction
-        probs = self.direction_model.predict_proba(x)[0]
-        prob_cont = float(probs[0])
-        prob_rev = float(probs[1])
+        # Direction (calibrated)
+        raw_probs = self.direction_model.predict_proba(x)[0]
+        prob_cont, prob_rev = self._calibrate(float(raw_probs[0]))
         confidence = abs(prob_cont - prob_rev)
 
         # Expected R
@@ -345,15 +378,15 @@ class TriggerGBT:
         )
 
     def predict_direction(self, obs: np.ndarray) -> tuple[int, float, float, float]:
-        """Predict direction for a single observation.
+        """Predict direction for a single observation (calibrated).
 
         Returns:
             (action_idx, confidence, prob_cont, prob_rev)
             where action_idx=0 means continuation, 1 means reversal.
         """
         x = self._scale_single(obs)
-        probs = self.direction_model.predict_proba(x)[0]
-        prob_cont, prob_rev = float(probs[0]), float(probs[1])
+        raw_probs = self.direction_model.predict_proba(x)[0]
+        prob_cont, prob_rev = self._calibrate(float(raw_probs[0]))
         action_idx = 0 if prob_cont >= prob_rev else 1
         confidence = abs(prob_cont - prob_rev)
         return action_idx, confidence, prob_cont, prob_rev
@@ -370,7 +403,7 @@ class TriggerGBT:
     # ------------------------------------------------------------------
 
     def predict_full_batch(self, obs: np.ndarray) -> np.ndarray:
-        """Produce full 8-dim forecast for a batch of observations.
+        """Produce full 8-dim forecast for a batch of observations (calibrated).
 
         Args:
             obs: ndarray of shape (N, F).
@@ -381,10 +414,15 @@ class TriggerGBT:
         X = self.scaler.transform(obs[:, self._alive_mask])
         n = len(X)
 
-        # Direction
-        probs = self.direction_model.predict_proba(X)
-        prob_cont = probs[:, 0]
-        prob_rev = probs[:, 1]
+        # Direction (calibrated)
+        raw_probs = self.direction_model.predict_proba(X)
+        cal = getattr(self, "calibrator", None)
+        if cal is not None:
+            prob_cont = np.clip(cal.predict(raw_probs[:, 0]), 0.01, 0.99)
+            prob_rev = 1.0 - prob_cont
+        else:
+            prob_cont = raw_probs[:, 0]
+            prob_rev = raw_probs[:, 1]
         confidence = np.abs(prob_cont - prob_rev)
 
         # Expected R
@@ -424,7 +462,13 @@ class TriggerGBT:
             (actions, confidences, probs) where probs has shape (N, 2).
         """
         X = self.scaler.transform(obs[:, self._alive_mask])
-        probs = self.direction_model.predict_proba(X)
+        raw_probs = self.direction_model.predict_proba(X)
+        cal = getattr(self, "calibrator", None)
+        if cal is not None:
+            p_cont = np.clip(cal.predict(raw_probs[:, 0]), 0.01, 0.99)
+            probs = np.column_stack([p_cont, 1.0 - p_cont])
+        else:
+            probs = raw_probs
         actions = np.argmax(probs, axis=1)
         confidences = np.abs(probs[:, 0] - probs[:, 1])
         return actions, confidences, probs
@@ -458,6 +502,7 @@ class TriggerGBT:
                 "stop_model": self.stop_model,
                 "scaler": self.scaler,
                 "alive_mask": self._alive_mask,
+                "calibrator": getattr(self, "calibrator", None),
                 "version": "v5_trigger",
             },
             path,
@@ -477,5 +522,6 @@ class TriggerGBT:
         model.stop_model = data.get("stop_model")
         model.scaler = data["scaler"]
         model._alive_mask = data["alive_mask"]
-        log.info("TriggerGBT loaded from %s", path)
+        model.calibrator = data.get("calibrator")
+        log.info("TriggerGBT loaded from %s (calibrated=%s)", path, model.calibrator is not None)
         return model

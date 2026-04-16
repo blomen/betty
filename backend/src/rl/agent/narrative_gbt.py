@@ -101,10 +101,12 @@ class NarrativeGBT:
             base_params = dict(
                 n_estimators=n_estimators,
                 max_depth=min(max_depth, 4),
+                num_leaves=15,
                 learning_rate=learning_rate,
                 subsample=subsample,
                 min_child_samples=100,
                 colsample_bytree=0.5,
+                min_split_gain=0.01,
                 reg_alpha=0.1,
                 reg_lambda=1.0,
                 n_jobs=2,
