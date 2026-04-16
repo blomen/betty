@@ -47,6 +47,18 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
     settlements: list[dict] = []
     used_history: set[int] = set()  # indices of matched history entries
 
+    # Build a set of open bet signatures to avoid false positives:
+    # if a bet with the same odds+stake is still open in history, don't settle it
+    # via fuzzy matching against a different settled bet.
+    _open_sigs: set[tuple[float, float]] = set()
+    for entry in history:
+        h_status = (entry.get("status") or "").lower()
+        if h_status in ("pending", "open", ""):
+            h_odds = float(entry.get("odds", 0) or 0)
+            h_stake = float(entry.get("stake", 0) or 0)
+            if h_odds > 0:
+                _open_sigs.add((round(h_odds, 2), round(h_stake, 2)))
+
     for bet in db_pending:
         bet_id = bet.get("bet_id") or bet.get("id")
         bet_provider_id = str(bet.get("provider_bet_id") or "")
@@ -116,6 +128,15 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
 
         if matched:
             idx, entry = matched
+            # Guard: if matched via fuzzy/name (not exact ID) and a bet with
+            # the same odds is still open, this is likely a false positive —
+            # the DB bet is the open one, not the settled one.
+            if method != "id" and (round(bet_odds, 2), round(bet_stake, 2)) in _open_sigs:
+                logger.info(
+                    f"[settle] Skipping false positive: bet {bet_id} ({bet_odds}@{bet_stake}) "
+                    f"matched settled entry via {method} but an open bet with same odds exists"
+                )
+                continue
             used_history.add(idx)
             settlements.append(
                 {
@@ -290,9 +311,9 @@ class PendingLoop:
             return
 
         self._status[pid]["settlements"] = settlements
-        logger.info(f"[PendingLoop] {len(settlements)} settlements detected for {pid}")
+        logger.info(f"[PendingLoop] {len(settlements)} settlements detected for {pid} — broadcasting for review")
 
-        # 5. Broadcast detected settlements
+        # 5. Broadcast to UI for user confirmation — don't auto-record
         self._broadcaster.publish(
             "settlements_detected",
             {
@@ -300,8 +321,6 @@ class PendingLoop:
                 "settlements": settlements,
             },
         )
-
-        # 6. Don't auto-record — let the user confirm from the Pending UI
 
     # ------------------------------------------------------------------
     # HTTP helpers
