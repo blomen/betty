@@ -1,15 +1,23 @@
 """Opportunity service - value bet listing, hedging, and bonus scanning."""
 
 import logging
+
 from sqlalchemy.orm import Session
 
-from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
-from ..repositories.limit_repo import LimitRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
-from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
-from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP
-from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit, ProviderRunMetrics
+from ..bankroll.stake_calculator import (
+    BONUS_MIN_ODDS,
+    OPTIMAL_MAX_KELLY,
+    OPTIMAL_SINGLE_BET_CAP,
+    StakeCalculator,
+    calculate_stake,
+    dynamic_min_stake,
+)
+from ..constants import MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP, PROVIDER_CANONICAL
+from ..db.models import Bet, Event, Odds, ProfileProviderLimit, Provider, ProviderRunMetrics
+from ..repositories import OddsRepo, OpportunityRepo, ProfileRepo
+from ..repositories.limit_repo import LimitRepo
 from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
@@ -21,21 +29,16 @@ def get_provider_last_checked(db: Session, provider_ids: list[str] | None = None
     Returns {provider_id: iso_timestamp} for the most recent successful run.
     """
     from sqlalchemy import func
-    q = (
-        db.query(
-            ProviderRunMetrics.provider_id,
-            func.max(ProviderRunMetrics.end_time).label("last_checked"),
-        )
-        .filter(ProviderRunMetrics.status == "success")
-    )
+
+    q = db.query(
+        ProviderRunMetrics.provider_id,
+        func.max(ProviderRunMetrics.end_time).label("last_checked"),
+    ).filter(ProviderRunMetrics.status == "success")
     if provider_ids:
         q = q.filter(ProviderRunMetrics.provider_id.in_(provider_ids))
     q = q.group_by(ProviderRunMetrics.provider_id)
 
-    return {
-        pid: ts.isoformat() + "Z" if ts else None
-        for pid, ts in q.all()
-    }
+    return {pid: ts.isoformat() + "Z" if ts else None for pid, ts in q.all()}
 
 
 def _get_dutch_legs(outcomes) -> list:
@@ -77,7 +80,7 @@ class OpportunityService:
         """List active opportunities with stake recommendations for value bets."""
         provider_ids = None
         if providers:
-            raw_ids = [p.strip() for p in providers.split(',')]
+            raw_ids = [p.strip() for p in providers.split(",")]
             expanded = set(raw_ids)
             for pid in raw_ids:
                 canon = PROVIDER_CANONICAL.get(pid)
@@ -125,20 +128,25 @@ class OpportunityService:
 
         # Exclude opportunities where user already has a pending bet (same event+market+outcome+point)
         if rows and profile:
-            pending = self.db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.point).filter(
-                Bet.profile_id == profile.id,
-                Bet.result == "pending",
-                Bet.event_id.isnot(None),
-            ).all()
+            pending = (
+                self.db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.point)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.result == "pending",
+                    Bet.event_id.isnot(None),
+                )
+                .all()
+            )
             if pending:
                 pending_keys = {(b.event_id, b.market, b.outcome, b.point) for b in pending}
                 rows = [
-                    (opp, ev) for opp, ev in rows
+                    (opp, ev)
+                    for opp, ev in rows
                     if (opp.event_id, opp.market, opp.outcome1, opp.point) not in pending_keys
                 ]
 
         # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
-        if type in ('value', 'dutch', 'reverse', 'reverse_value') and rows and profile:
+        if type in ("value", "dutch", "reverse", "reverse_value") and rows and profile:
             try:
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
@@ -160,7 +168,7 @@ class OpportunityService:
 
         # Batch pre-fetch bonus statuses for all providers (single query instead of N)
         bonus_cache = {}
-        if profile and type == 'value':
+        if profile and type == "value":
             provider_ids = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
             if provider_ids:
                 try:
@@ -222,21 +230,21 @@ class OpportunityService:
                 result["prov_away"] = None
 
             # Add stake recommendations for value bets
-            if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
+            if type == "value" and stake_calculator and profile and opp.odds1 and opp.odds2:
                 self._add_stake_recommendation(result, opp, profile, stake_calculator, bonus_cache)
 
             # Add dutch/reverse-specific fields
-            if type in ('dutch', 'reverse') and stake_calculator and profile:
+            if type in ("dutch", "reverse") and stake_calculator and profile:
                 self._add_dutch_recommendation(result, opp, profile, stake_calculator)
 
             # Add stake recommendations for reverse value bets (Pinnacle vs consensus)
-            if type == 'reverse_value' and stake_calculator and profile and opp.odds1 and opp.odds2:
+            if type == "reverse_value" and stake_calculator and profile and opp.odds1 and opp.odds2:
                 self._add_reverse_value_recommendation(result, opp, stake_calculator)
 
             results.append(result)
 
         # Compute provider allocation scores (daily caps + wagering priority + edge routing)
-        if type == 'value' and profile and results:
+        if type == "value" and profile and results:
             try:
                 allocator = ProviderAllocator(self.db, profile.id)
                 allocator.preload_daily_bets()
@@ -279,10 +287,7 @@ class OpportunityService:
         if not opposing_odds:
             return None
 
-        opposing_list = [
-            {"provider": o.provider_id, "outcome": o.outcome, "odds": o.odds}
-            for o in opposing_odds
-        ]
+        opposing_list = [{"provider": o.provider_id, "outcome": o.outcome, "odds": o.odds} for o in opposing_odds]
 
         result = find_best_hedge(
             event_id=event_id,
@@ -364,21 +369,23 @@ class OpportunityService:
                 kelly_amount = float(int(kelly_amount))
                 max_amount = float(int(max_amount))
 
-            results.append({
-                "event_id": o.event_id,
-                "market": o.market,
-                "outcome": o.outcome,
-                "anchor_provider": o.anchor_provider,
-                "anchor_odds": round(o.anchor_odds, 2),
-                "fair_odds": round(o.fair_odds, 2),
-                "edge_pct": round(o.edge_pct, 1),
-                "home_team": o.home_team,
-                "away_team": o.away_team,
-                "sport": o.sport,
-                "suggested_stake": round(suggested, 2) if not is_poly else int(suggested),
-                "kelly_stake": round(kelly_amount, 2) if not is_poly else int(kelly_amount),
-                "max_stake": round(max_amount, 2) if not is_poly else int(max_amount),
-            })
+            results.append(
+                {
+                    "event_id": o.event_id,
+                    "market": o.market,
+                    "outcome": o.outcome,
+                    "anchor_provider": o.anchor_provider,
+                    "anchor_odds": round(o.anchor_odds, 2),
+                    "fair_odds": round(o.fair_odds, 2),
+                    "edge_pct": round(o.edge_pct, 1),
+                    "home_team": o.home_team,
+                    "away_team": o.away_team,
+                    "sport": o.sport,
+                    "suggested_stake": round(suggested, 2) if not is_poly else int(suggested),
+                    "kelly_stake": round(kelly_amount, 2) if not is_poly else int(kelly_amount),
+                    "max_stake": round(max_amount, 2) if not is_poly else int(max_amount),
+                }
+            )
 
         return {
             "opportunities": results,
@@ -517,61 +524,47 @@ class OpportunityService:
                         prov_home, prov_away = names
                     break
 
-            formatted.append({
-                "id": i + 1,
-                "type": "dutch",
-                "event_id": r["event_id"],
-                "market": clean_market,
-                "point": point_value,
-                "profit_pct": r["guaranteed_profit_pct"],
-                "edge_pct": r["combined_edge_pct"],
-                "guaranteed_profit_pct": r["guaranteed_profit_pct"],
-                "sport": r["sport"],
-                "league": r["league"],
-                "home_team": r["home_team"],
-                "away_team": r["away_team"],
-                "display_home": ev.display_home if ev else None,
-                "display_away": ev.display_away if ev else None,
-                "prov_home": prov_home,
-                "prov_away": prov_away,
-                "starts_at": r["starts_at"],
-                "legs": r["legs"],
-                "total_stake": 0,  # Frontend sets via anchor stake
-                "arb_profit_pct": r.get("arb_profit_pct"),
-                "arb_legs": r.get("arb_legs"),
-            })
-
-        # Include wagering info for anchor providers
-        anchor_wagering = {}
-        profile = self.profile_repo.get_active()
-        if profile:
-            for pid in anchor_providers:
-                bonus = self.profile_repo.get_bonus_status(profile.id, pid)
-                if bonus and bonus.get("status") in ("in_progress", "trigger_needed", "freebet_available"):
-                    anchor_wagering[pid] = {
-                        "status": bonus["status"],
-                        "wagered": bonus.get("wagered_amount", 0),
-                        "requirement": bonus.get("wagering_requirement", 0),
-                        "remaining": max(0, (bonus.get("wagering_requirement", 0) or 0) - (bonus.get("wagered_amount", 0) or 0)),
-                        "progress_pct": bonus.get("progress_pct", 0),
-                        "min_odds": bonus.get("min_odds", 0),
-                        "bonus_amount": bonus.get("bonus_amount", 0),
-                        "bonus_type": bonus.get("bonus_type"),
-                        "days_remaining": bonus.get("days_remaining"),
-                    }
+            formatted.append(
+                {
+                    "id": i + 1,
+                    "type": "dutch",
+                    "event_id": r["event_id"],
+                    "market": clean_market,
+                    "point": point_value,
+                    "profit_pct": r["guaranteed_profit_pct"],
+                    "edge_pct": r["combined_edge_pct"],
+                    "guaranteed_profit_pct": r["guaranteed_profit_pct"],
+                    "sport": r["sport"],
+                    "league": r["league"],
+                    "home_team": r["home_team"],
+                    "away_team": r["away_team"],
+                    "display_home": ev.display_home if ev else None,
+                    "display_away": ev.display_away if ev else None,
+                    "prov_home": prov_home,
+                    "prov_away": prov_away,
+                    "starts_at": r["starts_at"],
+                    "legs": r["legs"],
+                    "total_stake": 0,  # Frontend sets via anchor stake
+                    "arb_profit_pct": r.get("arb_profit_pct"),
+                    "arb_legs": r.get("arb_legs"),
+                }
+            )
 
         return {
             "opportunities": formatted,
             "count": len(results),
             "anchor_providers": anchor_providers,
-            "anchor_wagering": anchor_wagering,
         }
 
-    def _add_stake_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator, bonus_cache: dict | None = None):
+    def _add_stake_recommendation(
+        self, result: dict, opp, profile, stake_calculator: StakeCalculator, bonus_cache: dict | None = None
+    ):
         """Add stake recommendation fields to an opportunity result dict."""
         try:
             edge_raw = (opp.odds1 / opp.odds2 - 1) if opp.odds2 > 1 else 0
-            bonus_status = (bonus_cache or {}).get(opp.provider1_id) or self.profile_repo.get_bonus_status(profile.id, opp.provider1_id)
+            bonus_status = (bonus_cache or {}).get(opp.provider1_id) or self.profile_repo.get_bonus_status(
+                profile.id, opp.provider1_id
+            )
             min_odds = 0.0 if bonus_status.get("is_cleared", True) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
             stake_rec = stake_calculator.calculate(
@@ -609,12 +602,17 @@ class OpportunityService:
                 # Check if a pending trigger bet already exists for this provider
                 if bs == "trigger_needed":
                     from ..db.models import Bet
-                    pending_trigger = self.db.query(Bet).filter(
-                        Bet.profile_id == profile.id,
-                        Bet.provider_id == opp.provider1_id,
-                        Bet.result == "pending",
-                        Bet.stake >= bonus_amount,
-                    ).first()
+
+                    pending_trigger = (
+                        self.db.query(Bet)
+                        .filter(
+                            Bet.profile_id == profile.id,
+                            Bet.provider_id == opp.provider1_id,
+                            Bet.result == "pending",
+                            Bet.stake >= bonus_amount,
+                        )
+                        .first()
+                    )
                     if pending_trigger:
                         result["final_stake"] = 0
                         result["skip_reason"] = "trigger_placed"
@@ -706,11 +704,13 @@ class OpportunityService:
                 for leg in legs_data:
                     leg_stake = round(total_stake * (1.0 / leg["odds"]) / total_inv, 2)
                     leg_return = round(leg_stake * leg["odds"], 2)
-                    legs_with_stakes.append({
-                        **leg,
-                        "stake": leg_stake,
-                        "potential_return": leg_return,
-                    })
+                    legs_with_stakes.append(
+                        {
+                            **leg,
+                            "stake": leg_stake,
+                            "potential_return": leg_return,
+                        }
+                    )
 
             result["guaranteed_profit_pct"] = guaranteed_profit_pct
             result["total_stake"] = round(total_stake, 2)
@@ -839,9 +839,7 @@ class OpportunityService:
 
         updated_index = {}
         for eid, pid, market, outcome, point, updated_at in odds_rows:
-            updated_index[(eid, pid, market, outcome, point)] = (
-                updated_at.isoformat() + "Z" if updated_at else None
-            )
+            updated_index[(eid, pid, market, outcome, point)] = updated_at.isoformat() + "Z" if updated_at else None
 
         result = {}
         for opp, _ in rows:
@@ -910,31 +908,35 @@ class OpportunityService:
             progress_pct = (wagered / wagering_req * 100) if wagering_req > 0 else 100.0
             min_odds = bonus_detail.get("min_odds", 0) or 0
 
-            providers.append({
-                "provider_id": pid,
-                "balance": round(balance, 2),
-                "wagering_remaining": round(remaining, 2),
-                "wagering_progress_pct": round(progress_pct, 1),
-                "bonus_status": bonus_status,
-                "bonus_amount": bonus_amount,
-                "min_odds": min_odds,
-                "daily_bets": alloc.daily_bets_group,
-                "daily_cap": alloc.daily_cap,
-                "limit_type": limit_type_map.get(pid),
-                "limit_level": limit_level if limit_level >= 1 else None,
-                "allocation_score": alloc.score,
-                "is_limited": limit_level >= 1,
-            })
+            providers.append(
+                {
+                    "provider_id": pid,
+                    "balance": round(balance, 2),
+                    "wagering_remaining": round(remaining, 2),
+                    "wagering_progress_pct": round(progress_pct, 1),
+                    "bonus_status": bonus_status,
+                    "bonus_amount": bonus_amount,
+                    "min_odds": min_odds,
+                    "daily_bets": alloc.daily_bets_group,
+                    "daily_cap": alloc.daily_cap,
+                    "limit_type": limit_type_map.get(pid),
+                    "limit_level": limit_level if limit_level >= 1 else None,
+                    "allocation_score": alloc.score,
+                    "is_limited": limit_level >= 1,
+                }
+            )
 
             total_balance += balance
             total_wagering += remaining
 
         # Sort: wagering_remaining DESC → balance DESC → limit_level ASC
-        providers.sort(key=lambda p: (
-            -(p["wagering_remaining"]),
-            -(p["balance"]),
-            (p["limit_level"] or 0),
-        ))
+        providers.sort(
+            key=lambda p: (
+                -(p["wagering_remaining"]),
+                -(p["balance"]),
+                (p["limit_level"] or 0),
+            )
+        )
 
         return {
             "cluster": cluster_name,
@@ -952,10 +954,9 @@ class OpportunityService:
             profile = self.profile_repo.get_active()
             if profile:
                 from ..db.models import ProfileProviderBalance
+
                 rows = (
-                    self.db.query(ProfileProviderBalance)
-                    .filter(ProfileProviderBalance.profile_id == profile.id)
-                    .all()
+                    self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile.id).all()
                 )
                 balance_map = {r.provider_id: r.balance or 0.0 for r in rows}
         except Exception:
@@ -967,14 +968,16 @@ class OpportunityService:
         for group_name, group_info in PLATFORM_GROUPS.items():
             total = sum(balance_map.get(m, 0.0) for m in group_info["members"])
             playable = sum(1 for m in group_info["members"] if balance_map.get(m, 0.0) >= 5)
-            clusters.append({
-                "id": group_name,
-                "label": group_name.replace("_", " ").title(),
-                "members": group_info["members"],
-                "canonical": group_info["canonical"],
-                "total_balance": round(total, 2),
-                "playable_count": playable,
-            })
+            clusters.append(
+                {
+                    "id": group_name,
+                    "label": group_name.replace("_", " ").title(),
+                    "members": group_info["members"],
+                    "canonical": group_info["canonical"],
+                    "total_balance": round(total, 2),
+                    "playable_count": playable,
+                }
+            )
 
         # Standalone providers (in PLATFORM_MAP but not in any PLATFORM_GROUPS)
         grouped_providers = set()
@@ -984,14 +987,16 @@ class OpportunityService:
         for pid, platform in PLATFORM_MAP.items():
             if pid not in grouped_providers and pid not in ("pinnacle", "polymarket"):
                 bal = balance_map.get(pid, 0.0)
-                clusters.append({
-                    "id": pid,
-                    "label": pid.title(),
-                    "members": [pid],
-                    "canonical": pid,
-                    "total_balance": round(bal, 2),
-                    "playable_count": 1 if bal >= 5 else 0,
-                })
+                clusters.append(
+                    {
+                        "id": pid,
+                        "label": pid.title(),
+                        "members": [pid],
+                        "canonical": pid,
+                        "total_balance": round(bal, 2),
+                        "playable_count": 1 if bal >= 5 else 0,
+                    }
+                )
 
         return clusters
 

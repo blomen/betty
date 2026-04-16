@@ -42,11 +42,6 @@ export const opportunitiesApi = {
     opportunities: unknown[];
     count: number;
     anchor_providers: string[];
-    anchor_wagering?: Record<string, {
-      status: string; wagered: number; requirement: number; remaining: number;
-      progress_pct: number; min_odds: number; bonus_amount: number;
-      bonus_type: string | null; days_remaining: number | null;
-    }>;
   }> {
     const params = new URLSearchParams();
     params.set('providers', providers.join(','));

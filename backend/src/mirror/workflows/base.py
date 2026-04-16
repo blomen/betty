@@ -42,6 +42,20 @@ class HistoryEntry:
     payout: float | None = None
 
 
+@dataclass
+class PositionEntry:
+    """An open/pending bet from the provider's perspective."""
+
+    provider_bet_id: str
+    event_name: str
+    market: str
+    outcome: str
+    odds: float
+    stake: float
+    placed_at: str | None = None
+    potential_payout: float | None = None
+
+
 class ProviderWorkflow(ABC):
     """Base class for provider-specific fire workflow automation.
 
@@ -50,13 +64,14 @@ class ProviderWorkflow(ABC):
     """
 
     platform: str  # "altenar", "gecko", "kambi", "pinnacle", "polymarket"
+    autonomous_placement: bool = False  # True for API-based providers (Pinnacle)
 
     def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
         self.provider_id = provider_id
         self.domain = domain
         self.mode = mode
 
-    async def find_tab(self, context: "BrowserContext") -> "Page | None":
+    async def find_tab(self, context: BrowserContext) -> Page | None:
         """Find this provider's tab in the browser context.
 
         Prefers the page with the longest URL (most likely logged in / deepest page).
@@ -72,40 +87,47 @@ class ProviderWorkflow(ABC):
         return best
 
     @abstractmethod
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         """Check if user is logged in. Returns True if authenticated."""
 
     @abstractmethod
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         """Read bet history and return settled bets for DB reconciliation."""
 
     @abstractmethod
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         """Read current balance. Returns amount in provider's native currency."""
 
     @abstractmethod
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate the page to the event for this bet. Returns True on success."""
 
     @abstractmethod
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         """Place a bet: select outcome, enter stake, submit."""
 
-    async def check_live_price(self, page: "Page", bet) -> float | None:
-        """Read live odds and return edge %. Override for providers with DOM/API price reads.
-        Returns None if not supported or price unavailable."""
-        return None
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        """Auto-select outcome on betslip. Override for platforms with WSDK/API support."""
+        return PlacementResult(status="manual", bet_id=0, reason="no_prep")
 
-    async def await_confirmation(self, page: "Page", timeout_s: float = 15.0) -> PlacementResult | None:
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+        """Read live odds. Returns (live_odds, live_edge) or (None, None)."""
+        return None, None
+
+    async def fetch_positions(self, page: Page) -> list[PositionEntry]:
+        """Read open/pending bets from provider. Override per platform."""
+        return []
+
+    async def await_confirmation(self, page: Page, timeout_s: float = 15.0) -> PlacementResult | None:
         """Wait for placement confirmation. Default: no-op (API response IS confirmation).
         Override for DOM-based platforms where confirmation is async (e.g., Polymarket)."""
         return None
 
-    async def cleanup(self, page: "Page") -> None:
+    async def cleanup(self, page: Page) -> None:
         """Called after all bets for this provider are done. Override to close extra tabs etc."""
         pass
 
-    async def _evaluate_api(self, page: "Page", url: str, method: str = "GET", body: dict | None = None) -> dict | None:
+    async def _evaluate_api(self, page: Page, url: str, method: str = "GET", body: dict | None = None) -> dict | None:
         """Make an API call from the page's session (inherits cookies/auth)."""
         try:
             if body:

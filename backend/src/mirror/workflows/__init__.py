@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
+from .base import HistoryEntry, PlacementResult, PositionEntry, ProviderWorkflow, WorkflowMode
 
 if TYPE_CHECKING:
     pass
@@ -106,5 +106,6 @@ __all__ = [
     "WorkflowMode",
     "PlacementResult",
     "HistoryEntry",
+    "PositionEntry",
     "get_workflow",
 ]

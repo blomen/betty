@@ -208,107 +208,30 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 5. User confirms Place/Skip for each bet
 6. Bets recorded to server DB via API proxy
 
-### Generic Mirror Workflow (IMPORTANT — all providers follow this)
+### Mirror Workflow (IMPORTANT — all providers follow this)
 
-**Every provider — Kambi, Altenar, Gecko, Generic — follows the exact same state machine. No exceptions.**
+**Canonical reference: [`docs/mirror-workflow.md`](docs/mirror-workflow.md)** — full checklist, per-platform details, capability matrix, troubleshooting.
 
-#### State Machine (per provider)
+Every provider follows the same state machine. No exceptions:
+
 ```
-IDLE → OPENING (find browser tab)
-     → LOGIN_WAITING (poll 120s: interception → DOM → workflow API)
-     → SETTLING (sync history, settle pending, record unknown bets)
-     → NAVIGATING (navigate to event page)
-     → READY (await user Place/Skip)
-     → PLACING (intercept placement, record to DB)
-     → back to NAVIGATING (next bet) or IDLE (done)
+IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLACING → back to NAVIGATING or IDLE
 ```
 
-#### The Rule: Settle Before Play
-**Before placing ANY bet, the provider MUST sync its full bet history to DB.** The provider's bet history is the source of truth — the DB may have fewer bets (manual bets, bets placed before mirror existed).
+**The 8-step checklist (summary):**
+1. **Wire interception** — balance/history/placement URL patterns in `browser.py`
+2. **Open site & await login** — `find_tab()` → `check_login()` (120s timeout)
+3. **Sync balance** — interceptor → workflow API → DOM scrape → `POST /api/bankroll/set/{provider_id}`
+4. **Settle pending** — `sync_history()` → 3-tier fuzzy match → broadcast for user review → record to DB. **Settlement MUST complete before placing any bet.**
+5. **Navigate** — pop highest-edge bet from cluster queue → `navigate_to_event()`
+6. **Sync odds & confirm edge** — `prep_betslip()` → `check_live_price()` → auto-skip if -EV
+7. **Await place & intercept** — user clicks Place on site → interceptor catches → `POST /api/bets`
+8. **Move to pending** — bet recorded, PendingLoop picks up for future settlement → next bet
 
-Settlement flow (runs once after login, before first bet):
-1. Fetch pending bets from DB (`/api/opportunities/play/pending-bets`)
-2. Call `workflow.sync_history(page)` → returns `list[HistoryEntry]`
-3. Match DB pending bets against history (3-tier fuzzy matching: exact ID → name+odds → fuzzy odds+stake)
-4. Broadcast `settlements_detected` → UI shows toast for user confirmation
-5. Record unknown open bets from history that aren't in DB
-6. Only after settling completes → start navigating to bets
-
-#### Navigate → Prep → Place (the three-step pattern)
-
-**Step 1: Navigate** (`workflow.navigate_to_event(page, bet)`)
-- Get user to the event page with the correct outcome visible
-- Kambi: `KambiWidget.navigateClient('#/event/{id}')` JS API
-- Altenar: `sportRoutingParams` URL + shadow DOM traversal
-- Gecko: event URL with ID
-- Generic: URL template from intel JSON (`/sport/event/{event_id}`)
-
-**Step 2: Prep** (`workflow.prep_betslip(page, bet, stake)`)
-- Auto-select the outcome on the betslip
-- Fill stake if possible (or leave for user)
-- Read live odds from DOM → return `PlacementResult(status="prepped", actual_odds=X)`
-- If `live_edge < 0` → auto-skip (negative EV)
-
-**Step 3: Place** (user clicks Place on site, interception captures it)
-- User manually clicks the provider's "Place Bet" button
-- Network interception catches the request/response (`placebet`, `/coupons`, `/bets/straight`, etc.)
-- Triggers `bet_intercepted_event` → unblocks ProviderRunner
-- Returns `PlacementResult(status="placed", bet_id=X, actual_odds=Y, actual_stake=Z)`
-- Bet recorded to DB via `POST /api/bets`
-
-#### What Every Workflow Must Implement
-
-```python
-class ProviderWorkflow:
-    async def check_login(self, page) -> bool          # Is user logged in?
-    async def sync_balance(self, page) -> float        # Current balance
-    async def sync_history(self, page) -> list[HistoryEntry]  # All bets (open+settled)
-    async def navigate_to_event(self, page, bet) -> bool      # Go to event page
-    async def place_bet(self, page, bet, stake) -> PlacementResult
-    async def find_tab(self, context) -> Page | None   # Find provider's browser tab
-    # Optional:
-    async def prep_betslip(self, page, bet, stake) -> PlacementResult  # Auto-select outcome
-    async def check_live_price(self, page, bet) -> tuple[float, float]  # (odds, edge%)
-```
-
-#### HistoryEntry Fields
-```python
-HistoryEntry(
-    provider_bet_id: str,    # Provider's bet ID (for exact matching)
-    event_name: str,         # "Team A vs Team B"
-    market: str,             # "1x2", "spread", "total"
-    outcome: str,            # "1", "X", "2", "over", "under"
-    odds: float,             # Decimal odds
-    stake: float,            # Amount wagered
-    status: str,             # "won" | "lost" | "void" | "cashout" | "pending"
-    payout: float,           # Amount returned (0 if lost)
-)
-```
-
-#### GenericWorkflow (data-driven, for unwired providers)
-
-For providers without a dedicated workflow class, `GenericWorkflow` reads from an intel JSON file at `data/mirror_intel/{provider_id}.json`. It supports:
-- **Balance**: API endpoint + JSON path, or DOM selector + regex
-- **History**: API endpoint + field mapping, or DOM selectors
-- **Navigation**: URL template with `{event_id}` variable
-- **Betslip**: CSS selectors for odds buttons, stake input, confirm button
-
-Optional strategy override in `workflows/strategies/{provider_id}.py` for edge cases (shadow DOM, WASM, custom auth).
-
-#### Cluster Deduplication
-Providers sharing a platform (e.g., Unibet + LeoVegas = Kambi cluster) have identical odds. Once a bet is placed on ANY provider in a cluster, that event+market is blocked across all siblings. Clusters defined in `play_loop.py:_CLUSTER_MEMBERS`.
-
-#### Daily Bet Cap
-Soft providers: 10 bets/day per provider (`DAILY_BET_CAP`). Uncapped: Pinnacle, Polymarket, Cloudbet.
-
-#### Adding a New Provider Checklist
-1. **Discovery first**: Research provider's auth, API endpoints, CORS, bet placement URLs
-2. **Language + notifications**: Set to English, mute overlays/cookie banners
-3. **Implement workflow**: Either dedicated class (if platform-specific) or intel JSON (if generic)
-4. **Required methods**: `check_login`, `sync_balance`, `sync_history`, `navigate_to_event`, `place_bet`
-5. **Wire interception**: Add bet placement URL patterns to `browser.py` interceptor keywords
-6. **Add to cluster map** if sibling of existing platform
-7. **Test the full flow**: Login → Settle pending → Navigate → Prep → Place → Record
+**Key rules:**
+- Cluster deduplication: siblings share odds, one bet blocks all (`play_loop.py:_CLUSTER_MEMBERS`)
+- Daily cap: 10/day per soft provider (uncapped: pinnacle, polymarket, cloudbet)
+- Provider history is source of truth — unknown bets recorded to DB during settlement
 
 ### Key Files
 ```

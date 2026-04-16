@@ -293,7 +293,9 @@ export default function PlayPage() {
     return `${Math.round(h / 24)}d`
   }
 
+  const ALTENAR_PROVIDERS = new Set(['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet'])
   const bets = batch.filter(b => {
+    if (ALTENAR_PROVIDERS.has(b.provider_id)) return false  // Dutch tab only
     if (b.edge_pct <= 0) return false
     const h = getTtkHours(b)
     if (h != null && h > ttkFilter) return false
@@ -301,10 +303,10 @@ export default function PlayPage() {
   })
 
   // Static cluster membership — mirrors PLATFORM_GROUPS from constants.py
+  // Altenar sites excluded — they limit fast, extract via Dutch tab instead
   const CLUSTER_MEMBERS: Record<string, string[]> = {
     kambi: ['unibet', 'leovegas', 'expekt', 'betmgm', 'speedybet', 'x3000', 'goldenbull', '1x2'],
     spectate: ['888sport', 'mrgreen'],
-    altenar_main: ['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet'],
     gecko_betsson: ['betsson', 'nordicbet', 'betsafe', 'spelklubben'],
     comeon_group: ['comeon', 'lyllo', 'hajper', 'snabbare'],
   }

@@ -177,6 +177,7 @@ def _resolve_provider_meta(provider_bets: dict[str, list[FireWindowBet]]) -> Non
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def open_window(
     batch: list[dict],
     provider_order: list[str] | None = None,
@@ -232,7 +233,8 @@ def open_window(
     for pid in list(provider_bets.keys()):
         before = len(provider_bets[pid])
         provider_bets[pid] = [
-            b for b in provider_bets[pid]
+            b
+            for b in provider_bets[pid]
             if f"{b.event_id}:{b.market}:{b.outcome}" not in already
             and not (b.market_slug and f"slug:{b.market_slug}" in already)
         ]
@@ -254,6 +256,7 @@ def open_window(
         try:
             from ..db.models import get_session
             from ..services.bankroll_service import BankrollService
+
             db = get_session()
             try:
                 service = BankrollService(db)
@@ -338,14 +341,16 @@ def _build_queue_response() -> dict:
         bets = _window.provider_bets.get(pid, [])
         fired = pid in _window.fired_results
         tier = bets[0].tier if bets else "soft"
-        queue.append({
-            "provider_id": pid,
-            "bet_count": len(bets),
-            "total_stake": round(sum(b.stake for b in bets), 2),
-            "total_ev": round(sum(b.expected_profit for b in bets), 2),
-            "tier": tier,
-            "fired": fired,
-        })
+        queue.append(
+            {
+                "provider_id": pid,
+                "bet_count": len(bets),
+                "total_stake": round(sum(b.stake for b in bets), 2),
+                "total_ev": round(sum(b.expected_profit for b in bets), 2),
+                "tier": tier,
+                "fired": fired,
+            }
+        )
 
     result = {
         "status": _window.status,
@@ -363,6 +368,7 @@ def _build_queue_response() -> dict:
 # ---------------------------------------------------------------------------
 # Set current provider (replaces activate_provider)
 # ---------------------------------------------------------------------------
+
 
 def set_current_provider(provider_id: str) -> dict:
     """Set the current provider and return live state. No polling, no tabs."""
@@ -387,12 +393,12 @@ async def open_needed_tabs(mirror_service) -> dict:
     global _tabs_opened
     if _tabs_opened:
         return {"opened": [], "settle_needed": [], "count": 0, "skipped": "already_opened"}
+    from ..config.loader import load_config
     from ..db.models import Bet, Event
     from ..repositories.profile_repo import ProfileRepo
-    from ..config.loader import load_config
 
-    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror_service, "interceptor", None) if mirror_service else None
+    context = getattr(context, "context", None) if context else None
     if not context:
         return {"error": "no_browser_context"}
 
@@ -407,16 +413,14 @@ async def open_needed_tabs(mirror_service) -> dict:
         balances = repo.get_all_balances(profile.id) if profile else {}
 
         # Find providers with expired pending bets
-        pending = db.query(Bet).filter(
-            Bet.profile_id == profile.id, Bet.result == "pending"
-        ).all() if profile else []
+        pending = db.query(Bet).filter(Bet.profile_id == profile.id, Bet.result == "pending").all() if profile else []
 
         providers_needing_settle: set[str] = set()
         for bet in pending:
-            start = getattr(bet, 'start_time', None)
+            start = getattr(bet, "start_time", None)
             if not start:
                 event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                start = getattr(event, 'start_time', None) if event else None
+                start = getattr(event, "start_time", None) if event else None
             if start:
                 # Normalize timezone — DB may store naive datetimes
                 if start.tzinfo is None:
@@ -507,8 +511,8 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     """
     result = {"provider_id": provider_id, "steps": {}}
 
-    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror_service, "interceptor", None) if mirror_service else None
+    context = getattr(context, "context", None) if context else None
 
     # Settle expired bets across ALL providers
     try:
@@ -535,6 +539,7 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         # Read cluster balances
         try:
             from ..repositories.profile_repo import ProfileRepo
+
             db = get_session()
             try:
                 repo = ProfileRepo(db)
@@ -568,8 +573,14 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
         if provider_id == "polymarket":
             try:
                 from ..mirror.workflows.polymarket import PolymarketWorkflow
-                poly_wf = workflow if isinstance(workflow, PolymarketWorkflow) else PolymarketWorkflow(
-                    provider_id="polymarket", domain="polymarket.com",
+
+                poly_wf = (
+                    workflow
+                    if isinstance(workflow, PolymarketWorkflow)
+                    else PolymarketWorkflow(
+                        provider_id="polymarket",
+                        domain="polymarket.com",
+                    )
                 )
                 settle_result = await poly_wf.settle_all(page)
                 result["steps"]["settle"] = {
@@ -591,7 +602,9 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
                 logger.warning(f"[FireWindow] Polymarket settle_all failed: {e}", exc_info=True)
                 result["steps"]["settle"] = f"error:{e}"
         elif provider_id == "pinnacle":
-            logger.info(f"[FireWindow] >>> Pinnacle settle: page={'found' if page else 'NONE'}, workflow={type(workflow).__name__}, has_strategy={hasattr(workflow, 'strategy') and workflow.strategy is not None}")
+            logger.info(
+                f"[FireWindow] >>> Pinnacle settle: page={'found' if page else 'NONE'}, workflow={type(workflow).__name__}, has_strategy={hasattr(workflow, 'strategy') and workflow.strategy is not None}"
+            )
             try:
                 settle_result = await workflow.settle_all(page)
                 logger.info(f"[FireWindow] >>> Pinnacle settle_all done: {settle_result}")
@@ -615,6 +628,7 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
     # Read balance from DB (interceptor syncs it on page load)
     try:
         from ..repositories.profile_repo import ProfileRepo
+
         db = get_session()
         try:
             repo = ProfileRepo(db)
@@ -633,6 +647,7 @@ async def activate_provider_workflow(provider_id: str, mirror_service) -> dict:
 def _settle_from_history(provider_id: str, history: list) -> int:
     """Match history entries against pending bets in DB and settle them."""
     from .bet_service import BetService
+
     settled_count = 0
     db = get_session()
     try:
@@ -641,6 +656,7 @@ def _settle_from_history(provider_id: str, history: list) -> int:
             if entry.status in ("won", "lost", "void", "cashout"):
                 # Try to find matching pending bet
                 from ..db.models import Bet
+
                 pending = (
                     db.query(Bet)
                     .filter(
@@ -657,8 +673,7 @@ def _settle_from_history(provider_id: str, history: list) -> int:
                         pending.payout = entry.payout
                     settled_count += 1
                     logger.info(
-                        f"[FireWindow] Settled {provider_id} bet #{pending.id}: "
-                        f"{entry.status} (payout={entry.payout})"
+                        f"[FireWindow] Settled {provider_id} bet #{pending.id}: {entry.status} (payout={entry.payout})"
                     )
         db.commit()
     except Exception as e:
@@ -678,9 +693,10 @@ def _settle_expired_bets() -> dict:
 
     Returns {provider_id: {"expired": N, "voided": N}}.
     """
+    from datetime import datetime, timezone
+
     from ..db.models import Bet, Event
     from .bet_service import BetService
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
     result = {}
@@ -688,18 +704,14 @@ def _settle_expired_bets() -> dict:
     try:
         svc = BetService(db)
 
-        pending = (
-            db.query(Bet)
-            .filter(Bet.result == "pending")
-            .all()
-        )
+        pending = db.query(Bet).filter(Bet.result == "pending").all()
 
         expired_by_provider: dict[str, list] = {}
         for bet in pending:
-            start = bet.start_time if hasattr(bet, 'start_time') and bet.start_time else None
+            start = bet.start_time if hasattr(bet, "start_time") and bet.start_time else None
             if not start:
                 event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                start = event.start_time if event and hasattr(event, 'start_time') else None
+                start = event.start_time if event and hasattr(event, "start_time") else None
 
             if start:
                 if start.tzinfo is None:
@@ -715,10 +727,7 @@ def _settle_expired_bets() -> dict:
                     svc.settle_bet(bet.id, "void", 0.0)
                     voided += 1
                     voided_ids.add(bet.id)
-                    logger.info(
-                        f"[FireWindow] Voided expired ghost bet #{bet.id} "
-                        f"{pid} (stake={bet.stake})"
-                    )
+                    logger.info(f"[FireWindow] Voided expired ghost bet #{bet.id} {pid} (stake={bet.stake})")
                 except Exception as e:
                     logger.warning(f"[FireWindow] Failed to void bet #{bet.id}: {e}")
             result[pid] = {"expired": len(bets), "voided": voided}
@@ -729,10 +738,7 @@ def _settle_expired_bets() -> dict:
         if voided_ids and _window is not None:
             for pid in list(_window.provider_bets.keys()):
                 before = len(_window.provider_bets[pid])
-                _window.provider_bets[pid] = [
-                    b for b in _window.provider_bets[pid]
-                    if b.bet_id not in voided_ids
-                ]
+                _window.provider_bets[pid] = [b for b in _window.provider_bets[pid] if b.bet_id not in voided_ids]
                 removed = before - len(_window.provider_bets[pid])
                 if removed:
                     logger.info(f"[FireWindow] Removed {removed} voided bets from {pid} queue")
@@ -749,6 +755,7 @@ def _settle_expired_bets() -> dict:
 # ---------------------------------------------------------------------------
 # Live state (simplified — DB odds + balance, no live overlay)
 # ---------------------------------------------------------------------------
+
 
 def get_live_state() -> dict:
     """Return current state for the active provider using DB odds."""
@@ -780,28 +787,30 @@ def get_live_state() -> dict:
         else:
             excluded_count += 1
 
-        bet_dicts.append({
-            "bet_id": bet.bet_id,
-            "provider_id": bet.provider_id,
-            "event_id": bet.event_id,
-            "market": bet.market,
-            "outcome": bet.outcome,
-            "point": bet.point,
-            "odds": bet.odds,
-            "fair_odds": bet.fair_odds,
-            "edge_pct": bet.edge_pct,
-            "stake": bet.stake,
-            "expected_profit": bet.expected_profit,
-            "display_home": bet.display_home,
-            "display_away": bet.display_away,
-            "sport": bet.sport,
-            "tier": bet.tier,
-            "market_slug": bet.market_slug,
-            "poly_outcome": bet.poly_outcome,
-            "original_outcome": bet.original_outcome,
-            "start_time": bet.start_time,
-            "available_providers": bet.available_providers,
-        })
+        bet_dicts.append(
+            {
+                "bet_id": bet.bet_id,
+                "provider_id": bet.provider_id,
+                "event_id": bet.event_id,
+                "market": bet.market,
+                "outcome": bet.outcome,
+                "point": bet.point,
+                "odds": bet.odds,
+                "fair_odds": bet.fair_odds,
+                "edge_pct": bet.edge_pct,
+                "stake": bet.stake,
+                "expected_profit": bet.expected_profit,
+                "display_home": bet.display_home,
+                "display_away": bet.display_away,
+                "sport": bet.sport,
+                "tier": bet.tier,
+                "market_slug": bet.market_slug,
+                "poly_outcome": bet.poly_outcome,
+                "original_outcome": bet.original_outcome,
+                "start_time": bet.start_time,
+                "available_providers": bet.available_providers,
+            }
+        )
 
     # Fetch current balance — for clusters, sum all member balances
     is_cluster = pid == ALTENAR_CLUSTER_ID
@@ -809,6 +818,7 @@ def get_live_state() -> dict:
     cluster_balances = None
     try:
         from ..repositories.profile_repo import ProfileRepo
+
         db = get_session()
         try:
             profile_repo = ProfileRepo(db)
@@ -851,9 +861,11 @@ def get_live_state() -> dict:
 # Single-bet flow: check → confirm → next
 # ---------------------------------------------------------------------------
 
+
 def _get_cluster_balances(cluster_providers: list[str]) -> dict[str, float]:
     """Get balances for all providers in a cluster. Returns {pid: balance}."""
     from ..repositories.profile_repo import ProfileRepo
+
     balances = {}
     db = get_session()
     try:
@@ -874,13 +886,18 @@ def _get_already_placed(provider_ids: list[str]) -> set[str]:
     imported positions (event_id=None) match fire window bets by slug.
     """
     from ..db.models import Bet
+
     already_placed: set[str] = set()
     db = get_session()
     try:
-        rows = db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.confirmation_id).filter(
-            Bet.provider_id.in_(provider_ids),
-            Bet.result == "pending",
-        ).all()
+        rows = (
+            db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.confirmation_id)
+            .filter(
+                Bet.provider_id.in_(provider_ids),
+                Bet.result == "pending",
+            )
+            .all()
+        )
         for row in rows:
             already_placed.add(f"{row[0]}:{row[1]}:{row[2]}")
             if row[3]:
@@ -961,6 +978,7 @@ def get_next_bet() -> dict:
             balance = 0
             try:
                 from ..repositories.profile_repo import ProfileRepo
+
                 _db = get_session()
                 try:
                     _repo = ProfileRepo(_db)
@@ -981,8 +999,15 @@ def get_next_bet() -> dict:
         cents = round((1 / bet.odds) * 100) if bet.odds > 1 else 0
         fair_cents = round((1 / bet.fair_odds) * 100) if bet.fair_odds > 1 else 0
 
-        remaining = len([b for b in bets if b.bet_id not in fired_ids and b.edge_pct > 0
-                         and f"{b.event_id}:{b.market}:{b.outcome}" not in already_placed])
+        remaining = len(
+            [
+                b
+                for b in bets
+                if b.bet_id not in fired_ids
+                and b.edge_pct > 0
+                and f"{b.event_id}:{b.market}:{b.outcome}" not in already_placed
+            ]
+        )
 
         return {
             "bet_id": bet.bet_id,
@@ -1034,15 +1059,16 @@ async def check_bet(bet_id: int, mirror_service) -> dict:
         if pid == ALTENAR_CLUSTER_ID and bet.available_providers:
             check_pid = bet.available_providers[0]
         workflow = get_workflow(check_pid)
-        context = getattr(mirror_service, 'interceptor', None)
-        context = getattr(context, 'context', None) if context else None
+        context = getattr(mirror_service, "interceptor", None)
+        context = getattr(context, "context", None) if context else None
         if context:
             page = await workflow.find_tab(context)
             if page:
                 await workflow.navigate_to_event(page, bet)
-                live_edge = await workflow.check_live_price(page, bet)
+                _price_result = await workflow.check_live_price(page, bet)
+                live_edge = _price_result[1] if isinstance(_price_result, tuple) else _price_result
                 # Get live price from prepare result if available
-                prep = getattr(workflow, '_last_prepare', None)
+                prep = getattr(workflow, "_last_prepare", None)
                 if prep and prep.get("live_price"):
                     live_cents = round(prep["live_price"] * 100)
 
@@ -1096,9 +1122,10 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
         actual_pid = pid
 
     # Adjust stake to available balance
-    balance = float('inf')
+    balance = float("inf")
     try:
         from ..repositories.profile_repo import ProfileRepo
+
         _db = get_session()
         try:
             _repo = ProfileRepo(_db)
@@ -1117,8 +1144,8 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
     label = f"*{bet.display_home} vs {bet.display_away}*{bet.market}*{bet.outcome}*"
 
     workflow = get_workflow(actual_pid)
-    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror_service, "interceptor", None) if mirror_service else None
+    context = getattr(context, "context", None) if context else None
     page = await workflow.find_tab(context) if context else None
 
     if page is None and workflow.mode.value == "autonomous":
@@ -1129,6 +1156,7 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
         result = await workflow.place_bet(page, bet, actual_stake)
     else:
         from ..mirror.workflows.base import PlacementResult
+
         result = PlacementResult(status="manual", bet_id=bet_id, actual_stake=actual_stake)
 
     if result.status in ("placed", "manual"):
@@ -1151,8 +1179,9 @@ async def place_bet(bet_id: int, mirror_service, target_provider: str | None = N
 
 def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake: float | None = None) -> None:
     """Record placed bet to the database."""
-    from .bet_service import BetService
     from ..db.models import Bet
+    from .bet_service import BetService
+
     stake = actual_stake if actual_stake is not None else bet.stake
     db = get_session()
     try:
@@ -1190,6 +1219,7 @@ def _record_bet(bet: FireWindowBet, provider_id: str, result: dict, actual_stake
 def _sync_balance_after_bet(bet: FireWindowBet, provider_id: str) -> None:
     """Deduct stake from provider balance after placement."""
     from ..repositories.profile_repo import ProfileRepo
+
     db = get_session()
     try:
         repo = ProfileRepo(db)
@@ -1223,6 +1253,7 @@ def skip_bet(bet_id: int) -> dict:
 # Fire all (legacy — kept for batch fire)
 # ---------------------------------------------------------------------------
 
+
 async def fire_provider(mirror_service) -> dict:
     """Fire bets for the current provider with per-bet live price checking.
 
@@ -1246,6 +1277,7 @@ async def fire_provider(mirror_service) -> dict:
 
     # Check balance
     from ..repositories.profile_repo import ProfileRepo
+
     db = get_session()
     try:
         profile_repo = ProfileRepo(db)
@@ -1262,8 +1294,8 @@ async def fire_provider(mirror_service) -> dict:
 
     # Get workflow + browser context once for the whole provider
     workflow = get_workflow(pid)
-    context = getattr(mirror_service, 'interceptor', None) if mirror_service else None
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror_service, "interceptor", None) if mirror_service else None
+    context = getattr(context, "context", None) if context else None
     page = await workflow.find_tab(context) if context else None
 
     for bet in sorted_bets:
@@ -1273,7 +1305,8 @@ async def fire_provider(mirror_service) -> dict:
         edge = bet.edge_pct
         if page is not None:
             await workflow.navigate_to_event(page, bet)
-            live_edge = await workflow.check_live_price(page, bet)
+            _price_result = await workflow.check_live_price(page, bet)
+            live_edge = _price_result[1] if isinstance(_price_result, tuple) else _price_result
             if live_edge is not None:
                 edge = live_edge
 
@@ -1392,6 +1425,7 @@ def _advance_queue() -> str | None:
 # Summary / lifecycle
 # ---------------------------------------------------------------------------
 
+
 def get_fired_summary() -> dict:
     """Return summary of all providers' fire results."""
     if _window is None:
@@ -1417,11 +1451,13 @@ def get_fired_summary() -> dict:
             total_fired += summary.get("fired", 0)
             total_failed += summary.get("failed", 0)
             total_excluded += summary.get("excluded", 0)
-            providers.append({
-                "provider_id": pid,
-                "status": "fired",
-                **summary,
-            })
+            providers.append(
+                {
+                    "provider_id": pid,
+                    "status": "fired",
+                    **summary,
+                }
+            )
 
     return {
         "status": _window.status,
@@ -1518,11 +1554,7 @@ async def check_settlements(mirror_service) -> dict:
         if not profile:
             return {"error": "no active profile"}
 
-        pending = (
-            db.query(Bet)
-            .filter(Bet.profile_id == profile.id, Bet.result == "pending")
-            .all()
-        )
+        pending = db.query(Bet).filter(Bet.profile_id == profile.id, Bet.result == "pending").all()
 
         if not pending:
             return {"settlements": [], "summary": {"total": 0}}
@@ -1536,9 +1568,10 @@ async def check_settlements(mirror_service) -> dict:
         if "polymarket" in by_provider and mirror_service:
             try:
                 from ..mirror.workflows.polymarket import PolymarketWorkflow
+
                 poly_wf = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
-                context = getattr(mirror_service, 'interceptor', None)
-                context = getattr(context, 'context', None) if context else None
+                context = getattr(mirror_service, "interceptor", None)
+                context = getattr(context, "context", None) if context else None
                 if context:
                     poly_page = await poly_wf.find_tab(context)
                     if poly_page:
@@ -1546,31 +1579,41 @@ async def check_settlements(mirror_service) -> dict:
                         # Match positions against pending bets
                         for bet in by_provider["polymarket"]:
                             event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                            event_name = f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id or ""
+                            event_name = (
+                                f"{event.home_team} vs {event.away_team}"
+                                if event and event.home_team
+                                else bet.event_id or ""
+                            )
                             # Find matching position by checking if event keywords appear in full_text
                             matched_pos = _match_polymarket_position(bet, event, positions)
                             if matched_pos:
                                 status = matched_pos["status"]
-                                if "Won" in matched_pos.get("full_text", "") or "WON" in matched_pos.get("full_text", ""):
+                                if "Won" in matched_pos.get("full_text", "") or "WON" in matched_pos.get(
+                                    "full_text", ""
+                                ):
                                     status = "won"
-                                elif "Lost" in matched_pos.get("full_text", "") or "LOST" in matched_pos.get("full_text", ""):
+                                elif "Lost" in matched_pos.get("full_text", "") or "LOST" in matched_pos.get(
+                                    "full_text", ""
+                                ):
                                     status = "lost"
                                 if status in ("won", "lost"):
                                     vals = matched_pos.get("values", [])
                                     payout = vals[0] if status == "won" and vals else 0
-                                    staged.append({
-                                        "bet_id": bet.id,
-                                        "provider": "polymarket",
-                                        "event": event_name,
-                                        "market": bet.market,
-                                        "outcome": bet.outcome,
-                                        "odds": bet.odds,
-                                        "stake": bet.stake,
-                                        "result": status,
-                                        "payout": round(payout, 2),
-                                        "pl": round(payout - bet.stake, 2),
-                                        "has_redeem": matched_pos.get("has_redeem", False),
-                                    })
+                                    staged.append(
+                                        {
+                                            "bet_id": bet.id,
+                                            "provider": "polymarket",
+                                            "event": event_name,
+                                            "market": bet.market,
+                                            "outcome": bet.outcome,
+                                            "odds": bet.odds,
+                                            "stake": bet.stake,
+                                            "result": status,
+                                            "payout": round(payout, 2),
+                                            "pl": round(payout - bet.stake, 2),
+                                            "has_redeem": matched_pos.get("has_redeem", False),
+                                        }
+                                    )
             except Exception as e:
                 logger.warning(f"[settle] Polymarket settlement check failed: {e}", exc_info=True)
 
@@ -1578,8 +1621,8 @@ async def check_settlements(mirror_service) -> dict:
         if "pinnacle" in by_provider and mirror_service:
             try:
                 workflow = get_workflow("pinnacle")
-                context = getattr(mirror_service, 'interceptor', None)
-                context = getattr(context, 'context', None) if context else None
+                context = getattr(mirror_service, "interceptor", None)
+                context = getattr(context, "context", None) if context else None
                 if context:
                     page = await workflow.find_tab(context)
                     if page:
@@ -1590,20 +1633,28 @@ async def check_settlements(mirror_service) -> dict:
                                 for bet in by_provider.get("pinnacle", []):
                                     if bet.odds == entry.odds and bet.stake == entry.stake and bet.result == "pending":
                                         payout = entry.payout or 0
-                                        event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                                        event_name = f"{event.home_team} vs {event.away_team}" if event else bet.event_id
-                                        staged.append({
-                                            "bet_id": bet.id,
-                                            "provider": "pinnacle",
-                                            "event": event_name,
-                                            "market": bet.market,
-                                            "outcome": bet.outcome,
-                                            "odds": bet.odds,
-                                            "stake": bet.stake,
-                                            "result": entry.status,
-                                            "payout": round(payout, 2),
-                                            "pl": round(payout - bet.stake, 2),
-                                        })
+                                        event = (
+                                            db.query(Event).filter(Event.id == bet.event_id).first()
+                                            if bet.event_id
+                                            else None
+                                        )
+                                        event_name = (
+                                            f"{event.home_team} vs {event.away_team}" if event else bet.event_id
+                                        )
+                                        staged.append(
+                                            {
+                                                "bet_id": bet.id,
+                                                "provider": "pinnacle",
+                                                "event": event_name,
+                                                "market": bet.market,
+                                                "outcome": bet.outcome,
+                                                "odds": bet.odds,
+                                                "stake": bet.stake,
+                                                "result": entry.status,
+                                                "payout": round(payout, 2),
+                                                "pl": round(payout - bet.stake, 2),
+                                            }
+                                        )
                                         break
             except Exception as e:
                 logger.warning(f"[settle] Pinnacle settlement check failed: {e}")
@@ -1613,28 +1664,32 @@ async def check_settlements(mirror_service) -> dict:
             if pid in ("polymarket", "pinnacle"):
                 continue  # Already handled above
             for bet in bets:
-                start = getattr(bet, 'start_time', None)
+                start = getattr(bet, "start_time", None)
                 if not start:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                    start = getattr(event, 'start_time', None) if event else None
+                    start = getattr(event, "start_time", None) if event else None
                 if start:
                     if start.tzinfo is None:
                         start = start.replace(tzinfo=timezone.utc)
                 if start and start < now:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
-                    event_name = f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id
-                    staged.append({
-                        "bet_id": bet.id,
-                        "provider": pid,
-                        "event": event_name,
-                        "market": bet.market,
-                        "outcome": bet.outcome,
-                        "odds": bet.odds,
-                        "stake": bet.stake,
-                        "result": "expired",  # Needs manual check
-                        "payout": None,
-                        "pl": None,
-                    })
+                    event_name = (
+                        f"{event.home_team} vs {event.away_team}" if event and event.home_team else bet.event_id
+                    )
+                    staged.append(
+                        {
+                            "bet_id": bet.id,
+                            "provider": pid,
+                            "event": event_name,
+                            "market": bet.market,
+                            "outcome": bet.outcome,
+                            "odds": bet.odds,
+                            "stake": bet.stake,
+                            "result": "expired",  # Needs manual check
+                            "payout": None,
+                            "pl": None,
+                        }
+                    )
 
     except Exception as e:
         logger.error(f"[settle] check_settlements failed: {e}", exc_info=True)
@@ -1689,7 +1744,9 @@ def apply_settlements() -> dict:
                     if s.get("payout") is not None:
                         bet.payout = s["payout"]
                     applied += 1
-                    logger.info(f"[settle] Applied: #{s['bet_id']} {s['provider']} → {s['result']} (P&L: {s.get('pl')})")
+                    logger.info(
+                        f"[settle] Applied: #{s['bet_id']} {s['provider']} → {s['result']} (P&L: {s.get('pl')})"
+                    )
 
                     # Sync balance: add payout back
                     if s["result"] == "won" and s.get("payout") and profile:

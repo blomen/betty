@@ -533,7 +533,8 @@ async def navigate_to_bet(req: NavigateBetRequest):
     # Check live price
     live_edge = None
     try:
-        live_edge = await workflow.check_live_price(page, bet)
+        _price_result = await workflow.check_live_price(page, bet)
+        live_edge = _price_result[1] if isinstance(_price_result, tuple) else _price_result
     except Exception:
         pass
 
@@ -601,7 +602,8 @@ async def get_live_price(
     bet.display_away = display_away
 
     try:
-        live_edge = await workflow.check_live_price(page, bet)
+        _price_result = await workflow.check_live_price(page, bet)
+        live_edge = _price_result[1] if isinstance(_price_result, tuple) else _price_result
         # Read the matched button price for display
         live_cents = None
         if provider_id == "polymarket":
