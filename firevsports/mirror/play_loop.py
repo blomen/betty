@@ -210,10 +210,16 @@ class PlayLoop:
             runner.skip()
 
     def on_bet_intercepted(self, provider_id: str, body: dict, request_body: dict | None = None) -> None:
-        """Route intercepted bet to the correct runner."""
+        """Route intercepted bet to the correct runner, or record directly as fallback."""
         runner = self._runners.get(provider_id)
         if runner:
             runner.on_bet_intercepted(body, request_body)
+            return
+        # No runner at all — log warning (bet will be picked up by settlement sync)
+        logger.warning(
+            f"[PlayCoordinator] Bet intercepted for {provider_id} but no runner exists — "
+            f"will be picked up by next settlement sync"
+        )
 
     def confirm_settlements(self, confirmed: list[dict] | None = None) -> None:
         """No-op for parallel play — settlements auto-confirm in runners."""
@@ -298,12 +304,14 @@ class PlayLoop:
     # ------------------------------------------------------------------
 
     def _make_pop_bet(self, cluster: str) -> callable:
-        """Return a pop function for a specific cluster queue."""
+        """Return a pop function that always picks the highest-edge bet."""
         queue = self._cluster_queues[cluster]
 
         def pop() -> dict | None:
             if not queue:
                 return None
+            # Always pick highest edge — re-sort in case batch was reloaded
+            queue.sort(key=lambda b: -b.get("edge_pct", 0.0))
             return queue.pop(0)
 
         return pop
