@@ -293,9 +293,10 @@ export default function PlayPage() {
     return `${Math.round(h / 24)}d`
   }
 
-  const ALTENAR_PROVIDERS = new Set(['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet'])
+  // Providers that limit fast — extract via Dutch tab, not value betting
+  const DUTCH_ONLY = new Set(['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet', 'interwetten'])
   const bets = batch.filter(b => {
-    if (ALTENAR_PROVIDERS.has(b.provider_id)) return false  // Dutch tab only
+    if (DUTCH_ONLY.has(b.provider_id)) return false
     if (b.edge_pct <= 0) return false
     const h = getTtkHours(b)
     if (h != null && h > ttkFilter) return false
