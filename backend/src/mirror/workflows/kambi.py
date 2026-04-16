@@ -465,10 +465,23 @@ class KambiWorkflow(ProviderWorkflow):
 
         try:
             result = await page.evaluate(
-                """(terms) => {
-                // Clear any existing betslip selections first
-                const selected = document.querySelectorAll(".KambiBC-betty-outcome--selected");
-                for (const s of selected) s.click();
+                """async (terms) => {
+                // Clear betslip: click all X/remove buttons in the betslip
+                const removeBtns = document.querySelectorAll(
+                    ".mod-KambiBC-betslip-outcome__remove, " +
+                    "[class*=betslip] [class*=remove], " +
+                    "[class*=betslip] button[aria-label*='emove'], " +
+                    "[class*=betslip] button[aria-label*='lose']"
+                );
+                for (const r of removeBtns) r.click();
+                const links = document.querySelectorAll("a, button, span");
+                for (const l of links) {
+                    const t = (l.textContent || "").trim().toLowerCase();
+                    if (t === "rensa kupongen" || t === "clear betslip" || t === "remove all") {
+                        l.click(); break;
+                    }
+                }
+                await new Promise(r => setTimeout(r, 300));
 
                 const btns = document.querySelectorAll(".KambiBC-betty-outcome");
                 for (const term of terms) {

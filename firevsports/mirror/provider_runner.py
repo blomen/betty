@@ -423,20 +423,33 @@ class ProviderRunner:
                         except Exception:
                             pass
 
-                    # Auto-skip if live edge went negative (odds dropped below fair)
-                    if live_edge is not None and live_edge < 0:
-                        logger.info(f"[Runner:{pid}] Auto-skip: live edge {live_edge:.1f}% (negative)")
-                        self._broadcaster.publish(
-                            "bet_skipped",
-                            {
-                                "bet": bet,
-                                "reason": f"negative EV ({live_odds:.2f}, edge {live_edge:.1f}%)",
-                                "live_odds": live_odds,
-                                "live_edge": live_edge,
-                            },
-                        )
-                        self.stats["skipped"] += 1
-                        break  # Exit wait loop, move to next bet
+                    # Auto-skip if live edge dropped significantly
+                    if live_edge is not None:
+                        should_skip = False
+                        skip_reason = ""
+
+                        if live_edge < 0:
+                            should_skip = True
+                            skip_reason = f"negative EV ({live_odds:.2f}, edge {live_edge:.1f}%)"
+                        elif self._peek_top_edge:
+                            top_edge = self._peek_top_edge()
+                            if top_edge is not None and top_edge > 0 and live_edge < top_edge * 0.5:
+                                should_skip = True
+                                skip_reason = f"edge dropped ({live_edge:.1f}% < 50% of top {top_edge:.1f}%)"
+
+                        if should_skip:
+                            logger.info(f"[Runner:{pid}] Auto-skip: {skip_reason}")
+                            self._broadcaster.publish(
+                                "bet_skipped",
+                                {
+                                    "bet": bet,
+                                    "reason": skip_reason,
+                                    "live_odds": live_odds,
+                                    "live_edge": live_edge,
+                                },
+                            )
+                            self.stats["skipped"] += 1
+                            break
 
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
