@@ -290,6 +290,7 @@ class PlayLoop:
                 block_event_market=self._block_event_market,
                 is_blocked=self._is_blocked,
                 placed_today=self._placed_today,
+                peek_top_edge=self._make_peek_top_edge(cluster),
             )
             self._runners[pid] = runner
             runner.start()
@@ -315,6 +316,17 @@ class PlayLoop:
             return queue.pop(0)
 
         return pop
+
+    def _make_peek_top_edge(self, cluster: str) -> callable:
+        """Return a function that peeks at the highest edge in the queue without popping."""
+        queue = self._cluster_queues[cluster]
+
+        def peek() -> float | None:
+            if not queue:
+                return None
+            return max(b.get("edge_pct", 0.0) for b in queue)
+
+        return peek
 
     def _block_event_market(self, bet: dict) -> None:
         """Block event+market across all cluster queues after placement."""

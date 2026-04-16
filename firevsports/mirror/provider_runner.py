@@ -57,6 +57,7 @@ class ProviderRunner:
         block_event_market: Callable[[dict], None],
         is_blocked: Callable[[dict], bool],
         placed_today: dict[str, int],
+        peek_top_edge: Callable[[], float | None] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -66,6 +67,7 @@ class ProviderRunner:
         self._block_event_market = block_event_market
         self._is_blocked = is_blocked
         self._placed_today = placed_today
+        self._peek_top_edge = peek_top_edge
 
         # Per-runner state
         self.state: str = STATE_IDLE
@@ -421,6 +423,21 @@ class ProviderRunner:
                         except Exception:
                             pass
 
+                    # Auto-skip if live edge went negative (odds dropped below fair)
+                    if live_edge is not None and live_edge < 0:
+                        logger.info(f"[Runner:{pid}] Auto-skip: live edge {live_edge:.1f}% (negative)")
+                        self._broadcaster.publish(
+                            "bet_skipped",
+                            {
+                                "bet": bet,
+                                "reason": f"negative EV ({live_odds:.2f}, edge {live_edge:.1f}%)",
+                                "live_odds": live_odds,
+                                "live_edge": live_edge,
+                            },
+                        )
+                        self.stats["skipped"] += 1
+                        break  # Exit wait loop, move to next bet
+
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
                     try:
@@ -429,9 +446,10 @@ class ProviderRunner:
                         logger.exception(f"[Runner:{pid}] Recording failed")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})
                         self.stats["skipped"] += 1
-                else:
+                elif self._skip_event.is_set():
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "user_skip"})
                     self.stats["skipped"] += 1
+                # else: auto-skipped by better-bet logic (already broadcast + counted)
 
             # Done
             self._broadcaster.publish("provider_complete", {"provider_id": pid})

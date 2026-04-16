@@ -582,7 +582,11 @@ export default function PlayPage() {
               {/* Bet rows */}
               <table className="w-full text-xs">
                 <tbody>
-                  {cb.map(b => {
+                  {[...cb].sort((a, b) => {
+                    const aEdge = livePrices[`${a.event_id}:${a.market}:${a.outcome}`]?.edge ?? a.edge_pct
+                    const bEdge = livePrices[`${b.event_id}:${b.market}:${b.outcome}`]?.edge ?? b.edge_pct
+                    return bEdge - aEdge
+                  }).map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
                     const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
                     const live = livePrices[liveKey]

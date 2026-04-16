@@ -466,6 +466,10 @@ class KambiWorkflow(ProviderWorkflow):
         try:
             result = await page.evaluate(
                 """(terms) => {
+                // Clear any existing betslip selections first
+                const selected = document.querySelectorAll(".KambiBC-betty-outcome--selected");
+                for (const s of selected) s.click();
+
                 const btns = document.querySelectorAll(".KambiBC-betty-outcome");
                 for (const term of terms) {
                     const lower = term.toLowerCase();
