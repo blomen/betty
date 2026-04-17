@@ -1477,8 +1477,25 @@ def train(
     normalizer_path = episodes_dir / "normalizer.json"
     normalizer = RunningNormalizer(dim=obs_dim)
     if normalizer_path.exists():
-        normalizer.load(normalizer_path)
-        typer.echo(f"Loaded normalizer (count={normalizer.count})")
+        import json as _json
+
+        saved = _json.loads(normalizer_path.read_text())
+        saved_dim = saved.get("dim", obs_dim)
+        if saved_dim == obs_dim:
+            normalizer.load(normalizer_path)
+            typer.echo(f"Loaded normalizer (count={normalizer.count})")
+        elif saved_dim < obs_dim:
+            # Hybrid DQN: base obs was 279-dim, augmented to 295-dim.
+            # Load saved stats for base dims; use identity (mean=0, std=1) for extras.
+            base_norm = RunningNormalizer(dim=saved_dim)
+            base_norm.load(normalizer_path)
+            normalizer.count = base_norm.count
+            normalizer.ewm_mean[:saved_dim] = base_norm.ewm_mean
+            normalizer.ewm_var[:saved_dim] = base_norm.ewm_var
+            # Extra dims (GBT forecast + position state) already scaled — pass-through
+            typer.echo(f"Extended normalizer {saved_dim}→{obs_dim} (identity for {obs_dim - saved_dim} augmented dims)")
+        else:
+            raise ValueError(f"Saved normalizer dim {saved_dim} > expected {obs_dim}")
     else:
         typer.echo("Warning: no normalizer.json found — using raw observations.")
 
