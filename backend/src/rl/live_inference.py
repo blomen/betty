@@ -194,11 +194,18 @@ class LiveInference:
 
 
 class LiveInferenceV5:
-    """Two-stage inference: narrative (slow) -> trigger (fast)."""
+    """Three-stage hybrid inference: narrative (slow) → trigger (fast) → DQN (decision).
+
+    Implements the GBT-finds-edge, DQN-decides hybrid model from the design doc.
+    - NarrativeGBT: 153-dim structural features → setup probabilities
+    - TriggerGBT: 144-dim trigger obs → direction + expected R + stop
+    - DQN: 295-dim augmented obs (base + GBT forecast + position state) → action Q-values
+    """
 
     def __init__(self) -> None:
         self._narrative_gbt = None
         self._trigger_gbt = None
+        self._dqn = None  # optional DQN for hybrid decision layer
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
@@ -239,22 +246,45 @@ class LiveInferenceV5:
                     except Exception:
                         log.exception("Failed to load TriggerGBT from %s", trigger_path)
 
+            # Try to load DQN for hybrid decision layer (optional — falls back to pure GBT)
+            if self._dqn is None:
+                dqn_path = search_dir / "dqn_latest.pt"
+                if dqn_path.exists():
+                    try:
+                        ckpt = torch.load(dqn_path, weights_only=False, map_location="cpu")
+                        w = ckpt["q_network"]["encoder.0.weight"]
+                        dqn_dim = w.shape[1]
+                        self._dqn = DQNetwork(input_dim=dqn_dim)
+                        self._dqn.load_state_dict(ckpt["q_network"])
+                        self._dqn.eval()
+                        self._dqn_input_dim = dqn_dim
+                        log.info("DQN loaded from %s (input_dim=%d)", dqn_path, dqn_dim)
+                    except Exception:
+                        log.exception("Failed to load DQN from %s", dqn_path)
+                        self._dqn = None
+
             # Also try to load normalizer from first search dir that has models
             if narrative_loaded and self._normalizer is None:
                 episodes_dir = search_dir / "episodes"
                 norm_path = episodes_dir / "normalizer.json"
                 if norm_path.exists():
-                    self._normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+                    # Normalizer dim matches whatever the DQN expects (may be augmented)
+                    norm_dim = getattr(self, "_dqn_input_dim", OBSERVATION_DIM)
+                    self._normalizer = RunningNormalizer(dim=norm_dim)
                     self._normalizer.load(norm_path)
                     log.info(
-                        "Normalizer loaded from %s (count=%d)",
+                        "Normalizer loaded from %s (count=%d, dim=%d)",
                         norm_path,
                         self._normalizer.count,
+                        norm_dim,
                     )
 
         if narrative_loaded and trigger_loaded:
             self._loaded = True
-            log.info("LiveInferenceV5: both models loaded successfully")
+            log.info(
+                "LiveInferenceV5: loaded (narrative+trigger+DQN=%s)",
+                self._dqn is not None,
+            )
         else:
             log.info(
                 "LiveInferenceV5: narrative=%s trigger=%s",
@@ -330,9 +360,55 @@ class LiveInferenceV5:
             trigger_gbt_forecast=gbt_forecast,
         )
 
-        # 8. Final direction prediction from trigger GBT
-        action_idx, confidence, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
+        # 8. GBT direction prediction (primary)
+        gbt_action, gbt_conf, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
         stop_ticks = self._trigger_gbt.predict_stop(trigger_obs)
+
+        # 9. DQN ensemble (optional) — hybrid decision layer
+        dqn_q_values = None
+        dqn_action = None
+        dqn_agrees = True
+        if self._dqn is not None:
+            try:
+                # Build augmented obs: base + GBT forecast + position state
+                position_state = np.zeros(8, dtype=np.float32)  # flat by default
+                augmented_obs = np.concatenate(
+                    [base_obs.astype(np.float32), gbt_forecast.astype(np.float32), position_state]
+                )
+                # Pad or truncate to match DQN's trained input dim
+                if len(augmented_obs) != self._dqn_input_dim:
+                    if len(augmented_obs) < self._dqn_input_dim:
+                        pad = np.zeros(self._dqn_input_dim - len(augmented_obs), dtype=np.float32)
+                        augmented_obs = np.concatenate([augmented_obs, pad])
+                    else:
+                        augmented_obs = augmented_obs[: self._dqn_input_dim]
+                # Normalize if normalizer matches this dim
+                if self._normalizer is not None and self._normalizer.dim == self._dqn_input_dim:
+                    augmented_obs = self._normalizer.normalize(augmented_obs)
+                obs_tensor = torch.from_numpy(augmented_obs).unsqueeze(0)
+                with torch.no_grad():
+                    q_values = self._dqn(obs_tensor)[0].numpy()
+                dqn_q_values = q_values.tolist()
+                dqn_action = int(np.argmax(q_values))
+                # 0=CONT, 1=REV, 2=SKIP
+                dqn_agrees = (dqn_action == gbt_action) or (dqn_action == 2)
+            except Exception:
+                log.debug("DQN inference failed", exc_info=True)
+
+        # Decision: GBT primary. DQN disagreement reduces confidence (veto mechanism).
+        action_idx = gbt_action
+        if self._dqn is not None and not dqn_agrees:
+            # DQN disagrees strongly with GBT — reduce effective confidence
+            confidence = gbt_conf * 0.5
+            log.info(
+                "DQN disagrees with GBT: gbt=%d dqn=%d — reducing confidence %.3f → %.3f",
+                gbt_action,
+                dqn_action,
+                gbt_conf,
+                confidence,
+            )
+        else:
+            confidence = gbt_conf
 
         # Build setup_probs dict
         from .labeling.setup_types import SetupType
@@ -386,15 +462,18 @@ class LiveInferenceV5:
             "inputs": base_obs.tolist(),
             "action": Action(action_idx).name,
             "confidence": float(confidence),
-            "q_values": [prob_cont, prob_rev, 0.0],
+            "q_values": dqn_q_values if dqn_q_values is not None else [prob_cont, prob_rev, 0.0],
             "stop_ticks": float(stop_ticks),
             "setup_probs": setup_probs_dict,
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_multiplier(composite),
+            "dqn_action": dqn_action,
+            "dqn_agrees": dqn_agrees,
+            "gbt_action": gbt_action,
             "activations": {},
             "connections": [],
-            "model_type": "v5_hierarchical",
+            "model_type": "v5_hybrid_gbt_dqn" if self._dqn is not None else "v5_hierarchical",
         }
 
 

@@ -1371,6 +1371,25 @@ def train(
     stop_path = episodes_dir / "stop_targets.npy"
     stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
 
+    # HYBRID MODE: augment base observation with GBT forecast + position state
+    # base (279) + gbt_forecast (8) + position_state (8) = 295-dim
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists():
+        trigger_obs = np.load(trigger_path)
+        if len(trigger_obs) == len(observations):
+            # Extract GBT forecast from trigger_obs (last 8 dims before exec passthrough)
+            # Layout: narrative(18) + setup(8) + pass(10) + micro(20) + of(21) + cdl(15)
+            #       + zone_f(4) + zone_c(5) + zone_cmp(31) + approach(1) + gbt(8) + exec(3)
+            # GBT forecast is at index 133:141
+            gbt_forecast = trigger_obs[:, 133:141]  # (N, 8)
+            # Position state: zeros for training (no carry-over between episodes yet)
+            # TODO: track position state across touches for true sequential RL
+            position_state = np.zeros((len(observations), 8), dtype=np.float32)
+            observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+            typer.echo(f"HYBRID: augmented obs with GBT forecast + position state → {observations.shape[1]}-dim")
+        else:
+            typer.echo("Warning: trigger_obs size mismatch, training DQN on base obs only")
+
     n = len(observations)
     typer.echo(f"Loaded {n} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
 

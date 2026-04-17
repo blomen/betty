@@ -66,7 +66,8 @@ REPLAY_BUFFER_SIZE = 2_000_000
 EPSILON_START = 1.0
 EPSILON_END = 0.05
 EPSILON_DECAY_STEPS = 5_000
-GAMMA = 0.0
+GAMMA = 0.9  # sequential RL — learn hold/trail/exit decisions with temporal discounting
+# (was 0.0 which made it a contextual bandit; 0.9 enables multi-step value propagation)
 
 # --- Reward Preprocessing ---
 REWARD_CLIP_MIN = -2.0
