@@ -74,6 +74,13 @@ LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
 DAILY_BET_CAP = 10  # max bets per soft provider per day
 UNCAPPED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
 
+# Dutch-only providers — spawn DutchRunner instead of ProviderRunner.
+# These providers limit fast; drain balance via guaranteed-profit Dutch arb.
+DUTCH_ONLY_PROVIDERS = {"interwetten", "betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"}
+
+# Unlimited providers used as counter-legs for Dutch hedging (API-based, autonomous_placement=True)
+COUNTER_PROVIDERS = ("pinnacle", "polymarket", "cloudbet")  # tuple for stable ordering
+
 
 class PlayLoop:
     """Multi-provider play coordinator.
@@ -321,6 +328,7 @@ class PlayLoop:
 
     def _spawn_runners(self, provider_ids: list[str]) -> None:
         """Create and start runners for providers that don't have one yet."""
+        from .dutch_runner import DutchRunner
         from .provider_runner import ProviderRunner
 
         for pid in provider_ids:
@@ -331,20 +339,31 @@ class PlayLoop:
             if cluster not in self._cluster_queues:
                 self._cluster_queues[cluster] = []
 
-            runner = ProviderRunner(
-                provider_id=pid,
-                browser=self._browser,
-                broadcaster=self._broadcaster,
-                proxy_url=self._proxy_url,
-                pop_bet=self._make_pop_bet(cluster),
-                block_event_market=self._block_event_market,
-                is_blocked=self._is_blocked,
-                placed_today=self._placed_today,
-                peek_top_edge=self._make_peek_top_edge(cluster),
-            )
+            if pid in DUTCH_ONLY_PROVIDERS:
+                runner = DutchRunner(
+                    provider_id=pid,
+                    browser=self._browser,
+                    broadcaster=self._broadcaster,
+                    proxy_url=self._proxy_url,
+                    block_event_market=self._block_event_market,
+                    is_blocked=self._is_blocked,
+                    placed_today=self._placed_today,
+                )
+            else:
+                runner = ProviderRunner(
+                    provider_id=pid,
+                    browser=self._browser,
+                    broadcaster=self._broadcaster,
+                    proxy_url=self._proxy_url,
+                    pop_bet=self._make_pop_bet(cluster),
+                    block_event_market=self._block_event_market,
+                    is_blocked=self._is_blocked,
+                    placed_today=self._placed_today,
+                    peek_top_edge=self._make_peek_top_edge(cluster),
+                )
             self._runners[pid] = runner
             runner.start()
-            logger.info(f"[PlayCoordinator] Spawned runner for {pid}")
+            logger.info(f"[PlayCoordinator] Spawned {'Dutch ' if pid in DUTCH_ONLY_PROVIDERS else ''}runner for {pid}")
 
     def _add_new_runners(self) -> None:
         """Add runners for newly-selected providers while coordinator is running."""
