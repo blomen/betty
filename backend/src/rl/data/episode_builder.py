@@ -312,8 +312,14 @@ def label_outcome_from_array(
     long_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=+1)
     short_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=-1)
 
-    reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r
-    reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r
+    # Drawdown penalty: penalize choppy paths where MAE is large relative to reward.
+    # A clean 2R move (low MAE) scores higher than a choppy 2R with -1.5R drawdown.
+    _DD_LAMBDA = 0.15  # penalty weight
+    long_dd_penalty = _DD_LAMBDA * max(0.0, long_mae / max(_STOP_TICKS_TRAIL, 1))
+    short_dd_penalty = _DD_LAMBDA * max(0.0, short_mae / max(_STOP_TICKS_TRAIL, 1))
+
+    reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty
+    reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty
 
     reward_cont, reward_rev = _compute_rewards(
         touch_price,

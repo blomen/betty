@@ -117,6 +117,9 @@ class ReplayEngine:
         # TPO profile dict (updated in _build_state, used by _rebuild_active_levels)
         self._tpo_profile: dict | None = None
 
+        # Zone touch memory: tracks how many times each zone was touched in this session
+        self._zone_touch_mem: dict[float, dict] = {}  # zone_key → {count, last_ts}
+
         # Precomputed cross-session levels (injected before replay)
         self._precomputed: dict | None = None
 
@@ -794,7 +797,32 @@ class ReplayEngine:
             "single_print_zones": (self._precomputed.get("single_print_zones", []) if self._precomputed else []),
             "swing_structure": (self._precomputed.get("swing_structure") if self._precomputed else None),
             "amt_dynamics": self._amt_tracker.snapshot(),
+            "zone_memory": self._get_zone_memory_for_state(zone, ts),
         }
+
+    def _get_zone_memory_for_state(self, zone: Zone, ts: datetime) -> dict:
+        """Build zone_memory dict for the observation.
+
+        Records this touch and returns memory for all zones.
+        """
+        zone_key = round(zone.center_price * 4) / 4
+        ts_epoch = ts.timestamp()
+
+        # Record this touch
+        entry = self._zone_touch_mem.get(zone_key, {"count": 0, "last_ts": 0.0})
+        entry["count"] += 1
+        entry["last_ts"] = ts_epoch
+        self._zone_touch_mem[zone_key] = entry
+
+        # Build memory dict for all zones
+        result = {}
+        for key, mem in self._zone_touch_mem.items():
+            result[key] = {
+                "touch_count": mem["count"],
+                "last_result": 0.0,  # not tracked in replay (would need forward scan)
+                "time_since_last": ts_epoch - mem["last_ts"] if mem["last_ts"] > 0 else 3600,
+            }
+        return result
 
     def _build_session_context(
         self,

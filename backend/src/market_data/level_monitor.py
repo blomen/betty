@@ -1176,6 +1176,47 @@ class LevelMonitor:
             self.add_signal_callback(fn)
         # None means remove — but we don't know which one, handled by remove_signal_callback
 
+    def _get_zone_memory(self) -> dict:
+        """Get the zone touch memory dict. Created lazily on first access."""
+        if not hasattr(self, "_zone_touch_history"):
+            self._zone_touch_history = {}  # zone_key → {touch_count, last_result, last_ts}
+        return self._zone_touch_history
+
+    def record_zone_touch(self, zone_key: float, result: float = 0.0) -> None:
+        """Record a zone touch result for memory features.
+
+        Args:
+            zone_key: Zone center price snapped to tick grid.
+            result: +1.0 if price bounced (reversal worked), -1.0 if broke through
+                    (continuation worked), 0.0 if unknown/first touch.
+        """
+        import time as _time
+
+        mem = self._get_zone_memory()
+        entry = mem.get(zone_key, {"touch_count": 0, "last_result": 0.0, "last_ts": 0.0})
+        entry["touch_count"] = entry["touch_count"] + 1
+        entry["last_result"] = result
+        entry["last_ts"] = _time.time()
+        mem[zone_key] = entry
+
+    def _build_zone_memory_for_state(self) -> dict:
+        """Build zone_memory dict for the RL state.
+
+        Returns dict mapping zone_key → {touch_count, last_result, time_since_last}.
+        """
+        import time as _time
+
+        now = _time.time()
+        mem = self._get_zone_memory()
+        result = {}
+        for key, entry in mem.items():
+            result[key] = {
+                "touch_count": entry["touch_count"],
+                "last_result": entry["last_result"],
+                "time_since_last": now - entry["last_ts"] if entry["last_ts"] > 0 else 3600,
+            }
+        return result
+
     def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
         import time as _time
 
@@ -1188,6 +1229,11 @@ class LevelMonitor:
                 recent_ticks = self._tick_buffer.get_recent(50)
             except Exception:
                 pass
+
+        # Record this zone touch in memory
+        zone_key = round(zone.center_price * 4) / 4
+        self.record_zone_touch(zone_key)
+
         return {
             "zone": zone,
             "all_zones": self._zones,
@@ -1212,6 +1258,7 @@ class LevelMonitor:
             "recent_ticks": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
             "amt_dynamics": self._amt_tracker.snapshot(),
+            "zone_memory": self._build_zone_memory_for_state(),
         }
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:

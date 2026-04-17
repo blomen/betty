@@ -20,8 +20,9 @@ Zone mode (state["zone"] present):
     micro (hand-crafted)         20
     approach direction            1
     execution context             7
+    zone touch memory             3
     ---
-    total                       276
+    total                       279
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   31
@@ -215,6 +216,23 @@ def build_observation(state: dict) -> np.ndarray:
     # 13. Execution context (7) — Fabio's timing/auction rules
     seg_execution = extract_execution_features(state, recent_ticks, candles, price)
 
+    # 14. Zone touch memory (3) — session-level zone interaction history
+    zone_memory = state.get("zone_memory", {})
+    zone_key = None
+    if zone is not None:
+        zone_key = round(zone.center_price * 4) / 4  # snap to tick grid
+    elif price > 0:
+        zone_key = round(price * 4) / 4
+    zm = zone_memory.get(zone_key, {}) if zone_key else {}
+    seg_zone_memory = np.array(
+        [
+            min(zm.get("touch_count", 0), 10) / 10.0,  # 0-1, capped at 10
+            zm.get("last_result", 0.0),  # +1 bounced, -1 broke through, 0 first
+            min(zm.get("time_since_last", 3600), 3600) / 3600.0,  # 0-1, capped at 1h
+        ],
+        dtype=np.float32,
+    )
+
     obs = np.concatenate(
         [
             seg_level,  # len(LevelType) — multi-hot (zone) or one-hot (legacy)
@@ -232,6 +250,7 @@ def build_observation(state: dict) -> np.ndarray:
             seg_micro,  # 20
             seg_approach,  # 1
             seg_execution,  # 7
+            seg_zone_memory,  # 3
         ]
     )
 
