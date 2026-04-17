@@ -240,24 +240,74 @@ class PlayLoop:
     # Coordinator loop
     # ------------------------------------------------------------------
 
+    async def _refresh_batch(self) -> None:
+        """Fetch fresh opportunities and merge new ones into cluster queues."""
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{self._proxy_url}/api/play/batch",
+                    headers={_AUTH_HEADER: _AUTH_VALUE},
+                )
+                if resp.status_code != 200:
+                    return
+                data = resp.json()
+                fresh_bets = data.get("batch") or data.get("bets") or []
+                if not fresh_bets:
+                    return
+
+                added = 0
+                for bet in fresh_bets:
+                    pid = bet.get("provider_id", "")
+                    cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
+                    if cluster not in self._cluster_queues:
+                        continue
+                    queue = self._cluster_queues[cluster]
+                    key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
+                    existing = {(b.get("event_id"), b.get("market"), b.get("outcome")) for b in queue}
+                    if key not in existing and not self._is_blocked(bet):
+                        queue.append(bet)
+                        added += 1
+
+                if added:
+                    self._queue_total = sum(len(q) for q in self._cluster_queues.values())
+                    logger.info(f"[PlayCoordinator] Batch refresh: added {added} new bets (total={self._queue_total})")
+        except Exception as e:
+            logger.debug(f"[PlayCoordinator] Batch refresh failed: {e}")
+
     async def _run_coordinator(self) -> None:
         """Spawn runners and wait for all to complete.
 
         Polls periodically so dynamically-added runners are picked up.
+        Refreshes batch every 30s to pick up new opportunities.
         """
         self.state = STATE_RUNNING
         self._runners.clear()
         self._spawn_runners(self._provider_ids)
+
+        _BATCH_REFRESH_INTERVAL = 30.0
+        _last_refresh = asyncio.get_event_loop().time()
 
         # Poll until all runners are done (supports dynamically added runners)
         while True:
             active = [r for r in self._runners.values() if r.running]
             if not active:
                 break
+
+            # Refresh batch periodically
+            now = asyncio.get_event_loop().time()
+            if now - _last_refresh >= _BATCH_REFRESH_INTERVAL:
+                await self._refresh_batch()
+                _last_refresh = now
+
             # Wait for any active runner to finish, then re-check
             tasks = [r._task for r in active if r._task]
             if tasks:
-                _done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                try:
+                    _done, _pending = await asyncio.wait(tasks, timeout=5.0, return_when=asyncio.FIRST_COMPLETED)
+                except Exception:
+                    await asyncio.sleep(1)
             else:
                 await asyncio.sleep(1)
 

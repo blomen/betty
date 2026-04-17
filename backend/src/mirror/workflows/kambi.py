@@ -466,22 +466,16 @@ class KambiWorkflow(ProviderWorkflow):
         try:
             result = await page.evaluate(
                 """async (terms) => {
-                // Clear betslip: click all X/remove buttons in the betslip
-                const removeBtns = document.querySelectorAll(
-                    ".mod-KambiBC-betslip-outcome__remove, " +
-                    "[class*=betslip] [class*=remove], " +
-                    "[class*=betslip] button[aria-label*='emove'], " +
-                    "[class*=betslip] button[aria-label*='lose']"
-                );
-                for (const r of removeBtns) r.click();
-                const links = document.querySelectorAll("a, button, span");
-                for (const l of links) {
-                    const t = (l.textContent || "").trim().toLowerCase();
-                    if (t === "rensa kupongen" || t === "clear betslip" || t === "remove all") {
-                        l.click(); break;
-                    }
-                }
-                await new Promise(r => setTimeout(r, 300));
+                // Clear betslip: expand if minimized, then click clear button
+                const toggle = document.querySelector(".mod-KambiBC-betslip__header-toggle-betslip-icon");
+                if (toggle) { toggle.click(); await new Promise(r => setTimeout(r, 300)); }
+                // Click "Rensa kupongen" clear button
+                const clearBtn = document.querySelector(".mod-KambiBC-betslip__clear-btn");
+                if (clearBtn) { clearBtn.click(); await new Promise(r => setTimeout(r, 300)); }
+                // Fallback: click individual close buttons
+                const closeBtns = document.querySelectorAll(".mod-KambiBC-betslip-outcome__close-btn");
+                for (const c of closeBtns) c.click();
+                if (closeBtns.length > 0) await new Promise(r => setTimeout(r, 300));
 
                 const btns = document.querySelectorAll(".KambiBC-betty-outcome");
                 for (const term of terms) {
