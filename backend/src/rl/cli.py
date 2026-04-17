@@ -1976,14 +1976,35 @@ def eval(
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
+    # HYBRID: augment base obs with GBT forecast + position state (mirror of train)
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists():
+        trigger_obs = np.load(trigger_path)
+        if len(trigger_obs) == len(observations):
+            gbt_forecast = trigger_obs[:, 133:141]
+            position_state = np.zeros((len(observations), 8), dtype=np.float32)
+            observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+            typer.echo(f"HYBRID: augmented eval obs → {observations.shape[1]}-dim")
+
     n = len(observations)
     obs_dim = observations.shape[1]
 
-    # Load normalizer with actual obs dim
+    # Load normalizer — extend if saved dim smaller than augmented
     normalizer_path = episodes_dir / "normalizer.json"
     normalizer = RunningNormalizer(dim=obs_dim)
     if normalizer_path.exists():
-        normalizer.load(normalizer_path)
+        import json as _json
+
+        saved = _json.loads(normalizer_path.read_text())
+        saved_dim = saved.get("dim", obs_dim)
+        if saved_dim == obs_dim:
+            normalizer.load(normalizer_path)
+        elif saved_dim < obs_dim:
+            base_norm = RunningNormalizer(dim=saved_dim)
+            base_norm.load(normalizer_path)
+            normalizer.count = base_norm.count
+            normalizer.ewm_mean[:saved_dim] = base_norm.ewm_mean
+            normalizer.ewm_var[:saved_dim] = base_norm.ewm_var
 
     normalized_obs = np.stack([normalizer.normalize(obs) for obs in observations])
 
