@@ -60,6 +60,17 @@ export default function PlayPage() {
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
+  const [dutchHedgeStatus, setDutchHedgeStatus] = useState<Record<string, {
+    status: 'placing' | 'placed' | 'failed' | 'unhedged'
+    counter_provider?: string
+    outcome?: string
+    actual_odds?: number
+    actual_stake?: number
+    reason?: string
+  }>>({})
+  const [dutchCounterPlan, setDutchCounterPlan] = useState<any[] | null>(null)
+  const [dutchProfitPct, setDutchProfitPct] = useState<number | null>(null)
+  const [dutchGroupId, setDutchGroupId] = useState<string | null>(null)
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -211,7 +222,32 @@ export default function PlayPage() {
       const key = `${data.event_id}:${data.market}:${data.outcome}`
       setLivePrices(prev => ({ ...prev, [key]: { odds: data.live_odds, edge: data.live_edge } }))
     }
-    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null) }
+    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null); setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}) }
+    if (type === 'dutch_bet_ready') {
+      const bet = data.bet ?? data
+      setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge })
+      setDutchCounterPlan(data.counter_plan ?? null)
+      setDutchProfitPct(data.guaranteed_profit_pct ?? null)
+      setDutchGroupId(data.dutch_group_id ?? null)
+      setDutchHedgeStatus({})
+      setLoopStatus(null)
+    }
+    if (type === 'dutch_hedge_placing') {
+      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
+    }
+    if (type === 'dutch_hedge_placed') {
+      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placed', counter_provider: data.counter_provider, outcome: data.outcome, actual_odds: data.actual_odds, actual_stake: data.actual_stake } }))
+    }
+    if (type === 'dutch_hedge_failed') {
+      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'failed', counter_provider: data.counter_provider, outcome: data.outcome, reason: data.reason } }))
+    }
+    if (type === 'dutch_unhedged') {
+      setDutchHedgeStatus(prev => ({ ...prev, __unhedged: { status: 'unhedged', outcome: data.outcome, reason: 'All fallbacks exhausted' } }))
+    }
+    if (type === 'dutch_complete') {
+      setDutchProfitPct(data.guaranteed_profit_pct ?? dutchProfitPct)
+      setTimeout(() => { setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}); setCurrentBetReady(null) }, 5000)
+    }
     if (type === 'provider_complete') {
       setLoopProviderStatus(prev => {
         if (!prev) return prev
@@ -227,6 +263,10 @@ export default function PlayPage() {
       setToasts([])
       setSettleWaiting(false)
       setLoopStatus(null)
+      setDutchCounterPlan(null)
+      setDutchProfitPct(null)
+      setDutchGroupId(null)
+      setDutchHedgeStatus({})
     }
     // Update per-provider status from individual events
     if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
@@ -430,6 +470,56 @@ export default function PlayPage() {
         </div>
       )}
 
+      {/* Dutch arb card */}
+      {currentBetReady && dutchCounterPlan && (
+        <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
+            {dutchProfitPct != null && (
+              <span className="text-xs font-mono font-semibold text-green-400">+{dutchProfitPct.toFixed(2)}% guaranteed profit</span>
+            )}
+            {dutchGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{dutchGroupId}</span>}
+          </div>
+          <div className="flex items-center gap-2 text-xs mb-1.5">
+            <span className="text-zinc-400">Anchor:</span>
+            <span className="text-zinc-200">{currentBetReady.display_home} v {currentBetReady.display_away}</span>
+            <span className="text-amber-400 font-medium">{resolveOutcome(currentBetReady)}</span>
+            <span className="font-mono text-zinc-200">@ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}</span>
+            <span className="text-zinc-500 uppercase text-[10px]">{currentBetReady.provider_id}</span>
+          </div>
+          <div className="space-y-0.5">
+            {dutchCounterPlan.map((leg: any, i: number) => (
+              <div key={i}>
+                <div className="text-[10px] text-zinc-500 mb-0.5">Counter: {leg.outcome}</div>
+                {leg.providers?.map((p: any, j: number) => {
+                  const hedge = dutchHedgeStatus[p.provider]
+                  return (
+                    <div key={j} className="flex items-center gap-2 pl-3 text-[10px]">
+                      <span className="text-zinc-400 uppercase w-16">{p.provider}</span>
+                      <span className="font-mono text-zinc-300">@ {p.odds?.toFixed(2)}</span>
+                      <span className="font-mono text-zinc-500">{(p.stake_pct * 100).toFixed(0)}%</span>
+                      {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
+                      {hedge?.status === 'placed' && (
+                        <span className="text-green-400 font-semibold">
+                          HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
+                        </span>
+                      )}
+                      {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
+                      {!hedge && <span className="text-zinc-600">Waiting</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+            {dutchHedgeStatus.__unhedged && (
+              <div className="flex items-center gap-2 pl-3 text-[10px] mt-1">
+                <span className="text-red-400 font-semibold">UNHEDGED — all fallbacks exhausted</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Per-provider status rows */}
       {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
         <div className="border-b border-zinc-800">
@@ -503,6 +593,7 @@ export default function PlayPage() {
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
+                        {DUTCH_ONLY.has(pid) && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH</span>}
                         {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
                         {!uncapped && <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
