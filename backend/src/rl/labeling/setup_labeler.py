@@ -4,6 +4,7 @@ Labels episodes based on structural context at the zone touch.
 Each rule checks zone composition, approach direction, outcome,
 and session context to classify the setup.
 """
+
 from __future__ import annotations
 
 from datetime import time
@@ -12,11 +13,18 @@ from .setup_types import SetupType
 
 # Session extreme level types that qualify for failed auctions
 _SESSION_EXTREMES = {
-    "pdh", "pdl", "nyib_high", "nyib_low",
-    "tokyo_high", "tokyo_low",
-    "daily_swing_high", "daily_swing_low",
-    "weekly_swing_high", "weekly_swing_low",
-    "monthly_swing_high", "monthly_swing_low",
+    "pdh",
+    "pdl",
+    "nyib_high",
+    "nyib_low",
+    "tokyo_high",
+    "tokyo_low",
+    "daily_swing_high",
+    "daily_swing_low",
+    "weekly_swing_high",
+    "weekly_swing_low",
+    "monthly_swing_high",
+    "monthly_swing_low",
 }
 
 # Value area edge types for look-above/below-fail
@@ -81,11 +89,8 @@ def _is_gap_fill(ep: dict) -> bool:
 
 
 def _is_single_print_fill(ep: dict) -> bool:
-    """Price returning to fill single-print zone or naked POC."""
-    if ep.get("has_single_print", False):
-        return True
-    zone_types = set(ep["zone_types"])
-    return "naked_poc" in zone_types
+    """Price returning to fill single-print zone."""
+    return bool(ep.get("has_single_print", False))
 
 
 def label_episode(ep: dict) -> SetupType:

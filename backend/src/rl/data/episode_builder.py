@@ -22,7 +22,6 @@ import numpy as np
 
 from src.rl.config import (
     COST_PER_TRADE_TICKS,
-    STOP_TICKS,
     TICK_SIZE,
     Action,
 )
@@ -272,7 +271,10 @@ def label_outcome_from_array(
         be_trigger_r: R-multiple at which stop moves to breakeven (default _BE_TRIGGER_R).
             Pass different values to sweep the optimal threshold via analyze-be.
     """
-    cost_r = COST_PER_TRADE_TICKS / max(STOP_TICKS, 1)
+    # Cost_r must use the same stop basis as dd_penalty below (both use
+    # _STOP_TICKS_TRAIL). Mixing STOP_TICKS (10) here with _STOP_TICKS_TRAIL
+    # (20) in dd_penalty produced an inconsistent R scale in training rewards.
+    cost_r = COST_PER_TRADE_TICKS / max(_STOP_TICKS_TRAIL, 1)
 
     # Base velocity scores
     long_profiles = _measure_movement(touch_price, ticks, start, end, touch_ts, direction=+1)

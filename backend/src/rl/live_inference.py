@@ -392,7 +392,14 @@ class LiveInferenceV5:
         if self._dqn is not None:
             try:
                 # Build augmented obs: base + GBT forecast + position state
-                position_state = np.zeros(8, dtype=np.float32)  # flat by default
+                # Use caller-provided position_state if available, else flat zeros.
+                ps_raw = state.get("position_state")
+                if ps_raw is not None:
+                    position_state = np.asarray(ps_raw, dtype=np.float32).flatten()
+                    if position_state.size != 8:
+                        position_state = np.zeros(8, dtype=np.float32)
+                else:
+                    position_state = np.zeros(8, dtype=np.float32)
                 augmented_obs = np.concatenate(
                     [base_obs.astype(np.float32), gbt_forecast.astype(np.float32), position_state]
                 )

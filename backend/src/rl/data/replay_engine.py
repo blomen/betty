@@ -374,6 +374,12 @@ class ReplayEngine:
                     levels_below=zone_centers_below,
                 )
                 episode.state = state
+                # Record outcome for this zone so the NEXT touch's zone_memory has it.
+                # +1 = reversal won (zone held), -1 = continuation won (broke through).
+                zone_key = round(zone.center_price * 4) / 4
+                rc, rr = episode.reward_continuation, episode.reward_reversal
+                if zone_key in self._zone_touch_mem:
+                    self._zone_touch_mem[zone_key]["last_result"] = 1.0 if rr > rc else -1.0
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]
                 log.debug(
@@ -808,10 +814,11 @@ class ReplayEngine:
         zone_key = round(zone.center_price * 4) / 4
         ts_epoch = ts.timestamp()
 
-        # Record this touch
-        entry = self._zone_touch_mem.get(zone_key, {"count": 0, "last_ts": 0.0})
+        # Record this touch (preserving any previously-recorded last_result)
+        entry = self._zone_touch_mem.get(zone_key, {"count": 0, "last_ts": 0.0, "last_result": 0.0})
         entry["count"] += 1
         entry["last_ts"] = ts_epoch
+        entry.setdefault("last_result", 0.0)
         self._zone_touch_mem[zone_key] = entry
 
         # Build memory dict for all zones
@@ -819,7 +826,7 @@ class ReplayEngine:
         for key, mem in self._zone_touch_mem.items():
             result[key] = {
                 "touch_count": mem["count"],
-                "last_result": 0.0,  # not tracked in replay (would need forward scan)
+                "last_result": float(mem.get("last_result", 0.0)),
                 "time_since_last": ts_epoch - mem["last_ts"] if mem["last_ts"] > 0 else 3600,
             }
         return result

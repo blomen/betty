@@ -140,6 +140,111 @@ _EPISODES_DIR = _DATA_DIR / "episodes"
 _MODELS_DIR = _DATA_DIR / "models"
 
 
+def _simulate_session_position_states(
+    touch_epochs,
+    rewards_cont,
+    rewards_rev,
+    stop_targets,
+    session_gap_s: float = 3600.0,
+):
+    """Greedy session-aware simulation of position state for each touch.
+
+    Walks episodes in chronological order, maintains per-session trackers, and
+    returns an (N, 8) array mirroring build_position_state's output at each
+    touch. "Session boundary" = gap > session_gap_s since the last touch or a
+    different ET calendar date.
+
+    The simulation takes the greedy action at each touch (argmax of the three
+    rewards) and carries session_pnl / consecutive_losses / trade_count forward.
+    The observed state at touch t reflects the OUTCOME of touch t-1 — so the
+    model sees realistic carry-over from prior decisions.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    import numpy as np
+
+    _ET = ZoneInfo("America/New_York")
+    n = len(touch_epochs)
+    states = np.zeros((n, 8), dtype=np.float32)
+    if n == 0:
+        return states
+
+    # Chronological order
+    order = np.argsort(touch_epochs)
+
+    # Per-session trackers
+    pos_side = "flat"
+    entry_ts = 0.0
+    entry_price = 0.0  # unused — unrealized_r stays 0 since we don't re-tick mid-touch
+    session_pnl = 0.0
+    consec_losses = 0
+    trade_count = 0
+    last_ts = 0.0
+    last_date = None
+
+    for idx in order:
+        ts = float(touch_epochs[idx])
+        if ts <= 0:
+            # missing timestamp — observe zeros
+            continue
+        dt_et = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(_ET).date()
+        # Session boundary: different ET date OR long gap since last touch
+        if last_date is None or dt_et != last_date or (ts - last_ts) > session_gap_s:
+            pos_side = "flat"
+            entry_ts = 0.0
+            entry_price = 0.0
+            session_pnl = 0.0
+            consec_losses = 0
+            trade_count = 0
+        last_ts = ts
+        last_date = dt_et
+
+        # Observation at this touch reflects state BEFORE this touch resolves
+        pos_flat = 1.0 if pos_side == "flat" else 0.0
+        pos_long = 1.0 if pos_side == "long" else 0.0
+        pos_short = 1.0 if pos_side == "short" else 0.0
+        # Unrealized R: episodes are point-in-time in training; treat as 0 at touch
+        unrealized_r = 0.0
+        time_in_trade = 0.0 if entry_ts == 0.0 else min((ts - entry_ts) / 3600.0, 1.0)
+        session_pnl_norm = float(np.clip(session_pnl / 10.0, -1.0, 1.0))
+        consec_norm = min(consec_losses / 3.0, 1.0)
+        progress = min(trade_count / 20.0, 1.0)
+
+        states[idx] = (
+            pos_flat,
+            pos_long,
+            pos_short,
+            unrealized_r,
+            time_in_trade,
+            session_pnl_norm,
+            consec_norm,
+            progress,
+        )
+
+        # Resolve greedy action and update trackers for next touch
+        rc = float(rewards_cont[idx])
+        rr = float(rewards_rev[idx])
+        best = max(rc, rr, 0.0)  # skip reward = 0
+        if best == 0.0:
+            # SKIP: position unchanged, no trade
+            continue
+        trade_count += 1
+        session_pnl += best
+        if best <= 0.0:
+            consec_losses += 1
+        else:
+            consec_losses = 0
+        # Flip position for this simulated trade; assume flat-out at next touch
+        # (we don't have forward ticks to trail a live position between episodes).
+        # pos_side recorded is what the NEXT touch observes — reset to flat here
+        # so carry-over is session_pnl/consec only, not a lingering position.
+        pos_side = "flat"
+        entry_ts = 0.0
+
+    return states
+
+
 # ---------------------------------------------------------------------------
 # fetch
 # ---------------------------------------------------------------------------
@@ -815,6 +920,7 @@ def _replay_single_file(
     # --- Phase 2: replay each session using TickArray (not to_dict) ---
     month_obs, month_trig, month_rc, month_rr = [], [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
+    month_gap, month_te = [], []  # overnight_gap, touch_epoch for labeler
     session_count = 0
     prior_levels = None
 
@@ -902,6 +1008,11 @@ def _replay_single_file(
                     pos_state = build_position_state()
                     obs = augment_observation(obs, gbt_forecast, pos_state)
 
+            # Extract label-relevant metadata before freeing state
+            session_ctx = (ep.state or {}).get("session_context", {}) if ep.state else {}
+            overnight_gap = float(session_ctx.get("overnight_gap", 0.0) or 0.0)
+            touch_epoch = ep.touch_ts.timestamp() if ep.touch_ts else 0.0
+
             ep.state = None  # free large state dict — not needed after trigger_obs built
 
             month_obs.append(obs)
@@ -912,6 +1023,8 @@ def _replay_single_file(
             month_st.append(ep.optimal_stop_ticks)
             month_be.append(float(ep.breakeven_reached))
             month_lc.append(float(ep.levels_captured_best))
+            month_gap.append(overnight_gap)
+            month_te.append(touch_epoch)
 
         del episodes
         gc.collect()
@@ -929,6 +1042,8 @@ def _replay_single_file(
         np.save(out_dir / f"st_{chunk_idx:04d}.npy", np.array(month_st, dtype=np.float32))
         np.save(out_dir / f"be_{chunk_idx:04d}.npy", np.array(month_be, dtype=np.float32))
         np.save(out_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
+        np.save(out_dir / f"gap_{chunk_idx:04d}.npy", np.array(month_gap, dtype=np.float32))
+        np.save(out_dir / f"te_{chunk_idx:04d}.npy", np.array(month_te, dtype=np.float64))
 
     return n_eps, len(sorted_dates)
 
@@ -1182,6 +1297,13 @@ def replay(
         episodes_dir / "levels_captured.npy",
         np.concatenate([np.load(chunk_dir / f"lc_{i:04d}.npy") for i in chunk_indices]),
     )
+
+    # Label metadata for setup labeler (has_gap proxy + touch_epoch → touch_time_et)
+    gap_chunks = [chunk_dir / f"gap_{i:04d}.npy" for i in chunk_indices]
+    te_chunks = [chunk_dir / f"te_{i:04d}.npy" for i in chunk_indices]
+    if all(p.exists() for p in gap_chunks) and all(p.exists() for p in te_chunks):
+        np.save(episodes_dir / "overnight_gap.npy", np.concatenate([np.load(p) for p in gap_chunks]))
+        np.save(episodes_dir / "touch_epochs.npy", np.concatenate([np.load(p) for p in te_chunks]))
 
     # Clean up chunks
     for old in chunk_dir.glob("*.npy"):
@@ -1448,9 +1570,22 @@ def train(
             #       + zone_f(4) + zone_c(5) + zone_cmp(31) + approach(1) + gbt(8) + exec(3)
             # GBT forecast is at index 133:141
             gbt_forecast = trigger_obs[:, 133:141]  # (N, 8)
-            # Position state: zeros for training (no carry-over between episodes yet)
-            # TODO: track position state across touches for true sequential RL
-            position_state = np.zeros((len(observations), 8), dtype=np.float32)
+            # Session-aware position state: simulate greedy execution across touches in
+            # chronological order, carrying position/session context forward. Previously
+            # this was zeros, which made the 8 position dims dead weight.
+            te_path = episodes_dir / "touch_epochs.npy"
+            if te_path.exists():
+                touch_epochs = np.load(te_path)
+                position_state = _simulate_session_position_states(
+                    touch_epochs=touch_epochs,
+                    rewards_cont=rewards_cont,
+                    rewards_rev=rewards_rev,
+                    stop_targets=stop_targets,
+                )
+                typer.echo(f"Position state: session-aware simulation over {len(position_state)} episodes")
+            else:
+                position_state = np.zeros((len(observations), 8), dtype=np.float32)
+                typer.echo("Position state: zeros (touch_epochs.npy missing — re-replay to enable)")
             observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
             typer.echo(f"HYBRID: augmented obs with GBT forecast + position state → {observations.shape[1]}-dim")
         else:
@@ -1563,10 +1698,12 @@ def train(
         for _ in range((start_epoch - 1) * steps_per_epoch):
             scheduler.step()
 
-    # Training loop
+    # Training loop with per-epoch val accuracy tracking + best-by-val checkpoint
     remaining = epochs - start_epoch + 1
     typer.echo(f"\nTraining for {remaining} epochs ({start_epoch}-{epochs}) x {steps_per_epoch} steps/epoch ...")
     typer.echo(f"LR: {scheduler.get_last_lr()[0]:.2e} -> 1e-5 cosine | Epsilon: {agent.epsilon:.2f} -> 0.05")
+    best_val_acc = -1.0
+    best_path = models_dir / f"dqn_{checkpoint}_best.pt"
     for epoch in range(start_epoch, epochs + 1):
         epoch_loss = 0.0
         for _step in range(steps_per_epoch):
@@ -1574,14 +1711,29 @@ def train(
             scheduler.step()
             epoch_loss += loss
         avg_loss = epoch_loss / steps_per_epoch
+        # Per-epoch val accuracy so overfitting is visible as train-loss-falls/val-acc-stalls
+        val_correct = 0
+        for i in range(len(val_obs)):
+            q = agent.q_network.predict(val_obs[i])[0]
+            pred = int(np.argmax(q[:2]))
+            actual = 0 if float(val_rc[i]) >= float(val_rr[i]) else 1
+            if pred == actual:
+                val_correct += 1
+        val_acc = val_correct / max(len(val_obs), 1)
         if epoch % max(1, epochs // 20) == 0 or epoch == 1:
             lr = scheduler.get_last_lr()[0]
-            typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={avg_loss:.4f}  epsilon={agent.epsilon:.3f}  lr={lr:.2e}")
-        # Checkpoint every 5 epochs so progress is never lost
+            typer.echo(
+                f"  Epoch {epoch:>5}/{epochs}  train_loss={avg_loss:.4f}  val_acc={val_acc:.3f}  "
+                f"epsilon={agent.epsilon:.3f}  lr={lr:.2e}"
+            )
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            agent.save(best_path, epoch=epoch)
         if epoch % 5 == 0:
             ckpt_path = models_dir / f"dqn_{checkpoint}.pt"
             agent.save(ckpt_path, epoch=epoch)
             typer.echo(f"  [checkpoint saved: epoch {epoch}]")
+    typer.echo(f"\nBest val accuracy during training: {best_val_acc:.3f} → saved to {best_path.name}")
 
     # Validation: check if model predicts the better direction correctly
     typer.echo("\nRunning validation ...")
@@ -2292,6 +2444,20 @@ def label_setups() -> None:
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
+    # Optional per-episode metadata for setup labeler (new in post-2026-04-18 replay)
+    gap_path = episodes_dir / "overnight_gap.npy"
+    te_path = episodes_dir / "touch_epochs.npy"
+    overnight_gap = np.load(gap_path) if gap_path.exists() else None
+    touch_epochs = np.load(te_path) if te_path.exists() else None
+    if overnight_gap is None or touch_epochs is None:
+        typer.echo("WARNING: overnight_gap.npy / touch_epochs.npy missing — gap_fill and ib_extension will be starved.")
+
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+    from zoneinfo import ZoneInfo
+
+    _ET_TZ = ZoneInfo("America/New_York")
+
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
@@ -2315,6 +2481,14 @@ def label_setups() -> None:
         # Single print: check if zone_conf single_print_overlap (index 177) is active
         has_sp = bool(observations[i, 177] > 0.5)
 
+        # Gap flag: overnight_gap is normalized by IB range; |gap| > 0.2 is a real gap.
+        gap_val = float(overnight_gap[i]) if overnight_gap is not None else 0.0
+        has_gap = abs(gap_val) > 0.2
+        # Touch time in ET — needed for ib_extension + gap_fill time gates.
+        touch_time_et = None
+        if touch_epochs is not None and touch_epochs[i] > 0:
+            touch_time_et = _dt.fromtimestamp(float(touch_epochs[i]), tz=_tz.utc).astimezone(_ET_TZ)
+
         ep_dict = {
             "zone_types": zone_types,
             "approach_direction": approach_dir,
@@ -2322,11 +2496,11 @@ def label_setups() -> None:
             "reward_rev": float(rewards_rev[i]),
             "has_single_print": has_sp,
             "forward_reversal_speed": fwd_rev_speed,
-            # Fields used by labeler but not always available from obs alone
             "price_vs_value": float(observations[i, 52]),  # struct_0: price_vs_vwap
-            "has_gap": False,  # Cannot determine from observation vector
+            "has_gap": has_gap,
             "ib_closed": bool(observations[i, 57] > 0),  # struct_5: IB distance > 0
             "delta_ratio": float(observations[i, 31]),  # orderflow index 0
+            "touch_time_et": touch_time_et,
         }
 
         labels[i] = label_episode(ep_dict).value
