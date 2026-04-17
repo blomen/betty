@@ -333,7 +333,13 @@ class LiveInferenceV5:
 
         base_obs = build_observation(state)
         if self._normalizer is not None:
-            base_obs = self._normalizer.normalize(base_obs)
+            # Normalizer may be 295-dim (hybrid DQN) but base_obs is 279-dim.
+            # Use only the base slice of the normalizer stats.
+            if self._normalizer.dim == len(base_obs):
+                base_obs = self._normalizer.normalize(base_obs)
+            else:
+                std = np.sqrt(np.maximum(self._normalizer.ewm_var[: len(base_obs)], 1e-8))
+                base_obs = ((base_obs - self._normalizer.ewm_mean[: len(base_obs)]) / std).astype(np.float32)
 
         # 3. Get narrative features for trigger observation
         narrative = self._narrative_cache
@@ -397,9 +403,9 @@ class LiveInferenceV5:
                         augmented_obs = np.concatenate([augmented_obs, pad])
                     else:
                         augmented_obs = augmented_obs[: self._dqn_input_dim]
-                # Normalize if normalizer matches this dim
-                if self._normalizer is not None and self._normalizer.dim == self._dqn_input_dim:
-                    augmented_obs = self._normalizer.normalize(augmented_obs)
+                # base_obs is already normalized above; GBT forecast is probabilities
+                # in [0,1] and position_state is zeros — both already in model-friendly
+                # scale, so no second normalization pass.
                 obs_tensor = torch.from_numpy(augmented_obs).unsqueeze(0)
                 with torch.no_grad():
                     q_values = self._dqn(obs_tensor)[0].numpy()
