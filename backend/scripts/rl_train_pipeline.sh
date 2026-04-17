@@ -122,20 +122,12 @@ step_run "4/8" "Training Trigger GBT v5" "critical" \
     nice -n 19 python -m src.app rl train-trigger-gbt --checkpoint v5 --trees 1000 --depth 6 --lr 0.05
 [ $FAILED -eq 1 ] && exit 1
 
-# Step 5: Re-replay with GBT augmentation → hybrid trigger episodes (critical)
-# --clean on first entry wipes step-1 chunks; on resume, skip --clean so partial
-# progress from an interrupted step-5 replay is preserved.
-STEP5_STARTED=/app/data/rl/step5_started
-if [ -f "$STEP5_STARTED" ]; then
-    STEP5_CLEAN=""
-    echo "[5/8] Resuming step 5 (no --clean, preserving existing chunks)."
-else
-    STEP5_CLEAN="--clean"
-    touch "$STEP5_STARTED"
-fi
-step_run "5/8" "Re-replaying with GBT augmentation → hybrid trigger episodes" "critical" \
-    nice -n 19 python -m src.app rl replay --all --gbt trigger_gbt_v5.joblib --workers $WORKERS $STEP5_CLEAN
-rm -f "$STEP5_STARTED"  # clean up marker after success
+# Step 5: Augment trigger observations with GBT forecast (FAST — ~1 min)
+# Replaces the old "re-replay all 39 parquets with --gbt" which took ~5h.
+# Instead: load saved trigger_observations.npy, run GBT inference in batch,
+# write 8-dim forecast into slots [133:141]. Same result, 300x faster.
+step_run "5/8" "Augmenting trigger obs with GBT forecast (fast, batch inference)" "critical" \
+    python -m src.app rl augment-trigger-obs --gbt-name trigger_gbt_v5.joblib
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 6: Train Trigger DQN (critical)

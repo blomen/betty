@@ -1200,6 +1200,72 @@ def replay(
 
 
 # ---------------------------------------------------------------------------
+# augment-trigger-obs — fast GBT forecast injection without re-replay
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("augment-trigger-obs")
+def augment_trigger_obs(
+    gbt_name: str = typer.Option("trigger_gbt_v5.joblib", help="Trigger GBT model filename"),
+) -> None:
+    """Fast replacement for step 5 (re-replay with GBT augmentation).
+
+    Instead of re-replaying 39 parquets (~5h), this loads the saved
+    trigger_observations.npy, runs TriggerGBT inference in batch to get
+    the 8-dim forecast, and writes the forecast into slots 133:141.
+
+    Takes ~1 minute for 500K episodes vs 5 hours for re-replay.
+    """
+    import numpy as np
+
+    from src.rl.agent.trigger_gbt import TriggerGBT
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if not trigger_path.exists():
+        typer.echo(f"No trigger_observations.npy in {episodes_dir}", err=True)
+        raise typer.Exit(1)
+
+    gbt_path = models_dir / gbt_name
+    if not gbt_path.exists():
+        typer.echo(f"No {gbt_name} in {models_dir}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Loading {trigger_path}...")
+    trigger_obs = np.load(trigger_path)
+    typer.echo(f"Loaded {len(trigger_obs):,} episodes, shape={trigger_obs.shape}")
+
+    typer.echo(f"Loading {gbt_path}...")
+    gbt = TriggerGBT.load(gbt_path)
+
+    # Zero out the GBT forecast slot (indices 133:141) before prediction
+    # so the model sees "no forecast" baseline during inference
+    trigger_obs_no_forecast = trigger_obs.copy()
+    trigger_obs_no_forecast[:, 133:141] = 0.0
+
+    # Batch inference — predict_full_batch returns (N, 8) forecast
+    typer.echo("Running GBT inference in batches...")
+    batch_size = 50000
+    forecasts = []
+    for i in range(0, len(trigger_obs_no_forecast), batch_size):
+        chunk = trigger_obs_no_forecast[i : i + batch_size]
+        # predict_full returns 8-dim: [prob_cont, prob_rev, confidence, best_r, worst_r, be, levels, stop]
+        fc = gbt.predict_full_batch(chunk)
+        forecasts.append(fc)
+        typer.echo(f"  {min(i + batch_size, len(trigger_obs_no_forecast)):,} / {len(trigger_obs_no_forecast):,}")
+    forecasts = np.concatenate(forecasts, axis=0).astype(np.float32)
+
+    # Inject forecast into trigger_obs at slots 133:141
+    trigger_obs[:, 133:141] = forecasts
+
+    typer.echo(f"Saving augmented trigger_obs to {trigger_path}...")
+    np.save(trigger_path, trigger_obs)
+    typer.echo(f"Done. {len(trigger_obs):,} episodes × 144 dims with GBT forecast embedded.")
+
+
+# ---------------------------------------------------------------------------
 # merge-live — merge live episodes into the main episode pool
 # ---------------------------------------------------------------------------
 
