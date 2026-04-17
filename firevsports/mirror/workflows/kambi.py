@@ -503,6 +503,11 @@ class KambiWorkflow(ProviderWorkflow):
         path = self._BETTING_PATHS.get(self.provider_id, "/betting/sports")
         return f"https://{self.domain}{path}"
 
+    @property
+    def home_url(self) -> str:
+        """Open betting page directly — skip casino landing."""
+        return self._betting_url()
+
     async def navigate_to_event(self, page: Page, bet) -> bool:
         """Navigate to Kambi event via widget navigateClient API.
 
