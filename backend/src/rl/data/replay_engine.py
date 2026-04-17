@@ -814,8 +814,15 @@ class ReplayEngine:
         zone_key = round(zone.center_price * 4) / 4
         ts_epoch = ts.timestamp()
 
-        # Record this touch (preserving any previously-recorded last_result)
-        entry = self._zone_touch_mem.get(zone_key, {"count": 0, "last_ts": 0.0, "last_result": 0.0})
+        # Grab prior state BEFORE we overwrite last_ts (audit found this was the
+        # reason time_since_last was always 0 — we were reading after the update).
+        prior = self._zone_touch_mem.get(zone_key)
+        if prior is not None and prior.get("last_ts", 0.0) > 0:
+            time_since_last = ts_epoch - prior["last_ts"]
+        else:
+            time_since_last = 3600.0  # first touch: default to 1h
+
+        entry = prior if prior is not None else {"count": 0, "last_ts": 0.0, "last_result": 0.0}
         entry["count"] += 1
         entry["last_ts"] = ts_epoch
         entry.setdefault("last_result", 0.0)
@@ -824,10 +831,14 @@ class ReplayEngine:
         # Build memory dict for all zones
         result = {}
         for key, mem in self._zone_touch_mem.items():
+            if key == zone_key:
+                tsl = time_since_last
+            else:
+                tsl = ts_epoch - mem["last_ts"] if mem.get("last_ts", 0.0) > 0 else 3600.0
             result[key] = {
                 "touch_count": mem["count"],
                 "last_result": float(mem.get("last_result", 0.0)),
-                "time_since_last": ts_epoch - mem["last_ts"] if mem["last_ts"] > 0 else 3600,
+                "time_since_last": tsl,
             }
         return result
 
