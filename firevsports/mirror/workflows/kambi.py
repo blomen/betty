@@ -62,7 +62,8 @@ class KambiWorkflow(ProviderWorkflow):
     def _balance_rest_url(self) -> str | None:
         path = _BALANCE_ENDPOINTS.get(self.provider_id)
         if path and self.domain:
-            return f"https://{self.domain}{path}"
+            domain = f"www.{self.domain}" if not self.domain.startswith("www.") else self.domain
+            return f"https://{domain}{path}"
         return None
 
     def _balance_graphql_url(self) -> str | None:
