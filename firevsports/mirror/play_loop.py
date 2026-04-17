@@ -79,7 +79,7 @@ UNCAPPED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
 DUTCH_ONLY_PROVIDERS = {"interwetten", "betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"}
 
 # Unlimited providers used as counter-legs for Dutch hedging (API-based, autonomous_placement=True)
-COUNTER_PROVIDERS = ("pinnacle", "polymarket", "cloudbet")  # tuple for stable ordering
+COUNTER_PROVIDERS = ("pinnacle", "polymarket")  # tuple for stable ordering; cloudbet has no autonomous workflow yet
 
 
 class PlayLoop:

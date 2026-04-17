@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How often to re-fetch Dutch opps from the server API
-_OPP_REFRESH_INTERVAL = 30.0
+# Cooldown between Dutch opp fetch cycles to avoid hammering the API
+_OPP_FETCH_COOLDOWN = 10.0
 
 
 class DutchRunner:
@@ -278,7 +278,7 @@ class DutchRunner:
                     bet_ns.stake = stake
                     prep_result = await workflow.prep_betslip(page, bet_ns, stake)
 
-                    # Check live price
+                    # Check live price and re-validate arb profitability
                     live_odds = prep_result.actual_odds
                     if hasattr(workflow, "check_live_price"):
                         try:
@@ -287,6 +287,21 @@ class DutchRunner:
                                 live_odds = lo
                         except Exception:
                             pass
+
+                    # Re-validate arb: if live anchor odds dropped, guaranteed profit may be gone
+                    if live_odds and live_odds > 0:
+                        live_profit = self._recalc_profit(live_odds, counter_plan)
+                        if live_profit is not None and live_profit <= 0:
+                            logger.info(
+                                f"[Dutch:{pid}] Arb margin gone at live odds {live_odds:.2f} "
+                                f"(profit={live_profit:.2f}%) — skipping"
+                            )
+                            self._broadcaster.publish(
+                                "bet_skipped",
+                                {"bet": anchor_bet, "reason": f"arb margin gone ({live_profit:.1f}%)"},
+                            )
+                            self.stats["skipped"] += 1
+                            continue
 
                     # Broadcast dutch_bet_ready with full opp context
                     self.state = STATE_READY
@@ -373,6 +388,9 @@ class DutchRunner:
                 if not placed_any:
                     logger.info(f"[Dutch:{pid}] No viable opps in batch — done")
                     break
+
+                # Cooldown before re-fetching to avoid hammering the API
+                await asyncio.sleep(_OPP_FETCH_COOLDOWN)
 
             # Done
             self._broadcaster.publish("provider_complete", {"provider_id": pid, "mode": "dutch"})
@@ -564,6 +582,24 @@ class DutchRunner:
             if not nav_ok:
                 return PlacementResult(status="failed", bet_id=0, reason="navigation_failed")
 
+            # Check live counter odds — recalculate stake if they moved
+            if hasattr(workflow, "check_live_price"):
+                try:
+                    live_odds, _edge = await workflow.check_live_price(page, bet_ns)
+                    if live_odds and live_odds > 0 and live_odds != odds:
+                        logger.info(
+                            f"[Dutch:{self.provider_id}] Counter odds moved: {odds:.2f} → {live_odds:.2f} on {counter_pid}"
+                        )
+                        # Recalculate stake for equal payout
+                        counter_bet["odds"] = live_odds
+                        bet_ns.odds = live_odds
+                        # stake was total_payout / old_odds; adjust to total_payout / live_odds
+                        stake = round(stake * odds / live_odds, 2)
+                        counter_bet["stake"] = stake
+                        bet_ns.stake = stake
+                except Exception:
+                    pass  # Use original odds/stake if live check fails
+
             # Place bet (autonomous — API/SDK call)
             result = await workflow.place_bet(page, bet_ns, stake)
             return result
@@ -575,6 +611,22 @@ class DutchRunner:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _recalc_profit(live_anchor_odds: float, counter_plan: list[dict]) -> float | None:
+        """Recalculate guaranteed profit % using live anchor odds.
+
+        Returns profit % (positive = profitable) or None if can't calculate.
+        Formula: profit = 1 / (1/anchor + sum(1/best_counter)) - 1
+        """
+        try:
+            inv_sum = 1.0 / live_anchor_odds
+            for counter in counter_plan:
+                best_odds = counter["providers"][0]["odds"]
+                inv_sum += 1.0 / best_odds
+            return (1.0 / inv_sum - 1.0) * 100.0
+        except (ZeroDivisionError, IndexError, KeyError):
+            return None
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
@@ -600,17 +652,20 @@ class DutchRunner:
 
     @staticmethod
     def _calc_anchor_stake(opp: dict, anchor_leg: dict, balance: float | None) -> float:
-        """Calculate anchor leg stake based on stake_pct and provider balance."""
+        """Calculate anchor leg stake based on stake_pct and provider balance.
+
+        The server API returns stake_pct per leg (inverse-odds weighting).
+        Fallback uses a conservative 25% if stake_pct is missing.
+        """
         stake_pct = anchor_leg.get("stake_pct", 0)
         if not stake_pct or stake_pct <= 0:
-            stake_pct = 1.0 / len(opp.get("legs", [1]))  # Equal split fallback
+            stake_pct = 0.25  # Conservative fallback — never risk full balance on missing data
 
         # Use provider balance as the total stake pool
         if balance and balance > 0:
-            # Total Dutch stake = balance (drain the account)
             anchor_stake = round(balance * stake_pct, 2)
-            # Cap at balance
-            return min(anchor_stake, balance)
+            # Hard cap: never exceed 80% of balance (leave room for rounding / fees)
+            return min(anchor_stake, balance * 0.8)
         return 10.0  # Minimum fallback
 
     async def _handle_anchor_placement(
