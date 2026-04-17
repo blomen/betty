@@ -1,13 +1,12 @@
-from typing import List, Any
-import logging
 import asyncio
+import logging
 import time
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Any
 
 # Kambi Specific Logic adapted from APIExtractor
 from ..core import Retriever, StandardEvent
-from ..matching.normalizer import normalize_team_name, normalize_market, normalize_outcome
+from ..matching.normalizer import normalize_outcome, normalize_team_name
 from .shared.metrics import ExtractionMetrics
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,7 @@ EVENT_CACHE_TTL_SECONDS = 300
 @dataclass
 class CachedGroupData:
     """Cache entry with TTL for group data."""
+
     data: Any
     created_at: float
 
@@ -33,7 +33,8 @@ class CachedGroupData:
 @dataclass
 class CachedEventData:
     """Cache entry for parsed events per group, shared across Kambi brands."""
-    events: List[StandardEvent]
+
+    events: list[StandardEvent]
     created_at: float
 
     def is_expired(self) -> bool:
@@ -49,14 +50,14 @@ class KambiRetriever(Retriever):
     # All brands share the same group tree, so keyed by base_url only
     # This means 1 fetch serves all 8 providers instead of 8 redundant fetches
     # Uses TTL-based caching to prevent stale data
-    _SHARED_GROUP_CACHE: Dict[str, CachedGroupData] = {}
+    _SHARED_GROUP_CACHE: dict[str, CachedGroupData] = {}
 
     # Shared class-level cache for PARSED events per group
     # All 8 Kambi brands return identical events (same API backend, different brand slug)
     # Key: (base_url, group_id, sport) → CachedEventData with list of StandardEvents
     # First brand fetches + parses, subsequent brands clone with their provider_id
     # Saves ~7 redundant API calls per group × ~50 groups = ~350 avoided HTTP requests
-    _SHARED_EVENT_CACHE: Dict[tuple, CachedEventData] = {}
+    _SHARED_EVENT_CACHE: dict[tuple, CachedEventData] = {}
 
     # We might need to fetch the groups first, then the events.
     # The Retriever interface assumes a single URL per sport usually,
@@ -70,10 +71,8 @@ class KambiRetriever(Retriever):
         # Create transport with circuit breaker and rate limit config if not provided
         if transport is None:
             from ..core import HttpTransport
-            transport = HttpTransport(
-                circuit_breaker=circuit_breaker,
-                rate_limit_config=rate_limit_config
-            )
+
+            transport = HttpTransport(circuit_breaker=circuit_breaker, rate_limit_config=rate_limit_config)
         super().__init__(config, transport)
         self.brand = config.get("brand") or config.get("id")
         self.base_url = config.get("api_base") or config.get("base_url")
@@ -81,11 +80,13 @@ class KambiRetriever(Retriever):
 
     def _get_sport_url(self, sport: str) -> str:
         # This method in the base class returns a single URL.
-        # kambi needs more complex logic. 
+        # kambi needs more complex logic.
         # We will override `extract` instead or use this for the final call.
-        return "" 
+        return ""
 
-    async def extract(self, sport: str, limit: int = 50, target_leagues: set[str] | None = None, **kwargs) -> List[StandardEvent]:
+    async def extract(
+        self, sport: str, limit: int = 50, target_leagues: set[str] | None = None, **kwargs
+    ) -> list[StandardEvent]:
         metrics = ExtractionMetrics()
 
         # 1. Get Groups (using shared cache with TTL)
@@ -102,16 +103,9 @@ class KambiRetriever(Retriever):
             if cached_entry and cached_entry.is_expired():
                 logger.debug(f"[{self.provider_id}] Cache expired, refetching")
             logger.debug(f"[{self.provider_id}] Fetching groups from: {groups_url}")
-            group_data = await self.transport.get(
-                groups_url,
-                params=self.default_params,
-                provider_id=self.provider_id
-            )
+            group_data = await self.transport.get(groups_url, params=self.default_params, provider_id=self.provider_id)
             if group_data:
-                self._SHARED_GROUP_CACHE[cache_key] = CachedGroupData(
-                    data=group_data,
-                    created_at=time.time()
-                )
+                self._SHARED_GROUP_CACHE[cache_key] = CachedGroupData(data=group_data, created_at=time.time())
                 logger.debug(f"[{self.provider_id}] Cached groups for all brands (TTL={GROUP_CACHE_TTL_SECONDS}s)")
 
         if not group_data:
@@ -129,15 +123,14 @@ class KambiRetriever(Retriever):
         # Falls back to unfiltered if league filter removes everything
         if target_leagues and target_groups:
             original = len(target_groups)
-            filtered = [
-                g for g in target_groups
-                if self._match_league(g.get("name", ""), target_leagues)
-            ]
+            filtered = [g for g in target_groups if self._match_league(g.get("name", ""), target_leagues)]
             if filtered:
                 target_groups = filtered
                 skipped = original - len(target_groups)
                 if skipped > 0:
-                    logger.debug(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
+                    logger.debug(
+                        f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)"
+                    )
             else:
                 logger.debug(f"[{self.provider_id}] {sport}: league filter matched 0/{original} groups, using all")
 
@@ -176,7 +169,7 @@ class KambiRetriever(Retriever):
         # Deduplicate events by ID — keep the version with the most markets
         # Same event appears in parent + child groups with different betoffer sets;
         # child groups typically have richer match-level betoffers
-        event_map: Dict[str, StandardEvent] = {}
+        event_map: dict[str, StandardEvent] = {}
         for event in all_events:
             existing = event_map.get(event.id)
             if existing is None or len(event.markets) > len(existing.markets):
@@ -196,15 +189,14 @@ class KambiRetriever(Retriever):
         logger.info("Kambi group + event caches cleared")
 
     @classmethod
-    def get_cache_stats(cls) -> Dict:
+    def get_cache_stats(cls) -> dict:
         """Get statistics about the shared caches."""
         now = time.time()
         stats = {
             "group_cache_entries": len(cls._SHARED_GROUP_CACHE),
             "event_cache_entries": len(cls._SHARED_EVENT_CACHE),
             "event_cache_events": sum(
-                len(entry.events) for entry in cls._SHARED_EVENT_CACHE.values()
-                if not entry.is_expired()
+                len(entry.events) for entry in cls._SHARED_EVENT_CACHE.values() if not entry.is_expired()
             ),
             "expired_entries": 0,
             "active_entries": 0,
@@ -221,8 +213,8 @@ class KambiRetriever(Retriever):
                 stats["oldest_age_seconds"] = age
 
         return stats
-        
-    async def _fetch_group_events(self, group: dict, sport: str, metrics: ExtractionMetrics) -> List[StandardEvent]:
+
+    async def _fetch_group_events(self, group: dict, sport: str, metrics: ExtractionMetrics) -> list[StandardEvent]:
         # Check shared event cache first — all Kambi brands return identical events
         cache_key = (self.base_url, group["id"], sport)
         cached = self._SHARED_EVENT_CACHE.get(cache_key)
@@ -231,18 +223,18 @@ class KambiRetriever(Retriever):
             cloned = []
             for ev in cached.events:
                 clone = StandardEvent(
-                    id=ev.id, name=ev.name,
-                    home_team=ev.home_team, away_team=ev.away_team,
-                    sport=ev.sport, league=ev.league,
+                    id=ev.id,
+                    name=ev.name,
+                    home_team=ev.home_team,
+                    away_team=ev.away_team,
+                    sport=ev.sport,
+                    league=ev.league,
                     start_time=ev.start_time,
                     markets=ev.markets,  # markets are read-only, safe to share
                     provider=self.provider_id,
                 )
                 cloned.append(clone)
-            logger.debug(
-                f"[{self.provider_id}] Cache hit for group {group['id']} ({sport}): "
-                f"{len(cloned)} events"
-            )
+            logger.debug(f"[{self.provider_id}] Cache hit for group {group['id']} ({sport}): {len(cloned)} events")
             metrics.events_parsed += len(cloned)
             return cloned
 
@@ -265,9 +257,7 @@ class KambiRetriever(Retriever):
         events = self.parse(data, sport, metrics)
 
         # Cache parsed events for other brands to reuse
-        self._SHARED_EVENT_CACHE[cache_key] = CachedEventData(
-            events=events, created_at=time.time()
-        )
+        self._SHARED_EVENT_CACHE[cache_key] = CachedEventData(events=events, created_at=time.time())
 
         return events
 
@@ -312,7 +302,7 @@ class KambiRetriever(Retriever):
                 f"(common API limit - verify not truncated)"
             )
 
-    def parse(self, data: Any, sport: str, metrics: ExtractionMetrics = None) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str, metrics: ExtractionMetrics = None) -> list[StandardEvent]:
         # Logic from APIExtractor._kambi_parse_event
         if not data:
             return []
@@ -348,12 +338,7 @@ class KambiRetriever(Retriever):
         return events
 
     def _parse_single_event(
-        self,
-        event_raw: dict,
-        betoffers: list,
-        outcome_map: dict,
-        sport: str,
-        metrics: ExtractionMetrics
+        self, event_raw: dict, betoffers: list, outcome_map: dict, sport: str, metrics: ExtractionMetrics
     ) -> StandardEvent | None:
         try:
             event_id = str(event_raw.get("id", ""))
@@ -449,42 +434,78 @@ class KambiRetriever(Retriever):
 
             # Exclude partial markets, derivative bets, and futures (applies to ALL bet offer types)
             EXCLUDE_PATTERNS = (
-                "quarter", "period", "half",
-                "1st", "2nd", "3rd", "4th", "5th",
-                "first",                                        # "First Inning", "First Half", etc.
-                "inning",                                       # Baseball period markets ("Innings 1-5", "5 Innings")
-                "map ",                                         # Esports period markets ("Map 1", "Map 2")
+                "quarter",
+                "period",
+                "half",
+                "1st",
+                "2nd",
+                "3rd",
+                "4th",
+                "5th",
+                "first",  # "First Inning", "First Half", etc.
+                "inning",  # Baseball period markets ("Innings 1-5", "5 Innings")
+                "map ",  # Esports period markets ("Map 1", "Map 2")
                 "draw no bet",
-                "competition", "season", "trophy", "award",  # Futures/outrights
-                "0:00-", "5:00-", "10:00-",                   # Time-segment markets
-                "conference winner", "division winner",        # Season futures
-                "group winner",                                # Tournament futures
-                "team total", "lags total",                    # Team-specific totals (not match total)
-                "total goals by", "total points by",            # Kambi team totals (e.g. "Total Goals by Sweden")
-                "total games by", "total sets by",              # Tennis team totals
-                "total corners", "total cards", "total shots",  # Prop totals (not match total)
-                "total fouls", "total offsides",                # Prop totals (not match total)
+                "competition",
+                "season",
+                "trophy",
+                "award",  # Futures/outrights
+                "0:00-",
+                "5:00-",
+                "10:00-",  # Time-segment markets
+                "conference winner",
+                "division winner",  # Season futures
+                "group winner",  # Tournament futures
+                "team total",
+                "lags total",  # Team-specific totals (not match total)
+                "total goals by",
+                "total points by",  # Kambi team totals (e.g. "Total Goals by Sweden")
+                "total games by",
+                "total sets by",  # Tennis team totals
+                "total corners",
+                "total cards",
+                "total shots",  # Prop totals (not match total)
+                "total fouls",
+                "total offsides",  # Prop totals (not match total)
+                "power play",
+                "powerplay",  # Ice hockey power play totals
+                "numerärt",
+                "numerär",  # Swedish "power play" (numerärt överläge)
+                "empty net",  # Empty net goals
+                "skott",
+                "shots on",  # Shots on goal totals
             )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None
 
             # Log criterion labels for spread/total markets that pass filters (diagnostic)
             if bet_offer_type_id in (1, 6, 7) and label:
-                logger.debug(
-                    f"[kambi] Accepted betOfferType={bet_offer_type_id} label='{label}'"
-                )
+                logger.debug(f"[kambi] Accepted betOfferType={bet_offer_type_id} label='{label}'")
+
+            # For betOfferType 6 (total), exclude team-specific totals
+            # Swedish labels: "Antal mål för Calgary Flames" / English: "Total Goals by Team X"
+            # These contain the team name — match totals say "Antal mål" without a team
+            if bet_offer_type_id == 6 and label:
+                # Drop if label contains " för " or " by " followed by a team name
+                # (team-specific totals, not match totals)
+                if " för " in label or " by " in label or " av " in label:
+                    logger.debug(f"[{self.provider_id}] Dropped team-specific total: '{label}'")
+                    return None
 
             # For betOfferType 2 (match winner), apply keyword filter to ensure full-match only
             # betOfferType 1 (handicap), 6 (total), 7 (spread) pass after EXCLUDE_PATTERNS
             if bet_offer_type_id == 2:
                 MATCH_KEYWORDS = (
-                    "full time", "fulltid", "heltid",       # Football regulation
-                    "match", "moneyline",                    # General
-                    "bout",                                  # Boxing, MMA
-                    "regular time",                          # Rugby, generic regulation
-                    "including overtime",                    # American football, ice hockey
-                    "including extra ends",                  # Curling
-                    "inklusive",                             # Swedish "including overtime" variant
+                    "full time",
+                    "fulltid",
+                    "heltid",  # Football regulation
+                    "match",
+                    "moneyline",  # General
+                    "bout",  # Boxing, MMA
+                    "regular time",  # Rugby, generic regulation
+                    "including overtime",  # American football, ice hockey
+                    "including extra ends",  # Curling
+                    "inklusive",  # Swedish "including overtime" variant
                 )
                 if not any(kw in label for kw in MATCH_KEYWORDS):
                     logger.debug(f"[{self.provider_id}] Dropped betOffer type={bet_offer_type_id} label='{label}'")
@@ -494,7 +515,8 @@ class KambiRetriever(Retriever):
             for outcome_ref in betoffer.get("outcomes", []):
                 outcome = outcome_map.get(outcome_ref.get("id"), outcome_ref)
                 odds = outcome.get("odds", 0) / 1000
-                if odds <= 1: continue
+                if odds <= 1:
+                    continue
                 # Parse Line/Point (e.g. 224500 -> 224.5)
                 point = outcome.get("line")
                 if point is not None:
@@ -515,15 +537,18 @@ class KambiRetriever(Retriever):
                 else:
                     normalized_name = normalize_outcome(raw_name, home_team, away_team)
 
-                outcomes.append({
-                    "name": normalized_name,
-                    "odds": round(odds, 3),
-                    "point": point,
-                    "provider_meta": {
-                        "outcome_id": str(outcome.get("id", "")),
-                    },
-                })
-            if not outcomes: return None
+                outcomes.append(
+                    {
+                        "name": normalized_name,
+                        "odds": round(odds, 3),
+                        "point": point,
+                        "provider_meta": {
+                            "outcome_id": str(outcome.get("id", "")),
+                        },
+                    }
+                )
+            if not outcomes:
+                return None
 
             # Determine market type from betOfferType ID and outcome structure
             if bet_offer_type_id == 6:
@@ -572,12 +597,14 @@ class KambiRetriever(Retriever):
         # Copied helper
         if isinstance(obj, dict):
             if "id" in obj and "name" in obj:
-                groups.append({
-                    "id": obj["id"],
-                    "name": obj.get("name", obj.get("englishName", "")),
-                    "sport": obj.get("sport", ""),
-                    "depth": depth,
-                })
+                groups.append(
+                    {
+                        "id": obj["id"],
+                        "name": obj.get("name", obj.get("englishName", "")),
+                        "sport": obj.get("sport", ""),
+                        "depth": depth,
+                    }
+                )
             for key in ["group", "groups", "children"]:
                 if key in obj and isinstance(obj[key], (list, dict)):
                     self._extract_groups_recursive(obj[key], groups, depth + 1)
@@ -595,6 +622,7 @@ class KambiRetriever(Retriever):
 
         # Load aliases from config
         from ..config import ConfigLoader
+
         config_loader = ConfigLoader.get_instance()
         aliases = config_loader.get_sport_aliases(target_sport)
 
