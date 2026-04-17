@@ -268,10 +268,25 @@ class LiveInferenceV5:
                 episodes_dir = search_dir / "episodes"
                 norm_path = episodes_dir / "normalizer.json"
                 if norm_path.exists():
-                    # Normalizer dim matches whatever the DQN expects (may be augmented)
+                    # Normalizer dim should match DQN's input dim; if saved smaller
+                    # (hybrid augmentation), extend with identity stats for extras.
+                    import json as _json
+
+                    saved = _json.loads(norm_path.read_text())
+                    saved_dim = saved.get("dim", OBSERVATION_DIM)
                     norm_dim = getattr(self, "_dqn_input_dim", OBSERVATION_DIM)
                     self._normalizer = RunningNormalizer(dim=norm_dim)
-                    self._normalizer.load(norm_path)
+                    if saved_dim == norm_dim:
+                        self._normalizer.load(norm_path)
+                    elif saved_dim < norm_dim:
+                        base_norm = RunningNormalizer(dim=saved_dim)
+                        base_norm.load(norm_path)
+                        self._normalizer.count = base_norm.count
+                        self._normalizer.ewm_mean[:saved_dim] = base_norm.ewm_mean
+                        self._normalizer.ewm_var[:saved_dim] = base_norm.ewm_var
+                        log.info("Extended normalizer %d→%d for hybrid obs", saved_dim, norm_dim)
+                    else:
+                        log.warning("Saved normalizer dim %d > expected %d", saved_dim, norm_dim)
                     log.info(
                         "Normalizer loaded from %s (count=%d, dim=%d)",
                         norm_path,
