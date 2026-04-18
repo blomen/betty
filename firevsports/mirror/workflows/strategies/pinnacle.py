@@ -91,16 +91,34 @@ def _american_to_decimal(price: float) -> float:
 
 
 async def _evaluate_api(page: "Page", url: str) -> Any:
+    """Fetch a Pinnacle API URL. Uses Playwright's request context (with the page's cookie
+    jar) to bypass browser CORS restrictions that block page.evaluate fetch() calls."""
     try:
-        return await page.evaluate(
-            f"""async () => {{
-                const resp = await fetch("{url}", {{credentials: "include"}});
-                if (!resp.ok) return {{ __error: resp.status }};
-                return await resp.json();
-            }}"""
-        )
+        resp = await page.context.request.get(url)
+        if resp.status < 200 or resp.status >= 400:
+            return {"__error": resp.status}
+        return await resp.json()
     except Exception as e:
         logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
+        return None
+
+
+async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
+    """POST JSON to Pinnacle via Playwright's request context (bypasses CORS)."""
+    try:
+        resp = await page.context.request.post(
+            url, data=body, headers={"Content-Type": "application/json"}
+        )
+        data = None
+        try:
+            data = await resp.json()
+        except Exception:
+            data = {}
+        if resp.status < 200 or resp.status >= 400:
+            return {"__error": resp.status, **(data or {})}
+        return data
+    except Exception as e:
+        logger.warning(f"[pinnacle] API POST failed: {url} — {e}")
         return None
 
 
@@ -155,19 +173,8 @@ async def _scan(page: "Page", intel: dict | None) -> dict:
     api = _api_base(intel)
     start, end = _date_range()
 
-    # Evaluate API helper (inherits page cookies)
     async def fetch_api(url: str) -> Any:
-        try:
-            return await page.evaluate(f"""
-                async () => {{
-                    const resp = await fetch("{url}", {{credentials: "include"}});
-                    if (!resp.ok) return {{ __error: resp.status }};
-                    return await resp.json();
-                }}
-            """)
-        except Exception as e:
-            logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
-            return None
+        return await _evaluate_api(page, url)
 
     # Balance
     bal_data = await fetch_api(f"{api}/wallet/balance")
@@ -475,15 +482,8 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
     # API fallback
     if not entries:
         start, end = _date_range()
-        try:
-            data = await page.evaluate(f"""
-                async () => {{
-                    const resp = await fetch("{api}/bets?status=settled&startDate={start}&endDate={end}", {{credentials: "include"}});
-                    if (!resp.ok) return {{ __error: resp.status }};
-                    return await resp.json();
-                }}
-            """)
-        except Exception:
+        data = await _evaluate_api(page, f"{api}/bets?status=settled&startDate={start}&endDate={end}")
+        if data is None or (isinstance(data, dict) and "__error" in data):
             data = None
 
         for b in _bets_list(data):
@@ -525,18 +525,8 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"unknown_outcome:{outcome}")
 
     # Fetch markets
-    try:
-        markets = await page.evaluate(f"""
-            async () => {{
-                const resp = await fetch("{api}/matchups/{matchup_id}/markets/straight", {{credentials: "include"}});
-                if (!resp.ok) return {{ __error: resp.status }};
-                return await resp.json();
-            }}
-        """)
-    except Exception:
-        markets = None
-
-    if not markets or "__error" in (markets if isinstance(markets, dict) else {}):
+    markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
+    if not markets or (isinstance(markets, dict) and "__error" in markets):
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
 
     # Find matching market
@@ -579,22 +569,9 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         "originTag": "ps:bsd",
     }
 
-    try:
-        body_json = json.dumps(body)
-        result = await page.evaluate("""
-            async ([url, bodyStr]) => {
-                const resp = await fetch(url, {
-                    method: "POST", credentials: "include",
-                    headers: {"Content-Type": "application/json"},
-                    body: bodyStr,
-                });
-                const data = await resp.json();
-                if (!resp.ok) return { __error: resp.status, ...data };
-                return data;
-            }
-        """, [f"{api}/bets/straight", body_json])
-    except Exception as e:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"api_call_failed:{e}")
+    result = await _post_api(page, f"{api}/bets/straight", body)
+    if result is None:
+        return PlacementResult(status="failed", bet_id=bet.bet_id, reason="api_call_failed")
 
     if not result or "__error" in result:
         detail = (result or {}).get("detail", (result or {}).get("title", str((result or {}).get("__error", ""))))
@@ -632,17 +609,7 @@ async def _check_live_price(page: "Page", bet, intel: dict | None) -> float | No
     if not matchup_id or not fair_odds:
         return None
 
-    try:
-        markets = await page.evaluate(f"""
-            async () => {{
-                const resp = await fetch("{api}/matchups/{matchup_id}/markets/straight", {{credentials: "include"}});
-                if (!resp.ok) return null;
-                return await resp.json();
-            }}
-        """)
-    except Exception:
-        return None
-
+    markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
     if not markets or not isinstance(markets, list):
         return None
 

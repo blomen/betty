@@ -2,6 +2,7 @@
   "provider_id": "pinnacle",
   "domain": "pinnacle.se",
   "api_base": "https://api.arcadia.pinnacle.se/0.1",
+  "autonomous_placement": true,
   "markets": {
     "designation_map": {
       "home": "home",

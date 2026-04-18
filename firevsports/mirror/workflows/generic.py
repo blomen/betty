@@ -86,6 +86,9 @@ class GenericWorkflow(ProviderWorkflow):
         from .strategies import load_strategy
 
         self.strategy = load_strategy(provider_id)
+        # Intel JSON may declare this provider as autonomous (API-based place_bet
+        # called on user confirm instead of waiting for a placement interception).
+        self.autonomous_placement = bool((self.intel or {}).get("autonomous_placement", False))
 
     # ------------------------------------------------------------------
     # Login
