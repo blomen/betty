@@ -17,6 +17,7 @@ import httpx
 from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
+    _PROVIDER_TO_CLUSTER,
     DAILY_BET_CAP,
     LOGIN_POLL_INTERVAL,
     LOGIN_TIMEOUT,
@@ -28,6 +29,7 @@ from .play_loop import (
     STATE_READY,
     STATE_SETTLING,
     UNCAPPED_PROVIDERS,
+    UNLIMITED_PROVIDERS,
     _bet_ns,
 )
 from .workflows import get_workflow
