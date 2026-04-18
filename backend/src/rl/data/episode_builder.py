@@ -323,6 +323,17 @@ def label_outcome_from_array(
     reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty
     reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty
 
+    # Cap rewards to what a live trade can actually realize. The broker stops at
+    # ~1R (20 ticks = _STOP_TICKS_TRAIL), so no live loss can exceed -1R — cap
+    # downside accordingly. Upside cap is generous (+6R = 3 levels of trail
+    # after the 1R breakeven lock) so the model still learns to hold winners.
+    # Without this cap, CV eval on raw forward-tick rewards shows phantom -15R
+    # losses that could never happen live, inflating max drawdown metrics.
+    _REWARD_LIVE_MIN = -1.0
+    _REWARD_LIVE_MAX = 6.0
+    reward_long = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_long)))
+    reward_short = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_short)))
+
     reward_cont, reward_rev = _compute_rewards(
         touch_price,
         approach_direction,

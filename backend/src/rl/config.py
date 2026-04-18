@@ -70,8 +70,10 @@ GAMMA = 0.9  # sequential RL — learn hold/trail/exit decisions with temporal d
 # (was 0.0 which made it a contextual bandit; 0.9 enables multi-step value propagation)
 
 # --- Reward Preprocessing ---
-REWARD_CLIP_MIN = -2.0
-REWARD_CLIP_MAX = 4.0
+# Aligned with live-stop-aware reward range in episode_builder (-1R live stop,
+# +6R max trail). Training sees the same distribution as CV eval and live.
+REWARD_CLIP_MIN = -1.0
+REWARD_CLIP_MAX = 6.0
 REWARD_NORMALIZE = True  # Standardize rewards to mean=0, std=1 before training
 
 # --- Target Network (Polyak soft update) ---
