@@ -69,6 +69,9 @@ export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [providerBalances, setProviderBalances] = useState<Record<string, number>>({})
+  // Per-provider bonus_amount (sourced from balance_status). Used alongside balance
+  // to detect when a provider is fully "done" (no cash AND no bonus left).
+  const [providerBonuses, setProviderBonuses] = useState<Record<string, number>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(24)
@@ -144,6 +147,14 @@ export default function PlayPage() {
       setSummary(result.summary ?? null)
       setProviderBalances(result.provider_balances ?? {})
       setPlacedToday(result.placed_today ?? {})
+      // balance_status carries per-provider bonus_amount; extract for "done" detection
+      const bonuses: Record<string, number> = {}
+      for (const entry of result.balance_status ?? []) {
+        if (entry?.provider_id && typeof entry.bonus_amount === 'number') {
+          bonuses[entry.provider_id] = entry.bonus_amount
+        }
+      }
+      setProviderBonuses(bonuses)
       const grouped: Record<string, any[]> = {}
       for (const p of pendingResult.providers ?? [])
         if (p.bets?.length) grouped[p.provider_id] = p.bets
@@ -684,13 +695,24 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {(() => {
-          // Group known soft providers by cluster (sibling providers share odds
-          // engines, so they group into one card with shared opps).
+          // Group ALL known soft providers by cluster — includes every sibling from
+          // SOFT_CLUSTER_MEMBERS plus any standalone provider that appears in
+          // providerBalances or providerBonuses. Done/drained siblings stay visible.
           const softByCluster: Record<string, string[]> = {}
-          for (const pid of Object.keys(providerBalances)) {
+          // Seed with all canonical siblings
+          for (const [cluster, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
+            softByCluster[cluster] = [...members]
+          }
+          // Add any standalone provider we have balance/bonus data for
+          const allKnownPids = new Set([
+            ...Object.keys(providerBalances),
+            ...Object.keys(providerBonuses),
+          ])
+          for (const pid of allKnownPids) {
             if (UNLIMITED_PROVIDERS.has(pid)) continue
             const cluster = resolveSoftCluster(pid)
-            ;(softByCluster[cluster] ??= []).push(pid)
+            if (!softByCluster[cluster]) softByCluster[cluster] = []
+            if (!softByCluster[cluster].includes(pid)) softByCluster[cluster].push(pid)
           }
           // Stable sort order — named clusters first, then standalones alphabetically
           const namedClusters = Object.keys(SOFT_CLUSTER_MEMBERS)
@@ -703,9 +725,11 @@ export default function PlayPage() {
             return a.localeCompare(b)
           })
           const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
-          const hasAnyFunded = clusterOrder.some(c =>
-            softByCluster[c].some(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
-          )
+          // Classify a provider: funded | drained (has bonus, no cash) | done (neither)
+          const isFunded = (pid: string) => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK
+          const isDone = (pid: string) =>
+            (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK &&
+            (providerBonuses[pid] ?? 0) < DRAIN_THRESHOLD_SEK
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
@@ -720,38 +744,50 @@ export default function PlayPage() {
                 </span>
               </div>
 
-              {!hasAnyFunded ? (
+              {clusterOrder.length === 0 ? (
                 <div className="px-3 py-3 text-[11px] text-zinc-600">
-                  No funded soft books. Fund a provider (balance ≥ {DRAIN_THRESHOLD_SEK} SEK) to see arb opps.
+                  No soft books configured.
                 </div>
               ) : (
                 <div className="flex flex-col">
                   {clusterOrder.map(cluster => {
                     const members = softByCluster[cluster]
-                    const funded = members.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
-                    const drained = members.filter(pid => (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK)
-                    if (funded.length === 0) return null
+                    const funded = members.filter(isFunded)
+                    const nonFunded = members.filter(pid => !isFunded(pid))
                     const opps = oppsByCluster[cluster] ?? []
                     const clusterMemberSet = new Set(members)
 
                     return (
                       <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
-                        {/* Cluster header — label + drained pills + shared opp count */}
+                        {/* Cluster header — label + non-funded sibling pills (done/drained) + opp count */}
                         <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900/40 border-b border-zinc-800/50 flex-wrap">
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
-                          {drained.map(pid => (
-                            <span
-                              key={pid}
-                              className="px-1.5 py-0.5 text-[10px] rounded text-zinc-600 line-through bg-zinc-900/50 border border-zinc-800"
-                              title={`Balance ${(providerBalances[pid] ?? 0).toFixed(2)} SEK < ${DRAIN_THRESHOLD_SEK} — blacklisted`}
-                            >
-                              {pid}
-                            </span>
-                          ))}
+                          {nonFunded.map(pid => {
+                            const done = isDone(pid)
+                            const bonus = providerBonuses[pid] ?? 0
+                            const bal = providerBalances[pid] ?? 0
+                            return (
+                              <span
+                                key={pid}
+                                className={`px-1.5 py-0.5 text-[10px] rounded border inline-flex items-center gap-1 ${
+                                  done
+                                    ? 'text-zinc-700 bg-zinc-950 border-zinc-900'
+                                    : 'text-amber-500/70 bg-zinc-900/50 border-zinc-800 italic'
+                                }`}
+                                title={done
+                                  ? `${pid} is done — balance ${bal.toFixed(2)} & bonus ${bonus.toFixed(2)} both below ${DRAIN_THRESHOLD_SEK}`
+                                  : `${pid} drained — balance ${bal.toFixed(2)}, bonus ${bonus.toFixed(2)} still live`}
+                              >
+                                {done && <span className="text-red-500 font-bold">✕</span>}
+                                <span className={`uppercase ${done ? 'line-through' : ''}`}>{pid}</span>
+                                {!done && bonus > 0 && <span className="ml-0.5 text-amber-400/80 not-italic">{Math.round(bonus)}b</span>}
+                              </span>
+                            )
+                          })}
                           <span className="text-[10px] text-zinc-600 ml-auto">
-                            {opps.length} arb{opps.length === 1 ? '' : 's'} · siblings share odds
+                            {funded.length > 0 ? `${opps.length} arb${opps.length === 1 ? '' : 's'} · siblings share odds` : 'no funded siblings'}
                           </span>
                         </div>
 
