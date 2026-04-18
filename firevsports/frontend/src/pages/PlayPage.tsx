@@ -232,22 +232,30 @@ export default function PlayPage() {
 
   // Continuously poll login state for every active provider so the skin tab flips
   // amber→green when the mirror confirms login, and green→amber if the session drops.
-  // SSE events cover state changes, but polling fills gaps (page reload, missed events).
+  // Debounced: 2 consecutive false polls required to drop green (guards against
+  // transient DOM scrape failures during mid-flow navigation).
   useEffect(() => {
     if (activeProviders.size === 0) return
     let cancelled = false
+    const missCount: Record<string, number> = {}
     const check = async () => {
       for (const pid of activeProviders) {
         try {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
           const d = await r.json()
           if (cancelled) return
-          setLoggedInProviders(prev => {
-            const has = prev.has(pid)
-            if (d.logged_in && !has) return new Set(prev).add(pid)
-            if (!d.logged_in && has) { const n = new Set(prev); n.delete(pid); return n }
-            return prev
-          })
+          if (d.logged_in) {
+            missCount[pid] = 0
+            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+          } else {
+            missCount[pid] = (missCount[pid] || 0) + 1
+            if (missCount[pid] >= 2) {
+              setLoggedInProviders(prev => {
+                if (!prev.has(pid)) return prev
+                const n = new Set(prev); n.delete(pid); return n
+              })
+            }
+          }
         } catch { /* swallow — retry next tick */ }
       }
     }
@@ -774,8 +782,6 @@ export default function PlayPage() {
                           </span>
                           {nonFunded.map(pid => {
                             const done = isDone(pid)
-                            const bonus = providerBonuses[pid] ?? 0
-                            const bal = providerBalances[pid] ?? 0
                             return (
                               <span
                                 key={pid}
@@ -784,13 +790,10 @@ export default function PlayPage() {
                                     ? 'text-zinc-700 bg-zinc-950 border-zinc-900'
                                     : 'text-amber-500/70 bg-zinc-900/50 border-zinc-800 italic'
                                 }`}
-                                title={done
-                                  ? `${pid} is done — balance ${bal.toFixed(2)} & bonus ${bonus.toFixed(2)} both below ${DRAIN_THRESHOLD_SEK}`
-                                  : `${pid} drained — balance ${bal.toFixed(2)}, bonus ${bonus.toFixed(2)} still live`}
+                                title={done ? `${pid} is done — no balance, no bonus` : `${pid} has bonus remaining`}
                               >
                                 {done && <span className="text-red-500 font-bold">✕</span>}
                                 <span className={`uppercase ${done ? 'line-through' : ''}`}>{pid}</span>
-                                {!done && bonus > 0 && <span className="ml-0.5 text-amber-400/80 not-italic">{Math.round(bonus)}b</span>}
                               </span>
                             )
                           })}
@@ -822,11 +825,6 @@ export default function PlayPage() {
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
                                   <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
-                                  {bonus >= DRAIN_THRESHOLD_SEK && (
-                                    <span className="ml-1 text-amber-400/80" title={`Bonus pending: ${bonus.toFixed(2)} SEK`}>
-                                      +{Math.round(bonus)}b
-                                    </span>
-                                  )}
                                 </button>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
                                 {stakeCaps[pid] && (
