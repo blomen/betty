@@ -268,6 +268,19 @@ class PendingLoop:
                 logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
                 return
 
+            # Skip if the user's tab is currently on an event page — a play runner
+            # likely has the betslip prepped and waiting for confirmation. Navigating
+            # the tab to /portfolio?tab=history here would clobber that state.
+            current_url = (page.url or "").lower()
+            on_portfolio = "/portfolio" in current_url or current_url.endswith(workflow.domain) \
+                or current_url == f"https://{workflow.domain}/" or current_url == "about:blank"
+            if not on_portfolio:
+                logger.debug(
+                    f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
+                    f"skipping sync to avoid clobbering an active betslip"
+                )
+                return
+
             # 2. Check login
             try:
                 logged_in = await workflow.check_login(page)
