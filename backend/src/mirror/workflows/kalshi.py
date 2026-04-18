@@ -14,7 +14,9 @@ SDK reality check (vs. original plan):
                 The plan's `ExchangeClient` name does not exist in this SDK.
     - Auth:     `client.set_kalshi_auth(key_id, private_key_path)` takes a FILE
                 path, not a PEM string — so we materialize KALSHI_PRIVATE_KEY_PEM
-                to a temp file on init.
+                to a stable file under the project's data directory (not a
+                per-process tempfile, which previously leaked a PEM per
+                instantiation under %TEMP%).
     - Responses are pydantic v2 models, accessed via attributes (not `.get()`).
     - There is no `now_ts()` helper — use `int(time.time())`.
 """
@@ -22,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import time
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,48 @@ def _load_sdk() -> bool:
         return False
 
 
+def _kalshi_key_path(pem_body: str):
+    """Return the stable on-disk path for the Kalshi private key.
+
+    The SDK's `set_kalshi_auth` takes a file path, not a PEM string. We
+    materialize KALSHI_PRIVATE_KEY_PEM to `<data_dir>/kalshi_key.pem`
+    (0600) and re-use it across runs instead of creating a new tempfile
+    per workflow instantiation (which previously leaked under %TEMP%).
+
+    Writes the file only when missing or out-of-date to avoid unnecessary
+    churn on the filesystem.
+    """
+    # Import is deferred so importing this module doesn't force the paths
+    # package to initialize when the SDK isn't even installed.
+    try:
+        from ...paths import get_data_dir  # type: ignore
+    except ImportError:
+        # Fallback for firevsports copy, which has no ...paths — use a
+        # sibling `data/` folder next to the mirror root.
+        import pathlib
+
+        base = pathlib.Path(__file__).resolve().parents[2] / "data"
+        base.mkdir(parents=True, exist_ok=True)
+        key_path = base / "kalshi_key.pem"
+    else:
+        key_path = get_data_dir() / "kalshi_key.pem"
+
+    # Write only if the body has changed (or the file is absent).
+    try:
+        existing = key_path.read_text(encoding="utf-8") if key_path.exists() else None
+    except OSError:
+        existing = None
+    if existing != pem_body:
+        key_path.write_text(pem_body, encoding="utf-8")
+    # Restrict permissions to owner read/write (best-effort; on Windows
+    # chmod is a no-op but the call is harmless).
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return key_path
+
+
 class KalshiWorkflow(ProviderWorkflow):
     platform = "kalshi"
     autonomous_placement = True
@@ -78,16 +121,12 @@ class KalshiWorkflow(ProviderWorkflow):
         if not _load_sdk():
             return
         try:
-            # SDK requires a PEM **file path** — materialize env var to a temp file.
-            # Support `\n`-escaped newlines since env files commonly flatten them.
+            # SDK requires a PEM **file path**, not a PEM string. Write to a
+            # stable location under the project's data dir (reused across
+            # runs) with 0600 perms — avoids the tempfile leak that
+            # accumulated one file per workflow instantiation.
             pem_body = key_pem.replace("\\n", "\n")
-            fd, self._key_path = tempfile.mkstemp(prefix="kalshi_key_", suffix=".pem", text=True)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(pem_body)
-            except Exception:
-                os.close(fd)
-                raise
+            self._key_path = str(_kalshi_key_path(pem_body))
 
             self._client = _KalshiClient()
             self._client.set_kalshi_auth(key_id=key_id, private_key_path=self._key_path)
