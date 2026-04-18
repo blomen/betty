@@ -7,6 +7,7 @@ unauthenticated — only placement (in the mirror workflow) needs API keys.
 from __future__ import annotations
 
 import logging
+import re
 
 import aiohttp
 
@@ -94,16 +95,89 @@ def _market_volume_usd(m: dict) -> float:
         return 0.0
 
 
+_TITLE_PREFIX_RE = re.compile(
+    r"^(game|match|leg|set)\s*\d+\s*:\s*", flags=re.IGNORECASE
+)
+
+
+def _strip_title_prefix(s: str) -> str:
+    """Drop leading "Game N:", "Match N:" style prefixes from a team segment."""
+    # e.g. "Game 4: Los Angeles L" → "Los Angeles L"
+    return _TITLE_PREFIX_RE.sub("", s).strip()
+
+
 def _extract_teams_from_title(title: str) -> tuple[str, str]:
-    """Split 'Home vs Away' / 'Home @ Away' into (home, away). Falls back gracefully."""
-    for sep in (" vs ", " @ ", " at ", " v. ", " v "):
+    """Split a Kalshi title into ``(home, away)``, honouring separator convention.
+
+    Conventions:
+        - " at " / " @ " → US convention: ``<visitor> at <host>`` → home = right, away = left.
+        - " vs " / " v. " / " v " → European convention for sports in our scope
+          (soccer): ``<home> vs <away>``. Kalshi uses "vs" for soccer almost
+          exclusively; US-sport tickers use " at ".
+        - Fallback: returns ``(title.strip(), "")`` so callers can bail out.
+    """
+    # US "away at home" ordering.
+    for sep in (" at ", " @ "):
         if sep in title:
             left, right = title.split(sep, 1)
-            # Strip trailing question-marks / 'Winner?' suffixes.
             right = right.split("?")[0].strip()
             right = right.replace("Winner", "").strip()
-            return left.strip(), right
-    return title.strip(), ""
+            # home = right (host), away = left (visitor)
+            return _strip_title_prefix(right), _strip_title_prefix(left)
+    # European "home vs away" ordering.
+    for sep in (" vs ", " v. ", " v "):
+        if sep in title:
+            left, right = title.split(sep, 1)
+            right = right.split("?")[0].strip()
+            right = right.replace("Winner", "").strip()
+            return _strip_title_prefix(left), _strip_title_prefix(right)
+    return _strip_title_prefix(title.strip()), ""
+
+
+def _ticker_suffix(ticker: str) -> str:
+    """Return the canonical short-code suffix from a Kalshi market ticker.
+
+    Example: ``KXNBAGAME-26APR18LALHOU-HOU`` → ``HOU``.
+    Returns an uppercase stripped string; empty if the ticker has no hyphen.
+    """
+    if not ticker or "-" not in ticker:
+        return ""
+    return ticker.rsplit("-", 1)[-1].strip().upper()
+
+
+def _match_market_to_side(m: dict, home: str, away: str) -> str | None:
+    """Return ``"home"`` / ``"away"`` if the market's ``yes_sub_title`` or
+    ticker suffix identifies which team it represents. ``None`` if ambiguous.
+
+    Strategy:
+        1. ``yes_sub_title`` substring match against home/away (case-insensitive).
+        2. Ticker suffix substring match against home/away.
+    Both sides must not match simultaneously for the match to count.
+    """
+    home_l = (home or "").lower().strip()
+    away_l = (away or "").lower().strip()
+    if not home_l or not away_l:
+        return None
+
+    sub = str(m.get("yes_sub_title", "") or "").lower().strip()
+    if sub:
+        in_home = sub in home_l or home_l in sub
+        in_away = sub in away_l or away_l in sub
+        if in_home and not in_away:
+            return "home"
+        if in_away and not in_home:
+            return "away"
+
+    suffix = _ticker_suffix(m.get("ticker", "")).lower()
+    if suffix:
+        in_home = suffix in home_l or home_l.startswith(suffix)
+        in_away = suffix in away_l or away_l.startswith(suffix)
+        if in_home and not in_away:
+            return "home"
+        if in_away and not in_home:
+            return "away"
+
+    return None
 
 
 def parse_event(
@@ -138,23 +212,48 @@ def parse_event(
         return None
 
     is_no_draw = sport in _NO_DRAW_SPORTS
-    home, away = _extract_teams_from_title(raw.get("title", ""))
+    title = raw.get("title", "")
+    home, away = _extract_teams_from_title(title)
+    if not home or not away:
+        logger.info(
+            "[kalshi] unresolved title (no home/away split): ticker=%s title=%r",
+            event_ticker,
+            title,
+        )
+        return None
+
+    def _meta(m: dict) -> dict:
+        return {
+            "ticker": m.get("ticker"),
+            "volume": _market_volume_usd(m),
+        }
 
     # 2-way moneyline: exactly two contracts, complementary sides.
     # 3-way 1x2 (soccer): three contracts (home/draw/away).
     if is_no_draw and len(raw_markets) >= 2:
-        # Pick the top two highest-volume markets as home/away.
+        # Match each of the top-two-by-volume markets to home or away by name.
         sorted_mkts = sorted(raw_markets, key=_market_volume_usd, reverse=True)[:2]
+        sides = [_match_market_to_side(m, home, away) for m in sorted_mkts]
+        if set(sides) != {"home", "away"}:
+            logger.info(
+                "[kalshi] unresolved moneyline sides: ticker=%s home=%r away=%r "
+                "contracts=%s",
+                event_ticker,
+                home,
+                away,
+                [
+                    (m.get("ticker"), m.get("yes_sub_title"))
+                    for m in sorted_mkts
+                ],
+            )
+            return None
         outcomes = [
             {
-                "name": "home" if i == 0 else "away",
+                "name": side,
                 "odds": _price_to_odds(_market_price_dollars(m), fee_rate),
-                "provider_meta": {
-                    "ticker": m.get("ticker"),
-                    "volume": _market_volume_usd(m),
-                },
+                "provider_meta": _meta(m),
             }
-            for i, m in enumerate(sorted_mkts)
+            for side, m in zip(sides, sorted_mkts)
         ]
         market = {"type": "moneyline", "outcomes": outcomes}
     elif not is_no_draw and len(raw_markets) >= 3:
@@ -166,20 +265,38 @@ def parse_event(
         non_draw = [m for m in raw_markets if not is_draw(m)]
         if len(draw_mkts) != 1 or len(non_draw) < 2:
             return None
-        # Highest-volume non-draw is home; second is away.
+        # Sort non-draw markets by volume and assign sides by name matching.
         non_draw.sort(key=_market_volume_usd, reverse=True)
-        ordered = [non_draw[0], draw_mkts[0], non_draw[1]]
-        names = ["home", "draw", "away"]
+        top_two = non_draw[:2]
+        sides = [_match_market_to_side(m, home, away) for m in top_two]
+        if set(sides) != {"home", "away"}:
+            logger.info(
+                "[kalshi] unresolved 1x2 sides: ticker=%s home=%r away=%r "
+                "contracts=%s",
+                event_ticker,
+                home,
+                away,
+                [
+                    (m.get("ticker"), m.get("yes_sub_title"))
+                    for m in top_two
+                ],
+            )
+            return None
+        # Build ordered list: home, draw, away
+        home_mkt = top_two[sides.index("home")]
+        away_mkt = top_two[sides.index("away")]
+        ordered = [
+            ("home", home_mkt),
+            ("draw", draw_mkts[0]),
+            ("away", away_mkt),
+        ]
         outcomes = [
             {
                 "name": n,
                 "odds": _price_to_odds(_market_price_dollars(m), fee_rate),
-                "provider_meta": {
-                    "ticker": m.get("ticker"),
-                    "volume": _market_volume_usd(m),
-                },
+                "provider_meta": _meta(m),
             }
-            for n, m in zip(names, ordered)
+            for n, m in ordered
         ]
         market = {"type": "1x2", "outcomes": outcomes}
     else:
