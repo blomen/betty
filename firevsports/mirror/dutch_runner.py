@@ -1,7 +1,8 @@
-"""DutchRunner — Dutch arbitrage play loop for limited providers.
+"""DutchRunner — arbitrage play loop for soft books.
 
-Places the anchor (+EV) leg on the limited provider, then auto-hedges
-on unlimited providers (Pinnacle, Polymarket, Cloudbet) for guaranteed profit.
+Places the anchor (+EV) leg on the soft book, then auto-hedges on the best
+available counter (another soft book from a different cluster, or unlimited
+provider like Pinnacle/Polymarket) for guaranteed profit.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import httpx
 from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
-    COUNTER_PROVIDERS,
     DAILY_BET_CAP,
     LOGIN_POLL_INTERVAL,
     LOGIN_TIMEOUT,
@@ -46,7 +46,11 @@ _OPP_FETCH_COOLDOWN = 10.0
 
 
 class DutchRunner:
-    """Runs the Dutch arbitrage play loop for a single limited provider."""
+    """Runs the arbitrage play loop for a single soft book.
+
+    The counter-leg pool is dynamic: other active soft books (excluding
+    cluster siblings, which share odds engines) plus unlimited providers.
+    """
 
     def __init__(
         self,
@@ -57,6 +61,7 @@ class DutchRunner:
         block_event_market: Callable[[dict], None],
         is_blocked: Callable[[dict], bool],
         placed_today: dict[str, int],
+        active_providers: list[str] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -65,6 +70,7 @@ class DutchRunner:
         self._block_event_market = block_event_market
         self._is_blocked = is_blocked
         self._placed_today = placed_today
+        self._active_providers = list(active_providers or [])
 
         # Per-runner state
         self.state: str = STATE_IDLE
@@ -124,16 +130,44 @@ class DutchRunner:
         }
 
     # ------------------------------------------------------------------
+    # Counter-pool resolution
+    # ------------------------------------------------------------------
+
+    def _counter_pool(self) -> list[str]:
+        """Return active providers eligible as counter-legs.
+
+        Excludes self and cluster siblings (they share odds engines — zero edge).
+        Includes unlimited providers even if not in active list, since they always
+        have viable tabs managed by their ProviderRunner.
+        """
+        own_cluster = _PROVIDER_TO_CLUSTER.get(self.provider_id)
+        pool: list[str] = []
+        seen: set[str] = set()
+        for pid in self._active_providers + list(UNLIMITED_PROVIDERS):
+            if pid == self.provider_id or pid in seen:
+                continue
+            other_cluster = _PROVIDER_TO_CLUSTER.get(pid)
+            if own_cluster and other_cluster and own_cluster == other_cluster:
+                continue  # Sibling — identical odds, no edge
+            pool.append(pid)
+            seen.add(pid)
+        return pool
+
+    # ------------------------------------------------------------------
     # Fetch Dutch opportunities from server API
     # ------------------------------------------------------------------
 
     async def _fetch_dutch_opps(self) -> list[dict]:
-        """Fetch Dutch opportunities anchored on this provider."""
-        counter_csv = ",".join(COUNTER_PROVIDERS)
-        url = (
-            f"{self._proxy_url}/api/opportunities/dutch-workflow"
-            f"?providers={self.provider_id}&counterpart_providers={counter_csv}"
-        )
+        """Fetch Dutch opportunities anchored on this provider.
+
+        Counter pool is the dynamic set of active non-sibling providers plus
+        unlimited providers. When empty, the scanner treats it as "any provider".
+        """
+        pool = self._counter_pool()
+        params = f"providers={self.provider_id}"
+        if pool:
+            params += f"&counterpart_providers={','.join(pool)}"
+        url = f"{self._proxy_url}/api/opportunities/dutch-workflow?{params}"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
@@ -414,7 +448,13 @@ class DutchRunner:
         Returns a list of {outcome, providers: [{provider, odds, stake_pct}, ...]}
         where providers are ordered best-odds-first. Returns None if any outcome
         has no viable counter-provider.
+
+        Accepts any provider as a counter (cluster siblings were already excluded
+        when fetching opps via _counter_pool). Ranks by odds desc — highest odds
+        = best equal-payout math.
         """
+        pool = set(self._counter_pool())
+
         # Group counter-legs by outcome
         by_outcome: dict[str, list[dict]] = {}
         for leg in counter_legs:
@@ -427,8 +467,8 @@ class DutchRunner:
         for outcome, legs in by_outcome.items():
             # Sort by odds descending (best odds first = most profit)
             legs.sort(key=lambda l: l.get("odds", 0), reverse=True)
-            # Filter to counter-providers only
-            viable = [l for l in legs if l.get("provider") in COUNTER_PROVIDERS]
+            # Accept any provider in the dynamic counter pool
+            viable = [l for l in legs if l.get("provider") in pool]
             if not viable:
                 return None  # Can't cover this outcome
             plan.append(
@@ -551,12 +591,14 @@ class DutchRunner:
         odds: float,
         stake: float,
     ) -> PlacementResult | None:
-        """Place a single counter-leg bet on an autonomous provider."""
+        """Place a single counter-leg bet.
+
+        Handles both autonomous (API/SDK) and DOM-based (Kambi/Altenar/Gecko/etc)
+        counters. DOM counters require the provider tab to already be open and
+        logged in — same precondition as the anchor leg.
+        """
         try:
             workflow = get_workflow(counter_pid)
-            if not getattr(workflow, "autonomous_placement", False):
-                logger.warning(f"[Dutch:{self.provider_id}] {counter_pid} is not autonomous — skipping")
-                return PlacementResult(status="failed", bet_id=0, reason="not_autonomous")
 
             if not self._browser.context:
                 return PlacementResult(status="failed", bet_id=0, reason="no_browser")
@@ -593,16 +635,29 @@ class DutchRunner:
                         # Recalculate stake for equal payout
                         counter_bet["odds"] = live_odds
                         bet_ns.odds = live_odds
-                        # stake was total_payout / old_odds; adjust to total_payout / live_odds
                         stake = round(stake * odds / live_odds, 2)
                         counter_bet["stake"] = stake
                         bet_ns.stake = stake
                 except Exception:
                     pass  # Use original odds/stake if live check fails
 
-            # Place bet (autonomous — API/SDK call)
-            result = await workflow.place_bet(page, bet_ns, stake)
-            return result
+            if getattr(workflow, "autonomous_placement", False):
+                # API/SDK call — places directly
+                return await workflow.place_bet(page, bet_ns, stake)
+
+            # DOM-based counter: prep betslip + auto-confirm
+            prep_result = await workflow.prep_betslip(page, bet_ns, stake)
+            if prep_result.status not in ("prepped", "placed"):
+                return PlacementResult(
+                    status="failed",
+                    bet_id=0,
+                    reason=f"prep_failed: {prep_result.reason or prep_result.status}",
+                )
+            # prep_betslip already returned a placed result for workflows that
+            # do one-shot placement (rare); otherwise confirm_bet finalizes it.
+            if prep_result.status == "placed":
+                return prep_result
+            return await workflow.confirm_bet(page)
 
         except Exception:
             logger.exception(f"[Dutch:{self.provider_id}] Error placing on {counter_pid}")

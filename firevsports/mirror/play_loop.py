@@ -72,14 +72,11 @@ STATE_PLACING = "placing"
 LOGIN_POLL_INTERVAL = 5.0  # seconds between login checks
 LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
 DAILY_BET_CAP = 10  # max bets per soft provider per day
-UNCAPPED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
 
-# Dutch-only providers — spawn DutchRunner instead of ProviderRunner.
-# These providers limit fast; drain balance via guaranteed-profit Dutch arb.
-DUTCH_ONLY_PROVIDERS = {"interwetten", "betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"}
-
-# Unlimited providers used as counter-legs for Dutch hedging (API-based, autonomous_placement=True)
-COUNTER_PROVIDERS = ("pinnacle", "polymarket")  # tuple for stable ordering; cloudbet has no autonomous workflow yet
+# Unlimited providers — play value bets via ProviderRunner (no arb required; they don't limit).
+# Everything else (soft books) routes through DutchRunner for arb-only placement.
+UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
+UNCAPPED_PROVIDERS = UNLIMITED_PROVIDERS  # backward-compat alias for existing imports
 
 
 class PlayLoop:
@@ -329,29 +326,27 @@ class PlayLoop:
         self.state = STATE_IDLE
 
     def _spawn_runners(self, provider_ids: list[str]) -> None:
-        """Create and start runners for providers that don't have one yet."""
+        """Create and start runners for providers that don't have one yet.
+
+        Routing: UNLIMITED_PROVIDERS (pinnacle/poly/cloudbet) play value bets via
+        ProviderRunner. All other (soft) providers play arb-only via DutchRunner.
+        """
         from .dutch_runner import DutchRunner
         from .provider_runner import ProviderRunner
+
+        # DutchRunner needs the full active-provider set to know its counter pool
+        active = list(provider_ids)
 
         for pid in provider_ids:
             if pid in self._runners and self._runners[pid].running:
                 continue  # Already has an active runner
 
-            cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
-            if cluster not in self._cluster_queues:
-                self._cluster_queues[cluster] = []
+            is_unlimited = pid in UNLIMITED_PROVIDERS
 
-            if pid in DUTCH_ONLY_PROVIDERS:
-                runner = DutchRunner(
-                    provider_id=pid,
-                    browser=self._browser,
-                    broadcaster=self._broadcaster,
-                    proxy_url=self._proxy_url,
-                    block_event_market=self._block_event_market,
-                    is_blocked=self._is_blocked,
-                    placed_today=self._placed_today,
-                )
-            else:
+            if is_unlimited:
+                cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
+                if cluster not in self._cluster_queues:
+                    self._cluster_queues[cluster] = []
                 runner = ProviderRunner(
                     provider_id=pid,
                     browser=self._browser,
@@ -364,9 +359,20 @@ class PlayLoop:
                     peek_top_edge=self._make_peek_top_edge(cluster),
                     stake_caps=self._stake_caps,
                 )
+            else:
+                runner = DutchRunner(
+                    provider_id=pid,
+                    browser=self._browser,
+                    broadcaster=self._broadcaster,
+                    proxy_url=self._proxy_url,
+                    block_event_market=self._block_event_market,
+                    is_blocked=self._is_blocked,
+                    placed_today=self._placed_today,
+                    active_providers=active,
+                )
             self._runners[pid] = runner
             runner.start()
-            logger.info(f"[PlayCoordinator] Spawned {'Dutch ' if pid in DUTCH_ONLY_PROVIDERS else ''}runner for {pid}")
+            logger.info(f"[PlayCoordinator] Spawned {'ProviderRunner' if is_unlimited else 'DutchRunner'} for {pid}")
 
     def _add_new_runners(self) -> None:
         """Add runners for newly-selected providers while coordinator is running."""
