@@ -136,10 +136,10 @@ step_run "6/8" "Training Trigger DQN v5 (30 epochs, batch 4096)" "critical" \
 [ $FAILED -eq 1 ] && exit 1
 
 # Step 7: Evaluate (optional — nice to have but not required)
-# Threshold matches live gate in level_monitor.py:1023 so CV metrics reflect
-# what trades would actually fire in production (not an over-liberal 0.15).
+# Threshold 0.15 matches the live gate after we lowered it from 0.30.
+# Sweep on last training showed 7× total R at 0.15 vs 0.30 with only +4R DD.
 step_run "7/8" "Evaluating DQN v5" "optional" \
-    python -m src.app rl eval --checkpoint v5 --skip-threshold 0.30
+    python -m src.app rl eval --checkpoint v5 --skip-threshold 0.15
 
 # Step 8: Deploy
 if ! step_done "8/8"; then
