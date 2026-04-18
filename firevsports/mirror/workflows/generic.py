@@ -307,9 +307,22 @@ class GenericWorkflow(ProviderWorkflow):
         if not template:
             return True
 
-        event_id = getattr(bet, "provider_event_id", "") or getattr(bet, "event_id", "")
-        matchup_id = getattr(bet, "matchup_id", "") or ""
-        url = template.replace("{event_id}", str(event_id)).replace("{matchup_id}", str(matchup_id))
+        def _g(attr: str) -> str:
+            if isinstance(bet, dict):
+                val = bet.get(attr)
+                if val is None:
+                    val = (bet.get("provider_meta") or {}).get(attr, "")
+            else:
+                val = getattr(bet, attr, None)
+                if val is None:
+                    meta = getattr(bet, "provider_meta", None) or {}
+                    if isinstance(meta, dict):
+                        val = meta.get(attr, "")
+            return str(val or "")
+
+        url = template
+        for key in ("event_id", "provider_event_id", "matchup_id", "event_slug", "market_slug", "slug"):
+            url = url.replace(f"{{{key}}}", _g(key))
         if not url.startswith("http"):
             url = f"https://{self.domain}{url}"
 

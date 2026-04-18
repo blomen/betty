@@ -6,5 +6,9 @@
     "indicator": {
       "selector": "a[href*=\"portfolio\"]"
     }
+  },
+  "navigation": {
+    "event_url_template": "/event/{event_slug}",
+    "history_path": "/portfolio?tab=history"
   }
 }
