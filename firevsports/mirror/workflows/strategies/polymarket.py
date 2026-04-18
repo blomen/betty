@@ -268,47 +268,91 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
 
 
 async def _claim_banner(page: Page, intel: dict | None) -> dict:
-    """Click the top-level Claim banner if present + confirm in modal."""
+    """Click the 'You won $X Claim' banner via Playwright locator + confirm modal button."""
     try:
-        result = await page.evaluate(
+        # Probe first: is there a visible Claim button in the banner region (top < 500)?
+        banner = await page.evaluate(
             r"""() => {
                 for (const btn of document.querySelectorAll('button')) {
                     const t = (btn.textContent || '').trim();
-                    if (t === 'Claim' || t.startsWith('Claim')) {
-                        const rect = btn.getBoundingClientRect();
-                        if (rect.top < 400) { btn.click(); return {found: true, text: t}; }
-                    }
+                    if (t !== 'Claim') continue;
+                    const r = btn.getBoundingClientRect();
+                    if (btn.offsetParent === null || r.width === 0) continue;
+                    if (r.top > 500) continue;
+                    const row = btn.closest('div')?.parentElement;
+                    const rowText = (row?.textContent || '').trim().slice(0, 120);
+                    return { found: true, row_text: rowText };
                 }
-                return {found: false};
+                return { found: false };
             }"""
         )
-        if not result.get("found"):
+        if not banner.get("found"):
             return {"claimed": False, "amount": None}
 
-        await asyncio.sleep(3)
-        confirmed = await page.evaluate(
+        row_text = banner.get("row_text", "")
+        logger.info(f"[polymarket] Claim banner visible: {row_text}")
+
+        # Use Playwright's locator click — dispatches real pointer events, scrolls into view.
+        # Filter to the banner-region Claim (top<500) by chaining a count check.
+        claim_locator = page.get_by_role("button", name="Claim", exact=True).first
+        try:
+            await claim_locator.scroll_into_view_if_needed(timeout=3000)
+            await claim_locator.click(timeout=5000)
+            logger.info("[polymarket] Clicked Claim banner via locator")
+        except Exception as e:
+            logger.warning(f"[polymarket] locator.click failed on Claim banner: {e}")
+            return {"claimed": False, "amount": None, "error": "locator_click_failed"}
+
+        # Wait for confirm modal — look for 'Claim $X.XX' button inside any dialog/modal.
+        for _ in range(6):
+            await asyncio.sleep(1)
+            confirm_info = await page.evaluate(
+                r"""() => {
+                    for (const btn of document.querySelectorAll('button')) {
+                        const t = (btn.textContent || '').trim();
+                        if (!t.match(/^Claim\s+\$[\d,.]+/)) continue;
+                        if (btn.offsetParent === null) continue;
+                        return { found: true, text: t };
+                    }
+                    return { found: false };
+                }"""
+            )
+            if confirm_info.get("found"):
+                try:
+                    confirm_locator = page.get_by_role("button", name=re.compile(r"^Claim\s+\$"))
+                    await confirm_locator.first.click(timeout=5000)
+                    await asyncio.sleep(3)
+                    await _dismiss_modal(page)
+                    logger.info(f"[polymarket] Claim confirmed: {confirm_info.get('text')}")
+                    return {"claimed": True, "amount": confirm_info.get("text")}
+                except Exception as e:
+                    logger.warning(f"[polymarket] confirm click failed: {e}")
+                    return {"claimed": False, "amount": None, "error": f"confirm_failed:{e}"}
+
+        # No confirm button appeared — banner click may have failed, or auto-confirmed.
+        # Re-check if banner is gone (auto-success) vs still there (click ignored).
+        still_there = await page.evaluate(
             r"""() => {
                 for (const btn of document.querySelectorAll('button')) {
-                    const t = (btn.textContent || '').trim();
-                    if (t.startsWith('Claim $')) { btn.click(); return t; }
+                    if ((btn.textContent || '').trim() !== 'Claim') continue;
+                    const r = btn.getBoundingClientRect();
+                    if (btn.offsetParent !== null && r.width > 0 && r.top < 500) return true;
                 }
-                return null;
+                return false;
             }"""
         )
-        if confirmed:
-            await asyncio.sleep(3)
-            await _dismiss_modal(page)
-            logger.info(f"[polymarket] Claim confirmed: {confirmed}")
-            return {"claimed": True, "amount": confirmed}
-        await _dismiss_modal(page)
-        return {"claimed": True, "amount": result.get("text")}
+        if still_there:
+            logger.warning("[polymarket] Claim banner still visible — click didn't register")
+            return {"claimed": False, "amount": None, "error": "banner_still_visible"}
+        logger.info("[polymarket] Claim banner gone — assumed auto-confirmed")
+        return {"claimed": True, "amount": row_text}
     except Exception as e:
         logger.warning(f"[polymarket] claim_banner failed: {e}")
         return {"claimed": False, "amount": None, "error": str(e)}
 
 
 async def _redeem_all(page: Page, intel: dict | None) -> dict:
-    """Click Redeem on every FINISHED position (Won/Lost) — never Sell on open ones."""
+    """Click Redeem on every FINISHED position (Won/Lost) via Playwright locators."""
     if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
         try:
             await page.goto(
@@ -321,66 +365,97 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
             logger.warning(f"[polymarket] redeem nav failed: {e}")
             return {"redeemed": 0, "skipped_open": 0, "errors": 1, "total": 0}
 
-    redeemed, errors = 0, 0
-    count = await page.evaluate(
+    # Enumerate Won/Lost rows that have a visible Redeem button.
+    rows_info = await page.evaluate(
         r"""() => {
-            let n = 0;
+            const out = [];
+            const seen = new Set();
             for (const btn of document.querySelectorAll('button')) {
                 if (btn.textContent.trim() !== 'Redeem') continue;
+                const r = btn.getBoundingClientRect();
+                if (btn.offsetParent === null || r.width === 0) continue;
                 let p = btn.parentElement;
+                let finished = false;
+                let rowText = '';
                 for (let i = 0; i < 8 && p; i++) {
                     const t = p.textContent || '';
-                    if (/Won|Lost|WON|LOST/.test(t)) { n++; break; }
+                    if (/Won|Lost|WON|LOST/.test(t)) { finished = true; rowText = t.slice(0, 120); break; }
                     p = p.parentElement;
                 }
+                if (!finished) continue;
+                const key = rowText.slice(0, 80);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push({ row_text: rowText, top: Math.round(r.top) });
             }
-            return n;
+            return out;
         }"""
     )
 
-    for i in range(count):
+    total = len(rows_info)
+    logger.info(f"[polymarket] Found {total} finished positions with Redeem buttons")
+
+    redeemed, errors = 0, 0
+    for i, row in enumerate(rows_info):
         try:
-            clicked = await page.evaluate(
-                r"""() => {
-                    for (const btn of document.querySelectorAll('button')) {
-                        if (btn.textContent.trim() !== 'Redeem') continue;
-                        let p = btn.parentElement;
-                        let finished = false;
-                        for (let i = 0; i < 8 && p; i++) {
-                            const t = p.textContent || '';
-                            if (/Won|Lost|WON|LOST/.test(t)) { finished = true; break; }
-                            p = p.parentElement;
-                        }
-                        if (finished) { btn.click(); return true; }
-                    }
-                    return false;
-                }"""
-            )
-            if not clicked:
+            # Playwright can match button by text + ancestor-has-text; we use role locator
+            # and index the i-th visible Redeem (since seen.add dedupes we're OK).
+            redeem_buttons = page.get_by_role("button", name="Redeem", exact=True)
+            # Re-fetch visible count (DOM may have changed after prior clicks)
+            live_count = await redeem_buttons.count()
+            if live_count == 0:
+                logger.info(f"[polymarket] No more Redeem buttons after {redeemed} clicks")
                 break
-            await asyncio.sleep(2)
-            confirmed = await page.evaluate(
-                r"""() => {
-                    for (const btn of document.querySelectorAll('button')) {
-                        const t = (btn.textContent || '').trim();
-                        if (t.startsWith('Redeem $')) { btn.click(); return t; }
-                    }
-                    return null;
-                }"""
-            )
+            # Click the first visible one — subsequent iterations get the next first
+            # because the clicked one becomes non-finished after confirm.
+            target = redeem_buttons.first
+            try:
+                await target.scroll_into_view_if_needed(timeout=3000)
+                await target.click(timeout=5000)
+            except Exception as e:
+                logger.warning(f"[polymarket] Redeem #{i + 1} click failed: {e}")
+                errors += 1
+                continue
+
+            # Wait up to 6s for the confirm modal with 'Redeem $X.XX' button
+            confirmed = None
+            for _ in range(6):
+                await asyncio.sleep(1)
+                info = await page.evaluate(
+                    r"""() => {
+                        for (const btn of document.querySelectorAll('button')) {
+                            const t = (btn.textContent || '').trim();
+                            if (!t.match(/^Redeem\s+\$[\d,.]+/)) continue;
+                            if (btn.offsetParent === null) continue;
+                            return t;
+                        }
+                        return null;
+                    }"""
+                )
+                if info:
+                    confirmed = info
+                    break
             if confirmed:
-                await asyncio.sleep(3)
-                await _dismiss_modal(page)
-                redeemed += 1
-                logger.info(f"[polymarket] Redeemed {i + 1}/{count}: {confirmed}")
+                try:
+                    confirm_locator = page.get_by_role("button", name=re.compile(r"^Redeem\s+\$"))
+                    await confirm_locator.first.click(timeout=5000)
+                    await asyncio.sleep(3)
+                    await _dismiss_modal(page)
+                    redeemed += 1
+                    logger.info(f"[polymarket] Redeemed {i + 1}/{total}: {confirmed}")
+                except Exception as e:
+                    logger.warning(f"[polymarket] Redeem confirm failed: {e}")
+                    errors += 1
+                    await _dismiss_modal(page)
             else:
+                logger.warning(f"[polymarket] Redeem #{i + 1}: no confirm button appeared")
                 await _dismiss_modal(page)
                 errors += 1
         except Exception as e:
-            logger.warning(f"[polymarket] Redeem {i + 1} failed: {e}")
+            logger.warning(f"[polymarket] Redeem #{i + 1} failed: {e}")
             errors += 1
 
-    return {"redeemed": redeemed, "skipped_open": 0, "errors": errors, "total": count}
+    return {"redeemed": redeemed, "skipped_open": 0, "errors": errors, "total": total}
 
 
 strategy = Strategy(

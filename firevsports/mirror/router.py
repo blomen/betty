@@ -215,7 +215,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             dom = await browser.check_login_dom(provider_id)
             logged_in = dom.get("logged_in", False)
             balance = dom.get("balance") or balance
-        if logged_in and balance is None and page:
+        if logged_in and page:
             try:
                 bal = await workflow.sync_balance(page)
                 if bal >= 0:
