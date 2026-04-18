@@ -802,6 +802,7 @@ export default function PlayPage() {
                         {/* One card per funded sibling — same opps, different balance/active context */}
                         {funded.map(pid => {
                           const bal = providerBalances[pid] ?? 0
+                          const bonus = providerBonuses[pid] ?? 0
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
@@ -821,6 +822,11 @@ export default function PlayPage() {
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
                                   <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
+                                  {bonus >= DRAIN_THRESHOLD_SEK && (
+                                    <span className="ml-1 text-amber-400/80" title={`Bonus pending: ${bonus.toFixed(2)} SEK`}>
+                                      +{Math.round(bonus)}b
+                                    </span>
+                                  )}
                                 </button>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
                                 {stakeCaps[pid] && (
