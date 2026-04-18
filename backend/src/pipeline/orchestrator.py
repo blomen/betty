@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
-from ..constants import ALLOWED_SPORTS, PROVIDER_CANONICAL, SHARP_PROVIDERS
+from ..constants import PINNACLE_SPORTS, PROVIDER_CANONICAL, SHARP_PROVIDERS
 from ..db.models import DeferredEvent, Event, Odds, Provider, get_session
 from ..factory import ExtractorFactory
 from .broadcast import odds_broadcaster
@@ -670,9 +670,9 @@ class ExtractionPipeline:
                     self.metrics.start_provider("pinnacle")
 
                 try:
-                    # Only extract sports in ALLOWED_SPORTS
+                    # Only extract sports in PINNACLE_SPORTS
                     all_sports = set(s.kambi_sport for s in self.engine.sports)
-                    target_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
+                    target_sports = sorted(s for s in all_sports if s in PINNACLE_SPORTS)
 
                     if self.metrics:
                         self.metrics.set_provider_total_sports("pinnacle", len(target_sports))
@@ -749,9 +749,9 @@ class ExtractionPipeline:
                     results["polymarket"] = {"events_processed": 0, "odds_processed": 0, "error": error_msg}
 
             # Extract from other providers in parallel
-            # Only extract sports in ALLOWED_SPORTS
+            # Only extract sports in PINNACLE_SPORTS
             all_sports = set(s.kambi_sport for s in self.engine.sports)
-            kambi_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
+            kambi_sports = sorted(s for s in all_sports if s in PINNACLE_SPORTS)
 
             # Pre-compute sharp sports from Pinnacle cache for filtering
             sharp_sports = await self.get_cached_sports()
@@ -927,8 +927,8 @@ class ExtractionPipeline:
                         # Pinnacle-available sports. Otherwise use global kambi_sports.
                         provider_supported = getattr(provider_cfg, "supported_sports", None)
                         if provider_supported:
-                            # Use provider's supported sports, filtered to ALLOWED + sharp
-                            provider_sports = [s for s in provider_supported if s in ALLOWED_SPORTS]
+                            # Use provider's supported sports, filtered to PINNACLE_SPORTS + sharp
+                            provider_sports = [s for s in provider_supported if s in PINNACLE_SPORTS]
                             if sharp_sports:
                                 provider_sports = [s for s in provider_sports if s in sharp_sports]
                             # Order by Pinnacle event count.
@@ -1503,7 +1503,7 @@ class ExtractionPipeline:
                     try:
                         with OddsBatchProcessor(poly_session, batch_size=500) as odds_batch:
                             for event in events:
-                                if event.sport not in ALLOWED_SPORTS:
+                                if event.sport not in PINNACLE_SPORTS:
                                     continue
 
                                 s = event.sport

@@ -162,7 +162,10 @@ MAJOR_LEAGUES: dict[str, list[str]] = {
 
 MAJOR_LEAGUES_FLAT: frozenset[str] = frozenset(league for leagues in MAJOR_LEAGUES.values() for league in leagues)
 
-ALLOWED_SPORTS = frozenset(
+# Sports where Pinnacle provides sharp lines AND soft providers have head-to-head
+# coverage for value comparison. Renamed from ALLOWED_SPORTS for clarity — the set
+# represents Pinnacle's coverage, not a generic allowlist.
+PINNACLE_SPORTS = frozenset(
     {
         "football",
         "basketball",
