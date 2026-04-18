@@ -107,7 +107,7 @@ export default function PlayPage() {
   const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>({})
   const [arbLoading, setArbLoading] = useState(false)
   // Sub-tab switcher within the Play page
-  const [subTab, setSubTab] = useState<'arb' | 'value'>('arb')
+  const [subTab, setSubTab] = useState<'arb' | 'value'>('value')
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -711,16 +711,6 @@ export default function PlayPage() {
       {/* Sub-tab bar */}
       <div className="flex items-center gap-1 px-3 py-1 bg-zinc-900/60 border-b border-zinc-800">
         <button
-          onClick={() => setSubTab('arb')}
-          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
-            subTab === 'arb'
-              ? 'bg-purple-700/40 text-purple-200 border border-purple-600/50'
-              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
-          }`}
-        >
-          Arbitrage
-        </button>
-        <button
           onClick={() => setSubTab('value')}
           className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
             subTab === 'value'
@@ -729,6 +719,16 @@ export default function PlayPage() {
           }`}
         >
           Value Bets
+        </button>
+        <button
+          onClick={() => setSubTab('arb')}
+          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            subTab === 'arb'
+              ? 'bg-purple-700/40 text-purple-200 border border-purple-600/50'
+              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
+          }`}
+        >
+          Arbitrage
         </button>
       </div>
 
