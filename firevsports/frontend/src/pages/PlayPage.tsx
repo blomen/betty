@@ -230,16 +230,15 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [loadArbOpps])
 
-  // Continuously poll login state for every active provider so the skin tab flips
-  // amber→green when the mirror confirms login, and green→amber if the session drops.
-  // Debounced: 2 consecutive false polls required to drop green (guards against
-  // transient DOM scrape failures during mid-flow navigation).
+  // Continuously poll login state for every UNLIMITED provider so the skin tab flips
+  // green whenever a Polymarket/Pinnacle/Cloudbet tab is authed — regardless of
+  // whether we've selected it in the UI. Debounced: 2 consecutive false polls to drop
+  // green, so transient DOM scrape failures during mid-flow navigation don't flap.
   useEffect(() => {
-    if (activeProviders.size === 0) return
     let cancelled = false
     const missCount: Record<string, number> = {}
     const check = async () => {
-      for (const pid of activeProviders) {
+      for (const pid of UNLIMITED_PROVIDERS) {
         try {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
           const d = await r.json()
@@ -262,7 +261,7 @@ export default function PlayPage() {
     check()
     const id = setInterval(check, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [activeProviders])
+  }, [])
 
   // SSE event handler
   useEffect(() => {
@@ -719,10 +718,11 @@ export default function PlayPage() {
           for (const [cluster, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
             softByCluster[cluster] = [...members]
           }
-          // Add any standalone provider we have balance/bonus data for
+          // Add any standalone provider we have balance/bonus/pending data for
           const allKnownPids = new Set([
             ...Object.keys(providerBalances),
             ...Object.keys(providerBonuses),
+            ...Object.keys(pendingByProvider),
           ])
           for (const pid of allKnownPids) {
             if (UNLIMITED_PROVIDERS.has(pid)) continue
@@ -741,11 +741,17 @@ export default function PlayPage() {
             return a.localeCompare(b)
           })
           const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
-          // Classify a provider: funded | drained (has bonus, no cash) | done (neither)
-          const isFunded = (pid: string) => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK
+          // Classify a provider:
+          //   funded — has cash balance OR pending bets (worth a full card)
+          //   done   — no balance, no bonus, no pending (fully depleted — red ✕)
+          //   drained-but-live — in between (bonus-only): amber italic pill
+          const isFunded = (pid: string) =>
+            (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
+            (pendingByProvider[pid]?.length ?? 0) > 0
           const isDone = (pid: string) =>
             (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK &&
-            (providerBonuses[pid] ?? 0) < DRAIN_THRESHOLD_SEK
+            (providerBonuses[pid] ?? 0) < DRAIN_THRESHOLD_SEK &&
+            (pendingByProvider[pid]?.length ?? 0) === 0
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
