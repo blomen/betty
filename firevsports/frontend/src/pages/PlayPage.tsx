@@ -230,15 +230,15 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [loadArbOpps])
 
-  // Continuously poll login state for every UNLIMITED provider so the skin tab flips
-  // green whenever a Polymarket/Pinnacle/Cloudbet tab is authed — regardless of
-  // whether we've selected it in the UI. Debounced: 2 consecutive false polls to drop
-  // green, so transient DOM scrape failures during mid-flow navigation don't flap.
+  // Continuously poll login state for every active provider. Green = logged in
+  // AND loop running (only active providers have runners). Debounced: 2 consecutive
+  // false polls to drop green, so transient DOM scrape failures don't flap.
   useEffect(() => {
+    if (activeProviders.size === 0) return
     let cancelled = false
     const missCount: Record<string, number> = {}
     const check = async () => {
-      for (const pid of UNLIMITED_PROVIDERS) {
+      for (const pid of activeProviders) {
         try {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
           const d = await r.json()
@@ -261,7 +261,7 @@ export default function PlayPage() {
     check()
     const id = setInterval(check, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  }, [activeProviders])
 
   // SSE event handler
   useEffect(() => {
