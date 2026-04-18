@@ -121,13 +121,35 @@ _FALLBACK_DOMAINS: dict[str, str] = {
 
 
 def get_workflow(provider_id: str) -> ProviderWorkflow:
-    """Get the workflow instance for a provider. Cached per provider_id."""
+    """Get the workflow instance for a provider. Cached per provider_id.
+
+    If an intel JSON exists at data/mirror_intel/{provider_id}.json, route to
+    GenericWorkflow — lets us migrate providers off dedicated classes one by one.
+    """
     if provider_id in _WORKFLOW_CACHE:
         return _WORKFLOW_CACHE[provider_id]
 
     global _PLATFORM_MAP
     if _PLATFORM_MAP is None:
         _PLATFORM_MAP = _load_platform_map()
+
+    from .generic import GenericWorkflow, load_intel
+
+    if load_intel(provider_id) is not None:
+        domain = _FALLBACK_DOMAINS.get(provider_id, "")
+        if not domain:
+            try:
+                from ...config.loader import load_config
+
+                p = load_config().get_provider(provider_id)
+                if p and p.domain:
+                    domain = p.domain
+            except ImportError:
+                pass
+        instance = GenericWorkflow(provider_id=provider_id, domain=domain)
+        _WORKFLOW_CACHE[provider_id] = instance
+        logger.info(f"[workflows] {provider_id} → GenericWorkflow (intel JSON present)")
+        return instance
 
     provider = None
     try:

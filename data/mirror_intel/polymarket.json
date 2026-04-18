@@ -1,0 +1,10 @@
+{
+  "provider_id": "polymarket",
+  "domain": "polymarket.com",
+  "login": {
+    "method": "dom",
+    "indicator": {
+      "selector": "a[href*=\"portfolio\"]"
+    }
+  }
+}
