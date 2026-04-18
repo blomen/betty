@@ -1020,7 +1020,7 @@ class LevelMonitor:
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                if action not in ("SKIP", "skip") and confidence >= 0.30:
+                if action not in ("SKIP", "skip") and confidence >= 0.15:
                     import asyncio
 
                     try:

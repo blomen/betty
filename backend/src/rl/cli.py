@@ -2210,7 +2210,8 @@ def train_gbt(
 def eval(
     checkpoint: str = typer.Option("v1", help="Checkpoint name to load"),
     skip_threshold: float = typer.Option(
-        0.30, help="Min Q-spread to trade. Default matches live gate in level_monitor.py."
+        0.15,
+        help="Min Q-spread to trade. 0.15 matches live gate after threshold sweep showed 7× total R vs 0.30.",
     ),
 ) -> None:
     """Evaluate the trained DQN agent on the test split.
