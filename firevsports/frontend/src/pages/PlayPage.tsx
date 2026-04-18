@@ -20,11 +20,16 @@ const SOFT_CLUSTER_MEMBERS: Record<string, string[]> = {
   gecko_betsson: ['betsson', 'nordicbet', 'betsafe', 'spelklubben'],
   comeon_group: ['comeon', 'lyllo', 'hajper', 'snabbare'],
 }
+// Standalone soft providers — their own one-provider "cluster". Listed so they
+// always appear in the UI even when fully untouched (no balance / bonus / pending).
+const SOFT_STANDALONES: string[] = [
+  'interwetten', 'vbet', '10bet', 'tipwin', 'coolbet', 'bethard',
+]
 const PROVIDER_TO_SOFT_CLUSTER: Record<string, string> = {}
 for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
   for (const m of members) PROVIDER_TO_SOFT_CLUSTER[m] = c
 }
-// Resolve a soft provider's cluster (fallback to pid for standalones like interwetten, vbet).
+// Resolve a soft provider's cluster (fallback to pid for standalones).
 const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
 
 interface BatchBet {
@@ -736,15 +741,21 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
-          // Group ALL known soft providers by cluster — includes every sibling from
-          // SOFT_CLUSTER_MEMBERS plus any standalone provider that appears in
-          // providerBalances or providerBonuses. Done/drained siblings stay visible.
+          // Group ALL known soft providers by cluster — every sibling from
+          // SOFT_CLUSTER_MEMBERS, every standalone from SOFT_STANDALONES, and any
+          // additional provider we have balance / bonus / pending data for.
+          // Even untouched providers stay visible (rendered as ✕ done) so the
+          // user can see the full universe at a glance.
           const softByCluster: Record<string, string[]> = {}
           // Seed with all canonical siblings
           for (const [cluster, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
             softByCluster[cluster] = [...members]
           }
-          // Add any standalone provider we have balance/bonus/pending data for
+          // Seed standalones — each is its own one-provider "cluster"
+          for (const pid of SOFT_STANDALONES) {
+            if (!softByCluster[pid]) softByCluster[pid] = [pid]
+          }
+          // Add any extra provider we have data for that wasn't in the canonical lists
           const allKnownPids = new Set([
             ...Object.keys(providerBalances),
             ...Object.keys(providerBonuses),
