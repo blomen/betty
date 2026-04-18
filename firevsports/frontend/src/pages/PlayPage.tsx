@@ -230,22 +230,30 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [loadArbOpps])
 
-  // Seed loggedInProviders from backend when a provider becomes active — covers page reload
-  // where in-memory SSE state is lost but the mirror's login session is still live.
+  // Continuously poll login state for every active provider so the skin tab flips
+  // amber→green when the mirror confirms login, and green→amber if the session drops.
+  // SSE events cover state changes, but polling fills gaps (page reload, missed events).
   useEffect(() => {
+    if (activeProviders.size === 0) return
     let cancelled = false
-    for (const pid of activeProviders) {
-      fetch(`/mirror/browser/provider/${pid}`)
-        .then(r => r.json())
-        .then(d => {
+    const check = async () => {
+      for (const pid of activeProviders) {
+        try {
+          const r = await fetch(`/mirror/browser/provider/${pid}`)
+          const d = await r.json()
           if (cancelled) return
-          if (d.logged_in) {
-            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-          }
-        })
-        .catch(() => { /* */ })
+          setLoggedInProviders(prev => {
+            const has = prev.has(pid)
+            if (d.logged_in && !has) return new Set(prev).add(pid)
+            if (!d.logged_in && has) { const n = new Set(prev); n.delete(pid); return n }
+            return prev
+          })
+        } catch { /* swallow — retry next tick */ }
+      }
     }
-    return () => { cancelled = true }
+    check()
+    const id = setInterval(check, 5000)
+    return () => { cancelled = true; clearInterval(id) }
   }, [activeProviders])
 
   // SSE event handler
