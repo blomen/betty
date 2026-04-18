@@ -994,12 +994,17 @@ export default function PlayPage() {
           const cb = byCluster[clusterId] || []
           const stats = clusterStats(clusterId)
           const isActive = stats.providers.some(p => activeProviders.has(p))
+          const isLoggedIn = stats.providers.some(p => loggedInProviders.has(p))
 
           return (
             <div key={clusterId}>
               {/* Cluster header with skin tabs */}
               <div className={`flex items-center gap-2 px-3 py-1.5 border-b ${
-                isActive ? 'bg-amber-900/20 border-amber-700/50' : 'bg-zinc-900/50 border-zinc-800'
+                isActive
+                  ? (isLoggedIn
+                      ? 'bg-green-900/20 border-green-700/50'
+                      : 'bg-amber-900/20 border-amber-700/50')
+                  : 'bg-zinc-900/50 border-zinc-800'
               }`}>
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 {/* Skin tabs — sorted by balance desc */}
