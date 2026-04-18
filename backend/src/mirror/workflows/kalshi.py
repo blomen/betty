@@ -1,0 +1,239 @@
+"""KalshiWorkflow — API-first automation for Kalshi via kalshi-python SDK.
+
+Uses REST API for: balance, prices, order placement, history/fills.
+Playwright tab is opened to https://kalshi.com/markets/<ticker> for visual
+context only — no DOM automation.
+
+Falls back to a no-op stub if KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM are
+absent, or if kalshi-python is not installed. The stub never succeeds at
+placement; it exists so missing creds don't crash the registry.
+
+SDK reality check (vs. original plan):
+    - Package:  `kalshi-python` (v2.1.4). Official OpenAPI-generated client.
+    - Client:   `KalshiClient` (base) + per-resource `PortfolioApi` / `MarketsApi`.
+                The plan's `ExchangeClient` name does not exist in this SDK.
+    - Auth:     `client.set_kalshi_auth(key_id, private_key_path)` takes a FILE
+                path, not a PEM string — so we materialize KALSHI_PRIVATE_KEY_PEM
+                to a temp file on init.
+    - Responses are pydantic v2 models, accessed via attributes (not `.get()`).
+    - There is no `now_ts()` helper — use `int(time.time())`.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import tempfile
+import time
+from typing import TYPE_CHECKING
+
+from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+
+logger = logging.getLogger(__name__)
+
+_KalshiClient = None
+_PortfolioApi = None
+_MarketsApi = None
+
+
+def _load_sdk() -> bool:
+    global _KalshiClient, _PortfolioApi, _MarketsApi
+    if _KalshiClient is not None:
+        return True
+    try:
+        from kalshi_python import KalshiClient, MarketsApi, PortfolioApi  # type: ignore
+
+        _KalshiClient = KalshiClient
+        _PortfolioApi = PortfolioApi
+        _MarketsApi = MarketsApi
+        return True
+    except ImportError:
+        logger.warning("[kalshi] kalshi-python SDK not installed — API features disabled")
+        return False
+
+
+class KalshiWorkflow(ProviderWorkflow):
+    platform = "kalshi"
+    autonomous_placement = True
+
+    def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
+        super().__init__(provider_id, domain, mode)
+        self._client = None  # KalshiClient (base, holds auth + http)
+        self._portfolio = None  # PortfolioApi (balance, fills, orders)
+        self._markets = None  # MarketsApi (get_market for live prices)
+        self._key_path: str | None = None  # temp file path for the private key
+        self._pending_ticker: str | None = None
+        self._pending_count: int = 0
+        self._pending_yes_price_cents: int = 0
+        self._init_client()
+
+    def _init_client(self) -> None:
+        key_id = os.getenv("KALSHI_API_KEY_ID")
+        key_pem = os.getenv("KALSHI_PRIVATE_KEY_PEM")
+        if not (key_id and key_pem):
+            logger.info("[kalshi] No KALSHI_API_KEY_ID/PEM — API stub only")
+            return
+        if not _load_sdk():
+            return
+        try:
+            # SDK requires a PEM **file path** — materialize env var to a temp file.
+            # Support `\n`-escaped newlines since env files commonly flatten them.
+            pem_body = key_pem.replace("\\n", "\n")
+            fd, self._key_path = tempfile.mkstemp(prefix="kalshi_key_", suffix=".pem", text=True)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(pem_body)
+            except Exception:
+                os.close(fd)
+                raise
+
+            self._client = _KalshiClient()
+            self._client.set_kalshi_auth(key_id=key_id, private_key_path=self._key_path)
+            self._portfolio = _PortfolioApi(api_client=self._client)
+            self._markets = _MarketsApi(api_client=self._client)
+            logger.info("[kalshi] SDK client initialized (API mode)")
+        except Exception as e:
+            logger.error(f"[kalshi] client init failed: {e}")
+            self._client = None
+            self._portfolio = None
+            self._markets = None
+
+    @property
+    def has_api(self) -> bool:
+        return self._portfolio is not None and self._markets is not None
+
+    # ---------- Login / balance ----------
+
+    async def check_login(self, page: "Page") -> bool:
+        # API auth is independent of web session; presence of a client is enough.
+        return self.has_api
+
+    async def sync_balance(self, page: "Page") -> float:
+        if not self.has_api:
+            return 0.0
+        try:
+            resp = self._portfolio.get_balance()  # GetBalanceResponse(balance=int cents)
+            cents = getattr(resp, "balance", None) or 0
+            return round(float(cents) / 100.0, 2)
+        except Exception as e:
+            logger.warning(f"[kalshi] sync_balance failed: {e}")
+            return 0.0
+
+    # ---------- History sync (for settlement reconciliation) ----------
+
+    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+        if not self.has_api:
+            return []
+        try:
+            resp = self._portfolio.get_fills(limit=200)
+            fills = getattr(resp, "fills", None) or []
+        except Exception as e:
+            logger.warning(f"[kalshi] get_fills failed: {e}")
+            return []
+        out: list[HistoryEntry] = []
+        for f in fills:
+            ticker = getattr(f, "ticker", "") or ""
+            side = getattr(f, "side", "") or ""
+            count = int(getattr(f, "count", 0) or 0)
+            price_cents = int(getattr(f, "price", 0) or 0)
+            order_id = getattr(f, "order_id", None) or getattr(f, "fill_id", None) or ""
+            odds = round(100.0 / max(price_cents, 1), 4) if price_cents else 0.0
+            stake = round(count * price_cents / 100.0, 2)
+            # The Fill model carries no settlement flag — settlement comes from
+            # the Market/result endpoint, not Fills. Mark all as pending and let
+            # a future pass reconcile via market settlement status.
+            out.append(
+                HistoryEntry(
+                    provider_bet_id=str(order_id),
+                    event_name=ticker,
+                    market=ticker,
+                    outcome=side,
+                    odds=odds,
+                    stake=stake,
+                    status="pending",
+                    payout=None,
+                )
+            )
+        return out
+
+    # ---------- Navigation (visual context only) ----------
+
+    async def navigate_to_event(self, page: "Page", bet) -> bool:
+        ticker = getattr(bet, "provider_event_id", "") or ""
+        ticker = ticker.replace("kalshi_", "")
+        if not ticker:
+            return False
+        url = f"https://kalshi.com/markets/{ticker}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            return True
+        except Exception as e:
+            logger.warning(f"[kalshi] navigate failed: {e}")
+            return False
+
+    # ---------- Placement ----------
+
+    async def prep_betslip(self, page: "Page", bet, stake: float) -> PlacementResult:
+        # No DOM interaction; stash the order params for place_bet().
+        self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(
+            bet, "provider_event_id", None
+        )
+        if not self._pending_ticker:
+            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_ticker")
+        yes_price_dollars = self._infer_yes_price(bet)
+        self._pending_yes_price_cents = max(1, min(99, int(round(yes_price_dollars * 100))))
+        self._pending_count = max(1, int(stake // max(yes_price_dollars, 0.01)))
+        return PlacementResult(
+            status="ready",
+            bet_id=getattr(bet, "id", 0),
+            actual_odds=round(1.0 / yes_price_dollars, 4),
+            actual_stake=round(self._pending_count * yes_price_dollars, 2),
+        )
+
+    def _infer_yes_price(self, bet) -> float:
+        # Bet carries the decimal odds we computed in extraction;
+        # convert back to a YES-contract price target.
+        odds = float(getattr(bet, "odds", 2.0))
+        return max(0.01, min(0.99, round(1.0 / odds, 4)))
+
+    async def check_live_price(self, page: "Page", bet) -> tuple[float | None, float | None]:
+        if not self.has_api or not self._pending_ticker:
+            return None, None
+        try:
+            resp = self._markets.get_market(self._pending_ticker)
+            mkt = getattr(resp, "market", None)
+            yes_ask_cents = int(getattr(mkt, "yes_ask", 0) or 0) if mkt else 0
+            if yes_ask_cents <= 0:
+                return None, None
+            odds = round(100.0 / yes_ask_cents, 4)
+            return odds, None
+        except Exception as e:
+            logger.warning(f"[kalshi] check_live_price failed: {e}")
+            return None, None
+
+    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+        if not self.has_api or not self._pending_ticker:
+            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_client")
+        try:
+            resp = self._portfolio.create_order(
+                ticker=self._pending_ticker,
+                action="buy",
+                side="yes",
+                type="limit",
+                yes_price=self._pending_yes_price_cents,
+                count=self._pending_count,
+                expiration_ts=int(time.time()) + 60,  # 60-second resting limit
+            )
+            raw = resp.to_dict() if hasattr(resp, "to_dict") else None
+            return PlacementResult(
+                status="placed",
+                bet_id=getattr(bet, "id", 0),
+                actual_odds=round(100.0 / self._pending_yes_price_cents, 4),
+                actual_stake=round(self._pending_count * self._pending_yes_price_cents / 100.0, 2),
+                raw_response=raw,
+            )
+        except Exception as e:
+            logger.error(f"[kalshi] place_bet failed: {e}")
+            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason=str(e))
