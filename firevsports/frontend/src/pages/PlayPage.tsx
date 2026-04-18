@@ -586,6 +586,30 @@ export default function PlayPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {/* Sub-tab bar — top level, directly under main nav */}
+      <div className="flex items-center gap-1 px-3 py-1 bg-zinc-900/60 border-b border-zinc-800">
+        <button
+          onClick={() => setSubTab('value')}
+          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            subTab === 'value'
+              ? 'bg-amber-700/40 text-amber-200 border border-amber-600/50'
+              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
+          }`}
+        >
+          Value Bets
+        </button>
+        <button
+          onClick={() => setSubTab('arb')}
+          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            subTab === 'arb'
+              ? 'bg-purple-700/40 text-purple-200 border border-purple-600/50'
+              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
+          }`}
+        >
+          Arbitrage
+        </button>
+      </div>
+
       {/* Header */}
       <div className="flex items-center gap-4 px-3 py-1.5 border-b border-zinc-800 bg-zinc-900 text-xs">
         <span className="text-zinc-200 font-mono">{bets.length}</span>
@@ -707,30 +731,6 @@ export default function PlayPage() {
           ))}
         </div>
       )}
-
-      {/* Sub-tab bar */}
-      <div className="flex items-center gap-1 px-3 py-1 bg-zinc-900/60 border-b border-zinc-800">
-        <button
-          onClick={() => setSubTab('value')}
-          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
-            subTab === 'value'
-              ? 'bg-amber-700/40 text-amber-200 border border-amber-600/50'
-              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
-          }`}
-        >
-          Value Bets
-        </button>
-        <button
-          onClick={() => setSubTab('arb')}
-          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
-            subTab === 'arb'
-              ? 'bg-purple-700/40 text-purple-200 border border-purple-600/50'
-              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
-          }`}
-        >
-          Arbitrage
-        </button>
-      </div>
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
