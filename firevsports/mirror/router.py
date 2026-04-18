@@ -192,7 +192,8 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 break
         if not tab_url:
             return {"found": False, "logged_in": False, "balance": None, "domain": workflow.domain}
-        # Detection order: intercepted cache → workflow.check_login (intel JSON) → DOM scrape → sync_balance
+        # Detection order: intercepted cache → workflow.check_login (intel JSON) → DOM scrape.
+        # Balance: always attempt workflow.sync_balance when logged in (strategy/intel driven).
         intercepted = browser.provider_data.get(provider_id, {})
         logged_in = intercepted.get("logged_in", False)
         balance = intercepted.get("balance")
@@ -214,14 +215,13 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             dom = await browser.check_login_dom(provider_id)
             logged_in = dom.get("logged_in", False)
             balance = dom.get("balance") or balance
-        if not logged_in and page:
+        if logged_in and balance is None and page:
             try:
                 bal = await workflow.sync_balance(page)
                 if bal >= 0:
-                    logged_in = True
                     balance = bal
                     browser.provider_data.setdefault(provider_id, {}).update(
-                        {"logged_in": True, "balance": bal, "source": "workflow_api"}
+                        {"balance": bal, "source": "workflow_sync_balance"}
                     )
             except Exception:
                 pass
