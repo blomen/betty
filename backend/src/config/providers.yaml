@@ -828,6 +828,26 @@ providers:
       - boxing
       - esports
 
+  kalshi:
+    id: kalshi
+    name: Kalshi
+    domain: kalshi.com
+    retriever_type: kalshi
+    base_url: https://api.elections.kalshi.com/trade-api/v2
+    currency: USD
+    exchange_rate_sek: 10.5   # refresh periodically; rough 2026-04 FX
+    params:
+      min_volume_usd: 100
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)
 # ============================================================================
@@ -848,6 +868,12 @@ extraction_scheduling:
   polymarket:
     # Event matching only (not a sharp source). Doesn't need real-time refresh.
     providers: [polymarket]
+    interval_minutes: 5
+    grouped: false
+
+  kalshi:
+    # Prediction-market exchange. Public REST API, unauthenticated for market data.
+    providers: [kalshi]
     interval_minutes: 5
     grouped: false
 
@@ -951,6 +977,8 @@ active:
   # - stake    # Cloudflare blocks datacenter IPs — needs residential proxy to work
   - cloudbet
   - marathon
+  # Prediction-market exchange (playable + consensus input)
+  - kalshi
 
 
 # ============================================================================
