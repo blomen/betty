@@ -289,9 +289,14 @@ class PolymarketWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
-        """Phase 1: Build and sign order. API mode: SDK. DOM mode: click buttons."""
+        """Phase 1: Build and sign order. API mode: SDK. DOM mode: returns price from click."""
         if not self.has_api:
-            return PlacementResult(status="prepped", bet_id=0, actual_stake=stake)
+            # DOM mode: navigate_and_fill already clicked the outcome + filled stake.
+            # Return the ¢ price captured during the click so UI can show it.
+            cents = getattr(self, "_last_click_cents", None)
+            live_odds = round(1.0 / (cents / 100), 3) if cents and cents > 0 else None
+            reason = f"{cents}¢" if cents else None
+            return PlacementResult(status="prepped", bet_id=0, actual_stake=stake, actual_odds=live_odds, reason=reason)
 
         token_id = getattr(bet, "token_id", None)
         if not token_id:
@@ -472,15 +477,18 @@ class PolymarketWorkflow(ProviderWorkflow):
                     const t = (btn.textContent || '').trim();
                     if (t === 'Log In' || t === 'Sign Up') return {logged_in: false};
                 }
-                // Positive check: Cash $ in nav means logged in
-                const els = document.querySelectorAll('nav *, header *');
+                // Positive check: Cash/$ anywhere in nav/header, or Deposit button (only shown when logged in)
+                const body = document.body.innerText || '';
+                if (body.includes('Deposit') && body.includes('Withdraw')) return {logged_in: true};
+                const els = document.querySelectorAll('nav *, header *, [class*="wallet"] *, [class*="user"] *');
                 for (const el of els) {
                     const t = (el.textContent || '').trim();
-                    if (t.startsWith('Cash') && t.includes('$')) return {logged_in: true, text: t};
+                    if (t.includes('Cash') && t.includes('$')) return {logged_in: true, text: t};
                 }
-                // Also check for portfolio value (visible on portfolio page when logged in)
-                const body = document.body.innerText || '';
-                if (body.includes('Portfolio') && body.includes('Deposit')) return {logged_in: true};
+                // Check for portfolio link (only visible when logged in)
+                for (const a of document.querySelectorAll('a[href*="portfolio"]')) {
+                    if (a.offsetParent !== null) return {logged_in: true};
+                }
                 return {logged_in: false};
             }"""
             )
@@ -490,21 +498,26 @@ class PolymarketWorkflow(ProviderWorkflow):
             return False
 
     async def _sync_balance_dom(self, page: Page) -> float:
-        """Scrape USDC cash balance from DOM nav text ('Cash$101.51')."""
+        """Scrape USDC cash balance from DOM — specifically the Cash amount, not Portfolio."""
         try:
             amount = await page.evaluate(
-                """() => {
-                const els = document.querySelectorAll('nav *');
-                for (const el of els) {
+                r"""() => {
+                // Look for leaf elements whose text starts with "Cash$" — avoids
+                // parent divs like "Portfolio$44.72Cash$24.89" where the first $
+                // amount is the portfolio value, not cash.
+                const all = document.querySelectorAll('nav *, header *');
+                for (const el of all) {
                     const t = (el.textContent || '').trim();
-                    if (t.startsWith('Cash') && t.includes('$')) {
-                        const m = t.match(/\\$(\\d[\\d,.]*)/);
-                        return m ? parseFloat(m[1].replace(',', '')) : null;
+                    if (t.startsWith('Cash') && t.includes('$') && t.length < 30) {
+                        const m = t.match(/\$(\d[\d,.]*)/);
+                        if (m) return parseFloat(m[1].replace(',', ''));
                     }
                 }
                 return null;
             }"""
             )
+            if amount is not None:
+                logger.info(f"[polymarket] DOM balance: ${amount:.2f}")
             return amount if amount is not None else -1
         except Exception as e:
             logger.warning(f"[{self.provider_id}] sync_balance DOM failed: {e}")
@@ -549,7 +562,7 @@ class PolymarketWorkflow(ProviderWorkflow):
             return None, None
 
     async def _navigate_and_fill_dom(self, page: Page, bet) -> bool:
-        """DOM fallback: navigate + click outcome + fill stake via quick-add buttons."""
+        """DOM fallback: navigate + click correct outcome + type stake into Amount input."""
         slug = getattr(bet, "market_slug", None) or getattr(bet, "event_slug", None)
         if not slug:
             logger.warning(f"[{self.provider_id}] No slug on bet {getattr(bet, 'bet_id', '?')}")
@@ -557,11 +570,15 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         outcome = getattr(bet, "poly_outcome", None) or getattr(bet, "outcome", "")
         original_outcome = getattr(bet, "original_outcome", outcome)
-        stake = int(getattr(bet, "stake", 0))
-        home_name = getattr(bet, "display_home", "") or ""
-        away_name = getattr(bet, "display_away", "") or ""
+        stake = getattr(bet, "stake", 0)
+        home_name = (getattr(bet, "display_home", "") or getattr(bet, "poly_home", "") or "").strip()
+        away_name = (getattr(bet, "display_away", "") or getattr(bet, "poly_away", "") or "").strip()
 
         url = f"https://polymarket.com/event/{slug}"
+        logger.info(
+            f"[polymarket] DOM navigate: {url} outcome={original_outcome} "
+            f"home={home_name} away={away_name} stake=${stake}"
+        )
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
@@ -573,73 +590,186 @@ class PolymarketWorkflow(ProviderWorkflow):
         except Exception:
             await asyncio.sleep(5)
 
-        # Click outcome button
+        # Click outcome in the Moneyline row ONLY — page has multiple sections
+        # (Moneyline, Game 1 Winner, Handicap) each with their own ¢ buttons.
+        # Extraction maps 1st outcome → home, 2nd → away within Moneyline.
+        # Resolve target team name for button matching.
+        # Polymarket button order doesn't always match home/away — e.g. page title
+        # "Dignitas vs Cloud9" but buttons show "c9 85¢ | dig 16¢" (C9 first).
+        # Match by team name instead of index.
         outcome_lower = (original_outcome or outcome).lower()
-        if outcome_lower in ("home", "over"):
-            target = home_name.lower()[:3] if home_name else ""
-        elif outcome_lower in ("away", "under"):
-            target = away_name.lower()[:3] if away_name else ""
-        elif outcome_lower == "draw":
-            target = "draw"
+        if outcome_lower in ("home", "1"):
+            target_name = home_name.lower()
+        elif outcome_lower in ("away", "2"):
+            target_name = away_name.lower()
+        elif outcome_lower == "over":
+            target_name = "over"
+        elif outcome_lower == "under":
+            target_name = "under"
         else:
-            target = outcome.lower()[:3]
+            target_name = outcome_lower
 
         try:
             clicked = await page.evaluate(
-                """(target) => {
-                const btns = [...document.querySelectorAll('button')];
-                for (const btn of btns) {
-                    const text = (btn.textContent || '').toLowerCase();
-                    if (target && text.includes(target) && text.includes('¢')) {
-                        btn.scrollIntoView({block: 'center'});
-                        btn.click();
-                        return btn.textContent.trim().slice(0, 40);
+                """(targetName) => {
+                // Find the Moneyline section — look for text "Moneyline" then get its ¢ buttons
+                const allText = document.querySelectorAll('div, span, p, h2, h3, h4');
+                let moneylineContainer = null;
+                for (const el of allText) {
+                    const t = (el.textContent || '').trim();
+                    if (t === 'Moneyline' && el.tagName !== 'BUTTON') {
+                        let parent = el.parentElement;
+                        for (let i = 0; i < 6 && parent; i++) {
+                            const btns = parent.querySelectorAll('button');
+                            let centCount = 0;
+                            for (const b of btns) {
+                                if (b.textContent.includes('¢')) centCount++;
+                            }
+                            if (centCount >= 2) {
+                                moneylineContainer = parent;
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
+                        if (moneylineContainer) break;
                     }
+                }
+
+                // Collect ¢ buttons from the Moneyline section
+                let centBtns = [];
+                if (moneylineContainer) {
+                    for (const btn of moneylineContainer.querySelectorAll('button')) {
+                        const text = (btn.textContent || '').trim();
+                        if (text.includes('¢') && text.length < 60) {
+                            centBtns.push(btn);
+                        }
+                    }
+                }
+
+                // Fallback: if no Moneyline section found, use the FIRST pair of ¢ buttons
+                if (centBtns.length < 2) {
+                    centBtns = [];
+                    for (const btn of document.querySelectorAll('button')) {
+                        const text = (btn.textContent || '').trim();
+                        if (text.includes('¢') && text.length < 60) {
+                            centBtns.push(btn);
+                        }
+                        if (centBtns.length >= 2) break;
+                    }
+                }
+
+                // Match by team name — button text is like "c985¢" or "dig16¢"
+                // Compare against the full target name and common abbreviations.
+                const tn = targetName.toLowerCase();
+                let bestBtn = null;
+                let bestIdx = -1;
+                for (let i = 0; i < centBtns.length; i++) {
+                    const btnText = centBtns[i].textContent.trim().toLowerCase();
+                    // Strip the ¢ price suffix to get the team part
+                    const teamPart = btnText.replace(/\\d+¢.*/, '').trim();
+                    // Check: button team matches start/substring of target name
+                    if (teamPart && (tn.startsWith(teamPart) || teamPart.startsWith(tn.slice(0, 3))
+                        || tn.includes(teamPart) || teamPart.includes(tn.slice(0, 4)))) {
+                        bestBtn = centBtns[i];
+                        bestIdx = i;
+                        break;
+                    }
+                }
+
+                // Fallback: if no name match, use first button
+                if (!bestBtn && centBtns.length > 0) {
+                    bestBtn = centBtns[0];
+                    bestIdx = 0;
+                }
+
+                if (bestBtn) {
+                    bestBtn.scrollIntoView({block: 'center'});
+                    bestBtn.click();
+                    const priceMatch = bestBtn.textContent.match(/(\\d+)¢/);
+                    const cents = priceMatch ? parseInt(priceMatch[1]) : null;
+                    return {
+                        clicked: bestBtn.textContent.trim().slice(0, 50),
+                        index: bestIdx,
+                        total: centBtns.length,
+                        cents: cents,
+                        moneyline: !!moneylineContainer,
+                        targetName: targetName
+                    };
                 }
                 return null;
             }""",
-                target,
+                target_name,
             )
             if clicked:
-                logger.info(f"[polymarket] DOM: Clicked outcome '{clicked}'")
+                cents = clicked.get("cents")
+                logger.info(
+                    f"[polymarket] DOM: Clicked '{clicked.get('clicked')}' "
+                    f"(target='{target_name}', idx={clicked.get('index')}, "
+                    f"moneyline={clicked.get('moneyline')}, {cents}¢)"
+                )
+                # Store live price for bet_ready broadcast
+                if cents and cents > 0:
+                    self._last_click_cents = cents
                 await asyncio.sleep(1)
+            else:
+                logger.warning(f"[polymarket] DOM: No ¢ button matching target='{target_name}'")
         except Exception as e:
             logger.warning(f"[polymarket] DOM: Could not click outcome: {e}")
 
-        # Fill stake via quick-add buttons
+        # Fill stake by typing into the Amount input field (supports decimals)
         if stake > 0:
-            remaining = stake
-            for btn_val in [100, 10, 5, 1]:
-                while remaining >= btn_val:
-                    ok = await page.evaluate(
-                        f"""() => {{
-                        const btns = document.querySelectorAll('button');
-                        for (const btn of btns) {{
-                            if (btn.textContent.trim() === '+${btn_val}') {{
-                                btn.click(); return true;
-                            }}
-                        }}
-                        return false;
-                    }}"""
-                    )
-                    if ok:
-                        remaining -= btn_val
-                        await asyncio.sleep(0.15)
-                    else:
-                        break
-            if remaining > 0:
-                logger.warning(f"[polymarket] DOM: Partial fill ${stake - remaining}/${stake}")
+            stake_str = f"{stake:.2f}" if stake != int(stake) else str(int(stake))
+            try:
+                filled = await page.evaluate(
+                    """(amount) => {
+                    // Find the Amount input — it's an <input> near text "Amount"
+                    const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+                    for (const input of inputs) {
+                        // Check if this input or its parent/sibling has "Amount" text
+                        const parent = input.closest('div, label, fieldset');
+                        const context = parent ? parent.textContent : '';
+                        if (context.includes('Amount') || input.placeholder === '$0' ||
+                            input.placeholder === '$0.00' || input.placeholder === '0' ||
+                            input.placeholder === 'Amount') {
+                            // Clear existing value and type new amount
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value').set;
+                            nativeSetter.call(input, amount);
+                            input.dispatchEvent(new Event('input', {bubbles: true}));
+                            input.dispatchEvent(new Event('change', {bubbles: true}));
+                            return {filled: true, value: amount};
+                        }
+                    }
+                    // Fallback: try any visible input with $ nearby
+                    for (const input of inputs) {
+                        const rect = input.getBoundingClientRect();
+                        if (rect.width > 50 && rect.height > 20 && rect.top > 100) {
+                            const parent = input.closest('div');
+                            if (parent && parent.textContent.includes('$')) {
+                                const nativeSetter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value').set;
+                                nativeSetter.call(input, amount);
+                                input.dispatchEvent(new Event('input', {bubbles: true}));
+                                input.dispatchEvent(new Event('change', {bubbles: true}));
+                                return {filled: true, value: amount, method: 'fallback'};
+                            }
+                        }
+                    }
+                    return {filled: false};
+                }""",
+                    stake_str,
+                )
+                if filled and filled.get("filled"):
+                    logger.info(f"[polymarket] DOM: Filled stake ${stake_str} into Amount input")
+                else:
+                    logger.warning("[polymarket] DOM: Could not find Amount input — stake not filled")
+            except Exception as e:
+                logger.warning(f"[polymarket] DOM: Stake fill failed: {e}")
 
         return True
 
     async def _sync_history_dom(self, page: Page) -> list[HistoryEntry]:
-        """DOM fallback: scrape History tab and reconcile with DB via fuzzy match."""
-        from rapidfuzz import fuzz
-
-        from ...db.models import Bet, Event, get_session
-        from ...repositories.profile_repo import ProfileRepo
-        from ...services.bet_service import BetService
-
+        """DOM fallback: scrape History tab and return entries. PendingLoop handles settlement."""
         # Navigate to History tab
         if "/portfolio" not in (page.url or "") or "tab=history" not in (page.url or ""):
             await page.goto(
@@ -667,124 +797,44 @@ class PolymarketWorkflow(ProviderWorkflow):
 
         logger.info(f"[polymarket] sync_history DOM: {len(entries)} entries scraped")
 
-        db = get_session()
         history_results: list[HistoryEntry] = []
-        try:
-            profile = ProfileRepo(db).get_active()
-            if not profile:
-                logger.warning("[polymarket] sync_history: no active profile")
-                return []
+        for entry in entries:
+            activity = entry.get("activity", "")
+            market = entry.get("market", "")
+            value = float(entry.get("value", 0) or 0)
+            shares = float(entry.get("shares", 0) or 0)
+            outcome = entry.get("outcomeTag", "") or ""
 
-            all_bets = (
-                db.query(Bet, Event)
-                .join(Event, Bet.event_id == Event.id, isouter=True)
-                .filter(
-                    Bet.profile_id == profile.id,
-                    Bet.provider_id == "polymarket",
+            if not market or value <= 0:
+                continue
+
+            if activity == "Bought":
+                status, payout = "pending", 0.0
+                odds = round(1.0 / (value / shares), 4) if shares > 0 else 0.0
+                stake = round(value, 2)
+            elif activity == "Lost":
+                status, payout = "lost", 0.0
+                odds = round(1.0 / (value / shares), 4) if shares > 0 else 0.0
+                stake = round(value, 2)
+            elif activity == "Claimed":
+                status, payout = "won", round(abs(value), 2)
+                odds = 0.0  # Claimed entries have payout but not original odds/stake
+                stake = 0.0
+            else:
+                continue
+
+            history_results.append(
+                HistoryEntry(
+                    provider_bet_id="",
+                    event_name=market[:120],
+                    market="1x2",
+                    outcome=outcome,
+                    odds=odds,
+                    stake=stake,
+                    status=status,
+                    payout=payout,
                 )
-                .all()
             )
-
-            pending = [(b, e) for b, e in all_bets if b.result == "pending"]
-            settled_ids = {b.id for b, _ in all_bets if b.result != "pending"}
-
-            bet_service = BetService(db)
-            new_bets = 0
-            settled_bets = 0
-
-            for entry in entries:
-                activity = entry.get("activity", "")
-                market = entry.get("market", "")
-                value = entry.get("value", 0)
-                shares = entry.get("shares", 0)
-
-                if not market:
-                    continue
-
-                if activity == "Bought":
-                    already_exists = False
-                    for _bet, event in all_bets:
-                        event_name = ""
-                        if event:
-                            h = event.display_home or event.home_team or ""
-                            a = event.display_away or event.away_team or ""
-                            event_name = f"{h} vs {a}" if h and a else h or a
-                        score = fuzz.token_set_ratio(market.lower(), event_name.lower())
-                        if score >= 70:
-                            already_exists = True
-                            break
-                    if not already_exists and value > 0:
-                        logger.info(
-                            f"[polymarket] sync_history: new bet from history — "
-                            f"{market[:60]} stake=${value} shares={shares}"
-                        )
-                        result = bet_service.create_bet(
-                            event_id=None,
-                            provider_id="polymarket",
-                            market="1x2",
-                            outcome=entry.get("outcomeTag", "unknown"),
-                            odds=round(1.0 / (value / shares), 4) if shares > 0 and value > 0 else 2.0,
-                            stake=round(value, 2),
-                            bet_type="polymarket",
-                        )
-                        if "error" not in result:
-                            new_bets += 1
-
-                elif activity in ("Lost", "Claimed"):
-                    result_str = "lost" if activity == "Lost" else "won"
-                    payout = abs(value) if activity == "Claimed" else 0.0
-
-                    best_match = None
-                    best_score = 0
-                    for bet, event in pending:
-                        if bet.id in settled_ids:
-                            continue
-                        event_name = ""
-                        if event:
-                            h = event.display_home or event.home_team or ""
-                            a = event.display_away or event.away_team or ""
-                            event_name = f"{h} vs {a}" if h and a else h or a
-                        s1 = fuzz.partial_ratio(market.lower(), event_name.lower())
-                        s2 = fuzz.token_set_ratio(market.lower(), event_name.lower())
-                        score = max(s1, s2)
-                        if score > best_score and score >= 60:
-                            best_score = score
-                            best_match = bet
-
-                    if best_match:
-                        try:
-                            bet_service.settle_bet(best_match.id, result_str, round(payout, 2))
-                            settled_ids.add(best_match.id)
-                            settled_bets += 1
-                            logger.info(
-                                f"[polymarket] sync_history: settled bet #{best_match.id} "
-                                f"→ {result_str} (payout=${payout:.2f}) via {market[:50]}"
-                            )
-                            history_results.append(
-                                HistoryEntry(
-                                    provider_bet_id=str(best_match.id),
-                                    event_name=market[:80],
-                                    market=best_match.market or "1x2",
-                                    outcome=best_match.outcome or "",
-                                    odds=best_match.odds,
-                                    stake=best_match.stake,
-                                    status=result_str,
-                                    payout=round(payout, 2),
-                                )
-                            )
-                        except Exception as e:
-                            logger.warning(f"[polymarket] sync_history settle failed: {e}")
-
-            db.commit()
-            logger.info(
-                f"[polymarket] sync_history DOM complete: {new_bets} new bets recorded, {settled_bets} bets settled"
-            )
-
-        except Exception as e:
-            db.rollback()
-            logger.error(f"[polymarket] sync_history error: {e}", exc_info=True)
-        finally:
-            db.close()
 
         return history_results
 
