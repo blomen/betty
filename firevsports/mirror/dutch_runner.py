@@ -262,10 +262,15 @@ class DutchRunner:
                     if self._is_blocked(opp):
                         continue
 
+                    # Prefer arb_legs (pure soft-vs-soft) over mixed legs (soft + Pinnacle
+                    # fallback). arb_legs is only populated when a pure-soft arb is
+                    # executable — when present, it yields higher-edge placements.
+                    legs = opp.get("arb_legs") or opp.get("legs", [])
+
                     # Find the anchor leg (this provider) and counter-legs
                     anchor_leg = None
                     counter_legs = []
-                    for leg in opp.get("legs", []):
+                    for leg in legs:
                         if leg.get("provider") == pid:
                             anchor_leg = leg
                         else:
