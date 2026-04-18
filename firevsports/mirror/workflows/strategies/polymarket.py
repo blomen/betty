@@ -638,10 +638,104 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     )
 
 
+_READ_CENTS_JS = r"""(targetName) => {
+    // Find the ¢ button matching target (same logic as prep) and return its current cents.
+    let moneyline = null;
+    for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
+        const t = (el.textContent || '').trim();
+        if (t !== 'Moneyline' || el.tagName === 'BUTTON') continue;
+        let p = el.parentElement;
+        for (let i = 0; i < 6 && p; i++) {
+            const btns = p.querySelectorAll('button');
+            let cc = 0;
+            for (const b of btns) if (b.textContent.includes('¢')) cc++;
+            if (cc >= 2) { moneyline = p; break; }
+            p = p.parentElement;
+        }
+        if (moneyline) break;
+    }
+    let centBtns = [];
+    if (moneyline) {
+        for (const b of moneyline.querySelectorAll('button')) {
+            const t = (b.textContent || '').trim();
+            if (t.includes('¢') && t.length < 60) centBtns.push(b);
+        }
+    }
+    if (centBtns.length < 2) return null;
+
+    const tn = targetName.toLowerCase();
+    const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
+    for (const b of centBtns) {
+        const bt = b.textContent.trim().toLowerCase();
+        const team = bt.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
+        if (!team) continue;
+        const match =
+            tn.startsWith(team)
+            || team.startsWith(tn.slice(0, 3))
+            || tn.includes(team)
+            || (team.length >= 2 && team === initials)
+            || (team.length >= 2 && initials.startsWith(team))
+            || (team.length >= 3 && tn.split(/\s+/).some(w => w.startsWith(team)));
+        if (match) {
+            const m = b.textContent.match(/(\d+)¢/);
+            return m ? parseInt(m[1]) : null;
+        }
+    }
+    return null;
+}"""
+
+
+async def _check_live_price(page: Page, bet, intel: dict | None = None):
+    """Read the current ¢ price for the target outcome and compute (live_odds, live_edge)."""
+    def _g(attr: str) -> str:
+        if isinstance(bet, dict):
+            val = bet.get(attr)
+            if val is None:
+                val = (bet.get("provider_meta") or {}).get(attr)
+            return str(val or "")
+        val = getattr(bet, attr, None)
+        if val is None:
+            meta = getattr(bet, "provider_meta", None) or {}
+            if isinstance(meta, dict):
+                val = meta.get(attr)
+        return str(val or "")
+
+    fair_odds = getattr(bet, "fair_odds", None) if not isinstance(bet, dict) else bet.get("fair_odds")
+    if not fair_odds:
+        return None, None
+
+    outcome = _g("outcome").lower()
+    home = (_g("display_home") or _g("poly_home")).strip().lower()
+    away = (_g("display_away") or _g("poly_away")).strip().lower()
+    if outcome in ("home", "1"):
+        target = home
+    elif outcome in ("away", "2"):
+        target = away
+    elif outcome == "over":
+        target = "over"
+    elif outcome == "under":
+        target = "under"
+    else:
+        target = outcome
+
+    try:
+        cents = await page.evaluate(_READ_CENTS_JS, target)
+    except Exception:
+        return None, None
+
+    if not cents or cents <= 0 or cents >= 100:
+        return None, None
+
+    live_odds = round(100.0 / cents, 3)
+    live_edge = (live_odds / float(fair_odds) - 1.0) * 100.0
+    return live_odds, round(live_edge, 2)
+
+
 strategy = Strategy(
     sync_balance=_sync_balance,
     sync_history=_sync_history,
     prep_betslip=_prep_betslip,
+    check_live_price=_check_live_price,
     scrape_portfolio=_scrape_portfolio,
     claim_banner=_claim_banner,
     redeem_all=_redeem_all,
