@@ -91,6 +91,117 @@ def _american_to_decimal(price: float) -> float:
 
 
 # ------------------------------------------------------------------
+# API helpers — Playwright request context bypasses browser CORS.
+# ------------------------------------------------------------------
+
+_PINNACLE_HEADERS = {
+    "Origin": "https://www.pinnacle.se",
+    "Referer": "https://www.pinnacle.se/",
+    "Accept": "application/json",
+}
+
+
+async def _build_headers(page: "Page") -> dict:
+    try:
+        cookies = await page.context.cookies()
+        cookie_str = "; ".join(
+            f"{c['name']}={c['value']}" for c in cookies
+            if "pinnacle" in c.get("domain", "")
+        )
+    except Exception:
+        cookie_str = ""
+    headers = dict(_PINNACLE_HEADERS)
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    return headers
+
+
+async def _evaluate_api(page: "Page", url: str) -> Any:
+    try:
+        headers = await _build_headers(page)
+        resp = await page.context.request.get(url, headers=headers)
+        if resp.status < 200 or resp.status >= 400:
+            return {"__error": resp.status}
+        return await resp.json()
+    except Exception as e:
+        logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
+        return None
+
+
+async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
+    try:
+        headers = await _build_headers(page)
+        headers["Content-Type"] = "application/json"
+        resp = await page.context.request.post(url, data=body, headers=headers)
+        data = None
+        try:
+            data = await resp.json()
+        except Exception:
+            data = {}
+        if resp.status < 200 or resp.status >= 400:
+            return {"__error": resp.status, **(data or {})}
+        return data
+    except Exception as e:
+        logger.warning(f"[pinnacle] API POST failed: {url} — {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# Login + balance — DOM scrape (Pinnacle's /wallet/balance requires a JWT
+# fingerprint that Playwright's request context can't replicate).
+# ------------------------------------------------------------------
+
+async def _check_login(page: "Page", intel: dict | None) -> bool:
+    """Authenticated header shows 'SEK X.XX' + customer ID 'SSnnnnnnn'. Logged-out shows 'LOG IN'."""
+    import asyncio
+
+    await asyncio.sleep(1)
+    for _ in range(3):
+        try:
+            result = await page.evaluate(
+                r"""() => {
+                    for (const btn of document.querySelectorAll('button, a')) {
+                        const t = (btn.textContent || '').trim().toUpperCase();
+                        if (t === 'LOG IN' || t === 'SIGN IN' || t === 'REGISTER') {
+                            if (btn.offsetParent !== null) return {logged_in: false};
+                        }
+                    }
+                    const body = document.body.innerText || '';
+                    const cust = body.match(/SS\d{6,}/);
+                    const bal = body.match(/\b(SEK|EUR|USD|GBP|NOK|DKK)\s+\d+(?:[.,]\d{2})\b/);
+                    return {logged_in: !!(cust && bal)};
+                }"""
+            )
+            if isinstance(result, dict) and result.get("logged_in"):
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(1.5)
+    return False
+
+
+async def _sync_balance(page: "Page", intel: dict | None) -> float:
+    """Scrape SEK/EUR/USD + amount from the header row — same pattern as 'SEK 0.00DEPOSIT'."""
+    try:
+        amount = await page.evaluate(
+            r"""() => {
+                const body = document.body.innerText || '';
+                // Currency + amount with required decimal point — avoids false matches on names
+                const m = body.match(/\b(SEK|EUR|USD|GBP|NOK|DKK)\s+(\d+(?:[.,]\d{2}))\b/);
+                if (m) {
+                    const n = parseFloat(m[2].replace(/,/g, ''));
+                    if (!isNaN(n)) return n;
+                }
+                return null;
+            }"""
+        )
+        return float(amount) if amount is not None else -1.0
+    except Exception as e:
+        logger.warning(f"[pinnacle] sync_balance DOM failed: {e}")
+        return -1.0
+
+
+# ------------------------------------------------------------------
 # Scan — read-only preview
 # ------------------------------------------------------------------
 
@@ -426,15 +537,8 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
     # API fallback
     if not entries:
         start, end = _date_range()
-        try:
-            data = await page.evaluate(f"""
-                async () => {{
-                    const resp = await fetch("{api}/bets?status=settled&startDate={start}&endDate={end}", {{credentials: "include"}});
-                    if (!resp.ok) return {{ __error: resp.status }};
-                    return await resp.json();
-                }}
-            """)
-        except Exception:
+        data = await _evaluate_api(page, f"{api}/bets?status=settled&startDate={start}&endDate={end}")
+        if isinstance(data, dict) and "__error" in data:
             data = None
 
         for b in _bets_list(data):
@@ -476,18 +580,8 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"unknown_outcome:{outcome}")
 
     # Fetch markets
-    try:
-        markets = await page.evaluate(f"""
-            async () => {{
-                const resp = await fetch("{api}/matchups/{matchup_id}/markets/straight", {{credentials: "include"}});
-                if (!resp.ok) return {{ __error: resp.status }};
-                return await resp.json();
-            }}
-        """)
-    except Exception:
-        markets = None
-
-    if not markets or "__error" in (markets if isinstance(markets, dict) else {}):
+    markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
+    if not markets or (isinstance(markets, dict) and "__error" in markets):
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
 
     # Find matching market
@@ -530,22 +624,9 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         "originTag": "ps:bsd",
     }
 
-    try:
-        body_json = json.dumps(body)
-        result = await page.evaluate("""
-            async ([url, bodyStr]) => {
-                const resp = await fetch(url, {
-                    method: "POST", credentials: "include",
-                    headers: {"Content-Type": "application/json"},
-                    body: bodyStr,
-                });
-                const data = await resp.json();
-                if (!resp.ok) return { __error: resp.status, ...data };
-                return data;
-            }
-        """, [f"{api}/bets/straight", body_json])
-    except Exception as e:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"api_call_failed:{e}")
+    result = await _post_api(page, f"{api}/bets/straight", body)
+    if result is None:
+        return PlacementResult(status="failed", bet_id=bet.bet_id, reason="api_call_failed")
 
     if not result or "__error" in result:
         detail = (result or {}).get("detail", (result or {}).get("title", str((result or {}).get("__error", ""))))
@@ -583,17 +664,7 @@ async def _check_live_price(page: "Page", bet, intel: dict | None) -> float | No
     if not matchup_id or not fair_odds:
         return None
 
-    try:
-        markets = await page.evaluate(f"""
-            async () => {{
-                const resp = await fetch("{api}/matchups/{matchup_id}/markets/straight", {{credentials: "include"}});
-                if (!resp.ok) return null;
-                return await resp.json();
-            }}
-        """)
-    except Exception:
-        return None
-
+    markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
     if not markets or not isinstance(markets, list):
         return None
 
@@ -680,10 +751,10 @@ async def _navigate_to_event(page: "Page", bet, intel: dict | None) -> bool:
 
 
 strategy = Strategy(
+    check_login=_check_login,
+    sync_balance=_sync_balance,
     sync_history=_sync_history,
     place_bet=_place_bet,
     check_live_price=_check_live_price,
-    scan=_scan,
-    settle_all=_settle_all,
     navigate_to_event=_navigate_to_event,
 )
