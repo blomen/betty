@@ -640,7 +640,7 @@ export default function PlayPage() {
       {/* Placement toast */}
       {placementToast && (
         <div className="flex items-center gap-3 px-3 py-2 border-b bg-green-900/30 border-green-700/50 animate-pulse">
-          <span className="text-xs text-green-400 font-semibold">{placementToast.count}/{placementToast.cap}</span>
+          <span className="text-xs text-green-400 font-semibold">PLACED</span>
           <span className="text-xs text-zinc-200 truncate">
             {placementToast.bet?.display_home} v {placementToast.bet?.display_away}
           </span>
