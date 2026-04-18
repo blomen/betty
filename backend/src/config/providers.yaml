@@ -848,6 +848,30 @@ providers:
       - mma
       - boxing
 
+  smarkets:
+    id: smarkets
+    name: Smarkets
+    domain: smarkets.com
+    retriever_type: smarkets
+    base_url: https://api.smarkets.com/v3
+    currency: GBP
+    exchange_rate_sek: 13.3   # rough 2026-04 FX
+    params:
+      min_trades_24h: 1
+      # Smarkets geoblocks datacenter IPs (incl. Hetzner DE) with a 403
+      # security check. Set SMARKETS_PROXY_URL to a SOCKS5 URL (Bahnhof
+      # residential gost) to route through. Empty = direct (will 403).
+      proxy_url: ${SMARKETS_PROXY_URL}
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)
 # ============================================================================
@@ -917,10 +941,12 @@ extraction_scheduling:
   signal_international:
     # International signal-only providers — read odds for consensus, no bet placement
     # Cloudbet: REST feed, affiliate API key. Marathon: HTML scraping.
+    # Smarkets: betting exchange public JSON API (requires SOCKS5 proxy — geoblocked direct).
     # Stake.com removed — Cloudflare blocks datacenter IPs, needs residential proxy.
     providers:
       - cloudbet
       - marathon
+      - smarkets
     interval_minutes: 5
     grouped: false
 
@@ -977,6 +1003,8 @@ active:
   # - stake    # Cloudflare blocks datacenter IPs — needs residential proxy to work
   - cloudbet
   - marathon
+  # Betting exchange (signal-only; user IP-banned, SOCKS5 proxy required)
+  - smarkets
   # Prediction-market exchange (playable + consensus input)
   - kalshi
 
