@@ -27,6 +27,7 @@ _BALANCE_KEYWORDS = (
     "wallet/balance",
     "payment-stats",
     "/cashier/balance",
+    "clob.polymarket.com/balance-allowance",  # Polymarket CLOB SDK balance
 )
 _HISTORY_KEYWORDS = (
     "bethistory",
@@ -35,6 +36,7 @@ _HISTORY_KEYWORDS = (
     "my-bets",
     "widgetbethistory",
     "coupon-history",
+    "data-api.polymarket.com/trades",  # Polymarket trade history
 )
 _BET_PLACEMENT_KEYWORDS = (
     "placewidget",
@@ -433,6 +435,9 @@ class MirrorBrowser:
                 return
             balance = self._extract_balance(body)
             if balance is not None and balance >= 0:
+                # Polymarket balance-allowance returns USDC in raw wei (6 decimals)
+                if provider_id == "polymarket" and balance > 1_000_000:
+                    balance = balance / 1e6
                 if provider_id not in self.provider_data:
                     self.provider_data[provider_id] = {}
                 self.provider_data[provider_id]["logged_in"] = True
