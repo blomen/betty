@@ -106,6 +106,8 @@ export default function PlayPage() {
   // own card using the cluster's opp list (differing only in balance / cap / active state).
   const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>({})
   const [arbLoading, setArbLoading] = useState(false)
+  // Sub-tab switcher within the Play page
+  const [subTab, setSubTab] = useState<'arb' | 'value'>('arb')
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -706,10 +708,34 @@ export default function PlayPage() {
         </div>
       )}
 
+      {/* Sub-tab bar */}
+      <div className="flex items-center gap-1 px-3 py-1 bg-zinc-900/60 border-b border-zinc-800">
+        <button
+          onClick={() => setSubTab('arb')}
+          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            subTab === 'arb'
+              ? 'bg-purple-700/40 text-purple-200 border border-purple-600/50'
+              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
+          }`}
+        >
+          Arbitrage
+        </button>
+        <button
+          onClick={() => setSubTab('value')}
+          className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            subTab === 'value'
+              ? 'bg-amber-700/40 text-amber-200 border border-amber-600/50'
+              : 'text-zinc-500 hover:text-zinc-200 border border-transparent'
+          }`}
+        >
+          Value Bets
+        </button>
+      </div>
+
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
-        {(() => {
+        {subTab === 'arb' && (() => {
           // Group ALL known soft providers by cluster — includes every sibling from
           // SOFT_CLUSTER_MEMBERS plus any standalone provider that appears in
           // providerBalances or providerBonuses. Done/drained siblings stay visible.
@@ -980,6 +1006,7 @@ export default function PlayPage() {
         })()}
 
         {/* SECTION B — Value bets (unlimited providers only) */}
+        {subTab === 'value' && <>
         {clusterIds.length > 0 && (
           <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
             <h3 className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Value Bets</h3>
@@ -1150,6 +1177,7 @@ export default function PlayPage() {
             </div>
           )
         })}
+        </>}
 
       </div>
 
