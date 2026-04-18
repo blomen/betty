@@ -142,21 +142,24 @@ def parse_market_prices(raw: dict) -> dict[str, float]:
 
 
 # Market-type name (Smarkets `market_type.name`) -> our canonical market
-# label. Only 1x2/moneyline/spread/total are tracked per ALLOWED_MARKETS.
+# label.
+#
+# NOTE: Smarkets is signal-only (we're IP-banned from placing), and
+# spread/total markets emit one contract per line — the "keep first line
+# only" collapse produces misleading data. Until that's fixed as a
+# follow-up (review issue I3), we only surface 1x2 / moneyline from
+# Smarkets and skip handicap / over_under entirely.
 _MARKET_TYPE_TO_LABEL: dict[str, str] = {
     "WINNER_3_WAY": "1x2",
     "WINNER_2_WAY": "moneyline",
     "MATCH_WINNER": "moneyline",
-    "ASIAN_HANDICAP": "spread",
-    "HANDICAP_3_WAY": "spread",
-    "HANDICAP": "spread",
-    "OVER_UNDER": "total",
 }
 
 
 def classify_market_type(name: str, market_type: Any) -> str | None:
-    """Return the canonical market label ('1x2' / 'moneyline' / 'spread' /
-    'total') for a Smarkets market, or None to skip it.
+    """Return the canonical market label ('1x2' / 'moneyline') for a Smarkets
+    market, or None to skip it. Spread / total markets are intentionally
+    skipped on Smarkets (see module-level note).
 
     `market_type` may be a dict `{"name": "WINNER_3_WAY"}` (live API) or a
     bare string (defensive — older endpoints).
@@ -169,15 +172,46 @@ def classify_market_type(name: str, market_type: Any) -> str | None:
     if mt_name and mt_name in _MARKET_TYPE_TO_LABEL:
         return _MARKET_TYPE_TO_LABEL[mt_name]
 
-    # Fallback on human name heuristics (matches e.g. totals without
-    # a recognisable market_type slug).
+    # Fallback on human name heuristics — only for winner markets. We do
+    # NOT fall back to handicap / totals here (see module note).
     n = (name or "").lower()
     if "winner" in n or "match result" in n or "full-time result" in n:
         return "1x2" if "3-way" in n or "draw" in n else "moneyline"
-    if "handicap" in n or "spread" in n:
-        return "spread"
-    if "over/under" in n or "over / under" in n or "o/u" in n:
-        return "total"
+    return None
+
+
+def extract_home_away_from_event_name(name: str) -> tuple[str, str]:
+    """Split a Smarkets event `name` (e.g. "Nottm Forest vs Burnley") into
+    (home, away). Smarkets uses "home vs away" ordering consistently.
+
+    Returns ``("", "")`` if no separator is found.
+    """
+    for sep in (" vs ", " v. ", " v "):
+        if sep in name:
+            left, right = name.split(sep, 1)
+            return left.strip(), right.strip()
+    return "", ""
+
+
+def _contract_side(contract: dict) -> str | None:
+    """Map a Smarkets contract dict to our canonical outcome name
+    (``"home"`` / ``"draw"`` / ``"away"``), or None if not one of those.
+
+    Prefers ``contract_type.name`` (authoritative: HOME/DRAW/AWAY), falling
+    back to the ``slug`` field. Everything else (OVER/UNDER, YES/NO for
+    non-binary markets) returns None.
+    """
+    ct = contract.get("contract_type") or {}
+    ct_name = (ct.get("name") or "").upper().strip() if isinstance(ct, dict) else ""
+    if ct_name == "HOME":
+        return "home"
+    if ct_name == "DRAW":
+        return "draw"
+    if ct_name == "AWAY":
+        return "away"
+    slug = (contract.get("slug") or "").lower().strip()
+    if slug in ("home", "draw", "away"):
+        return slug
     return None
 
 
@@ -344,6 +378,19 @@ class SmarketsRetriever(Retriever):
         if not eid:
             return None
 
+        # Populate home/away from the event name ("Nottm Forest vs Burnley").
+        ev_name = ev_raw.get("name", "") or ""
+        home_team, away_team = extract_home_away_from_event_name(ev_name)
+        if not home_team or not away_team:
+            # Without sides we can't label outcomes; signal-only contribution
+            # would be zero anyway.
+            logger.debug(
+                "[smarkets] skip event %s: unresolvable home/away from name=%r",
+                eid,
+                ev_name,
+            )
+            return None
+
         mkts_body = await self._fetch_json(
             session, f"{self.base_url}/events/{eid}/markets/"
         )
@@ -358,16 +405,17 @@ class SmarketsRetriever(Retriever):
             )
             if label is None:
                 continue
-            # For spread/total, keeping every line would explode the event
-            # into hundreds of rows. Keep only the first occurrence per
-            # label (most representative; Smarkets orders them roughly by
-            # display_order).
+            # Keep only the first occurrence per label (most representative;
+            # Smarkets orders by display_order).
             if any(k["type"] == label for k in kept):
                 continue
             mid = m.get("id")
             if not mid:
                 continue
-            prices_body, quotes_body = await asyncio.gather(
+            contracts_body, prices_body, quotes_body = await asyncio.gather(
+                self._fetch_json(
+                    session, f"{self.base_url}/markets/{mid}/contracts/"
+                ),
                 self._fetch_json(
                     session,
                     f"{self.base_url}/markets/{mid}/last_executed_prices/",
@@ -376,6 +424,21 @@ class SmarketsRetriever(Retriever):
                     session, f"{self.base_url}/markets/{mid}/quotes/"
                 ),
             )
+            contracts = (contracts_body or {}).get("contracts") or []
+            if not contracts:
+                continue
+
+            # contract_id (str) → canonical side ("home"/"draw"/"away")
+            side_by_cid: dict[str, str] = {}
+            for c in contracts:
+                cid = c.get("id")
+                if cid is None:
+                    continue
+                side = _contract_side(c)
+                if side is None:
+                    continue
+                side_by_cid[str(cid)] = side
+
             odds_by_cid = parse_market_prices(
                 {
                     "last_executed_prices": (prices_body or {}).get(
@@ -386,10 +449,22 @@ class SmarketsRetriever(Retriever):
             )
             if not odds_by_cid:
                 continue
-            outcomes = [
-                {"name": cid, "odds": odds}
-                for cid, odds in odds_by_cid.items()
-            ]
+
+            outcomes: list[dict] = []
+            for cid, odds in odds_by_cid.items():
+                side = side_by_cid.get(str(cid))
+                if side is None:
+                    # Unlabeled contract for a winner market = data issue; skip.
+                    continue
+                outcomes.append({"name": side, "odds": odds})
+
+            # Sanity: enforce expected arity per market label.
+            sides = {o["name"] for o in outcomes}
+            if label == "1x2" and sides != {"home", "draw", "away"}:
+                continue
+            if label == "moneyline" and sides != {"home", "away"}:
+                continue
+
             kept.append({"type": label, "outcomes": outcomes})
 
         if not kept:
@@ -398,12 +473,14 @@ class SmarketsRetriever(Retriever):
         full_slug = ev_raw.get("full_slug") or ""
         return StandardEvent(
             id=f"smarkets_{eid}",
-            name=ev_raw.get("name", ""),
+            name=ev_name,
             sport=sport,
             markets=kept,
             provider="smarkets",
             url=f"https://smarkets.com{full_slug}" if full_slug else "",
             start_time=ev_raw.get("start_datetime") or "",
+            home_team=home_team,
+            away_team=away_team,
         )
 
     def parse(self, data: Any, sport: str) -> list[StandardEvent]:
