@@ -6,7 +6,7 @@ import { displayTeamName } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
 import { ProviderName } from '@/components/ProviderName';
 import { TabIcon, TAB_COLORS } from '@/components/TabBar';
-import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
+import type { Bet, BankrollStats } from '@/types';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
@@ -390,7 +390,6 @@ export function BetsPage() {
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
   // Sort & search (for history table)
   const [sort, setSort] = usePersistedState<{ key: SortKey; dir: SortDir } | null>('bbq_bets_sort', null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -407,7 +406,6 @@ export function BetsPage() {
   const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
   // Collapsed states
-  const [wageringCollapsed, setWageringCollapsed] = usePersistedState('bbq_bets_wageringCollapsed', true);
   const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', true);
 
   const fetchBets = useCallback(async () => {
@@ -431,20 +429,7 @@ export function BetsPage() {
     }
   }, []);
 
-  const fetchBonuses = useCallback(async () => {
-    try {
-      const status = await api.getBankrollStatus();
-      const active = Object.entries(status.bonus_progress).filter(
-        ([, b]) => b.status !== 'available' && b.status !== 'completed'
-          && b.wagering_requirement > 0
-      );
-      setActiveBonuses(active);
-    } catch {
-      // Silently ignore
-    }
-  }, []);
-
-  useEffect(() => { fetchBets(); fetchStats(); fetchBonuses(); }, [fetchBets, fetchStats, fetchBonuses]);
+  useEffect(() => { fetchBets(); fetchStats(); }, [fetchBets, fetchStats]);
 
   // ── History (settled bets only) ─────────────────────────────────
 
@@ -652,109 +637,6 @@ export function BetsPage() {
           <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
       </div>
-
-      {/* Wagering Progress */}
-      {activeBonuses.length > 0 && (<>
-        <button
-          className="flex items-center gap-2 w-full text-left cursor-pointer group"
-          onClick={() => setWageringCollapsed(c => !c)}
-        >
-          <span className={`text-[10px] text-muted2 transition-transform ${wageringCollapsed ? '' : 'rotate-90'}`}>▶</span>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
-            Wagering Progress <span className="text-muted2">{activeBonuses.length}</span>
-          </h3>
-        </button>
-        {!wageringCollapsed && (
-        <div className="border-l-2 border-tabBets">
-          <table className="sq">
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Type</th>
-                <th className="text-right">Progress</th>
-                <th className="text-right">Remaining</th>
-                <th className="text-right">Kr/wk</th>
-                <th className="text-right">Deadline</th>
-                <th className="text-right">ETA</th>
-              </tr>
-            </thead>
-            <tbody>
-              {activeBonuses
-                .sort((a, b) => {
-                  const order = { in_progress: 0, trigger_needed: 1, freebet_available: 2, claimed: 3 };
-                  return (order[a[1].status as keyof typeof order] ?? 9) - (order[b[1].status as keyof typeof order] ?? 9);
-                })
-                .map(([providerId, bonus]) => {
-                const pct = Math.min(100, bonus.progress_pct);
-                const days = bonus.days_remaining;
-                const urgent = days !== null && days <= 10;
-                const warning = days !== null && days > 10 && days <= 30;
-                const remaining = bonus.wagering_requirement - bonus.wagered_amount;
-                const isClaimed = bonus.status === 'claimed';
-                const hasProgress = !isClaimed && (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
-                const estDays = bonus.prognosis?.est_weeks != null ? Math.round(bonus.prognosis.est_weeks * 7) : null;
-                const onTrack = estDays !== null && days !== null && estDays <= days;
-                const requiredPerWk = bonus.prognosis?.required_weekly_wagering ?? null;
-
-                return (
-                  <tr key={providerId} className={isClaimed ? 'opacity-60' : ''}>
-                    <td className="text-text text-sm font-medium"><ProviderName name={providerId} /></td>
-                    <td>
-                      <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
-                        isClaimed ? 'bg-muted/15 text-muted' :
-                        bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
-                        'bg-tabBets/15 text-tabBets'
-                      }`}>
-                        {isClaimed ? 'NEEDED'
-                          : bonus.bonus_type === 'freebet' ? 'FREEBET'
-                          : bonus.status === 'trigger_needed' ? 'TRIGGER'
-                          : 'WAGER'}
-                      </span>
-                    </td>
-                    <td className="text-right">
-                      {hasProgress ? (
-                        <div className="flex items-center gap-2 justify-end">
-                          <div className="w-16 h-1.5 bg-bg overflow-hidden">
-                            <div
-                              className={`h-full ${urgent ? 'bg-error' : warning ? 'bg-amber-400' : 'bg-tabBets'}`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <span className="text-[10px] text-muted2">{pct.toFixed(0)}%</span>
-                        </div>
-                      ) : <span className="text-muted text-sm">-</span>}
-                    </td>
-                    <td className="text-right text-sm text-text">
-                      {isClaimed ? `${bonus.wagering_requirement.toFixed(0)} kr`
-                        : hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
-                    </td>
-                    <td className="text-right">
-                      {requiredPerWk != null && requiredPerWk > 0 ? (
-                        <span className="text-sm text-text">{requiredPerWk.toFixed(0)}</span>
-                      ) : <span className="text-muted text-sm">-</span>}
-                    </td>
-                    <td className="text-right">
-                      {days !== null ? (
-                        <span className={`text-sm ${urgent ? 'text-error font-medium' : warning ? 'text-amber-400' : 'text-muted'}`}>
-                          {days}d
-                        </span>
-                      ) : <span className="text-muted text-sm">-</span>}
-                    </td>
-                    <td className="text-right">
-                      {estDays !== null ? (
-                        <span className={`text-sm ${onTrack ? 'text-success' : 'text-error'}`}>
-                          ~{estDays}d
-                        </span>
-                      ) : <span className="text-muted text-sm">-</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        )}
-      </>)}
 
       {/* Bet History */}
       <button

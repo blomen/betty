@@ -268,8 +268,6 @@ providers:
     bonus:
       type: freebet
       amount: 1000
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
 
@@ -286,8 +284,6 @@ providers:
       amount: 600
       trigger_multiplier: 6        # Wager-first: wager deposit×6 at 1.80+ → bonus as cash
       trigger_odds: 1.80
-      wagering_multiplier: 0       # No wager after trigger
-      min_odds: 1.80
       trigger_mode: cumulative
 
 
@@ -304,9 +300,6 @@ providers:
       amount: 1000
       trigger_multiplier: 20       # Wager-first: wager deposit×20 at 1.80+ → bonus as cash
       trigger_odds: 1.80
-      deadline_days: 90
-      wagering_multiplier: 0       # No wager after trigger
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
@@ -321,8 +314,6 @@ providers:
       amount: 500
       trigger_multiplier: 10       # Wager-first: wager deposit×10 at 1.80+ → bonus as cash
       trigger_odds: 1.80
-      wagering_multiplier: 0       # No wager after trigger
-      min_odds: 1.80
       trigger_mode: cumulative
 
 
@@ -336,8 +327,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
@@ -350,8 +339,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
@@ -364,8 +351,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12      # 12× bonus only, instant credit on deposit
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
@@ -378,9 +363,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12      # 12× bonus only, instant credit on deposit
-      min_odds: 1.80
-      deadline_days: 90            # 90 days (not default 60)
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -398,8 +380,6 @@ providers:
       amount: 1000
       trigger_multiplier: 1        # 1× deposit at odds 1.50 to unlock
       trigger_odds: 1.50
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
-      min_odds: 1.80
       trigger_mode: cumulative
 
   campobet:
@@ -413,8 +393,6 @@ providers:
       amount: 500
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
-      min_odds: 1.80
       trigger_mode: cumulative
 
   swiper:
@@ -428,8 +406,6 @@ providers:
       amount: 1000
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
-      min_odds: 1.80
       trigger_mode: cumulative
 
   lodur:
@@ -441,7 +417,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 6       # 6× bonus only, no min odds specified
       trigger_mode: cumulative
 
   dbet:
@@ -453,8 +428,6 @@ providers:
     bonus:
       type: freebet
       amount: 500
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
   quickcasino:
@@ -468,8 +441,6 @@ providers:
       amount: 500
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -492,8 +463,6 @@ providers:
     bonus:
       type: freebet
       amount: 500
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
   888sport:
@@ -509,8 +478,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 14      # 14× bonus only (non-sticky). Code SPORTBONUS required.
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -529,8 +496,6 @@ providers:
     bonus:
       type: freebet
       amount: 250
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
   betsafe:
@@ -542,8 +507,6 @@ providers:
     bonus:
       type: freebet
       amount: 100
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
   nordicbet:
@@ -555,8 +518,6 @@ providers:
     bonus:
       type: freebet
       amount: 100
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
 
   spelklubben:
@@ -569,8 +530,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus. First bet per match only.
-      min_odds: 1.90
       trigger_mode: cumulative
 
   bethard:
@@ -583,8 +542,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus
-      min_odds: 1.90
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -610,8 +567,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus. Max win 10000kr.
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -639,9 +594,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 600
-      wagering_multiplier: 16      # (dep+bonus)×8 = bonus×16 when dep=bonus
-      min_odds: 1.80
-      deadline_days: 90
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -658,8 +610,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus. Max 250kr/bet.
-      min_odds: 1.80
       trigger_mode: cumulative
     max_leagues: 100
     concurrent_leagues: 8
@@ -682,8 +632,6 @@ providers:
     bonus:
       type: freebet                    # 100% matched FREE BET, not deposit match
       amount: 500                      # Winnings from freebet are wagering-free
-      wagering_multiplier: 1
-      min_odds: 1.80
       trigger_mode: single
     max_leagues: 100
     concurrent_leagues: 8
@@ -705,9 +653,6 @@ providers:
     bonus:
       type: freebet
       amount: 100
-      wagering_multiplier: 1
-      min_odds: 1.80
-      deadline_days: 7             # Free bet must be used within 7 days
       trigger_mode: single
     max_leagues: 100
     concurrent_leagues: 8
@@ -745,8 +690,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 800
-      wagering_multiplier: 20      # (dep+bonus)×10 = bonus×20 when dep=bonus. Max withdrawal 10×deposit.
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -774,9 +717,6 @@ providers:
       amount: 1000
       trigger_multiplier: 5       # Trigger: wager deposit×5 at 1.70+ to unlock bonus (5 stages × 20%)
       trigger_odds: 1.70
-      deadline_days: 14           # 14 days to complete wager
-      wagering_multiplier: 1      # Wager: each stage wagered 1× at 1.70+ to withdraw
-      min_odds: 1.70
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -804,8 +744,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 6       # 6× bonus only (deposit locked but no wagering). Code: ODDS
-      min_odds: 1.50               # 1.50 NOT 1.80 — verified from coolbet.com/sv/valkomstbonus
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
@@ -835,8 +773,6 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 14      # (dep+bonus)×7 = bonus×14 when dep=bonus. Max 1000kr/slip.
-      min_odds: 1.80
       trigger_mode: cumulative
 
   # --- International signal-only providers ---
