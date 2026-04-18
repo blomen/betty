@@ -1,7 +1,14 @@
 """Tests for Kalshi market parser."""
+import json
+from pathlib import Path
+
 import pytest
 
-from src.providers.kalshi import parse_event, series_to_sport
+from src.providers.kalshi import (
+    KalshiRetriever,
+    parse_event,
+    series_to_sport,
+)
 
 
 class TestSeriesToSport:
@@ -125,3 +132,27 @@ class TestParseEvent:
         assert len(mkt["outcomes"]) == 3
         names = {o["name"] for o in mkt["outcomes"]}
         assert names == {"home", "draw", "away"}
+
+
+class TestKalshiRetriever:
+    def test_parse_fixture_produces_events(self):
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "kalshi" / "events_sports.json"
+        )
+        raw = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        config = {"id": "kalshi", "params": {"min_volume_usd": 100}}
+        retriever = KalshiRetriever(config)
+        events = retriever.parse(raw, sport="basketball")
+
+        # Fixture is captured with &series_ticker=KXNBAGAME, so at least one
+        # NBA event should parse. If this is zero, the parser or fixture is wrong.
+        assert len(events) > 0, "Expected at least one basketball event from NBA fixture"
+        for e in events:
+            assert e.provider == "kalshi"
+            assert e.sport == "basketball"
+            assert e.markets and e.markets[0]["type"] in ("moneyline", "1x2")
+            for outcome in e.markets[0]["outcomes"]:
+                assert outcome["odds"] > 1.0
+                assert "provider_meta" in outcome
+                assert "ticker" in outcome["provider_meta"]

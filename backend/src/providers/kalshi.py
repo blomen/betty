@@ -1,14 +1,16 @@
 """Kalshi prediction-market extractor.
 
 Pulls binary YES/NO contracts from Kalshi's public REST API and converts
-them to StandardEvent moneyline / 1x2 / spread / total markets. Extraction
-is unauthenticated — only placement (in the mirror workflow) needs API keys.
+them to StandardEvent moneyline / 1x2 markets. Extraction is
+unauthenticated — only placement (in the mirror workflow) needs API keys.
 """
 from __future__ import annotations
 
 import logging
 
-from ..core import StandardEvent
+import aiohttp
+
+from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
 
@@ -193,3 +195,81 @@ def parse_event(
         home_team=home,
         away_team=away,
     )
+
+
+class KalshiRetriever(Retriever):
+    """Kalshi event-level retriever. Unauthenticated — market data is public.
+
+    Paginates `/events?with_nested_markets=true&status=open` until the API
+    stops returning a `cursor`. Filters by sport post-fetch.
+    """
+
+    DEFAULT_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+    DEFAULT_PAGE_LIMIT = 200
+
+    def __init__(self, config: dict, circuit_breaker=None, rate_limit_config=None):
+        super().__init__(config)
+        self.base_url = config.get("base_url", self.DEFAULT_BASE_URL)
+        self.min_volume_usd = float(
+            config.get("params", {}).get("min_volume_usd", 100)
+        )
+        from ..constants import KALSHI_FEE_RATE
+
+        self.fee_rate = float(
+            config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE)
+        )
+        self._circuit_breaker = circuit_breaker
+
+    def _get_sport_url(self, sport: str) -> str:
+        # Kalshi's /events endpoint is sport-agnostic; we filter in parse().
+        return (
+            f"{self.base_url}/events?status=open&with_nested_markets=true"
+            f"&limit={self.DEFAULT_PAGE_LIMIT}"
+        )
+
+    async def extract(
+        self, sport: str, limit: int = 500, **kwargs
+    ) -> list[StandardEvent]:
+        """Fetch all open Kalshi events with pagination, filter to sport in parse()."""
+        all_events: list[dict] = []
+        cursor: str | None = None
+        url = self._get_sport_url(sport)
+
+        async with aiohttp.ClientSession() as session:
+            for _ in range(50):  # hard cap at 50 pages × 200 = 10k events
+                page_url = url + (f"&cursor={cursor}" if cursor else "")
+                try:
+                    async with session.get(
+                        page_url, timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        resp.raise_for_status()
+                        body = await resp.json()
+                except Exception as e:
+                    logger.warning(f"[kalshi] fetch failed at cursor={cursor}: {e}")
+                    break
+                events = body.get("events", [])
+                all_events.extend(events)
+                cursor = body.get("cursor") or None
+                if not cursor or not events:
+                    break
+
+        logger.info(f"[kalshi] fetched {len(all_events)} raw events across pages")
+        parsed = self.parse({"events": all_events}, sport)
+        if limit and len(parsed) > limit:
+            parsed = parsed[:limit]
+        return parsed
+
+    def parse(self, data: dict, sport: str) -> list[StandardEvent]:
+        out: list[StandardEvent] = []
+        for raw in data.get("events", []):
+            ev = parse_event(
+                raw,
+                min_volume_usd=self.min_volume_usd,
+                fee_rate=self.fee_rate,
+            )
+            if ev is None:
+                continue
+            if ev.sport != sport:
+                continue
+            out.append(ev)
+        return out
