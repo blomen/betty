@@ -80,6 +80,7 @@ export default function PlayPage() {
   const [confirmedSettlements, setConfirmedSettlements] = useState<any[]>([])
   const [settleWaiting, setSettleWaiting] = useState(false)
   const [activeProviders, setActiveProviders] = useState<Set<string>>(new Set())
+  const [loggedInProviders, setLoggedInProviders] = useState<Set<string>>(new Set())
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
@@ -98,13 +99,10 @@ export default function PlayPage() {
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
   const [arbGroupId, setArbGroupId] = useState<string | null>(null)
   // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
-  // Siblings share odds, so one fetch per cluster suffices. Counter pool auto-excludes
-  // same-cluster providers at fetch time.
+  // Siblings share odds, so one fetch per cluster suffices. Each sibling renders its
+  // own card using the cluster's opp list (differing only in balance / cap / active state).
   const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>({})
   const [arbLoading, setArbLoading] = useState(false)
-  // Raw single-leg edges (value opps vs Pinnacle fair), includes negative edge
-  const [rawEdges, setRawEdges] = useState<any[]>([])
-  const [rawEdgesLoading, setRawEdgesLoading] = useState(false)
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -215,38 +213,31 @@ export default function PlayPage() {
     }
   }, [providerBalances])
 
-  const loadRawEdges = useCallback(async () => {
-    try {
-      setRawEdgesLoading(true)
-      const res = await api.getRawEdges(20)
-      const opps = ((res?.opportunities ?? []) as any[])
-        .sort((a, b) => (b.edge_pct ?? -999) - (a.edge_pct ?? -999))
-      setRawEdges(opps)
-    } catch {
-      /* swallow */
-    } finally {
-      setRawEdgesLoading(false)
-    }
-  }, [])
-
   useEffect(() => {
     loadArbOpps()
     const id = setInterval(loadArbOpps, 30_000)
     return () => clearInterval(id)
   }, [loadArbOpps])
 
-  useEffect(() => {
-    loadRawEdges()
-    const id = setInterval(loadRawEdges, 30_000)
-    return () => clearInterval(id)
-  }, [loadRawEdges])
-
   // SSE event handler
   useEffect(() => {
     if (!mirror.lastEvent) return
     const { type, data } = mirror.lastEvent
     if (type === 'login_waiting') setLoopStatus(`Waiting for login on ${data.provider_id}... (${Math.round(data.elapsed)}/${data.timeout}s)`)
-    if (type === 'login_detected') setLoopStatus(`Logged in to ${data.provider_id}`)
+    if (type === 'login_detected') {
+      setLoopStatus(`Logged in to ${data.provider_id}`)
+      setLoggedInProviders(prev => new Set(prev).add(data.provider_id))
+    }
+    if (type === 'balance_intercepted' && data.provider_id && data.balance != null && data.balance >= 0) {
+      setLoggedInProviders(prev => new Set(prev).add(data.provider_id))
+    }
+    if (type === 'login_required') {
+      setLoggedInProviders(prev => {
+        const next = new Set(prev)
+        next.delete(data.provider_id)
+        return next
+      })
+    }
     if (type === 'settling_pending') setLoopStatus(`Scanning pending on ${data.provider_id}...`)
     if (type === 'settling_done') {
       if (data.settlements?.length > 0) {
@@ -590,7 +581,7 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Dutch arb card */}
+      {/* Arb card */}
       {currentBetReady && arbCounterPlan && (
         <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
           <div className="flex items-center gap-2 mb-1.5">
@@ -722,45 +713,17 @@ export default function PlayPage() {
                     const members = softByCluster[cluster]
                     const funded = members.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
                     const drained = members.filter(pid => (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK)
-                    // Skip clusters with nothing funded (they still won't match anything,
-                    // and showing empty drained-only sections is just noise).
                     if (funded.length === 0) return null
                     const opps = oppsByCluster[cluster] ?? []
+                    const clusterMemberSet = new Set(members)
+
                     return (
                       <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
-                        {/* Cluster header — sibling activation buttons inline */}
-                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/30 flex-wrap">
+                        {/* Cluster header — label + drained pills + shared opp count */}
+                        <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900/40 border-b border-zinc-800/50 flex-wrap">
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
-                          {funded.map(pid => {
-                            const bal = providerBalances[pid] ?? 0
-                            const pending = pendingByProvider[pid]?.length ?? 0
-                            const placed = placedToday[pid] ?? 0
-                            const isSkinActive = activeProviders.has(pid)
-                            const atCap = placed >= 10
-                            return (
-                              <button
-                                key={pid}
-                                onClick={() => startSkin(pid)}
-                                className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                  isSkinActive
-                                    ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
-                                    : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                                }`}
-                              >
-                                <span className="uppercase font-semibold">{pid}</span>
-                                <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
-                                <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>
-                                {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
-                                {stakeCaps[pid] && (
-                                  <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
-                                    ≤{Math.round(stakeCaps[pid])}
-                                  </span>
-                                )}
-                              </button>
-                            )
-                          })}
                           {drained.map(pid => (
                             <span
                               key={pid}
@@ -771,69 +734,109 @@ export default function PlayPage() {
                             </span>
                           ))}
                           <span className="text-[10px] text-zinc-600 ml-auto">
-                            {opps.length} arb{opps.length === 1 ? '' : 's'}
+                            {opps.length} arb{opps.length === 1 ? '' : 's'} · siblings share odds
                           </span>
                         </div>
 
-                        {/* Per-cluster arb table */}
-                        {opps.length === 0 ? (
-                          <div className="px-6 py-2 text-[10px] text-zinc-600">
-                            {arbLoading ? 'Scanning…' : 'No arbs for this cluster right now.'}
-                          </div>
-                        ) : (
-                          <table className="w-full text-xs">
-                            <tbody>
-                              {opps.map((opp: any, i: number) => {
-                                const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
-                                const profitPct = opp.guaranteed_profit_pct ?? 0
-                                const eventLabel = opp.display_home && opp.display_away
-                                  ? `${opp.display_home} v ${opp.display_away}`
-                                  : opp.event_id
-                                // Find anchor leg: whichever leg is a member of this cluster
-                                const clusterMemberSet = new Set(members)
-                                const anchorLeg = (opp.legs ?? []).find((l: any) =>
-                                  clusterMemberSet.has(l.provider ?? l.provider_id ?? '')
-                                ) ?? {}
-                                const anchorOutcome = anchorLeg.outcome
-                                  ? (anchorLeg.point != null ? `${anchorLeg.outcome} ${anchorLeg.point}` : anchorLeg.outcome)
-                                  : '—'
-                                const counters = (counterLegs as any[]).filter((l: any) => {
-                                  const lp = l.provider ?? l.provider_id ?? ''
-                                  return !clusterMemberSet.has(lp)
-                                })
-                                return (
-                                  <tr key={`arb-${cluster}-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
-                                    <td className={`pl-6 pr-2 py-1 font-mono font-semibold text-right w-[60px] ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                      {profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%
-                                    </td>
-                                    <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
-                                    <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
-                                    <td className="px-2 py-1 text-[11px]">
-                                      <span className="text-amber-400">{anchorOutcome}</span>{' '}
-                                      <span className="font-mono text-zinc-200">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
-                                    </td>
-                                    <td className="px-2 py-1 text-[11px]">
-                                      <div className="flex flex-col gap-0.5">
-                                        {counters.map((leg: any, li: number) => {
-                                          const legOutcome = leg.outcome
-                                            ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
-                                            : '—'
-                                          return (
-                                            <div key={li} className="flex items-center gap-1">
-                                              <span className="text-amber-400/80">{legOutcome}</span>
-                                              <span className="text-zinc-500 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
-                                              <span className="font-mono text-zinc-300">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                        {/* One card per funded sibling — same opps, different balance/cap/active context */}
+                        {funded.map(pid => {
+                          const bal = providerBalances[pid] ?? 0
+                          const pending = pendingByProvider[pid]?.length ?? 0
+                          const placed = placedToday[pid] ?? 0
+                          const isSkinActive = activeProviders.has(pid)
+                          const isLoggedIn = loggedInProviders.has(pid)
+                          const atCap = placed >= 10
+                          return (
+                            <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
+                              {/* Provider header — activate button + state */}
+                              <div className="flex items-center gap-2 px-6 py-1.5 bg-zinc-900/20">
+                                <button
+                                  onClick={() => startSkin(pid)}
+                                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                                    isSkinActive
+                                      ? (isLoggedIn
+                                          ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                          : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
+                                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                  }`}
+                                >
+                                  <span className="uppercase font-semibold">{pid}</span>
+                                  <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
+                                </button>
+                                <span className={`text-[10px] ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                                  {placed}/10
+                                </span>
+                                {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
+                                {stakeCaps[pid] && (
+                                  <span className="px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
+                                    ≤{Math.round(stakeCaps[pid])}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Arb table — same opps for all siblings, anchor shown as THIS provider */}
+                              {opps.length === 0 ? (
+                                <div className="px-9 py-2 text-[10px] text-zinc-600">
+                                  {arbLoading ? 'Scanning…' : 'No arbs right now.'}
+                                </div>
+                              ) : (
+                                <table className="w-full text-xs">
+                                  <tbody>
+                                    {opps.map((opp: any, i: number) => {
+                                      const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
+                                      const profitPct = opp.guaranteed_profit_pct ?? 0
+                                      const eventLabel = opp.display_home && opp.display_away
+                                        ? `${opp.display_home} v ${opp.display_away}`
+                                        : opp.event_id
+                                      // Anchor: prefer the leg for THIS provider, fall back to any sibling
+                                      const anchorLeg =
+                                        (opp.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid) ??
+                                        (opp.legs ?? []).find((l: any) =>
+                                          clusterMemberSet.has(l.provider ?? l.provider_id ?? '')
+                                        ) ?? {}
+                                      const anchorOutcome = anchorLeg.outcome
+                                        ? (anchorLeg.point != null ? `${anchorLeg.outcome} ${anchorLeg.point}` : anchorLeg.outcome)
+                                        : '—'
+                                      const counters = (counterLegs as any[]).filter((l: any) => {
+                                        const lp = l.provider ?? l.provider_id ?? ''
+                                        return !clusterMemberSet.has(lp)
+                                      })
+                                      return (
+                                        <tr key={`arb-${pid}-${i}`} className="border-b border-zinc-800/20 hover:bg-zinc-800/40">
+                                          <td className={`pl-9 pr-2 py-1 font-mono font-semibold text-right w-[60px] ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                            {profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%
+                                          </td>
+                                          <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
+                                          <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                                          <td className="px-2 py-1 text-[11px]">
+                                            <span className="text-amber-400">{anchorOutcome}</span>{' '}
+                                            <span className="font-mono text-zinc-200">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                          </td>
+                                          <td className="px-2 py-1 text-[11px]">
+                                            <div className="flex flex-col gap-0.5">
+                                              {counters.map((leg: any, li: number) => {
+                                                const legOutcome = leg.outcome
+                                                  ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
+                                                  : '—'
+                                                return (
+                                                  <div key={li} className="flex items-center gap-1">
+                                                    <span className="text-amber-400/80">{legOutcome}</span>
+                                                    <span className="text-zinc-500 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
+                                                    <span className="font-mono text-zinc-300">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                                                  </div>
+                                                )
+                                              })}
                                             </div>
-                                          )
-                                        })}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                          </table>
-                        )}
+                                          </td>
+                                        </tr>
+                                      )
+                                    })}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     )
                   })}
@@ -873,6 +876,7 @@ export default function PlayPage() {
                     const placed = placedToday[pid] ?? 0
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
+                    const isLoggedIn = loggedInProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
                     const atCap = !uncapped && placed >= 10
                     const disabled = bal <= 0 && pending === 0 && !uncapped
@@ -884,7 +888,9 @@ export default function PlayPage() {
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
                             : isSkinActive
-                              ? 'bg-amber-700/50 text-amber-300 border border-amber-600/50'
+                              ? (isLoggedIn
+                                  ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                  : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
                               : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                         }`}
                       >
@@ -1010,58 +1016,6 @@ export default function PlayPage() {
           )
         })}
 
-        {/* SECTION C — Top 20 Raw Edges (single-leg, includes negative) */}
-        <div className="border-t border-zinc-800 mt-2">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
-            <h3 className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Top 20 Edges (raw)</h3>
-            <span className="text-[10px] text-zinc-500 font-mono">{rawEdges.length}</span>
-            {rawEdgesLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
-            <span className="text-[10px] text-zinc-600 ml-auto">single-leg vs Pinnacle fair · negative included</span>
-          </div>
-          {rawEdges.length === 0 ? (
-            <div className="px-3 py-3 text-[11px] text-zinc-600">
-              {rawEdgesLoading ? 'Loading…' : 'No edges available.'}
-            </div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-[10px] text-zinc-500 uppercase tracking-wider">
-                  <th className="pl-6 pr-2 py-1 text-right w-[60px]">Edge</th>
-                  <th className="px-2 py-1 text-left">Event</th>
-                  <th className="px-2 py-1 text-left">Market</th>
-                  <th className="px-2 py-1 text-left">Outcome</th>
-                  <th className="px-2 py-1 text-left">Provider</th>
-                  <th className="px-2 py-1 text-right">Odds</th>
-                  <th className="px-2 py-1 text-right">Fair</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rawEdges.map((opp: any, i: number) => {
-                  const edge = opp.edge_pct ?? 0
-                  const eventLabel = opp.display_home && opp.display_away
-                    ? `${opp.display_home} v ${opp.display_away}`
-                    : opp.event_id
-                  const outcome = opp.outcome1
-                    ? (opp.point != null ? `${opp.outcome1} ${opp.point}` : opp.outcome1)
-                    : '—'
-                  return (
-                    <tr key={`edge-${opp.id ?? i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
-                      <td className={`pl-6 pr-2 py-1 font-mono font-semibold text-right ${edge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
-                      </td>
-                      <td className="px-2 py-1 text-zinc-200 max-w-[240px] truncate text-[11px]">{eventLabel}</td>
-                      <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
-                      <td className="px-2 py-1 text-amber-400 text-[11px]">{outcome}</td>
-                      <td className="px-2 py-1 text-zinc-500 uppercase text-[10px]">{opp.provider1 ?? ''}</td>
-                      <td className="px-2 py-1 text-right font-mono text-zinc-200">{Number(opp.odds1 ?? 0).toFixed(2)}</td>
-                      <td className="px-2 py-1 text-right font-mono text-zinc-500">{Number(opp.fair_odds ?? 0).toFixed(2)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
       </div>
 
       {/* Settlement toasts */}

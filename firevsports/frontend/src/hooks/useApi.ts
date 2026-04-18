@@ -13,8 +13,8 @@ export const api = {
   getPendingBets: () => apiFetch<any>('/api/opportunities/play/pending-bets'),
   settleConfirm: () => apiFetch<any>('/api/opportunities/play/settle-confirm', { method: 'POST' }),
   settleScan: () => apiFetch<any>('/api/opportunities/play/settle-scan'),
-  // Dutch
-  getDutchOpportunities: () => apiFetch<any>('/api/opportunities/dutch-workflow'),
+  // Arb
+  getArbOpportunities: () => apiFetch<any>('/api/opportunities/arb-workflow'),
   getArbOpps: (providers: string[], counterpartProviders?: string[], limit?: number) => {
     if (!providers.length) return Promise.resolve({ opportunities: [] })
     const params = new URLSearchParams({ providers: providers.join(',') })
@@ -22,16 +22,7 @@ export const api = {
       params.set('counterpart_providers', counterpartProviders.join(','))
     }
     if (limit) params.set('limit', String(limit))
-    return apiFetch<any>(`/api/opportunities/dutch-workflow?${params.toString()}`)
-  },
-  // Raw single-leg edges (value opps vs Pinnacle fair) — includes negative edge
-  getRawEdges: (limit = 20) => {
-    const params = new URLSearchParams({
-      type: 'value',
-      limit: String(limit),
-      min_value: '-100',  // include negatives
-    })
-    return apiFetch<any>(`/api/opportunities?${params.toString()}`)
+    return apiFetch<any>(`/api/opportunities/arb-workflow?${params.toString()}`)
   },
   // Bankroll
   getBankrollSummary: () => apiFetch<any>('/api/bankroll'),
