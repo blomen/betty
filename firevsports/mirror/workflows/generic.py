@@ -335,6 +335,15 @@ class GenericWorkflow(ProviderWorkflow):
             return False
 
     # ------------------------------------------------------------------
+    # Betslip prep (outcome click + stake fill) — strategy override only
+    # ------------------------------------------------------------------
+
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        if self.strategy and self.strategy.prep_betslip:
+            return await self.strategy.prep_betslip(page, bet, stake, self.intel)
+        return PlacementResult(status="no_prep", bet_id=0, reason="not_implemented")
+
+    # ------------------------------------------------------------------
     # Placement — always guided
     # ------------------------------------------------------------------
 

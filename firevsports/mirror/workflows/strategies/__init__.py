@@ -25,6 +25,7 @@ class Strategy:
     sync_balance: Callable | None = None
     sync_history: Callable | None = None
     navigate_to_event: Callable | None = None
+    prep_betslip: Callable | None = None
     place_bet: Callable | None = None
     check_live_price: Callable | None = None
     # Optional settlement extensions (Polymarket uses these for claim + redeem on-chain).
