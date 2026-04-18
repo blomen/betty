@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.providers.smarkets import (
+    SmarketsRetriever,
     parse_market_prices,
     price_integer_to_odds,
     type_scope_to_sport,
@@ -131,3 +132,70 @@ class TestParseMarketPrices:
         for cid, odds in out.items():
             assert odds >= 1.0
             assert odds < 100.0
+
+
+class TestSmarketsRetriever:
+    def test_filter_events_by_sport_matches_type_field(self):
+        """In real Smarkets data `type_scope` is null and `type` carries the
+        sport as `<sport>_match`. filter_events_by_sport must use `type`."""
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "smarkets"
+            / "events_upcoming.json"
+        )
+        raw = json.loads(fixture.read_text(encoding="utf-8"))
+
+        config = {"id": "smarkets", "params": {"min_trades_24h": 1}}
+        retriever = SmarketsRetriever(config)
+
+        footballs = retriever.filter_events_by_sport(
+            raw.get("events", []), "football"
+        )
+        assert isinstance(footballs, list)
+        assert len(footballs) > 0, (
+            "Fixture must contain football matches — got 0"
+        )
+        for ev in footballs:
+            assert ev.get("type") == "football_match"
+
+    def test_filter_events_by_sport_unknown_returns_empty(self):
+        config = {"id": "smarkets"}
+        retriever = SmarketsRetriever(config)
+        assert (
+            retriever.filter_events_by_sport(
+                [{"type": "football_match"}], "cricket"
+            )
+            == []
+        )
+
+    def test_get_sport_url_uses_type_filter(self):
+        """URL must include both type_domain and type=<sport>_match so the
+        listing returns matches (not category nodes)."""
+        config = {"id": "smarkets"}
+        retriever = SmarketsRetriever(config)
+        url = retriever._get_sport_url("basketball")
+        assert "type_domain=basketball" in url
+        assert "type=basketball_match" in url
+        assert "state=upcoming" in url
+
+    def test_proxy_url_from_config_root(self):
+        config = {"id": "smarkets", "proxy_url": "socks5://host:1080"}
+        r = SmarketsRetriever(config)
+        assert r.proxy_url == "socks5://host:1080"
+
+    def test_proxy_url_from_params(self):
+        config = {
+            "id": "smarkets",
+            "params": {"proxy_url": "socks5://host:1080"},
+        }
+        r = SmarketsRetriever(config)
+        assert r.proxy_url == "socks5://host:1080"
+
+    def test_proxy_url_empty_is_none(self):
+        config = {
+            "id": "smarkets",
+            "params": {"proxy_url": ""},
+        }
+        r = SmarketsRetriever(config)
+        assert r.proxy_url is None
