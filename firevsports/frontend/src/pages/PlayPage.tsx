@@ -3,7 +3,7 @@ import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
 // Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
-const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet'])
+const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
 // Keep small — we always play the remaining balance down, threshold just avoids
@@ -1049,7 +1049,7 @@ export default function PlayPage() {
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
-                    const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
+                    const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
                     return (
                       <button key={pid}
