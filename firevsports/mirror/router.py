@@ -192,32 +192,39 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 break
         if not tab_url:
             return {"found": False, "logged_in": False, "balance": None, "domain": workflow.domain}
-        # Use intercepted data, fallback to DOM scrape, then workflow API
+        # Detection order: intercepted cache → workflow.check_login (intel JSON) → DOM scrape → sync_balance
         intercepted = browser.provider_data.get(provider_id, {})
         logged_in = intercepted.get("logged_in", False)
         balance = intercepted.get("balance")
+        page = None
+        for p in browser.context.pages:
+            if workflow.domain and workflow.domain in p.url:
+                page = p
+                break
+        if not logged_in and page:
+            try:
+                if await workflow.check_login(page):
+                    logged_in = True
+                    browser.provider_data.setdefault(provider_id, {}).update(
+                        {"logged_in": True, "source": "workflow_check_login"}
+                    )
+            except Exception:
+                pass
         if not logged_in:
             dom = await browser.check_login_dom(provider_id)
             logged_in = dom.get("logged_in", False)
             balance = dom.get("balance") or balance
-        if not logged_in:
-            # Workflow API fallback (e.g. GraphQL relay for LeoVegas)
-            page = None
-            for p in browser.context.pages:
-                if workflow.domain and workflow.domain in p.url:
-                    page = p
-                    break
-            if page:
-                try:
-                    bal = await workflow.sync_balance(page)
-                    if bal >= 0:
-                        logged_in = True
-                        balance = bal
-                        browser.provider_data.setdefault(provider_id, {}).update(
-                            {"logged_in": True, "balance": bal, "source": "workflow_api"}
-                        )
-                except Exception:
-                    pass
+        if not logged_in and page:
+            try:
+                bal = await workflow.sync_balance(page)
+                if bal >= 0:
+                    logged_in = True
+                    balance = bal
+                    browser.provider_data.setdefault(provider_id, {}).update(
+                        {"logged_in": True, "balance": bal, "source": "workflow_api"}
+                    )
+            except Exception:
+                pass
         return {
             "found": True,
             "provider_id": provider_id,
