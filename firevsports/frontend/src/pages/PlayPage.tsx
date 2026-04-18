@@ -219,6 +219,24 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [loadArbOpps])
 
+  // Seed loggedInProviders from backend when a provider becomes active — covers page reload
+  // where in-memory SSE state is lost but the mirror's login session is still live.
+  useEffect(() => {
+    let cancelled = false
+    for (const pid of activeProviders) {
+      fetch(`/mirror/browser/provider/${pid}`)
+        .then(r => r.json())
+        .then(d => {
+          if (cancelled) return
+          if (d.logged_in) {
+            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+          }
+        })
+        .catch(() => { /* */ })
+    }
+    return () => { cancelled = true }
+  }, [activeProviders])
+
   // SSE event handler
   useEffect(() => {
     if (!mirror.lastEvent) return
@@ -514,8 +532,7 @@ export default function PlayPage() {
     const totalBal = [...providers].reduce((s, p) => s + (providerBalances[p] ?? 0), 0)
     const ev = cb.reduce((s, b) => s + b.expected_profit, 0)
     const pending = [...providers].reduce((s, p) => s + (pendingByProvider[p]?.length ?? 0), 0)
-    const placed = [...providers].reduce((s, p) => s + (placedToday[p] ?? 0), 0)
-    return { providers: [...providers], ev, totalBal, pending, placed, betCount: cb.length }
+    return { providers: [...providers], ev, totalBal, pending, betCount: cb.length }
   }
 
   const clusterIds = Object.keys(byCluster).sort((a, b) => {
@@ -738,14 +755,12 @@ export default function PlayPage() {
                           </span>
                         </div>
 
-                        {/* One card per funded sibling — same opps, different balance/cap/active context */}
+                        {/* One card per funded sibling — same opps, different balance/active context */}
                         {funded.map(pid => {
                           const bal = providerBalances[pid] ?? 0
                           const pending = pendingByProvider[pid]?.length ?? 0
-                          const placed = placedToday[pid] ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
-                          const atCap = placed >= 10
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
@@ -763,9 +778,6 @@ export default function PlayPage() {
                                   <span className="uppercase font-semibold">{pid}</span>
                                   <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
                                 </button>
-                                <span className={`text-[10px] ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
-                                  {placed}/10
-                                </span>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
                                 {stakeCaps[pid] && (
                                   <span className="px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
@@ -873,12 +885,10 @@ export default function PlayPage() {
                 <div className="flex items-center gap-1">
                   {stats.providers.sort((a, b) => (providerBalances[b] ?? 0) - (providerBalances[a] ?? 0)).map(pid => {
                     const bal = providerBalances[pid] ?? 0
-                    const placed = placedToday[pid] ?? 0
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
-                    const atCap = !uncapped && placed >= 10
                     const disabled = bal <= 0 && pending === 0 && !uncapped
                     return (
                       <button key={pid}
@@ -896,7 +906,6 @@ export default function PlayPage() {
                       >
                         <span className="uppercase font-semibold">{pid}</span>
                         {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
-                        {!uncapped && <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
                         {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
                       </button>
