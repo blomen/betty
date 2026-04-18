@@ -17,17 +17,16 @@ _WORKFLOW_CACHE: dict[str, ProviderWorkflow] = {}  # Cached instances per provid
 
 
 def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
-    # Polymarket migrated to data/mirror_intel/polymarket.json + strategies/polymarket.py
-    # and is routed via GenericWorkflow in get_workflow() ahead of this map.
+    # Polymarket + Pinnacle migrated to data/mirror_intel/ + strategies/ and are
+    # routed via GenericWorkflow in get_workflow() ahead of this map.
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
     from .interwetten import InterwettenWorkflow
+    from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
-    from .pinnacle import PinnacleWorkflow
 
     return {
-        "pinnacle": PinnacleWorkflow,
         "altenar": AltenarWorkflow,
         "gecko_v2": GeckoWorkflow,
         "kambi": KambiWorkflow,
@@ -39,6 +38,7 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
+        "kalshi": KalshiWorkflow,
     }
 
 
@@ -56,6 +56,7 @@ _RETRIEVER_TO_PLATFORM = {
     "interwetten": "interwetten",
     "coolbet": "coolbet",
     "tipwin": "tipwin",
+    "kalshi": "kalshi",
 }
 
 # Fallback: provider_id → platform (when config.loader is unavailable in firevsports)
@@ -117,6 +118,7 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "mrgreen": "mrgreen.com",
     "888sport": "888sport.com",
     "snabbare": "snabbare.com",
+    "kalshi": "kalshi.com",
 }
 
 

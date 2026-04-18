@@ -21,6 +21,7 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
     from .interwetten import InterwettenWorkflow
+    from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
     from .pinnacle import PinnacleWorkflow
     from .polymarket import PolymarketWorkflow
@@ -39,6 +40,7 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
+        "kalshi": KalshiWorkflow,
     }
 
 
@@ -56,6 +58,7 @@ _RETRIEVER_TO_PLATFORM = {
     "interwetten": "interwetten",
     "coolbet": "coolbet",
     "tipwin": "tipwin",
+    "kalshi": "kalshi",
 }
 
 
@@ -75,7 +78,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
 
     if provider is None:
         if provider_id in _PLATFORM_MAP:
-            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
+            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(provider_id, "")
             instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
@@ -95,7 +98,7 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     domain = provider.domain or ""
     # Fallback domains for providers without explicit domain in config
     if not domain:
-        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se"}.get(provider_id, "")
+        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(provider_id, "")
     instance = cls(provider_id=provider_id, domain=domain)
     _WORKFLOW_CACHE[provider_id] = instance
     return instance
