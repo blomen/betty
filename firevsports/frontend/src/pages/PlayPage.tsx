@@ -10,6 +10,23 @@ const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet'])
 // residual-micro-balance bugs (1-2 SEK stuck from rounded stakes, refunds).
 const DRAIN_THRESHOLD_SEK = 1
 
+// Soft-book cluster membership (mirrors backend mirror/play_loop.py _CLUSTER_MEMBERS).
+// Cluster siblings share odds engines → arb between them has zero edge, so they
+// group into one section and auto-exclude each other from counter pool.
+const SOFT_CLUSTER_MEMBERS: Record<string, string[]> = {
+  kambi: ['unibet', 'leovegas', 'expekt', 'betmgm', 'speedybet', 'x3000', 'goldenbull', '1x2'],
+  spectate: ['888sport', 'mrgreen'],
+  altenar_main: ['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet'],
+  gecko_betsson: ['betsson', 'nordicbet', 'betsafe', 'spelklubben'],
+  comeon_group: ['comeon', 'lyllo', 'hajper', 'snabbare'],
+}
+const PROVIDER_TO_SOFT_CLUSTER: Record<string, string> = {}
+for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
+  for (const m of members) PROVIDER_TO_SOFT_CLUSTER[m] = c
+}
+// Resolve a soft provider's cluster (fallback to pid for standalones like interwetten, vbet).
+const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
+
 interface BatchBet {
   rank: number
   tier: string
@@ -69,7 +86,7 @@ export default function PlayPage() {
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
-  const [dutchHedgeStatus, setDutchHedgeStatus] = useState<Record<string, {
+  const [arbHedgeStatus, setArbHedgeStatus] = useState<Record<string, {
     status: 'placing' | 'placed' | 'failed' | 'unhedged'
     counter_provider?: string
     outcome?: string
@@ -77,11 +94,13 @@ export default function PlayPage() {
     actual_stake?: number
     reason?: string
   }>>({})
-  const [dutchCounterPlan, setDutchCounterPlan] = useState<any[] | null>(null)
-  const [dutchProfitPct, setDutchProfitPct] = useState<number | null>(null)
-  const [dutchGroupId, setDutchGroupId] = useState<string | null>(null)
-  // Per-anchor arb opps: { provider_id: [top 10 opps anchored on that provider] }
-  const [oppsByProvider, setOppsByProvider] = useState<Record<string, any[]>>({})
+  const [arbCounterPlan, setArbCounterPlan] = useState<any[] | null>(null)
+  const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
+  const [arbGroupId, setArbGroupId] = useState<string | null>(null)
+  // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
+  // Siblings share odds, so one fetch per cluster suffices. Counter pool auto-excludes
+  // same-cluster providers at fetch time.
+  const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>({})
   const [arbLoading, setArbLoading] = useState(false)
   // Raw single-leg edges (value opps vs Pinnacle fair), includes negative edge
   const [rawEdges, setRawEdges] = useState<any[]>([])
@@ -143,39 +162,58 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [load])
 
-  // Fetch top 10 arb opps per funded soft provider (anchor-centric).
-  // Counter pool excludes drained providers (balance < threshold).
+  // Fetch top 10 arb opps per cluster of funded soft providers.
+  // One fetch per cluster (siblings share odds). Counter pool excludes same-cluster
+  // providers (zero edge) and drained providers (no balance to place anchor leg).
   const loadArbOpps = useCallback(async () => {
-    const soft = Array.from(
-      new Set(batch.map(b => b.provider_id).filter(pid => !UNLIMITED_PROVIDERS.has(pid)))
-    )
-    const funded = soft.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
-    if (funded.length === 0) {
-      setOppsByProvider({})
+    // Group all known soft providers by cluster
+    const softByCluster: Record<string, string[]> = {}
+    for (const pid of Object.keys(providerBalances)) {
+      if (UNLIMITED_PROVIDERS.has(pid)) continue
+      const cluster = resolveSoftCluster(pid)
+      ;(softByCluster[cluster] ??= []).push(pid)
+    }
+
+    // Pick one representative per cluster that has at least one funded sibling
+    const reps: Array<{ cluster: string; rep: string }> = []
+    const fundedAll: string[] = []
+    for (const [cluster, members] of Object.entries(softByCluster)) {
+      const funded = members.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
+      if (funded.length > 0) {
+        reps.push({ cluster, rep: funded[0] })
+        fundedAll.push(...funded)
+      }
+    }
+
+    if (reps.length === 0) {
+      setOppsByCluster({})
       return
     }
-    // Non-drained counter pool: funded soft books + all unlimited providers
-    const pool = [...funded, ...Array.from(UNLIMITED_PROVIDERS)]
+
+    // Non-drained counter pool: all funded soft books + unlimited providers
+    const pool = [...fundedAll, ...Array.from(UNLIMITED_PROVIDERS)]
+
     try {
       setArbLoading(true)
       const results = await Promise.all(
-        funded.map(async anchor => {
-          const counters = pool.filter(p => p !== anchor)
+        reps.map(async ({ cluster, rep }) => {
+          // Exclude same-cluster siblings from counter pool (zero edge)
+          const counters = pool.filter(p => resolveSoftCluster(p) !== cluster)
           try {
-            const res = await api.getArbOpps([anchor], counters, 10)
+            const res = await api.getArbOpps([rep], counters, 10)
             const opps = ((res?.opportunities ?? []) as any[])
               .sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
-            return [anchor, opps] as const
+            return [cluster, opps] as const
           } catch {
-            return [anchor, [] as any[]] as const
+            return [cluster, [] as any[]] as const
           }
         })
       )
-      setOppsByProvider(Object.fromEntries(results))
+      setOppsByCluster(Object.fromEntries(results))
     } finally {
       setArbLoading(false)
     }
-  }, [batch, providerBalances])
+  }, [providerBalances])
 
   const loadRawEdges = useCallback(async () => {
     try {
@@ -302,31 +340,31 @@ export default function PlayPage() {
       const cap = data.cap ?? data.actual_stake
       if (pid && cap) setStakeCaps(prev => ({ ...prev, [pid]: cap }))
     }
-    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null); setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}) }
-    if (type === 'dutch_bet_ready') {
+    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null); setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}) }
+    if (type === 'arb_bet_ready') {
       const bet = data.bet ?? data
       setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge })
-      setDutchCounterPlan(data.counter_plan ?? null)
-      setDutchProfitPct(data.guaranteed_profit_pct ?? null)
-      setDutchGroupId(data.dutch_group_id ?? null)
-      setDutchHedgeStatus({})
+      setArbCounterPlan(data.counter_plan ?? null)
+      setArbProfitPct(data.guaranteed_profit_pct ?? null)
+      setArbGroupId(data.arb_group_id ?? null)
+      setArbHedgeStatus({})
       setLoopStatus(null)
     }
-    if (type === 'dutch_hedge_placing') {
-      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
+    if (type === 'arb_hedge_placing') {
+      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
     }
-    if (type === 'dutch_hedge_placed') {
-      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placed', counter_provider: data.counter_provider, outcome: data.outcome, actual_odds: data.actual_odds, actual_stake: data.actual_stake } }))
+    if (type === 'arb_hedge_placed') {
+      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placed', counter_provider: data.counter_provider, outcome: data.outcome, actual_odds: data.actual_odds, actual_stake: data.actual_stake } }))
     }
-    if (type === 'dutch_hedge_failed') {
-      setDutchHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'failed', counter_provider: data.counter_provider, outcome: data.outcome, reason: data.reason } }))
+    if (type === 'arb_hedge_failed') {
+      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'failed', counter_provider: data.counter_provider, outcome: data.outcome, reason: data.reason } }))
     }
-    if (type === 'dutch_unhedged') {
-      setDutchHedgeStatus(prev => ({ ...prev, __unhedged: { status: 'unhedged', outcome: data.outcome, reason: 'All fallbacks exhausted' } }))
+    if (type === 'arb_unhedged') {
+      setArbHedgeStatus(prev => ({ ...prev, __unhedged: { status: 'unhedged', outcome: data.outcome, reason: 'All fallbacks exhausted' } }))
     }
-    if (type === 'dutch_complete') {
-      setDutchProfitPct(data.guaranteed_profit_pct ?? dutchProfitPct)
-      setTimeout(() => { setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}); setCurrentBetReady(null) }, 5000)
+    if (type === 'arb_complete') {
+      setArbProfitPct(data.guaranteed_profit_pct ?? arbProfitPct)
+      setTimeout(() => { setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}); setCurrentBetReady(null) }, 5000)
       loadArbOpps()
     }
     if (type === 'provider_complete') {
@@ -344,10 +382,10 @@ export default function PlayPage() {
       setToasts([])
       setSettleWaiting(false)
       setLoopStatus(null)
-      setDutchCounterPlan(null)
-      setDutchProfitPct(null)
-      setDutchGroupId(null)
-      setDutchHedgeStatus({})
+      setArbCounterPlan(null)
+      setArbProfitPct(null)
+      setArbGroupId(null)
+      setArbHedgeStatus({})
     }
     // Update per-provider status from individual events
     if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
@@ -553,14 +591,14 @@ export default function PlayPage() {
       )}
 
       {/* Dutch arb card */}
-      {currentBetReady && dutchCounterPlan && (
+      {currentBetReady && arbCounterPlan && (
         <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
-            {dutchProfitPct != null && (
-              <span className="text-xs font-mono font-semibold text-green-400">+{dutchProfitPct.toFixed(2)}% guaranteed profit</span>
+            {arbProfitPct != null && (
+              <span className="text-xs font-mono font-semibold text-green-400">+{arbProfitPct.toFixed(2)}% guaranteed profit</span>
             )}
-            {dutchGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{dutchGroupId}</span>}
+            {arbGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{arbGroupId}</span>}
           </div>
           <div className="flex items-center gap-2 text-xs mb-1.5">
             <span className="text-zinc-400">Anchor:</span>
@@ -570,11 +608,11 @@ export default function PlayPage() {
             <span className="text-zinc-500 uppercase text-[10px]">{currentBetReady.provider_id}</span>
           </div>
           <div className="space-y-0.5">
-            {dutchCounterPlan.map((leg: any, i: number) => (
+            {arbCounterPlan.map((leg: any, i: number) => (
               <div key={i}>
                 <div className="text-[10px] text-zinc-500 mb-0.5">Counter: {leg.outcome}</div>
                 {leg.providers?.map((p: any, j: number) => {
-                  const hedge = dutchHedgeStatus[p.provider]
+                  const hedge = arbHedgeStatus[p.provider]
                   return (
                     <div key={j} className="flex items-center gap-2 pl-3 text-[10px]">
                       <span className="text-zinc-400 uppercase w-16">{p.provider}</span>
@@ -593,7 +631,7 @@ export default function PlayPage() {
                 })}
               </div>
             ))}
-            {dutchHedgeStatus.__unhedged && (
+            {arbHedgeStatus.__unhedged && (
               <div className="flex items-center gap-2 pl-3 text-[10px] mt-1">
                 <span className="text-red-400 font-semibold">UNHEDGED — all fallbacks exhausted</span>
               </div>
@@ -636,15 +674,30 @@ export default function PlayPage() {
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
-        {/* SECTION A — Per-provider Arb Opportunities (soft books, arb-only) */}
+        {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {(() => {
-          const fundedSoft = softProviders.filter(
-            pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK
+          // Group known soft providers by cluster (sibling providers share odds
+          // engines, so they group into one card with shared opps).
+          const softByCluster: Record<string, string[]> = {}
+          for (const pid of Object.keys(providerBalances)) {
+            if (UNLIMITED_PROVIDERS.has(pid)) continue
+            const cluster = resolveSoftCluster(pid)
+            ;(softByCluster[cluster] ??= []).push(pid)
+          }
+          // Stable sort order — named clusters first, then standalones alphabetically
+          const namedClusters = Object.keys(SOFT_CLUSTER_MEMBERS)
+          const clusterOrder = Object.keys(softByCluster).sort((a, b) => {
+            const ai = namedClusters.indexOf(a)
+            const bi = namedClusters.indexOf(b)
+            if (ai >= 0 && bi >= 0) return ai - bi
+            if (ai >= 0) return -1
+            if (bi >= 0) return 1
+            return a.localeCompare(b)
+          })
+          const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
+          const hasAnyFunded = clusterOrder.some(c =>
+            softByCluster[c].some(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
           )
-          const drainedSoft = softProviders.filter(
-            pid => (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK
-          )
-          const totalOpps = Object.values(oppsByProvider).reduce((n, arr) => n + arr.length, 0)
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
@@ -655,96 +708,101 @@ export default function PlayPage() {
                 <span className="text-[10px] text-zinc-500 font-mono">{totalOpps}</span>
                 {arbLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
                 <span className="text-[10px] text-zinc-600 ml-auto">
-                  top 10 per funded provider · drained excluded
+                  top 10 per cluster · siblings share odds · drained excluded
                 </span>
               </div>
 
-              {/* Drained (blacklisted) providers — shown but not scanned */}
-              {drainedSoft.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/20">
-                  <span className="text-[10px] text-zinc-600 uppercase tracking-wider">Drained:</span>
-                  {drainedSoft.map(pid => (
-                    <span
-                      key={pid}
-                      className="px-1.5 py-0.5 text-[10px] rounded text-zinc-600 line-through bg-zinc-900/50 border border-zinc-800"
-                      title={`Balance ${(providerBalances[pid] ?? 0).toFixed(2)} SEK < ${DRAIN_THRESHOLD_SEK} — excluded from counter pool`}
-                    >
-                      {pid}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* Per-provider arb cards */}
-              {fundedSoft.length === 0 ? (
+              {!hasAnyFunded ? (
                 <div className="px-3 py-3 text-[11px] text-zinc-600">
                   No funded soft books. Fund a provider (balance ≥ {DRAIN_THRESHOLD_SEK} SEK) to see arb opps.
                 </div>
               ) : (
                 <div className="flex flex-col">
-                  {fundedSoft.map(pid => {
-                    const bal = providerBalances[pid] ?? 0
-                    const pending = pendingByProvider[pid]?.length ?? 0
-                    const placed = placedToday[pid] ?? 0
-                    const isSkinActive = activeProviders.has(pid)
-                    const atCap = placed >= 10
-                    const opps = oppsByProvider[pid] ?? []
+                  {clusterOrder.map(cluster => {
+                    const members = softByCluster[cluster]
+                    const funded = members.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
+                    const drained = members.filter(pid => (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK)
+                    // Skip clusters with nothing funded (they still won't match anything,
+                    // and showing empty drained-only sections is just noise).
+                    if (funded.length === 0) return null
+                    const opps = oppsByCluster[cluster] ?? []
                     return (
-                      <div key={pid} className="border-b border-zinc-800/50 last:border-b-0">
-                        {/* Header bar with activate button */}
-                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/30">
-                          <button
-                            onClick={() => startSkin(pid)}
-                            className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                              isSkinActive
-                                ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
-                                : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                            }`}
-                          >
-                            <span className="uppercase font-semibold">{pid}</span>
-                            <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
-                          </button>
-                          <span className={`text-[10px] ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
-                            {placed}/10
+                      <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
+                        {/* Cluster header — sibling activation buttons inline */}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/30 flex-wrap">
+                          <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
+                            {cluster}
                           </span>
-                          {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
-                          {stakeCaps[pid] && (
-                            <span className="px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
-                              ≤{Math.round(stakeCaps[pid])}
+                          {funded.map(pid => {
+                            const bal = providerBalances[pid] ?? 0
+                            const pending = pendingByProvider[pid]?.length ?? 0
+                            const placed = placedToday[pid] ?? 0
+                            const isSkinActive = activeProviders.has(pid)
+                            const atCap = placed >= 10
+                            return (
+                              <button
+                                key={pid}
+                                onClick={() => startSkin(pid)}
+                                className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                                  isSkinActive
+                                    ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
+                                    : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                }`}
+                              >
+                                <span className="uppercase font-semibold">{pid}</span>
+                                <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
+                                <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>
+                                {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
+                                {stakeCaps[pid] && (
+                                  <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
+                                    ≤{Math.round(stakeCaps[pid])}
+                                  </span>
+                                )}
+                              </button>
+                            )
+                          })}
+                          {drained.map(pid => (
+                            <span
+                              key={pid}
+                              className="px-1.5 py-0.5 text-[10px] rounded text-zinc-600 line-through bg-zinc-900/50 border border-zinc-800"
+                              title={`Balance ${(providerBalances[pid] ?? 0).toFixed(2)} SEK < ${DRAIN_THRESHOLD_SEK} — blacklisted`}
+                            >
+                              {pid}
                             </span>
-                          )}
+                          ))}
                           <span className="text-[10px] text-zinc-600 ml-auto">
                             {opps.length} arb{opps.length === 1 ? '' : 's'}
                           </span>
                         </div>
 
-                        {/* Per-provider arb table */}
+                        {/* Per-cluster arb table */}
                         {opps.length === 0 ? (
                           <div className="px-6 py-2 text-[10px] text-zinc-600">
-                            {arbLoading ? 'Scanning…' : 'No arbs for this provider right now.'}
+                            {arbLoading ? 'Scanning…' : 'No arbs for this cluster right now.'}
                           </div>
                         ) : (
                           <table className="w-full text-xs">
                             <tbody>
                               {opps.map((opp: any, i: number) => {
-                                const anchor = opp.anchor ?? {}
                                 const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
                                 const profitPct = opp.guaranteed_profit_pct ?? 0
                                 const eventLabel = opp.display_home && opp.display_away
                                   ? `${opp.display_home} v ${opp.display_away}`
                                   : opp.event_id
-                                // Anchor may be inline on opp.legs as the leg with provider === pid
-                                const anchorLeg = anchor.provider || anchor.provider_id
-                                  ? anchor
-                                  : (opp.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid) ?? {}
+                                // Find anchor leg: whichever leg is a member of this cluster
+                                const clusterMemberSet = new Set(members)
+                                const anchorLeg = (opp.legs ?? []).find((l: any) =>
+                                  clusterMemberSet.has(l.provider ?? l.provider_id ?? '')
+                                ) ?? {}
                                 const anchorOutcome = anchorLeg.outcome
                                   ? (anchorLeg.point != null ? `${anchorLeg.outcome} ${anchorLeg.point}` : anchorLeg.outcome)
                                   : '—'
-                                const counters = (counterLegs as any[]).filter(
-                                  (l: any) => (l.provider ?? l.provider_id) !== pid
-                                )
+                                const counters = (counterLegs as any[]).filter((l: any) => {
+                                  const lp = l.provider ?? l.provider_id ?? ''
+                                  return !clusterMemberSet.has(lp)
+                                })
                                 return (
-                                  <tr key={`arb-${pid}-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
+                                  <tr key={`arb-${cluster}-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
                                     <td className={`pl-6 pr-2 py-1 font-mono font-semibold text-right w-[60px] ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                       {profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%
                                     </td>
