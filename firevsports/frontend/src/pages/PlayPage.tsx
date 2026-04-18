@@ -5,6 +5,11 @@ import { useMirrorStream } from '../hooks/useMirrorStream'
 // Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
 const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet'])
 
+// Provider is "drained" when balance falls below this threshold (SEK).
+// Keep small — we always play the remaining balance down, threshold just avoids
+// residual-micro-balance bugs (1-2 SEK stuck from rounded stakes, refunds).
+const DRAIN_THRESHOLD_SEK = 1
+
 interface BatchBet {
   rank: number
   tier: string
@@ -75,8 +80,12 @@ export default function PlayPage() {
   const [dutchCounterPlan, setDutchCounterPlan] = useState<any[] | null>(null)
   const [dutchProfitPct, setDutchProfitPct] = useState<number | null>(null)
   const [dutchGroupId, setDutchGroupId] = useState<string | null>(null)
-  const [arbOpps, setArbOpps] = useState<any[]>([])
+  // Per-anchor arb opps: { provider_id: [top 10 opps anchored on that provider] }
+  const [oppsByProvider, setOppsByProvider] = useState<Record<string, any[]>>({})
   const [arbLoading, setArbLoading] = useState(false)
+  // Raw single-leg edges (value opps vs Pinnacle fair), includes negative edge
+  const [rawEdges, setRawEdges] = useState<any[]>([])
+  const [rawEdgesLoading, setRawEdgesLoading] = useState(false)
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -134,34 +143,65 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [load])
 
-  // Active soft providers (arb-only). Derived on each render from activeProviders + UNLIMITED set.
-  const activeSoftProviders = Array.from(activeProviders).filter(pid => !UNLIMITED_PROVIDERS.has(pid))
-  const activeSoftKey = activeSoftProviders.sort().join(',')
-
+  // Fetch top 10 arb opps per funded soft provider (anchor-centric).
+  // Counter pool excludes drained providers (balance < threshold).
   const loadArbOpps = useCallback(async () => {
-    const pids = activeSoftKey ? activeSoftKey.split(',') : []
-    if (pids.length === 0) {
-      setArbOpps([])
+    const soft = Array.from(
+      new Set(batch.map(b => b.provider_id).filter(pid => !UNLIMITED_PROVIDERS.has(pid)))
+    )
+    const funded = soft.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
+    if (funded.length === 0) {
+      setOppsByProvider({})
       return
     }
+    // Non-drained counter pool: funded soft books + all unlimited providers
+    const pool = [...funded, ...Array.from(UNLIMITED_PROVIDERS)]
     try {
       setArbLoading(true)
-      const res = await api.getArbOpps(pids)
-      const opps = (res?.opportunities ?? []) as any[]
-      opps.sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
-      setArbOpps(opps)
-    } catch {
-      /* swallow — UI shows empty state */
+      const results = await Promise.all(
+        funded.map(async anchor => {
+          const counters = pool.filter(p => p !== anchor)
+          try {
+            const res = await api.getArbOpps([anchor], counters, 10)
+            const opps = ((res?.opportunities ?? []) as any[])
+              .sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
+            return [anchor, opps] as const
+          } catch {
+            return [anchor, [] as any[]] as const
+          }
+        })
+      )
+      setOppsByProvider(Object.fromEntries(results))
     } finally {
       setArbLoading(false)
     }
-  }, [activeSoftKey])
+  }, [batch, providerBalances])
+
+  const loadRawEdges = useCallback(async () => {
+    try {
+      setRawEdgesLoading(true)
+      const res = await api.getRawEdges(20)
+      const opps = ((res?.opportunities ?? []) as any[])
+        .sort((a, b) => (b.edge_pct ?? -999) - (a.edge_pct ?? -999))
+      setRawEdges(opps)
+    } catch {
+      /* swallow */
+    } finally {
+      setRawEdgesLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     loadArbOpps()
     const id = setInterval(loadArbOpps, 30_000)
     return () => clearInterval(id)
   }, [loadArbOpps])
+
+  useEffect(() => {
+    loadRawEdges()
+    const id = setInterval(loadRawEdges, 30_000)
+    return () => clearInterval(id)
+  }, [loadRawEdges])
 
   // SSE event handler
   useEffect(() => {
@@ -596,122 +636,154 @@ export default function PlayPage() {
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
-        {/* SECTION A — Arb Opportunities (soft books, arb-only) */}
-        <div className="border-b border-zinc-800 pb-2 mb-2">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
-            <h3 className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">
-              Arb Opportunities
-            </h3>
-            <span className="text-[10px] text-zinc-500 font-mono">{arbOpps.length}</span>
-            {arbLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
-            <span className="text-[10px] text-zinc-600 ml-auto">
-              activate soft books to stream arbs
-            </span>
-          </div>
+        {/* SECTION A — Per-provider Arb Opportunities (soft books, arb-only) */}
+        {(() => {
+          const fundedSoft = softProviders.filter(
+            pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK
+          )
+          const drainedSoft = softProviders.filter(
+            pid => (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK
+          )
+          const totalOpps = Object.values(oppsByProvider).reduce((n, arr) => n + arr.length, 0)
 
-          {/* Soft-book activation bar — derived from batch */}
-          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-zinc-800/50 bg-zinc-900/20">
-            {softProviders.length === 0 && (
-              <span className="text-[10px] text-zinc-600">No soft providers in current batch.</span>
-            )}
-            {softProviders.map(pid => {
-              const bal = providerBalances[pid] ?? 0
-              const pending = pendingByProvider[pid]?.length ?? 0
-              const placed = placedToday[pid] ?? 0
-              const isSkinActive = activeProviders.has(pid)
-              const atCap = placed >= 10
-              return (
-                <button key={pid}
-                  onClick={() => startSkin(pid)}
-                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                    isSkinActive
-                      ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
-                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                  }`}
-                >
-                  <span className="uppercase font-semibold">{pid}</span>
-                  {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
-                  <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>
-                  {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
-                  {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
-                </button>
-              )
-            })}
-          </div>
+          return (
+            <div className="border-b border-zinc-800 pb-2 mb-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
+                <h3 className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">
+                  Arb Opportunities
+                </h3>
+                <span className="text-[10px] text-zinc-500 font-mono">{totalOpps}</span>
+                {arbLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
+                <span className="text-[10px] text-zinc-600 ml-auto">
+                  top 10 per funded provider · drained excluded
+                </span>
+              </div>
 
-          {/* Arb opps table */}
-          {activeSoftProviders.length === 0 ? (
-            <div className="px-3 py-3 text-[11px] text-zinc-600">
-              Select one or more soft books above to see live arb opportunities.
-            </div>
-          ) : arbOpps.length === 0 ? (
-            <div className="px-3 py-3 text-[11px] text-zinc-600">
-              {arbLoading ? 'Loading arbs…' : 'No arb opportunities for the selected providers.'}
-            </div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-[10px] text-zinc-500 uppercase tracking-wider">
-                  <th className="pl-6 pr-2 py-1 text-left">Profit</th>
-                  <th className="px-2 py-1 text-left">Event</th>
-                  <th className="px-2 py-1 text-left">Market</th>
-                  <th className="px-2 py-1 text-left">Anchor</th>
-                  <th className="px-2 py-1 text-left">Counter</th>
-                </tr>
-              </thead>
-              <tbody>
-                {arbOpps.map((opp: any, i: number) => {
-                  const anchor = opp.anchor ?? {}
-                  const counterLegs = opp.counter_plan ?? opp.counter_legs ?? []
-                  const profitPct = opp.guaranteed_profit_pct ?? 0
-                  const eventLabel = opp.display_home && opp.display_away
-                    ? `${opp.display_home} v ${opp.display_away}`
-                    : opp.event_id
-                  const anchorOutcome = anchor.outcome
-                    ? (anchor.point != null ? `${anchor.outcome} ${anchor.point}` : anchor.outcome)
-                    : '—'
-                  return (
-                    <tr key={`arb-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
-                      <td className="pl-6 pr-2 py-1 font-mono font-semibold text-green-400 text-right w-[70px]">
-                        +{profitPct.toFixed(2)}%
-                      </td>
-                      <td className="px-2 py-1 text-zinc-200 max-w-[240px] truncate">{eventLabel}</td>
-                      <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
-                      <td className="px-2 py-1 text-[11px]">
-                        <div className="flex items-center gap-1">
-                          <span className="text-zinc-500 uppercase text-[10px]">{anchor.provider_id ?? anchor.provider ?? '—'}</span>
-                          <span className="text-amber-400">{anchorOutcome}</span>
-                          <span className="font-mono text-zinc-200">@ {Number(anchor.odds ?? 0).toFixed(2)}</span>
+              {/* Drained (blacklisted) providers — shown but not scanned */}
+              {drainedSoft.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/20">
+                  <span className="text-[10px] text-zinc-600 uppercase tracking-wider">Drained:</span>
+                  {drainedSoft.map(pid => (
+                    <span
+                      key={pid}
+                      className="px-1.5 py-0.5 text-[10px] rounded text-zinc-600 line-through bg-zinc-900/50 border border-zinc-800"
+                      title={`Balance ${(providerBalances[pid] ?? 0).toFixed(2)} SEK < ${DRAIN_THRESHOLD_SEK} — excluded from counter pool`}
+                    >
+                      {pid}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Per-provider arb cards */}
+              {fundedSoft.length === 0 ? (
+                <div className="px-3 py-3 text-[11px] text-zinc-600">
+                  No funded soft books. Fund a provider (balance ≥ {DRAIN_THRESHOLD_SEK} SEK) to see arb opps.
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  {fundedSoft.map(pid => {
+                    const bal = providerBalances[pid] ?? 0
+                    const pending = pendingByProvider[pid]?.length ?? 0
+                    const placed = placedToday[pid] ?? 0
+                    const isSkinActive = activeProviders.has(pid)
+                    const atCap = placed >= 10
+                    const opps = oppsByProvider[pid] ?? []
+                    return (
+                      <div key={pid} className="border-b border-zinc-800/50 last:border-b-0">
+                        {/* Header bar with activate button */}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/30">
+                          <button
+                            onClick={() => startSkin(pid)}
+                            className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                              isSkinActive
+                                ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
+                                : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                            }`}
+                          >
+                            <span className="uppercase font-semibold">{pid}</span>
+                            <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
+                          </button>
+                          <span className={`text-[10px] ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                            {placed}/10
+                          </span>
+                          {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
+                          {stakeCaps[pid] && (
+                            <span className="px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded">
+                              ≤{Math.round(stakeCaps[pid])}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-zinc-600 ml-auto">
+                            {opps.length} arb{opps.length === 1 ? '' : 's'}
+                          </span>
                         </div>
-                      </td>
-                      <td className="px-2 py-1 text-[11px]">
-                        <div className="flex flex-col gap-0.5">
-                          {counterLegs.map((leg: any, li: number) => {
-                            const legOutcome = leg.outcome
-                              ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
-                              : '—'
-                            const provList = leg.providers ?? (leg.provider ? [leg] : [])
-                            return (
-                              <div key={li} className="flex items-center gap-1 flex-wrap">
-                                <span className="text-amber-400/80">{legOutcome}</span>
-                                {provList.map((p: any, pi: number) => (
-                                  <span key={pi} className="inline-flex items-center gap-1">
-                                    <span className="text-zinc-500 uppercase text-[10px]">{p.provider ?? p.provider_id}</span>
-                                    <span className="font-mono text-zinc-300">@ {Number(p.odds ?? 0).toFixed(2)}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+
+                        {/* Per-provider arb table */}
+                        {opps.length === 0 ? (
+                          <div className="px-6 py-2 text-[10px] text-zinc-600">
+                            {arbLoading ? 'Scanning…' : 'No arbs for this provider right now.'}
+                          </div>
+                        ) : (
+                          <table className="w-full text-xs">
+                            <tbody>
+                              {opps.map((opp: any, i: number) => {
+                                const anchor = opp.anchor ?? {}
+                                const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
+                                const profitPct = opp.guaranteed_profit_pct ?? 0
+                                const eventLabel = opp.display_home && opp.display_away
+                                  ? `${opp.display_home} v ${opp.display_away}`
+                                  : opp.event_id
+                                // Anchor may be inline on opp.legs as the leg with provider === pid
+                                const anchorLeg = anchor.provider || anchor.provider_id
+                                  ? anchor
+                                  : (opp.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid) ?? {}
+                                const anchorOutcome = anchorLeg.outcome
+                                  ? (anchorLeg.point != null ? `${anchorLeg.outcome} ${anchorLeg.point}` : anchorLeg.outcome)
+                                  : '—'
+                                const counters = (counterLegs as any[]).filter(
+                                  (l: any) => (l.provider ?? l.provider_id) !== pid
+                                )
+                                return (
+                                  <tr key={`arb-${pid}-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
+                                    <td className={`pl-6 pr-2 py-1 font-mono font-semibold text-right w-[60px] ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      {profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%
+                                    </td>
+                                    <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
+                                    <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                                    <td className="px-2 py-1 text-[11px]">
+                                      <span className="text-amber-400">{anchorOutcome}</span>{' '}
+                                      <span className="font-mono text-zinc-200">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                    </td>
+                                    <td className="px-2 py-1 text-[11px]">
+                                      <div className="flex flex-col gap-0.5">
+                                        {counters.map((leg: any, li: number) => {
+                                          const legOutcome = leg.outcome
+                                            ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
+                                            : '—'
+                                          return (
+                                            <div key={li} className="flex items-center gap-1">
+                                              <span className="text-amber-400/80">{legOutcome}</span>
+                                              <span className="text-zinc-500 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
+                                              <span className="font-mono text-zinc-300">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
         {/* SECTION B — Value bets (unlimited providers only) */}
         {clusterIds.length > 0 && (
@@ -879,6 +951,59 @@ export default function PlayPage() {
             </div>
           )
         })}
+
+        {/* SECTION C — Top 20 Raw Edges (single-leg, includes negative) */}
+        <div className="border-t border-zinc-800 mt-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
+            <h3 className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Top 20 Edges (raw)</h3>
+            <span className="text-[10px] text-zinc-500 font-mono">{rawEdges.length}</span>
+            {rawEdgesLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
+            <span className="text-[10px] text-zinc-600 ml-auto">single-leg vs Pinnacle fair · negative included</span>
+          </div>
+          {rawEdges.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-zinc-600">
+              {rawEdgesLoading ? 'Loading…' : 'No edges available.'}
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                  <th className="pl-6 pr-2 py-1 text-right w-[60px]">Edge</th>
+                  <th className="px-2 py-1 text-left">Event</th>
+                  <th className="px-2 py-1 text-left">Market</th>
+                  <th className="px-2 py-1 text-left">Outcome</th>
+                  <th className="px-2 py-1 text-left">Provider</th>
+                  <th className="px-2 py-1 text-right">Odds</th>
+                  <th className="px-2 py-1 text-right">Fair</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rawEdges.map((opp: any, i: number) => {
+                  const edge = opp.edge_pct ?? 0
+                  const eventLabel = opp.display_home && opp.display_away
+                    ? `${opp.display_home} v ${opp.display_away}`
+                    : opp.event_id
+                  const outcome = opp.outcome1
+                    ? (opp.point != null ? `${opp.outcome1} ${opp.point}` : opp.outcome1)
+                    : '—'
+                  return (
+                    <tr key={`edge-${opp.id ?? i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
+                      <td className={`pl-6 pr-2 py-1 font-mono font-semibold text-right ${edge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
+                      </td>
+                      <td className="px-2 py-1 text-zinc-200 max-w-[240px] truncate text-[11px]">{eventLabel}</td>
+                      <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                      <td className="px-2 py-1 text-amber-400 text-[11px]">{outcome}</td>
+                      <td className="px-2 py-1 text-zinc-500 uppercase text-[10px]">{opp.provider1 ?? ''}</td>
+                      <td className="px-2 py-1 text-right font-mono text-zinc-200">{Number(opp.odds1 ?? 0).toFixed(2)}</td>
+                      <td className="px-2 py-1 text-right font-mono text-zinc-500">{Number(opp.fair_odds ?? 0).toFixed(2)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
       {/* Settlement toasts */}

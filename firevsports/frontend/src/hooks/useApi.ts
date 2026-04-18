@@ -15,10 +15,23 @@ export const api = {
   settleScan: () => apiFetch<any>('/api/opportunities/play/settle-scan'),
   // Dutch
   getDutchOpportunities: () => apiFetch<any>('/api/opportunities/dutch-workflow'),
-  getArbOpps: (providers: string[]) => {
+  getArbOpps: (providers: string[], counterpartProviders?: string[], limit?: number) => {
     if (!providers.length) return Promise.resolve({ opportunities: [] })
-    const qs = encodeURIComponent(providers.join(','))
-    return apiFetch<any>(`/api/opportunities/dutch-workflow?providers=${qs}`)
+    const params = new URLSearchParams({ providers: providers.join(',') })
+    if (counterpartProviders && counterpartProviders.length) {
+      params.set('counterpart_providers', counterpartProviders.join(','))
+    }
+    if (limit) params.set('limit', String(limit))
+    return apiFetch<any>(`/api/opportunities/dutch-workflow?${params.toString()}`)
+  },
+  // Raw single-leg edges (value opps vs Pinnacle fair) — includes negative edge
+  getRawEdges: (limit = 20) => {
+    const params = new URLSearchParams({
+      type: 'value',
+      limit: String(limit),
+      min_value: '-100',  // include negatives
+    })
+    return apiFetch<any>(`/api/opportunities?${params.toString()}`)
   },
   // Bankroll
   getBankrollSummary: () => apiFetch<any>('/api/bankroll'),
