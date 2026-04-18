@@ -27,6 +27,11 @@ class Strategy:
     navigate_to_event: Callable | None = None
     place_bet: Callable | None = None
     check_live_price: Callable | None = None
+    # Optional settlement extensions (Polymarket uses these for claim + redeem on-chain).
+    # Provider runner delegates to the strategy when all three are present.
+    scrape_portfolio: Callable | None = None  # (page, intel) -> list[dict] open positions
+    claim_banner: Callable | None = None      # (page, intel) -> {claimed, amount}
+    redeem_all: Callable | None = None        # (page, intel) -> {redeemed, skipped_open, errors, total}
 
 
 def load_strategy(provider_id: str) -> Strategy | None:

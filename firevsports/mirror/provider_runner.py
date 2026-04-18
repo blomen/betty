@@ -676,9 +676,17 @@ class ProviderRunner:
         """Detect settled bets and broadcast to UI — does NOT auto-record."""
         pending_bets = await self._fetch_pending(provider_id)
 
-        # Polymarket: DOM-based claim + redeem + match positions against pending
-        # bets via API proxy. settle_all can't be used — it does direct DB ops.
-        if hasattr(workflow, "claim_banner") and hasattr(workflow, "redeem_all"):
+        # Polymarket (or any provider with scrape_portfolio+claim_banner+redeem_all
+        # in its Strategy): DOM-based positions scrape → claim/redeem → match pending.
+        strat = getattr(workflow, "strategy", None)
+        intel = getattr(workflow, "intel", None)
+        supports_claim_redeem = bool(
+            strat
+            and getattr(strat, "claim_banner", None)
+            and getattr(strat, "redeem_all", None)
+            and getattr(strat, "scrape_portfolio", None)
+        )
+        if supports_claim_redeem:
             self.state = STATE_SETTLING
             self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
             try:
@@ -692,10 +700,8 @@ class ProviderRunner:
                     await asyncio.sleep(4)
 
                 # Scrape positions BEFORE redeeming (status visible: WON/LOST)
-                positions = []
-                if hasattr(workflow, "scrape_portfolio"):
-                    positions = await workflow.scrape_portfolio(page)
-                    logger.info(f"[Runner:{provider_id}] Scraped {len(positions)} positions")
+                positions = await strat.scrape_portfolio(page, intel)
+                logger.info(f"[Runner:{provider_id}] Scraped {len(positions)} positions")
 
                 # Match scraped positions against pending bets to build settlements
                 settlements = []
@@ -704,13 +710,13 @@ class ProviderRunner:
                     logger.info(f"[Runner:{provider_id}] Matched {len(settlements)} settlements")
 
                 # Click Claim banner if present
-                claim_result = await workflow.claim_banner(page)
+                claim_result = await strat.claim_banner(page, intel)
                 if claim_result.get("claimed"):
                     logger.info(f"[Runner:{provider_id}] Claimed: {claim_result.get('amount')}")
                     await asyncio.sleep(2)
 
                 # Click Redeem buttons for finished positions
-                redeem_result = await workflow.redeem_all(page)
+                redeem_result = await strat.redeem_all(page, intel)
                 logger.info(f"[Runner:{provider_id}] Redeem: {redeem_result}")
 
                 # Record settlements to DB via API proxy
