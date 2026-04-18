@@ -17,16 +17,16 @@ _WORKFLOW_CACHE: dict[str, ProviderWorkflow] = {}  # Cached instances per provid
 
 
 def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
+    # Polymarket migrated to data/mirror_intel/polymarket.json + strategies/polymarket.py
+    # and is routed via GenericWorkflow in get_workflow() ahead of this map.
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
     from .interwetten import InterwettenWorkflow
     from .kambi import KambiWorkflow
     from .pinnacle import PinnacleWorkflow
-    from .polymarket import PolymarketWorkflow
 
     return {
-        "polymarket": PolymarketWorkflow,
         "pinnacle": PinnacleWorkflow,
         "altenar": AltenarWorkflow,
         "gecko_v2": GeckoWorkflow,
