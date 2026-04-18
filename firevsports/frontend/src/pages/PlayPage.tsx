@@ -923,7 +923,7 @@ export default function PlayPage() {
                                   }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
-                                  <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>
+                                  <span className="ml-1 text-green-400 font-mono">{bal.toFixed(2)} kr</span>
                                 </button>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
                                 {stakeCaps[pid] && (
@@ -1058,7 +1058,11 @@ export default function PlayPage() {
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
-                        {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
+                        {bal > 0 && (
+                          <span className="ml-1 text-green-400 font-mono">
+                            {pid === 'polymarket' ? '$' : ''}{bal.toFixed(2)}{pid !== 'polymarket' ? ' kr' : ''}
+                          </span>
+                        )}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
                         {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
                       </button>
