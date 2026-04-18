@@ -1,0 +1,24 @@
+{
+  "provider_id": "pinnacle",
+  "domain": "pinnacle.se",
+  "api_base": "https://api.arcadia.pinnacle.se/0.1",
+  "markets": {
+    "designation_map": {
+      "home": "home",
+      "away": "away",
+      "draw": "draw",
+      "over": "over",
+      "under": "under"
+    },
+    "key_map": {
+      "moneyline": "s;0;m",
+      "1x2": "s;0;m",
+      "spread": "s;0;s",
+      "total": "s;0;ou"
+    }
+  },
+  "navigation": {
+    "event_url_template": "https://www.pinnacle.se/sv/matchup/{matchup_id}",
+    "history_path": "/sv/my-account/bet-history"
+  }
+}

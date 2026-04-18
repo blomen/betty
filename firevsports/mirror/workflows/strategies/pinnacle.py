@@ -90,6 +90,55 @@ def _american_to_decimal(price: float) -> float:
     return 1 + 100 / abs(price)
 
 
+async def _evaluate_api(page: "Page", url: str) -> Any:
+    try:
+        return await page.evaluate(
+            f"""async () => {{
+                const resp = await fetch("{url}", {{credentials: "include"}});
+                if (!resp.ok) return {{ __error: resp.status }};
+                return await resp.json();
+            }}"""
+        )
+    except Exception as e:
+        logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# Login — API ping: /wallet/balance returns amount iff authenticated.
+# ------------------------------------------------------------------
+
+async def _check_login(page: "Page", intel: dict | None) -> bool:
+    import asyncio
+
+    api = _api_base(intel)
+    # Give the page a moment to settle after nav (cookies may not be attached yet)
+    await asyncio.sleep(1)
+    for attempt in range(3):
+        result = await _evaluate_api(page, f"{api}/wallet/balance")
+        if result and "__error" not in (result if isinstance(result, dict) else {}):
+            if "amount" in result:
+                return True
+        if attempt < 2:
+            await asyncio.sleep(1.5)
+    return False
+
+
+# ------------------------------------------------------------------
+# Balance — /wallet/balance
+# ------------------------------------------------------------------
+
+async def _sync_balance(page: "Page", intel: dict | None) -> float:
+    api = _api_base(intel)
+    result = await _evaluate_api(page, f"{api}/wallet/balance")
+    if result and isinstance(result, dict) and "amount" in result:
+        try:
+            return float(result["amount"])
+        except (TypeError, ValueError):
+            pass
+    return -1.0
+
+
 # ------------------------------------------------------------------
 # Scan — read-only preview
 # ------------------------------------------------------------------
@@ -680,10 +729,10 @@ async def _navigate_to_event(page: "Page", bet, intel: dict | None) -> bool:
 
 
 strategy = Strategy(
+    check_login=_check_login,
+    sync_balance=_sync_balance,
     sync_history=_sync_history,
     place_bet=_place_bet,
     check_live_price=_check_live_price,
-    scan=_scan,
-    settle_all=_settle_all,
     navigate_to_event=_navigate_to_event,
 )
