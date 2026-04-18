@@ -60,6 +60,7 @@ export default function PlayPage() {
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
+  const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
   const [dutchHedgeStatus, setDutchHedgeStatus] = useState<Record<string, {
     status: 'placing' | 'placed' | 'failed' | 'unhedged'
     counter_provider?: string
@@ -221,6 +222,11 @@ export default function PlayPage() {
     if (type === 'live_price') {
       const key = `${data.event_id}:${data.market}:${data.outcome}`
       setLivePrices(prev => ({ ...prev, [key]: { odds: data.live_odds, edge: data.live_edge } }))
+    }
+    if (type === 'stake_limited') {
+      const pid = data.provider_id
+      const cap = data.cap ?? data.actual_stake
+      if (pid && cap) setStakeCaps(prev => ({ ...prev, [pid]: cap }))
     }
     if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null); setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}) }
     if (type === 'dutch_bet_ready') {
@@ -597,6 +603,7 @@ export default function PlayPage() {
                         {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
                         {!uncapped && <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
+                        {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
                       </button>
                     )
                   })}

@@ -58,6 +58,7 @@ class ProviderRunner:
         is_blocked: Callable[[dict], bool],
         placed_today: dict[str, int],
         peek_top_edge: Callable[[], float | None] | None = None,
+        stake_caps: dict[str, float] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -68,6 +69,7 @@ class ProviderRunner:
         self._is_blocked = is_blocked
         self._placed_today = placed_today
         self._peek_top_edge = peek_top_edge
+        self._stake_caps = stake_caps if stake_caps is not None else {}
 
         # Per-runner state
         self.state: str = STATE_IDLE
@@ -330,8 +332,13 @@ class ProviderRunner:
                 cached_bal = self._browser.provider_data.get(pid, {}).get("balance")
                 if cached_bal is not None and cached_bal > 0 and stake > cached_bal:
                     stake = cached_bal
-                    bet["stake"] = stake
-                    bet_ns.stake = stake
+                # Apply per-provider stake cap (learned from prior limit responses)
+                cap = self._stake_caps.get(pid)
+                if cap is not None and cap > 0 and stake > cap:
+                    logger.info(f"[Runner:{pid}] Capping stake {stake} → {cap} (provider limit)")
+                    stake = cap
+                bet["stake"] = stake
+                bet_ns.stake = stake
                 prep_result = await workflow.prep_betslip(page, bet_ns, stake)
 
                 # Check live price
@@ -510,6 +517,11 @@ class ProviderRunner:
                         actual_stake = req_stake
 
             if actual_stake and requested_stake and actual_stake < requested_stake * 0.9:
+                # Save cap for this provider so future bets respect it
+                prev_cap = self._stake_caps.get(pid)
+                if prev_cap is None or actual_stake < prev_cap:
+                    self._stake_caps[pid] = actual_stake
+                    logger.info(f"[Runner:{pid}] Stake cap learned: {actual_stake} (was requesting {requested_stake})")
                 self._broadcaster.publish(
                     "stake_limited",
                     {
@@ -517,6 +529,7 @@ class ProviderRunner:
                         "provider_id": pid,
                         "requested_stake": requested_stake,
                         "actual_stake": actual_stake,
+                        "cap": self._stake_caps[pid],
                     },
                 )
 

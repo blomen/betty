@@ -22,7 +22,7 @@ export function useMirrorStream() {
       'play_complete', 'play_stopped',
       'pending_started', 'history_synced', 'settlements_detected', 'settlements_confirmed',
       'balance_updated', 'balance_intercepted', 'history_intercepted', 'bet_intercepted',
-      'pending_stopped', 'live_price',
+      'pending_stopped', 'live_price', 'stake_limited',
       'dutch_bet_ready', 'dutch_hedge_placing', 'dutch_hedge_placed',
       'dutch_hedge_failed', 'dutch_unhedged', 'dutch_complete',
     ];

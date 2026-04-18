@@ -107,6 +107,8 @@ class PlayLoop:
         self.state: str = STATE_IDLE
         self._placed_today: dict[str, int] = {}
         self._blocked: set[tuple[str, str]] = set()
+        # Per-provider stake cap learned from limit responses (e.g. Unibet caps 70 SEK)
+        self._stake_caps: dict[str, float] = {}
 
         # Per-cluster queues: cluster_name → list of bets
         self._cluster_queues: dict[str, list[dict]] = {}
@@ -360,6 +362,7 @@ class PlayLoop:
                     is_blocked=self._is_blocked,
                     placed_today=self._placed_today,
                     peek_top_edge=self._make_peek_top_edge(cluster),
+                    stake_caps=self._stake_caps,
                 )
             self._runners[pid] = runner
             runner.start()
