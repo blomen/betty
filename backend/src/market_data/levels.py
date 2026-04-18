@@ -26,6 +26,11 @@ class VolumeProfile:
     val: float  # Value area low
     levels: list[VolumeProfileLevel] = field(default_factory=list)
     single_prints: list[tuple[float, float]] = field(default_factory=list)
+    # High/Low Volume Nodes — framework calls these "magnets" (HVN) and
+    # "slips" (LVN). HVN = local volume peak > 1.5× mean bucket volume and
+    # higher than both neighbors. LVN = local volume valley < 0.5× mean.
+    hvn_levels: list[float] = field(default_factory=list)
+    lvn_levels: list[float] = field(default_factory=list)
 
 
 @dataclass

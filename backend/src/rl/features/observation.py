@@ -216,7 +216,33 @@ def build_observation(state: dict) -> np.ndarray:
     # 13. Execution context (7) — Fabio's timing/auction rules
     seg_execution = extract_execution_features(state, recent_ticks, candles, price)
 
-    # 14. Zone touch memory (3) — session-level zone interaction history
+    # 14. Session-anchored CVD (2) — framework: CVD divergence at day scale,
+    # not a 20-candle rolling window. Normalized by session volume.
+    session_cvd = float(state.get("session_cvd", 0.0))
+    session_cvd_vol = float(state.get("session_cvd_total_vol", 0.0))
+    if session_cvd_vol > 0:
+        session_cvd_ratio = float(np.clip(session_cvd / session_cvd_vol, -1.0, 1.0))
+    else:
+        session_cvd_ratio = 0.0
+    session_cvd_sign = 1.0 if session_cvd > 0 else (-1.0 if session_cvd < 0 else 0.0)
+    seg_session_cvd = np.array([session_cvd_ratio, session_cvd_sign], dtype=np.float32)
+
+    # 15. HVN / LVN distance (2) — framework calls these "magnets" and "slips"
+    vp = volume_profile
+    hvn_dist = 0.0
+    lvn_dist = 0.0
+    if vp is not None:
+        hvns = getattr(vp, "hvn_levels", []) or []
+        lvns = getattr(vp, "lvn_levels", []) or []
+        if hvns:
+            nearest_hvn = min(hvns, key=lambda p: abs(p - price))
+            hvn_dist = float(np.clip((nearest_hvn - price) / (price * 0.002 + 1e-6), -1.0, 1.0))
+        if lvns:
+            nearest_lvn = min(lvns, key=lambda p: abs(p - price))
+            lvn_dist = float(np.clip((nearest_lvn - price) / (price * 0.002 + 1e-6), -1.0, 1.0))
+    seg_hvn_lvn = np.array([hvn_dist, lvn_dist], dtype=np.float32)
+
+    # 15. Zone touch memory (3) — session-level zone interaction history
     zone_memory = state.get("zone_memory", {})
     zone_key = None
     if zone is not None:
@@ -250,6 +276,8 @@ def build_observation(state: dict) -> np.ndarray:
             seg_micro,  # 20
             seg_approach,  # 1
             seg_execution,  # 7
+            seg_session_cvd,  # 2 (RTH-session CVD ratio + sign)
+            seg_hvn_lvn,  # 2 (signed distance to nearest HVN/LVN)
             seg_zone_memory,  # 3
         ]
     )

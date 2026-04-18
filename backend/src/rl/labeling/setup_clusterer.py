@@ -3,6 +3,7 @@
 Runs HDBSCAN on narrative features of episodes that didn't match any rule-based setup.
 Clusters are then mapped to setup types based on their centroid characteristics.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,8 +32,7 @@ def cluster_and_label(
         from hdbscan import HDBSCAN
     except ImportError:
         log.warning("hdbscan not installed — falling back to heuristic labeling")
-        return _heuristic_label(zone_types_list, rewards_cont, rewards_rev,
-                                price_vs_value, balance_widths)
+        return _heuristic_label(zone_types_list, rewards_cont, rewards_rev, price_vs_value, balance_widths)
 
     n = len(observations)
     clusterer = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=50)
@@ -52,8 +52,7 @@ def cluster_and_label(
             balance_widths=balance_widths[mask],
         )
 
-    log.info("Clustered %d episodes: %d clusters, %d noise",
-             n, len(set(cluster_ids) - {-1}), (cluster_ids == -1).sum())
+    log.info("Clustered %d episodes: %d clusters, %d noise", n, len(set(cluster_ids) - {-1}), (cluster_ids == -1).sum())
     return labels
 
 
@@ -79,11 +78,18 @@ def _classify_cluster(
     avg_balance = balance_widths.mean()
     cont_better = (rewards_cont > rewards_rev).mean()
 
+    # Thresholds tuned 2026-04-18: lowered balance_break avg_balance from 0.4
+    # → 0.25 (balance_widths are AMT dynamics idx 15 which rarely exceeds 0.4
+    # in historical data; 0.0 positives in last training). Lowered excess_ratio
+    # to 0.15 to match. Also require sample size >= 100 per cluster to avoid
+    # noise labels from tiny HDBSCAN clusters.
+    if len(rewards_cont) < 100:
+        return SetupType.UNKNOWN.value
     if poc_ratio > 0.3 and avg_pvv > 0.5 and rev_better > 0.55:
         return SetupType.ROTATION_TO_POC.value
-    if excess_ratio > 0.2:
+    if excess_ratio > 0.15:
         return SetupType.EXCESS_TEST.value
-    if avg_balance > 0.4 and cont_better > 0.55:
+    if avg_balance > 0.25 and cont_better > 0.55:
         return SetupType.BALANCE_BREAK.value
 
     return SetupType.UNKNOWN.value

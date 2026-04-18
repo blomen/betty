@@ -781,6 +781,31 @@ class ReplayEngine:
                 )
                 candle_flows_5m.append(agg)
 
+        # Session-anchored CVD — running sum of delta across RTH candle flows
+        # (framework: "CVD divergence" uses this, not a 20-candle rolling CVD).
+        # Only use flows inside RTH (filtered by _is_rth_bar equivalent via ts).
+        session_cvd = 0.0
+        session_cvd_total_vol = 0.0
+        if self._candle_flows:
+            for cf in self._candle_flows:
+                if _is_rth_bar({"ts": cf.ts}):
+                    session_cvd += float(cf.delta)
+                    session_cvd_total_vol += float(cf.volume)
+
+        # macro_bias: derive from VIX + yield curve for setups that gate on
+        # macro regime (news_directional, fakeout, spring etc). Without this
+        # the corresponding 14-dim setup detectors always produce zeros.
+        macro_bias = None
+        if macro:
+            vix = float(macro.get("vix", 20.0))
+            yc = float(macro.get("yield_curve_spread", macro.get("us10y", 0) - macro.get("us2y", 0)))
+            if vix > 25 or yc < -0.3:
+                macro_bias = "bear"
+            elif vix < 15 and yc > 0.3:
+                macro_bias = "bull"
+            else:
+                macro_bias = "neutral"
+
         return {
             "zone": zone,
             "all_zones": self._active_zones,
@@ -797,6 +822,9 @@ class ReplayEngine:
             "all_levels": all_level_prices,
             "orderflow_signals": of_signals,
             "macro": macro,
+            "macro_bias": macro_bias,
+            "session_cvd": session_cvd,
+            "session_cvd_total_vol": session_cvd_total_vol,
             "session_context": session_context,
             "day_type": day_type,
             "fvgs": self._fvgs,

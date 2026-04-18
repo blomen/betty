@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
+// Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
+const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet'])
+
 interface BatchBet {
   rank: number
   tier: string
@@ -72,6 +75,8 @@ export default function PlayPage() {
   const [dutchCounterPlan, setDutchCounterPlan] = useState<any[] | null>(null)
   const [dutchProfitPct, setDutchProfitPct] = useState<number | null>(null)
   const [dutchGroupId, setDutchGroupId] = useState<string | null>(null)
+  const [arbOpps, setArbOpps] = useState<any[]>([])
+  const [arbLoading, setArbLoading] = useState(false)
 
   const startSkin = async (pid: string) => {
     // Deselect — click active provider to remove it
@@ -128,6 +133,35 @@ export default function PlayPage() {
     const id = setInterval(load, 10_000)
     return () => clearInterval(id)
   }, [load])
+
+  // Active soft providers (arb-only). Derived on each render from activeProviders + UNLIMITED set.
+  const activeSoftProviders = Array.from(activeProviders).filter(pid => !UNLIMITED_PROVIDERS.has(pid))
+  const activeSoftKey = activeSoftProviders.sort().join(',')
+
+  const loadArbOpps = useCallback(async () => {
+    const pids = activeSoftKey ? activeSoftKey.split(',') : []
+    if (pids.length === 0) {
+      setArbOpps([])
+      return
+    }
+    try {
+      setArbLoading(true)
+      const res = await api.getArbOpps(pids)
+      const opps = (res?.opportunities ?? []) as any[]
+      opps.sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
+      setArbOpps(opps)
+    } catch {
+      /* swallow — UI shows empty state */
+    } finally {
+      setArbLoading(false)
+    }
+  }, [activeSoftKey])
+
+  useEffect(() => {
+    loadArbOpps()
+    const id = setInterval(loadArbOpps, 30_000)
+    return () => clearInterval(id)
+  }, [loadArbOpps])
 
   // SSE event handler
   useEffect(() => {
@@ -253,6 +287,7 @@ export default function PlayPage() {
     if (type === 'dutch_complete') {
       setDutchProfitPct(data.guaranteed_profit_pct ?? dutchProfitPct)
       setTimeout(() => { setDutchCounterPlan(null); setDutchProfitPct(null); setDutchGroupId(null); setDutchHedgeStatus({}); setCurrentBetReady(null) }, 5000)
+      loadArbOpps()
     }
     if (type === 'provider_complete') {
       setLoopProviderStatus(prev => {
@@ -348,24 +383,22 @@ export default function PlayPage() {
     return `${Math.round(h / 24)}d`
   }
 
-  // Providers that limit fast — extract via Dutch tab, not value betting
-  const DUTCH_ONLY = new Set(['betinia', 'campobet', 'lodur', 'quickcasino', 'swiper', 'dbet', 'interwetten'])
   const bets = batch.filter(b => {
-    if (DUTCH_ONLY.has(b.provider_id)) return false
+    if (!UNLIMITED_PROVIDERS.has(b.provider_id)) return false
     if (b.edge_pct <= 0) return false
     const h = getTtkHours(b)
     if (h != null && h > ttkFilter) return false
     return true
   })
 
-  // Static cluster membership — mirrors PLATFORM_GROUPS from constants.py
-  // Altenar sites excluded — they limit fast, extract via Dutch tab instead
-  const CLUSTER_MEMBERS: Record<string, string[]> = {
-    kambi: ['unibet', 'leovegas', 'expekt', 'betmgm', 'speedybet', 'x3000', 'goldenbull', '1x2'],
-    spectate: ['888sport', 'mrgreen'],
-    gecko_betsson: ['betsson', 'nordicbet', 'betsafe', 'spelklubben'],
-    comeon_group: ['comeon', 'lyllo', 'hajper', 'snabbare'],
-  }
+  // Soft providers seen in the current batch — drive the arb activation bar.
+  // Derived from batch data so the UI follows whatever the backend returns.
+  const softProviders = Array.from(
+    new Set(batch.map(b => b.provider_id).filter(pid => !UNLIMITED_PROVIDERS.has(pid)))
+  ).sort()
+
+  // Unlimited providers behave as their own standalone "cluster" — no sibling dedup needed.
+  const CLUSTER_MEMBERS: Record<string, string[]> = {}
   const providerToCluster: Record<string, string> = {}
   for (const [cluster, members] of Object.entries(CLUSTER_MEMBERS)) {
     for (const pid of members) providerToCluster[pid] = cluster
@@ -373,19 +406,22 @@ export default function PlayPage() {
   // Override with actual batch data (in case cluster names differ)
   for (const b of batch) providerToCluster[b.provider_id] = b.cluster || b.provider_id
 
-  // Group by cluster — flat list, no provider sub-grouping
+  // Group by cluster — flat list, no provider sub-grouping.
+  // Section B clusters are UNLIMITED-only; soft providers are handled in the arb section.
   const byCluster: Record<string, BatchBet[]> = {}
   for (const b of bets) {
     const cluster = b.cluster || b.provider_id
     if (!byCluster[cluster]) byCluster[cluster] = []
     byCluster[cluster].push(b)
   }
-  // Ensure clusters exist for ALL providers with balance or pending (even if no bets)
+  // Ensure clusters exist for UNLIMITED providers with balance or pending (even if no bets)
   for (const pid of Object.keys(providerBalances)) {
+    if (!UNLIMITED_PROVIDERS.has(pid)) continue
     const cluster = providerToCluster[pid] || pid
     if (!byCluster[cluster]) byCluster[cluster] = []
   }
   for (const pid of Object.keys(pendingByProvider)) {
+    if (!UNLIMITED_PROVIDERS.has(pid)) continue
     const cluster = providerToCluster[pid] || pid
     if (!byCluster[cluster]) byCluster[cluster] = []
   }
@@ -558,10 +594,134 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Main content — flat list per cluster */}
+      {/* Main content */}
       <div className="flex-1 overflow-y-auto">
+        {/* SECTION A — Arb Opportunities (soft books, arb-only) */}
+        <div className="border-b border-zinc-800 pb-2 mb-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
+            <h3 className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">
+              Arb Opportunities
+            </h3>
+            <span className="text-[10px] text-zinc-500 font-mono">{arbOpps.length}</span>
+            {arbLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
+            <span className="text-[10px] text-zinc-600 ml-auto">
+              activate soft books to stream arbs
+            </span>
+          </div>
+
+          {/* Soft-book activation bar — derived from batch */}
+          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-zinc-800/50 bg-zinc-900/20">
+            {softProviders.length === 0 && (
+              <span className="text-[10px] text-zinc-600">No soft providers in current batch.</span>
+            )}
+            {softProviders.map(pid => {
+              const bal = providerBalances[pid] ?? 0
+              const pending = pendingByProvider[pid]?.length ?? 0
+              const placed = placedToday[pid] ?? 0
+              const isSkinActive = activeProviders.has(pid)
+              const atCap = placed >= 10
+              return (
+                <button key={pid}
+                  onClick={() => startSkin(pid)}
+                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                    isSkinActive
+                      ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
+                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                  }`}
+                >
+                  <span className="uppercase font-semibold">{pid}</span>
+                  {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
+                  <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>
+                  {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
+                  {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Arb opps table */}
+          {activeSoftProviders.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-zinc-600">
+              Select one or more soft books above to see live arb opportunities.
+            </div>
+          ) : arbOpps.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-zinc-600">
+              {arbLoading ? 'Loading arbs…' : 'No arb opportunities for the selected providers.'}
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                  <th className="pl-6 pr-2 py-1 text-left">Profit</th>
+                  <th className="px-2 py-1 text-left">Event</th>
+                  <th className="px-2 py-1 text-left">Market</th>
+                  <th className="px-2 py-1 text-left">Anchor</th>
+                  <th className="px-2 py-1 text-left">Counter</th>
+                </tr>
+              </thead>
+              <tbody>
+                {arbOpps.map((opp: any, i: number) => {
+                  const anchor = opp.anchor ?? {}
+                  const counterLegs = opp.counter_plan ?? opp.counter_legs ?? []
+                  const profitPct = opp.guaranteed_profit_pct ?? 0
+                  const eventLabel = opp.display_home && opp.display_away
+                    ? `${opp.display_home} v ${opp.display_away}`
+                    : opp.event_id
+                  const anchorOutcome = anchor.outcome
+                    ? (anchor.point != null ? `${anchor.outcome} ${anchor.point}` : anchor.outcome)
+                    : '—'
+                  return (
+                    <tr key={`arb-${i}`} className="border-b border-zinc-800/30 hover:bg-zinc-800/40">
+                      <td className="pl-6 pr-2 py-1 font-mono font-semibold text-green-400 text-right w-[70px]">
+                        +{profitPct.toFixed(2)}%
+                      </td>
+                      <td className="px-2 py-1 text-zinc-200 max-w-[240px] truncate">{eventLabel}</td>
+                      <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                      <td className="px-2 py-1 text-[11px]">
+                        <div className="flex items-center gap-1">
+                          <span className="text-zinc-500 uppercase text-[10px]">{anchor.provider_id ?? anchor.provider ?? '—'}</span>
+                          <span className="text-amber-400">{anchorOutcome}</span>
+                          <span className="font-mono text-zinc-200">@ {Number(anchor.odds ?? 0).toFixed(2)}</span>
+                        </div>
+                      </td>
+                      <td className="px-2 py-1 text-[11px]">
+                        <div className="flex flex-col gap-0.5">
+                          {counterLegs.map((leg: any, li: number) => {
+                            const legOutcome = leg.outcome
+                              ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
+                              : '—'
+                            const provList = leg.providers ?? (leg.provider ? [leg] : [])
+                            return (
+                              <div key={li} className="flex items-center gap-1 flex-wrap">
+                                <span className="text-amber-400/80">{legOutcome}</span>
+                                {provList.map((p: any, pi: number) => (
+                                  <span key={pi} className="inline-flex items-center gap-1">
+                                    <span className="text-zinc-500 uppercase text-[10px]">{p.provider ?? p.provider_id}</span>
+                                    <span className="font-mono text-zinc-300">@ {Number(p.odds ?? 0).toFixed(2)}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* SECTION B — Value bets (unlimited providers only) */}
+        {clusterIds.length > 0 && (
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800">
+            <h3 className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Value Bets</h3>
+            <span className="text-[10px] text-zinc-500 font-mono">{bets.length}</span>
+          </div>
+        )}
         {clusterIds.length === 0 && batch.length > 0 && (
-          <div className="p-4 text-zinc-500 text-xs">No positive-edge bets available.</div>
+          <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet).</div>
         )}
 
         {clusterIds.map(clusterId => {
@@ -599,7 +759,6 @@ export default function PlayPage() {
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
-                        {DUTCH_ONLY.has(pid) && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH</span>}
                         {bal > 0 && <span className="ml-1 text-zinc-500">{Math.round(bal)}</span>}
                         {!uncapped && <span className={`ml-1 ${atCap ? 'text-red-400' : placed > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>{placed}/10</span>}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}

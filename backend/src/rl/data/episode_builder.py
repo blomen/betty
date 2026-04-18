@@ -373,16 +373,21 @@ def label_outcome_from_array(
 
         if behind:
             struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0
-            optimal_stop = max(6.0, min(40.0, struct_dist))
         else:
-            optimal_stop = float(_STOP_TICKS_TRAIL)
+            struct_dist = float(_STOP_TICKS_TRAIL)
 
-        # Use MAE as a floor — stop must be wider than breathing room
+        # Blend structural distance with MAE rather than hard-clamping. Previous
+        # approach produced a bimodal stop_target distribution (50% at floor 6,
+        # 45% at cap 40) which left the stop head with almost no gradient.
+        # Blend gives a smoother target distribution the GBT can learn.
         mae = long_mae if direction == 1 else short_mae
         if mae > 0:
             mae_floor = mae + 2.0
-            optimal_stop = max(optimal_stop, mae_floor)
-            optimal_stop = min(40.0, optimal_stop)
+            # Weighted average: structural is primary anchor, MAE softens it
+            optimal_stop = 0.7 * max(struct_dist, mae_floor) + 0.3 * min(struct_dist, mae_floor)
+        else:
+            optimal_stop = struct_dist
+        optimal_stop = float(max(4.0, min(50.0, optimal_stop)))
 
     # Best direction stats — use breakeven from _count_levels_captured
     if best_action == Action.CONTINUATION:

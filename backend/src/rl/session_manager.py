@@ -115,6 +115,10 @@ class SessionManager:
     REVERSAL_CUSHION_R: float = 2.0  # Only take reversal trades after +2R session profit
     IB_NO_TRADE_MINUTES: float = 15.0  # Don't trade during IB formation (first 15 min)
     PROFIT_CAP_R: float = 20.0  # Stop trading after hitting session profit target
+    MAX_TRADES_PER_SESSION: int = (
+        8  # Framework: 3 trades is ideal; 8 allows for wider interpretation but caps over-trading
+    )
+    NEWS_BLACKOUT_MINUTES: float = 15.0  # Avoid trading ±15 min around high-importance news (FOMC/NFP/CPI)
 
     def __init__(
         self,
@@ -179,6 +183,8 @@ class SessionManager:
             return self._signal("skip", current_price, reason="3_stops_halt")
         if self.session.total_pnl_r >= self.PROFIT_CAP_R:
             return self._signal("skip", current_price, reason="profit_cap_reached")
+        if self.session.trade_count >= self.MAX_TRADES_PER_SESSION:
+            return self._signal("skip", current_price, reason="max_trades_reached")
 
         # IB no-trade zone: skip during first 15 min of session
         touch_epoch = state.get("touch_epoch", 0.0)
@@ -186,6 +192,15 @@ class SessionManager:
             minutes_since_open = (touch_epoch - self.session.session_rth_open_epoch) / 60.0
             if 0 < minutes_since_open < self.IB_NO_TRADE_MINUTES:
                 return self._signal("skip", current_price, reason="ib_formation")
+
+        # News blackout: skip ±15 min around high-importance scheduled events.
+        # macro.news_proximity > threshold AND news_importance == high.
+        macro = state.get("macro") or {}
+        news_prox = float(macro.get("news_proximity", 0.0))
+        news_imp = float(macro.get("news_importance", 0.0))
+        # news_proximity = 1 - min_to_event/120, so >0.875 ≈ within 15 min
+        if news_prox > 0.875 and news_imp >= 2.5 / 3.0:
+            return self._signal("skip", current_price, reason="news_blackout")
 
         # Run inference — prefer specialists if available
         obs = build_observation(state)

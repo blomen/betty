@@ -3,6 +3,7 @@
 These maintain running state so each tick is O(1) rather than recomputing
 from scratch over the full trade history.
 """
+
 import math
 
 from ...market_data.levels import VolumeProfile, VolumeProfileLevel, VWAPBands
@@ -101,11 +102,7 @@ class IncrementalVolumeProfile:
                 if hi_idx < len(sorted_prices) - 1
                 else 0
             )
-            expand_down = (
-                buckets.get(sorted_prices[max(lo_idx - 1, 0)], 0)
-                if lo_idx > 0
-                else 0
-            )
+            expand_down = buckets.get(sorted_prices[max(lo_idx - 1, 0)], 0) if lo_idx > 0 else 0
 
             if expand_up >= expand_down and hi_idx < len(sorted_prices) - 1:
                 hi_idx += 1
@@ -126,12 +123,38 @@ class IncrementalVolumeProfile:
             if buckets[sorted_prices[i]] < poc_vol * 0.05:
                 single_prints.append((sorted_prices[i], sorted_prices[i]))
 
-        levels = [
-            VolumeProfileLevel(price=p, volume=v)
-            for p, v in sorted(buckets.items())
-        ]
+        # HVN / LVN detection — local volume peaks and valleys inside VA.
+        # Framework calls HVN "magnets" (price tends to pause/react) and LVN
+        # "slips" (price moves through fast). These are critical AMT reference
+        # points the model previously had no access to.
+        mean_vol = total_volume / max(len(sorted_prices), 1)
+        hvn_levels: list[float] = []
+        lvn_levels: list[float] = []
+        if len(sorted_prices) >= 3:
+            for i in range(1, len(sorted_prices) - 1):
+                p = sorted_prices[i]
+                v = buckets[p]
+                v_prev = buckets[sorted_prices[i - 1]]
+                v_next = buckets[sorted_prices[i + 1]]
+                # Only count within value area (HVN/LVN in tails are noisy)
+                if not (val <= p <= vah):
+                    continue
+                if v > mean_vol * 1.5 and v > v_prev and v > v_next and p != poc:
+                    hvn_levels.append(p)
+                elif v < mean_vol * 0.5 and v < v_prev and v < v_next:
+                    lvn_levels.append(p)
 
-        return VolumeProfile(poc=poc, vah=vah, val=val, levels=levels, single_prints=single_prints)
+        levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items())]
+
+        return VolumeProfile(
+            poc=poc,
+            vah=vah,
+            val=val,
+            levels=levels,
+            single_prints=single_prints,
+            hvn_levels=hvn_levels,
+            lvn_levels=lvn_levels,
+        )
 
     def reset(self) -> None:
         """Clear all accumulated state."""

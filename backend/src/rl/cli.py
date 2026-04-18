@@ -15,19 +15,112 @@ _ET = ZoneInfo("US/Eastern")
 rl_app = typer.Typer(help="RL Trading Agent — fetch, replay, train, eval")
 
 
+def _generate_historical_news_events(start_year: int, end_year: int) -> list:
+    """Generate NFP (first Friday 8:30 ET) + FOMC-proxy dates for historical
+    replay. We don't have a full historical economic calendar going back to
+    2011, so use the recurring high-impact events that dominate NQ:
+    - NFP: first Friday of each month, 8:30 ET (12:30 UTC after DST adjust)
+    - FOMC: 8 meetings/year, typically Wed at 14:00 ET; approximate as the
+      4th-to-last Wed of Jan/Mar/May/Jun/Jul/Sep/Oct/Dec (rough but captures
+      the timeslot and frequency).
+
+    Returns list of dicts with ts_utc, importance (3 for FOMC, 2 for NFP).
+    """
+    from datetime import datetime, timedelta
+    from datetime import timezone as _tz
+
+    events = []
+    for year in range(start_year, end_year + 1):
+        # NFP: first Friday of each month, 8:30 ET = 13:30 UTC (EST) / 12:30 UTC (EDT)
+        for month in range(1, 13):
+            d = datetime(year, month, 1, tzinfo=_tz.utc)
+            # find first Friday
+            while d.weekday() != 4:
+                d += timedelta(days=1)
+            # 13:30 UTC approximation
+            events.append(
+                {
+                    "ts_utc": d.replace(hour=13, minute=30),
+                    "importance": 2,
+                    "name": "NFP",
+                }
+            )
+        # FOMC: approx 8/year, every 6 weeks starting late-January
+        d = datetime(year, 1, 29, 19, 0, tzinfo=_tz.utc)  # 2:00 PM ET = 19:00 UTC
+        for _ in range(8):
+            # snap to Wednesday
+            while d.weekday() != 2:
+                d += timedelta(days=1)
+            events.append({"ts_utc": d, "importance": 3, "name": "FOMC"})
+            d += timedelta(weeks=6)
+    events.sort(key=lambda e: e["ts_utc"])
+    return events
+
+
+def _compute_news_features(session_date, events: list) -> tuple[float, float]:
+    """For a given session date, return (news_proximity, news_importance).
+
+    news_proximity = 1 - minutes_to_nearest_event/120, clipped [0, 1]
+    news_importance = nearest_event.importance / 3
+    """
+    from datetime import datetime
+    from datetime import timezone as _tz
+
+    if not events:
+        return 0.0, 0.0
+    # session midpoint: approximate 12:00 UTC on session_date
+    if hasattr(session_date, "year"):
+        ref = datetime(session_date.year, session_date.month, session_date.day, 12, 0, tzinfo=_tz.utc)
+    else:
+        return 0.0, 0.0
+    # find nearest event within ±2h (events only matter intraday)
+    nearest = None
+    nearest_delta = None
+    for e in events:
+        delta_min = abs((e["ts_utc"] - ref).total_seconds()) / 60.0
+        if delta_min > 24 * 60:
+            continue
+        if nearest_delta is None or delta_min < nearest_delta:
+            nearest = e
+            nearest_delta = delta_min
+    if nearest is None or nearest_delta > 120:
+        return 0.0, 0.0
+    news_proximity = max(0.0, min(1.0, 1.0 - nearest_delta / 120.0))
+    news_importance = nearest["importance"] / 3.0
+    return news_proximity, news_importance
+
+
 def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
     """Convert raw macro parquet (VIX, DXY, US10Y, US2Y levels) into
     the dict format expected by extract_macro_features().
 
     Computes daily changes, yield curve spread, regime score,
     and merges weekly COT data (forward-filled to daily).
+
+    The source parquet has separate rows per ticker per day (Yahoo bars
+    arrive at 05:00 UTC for DXY and 06:00 UTC for VIX/yields, never
+    merged). Without pre-processing, each row iteration sees only one
+    field populated → dxy/us10y/us2y changes were all NaN and rendered
+    as zeros in training. Collapse to one row per calendar date and
+    forward-fill missing columns before computing changes.
     """
+    import pandas as pd
+
+    # Collapse to one row per ET-aware calendar date, forward-fill so every
+    # row has every field populated (recovers 4 dead dims in macro[3..6]).
+    if macro_df is not None and not macro_df.empty:
+        df = macro_df.copy()
+        # index is tz-aware UTC; use its date component as the key.
+        df["_date"] = df.index.date
+        df = df.groupby("_date").last().sort_index()
+        df = df.ffill()  # fill gaps where a day only had one ticker reported
+        df.index.name = "date"
+        macro_df = df
+
     # Build COT lookup: forward-fill weekly COT to daily resolution
     cot_lookup: dict = {}
     if cot_df is not None and not cot_df.empty:
         # Reindex COT to daily frequency, forward-fill
-        import pandas as pd
-
         daily_idx = pd.date_range(cot_df.index.min(), cot_df.index.max(), freq="D")
         cot_daily = cot_df.reindex(daily_idx, method="ffill")
         for date_idx, row in cot_daily.iterrows():
@@ -51,6 +144,19 @@ def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
                 "cleared_volume": float(row.get("cleared_volume", 0)),
                 "block_volume": float(row.get("block_volume", 0)),
             }
+
+    # Pre-generate recurring US economic events (NFP + FOMC) for the macro
+    # date range — recovers news_proximity / news_importance dims that were
+    # hardcoded to 0.0 in historical replay.
+    news_events = []
+    if macro_df is not None and not macro_df.empty:
+        idx = macro_df.index
+        try:
+            start_year = int(idx.min().year) if hasattr(idx.min(), "year") else 2011
+            end_year = int(idx.max().year) if hasattr(idx.max(), "year") else 2026
+        except Exception:
+            start_year, end_year = 2011, 2026
+        news_events = _generate_historical_news_events(start_year, end_year)
 
     macro_data: dict = {}
     prev_row = None
@@ -104,6 +210,14 @@ def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
         if cot:
             entry["cot_net_position"] = cot["cot_net_position"]
             entry["cot_net_change"] = cot["cot_net_change"]
+
+        # News proximity/importance from recurring event schedule
+        try:
+            news_prox, news_imp = _compute_news_features(date_idx, news_events)
+            entry["news_proximity"] = news_prox
+            entry["news_importance"] = news_imp
+        except Exception:
+            pass
 
         # Merge exchange stats if available for this date
         stats = stats_lookup.get(date_str)

@@ -15,6 +15,11 @@ export const api = {
   settleScan: () => apiFetch<any>('/api/opportunities/play/settle-scan'),
   // Dutch
   getDutchOpportunities: () => apiFetch<any>('/api/opportunities/dutch-workflow'),
+  getArbOpps: (providers: string[]) => {
+    if (!providers.length) return Promise.resolve({ opportunities: [] })
+    const qs = encodeURIComponent(providers.join(','))
+    return apiFetch<any>(`/api/opportunities/dutch-workflow?providers=${qs}`)
+  },
   // Bankroll
   getBankrollSummary: () => apiFetch<any>('/api/bankroll'),
   getBankrollStats: () => apiFetch<any>('/api/bankroll/stats'),
