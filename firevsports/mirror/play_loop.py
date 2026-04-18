@@ -74,7 +74,7 @@ LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
 DAILY_BET_CAP = 10  # max bets per soft provider per day
 
 # Unlimited providers — play value bets via ProviderRunner (no arb required; they don't limit).
-# Everything else (soft books) routes through DutchRunner for arb-only placement.
+# Everything else (soft books) routes through ArbRunner for arb-only placement.
 UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
 UNCAPPED_PROVIDERS = UNLIMITED_PROVIDERS  # backward-compat alias for existing imports
 
@@ -329,12 +329,12 @@ class PlayLoop:
         """Create and start runners for providers that don't have one yet.
 
         Routing: UNLIMITED_PROVIDERS (pinnacle/poly/cloudbet) play value bets via
-        ProviderRunner. All other (soft) providers play arb-only via DutchRunner.
+        ProviderRunner. All other (soft) providers play arb-only via ArbRunner.
         """
-        from .dutch_runner import DutchRunner
+        from .arb_runner import ArbRunner
         from .provider_runner import ProviderRunner
 
-        # DutchRunner needs the full active-provider set to know its counter pool
+        # ArbRunner needs the full active-provider set to know its counter pool
         active = list(provider_ids)
 
         for pid in provider_ids:
@@ -360,7 +360,7 @@ class PlayLoop:
                     stake_caps=self._stake_caps,
                 )
             else:
-                runner = DutchRunner(
+                runner = ArbRunner(
                     provider_id=pid,
                     browser=self._browser,
                     broadcaster=self._broadcaster,
@@ -372,7 +372,7 @@ class PlayLoop:
                 )
             self._runners[pid] = runner
             runner.start()
-            logger.info(f"[PlayCoordinator] Spawned {'ProviderRunner' if is_unlimited else 'DutchRunner'} for {pid}")
+            logger.info(f"[PlayCoordinator] Spawned {'ProviderRunner' if is_unlimited else 'ArbRunner'} for {pid}")
 
     def _add_new_runners(self) -> None:
         """Add runners for newly-selected providers while coordinator is running."""

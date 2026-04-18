@@ -41,7 +41,7 @@ def get_provider_last_checked(db: Session, provider_ids: list[str] | None = None
     return {pid: ts.isoformat() + "Z" if ts else None for pid, ts in q.all()}
 
 
-def _get_dutch_legs(outcomes) -> list:
+def _get_arb_legs(outcomes) -> list:
     """Extract legs list from outcomes JSON (handles legacy list and new dict format)."""
     if isinstance(outcomes, list):
         return outcomes
@@ -145,8 +145,8 @@ class OpportunityService:
                     if (opp.event_id, opp.market, opp.outcome1, opp.point) not in pending_keys
                 ]
 
-        # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
-        if type in ("value", "dutch", "reverse", "reverse_value") and rows and profile:
+        # Initialize stake calculator for value/arb/reverse/reverse_value bets using profile risk settings
+        if type in ("value", "arb", "reverse", "reverse_value") and rows and profile:
             try:
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
@@ -233,9 +233,9 @@ class OpportunityService:
             if type == "value" and stake_calculator and profile and opp.odds1 and opp.odds2:
                 self._add_stake_recommendation(result, opp, profile, stake_calculator, bonus_cache)
 
-            # Add dutch/reverse-specific fields
-            if type in ("dutch", "reverse") and stake_calculator and profile:
-                self._add_dutch_recommendation(result, opp, profile, stake_calculator)
+            # Add arb/reverse-specific fields
+            if type in ("arb", "reverse") and stake_calculator and profile:
+                self._add_arb_recommendation(result, opp, profile, stake_calculator)
 
             # Add stake recommendations for reverse value bets (Pinnacle vs consensus)
             if type == "reverse_value" and stake_calculator and profile and opp.odds1 and opp.odds2:
@@ -395,16 +395,16 @@ class OpportunityService:
             "anchor_balance": round(anchor_balance, 2),
         }
 
-    def scan_dutch_workflow(
+    def scan_arb_workflow(
         self,
         anchor_providers: list[str],
         major_only: bool = False,
         counterpart_providers: list[str] | None = None,
         limit: int = 50,
     ) -> dict:
-        """Live-scan dutch opportunities forcing anchor providers into legs.
+        """Live-scan arb opportunities forcing anchor providers into legs.
 
-        Scans the odds DB for each anchor provider and returns dutch
+        Scans the odds DB for each anchor provider and returns arb
         opportunities sorted by edge (including negative edge).
         Optionally restricts counterpart (non-anchor) legs to specific providers.
         """
@@ -423,7 +423,7 @@ class OpportunityService:
         seen: dict[str, dict] = {}  # key = "event_id|market" -> best opp dict
         for provider_id in anchor_providers:
             canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
-            opps = scanner.scan_dutch_for_provider(canonical, counterpart_providers=counterpart_canonical)
+            opps = scanner.scan_arb_for_provider(canonical, counterpart_providers=counterpart_canonical)
             for opp in opps:
                 key = f"{opp.event_id}|{opp.market}"
                 # Replace provider in legs from canonical → requested alias
@@ -497,7 +497,7 @@ class OpportunityService:
                         if key not in prov_names_map:
                             prov_names_map[key] = (meta.get("prov_home"), meta.get("prov_away"))
 
-        # Format for API response (DutchOpp-compatible)
+        # Format for API response (ArbOpp-compatible)
         formatted = []
         for i, r in enumerate(results[:limit]):
             # Extract point from market key
@@ -527,7 +527,7 @@ class OpportunityService:
             formatted.append(
                 {
                     "id": i + 1,
-                    "type": "dutch",
+                    "type": "arb",
                     "event_id": r["event_id"],
                     "market": clean_market,
                     "point": point_value,
@@ -644,10 +644,10 @@ class OpportunityService:
             result["bonus_amount"] = None
             result["min_odds_applied"] = None
 
-    def _add_dutch_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
-        """Add dutch stake recommendation fields to an opportunity result dict."""
+    def _add_arb_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
+        """Add arb stake recommendation fields to an opportunity result dict."""
         try:
-            legs_data = _get_dutch_legs(opp.outcomes)
+            legs_data = _get_arb_legs(opp.outcomes)
             arb_profit_pct, arb_legs = _get_arb_data(opp.outcomes)
             guaranteed_profit_pct = opp.profit_pct or 0
             total_stake = 0.0
@@ -670,7 +670,7 @@ class OpportunityService:
                         break
 
             if trigger_provider and trigger_amount > 0 and legs_data:
-                # Scale total dutch stake so the trigger provider's leg equals trigger_amount
+                # Scale total arb stake so the trigger provider's leg equals trigger_amount
                 total_inv = sum(1.0 / leg["odds"] for leg in legs_data)
                 # Find the trigger leg's inverse-odds weight
                 trigger_leg_inv = 0.0
@@ -682,7 +682,7 @@ class OpportunityService:
                     # trigger_leg_stake = total_stake * (trigger_leg_inv / total_inv) = trigger_amount
                     total_stake = trigger_amount * total_inv / trigger_leg_inv
             elif guaranteed_profit_pct > 0:
-                # Guaranteed profit dutch: use max single bet cap (no Kelly needed, it's riskless)
+                # Guaranteed profit arb: use max single bet cap (no Kelly needed, it's riskless)
                 total_stake = stake_calculator.bankroll * stake_calculator.single_bet_cap_pct
             else:
                 # Partial coverage: use Kelly on the best EV leg's edge
@@ -697,7 +697,7 @@ class OpportunityService:
                     )
                     total_stake = stake_rec.stake
 
-            # Split into per-leg stakes using dutch formula
+            # Split into per-leg stakes using arb formula
             legs_with_stakes = []
             if legs_data and total_stake > 0:
                 total_inv = sum(1.0 / leg["odds"] for leg in legs_data)
@@ -719,10 +719,10 @@ class OpportunityService:
             result["arb_profit_pct"] = arb_profit_pct
             result["arb_legs"] = arb_legs
         except Exception as e:
-            logger.debug(f"Dutch stake calculation failed for opp {opp.id}: {e}")
+            logger.debug(f"Arb stake calculation failed for opp {opp.id}: {e}")
             result["guaranteed_profit_pct"] = opp.profit_pct or 0
             result["total_stake"] = 0
-            result["legs"] = _get_dutch_legs(opp.outcomes)
+            result["legs"] = _get_arb_legs(opp.outcomes)
             result["trigger_provider"] = None
             result["arb_profit_pct"] = None
             result["arb_legs"] = None

@@ -23,8 +23,8 @@ export function useMirrorStream() {
       'pending_started', 'history_synced', 'settlements_detected', 'settlements_confirmed',
       'balance_updated', 'balance_intercepted', 'history_intercepted', 'bet_intercepted',
       'pending_stopped', 'live_price', 'stake_limited',
-      'dutch_bet_ready', 'dutch_hedge_placing', 'dutch_hedge_placed',
-      'dutch_hedge_failed', 'dutch_unhedged', 'dutch_complete',
+      'arb_bet_ready', 'arb_hedge_placing', 'arb_hedge_placed',
+      'arb_hedge_failed', 'arb_unhedged', 'arb_complete',
     ];
 
     for (const type of eventTypes) {

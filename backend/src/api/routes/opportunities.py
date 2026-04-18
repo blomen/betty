@@ -117,15 +117,15 @@ def match_bonus_bet(
     return result
 
 
-@router.get("/dutch-workflow")
-def dutch_workflow(
+@router.get("/arb-workflow")
+def arb_workflow(
     providers: str,
     major_only: bool = False,
     counterpart_providers: Optional[str] = None,
     limit: int = 50,
     service: OpportunityService = Depends(_get_service),
 ):
-    """Live-scan dutch opportunities for specific anchor providers."""
+    """Live-scan arb opportunities for specific anchor providers."""
     provider_list = [p.strip() for p in providers.split(",") if p.strip()]
     if not provider_list:
         raise HTTPException(400, "At least one provider required")
@@ -133,7 +133,7 @@ def dutch_workflow(
         [p.strip() for p in counterpart_providers.split(",") if p.strip()]
         if counterpart_providers else None
     )
-    return service.scan_dutch_workflow(
+    return service.scan_arb_workflow(
         anchor_providers=provider_list,
         major_only=major_only,
         counterpart_providers=counterpart_list,

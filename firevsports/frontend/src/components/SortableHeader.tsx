@@ -12,7 +12,7 @@ interface SortableHeaderProps<K extends string> {
  * Clickable table column header with sort indicator.
  *
  * Shows ▲/▼ next to the active sort column.
- * Uniform across all tab pages (ValuePage, PolymarketPage, DutchPage, SpecialsPage).
+ * Uniform across all tab pages.
  */
 export function SortableHeader<K extends string>({
   column,

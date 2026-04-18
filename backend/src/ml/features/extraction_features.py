@@ -106,7 +106,7 @@ def update_extraction_outcomes(
     run_id: str,
     value_bets_found: int,
     avg_edge_pct: float | None,
-    dutch_opportunities_found: int = 0,
+    arb_opportunities_found: int = 0,
     reverse_opportunities_found: int = 0,
 ) -> None:
     from src.db.models import ExtractionFeature
@@ -114,6 +114,6 @@ def update_extraction_outcomes(
     if row:
         row.value_bets_found = value_bets_found
         row.avg_edge_pct = avg_edge_pct
-        row.dutch_opportunities_found = dutch_opportunities_found
+        row.arb_opportunities_found = arb_opportunities_found
         row.reverse_opportunities_found = reverse_opportunities_found
         session.flush()

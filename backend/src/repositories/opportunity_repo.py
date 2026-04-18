@@ -132,7 +132,7 @@ class OpportunityRepo:
             self.db.add(opp)
             return True, opp
 
-    def upsert_dutch(
+    def upsert_arb(
         self,
         event_id: str,
         market: str,
@@ -143,7 +143,7 @@ class OpportunityRepo:
         arb_profit_pct: float | None = None,
         arb_legs: list[dict] | None = None,
     ) -> tuple[bool, "Opportunity"]:
-        """Upsert a dutch opportunity. Returns (is_new, opportunity)."""
+        """Upsert an arb opportunity. Returns (is_new, opportunity)."""
         # Primary leg = highest edge, secondary = second highest
         sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
         primary = sorted_legs[0]
@@ -152,7 +152,7 @@ class OpportunityRepo:
         existing = self.db.query(Opportunity).filter(
             Opportunity.event_id == event_id,
             Opportunity.market == market,
-            Opportunity.type == "dutch",
+            Opportunity.type == "arb",
         ).first()
 
         now = datetime.now(timezone.utc)
@@ -192,7 +192,7 @@ class OpportunityRepo:
             return False, existing
         else:
             opp = Opportunity(
-                type="dutch",
+                type="arb",
                 event_id=event_id,
                 market=market,
                 outcome1=primary["outcome"],
@@ -220,7 +220,7 @@ class OpportunityRepo:
         guaranteed_profit_pct: float,
         point: float | None = None,
     ) -> tuple[bool, "Opportunity"]:
-        """Upsert a reverse dutch opportunity. Returns (is_new, opportunity)."""
+        """Upsert a reverse arb opportunity. Returns (is_new, opportunity)."""
         sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
         primary = sorted_legs[0]
         secondary = sorted_legs[1] if len(sorted_legs) > 1 else sorted_legs[0]

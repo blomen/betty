@@ -10,7 +10,7 @@
 | Soft providers | 15 canonical (30 active incl. aliases) |
 | Total DB odds | 62,399 (was 106k before fixes) |
 | Value opportunities | 1,045 |
-| Dutch opportunities | 376 |
+| Arb opportunities | 376 |
 | Reverse value | 44 |
 | Specials/boosts | 225 scraped, 5 +EV |
 
@@ -190,7 +190,7 @@ Validated results (full extraction run):
 | Tipwin events | 0 | 107 | **recovered** |
 | Total DB odds | 106,225 | 62,399 | **-41%** |
 | Value opps | 1,260 | 1,045 | -17% (cleaner data) |
-| Dutch opps | 383 | 376 | -2% |
+| Arb opps | 383 | 376 | -2% |
 | Reverse opps | 36 | 44 | +22% |
 
 ### 2026-02-20
@@ -211,7 +211,7 @@ Results:
 | 10bet basketball | 0 ev | 35 ev | **recovered** |
 | tipwin total | 205 ev | 1,301 ev | +535% (site-side) |
 | Value opportunities | 476 | 610 | +28% |
-| Dutch opportunities | 464 | 584 | +26% |
+| Arb opportunities | 464 | 584 | +26% |
 
 ### 2026-02-15
 

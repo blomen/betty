@@ -3,7 +3,7 @@
 export const TAB_COLORS: Record<string, string> = {
   play: '#22c55e',
   value: '#FF9800',
-  dutch: '#10b981',
+  arb: '#10b981',
   reverse: '#EF5350',
   polymarket: '#A855F7',
   stats: '#1E88E5',

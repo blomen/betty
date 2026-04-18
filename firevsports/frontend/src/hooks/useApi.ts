@@ -14,7 +14,6 @@ export const api = {
   settleConfirm: () => apiFetch<any>('/api/opportunities/play/settle-confirm', { method: 'POST' }),
   settleScan: () => apiFetch<any>('/api/opportunities/play/settle-scan'),
   // Arb
-  getArbOpportunities: () => apiFetch<any>('/api/opportunities/arb-workflow'),
   getArbOpps: (providers: string[], counterpartProviders?: string[], limit?: number) => {
     if (!providers.length) return Promise.resolve({ opportunities: [] })
     const params = new URLSearchParams({ providers: providers.join(',') })

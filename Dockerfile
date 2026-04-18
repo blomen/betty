@@ -1,15 +1,4 @@
-# ---- Stage 1: Frontend build (Node.js doesn't end up in final image) ----
-FROM node:20-alpine AS frontend
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --ignore-scripts
-COPY frontend/ ./
-ARG VITE_FIREV_API_KEY=""
-ENV VITE_FIREV_API_KEY=${VITE_FIREV_API_KEY}
-RUN npm run build
-
-
-# ---- Stage 2: Backend runtime ----
+# ---- Backend runtime ----
 FROM python:3.10-slim
 
 # System deps for Playwright/Camoufox headless browsers
@@ -35,9 +24,6 @@ RUN mkdir -p backend/src && touch backend/src/__init__.py && \
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 RUN playwright install chromium && playwright install-deps
 
-# Frontend build artifacts (from stage 1 — no node_modules, no Node.js)
-COPY --from=frontend /app/frontend/dist frontend/dist
-
 # Backend source — this is the LAST layer, so code changes only rebuild this
 COPY backend/ backend/
 
@@ -53,7 +39,6 @@ RUN useradd -m -u 1000 -s /bin/bash firev && \
 
 ENV FIREV_DATA_DIR=/app/data
 ENV FIREV_LOGS_DIR=/app/logs
-ENV FIREV_FRONTEND_DIR=/app/frontend/dist
 
 EXPOSE 8000
 

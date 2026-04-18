@@ -111,7 +111,7 @@ class OpportunityAnalyzer:
         # Clean up stale opportunities before detection (incremental deactivation when provided)
         cleanup_stats = self.opp_repo.cleanup_stale(changed_event_ids=changed_event_ids)
 
-        # Pre-load events once — shared across all scan types (value, dutch, reverse)
+        # Pre-load events once — shared across all scan types (value, arb, reverse)
         events = self.scanner.get_multi_provider_events(min_providers=2)
 
         # Incremental mode: restrict scan to changed events only
@@ -129,7 +129,7 @@ class OpportunityAnalyzer:
 
         results = {
             "value": {"found": 0, "new": 0, "fanned": 0},
-            "dutch": {"found": 0, "new": 0},
+            "arb": {"found": 0, "new": 0},
             "reverse": {"found": 0, "new": 0},
             "reverse_value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
@@ -161,13 +161,13 @@ class OpportunityAnalyzer:
                 results["value"]["fanned"] += value_count.get("fanned", 0)
                 upserted_opps.extend(value_count.get("opps", []))
 
-                # Detect dutch/reverse (cross-book opportunities)
-                dutch_count = self._detect_dutch(event, market, odds_by_outcome, odds_grouped)
-                results["dutch"]["found"] += dutch_count["dutch_found"]
-                results["dutch"]["new"] += dutch_count["dutch_new"]
-                results["reverse"]["found"] += dutch_count["reverse_found"]
-                results["reverse"]["new"] += dutch_count["reverse_new"]
-                upserted_opps.extend(dutch_count.get("opps", []))
+                # Detect arb/reverse (cross-book opportunities)
+                arb_count = self._detect_arb(event, market, odds_by_outcome, odds_grouped)
+                results["arb"]["found"] += arb_count["arb_found"]
+                results["arb"]["new"] += arb_count["arb_new"]
+                results["reverse"]["found"] += arb_count["reverse_found"]
+                results["reverse"]["new"] += arb_count["reverse_new"]
+                upserted_opps.extend(arb_count.get("opps", []))
 
                 # Detect reverse value (Pinnacle vs soft consensus)
                 rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome, odds_grouped)
@@ -217,7 +217,7 @@ class OpportunityAnalyzer:
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
             f"{results['value']['found']} value bets, "
-            f"{results['dutch']['found']} dutch, "
+            f"{results['arb']['found']} arb, "
             f"{results['reverse']['found']} reverse, "
             f"{results['reverse_value']['found']} reverse_value"
         )
@@ -441,7 +441,7 @@ class OpportunityAnalyzer:
 
         return result
 
-    def _detect_dutch(
+    def _detect_arb(
         self,
         event,
         market: str,
@@ -449,17 +449,17 @@ class OpportunityAnalyzer:
         all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> dict:
         """
-        Detect dutch opportunities for a market.
+        Detect arb opportunities for a market.
 
         Soft book legs with +EV; Pinnacle legs at fair odds (0% edge) as coverage.
         Requires at least one soft +EV leg.
 
         Returns:
-            {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
+            {"arb_found": int, "arb_new": int, "reverse_found": int, "reverse_new": int}
         """
-        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0, "opps": []}
+        result = {"arb_found": 0, "arb_new": 0, "reverse_found": 0, "reverse_new": 0, "opps": []}
 
-        opp = self.scanner._find_dutch_in_market(
+        opp = self.scanner._find_arb_in_market(
             event=event,
             market=market,
             odds_by_outcome=odds_by_outcome,
@@ -478,10 +478,10 @@ class OpportunityAnalyzer:
 
         providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in opp.legs)
         logger.debug(
-            f"[Analyzer] Dutch found: {event.id} {market} GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
+            f"[Analyzer] Arb found: {event.id} {market} GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
         )
 
-        result["dutch_found"] = 1
+        result["arb_found"] = 1
 
         # ── Post-validation: reject if platform dedup failed ──
         # Safety net: ensure no two soft legs share the same canonical platform.
@@ -496,7 +496,7 @@ class OpportunityAnalyzer:
                 has_platform_violation = True
                 logger.warning(
                     f"[Analyzer] Platform violation detected! {event.id} {market}: "
-                    f"multiple soft legs on canonical '{canon}' — skipping dutch"
+                    f"multiple soft legs on canonical '{canon}' — skipping arb"
                 )
                 break
             seen_canonicals.add(canon)
@@ -504,10 +504,10 @@ class OpportunityAnalyzer:
         if has_platform_violation:
             return result
 
-        # Store once with canonical providers (no fan-out needed for dutch —
+        # Store once with canonical providers (no fan-out needed for arb —
         # there's only one row per event+market, so fan-out to platform members
         # would overwrite the same row N times with only the last write persisting).
-        is_new, dutch_opp = self.opp_repo.upsert_dutch(
+        is_new, arb_opp = self.opp_repo.upsert_arb(
             event_id=event.id,
             market=clean_market,
             legs=opp.legs,
@@ -517,8 +517,8 @@ class OpportunityAnalyzer:
             arb_profit_pct=opp.arb_profit_pct,
             arb_legs=opp.arb_legs,
         )
-        result["opps"].append(dutch_opp)
+        result["opps"].append(arb_opp)
         if is_new:
-            result["dutch_new"] = 1
+            result["arb_new"] = 1
 
         return result

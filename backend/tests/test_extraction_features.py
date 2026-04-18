@@ -109,7 +109,7 @@ def test_extraction_features_outcome_resolution(db_session):
     result = db_session.query(ExtractionFeature).filter_by(run_id="run-xyz").first()
     result.value_bets_found = 47
     result.avg_edge_pct = 8.2
-    result.dutch_opportunities_found = 12
+    result.arb_opportunities_found = 12
     db_session.commit()
 
     updated = db_session.query(ExtractionFeature).filter_by(run_id="run-xyz").first()

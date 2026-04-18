@@ -136,7 +136,7 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
 # Only extract sports where Pinnacle provides sharp lines AND soft providers
 # have head-to-head match coverage for value comparison.
 # Excluded: golf, cycling, motorsports (outright/winner markets only — no soft match coverage)
-# Major leagues per sport — used by dutch workflow "limited" toggle
+# Major leagues per sport — used by arb workflow "limited" toggle
 # When limited at a provider, only play major leagues where limits are higher
 MAJOR_LEAGUES: dict[str, list[str]] = {
     "football": [

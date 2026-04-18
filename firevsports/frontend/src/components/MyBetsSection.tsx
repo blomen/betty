@@ -16,7 +16,7 @@ interface MyBetsSectionProps {
   filter: (bet: Bet) => boolean;
   /** Color key from TAB_COLORS (e.g. 'value', 'success', 'reverse') */
   colorKey: string;
-  /** Unique prefix for localStorage persistence (e.g. 'value', 'dutch') */
+  /** Unique prefix for localStorage persistence (e.g. 'value', 'arb') */
   persistKey?: string;
 }
 

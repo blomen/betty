@@ -65,8 +65,8 @@ MAX_REVERSE_ODDS = 15.0
 
 
 @dataclass
-class DutchOpportunity:
-    """A dutch betting opportunity: opposing outcomes both +EV at different providers."""
+class ArbOpportunity:
+    """An arbitrage opportunity: opposing outcomes both +EV at different providers."""
 
     event_id: str
     market: str
@@ -413,9 +413,9 @@ class OpportunityScanner:
         logger.info(f"[Scanner] Found {len(opportunities)} bonus opportunities for {anchor_provider}")
         return opportunities
 
-    def scan_dutch(self, min_edge_pct: float = 0.0, events: list = None) -> list[DutchOpportunity]:
+    def scan_arb(self, min_edge_pct: float = 0.0, events: list = None) -> list[ArbOpportunity]:
         """
-        Find pure dutch opportunities: ALL legs +EV at different providers.
+        Find pure arbitrage opportunities: ALL legs +EV at different providers.
 
         Every outcome must beat Pinnacle fair odds (positive edge on every leg).
         These are the highest-quality cross-book opportunities.
@@ -425,7 +425,7 @@ class OpportunityScanner:
             events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
-            List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
+            List of ArbOpportunity sorted by guaranteed_profit_pct (highest first)
         """
         opportunities = []
 
@@ -440,30 +440,30 @@ class OpportunityScanner:
                 if skip_spreads and market.startswith("spread"):
                     continue
 
-                dutch = self._find_dutch_in_market(
+                arb = self._find_arb_in_market(
                     event=event,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     all_markets=odds_grouped,
                 )
-                if dutch and dutch.combined_edge_pct >= min_edge_pct:
-                    # Dutch: at least one soft +EV leg, others at fair odds (0% edge)
-                    if any(leg["edge_pct"] > 0 and not leg["is_sharp"] for leg in dutch.legs):
-                        opportunities.append(dutch)
+                if arb and arb.combined_edge_pct >= min_edge_pct:
+                    # Arb: at least one soft +EV leg, others at fair odds (0% edge)
+                    if any(leg["edge_pct"] > 0 and not leg["is_sharp"] for leg in arb.legs):
+                        opportunities.append(arb)
 
         opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
 
         logger.info(
-            f"[Scanner] Found {len(opportunities)} dutch opportunities "
+            f"[Scanner] Found {len(opportunities)} arb opportunities "
             f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
         )
         return opportunities
 
-    def scan_reverse(self, min_edge_pct: float = 0.0, events: list = None) -> list[DutchOpportunity]:
+    def scan_reverse(self, min_edge_pct: float = 0.0, events: list = None) -> list[ArbOpportunity]:
         """
-        Find reverse dutch opportunities: at least one soft +EV leg, others covered.
+        Find reverse arbitrage opportunities: at least one soft +EV leg, others covered.
 
-        Unlike pure dutch (all legs +EV), reverse dutch has some legs at negative
+        Unlike pure arb (all legs +EV), reverse arb has some legs at negative
         edge (typically covered by Pinnacle raw odds). Useful for reducing variance
         on strong single-leg value bets.
 
@@ -472,7 +472,7 @@ class OpportunityScanner:
             events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
-            List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
+            List of ArbOpportunity sorted by guaranteed_profit_pct (highest first)
         """
         opportunities = []
 
@@ -487,42 +487,42 @@ class OpportunityScanner:
                 if skip_spreads and market.startswith("spread"):
                     continue
 
-                dutch = self._find_dutch_in_market(
+                arb = self._find_arb_in_market(
                     event=event,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     all_markets=odds_grouped,
                 )
-                if dutch and dutch.combined_edge_pct >= min_edge_pct:
+                if arb and arb.combined_edge_pct >= min_edge_pct:
                     # Reverse: has at least one negative-edge leg
-                    if any(leg["edge_pct"] <= 0 for leg in dutch.legs):
-                        opportunities.append(dutch)
+                    if any(leg["edge_pct"] <= 0 for leg in arb.legs):
+                        opportunities.append(arb)
 
         opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
 
         logger.info(
-            f"[Scanner] Found {len(opportunities)} reverse dutch opportunities "
+            f"[Scanner] Found {len(opportunities)} reverse arb opportunities "
             f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
         )
         return opportunities
 
-    def scan_dutch_for_provider(
+    def scan_arb_for_provider(
         self,
         provider_id: str,
         counterpart_providers: list[str] | None = None,
-    ) -> list[DutchOpportunity]:
+    ) -> list[ArbOpportunity]:
         """
-        Find dutch opportunities where provider_id is forced as one of the legs.
+        Find arb opportunities where provider_id is forced as one of the legs.
 
-        Unlike scan_dutch(), this does NOT require +EV — returns all dutch including
-        negative edge. Used by the dutch workflow for balance draining.
+        Unlike scan_arb(), this does NOT require +EV — returns all arbs including
+        negative edge. Used by the arb workflow for balance draining.
 
         Args:
-            provider_id: Provider to force into the dutch (e.g. 'betinia')
+            provider_id: Provider to force into the arb (e.g. 'betinia')
             counterpart_providers: If set, only allow these providers for non-anchor legs
 
         Returns:
-            List of DutchOpportunity sorted by combined_edge_pct (highest first)
+            List of ArbOpportunity sorted by combined_edge_pct (highest first)
         """
         opportunities = []
 
@@ -536,7 +536,7 @@ class OpportunityScanner:
                 if skip_spreads and market.startswith("spread"):
                     continue
 
-                dutch = self._find_dutch_in_market(
+                arb = self._find_arb_in_market(
                     event=event,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
@@ -544,15 +544,15 @@ class OpportunityScanner:
                     anchor_provider=provider_id,
                     counterpart_providers=counterpart_providers,
                 )
-                if dutch is None:
+                if arb is None:
                     continue
                 # Only include if the provider actually appears in a leg
-                if any(leg["provider"] == provider_id for leg in dutch.legs):
-                    opportunities.append(dutch)
+                if any(leg["provider"] == provider_id for leg in arb.legs):
+                    opportunities.append(arb)
 
         opportunities.sort(key=lambda x: x.combined_edge_pct, reverse=True)
 
-        logger.info(f"[Scanner] Found {len(opportunities)} dutch-workflow opportunities for {provider_id}")
+        logger.info(f"[Scanner] Found {len(opportunities)} arb-workflow opportunities for {provider_id}")
         return opportunities
 
     def scan_reverse_value(self, min_edge_pct: float = 2.0, events: list = None) -> list[ValueBet]:
@@ -669,7 +669,7 @@ class OpportunityScanner:
 
         return values
 
-    def _find_dutch_in_market(
+    def _find_arb_in_market(
         self,
         event: Event,
         market: str,
@@ -677,11 +677,11 @@ class OpportunityScanner:
         all_markets: dict[str, dict[str, list[dict]]] = None,
         anchor_provider: str | None = None,
         counterpart_providers: list[str] | None = None,
-    ) -> DutchOpportunity | None:
+    ) -> ArbOpportunity | None:
         """
-        Find a dutch opportunity in a single market.
+        Find an arb opportunity in a single market.
 
-        Cross-book dutch: uses best odds per outcome from ANY provider (soft or
+        Cross-book arb: uses best odds per outcome from ANY provider (soft or
         Pinnacle raw). Edge is always computed vs Pinnacle de-vigged fair odds.
 
         When anchor_provider is None: requires at least one soft +EV leg.
@@ -842,16 +842,16 @@ class OpportunityScanner:
         if len(all_providers) < 2:
             return None
 
-        # Dutch calculation: stake all outcomes, guaranteed return = 1/sum(1/odds)
-        dutch_sum = sum(1.0 / best_per_outcome[out]["odds"] for out in all_outcomes)
-        guaranteed_return_per_unit = 1.0 / dutch_sum
+        # Arb calculation: stake all outcomes, guaranteed return = 1/sum(1/odds)
+        total_inv_sum = sum(1.0 / best_per_outcome[out]["odds"] for out in all_outcomes)
+        guaranteed_return_per_unit = 1.0 / total_inv_sum
         guaranteed_profit_pct = round((guaranteed_return_per_unit - 1) * 100, 2)
 
         # Per-leg stake percentages (how much of total stake goes to each leg)
         legs = []
         for out in all_outcomes:
             data = best_per_outcome[out]
-            stake_pct = round((1.0 / data["odds"]) / dutch_sum * 100, 2)
+            stake_pct = round((1.0 / data["odds"]) / total_inv_sum * 100, 2)
             legs.append(
                 {
                     "outcome": out,
@@ -909,7 +909,7 @@ class OpportunityScanner:
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
 
-        return DutchOpportunity(
+        return ArbOpportunity(
             event_id=event.id,
             market=market,
             legs=legs,
@@ -942,7 +942,7 @@ class OpportunityScanner:
         Uses PLATFORM_MAP (underlying odds engine) for conflict detection,
         NOT PROVIDER_CANONICAL (extraction consolidation groups).
         e.g. dbet and betinia are both 'altenar' even though dbet is extracted
-        separately — dutching across them is pointless.
+        separately — arbing across them is pointless.
         """
         return PLATFORM_MAP.get(provider, provider)
 

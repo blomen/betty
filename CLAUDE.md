@@ -13,12 +13,12 @@ The repo contains three independent programs sharing one codebase:
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
 | **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
-| **FirevSports** | Your PC | Local betting client: Play, Pending, Dutch, Bankroll, Stats + Playwright mirror | `firevsports/firevsports.bat` |
+| **FirevSports** | Your PC | Local betting client: Play, Bankroll, Stats + Playwright mirror | `firevsports/firevsports.bat` |
 | **FirevStocks** | Your PC | Local trading client: Chart, DQN, Bankroll, Stats + TopstepX | `firevstocks/firevstocks.bat` |
 
-**Server** is a pure compute/data engine — no UI for betting or trading. It runs extraction, analysis, and serves the API.
+**Server** is a pure compute/data engine — no UI. It runs extraction, analysis, and serves the API.
 
-**FirevSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend with 5 tabs.
+**FirevSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend. The **Play** tab is the unified betting view: arbitrage flow for soft books (via `ArbRunner`), value-bet flow for unlimited providers (pinnacle / polymarket / cloudbet) via `ProviderRunner`.
 
 **FirevStocks** is the local trading app (managed by a separate agent).
 
@@ -30,14 +30,14 @@ Hetzner Server (24/7, headless)              Your PC
 │   ├── providers/    # 16 extractors        │   ├── server.py       # Thin FastAPI proxy + mirror
 │   ├── pipeline/     # orchestrator         │   ├── mirror/         # Playwright browser + interceptor
 │   ├── analysis/     # scanner, devig       │   │   ├── browser.py  # Browser lifecycle + network interception
-│   ├── matching/     # Fuzzy matching       │   │   ├── play_loop.py    # Automated betting loop
-│   ├── bankroll/     # Kelly sizing         │   │   ├── pending_loop.py # Settlement sync loop
-│   ├── api/          # FastAPI endpoints    │   │   └── workflows/  # Provider DOM automation
-│   └── db/           # PostgreSQL ORM       │   └── frontend/      # React: Play, Pending, Dutch, Bankroll, Stats
-├── frontend/src/     # Server dashboard     │
-│   └── pages/        # Poly, Soft, Pinnacle,├── firevstocks/        # Local trading client (separate agent)
-│                     # Dutch, Bankroll, Stats│   ├── server.py
-└── docker-compose.yml                       │   └── frontend/
+│   ├── matching/     # Fuzzy matching       │   │   ├── play_loop.py    # Automated betting loop (value + arb)
+│   ├── bankroll/     # Kelly sizing         │   │   ├── arb_runner.py   # Arbitrage play loop for soft books
+│   ├── api/          # FastAPI endpoints    │   │   ├── pending_loop.py # Settlement sync loop
+│   └── db/           # PostgreSQL ORM       │   │   └── workflows/  # Provider DOM automation
+└── docker-compose.yml                       │   └── frontend/      # React: Play, Bankroll, Stats
+                                             ├── firevstocks/        # Local trading client (separate agent)
+                                             │   ├── server.py
+                                             │   └── frontend/
                                              │
                                              └── SSH tunnel → server API (port 18000)
 ```
@@ -46,11 +46,10 @@ Hetzner Server (24/7, headless)              Your PC
 
 | Frontend | Location | Purpose | Served by |
 |----------|----------|---------|-----------|
-| **Server dashboard** | `frontend/` | Read-only: Poly, Soft, Pinnacle, Dutch, Bankroll, Stats | Nginx on server |
-| **FirevSports** | `firevsports/frontend/` | Betting: Play, Pending, Dutch, Bankroll, Stats + mirror control | Local FastAPI |
+| **FirevSports** | `firevsports/frontend/` | Betting: Play (unified arb + value), Bankroll, Stats + mirror control | Local FastAPI |
 | **FirevStocks** | `firevstocks/frontend/` | Trading: Chart, DQN, Bankroll, Stats | Local FastAPI |
 
-**The server `frontend/` has NO Play tab.** All betting happens through FirevSports locally.
+**The server is API-only — no visual UI.** All betting/trading happens through the local clients.
 
 ### Server Backend
 
@@ -197,7 +196,7 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 ### How It Works
 1. SSH tunnel to server API (port 18000 → Docker backend:8000)
 2. Thin local FastAPI (port 8000): proxies `/api/*` to tunnel, serves frontend, controls Playwright browser
-3. React frontend: Play, Pending, Dutch, Bankroll, Stats tabs
+3. React frontend: Play, Bankroll, Stats tabs. Play is the unified view for arbitrage + value bets.
 4. Playwright browser: headed Chromium for bet placement on provider sites
 
 ### Play Workflow (HIGH-LEVEL)
@@ -242,19 +241,19 @@ firevsports/
 ├── proxy.py              # Reverse proxy to server tunnel
 ├── mirror/
 │   ├── browser.py        # Playwright lifecycle + network interception
-│   ├── play_loop.py      # Automated betting state machine
+│   ├── play_loop.py      # Automated betting state machine (value + arb coordination)
+│   ├── arb_runner.py     # Arbitrage runner for soft books (anchor + auto-hedge)
 │   ├── pending_loop.py   # Settlement sync loop
 │   ├── router.py         # /mirror/* endpoints
 │   ├── sse.py            # Local SSE broadcaster
 │   └── workflows/        # Provider DOM automation (copied from backend)
-└── frontend/             # Dedicated React app (NOT the server frontend)
+└── frontend/             # Dedicated React app
 ```
 
-### Frontends (IMPORTANT — read carefully)
-- **`frontend/`** — SERVER dashboard only (Poly, Soft, Pinnacle, Dutch, Bankroll, Stats). Deployed to Hetzner. NO Play tab.
-- **`firevsports/frontend/`** — LOCAL betting client (Play, Pending, Dutch, Bankroll, Stats). Runs on your PC only.
+### Frontends (IMPORTANT)
+- **`firevsports/frontend/`** — LOCAL betting client (Play, Bankroll, Stats). Runs on your PC only. Play is the unified view for all bet types.
 - **`firevstocks/frontend/`** — LOCAL trading client (separate agent manages this).
-- **Do NOT confuse them.** Changes to betting UI go in `firevsports/frontend/`, not `frontend/`.
+- **The server has no frontend.** It's API-only. Any betting UI work goes in `firevsports/frontend/`.
 
 ## WHY It's Structured This Way
 
@@ -313,22 +312,6 @@ cd backend && pytest tests/
 - Rate limits enforced via circuit breaker in orchestrator
 - Event matching uses `rapidfuzz` for team name normalization
 - Shared constants in `constants.py` (ALLOWED_MARKETS, SHARP_PROVIDERS)
-
-### UI Uniformity Rule (IMPORTANT)
-**All tab pages must follow the same UI patterns. When adding a feature to one page, apply it to all similar pages.**
-
-Standard patterns:
-- **FilterBar** with `MultiSelectDropdown` for provider/sport filtering (shared component in `FilterBar.tsx`)
-- **Expanded rows** use `<select>` dropdown to pick provider + single bet button (not multiple per-provider buttons)
-- **Accent colors** per tab: `tabValue` (orange) for Soft, `tabBonus` (purple) for Specials, `success` (green) for Dutch
-- **Table structure**: compact `sq` class, consistent column naming (Event/Boost, Providers, Odds, Edge, etc.)
-- **EV data**: show `edge_pct` (vs Pinnacle fair odds) wherever available, not just `boost_pct` (vs original odds)
-
-Shared filter components in `frontend/src/components/Terminal/FilterBar.tsx`:
-- `MultiSelectDropdown` — compact popover with checkboxes + search (for >6 options)
-- `SingleSelectPills` — inline pill buttons for single-select categories
-- `MultiSelectPills` — inline pills for multi-select (available, not yet used)
-- `RangeFilter` — min/max number inputs (available, not yet used)
 
 ### Code Cleanup Rule (IMPORTANT)
 **If you find any redundant code handling markets other than 1x2/moneyline/spread/total, remove it immediately.**

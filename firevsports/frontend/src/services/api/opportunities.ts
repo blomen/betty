@@ -12,7 +12,7 @@ export const opportunitiesApi = {
 
   // ============ Opportunities ============
   async getOpportunities(
-    type?: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value',
+    type?: 'arbitrage' | 'value' | 'bonus' | 'arb' | 'reverse' | 'reverse_value',
     activeOnly = true,
     provider1?: string,
     provider2?: string,
@@ -33,7 +33,7 @@ export const opportunitiesApi = {
     return fetchJson(`/opportunities?${params}`);
   },
 
-  async getDutchWorkflow(
+  async getArbWorkflow(
     providers: string[],
     majorOnly: boolean,
     limit: number = 50,
@@ -51,7 +51,7 @@ export const opportunitiesApi = {
       params.set('counterpart_providers', counterpartProviders.join(','));
     }
     params.set('_t', String(Date.now())); // Cache-bust: live scan, never cache
-    return fetchJson(`/opportunities/dutch-workflow?${params}`);
+    return fetchJson(`/opportunities/arb-workflow?${params}`);
   },
 
   // ============ Clusters ============

@@ -221,7 +221,7 @@ def _create_extraction_features(conn: sqlite3.Connection) -> None:
             avg_match_rate REAL,
             value_bets_found INTEGER,
             avg_edge_pct REAL,
-            dutch_opportunities_found INTEGER,
+            arb_opportunities_found INTEGER,
             reverse_opportunities_found INTEGER,
             total_opportunity_value REAL,
             bets_placed_from_run INTEGER,

@@ -397,7 +397,7 @@ def close_started_bets(service: BetService = Depends(_get_service)):
 @router.post("/batch")
 async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_writer)):
     """
-    Place multiple legs at once (dutch bet).
+    Place multiple legs at once (arb bet).
     Each leg is placed independently — if one fails, already-placed legs remain.
     Commits per-leg with retry to minimize lock contention impact.
     """

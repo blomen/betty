@@ -1,4 +1,4 @@
-"""DutchRunner — arbitrage play loop for soft books.
+"""ArbRunner — arbitrage play loop for soft books.
 
 Places the anchor (+EV) leg on the soft book, then auto-hedges on the best
 available counter (another soft book from a different cluster, or unlimited
@@ -43,11 +43,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Cooldown between Dutch opp fetch cycles to avoid hammering the API
+# Cooldown between arb opp fetch cycles to avoid hammering the API
 _OPP_FETCH_COOLDOWN = 10.0
 
 
-class DutchRunner:
+class ArbRunner:
     """Runs the arbitrage play loop for a single soft book.
 
     The counter-leg pool is dynamic: other active soft books (excluding
@@ -94,7 +94,7 @@ class DutchRunner:
     def start(self) -> None:
         if self._task and not self._task.done():
             return
-        self._task = asyncio.create_task(self._run(), name=f"dutch_{self.provider_id}")
+        self._task = asyncio.create_task(self._run(), name=f"arb_{self.provider_id}")
 
     def stop(self) -> None:
         if self._task and not self._task.done():
@@ -114,12 +114,12 @@ class DutchRunner:
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
         if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
-            logger.info(f"[Dutch:{self.provider_id}] Bet intercepted (state={self.state})")
+            logger.info(f"[Arb:{self.provider_id}] Bet intercepted (state={self.state})")
             self._intercepted_body = body
             self._intercepted_request_body = request_body
             self._bet_intercepted_event.set()
         else:
-            logger.warning(f"[Dutch:{self.provider_id}] Bet intercepted in state={self.state} — ignoring")
+            logger.warning(f"[Arb:{self.provider_id}] Bet intercepted in state={self.state} — ignoring")
 
     def get_status(self) -> dict:
         return {
@@ -128,7 +128,7 @@ class DutchRunner:
             "current_bet": self.current_bet,
             "stats": self.stats,
             "placed_today": self._placed_today.get(self.provider_id, 0),
-            "mode": "dutch",
+            "mode": "arb",
         }
 
     # ------------------------------------------------------------------
@@ -156,11 +156,11 @@ class DutchRunner:
         return pool
 
     # ------------------------------------------------------------------
-    # Fetch Dutch opportunities from server API
+    # Fetch arb opportunities from server API
     # ------------------------------------------------------------------
 
-    async def _fetch_dutch_opps(self) -> list[dict]:
-        """Fetch Dutch opportunities anchored on this provider.
+    async def _fetch_arb_opps(self) -> list[dict]:
+        """Fetch arbitrage opportunities anchored on this provider.
 
         Counter pool is the dynamic set of active non-sibling providers plus
         unlimited providers. When empty, the scanner treats it as "any provider".
@@ -169,7 +169,7 @@ class DutchRunner:
         params = f"providers={self.provider_id}"
         if pool:
             params += f"&counterpart_providers={','.join(pool)}"
-        url = f"{self._proxy_url}/api/opportunities/dutch-workflow?{params}"
+        url = f"{self._proxy_url}/api/opportunities/arb-workflow?{params}"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
@@ -182,7 +182,7 @@ class DutchRunner:
             opps.sort(key=lambda o: o.get("guaranteed_profit_pct", 0), reverse=True)
             return opps
         except Exception:
-            logger.exception(f"[Dutch:{self.provider_id}] Failed to fetch Dutch opps")
+            logger.exception(f"[Arb:{self.provider_id}] Failed to fetch arb opps")
             return []
 
     # ------------------------------------------------------------------
@@ -192,13 +192,13 @@ class DutchRunner:
     async def _run(self) -> None:
         self.state = STATE_PROVIDER_OPENING
         pid = self.provider_id
-        logger.info(f"[Dutch:{pid}] Starting Dutch runner")
+        logger.info(f"[Arb:{pid}] Starting arb runner")
 
         try:
             workflow = get_workflow(pid)
 
             # 1. Find tab
-            self._broadcaster.publish("provider_opening", {"provider_id": pid, "mode": "dutch"})
+            self._broadcaster.publish("provider_opening", {"provider_id": pid, "mode": "arb"})
             page = None
             for _attempt in range(10):
                 if self._browser.context:
@@ -213,7 +213,7 @@ class DutchRunner:
                 await asyncio.sleep(1)
 
             if page is None:
-                logger.warning(f"[Dutch:{pid}] No tab found — stopping")
+                logger.warning(f"[Arb:{pid}] No tab found — stopping")
                 self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "no_tab"})
                 return
 
@@ -222,7 +222,7 @@ class DutchRunner:
             self._broadcaster.publish("login_waiting", {"provider_id": pid})
             logged_in = await self._wait_for_login(workflow, page)
             if not logged_in:
-                logger.warning(f"[Dutch:{pid}] Login timeout — stopping")
+                logger.warning(f"[Arb:{pid}] Login timeout — stopping")
                 self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "login_timeout"})
                 return
 
@@ -234,15 +234,15 @@ class DutchRunner:
                 await self._fetch_placed_today(pid)
                 placed = self._placed_today.get(pid, 0)
                 if placed >= DAILY_BET_CAP:
-                    logger.info(f"[Dutch:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})")
+                    logger.info(f"[Arb:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})")
                     self._broadcaster.publish(
                         "provider_complete",
                         {"provider_id": pid, "reason": f"daily cap ({placed}/{DAILY_BET_CAP})"},
                     )
                     return
 
-            # 5. Dutch bet loop
-            logger.info(f"[Dutch:{pid}] Entering Dutch bet loop")
+            # 5. Arb bet loop
+            logger.info(f"[Arb:{pid}] Entering arb bet loop")
             while True:
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
@@ -253,10 +253,10 @@ class DutchRunner:
                         )
                         break
 
-                # Fetch fresh Dutch opps
-                opps = await self._fetch_dutch_opps()
+                # Fetch fresh arb opps
+                opps = await self._fetch_arb_opps()
                 if not opps:
-                    logger.info(f"[Dutch:{pid}] No Dutch opps available — done")
+                    logger.info(f"[Arb:{pid}] No arb opps available — done")
                     break
 
                 placed_any = False
@@ -285,7 +285,7 @@ class DutchRunner:
                     counter_plan = self._build_counter_plan(opp, counter_legs)
                     if not counter_plan:
                         logger.info(
-                            f"[Dutch:{pid}] No viable counter-legs for "
+                            f"[Arb:{pid}] No viable counter-legs for "
                             f"{opp.get('home_team')} v {opp.get('away_team')} — skipping"
                         )
                         continue
@@ -300,14 +300,14 @@ class DutchRunner:
                     workflow = get_workflow(pid)
                     page = await workflow.find_tab(self._browser.context) if self._browser.context else None
                     if page is None:
-                        logger.warning(f"[Dutch:{pid}] Lost tab — skipping")
+                        logger.warning(f"[Arb:{pid}] Lost tab — skipping")
                         self.stats["skipped"] += 1
                         continue
 
                     bet_ns = _bet_ns(anchor_bet)
                     nav_ok = await workflow.navigate_to_event(page, bet_ns)
                     if not nav_ok:
-                        logger.warning(f"[Dutch:{pid}] Navigation failed — skipping")
+                        logger.warning(f"[Arb:{pid}] Navigation failed — skipping")
                         self._broadcaster.publish("bet_skipped", {"bet": anchor_bet, "reason": "navigation_failed"})
                         self.stats["skipped"] += 1
                         continue
@@ -334,7 +334,7 @@ class DutchRunner:
                         live_profit = self._recalc_profit(live_odds, counter_plan)
                         if live_profit is not None and live_profit <= 0:
                             logger.info(
-                                f"[Dutch:{pid}] Arb margin gone at live odds {live_odds:.2f} "
+                                f"[Arb:{pid}] Arb margin gone at live odds {live_odds:.2f} "
                                 f"(profit={live_profit:.2f}%) — skipping"
                             )
                             self._broadcaster.publish(
@@ -344,16 +344,16 @@ class DutchRunner:
                             self.stats["skipped"] += 1
                             continue
 
-                    # Broadcast dutch_bet_ready with full opp context
+                    # Broadcast arb_bet_ready with full opp context
                     self.state = STATE_READY
                     self._bet_intercepted_event.clear()
                     self._skip_event.clear()
                     self._intercepted_body = None
                     self._intercepted_request_body = None
 
-                    dutch_group_id = uuid.uuid4().hex[:12]
+                    arb_group_id = uuid.uuid4().hex[:12]
                     self._broadcaster.publish(
-                        "dutch_bet_ready",
+                        "arb_bet_ready",
                         {
                             "bet": anchor_bet,
                             "provider_id": pid,
@@ -361,7 +361,7 @@ class DutchRunner:
                             "live_odds": live_odds,
                             "counter_plan": counter_plan,
                             "guaranteed_profit_pct": opp.get("guaranteed_profit_pct", 0),
-                            "dutch_group_id": dutch_group_id,
+                            "arb_group_id": arb_group_id,
                         },
                     )
 
@@ -406,16 +406,16 @@ class DutchRunner:
                     self._block_event_market(anchor_bet)
 
                     # Record anchor bet to DB
-                    await self._record_bet(anchor_bet, anchor_result, dutch_group_id)
+                    await self._record_bet(anchor_bet, anchor_result, arb_group_id)
 
                     # Phase 3: Auto-hedge counter-legs
-                    hedge_ok = await self._place_counter_legs(opp, counter_plan, stake, anchor_leg, dutch_group_id)
+                    hedge_ok = await self._place_counter_legs(opp, counter_plan, stake, anchor_leg, arb_group_id)
                     if hedge_ok:
                         self.stats["hedged"] += 1
                         self._broadcaster.publish(
-                            "dutch_complete",
+                            "arb_complete",
                             {
-                                "dutch_group_id": dutch_group_id,
+                                "arb_group_id": arb_group_id,
                                 "provider_id": pid,
                                 "guaranteed_profit_pct": opp.get("guaranteed_profit_pct", 0),
                             },
@@ -427,20 +427,20 @@ class DutchRunner:
                     break  # Re-fetch fresh opps after each placement
 
                 if not placed_any:
-                    logger.info(f"[Dutch:{pid}] No viable opps in batch — done")
+                    logger.info(f"[Arb:{pid}] No viable opps in batch — done")
                     break
 
                 # Cooldown before re-fetching to avoid hammering the API
                 await asyncio.sleep(_OPP_FETCH_COOLDOWN)
 
             # Done
-            self._broadcaster.publish("provider_complete", {"provider_id": pid, "mode": "dutch"})
-            logger.info(f"[Dutch:{pid}] Complete — {self.stats}")
+            self._broadcaster.publish("provider_complete", {"provider_id": pid, "mode": "arb"})
+            logger.info(f"[Arb:{pid}] Complete — {self.stats}")
 
         except asyncio.CancelledError:
-            logger.info(f"[Dutch:{pid}] Cancelled")
+            logger.info(f"[Arb:{pid}] Cancelled")
         except Exception:
-            logger.exception(f"[Dutch:{pid}] Unhandled error")
+            logger.exception(f"[Arb:{pid}] Unhandled error")
         finally:
             self.state = STATE_IDLE
             self.current_bet = None
@@ -495,12 +495,12 @@ class DutchRunner:
         counter_plan: list[dict],
         total_stake: float,
         anchor_leg: dict,
-        dutch_group_id: str,
+        arb_group_id: str,
     ) -> bool:
         """Place counter-legs with fallback chain. Returns True if fully hedged."""
         anchor_odds = anchor_leg.get("odds", 1.0)
         # Total payout if anchor wins = anchor_stake * anchor_odds
-        # For equal-payout Dutch: each counter-leg stake = total_payout / counter_odds
+        # For equal-payout arb: each counter-leg stake = total_payout / counter_odds
         anchor_stake = total_stake
         total_payout = anchor_stake * anchor_odds
 
@@ -515,13 +515,13 @@ class DutchRunner:
                 counter_stake = round(total_payout / counter_odds, 2)
 
                 logger.info(
-                    f"[Dutch:{self.provider_id}] Hedging {outcome} on {counter_pid} "
+                    f"[Arb:{self.provider_id}] Hedging {outcome} on {counter_pid} "
                     f"@ {counter_odds} stake={counter_stake}"
                 )
                 self._broadcaster.publish(
-                    "dutch_hedge_placing",
+                    "arb_hedge_placing",
                     {
-                        "dutch_group_id": dutch_group_id,
+                        "arb_group_id": arb_group_id,
                         "counter_provider": counter_pid,
                         "outcome": outcome,
                         "odds": counter_odds,
@@ -533,9 +533,9 @@ class DutchRunner:
                 if result and result.status == "placed":
                     hedged = True
                     self._broadcaster.publish(
-                        "dutch_hedge_placed",
+                        "arb_hedge_placed",
                         {
-                            "dutch_group_id": dutch_group_id,
+                            "arb_group_id": arb_group_id,
                             "counter_provider": counter_pid,
                             "outcome": outcome,
                             "actual_odds": result.actual_odds,
@@ -560,15 +560,15 @@ class DutchRunner:
                         actual_odds=result.actual_odds or counter_odds,
                         actual_stake=result.actual_stake or counter_stake,
                     )
-                    await self._record_bet(counter_bet, counter_result, dutch_group_id)
+                    await self._record_bet(counter_bet, counter_result, arb_group_id)
                     break
                 else:
                     reason = result.reason if result else "no_result"
-                    logger.warning(f"[Dutch:{self.provider_id}] Hedge failed on {counter_pid}: {reason} — trying next")
+                    logger.warning(f"[Arb:{self.provider_id}] Hedge failed on {counter_pid}: {reason} — trying next")
                     self._broadcaster.publish(
-                        "dutch_hedge_failed",
+                        "arb_hedge_failed",
                         {
-                            "dutch_group_id": dutch_group_id,
+                            "arb_group_id": arb_group_id,
                             "counter_provider": counter_pid,
                             "outcome": outcome,
                             "reason": reason,
@@ -577,11 +577,11 @@ class DutchRunner:
 
             if not hedged:
                 all_hedged = False
-                logger.error(f"[Dutch:{self.provider_id}] UNHEDGED — could not place {outcome} on any counter-provider")
+                logger.error(f"[Arb:{self.provider_id}] UNHEDGED — could not place {outcome} on any counter-provider")
                 self._broadcaster.publish(
-                    "dutch_unhedged",
+                    "arb_unhedged",
                     {
-                        "dutch_group_id": dutch_group_id,
+                        "arb_group_id": arb_group_id,
                         "provider_id": self.provider_id,
                         "outcome": outcome,
                         "event": f"{opp.get('home_team')} v {opp.get('away_team')}",
@@ -637,7 +637,7 @@ class DutchRunner:
                     live_odds, _edge = await workflow.check_live_price(page, bet_ns)
                     if live_odds and live_odds > 0 and live_odds != odds:
                         logger.info(
-                            f"[Dutch:{self.provider_id}] Counter odds moved: {odds:.2f} → {live_odds:.2f} on {counter_pid}"
+                            f"[Arb:{self.provider_id}] Counter odds moved: {odds:.2f} → {live_odds:.2f} on {counter_pid}"
                         )
                         # Recalculate stake for equal payout
                         counter_bet["odds"] = live_odds
@@ -667,7 +667,7 @@ class DutchRunner:
             return await workflow.confirm_bet(page)
 
         except Exception:
-            logger.exception(f"[Dutch:{self.provider_id}] Error placing on {counter_pid}")
+            logger.exception(f"[Arb:{self.provider_id}] Error placing on {counter_pid}")
             return PlacementResult(status="failed", bet_id=0, reason="exception")
 
     # ------------------------------------------------------------------
@@ -692,7 +692,7 @@ class DutchRunner:
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
-        """Convert a Dutch opp + leg into a bet dict compatible with ProviderRunner."""
+        """Convert an arb opp + leg into a bet dict compatible with ProviderRunner."""
         return {
             "event_id": opp.get("event_id", ""),
             "provider_id": leg.get("provider", ""),
@@ -776,7 +776,7 @@ class DutchRunner:
                 "actual_stake": actual_stake,
                 "placed_today": self._placed_today.get(pid, 0) + 1,
                 "daily_cap": DAILY_BET_CAP,
-                "mode": "dutch",
+                "mode": "arb",
             },
         )
 
@@ -788,8 +788,8 @@ class DutchRunner:
             reason="intercepted" if self._intercepted_body else "manual",
         )
 
-    async def _record_bet(self, bet: dict, result: PlacementResult, dutch_group_id: str) -> None:
-        """Record a bet to the server DB with dutch group linkage."""
+    async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
+        """Record a bet to the server DB with arb group linkage."""
         url = f"{self._proxy_url}/api/bets"
         payload = {
             "event_id": bet.get("event_id", ""),
@@ -801,7 +801,7 @@ class DutchRunner:
             "point": bet.get("point"),
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
-            "notes": f"dutch_group:{dutch_group_id}",
+            "notes": f"arb_group:{arb_group_id}",
         }
         for attempt in range(3):
             try:
@@ -810,14 +810,14 @@ class DutchRunner:
                     resp.raise_for_status()
                     data = resp.json()
                     logger.info(
-                        f"[Dutch:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={dutch_group_id})"
+                        f"[Arb:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={arb_group_id})"
                     )
                     return
             except Exception:
-                logger.exception(f"[Dutch:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
+                logger.exception(f"[Arb:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
-        logger.error(f"[Dutch:{self.provider_id}] Bet lost after 3 attempts: {payload}")
+        logger.error(f"[Arb:{self.provider_id}] Bet lost after 3 attempts: {payload}")
 
     # ------------------------------------------------------------------
     # Reused helpers from ProviderRunner
@@ -893,7 +893,7 @@ class DutchRunner:
             try:
                 raw_history = await workflow.sync_history(page)
             except Exception:
-                logger.exception(f"[Dutch:{pid}] sync_history failed")
+                logger.exception(f"[Arb:{pid}] sync_history failed")
                 return
 
         history = [
@@ -913,7 +913,7 @@ class DutchRunner:
         if pending_bets:
             settlements = _detect_settlements(pending_bets, history)
             if settlements:
-                logger.info(f"[Dutch:{pid}] {len(settlements)} settlements detected")
+                logger.info(f"[Arb:{pid}] {len(settlements)} settlements detected")
                 self._broadcaster.publish(
                     "settlements_detected",
                     {"provider_id": pid, "pending_bets": pending_bets, "settlements": settlements},
@@ -943,7 +943,7 @@ class DutchRunner:
             placed = data.get("placed_today", {})
             self._placed_today.update(placed)
         except Exception:
-            logger.warning(f"[Dutch:{provider_id}] failed to fetch placed_today")
+            logger.warning(f"[Arb:{provider_id}] failed to fetch placed_today")
 
     async def _post_balance(self, provider_id: str, balance: float) -> None:
         url = f"{self._proxy_url}/api/bankroll/set/{provider_id}"

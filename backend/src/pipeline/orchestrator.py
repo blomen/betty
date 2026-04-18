@@ -1298,7 +1298,7 @@ class ExtractionPipeline:
                 # Backfill opportunity outcomes from analysis results
                 if analysis_results:
                     value_found = analysis_results.get("value", {}).get("found", 0)
-                    dutch_found = analysis_results.get("dutch", {}).get("found", 0)
+                    arb_found = analysis_results.get("arb", {}).get("found", 0)
                     reverse_found = analysis_results.get("reverse", {}).get("found", 0) + analysis_results.get(
                         "reverse_value", {}
                     ).get("found", 0)
@@ -1321,7 +1321,7 @@ class ExtractionPipeline:
                         run_id=run_id,
                         value_bets_found=value_found,
                         avg_edge_pct=avg_edge,
-                        dutch_opportunities_found=dutch_found,
+                        arb_opportunities_found=arb_found,
                         reverse_opportunities_found=reverse_found,
                     )
 

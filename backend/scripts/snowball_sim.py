@@ -1,8 +1,8 @@
 """
-Bankroll Snowball Simulator (EV-Only, No Hedging/Dutch)
-=======================================================
+Bankroll Snowball Simulator (EV-Only, No Hedging/Arb)
+=====================================================
 Simulates optimal strategy to grow from minimum deposit to full provider coverage
-using ONLY +EV value bets. No hedging, no dutch, no arbitrage.
+using ONLY +EV value bets. No hedging, no arbitrage.
 
 Models:
 - Free bet as +EV straight bet (SNR = stake not returned, only profit on win)

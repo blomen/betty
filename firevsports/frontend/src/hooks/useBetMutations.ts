@@ -103,7 +103,7 @@ export function useBetMutations() {
         });
       }
       // Only invalidate specific bet queries — avoid broad ['bets'] which
-      // triggers refetches on every page (ValuePage, DutchPage, StatsPage, etc.)
+      // triggers refetches on every page.
       // BetsPage handles its own refresh via manual fetchBets() calls.
       queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
       queryClient.invalidateQueries({ queryKey: ['bets', 'all'] });

@@ -141,7 +141,7 @@ class Bet(Base):
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
     point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
-    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost", "mirror"
+    bet_type = Column(String, nullable=True)    # "value", "arb", "reverse", "polymarket", "boost", "mirror"
 
     # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
     stake = Column(Float, nullable=False)       # 100.00
@@ -288,7 +288,7 @@ class Opportunity(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    type = Column(String, nullable=False)  # "arbitrage", "value", "bonus"
+    type = Column(String, nullable=False)  # "value", "arb", "reverse", "reverse_value", "bonus"
 
     # Event reference
     event_id = Column(String, ForeignKey("events.id"))

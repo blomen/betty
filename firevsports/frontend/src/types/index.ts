@@ -17,7 +17,7 @@ export interface BettingContext {
 // Opportunities (Arbitrage + Value + Bonus)
 export interface Opportunity {
   id: number;
-  type: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value';
+  type: 'arbitrage' | 'value' | 'bonus' | 'arb' | 'reverse' | 'reverse_value';
   event_id: string;
   market: string;
   provider1: string;
@@ -214,7 +214,7 @@ export interface Bet {
   provider_site_url?: string | null;
   boost_title?: string | null;
   predicted_result?: string | null;
-  bet_type?: string | null;  // "value", "dutch", "reverse", "polymarket", "boost"
+  bet_type?: string | null;  // "value", "arb", "reverse", "polymarket", "boost"
 }
 
 // Profile

@@ -79,12 +79,12 @@ class BetCreate(BaseModel):
     fair_odds_at_placement: Optional[float] = None  # For boosts: pass LLM fair odds directly
     boost_event: Optional[str] = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
     boost_title: Optional[str] = None  # For boosts: LLM-simplified title at placement
-    bet_type: Optional[str] = None  # "value", "dutch", "reverse", "polymarket", "boost"
+    bet_type: Optional[str] = None  # "value", "arb", "reverse", "polymarket", "boost"
     start_time: Optional[str] = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
 
 
 class BatchBetLeg(BaseModel):
-    """Single leg in a batch (dutch) bet placement."""
+    """Single leg in a batch (arb) bet placement."""
     event_id: Optional[str] = None
     provider_id: str
     market: Optional[str] = None
@@ -96,11 +96,11 @@ class BatchBetLeg(BaseModel):
     bonus_type: Optional[str] = None
     utility_score: Optional[float] = None
     selection_probability: Optional[float] = None
-    bet_type: Optional[str] = None  # "value", "dutch", "reverse", "polymarket", "boost"
+    bet_type: Optional[str] = None  # "value", "arb", "reverse", "polymarket", "boost"
 
 
 class BatchBetCreate(BaseModel):
-    """Place multiple legs at once (dutch bet)."""
+    """Place multiple legs at once (arb bet)."""
     legs: list[BatchBetLeg]
 
 

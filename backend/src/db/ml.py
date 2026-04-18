@@ -187,7 +187,7 @@ class ExtractionFeature(Base):
     avg_match_rate = Column(Float, nullable=True)
     value_bets_found = Column(Integer, nullable=True)
     avg_edge_pct = Column(Float, nullable=True)
-    dutch_opportunities_found = Column(Integer, nullable=True)
+    arb_opportunities_found = Column(Integer, nullable=True)
     reverse_opportunities_found = Column(Integer, nullable=True)
     total_opportunity_value = Column(Float, nullable=True)
     bets_placed_from_run = Column(Integer, nullable=True)

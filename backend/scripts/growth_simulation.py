@@ -1,7 +1,7 @@
 """
 Firev Growth Simulation — Pure +EV Model (All Streams)
 =============================================================
-All bets are +EV. No hedging, no dutch, no churning.
+All bets are +EV. No hedging, no arb, no churning.
 
 BET STREAMS (all played simultaneously):
   1. Soft value bets   — ~1,862/scan, avg 8.8% edge (Kambi/Altenar/Gecko vs Pinnacle)
@@ -624,7 +624,7 @@ def main():
 
     print("=" * 78)
     print("  FIREV GROWTH SIMULATION — PURE +EV MODEL (ALL STREAMS)")
-    print("  All bets are +EV. No hedging, no dutch, no churning.")
+    print("  All bets are +EV. No hedging, no arb, no churning.")
     print(f"  Monte Carlo: {NUM_SIMS:,} runs per scenario")
     print("=" * 78)
 
@@ -934,7 +934,7 @@ def main():
     3. Pinnacle reverse   (longshot edge: ~1.4% of bets)
     4. +EV Specials       (high edge when available: ~0.2%)
 
-  All bets are +EV, Kelly-sized. No hedging, no dutch.
+  All bets are +EV, Kelly-sized. No hedging, no arb.
   More streams = more diversification = smoother growth.
 
   MINIMUM START BANKROLL

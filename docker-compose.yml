@@ -67,7 +67,6 @@ services:
     environment:
       - FIREV_DATA_DIR=/app/data
       - FIREV_LOGS_DIR=/app/logs
-      - FIREV_FRONTEND_DIR=/app/frontend/dist
       - DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/firev
       - MARKET_DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/market
     depends_on:

@@ -5,8 +5,6 @@ __pycache__
 backend/data/
 backend/logs/
 backend/.env
-frontend/node_modules/
-frontend/dist/
 *.egg-info
 .venv
 chrome-profile/

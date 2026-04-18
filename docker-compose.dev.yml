@@ -5,7 +5,6 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend
-      - ./frontend/dist:/app/frontend/dist
       - firev_data:/app/data
       - firev_logs:/app/logs
     env_file:

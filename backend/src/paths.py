@@ -60,14 +60,6 @@ def get_aliases_path() -> Path:
     return Path(__file__).parent / "matching" / "aliases.yaml"
 
 
-def get_frontend_dir() -> Path:
-    """Frontend dist directory."""
-    return Path(os.environ.get(
-        "FIREV_FRONTEND_DIR",
-        str(_BACKEND_DIR.parent / "frontend" / "dist"),
-    ))
-
-
 def get_env_path() -> Path:
     """.env file path."""
     return _BACKEND_DIR / ".env"

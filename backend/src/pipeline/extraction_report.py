@@ -48,13 +48,13 @@ class ExtractionReport:
 
         analysis = results.get("analysis", {})
         value_data = analysis.get("value", {})
-        dutch_data = analysis.get("dutch", {})
+        arb_data = analysis.get("arb", {})
         value_bets = value_data.get("found", 0)
-        dutch_bets = dutch_data.get("found", 0)
+        arb_bets = arb_data.get("found", 0)
         reverse_bets = analysis.get("reverse", {}).get("found", 0)
         # "found" = unique canonical opportunities; "fanned" = extra alias copies
         value_total = value_bets + value_data.get("fanned", 0)
-        dutch_total = dutch_bets + dutch_data.get("fanned", 0)
+        arb_total = arb_bets + arb_data.get("fanned", 0)
 
         providers_data = results.get("providers", {})
         succeeded = sum(1 for p in providers_data.values() if not p.get("error"))
@@ -62,17 +62,17 @@ class ExtractionReport:
 
         lines.append(f"Duration: {duration:.1f}s | Providers: {succeeded}/{total_providers} OK")
         lines.append(f"Events: {total_events:,} | Odds: {total_odds:,} | Matched: {matched_events:,} ({match_pct:.1f}%)")
-        if value_bets > 0 or dutch_bets > 0 or reverse_bets > 0:
+        if value_bets > 0 or arb_bets > 0 or reverse_bets > 0:
             parts = []
             if value_bets > 0:
                 s = f"{value_bets} value"
                 if value_total > value_bets:
                     s += f" ({value_total} incl. aliases)"
                 parts.append(s)
-            if dutch_bets > 0:
-                s = f"{dutch_bets} dutch"
-                if dutch_total > dutch_bets:
-                    s += f" ({dutch_total} incl. aliases)"
+            if arb_bets > 0:
+                s = f"{arb_bets} arb"
+                if arb_total > arb_bets:
+                    s += f" ({arb_total} incl. aliases)"
                 parts.append(s)
             if reverse_bets > 0:
                 parts.append(f"{reverse_bets} reverse")
@@ -810,7 +810,7 @@ class ExtractionReport:
 
         lines.append("RUN HISTORY (last 5)")
         lines.append(thin_sep)
-        lines.append(f"{'Time':>16} {'Dur':>6} {'Events':>7} {'Odds':>8} {'Match':>6} {'OK/F':>5} {'Value':>6} {'Dutch':>6}")
+        lines.append(f"{'Time':>16} {'Dur':>6} {'Events':>7} {'Odds':>8} {'Match':>6} {'OK/F':>5} {'Value':>6} {'Arb':>6}")
         lines.append(thin_sep)
 
         for r in runs:
@@ -822,7 +822,7 @@ class ExtractionReport:
             # Extract match info from report text (quick parse)
             match_str = "    -"
             opp_value = "     -"
-            opp_dutch = "     -"
+            opp_arb = "     -"
             if r.report:
                 import re
                 m = re.search(r'Matched:\s*[\d,]+\s*\((\d+\.\d+)%\)', r.report)
@@ -831,14 +831,14 @@ class ExtractionReport:
                 m = re.search(r'(\d+)\s*value', r.report)
                 if m:
                     opp_value = f"{int(m.group(1)):>6}"
-                m = re.search(r'(\d+)\s*dutch', r.report)
+                m = re.search(r'(\d+)\s*arb', r.report)
                 if m:
-                    opp_dutch = f"{int(m.group(1)):>6}"
+                    opp_arb = f"{int(m.group(1)):>6}"
 
             ok = r.providers_succeeded or 0
             fail = r.providers_failed or 0
 
-            lines.append(f"{time_str:>16} {dur:>5.0f}s {evts:>7,} {odds:>8,} {match_str} {ok:>2}/{fail:<2} {opp_value} {opp_dutch}")
+            lines.append(f"{time_str:>16} {dur:>5.0f}s {evts:>7,} {odds:>8,} {match_str} {ok:>2}/{fail:<2} {opp_value} {opp_arb}")
 
         # Trend summary
         first, last = runs[-1], runs[0]

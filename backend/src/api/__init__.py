@@ -22,8 +22,7 @@ load_dotenv(get_env_path(), override=True)
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from ..db.models import init_db
@@ -1318,30 +1317,10 @@ async def get_version():
     }
 
 
-# Serve frontend static files (when dist/ exists — bundled mode or pre-built dev)
-from ..paths import get_frontend_dir
-
-_frontend_dir = get_frontend_dir()
-if _frontend_dir.exists():
-    # Mount JS/CSS/image assets
-    _assets_dir = _frontend_dir / "assets"
-    if _assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="static-assets")
-
-    # Serve favicon and other root static files
-    @app.get("/terminal.svg")
-    async def serve_favicon():
-        svg = _frontend_dir / "terminal.svg"
-        if svg.exists():
-            return FileResponse(str(svg), media_type="image/svg+xml")
-
-    # SPA catch-all: serve index.html for all non-API routes
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        """Serve React app for client-side routing."""
-        index = _frontend_dir / "index.html"
-        if index.exists():
-            return FileResponse(str(index), media_type="text/html")
+@app.get("/")
+async def root():
+    """Backend is API-only. Visual clients (FirevSports / FirevStocks) run locally."""
+    return {"status": "firev-api", "version": app.version}
 
 
 # Dev entry point (no --reload). On Windows, --reload forces SelectorEventLoop
