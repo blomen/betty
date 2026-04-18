@@ -90,11 +90,38 @@ def _american_to_decimal(price: float) -> float:
     return 1 + 100 / abs(price)
 
 
-async def _evaluate_api(page: "Page", url: str) -> Any:
-    """Fetch a Pinnacle API URL. Uses Playwright's request context (with the page's cookie
-    jar) to bypass browser CORS restrictions that block page.evaluate fetch() calls."""
+_PINNACLE_HEADERS = {
+    "Origin": "https://www.pinnacle.se",
+    "Referer": "https://www.pinnacle.se/",
+    "Accept": "application/json",
+}
+
+
+async def _build_headers(page: "Page") -> dict:
+    """Build headers for Pinnacle API calls — Origin, Referer, and Cookie (explicit because
+    cross-subdomain cookies aren't always auto-attached by Playwright's request context)."""
     try:
-        resp = await page.context.request.get(url)
+        cookies = await page.context.cookies()
+        # Include all pinnacle-domain cookies (site cookies are typically scoped .pinnacle.se
+        # but may be scoped to www. — send them all for api.arcadia. to decide)
+        cookie_str = "; ".join(
+            f"{c['name']}={c['value']}" for c in cookies
+            if "pinnacle" in c.get("domain", "")
+        )
+    except Exception:
+        cookie_str = ""
+    headers = dict(_PINNACLE_HEADERS)
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    return headers
+
+
+async def _evaluate_api(page: "Page", url: str) -> Any:
+    """Fetch a Pinnacle API URL. Uses Playwright's request context (bypasses CORS) and
+    explicitly attaches cookies to ensure cross-subdomain auth survives."""
+    try:
+        headers = await _build_headers(page)
+        resp = await page.context.request.get(url, headers=headers)
         if resp.status < 200 or resp.status >= 400:
             return {"__error": resp.status}
         return await resp.json()
@@ -106,9 +133,9 @@ async def _evaluate_api(page: "Page", url: str) -> Any:
 async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
     """POST JSON to Pinnacle via Playwright's request context (bypasses CORS)."""
     try:
-        resp = await page.context.request.post(
-            url, data=body, headers={"Content-Type": "application/json"}
-        )
+        headers = await _build_headers(page)
+        headers["Content-Type"] = "application/json"
+        resp = await page.context.request.post(url, data=body, headers=headers)
         data = None
         try:
             data = await resp.json()
@@ -132,13 +159,15 @@ async def _check_login(page: "Page", intel: dict | None) -> bool:
     api = _api_base(intel)
     # Give the page a moment to settle after nav (cookies may not be attached yet)
     await asyncio.sleep(1)
+    last_result = None
     for attempt in range(3):
         result = await _evaluate_api(page, f"{api}/wallet/balance")
-        if result and "__error" not in (result if isinstance(result, dict) else {}):
-            if "amount" in result:
-                return True
+        last_result = result
+        if result and isinstance(result, dict) and "amount" in result and "__error" not in result:
+            return True
         if attempt < 2:
             await asyncio.sleep(1.5)
+    logger.warning(f"[pinnacle] check_login failed — last response: {last_result}")
     return False
 
 
