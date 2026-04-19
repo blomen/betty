@@ -21,6 +21,7 @@ Schema notes (verified against live API 2026-04-18):
       "Security Check" HTML page. Configure proxy_url in providers.yaml
       (SOCKS5 URL) to route via the Bahnhof residential gost proxy.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -242,14 +243,19 @@ class SmarketsRetriever(Retriever):
         super().__init__(config)
         self.base_url = config.get("base_url", self.DEFAULT_BASE_URL).rstrip("/")
 
+        import os
+
+        # Smarkets geoblocks most IPs (Sweden, Hetzner DE) — always route through
+        # the shared Bahnhof SOCKS5 proxy, same as Pinnacle and friends.
+        # Config can still override via explicit proxy_url (e.g. for testing).
         proxy = config.get("proxy_url")
         if proxy is None:
             proxy = (config.get("params") or {}).get("proxy_url")
+        if not proxy or (isinstance(proxy, str) and proxy.startswith("${")):
+            proxy = os.environ.get("PROXY_URL", "")
         self.proxy_url: str | None = proxy if proxy else None
 
-        self.min_trades_24h = int(
-            (config.get("params") or {}).get("min_trades_24h", 1)
-        )
+        self.min_trades_24h = int((config.get("params") or {}).get("min_trades_24h", 1))
         self._circuit_breaker = circuit_breaker
 
     # ------------------------------------------------------------------
@@ -268,16 +274,9 @@ class SmarketsRetriever(Retriever):
 
     def _get_sport_url(self, sport: str) -> str:
         domain = self._sport_to_type_domain(sport)
-        return (
-            f"{self.base_url}/events/?state=upcoming"
-            f"&type_domain={domain}"
-            f"&type={domain}_match"
-            f"&limit=100"
-        )
+        return f"{self.base_url}/events/?state=upcoming&type_domain={domain}&type={domain}_match&limit=100"
 
-    def filter_events_by_sport(
-        self, events: list[dict], sport: str
-    ) -> list[dict]:
+    def filter_events_by_sport(self, events: list[dict], sport: str) -> list[dict]:
         """Keep only events whose `type` matches `<sport>_match`.
 
         `type_scope` is always null in live data — we filter on `type`.
@@ -292,9 +291,7 @@ class SmarketsRetriever(Retriever):
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    async def _fetch_json(
-        self, session: aiohttp.ClientSession, url: str
-    ) -> dict | None:
+    async def _fetch_json(self, session: aiohttp.ClientSession, url: str) -> dict | None:
         try:
             kwargs: dict[str, Any] = {
                 "timeout": aiohttp.ClientTimeout(total=15),
@@ -303,9 +300,7 @@ class SmarketsRetriever(Retriever):
                 kwargs["proxy"] = self.proxy_url
             async with session.get(url, **kwargs) as resp:
                 if resp.status != 200:
-                    logger.warning(
-                        "[smarkets] %s on %s", resp.status, url
-                    )
+                    logger.warning("[smarkets] %s on %s", resp.status, url)
                     return None
                 return await resp.json()
         except Exception as e:
@@ -316,9 +311,7 @@ class SmarketsRetriever(Retriever):
     # Extraction
     # ------------------------------------------------------------------
 
-    async def extract(
-        self, sport: str, limit: int = 500, **kwargs
-    ) -> list[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         if sport not in SMARKETS_TYPE_SCOPE_TO_SPORT.values():
             logger.info("[smarkets] skip unsupported sport=%s", sport)
             return []
@@ -338,11 +331,7 @@ class SmarketsRetriever(Retriever):
                 url = (
                     f"{self.base_url}/events/{nxt}"
                     if nxt.startswith("?")
-                    else (
-                        f"{self.base_url}{nxt}"
-                        if nxt.startswith("/")
-                        else nxt
-                    )
+                    else (f"{self.base_url}{nxt}" if nxt.startswith("/") else nxt)
                 )
 
             in_scope = self.filter_events_by_sport(events_raw, sport)
@@ -359,9 +348,7 @@ class SmarketsRetriever(Retriever):
                 async with sem:
                     return await self._build_event(session, ev_raw, sport)
 
-            results = await asyncio.gather(
-                *(build_event(e) for e in in_scope)
-            )
+            results = await asyncio.gather(*(build_event(e) for e in in_scope))
             events = [r for r in results if r is not None]
 
         if limit and len(events) > limit:
@@ -391,18 +378,14 @@ class SmarketsRetriever(Retriever):
             )
             return None
 
-        mkts_body = await self._fetch_json(
-            session, f"{self.base_url}/events/{eid}/markets/"
-        )
+        mkts_body = await self._fetch_json(session, f"{self.base_url}/events/{eid}/markets/")
         mkts = (mkts_body or {}).get("markets") or []
         if not mkts:
             return None
 
         kept: list[dict] = []
         for m in mkts:
-            label = classify_market_type(
-                m.get("name", ""), m.get("market_type")
-            )
+            label = classify_market_type(m.get("name", ""), m.get("market_type"))
             if label is None:
                 continue
             # Keep only the first occurrence per label (most representative;
@@ -413,16 +396,12 @@ class SmarketsRetriever(Retriever):
             if not mid:
                 continue
             contracts_body, prices_body, quotes_body = await asyncio.gather(
-                self._fetch_json(
-                    session, f"{self.base_url}/markets/{mid}/contracts/"
-                ),
+                self._fetch_json(session, f"{self.base_url}/markets/{mid}/contracts/"),
                 self._fetch_json(
                     session,
                     f"{self.base_url}/markets/{mid}/last_executed_prices/",
                 ),
-                self._fetch_json(
-                    session, f"{self.base_url}/markets/{mid}/quotes/"
-                ),
+                self._fetch_json(session, f"{self.base_url}/markets/{mid}/quotes/"),
             )
             contracts = (contracts_body or {}).get("contracts") or []
             if not contracts:
@@ -441,9 +420,7 @@ class SmarketsRetriever(Retriever):
 
             odds_by_cid = parse_market_prices(
                 {
-                    "last_executed_prices": (prices_body or {}).get(
-                        "last_executed_prices", {}
-                    ),
+                    "last_executed_prices": (prices_body or {}).get("last_executed_prices", {}),
                     "quotes": (quotes_body or {}),
                 }
             )

@@ -858,10 +858,10 @@ providers:
     exchange_rate_sek: 13.3   # rough 2026-04 FX
     params:
       min_trades_24h: 1
-      # Smarkets geoblocks datacenter IPs (incl. Hetzner DE) with a 403
-      # security check. Set SMARKETS_PROXY_URL to a SOCKS5 URL (Bahnhof
-      # residential gost) to route through. Empty = direct (will 403).
-      proxy_url: ${SMARKETS_PROXY_URL}
+      # Smarkets geoblocks datacenter + most residential IPs with a 403
+      # Security Check. The retriever falls back to the shared Bahnhof
+      # SOCKS5 proxy (PROXY_URL env var) automatically — same routing as
+      # Pinnacle. Override here only for testing.
     supported_sports:
       - football
       - basketball
