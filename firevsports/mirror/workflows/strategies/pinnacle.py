@@ -10,15 +10,14 @@ Overrides GenericWorkflow methods with Pinnacle-specific API logic:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from . import Strategy
 from ..base import HistoryEntry, PlacementResult
+from . import Strategy
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -31,17 +30,36 @@ def _api_base(intel: dict | None) -> str:
 
 
 def _designation_map(intel: dict | None) -> dict:
-    return (intel or {}).get("markets", {}).get("designation_map", {
-        "home": "home", "away": "away", "draw": "draw",
-        "over": "over", "under": "under",
-    })
+    return (
+        (intel or {})
+        .get("markets", {})
+        .get(
+            "designation_map",
+            {
+                "home": "home",
+                "away": "away",
+                "draw": "draw",
+                "over": "over",
+                "under": "under",
+            },
+        )
+    )
 
 
 def _market_key_map(intel: dict | None) -> dict:
-    return (intel or {}).get("markets", {}).get("key_map", {
-        "moneyline": "s;0;m", "1x2": "s;0;m",
-        "spread": "s;0;s", "total": "s;0;ou",
-    })
+    return (
+        (intel or {})
+        .get("markets", {})
+        .get(
+            "key_map",
+            {
+                "moneyline": "s;0;m",
+                "1x2": "s;0;m",
+                "spread": "s;0;s",
+                "total": "s;0;ou",
+            },
+        )
+    )
 
 
 def _date_range(days: int = 30) -> tuple[str, str]:
@@ -101,13 +119,10 @@ _PINNACLE_HEADERS = {
 }
 
 
-async def _build_headers(page: "Page") -> dict:
+async def _build_headers(page: Page) -> dict:
     try:
         cookies = await page.context.cookies()
-        cookie_str = "; ".join(
-            f"{c['name']}={c['value']}" for c in cookies
-            if "pinnacle" in c.get("domain", "")
-        )
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "pinnacle" in c.get("domain", ""))
     except Exception:
         cookie_str = ""
     headers = dict(_PINNACLE_HEADERS)
@@ -116,7 +131,7 @@ async def _build_headers(page: "Page") -> dict:
     return headers
 
 
-async def _evaluate_api(page: "Page", url: str) -> Any:
+async def _evaluate_api(page: Page, url: str) -> Any:
     try:
         headers = await _build_headers(page)
         resp = await page.context.request.get(url, headers=headers)
@@ -128,7 +143,7 @@ async def _evaluate_api(page: "Page", url: str) -> Any:
         return None
 
 
-async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
+async def _post_api(page: Page, url: str, body: dict) -> dict | None:
     try:
         headers = await _build_headers(page)
         headers["Content-Type"] = "application/json"
@@ -151,7 +166,8 @@ async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
 # fingerprint that Playwright's request context can't replicate).
 # ------------------------------------------------------------------
 
-async def _check_login(page: "Page", intel: dict | None) -> bool:
+
+async def _check_login(page: Page, intel: dict | None) -> bool:
     """Authenticated header shows 'SEK X.XX' + customer ID 'SSnnnnnnn'. Logged-out shows 'LOG IN'."""
     import asyncio
 
@@ -180,7 +196,7 @@ async def _check_login(page: "Page", intel: dict | None) -> bool:
     return False
 
 
-async def _sync_balance(page: "Page", intel: dict | None) -> float:
+async def _sync_balance(page: Page, intel: dict | None) -> float:
     """Scrape SEK/EUR/USD + amount from the header row — same pattern as 'SEK 0.00DEPOSIT'."""
     try:
         amount = await page.evaluate(
@@ -205,7 +221,8 @@ async def _sync_balance(page: "Page", intel: dict | None) -> float:
 # Scan — read-only preview
 # ------------------------------------------------------------------
 
-async def _scan(page: "Page", intel: dict | None) -> dict:
+
+async def _scan(page: Page, intel: dict | None) -> dict:
     """Fetch balance, pending bets, settled bets from Pinnacle API. Read-only."""
     try:
         from ....db.models import Bet, Event, get_session
@@ -238,8 +255,7 @@ async def _scan(page: "Page", intel: dict | None) -> dict:
 
     # API pending bets
     unsettled = await fetch_api(f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
-    api_pending = [_parse_api_bet(b) for b in _bets_list(unsettled)
-                   if float(b.get("price", 0)) > 0]
+    api_pending = [_parse_api_bet(b) for b in _bets_list(unsettled) if float(b.get("price", 0)) > 0]
 
     # API settled bets (last 30 days)
     settled = await fetch_api(f"{api}/bets?status=settled&startDate={start}&endDate={end}")
@@ -270,12 +286,17 @@ async def _scan(page: "Page", intel: dict | None) -> dict:
             for bet, event in rows:
                 h = (event.display_home or event.home_team or "") if event else ""
                 a = (event.display_away or event.away_team or "") if event else ""
-                db_pending.append({
-                    "bet_id": bet.id, "event": f"{h} vs {a}" if h else bet.event_id,
-                    "market": bet.market, "outcome": bet.outcome,
-                    "odds": bet.odds, "stake": bet.stake,
-                    "placed_at": bet.placed_at.isoformat() if bet.placed_at else "",
-                })
+                db_pending.append(
+                    {
+                        "bet_id": bet.id,
+                        "event": f"{h} vs {a}" if h else bet.event_id,
+                        "market": bet.market,
+                        "outcome": bet.outcome,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "placed_at": bet.placed_at.isoformat() if bet.placed_at else "",
+                    }
+                )
         db.close()
     except Exception as e:
         logger.warning(f"[pinnacle] scan DB error: {e}")
@@ -315,7 +336,8 @@ async def _scan(page: "Page", intel: dict | None) -> dict:
 # Settle all — scrape pending + auto-settle + sync balance
 # ------------------------------------------------------------------
 
-async def _settle_all(page: "Page", intel: dict | None) -> dict:
+
+async def _settle_all(page: Page, intel: dict | None) -> dict:
     """Full Pinnacle settlement via API.
 
     1. Fetch unsettled bets → record any missing in DB
@@ -383,6 +405,7 @@ async def _settle_all(page: "Page", intel: dict | None) -> dict:
             event_id = None
             if p["home"] and p["away"]:
                 from sqlalchemy import or_
+
                 event = (
                     db.query(Event)
                     .filter(
@@ -395,12 +418,18 @@ async def _settle_all(page: "Page", intel: dict | None) -> dict:
                     event_id = event.id
 
             svc.create_bet(
-                event_id=event_id, provider_id="pinnacle",
-                market=p["market_type"], outcome=p["designation"],
-                odds=p["odds"], stake=p["stake"], bet_type="mirror",
+                event_id=event_id,
+                provider_id="pinnacle",
+                market=p["market_type"],
+                outcome=p["designation"],
+                odds=p["odds"],
+                stake=p["stake"],
+                bet_type="mirror",
             )
             recorded_new += 1
-            logger.info(f"[pinnacle] Recorded missing bet: {p['event']} {p['designation']} @ {p['odds']} stake={p['stake']}")
+            logger.info(
+                f"[pinnacle] Recorded missing bet: {p['event']} {p['designation']} @ {p['odds']} stake={p['stake']}"
+            )
         db.commit()
 
         # Step 2: Fetch settled bets → auto-settle
@@ -443,13 +472,19 @@ async def _settle_all(page: "Page", intel: dict | None) -> dict:
                 event_name = f"{h} vs {a}" if h and a else h or a
 
             svc.settle_bet(matched_bet.id, status, round(payout, 2))
-            settled_entries.append({
-                "bet_id": matched_bet.id, "event": event_name,
-                "market": matched_bet.market, "outcome": matched_bet.outcome,
-                "odds": matched_bet.odds, "stake": matched_bet.stake,
-                "result": status, "payout": round(payout, 2),
-                "pl": round(payout - matched_bet.stake, 2),
-            })
+            settled_entries.append(
+                {
+                    "bet_id": matched_bet.id,
+                    "event": event_name,
+                    "market": matched_bet.market,
+                    "outcome": matched_bet.outcome,
+                    "odds": matched_bet.odds,
+                    "stake": matched_bet.stake,
+                    "result": status,
+                    "payout": round(payout, 2),
+                    "pl": round(payout - matched_bet.stake, 2),
+                }
+            )
             pending = [(b, e) for b, e in pending if b.id != matched_bet.id]
 
             logger.info(f"[pinnacle] Settled bet #{matched_bet.id} {event_name} → {status} (payout={payout:.2f})")
@@ -477,7 +512,8 @@ async def _settle_all(page: "Page", intel: dict | None) -> dict:
         "settled": len(settled_entries),
         "settlements": settled_entries,
         "summary": {
-            "wins": len(wins), "losses": len(losses),
+            "wins": len(wins),
+            "losses": len(losses),
             "total_staked": round(total_staked, 2),
             "total_payout": round(total_payout, 2),
             "net_pl": round(total_payout - total_staked, 2),
@@ -490,7 +526,8 @@ async def _settle_all(page: "Page", intel: dict | None) -> dict:
 # Sync history — DOM scrape + API fallback
 # ------------------------------------------------------------------
 
-async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
+
+async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     """Scrape settled bets from Pinnacle. DOM first, API fallback."""
     api = _api_base(intel)
     entries: list[HistoryEntry] = []
@@ -502,35 +539,42 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
         raw = ""
 
     if raw:
-        flat = raw.replace('\n', ' ').replace('\r', '')
-        cards = re.split(r'(?=(?:Settled|R.ttat):\s)', flat)
+        flat = raw.replace("\n", " ").replace("\r", "")
+        cards = re.split(r"(?=(?:Settled|R.ttat):\s)", flat)
         for card in cards:
-            if 'Stake:' not in card and 'Insats:' not in card:
+            if "Stake:" not in card and "Insats:" not in card:
                 continue
-            odds_m = re.search(r'@\s*([\d.]+)', card)
-            stake_m = re.search(r'(?:Stake|Insats):\s*([\d.,]+)', card)
+            odds_m = re.search(r"@\s*([\d.]+)", card)
+            stake_m = re.search(r"(?:Stake|Insats):\s*([\d.,]+)", card)
             if not odds_m or not stake_m:
                 continue
             odds = float(odds_m.group(1))
-            stake = float(stake_m.group(1).replace(',', '.'))
+            stake = float(stake_m.group(1).replace(",", "."))
             upper = card.upper()
-            if 'RLUST' in upper or 'LOSS' in upper:
+            if "RLUST" in upper or "LOSS" in upper:
                 status = "lost"
-            elif 'VOID' in upper or 'CANCEL' in upper or 'OGILTIG' in upper:
+            elif "VOID" in upper or "CANCEL" in upper or "OGILTIG" in upper:
                 status = "void"
-            elif 'SETTLED' in upper or 'TTAT' in upper:
+            elif "SETTLED" in upper or "TTAT" in upper:
                 status = "won"
             else:
                 continue
             payout = 0.0 if status == "lost" else (stake * odds if status == "won" else stake)
-            bet_id_m = re.search(r'#(\d+)', card)
-            event_m = re.search(r'(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)', card)
+            bet_id_m = re.search(r"#(\d+)", card)
+            event_m = re.search(r"(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)", card)
             if stake > 0 and odds > 0:
-                entries.append(HistoryEntry(
-                    provider_bet_id=bet_id_m.group(1) if bet_id_m else "",
-                    event_name=f"{event_m.group(1).strip()} vs {event_m.group(2).strip()}" if event_m else "",
-                    market="", outcome="", odds=odds, stake=stake, status=status, payout=payout,
-                ))
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=bet_id_m.group(1) if bet_id_m else "",
+                        event_name=f"{event_m.group(1).strip()} vs {event_m.group(2).strip()}" if event_m else "",
+                        market="",
+                        outcome="",
+                        odds=odds,
+                        stake=stake,
+                        status=status,
+                        payout=payout,
+                    )
+                )
 
     logger.info(f"[pinnacle] DOM scrape: {len(entries)} bet(s)")
 
@@ -551,12 +595,18 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
                 st, pay = "lost", 0
             else:
                 st, pay = "void", p["stake"]
-            entries.append(HistoryEntry(
-                provider_bet_id=str(p["pin_id"] or ""),
-                event_name=p["event"], market=p["market_type"],
-                outcome=p["designation"], odds=p["odds"], stake=p["stake"],
-                status=st, payout=pay,
-            ))
+            entries.append(
+                HistoryEntry(
+                    provider_bet_id=str(p["pin_id"] or ""),
+                    event_name=p["event"],
+                    market=p["market_type"],
+                    outcome=p["designation"],
+                    odds=p["odds"],
+                    stake=p["stake"],
+                    status=st,
+                    payout=pay,
+                )
+            )
 
     return entries
 
@@ -565,7 +615,8 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
 # Place bet — full API automation
 # ------------------------------------------------------------------
 
-async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> PlacementResult:
+
+async def _place_bet(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
     """Place bet via Pinnacle API: fetch markets → slippage check → place."""
     api = _api_base(intel)
     matchup_id = getattr(bet, "matchup_id", None)
@@ -582,11 +633,14 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
     # Fetch markets
     markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
     if not markets or (isinstance(markets, dict) and "__error" in markets):
+        logger.warning(f"[pinnacle] markets_fetch_failed for matchup={matchup_id}: {markets}")
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
 
     # Find matching market
     target = _find_market(markets, market, point, intel)
     if not target:
+        keys = [m.get("key") for m in markets[:10]] if isinstance(markets, list) else "?"
+        logger.warning(f"[pinnacle] market_not_found market={market} point={point} available_keys={keys}")
         return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"market_not_found:{market}")
     if target.get("status") != "open":
         return PlacementResult(status="skipped", bet_id=bet.bet_id, reason=f"market_closed:{target.get('status')}")
@@ -602,7 +656,9 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
     threshold = (intel or {}).get("placement", {}).get("slippage_threshold", 0.05)
     if bet.odds > 0 and decimal_odds < bet.odds * (1 - threshold):
         return PlacementResult(
-            status="skipped", bet_id=bet.bet_id, actual_odds=round(decimal_odds, 3),
+            status="skipped",
+            bet_id=bet.bet_id,
+            actual_odds=round(decimal_odds, 3),
             reason=f"slippage:{decimal_odds:.2f}_vs_{bet.odds:.2f}",
         )
 
@@ -613,13 +669,15 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         "acceptBetterPrices": True,
         "acceptBetterPrice": True,
         "class": "Straight",
-        "selections": [{
-            "marketId": target["version"],
-            "matchupId": int(matchup_id),
-            "marketKey": target["key"],
-            "designation": designation,
-            "price": round(decimal_odds, 2),
-        }],
+        "selections": [
+            {
+                "marketId": target["version"],
+                "matchupId": int(matchup_id),
+                "marketKey": target["key"],
+                "designation": designation,
+                "price": round(decimal_odds, 2),
+            }
+        ],
         "stake": round(stake, 2),
         "originTag": "ps:bsd",
     }
@@ -641,8 +699,10 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
         f"{market} {outcome} @ {confirmed_price} stake={confirmed_stake}"
     )
     return PlacementResult(
-        status="placed", bet_id=bet.bet_id,
-        actual_odds=confirmed_price, actual_stake=confirmed_stake,
+        status="placed",
+        bet_id=bet.bet_id,
+        actual_odds=confirmed_price,
+        actual_stake=confirmed_stake,
         raw_response=result,
     )
 
@@ -651,7 +711,8 @@ async def _place_bet(page: "Page", bet, stake: float, intel: dict | None) -> Pla
 # Live price
 # ------------------------------------------------------------------
 
-async def _check_live_price(page: "Page", bet, intel: dict | None) -> float | None:
+
+async def _check_live_price(page: Page, bet, intel: dict | None) -> float | None:
     try:
         from ....analysis.value import compute_edge
     except ImportError:
@@ -689,6 +750,7 @@ async def _check_live_price(page: "Page", bet, intel: dict | None) -> float | No
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _find_market(markets: list[dict], market_type: str, point: float | None, intel: dict | None) -> dict | None:
     key_map = _market_key_map(intel)
@@ -730,7 +792,8 @@ def _find_market(markets: list[dict], market_type: str, point: float | None, int
 # Strategy export
 # ------------------------------------------------------------------
 
-async def _navigate_to_event(page: "Page", bet, intel: dict | None) -> bool:
+
+async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
     """Navigate to Pinnacle event page by matchup ID."""
     matchup_id = getattr(bet, "matchup_id", None)
     if not matchup_id:
