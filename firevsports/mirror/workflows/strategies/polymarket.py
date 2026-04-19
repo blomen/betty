@@ -458,9 +458,284 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
     return {"redeemed": redeemed, "skipped_open": 0, "errors": errors, "total": total}
 
 
+_FILL_JS = r"""(amount) => {
+    const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+    for (const input of inputs) {
+        const parent = input.closest('div, label, fieldset');
+        const ctx = parent ? parent.textContent : '';
+        if (ctx.includes('Amount') || input.placeholder === '$0' ||
+            input.placeholder === '$0.00' || input.placeholder === '0' ||
+            input.placeholder === 'Amount') {
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            setter.call(input, amount);
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+            return { filled: true, value: amount };
+        }
+    }
+    return { filled: false };
+}"""
+
+
+_LOCATE_TARGET_JS = r"""(targetName) => {
+    // Identify which ¢ button matches target, return its DOM path markers so
+    // Playwright can re-locate it via a text-based locator.
+    let moneyline = null;
+    for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
+        const t = (el.textContent || '').trim();
+        if (t !== 'Moneyline' || el.tagName === 'BUTTON') continue;
+        let p = el.parentElement;
+        for (let i = 0; i < 6 && p; i++) {
+            const btns = p.querySelectorAll('button');
+            let cc = 0;
+            for (const b of btns) if (b.textContent.includes('¢')) cc++;
+            if (cc >= 2) { moneyline = p; break; }
+            p = p.parentElement;
+        }
+        if (moneyline) break;
+    }
+    let centBtns = [];
+    if (moneyline) {
+        for (const b of moneyline.querySelectorAll('button')) {
+            const t = (b.textContent || '').trim();
+            if (t.includes('¢') && t.length < 60) centBtns.push(b);
+        }
+    }
+    if (centBtns.length < 2) {
+        centBtns = [];
+        for (const b of document.querySelectorAll('button')) {
+            const t = (b.textContent || '').trim();
+            if (t.includes('¢') && t.length < 60) centBtns.push(b);
+            if (centBtns.length >= 2) break;
+        }
+    }
+    const tn = targetName.toLowerCase();
+    const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
+    for (const b of centBtns) {
+        const bt = b.textContent.trim().toLowerCase();
+        const team = bt.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
+        if (!team) continue;
+        const match =
+            tn.startsWith(team)
+            || team.startsWith(tn.slice(0, 3))
+            || tn.includes(team)
+            || (team.length >= 2 && team === initials)
+            || (team.length >= 2 && initials.startsWith(team))
+            || (team.length >= 3 && tn.split(/\s+/).some(w => w.startsWith(team)));
+        if (match) {
+            const m = b.textContent.match(/(\d+)¢/);
+            return {
+                full_text: b.textContent.trim(),
+                cents: m ? parseInt(m[1]) : null,
+                moneyline: !!moneyline,
+            };
+        }
+    }
+    // Fallback: first moneyline button
+    if (centBtns.length > 0) {
+        const b = centBtns[0];
+        const m = b.textContent.match(/(\d+)¢/);
+        return {
+            full_text: b.textContent.trim(),
+            cents: m ? parseInt(m[1]) : null,
+            moneyline: !!moneyline,
+            fallback: true,
+        };
+    }
+    return null;
+}"""
+
+
+async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
+    """Click the correct outcome (via Playwright locator for real pointer events) + fill Amount."""
+    from ..base import PlacementResult
+
+    def _g(attr: str) -> str:
+        if isinstance(bet, dict):
+            val = bet.get(attr)
+            if val is None:
+                val = (bet.get("provider_meta") or {}).get(attr)
+            return str(val or "")
+        val = getattr(bet, attr, None)
+        if val is None:
+            meta = getattr(bet, "provider_meta", None) or {}
+            if isinstance(meta, dict):
+                val = meta.get(attr)
+        return str(val or "")
+
+    outcome = _g("outcome").lower()
+    home = (_g("display_home") or _g("poly_home")).strip().lower()
+    away = (_g("display_away") or _g("poly_away")).strip().lower()
+    bet_id = getattr(bet, "bet_id", 0) if not isinstance(bet, dict) else bet.get("bet_id", 0)
+
+    if outcome in ("home", "1"):
+        target = home
+    elif outcome in ("away", "2"):
+        target = away
+    elif outcome == "over":
+        target = "over"
+    elif outcome == "under":
+        target = "under"
+    else:
+        target = outcome
+
+    try:
+        await page.wait_for_selector("button", timeout=10000)
+    except Exception:
+        await asyncio.sleep(3)
+
+    # Step 1: identify the target button text via JS (same matching logic as before)
+    target_info = None
+    try:
+        target_info = await page.evaluate(_LOCATE_TARGET_JS, target)
+    except Exception as e:
+        logger.warning(f"[polymarket] prep locate failed: {e}")
+
+    if not target_info:
+        return PlacementResult(status="failed", bet_id=bet_id, reason="no_cent_button_matched")
+
+    full_text = target_info["full_text"]
+    cents = target_info.get("cents")
+    logger.info(
+        f"[polymarket] Target outcome: '{full_text}' (target='{target}', "
+        f"cents={cents}, moneyline={target_info.get('moneyline')}"
+        f"{', fallback' if target_info.get('fallback') else ''})"
+    )
+
+    # Step 2: click via Playwright locator (real pointer events fire React handlers)
+    try:
+        locator = page.get_by_role("button", name=full_text, exact=True).first
+        await locator.scroll_into_view_if_needed(timeout=3000)
+        await locator.click(timeout=5000)
+        logger.info(f"[polymarket] Clicked '{full_text}' via locator")
+    except Exception as e:
+        logger.warning(f"[polymarket] locator click failed: {e}")
+        return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_failed:{e}")
+
+    await asyncio.sleep(1.5)
+
+    live_odds = round(1.0 / (cents / 100.0), 3) if cents and cents > 0 else None
+
+    # Step 3: fill Amount input — betslip should now be rendered on the right
+    if stake > 0:
+        stake_str = f"{stake:.2f}" if stake != int(stake) else str(int(stake))
+        try:
+            filled = await page.evaluate(_FILL_JS, stake_str)
+            if filled and filled.get("filled"):
+                logger.info(f"[polymarket] Filled Amount input: ${stake_str}")
+            else:
+                logger.warning("[polymarket] Amount input not found — stake not filled")
+        except Exception as e:
+            logger.warning(f"[polymarket] stake fill failed: {e}")
+
+    return PlacementResult(
+        status="prepped",
+        bet_id=bet_id,
+        actual_odds=live_odds,
+        actual_stake=stake,
+        reason=f"{cents}¢" if cents else None,
+    )
+
+
+_READ_CENTS_JS = r"""(targetName) => {
+    // Find the ¢ button matching target (same logic as prep) and return its current cents.
+    let moneyline = null;
+    for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
+        const t = (el.textContent || '').trim();
+        if (t !== 'Moneyline' || el.tagName === 'BUTTON') continue;
+        let p = el.parentElement;
+        for (let i = 0; i < 6 && p; i++) {
+            const btns = p.querySelectorAll('button');
+            let cc = 0;
+            for (const b of btns) if (b.textContent.includes('¢')) cc++;
+            if (cc >= 2) { moneyline = p; break; }
+            p = p.parentElement;
+        }
+        if (moneyline) break;
+    }
+    let centBtns = [];
+    if (moneyline) {
+        for (const b of moneyline.querySelectorAll('button')) {
+            const t = (b.textContent || '').trim();
+            if (t.includes('¢') && t.length < 60) centBtns.push(b);
+        }
+    }
+    if (centBtns.length < 2) return null;
+
+    const tn = targetName.toLowerCase();
+    const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
+    for (const b of centBtns) {
+        const bt = b.textContent.trim().toLowerCase();
+        const team = bt.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
+        if (!team) continue;
+        const match =
+            tn.startsWith(team)
+            || team.startsWith(tn.slice(0, 3))
+            || tn.includes(team)
+            || (team.length >= 2 && team === initials)
+            || (team.length >= 2 && initials.startsWith(team))
+            || (team.length >= 3 && tn.split(/\s+/).some(w => w.startsWith(team)));
+        if (match) {
+            const m = b.textContent.match(/(\d+)¢/);
+            return m ? parseInt(m[1]) : null;
+        }
+    }
+    return null;
+}"""
+
+
+async def _check_live_price(page: Page, bet, intel: dict | None = None):
+    """Read the current ¢ price for the target outcome and compute (live_odds, live_edge)."""
+    def _g(attr: str) -> str:
+        if isinstance(bet, dict):
+            val = bet.get(attr)
+            if val is None:
+                val = (bet.get("provider_meta") or {}).get(attr)
+            return str(val or "")
+        val = getattr(bet, attr, None)
+        if val is None:
+            meta = getattr(bet, "provider_meta", None) or {}
+            if isinstance(meta, dict):
+                val = meta.get(attr)
+        return str(val or "")
+
+    fair_odds = getattr(bet, "fair_odds", None) if not isinstance(bet, dict) else bet.get("fair_odds")
+    if not fair_odds:
+        return None, None
+
+    outcome = _g("outcome").lower()
+    home = (_g("display_home") or _g("poly_home")).strip().lower()
+    away = (_g("display_away") or _g("poly_away")).strip().lower()
+    if outcome in ("home", "1"):
+        target = home
+    elif outcome in ("away", "2"):
+        target = away
+    elif outcome == "over":
+        target = "over"
+    elif outcome == "under":
+        target = "under"
+    else:
+        target = outcome
+
+    try:
+        cents = await page.evaluate(_READ_CENTS_JS, target)
+    except Exception:
+        return None, None
+
+    if not cents or cents <= 0 or cents >= 100:
+        return None, None
+
+    live_odds = round(100.0 / cents, 3)
+    live_edge = (live_odds / float(fair_odds) - 1.0) * 100.0
+    return live_odds, round(live_edge, 2)
+
+
 strategy = Strategy(
     sync_balance=_sync_balance,
     sync_history=_sync_history,
+    prep_betslip=_prep_betslip,
+    check_live_price=_check_live_price,
     scrape_portfolio=_scrape_portfolio,
     claim_banner=_claim_banner,
     redeem_all=_redeem_all,

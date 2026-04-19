@@ -86,6 +86,9 @@ class GenericWorkflow(ProviderWorkflow):
         from .strategies import load_strategy
 
         self.strategy = load_strategy(provider_id)
+        # Intel JSON may declare this provider as autonomous (API-based place_bet
+        # called on user confirm instead of waiting for a placement interception).
+        self.autonomous_placement = bool((self.intel or {}).get("autonomous_placement", False))
 
     # ------------------------------------------------------------------
     # Login
@@ -333,6 +336,15 @@ class GenericWorkflow(ProviderWorkflow):
         except Exception as e:
             logger.warning(f"[{self.provider_id}] Navigate failed: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Betslip prep (outcome click + stake fill) — strategy override only
+    # ------------------------------------------------------------------
+
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
+        if self.strategy and self.strategy.prep_betslip:
+            return await self.strategy.prep_betslip(page, bet, stake, self.intel)
+        return PlacementResult(status="no_prep", bet_id=0, reason="not_implemented")
 
     # ------------------------------------------------------------------
     # Placement — always guided

@@ -75,7 +75,7 @@ DAILY_BET_CAP = 10  # max bets per soft provider per day
 
 # Unlimited providers — play value bets via ProviderRunner (no arb required; they don't limit).
 # Everything else (soft books) routes through ArbRunner for arb-only placement.
-UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet"}
+UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}
 UNCAPPED_PROVIDERS = UNLIMITED_PROVIDERS  # backward-compat alias for existing imports
 
 

@@ -30,16 +30,21 @@ SHARP_PROVIDERS = frozenset({"pinnacle"})
 # Signal-only providers — odds used for consensus/fair-odds but NOT for opportunity
 # generation (can't place bets on these). Their odds strengthen the model but they
 # should never appear as "bet on marathon" in the frontend.
-SIGNAL_ONLY_PROVIDERS = frozenset({"marathon", "stake"})
+SIGNAL_ONLY_PROVIDERS = frozenset({"marathon", "stake", "smarkets"})
 
 # Polymarket fee: 2% on net profit (winnings minus cost).
 # Effective odds after fee = (1 - fee) * odds + fee
 POLYMARKET_FEE_RATE = 0.02
 
+# Kalshi per-trade fee approximation. Actual formula is
+# ceil(0.07 × price × (1 − price) × contracts); we model it as a flat
+# multiplier on the price (tune from live fills data once enough trades land).
+KALSHI_FEE_RATE = 0.02
+
 # Providers that store the extended market set (enrichment + map markets).
 # Pinnacle: sharp baseline for all markets.
-# Polymarket: needs map markets for value comparison vs Pinnacle.
-EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({"polymarket"})
+# Polymarket + Kalshi: prediction-market microstructure for value comparison.
+EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({"polymarket", "kalshi"})
 
 # Platform map: provider_id -> platform name
 # Providers on the same platform share the same odds engine (not independent).
@@ -88,6 +93,10 @@ PLATFORM_MAP: dict[str, str] = {
     "marathon": "marathon",
     "cloudbet": "cloudbet",
     "stake": "stake",
+    # Prediction-market exchange (playable)
+    "kalshi": "kalshi",
+    # Signal-only exchange (user is IP-banned from placement)
+    "smarkets": "smarkets",
 }
 
 # Platform groups for consolidation: extract once per platform, store under canonical
@@ -162,7 +171,10 @@ MAJOR_LEAGUES: dict[str, list[str]] = {
 
 MAJOR_LEAGUES_FLAT: frozenset[str] = frozenset(league for leagues in MAJOR_LEAGUES.values() for league in leagues)
 
-ALLOWED_SPORTS = frozenset(
+# Sports where Pinnacle provides sharp lines AND soft providers have head-to-head
+# coverage for value comparison. Renamed from ALLOWED_SPORTS for clarity — the set
+# represents Pinnacle's coverage, not a generic allowlist.
+PINNACLE_SPORTS = frozenset(
     {
         "football",
         "basketball",

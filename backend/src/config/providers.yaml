@@ -828,6 +828,50 @@ providers:
       - boxing
       - esports
 
+  kalshi:
+    id: kalshi
+    name: Kalshi
+    domain: kalshi.com
+    retriever_type: kalshi
+    base_url: https://api.elections.kalshi.com/trade-api/v2
+    currency: USD
+    exchange_rate_sek: 10.5   # refresh periodically; rough 2026-04 FX
+    params:
+      min_volume_usd: 100
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+
+  smarkets:
+    id: smarkets
+    name: Smarkets
+    domain: smarkets.com
+    retriever_type: smarkets
+    base_url: https://api.smarkets.com/v3
+    currency: GBP
+    exchange_rate_sek: 13.3   # rough 2026-04 FX
+    params:
+      min_trades_24h: 1
+      # Smarkets geoblocks datacenter + most residential IPs with a 403
+      # Security Check. The retriever falls back to the shared Bahnhof
+      # SOCKS5 proxy (PROXY_URL env var) automatically — same routing as
+      # Pinnacle. Override here only for testing.
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)
 # ============================================================================
@@ -848,6 +892,12 @@ extraction_scheduling:
   polymarket:
     # Event matching only (not a sharp source). Doesn't need real-time refresh.
     providers: [polymarket]
+    interval_minutes: 5
+    grouped: false
+
+  kalshi:
+    # Prediction-market exchange. Public REST API, unauthenticated for market data.
+    providers: [kalshi]
     interval_minutes: 5
     grouped: false
 
@@ -891,10 +941,12 @@ extraction_scheduling:
   signal_international:
     # International signal-only providers — read odds for consensus, no bet placement
     # Cloudbet: REST feed, affiliate API key. Marathon: HTML scraping.
+    # Smarkets: betting exchange public JSON API (requires SOCKS5 proxy — geoblocked direct).
     # Stake.com removed — Cloudflare blocks datacenter IPs, needs residential proxy.
     providers:
       - cloudbet
       - marathon
+      - smarkets
     interval_minutes: 5
     grouped: false
 
@@ -951,6 +1003,10 @@ active:
   # - stake    # Cloudflare blocks datacenter IPs — needs residential proxy to work
   - cloudbet
   - marathon
+  # Betting exchange (signal-only; user IP-banned, SOCKS5 proxy required)
+  - smarkets
+  # Prediction-market exchange (playable + consensus input)
+  - kalshi
 
 
 # ============================================================================

@@ -3,7 +3,7 @@ import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
 // Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
-const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet'])
+const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
 // Keep small — we always play the remaining balance down, threshold just avoids
@@ -20,11 +20,16 @@ const SOFT_CLUSTER_MEMBERS: Record<string, string[]> = {
   gecko_betsson: ['betsson', 'nordicbet', 'betsafe', 'spelklubben'],
   comeon_group: ['comeon', 'lyllo', 'hajper', 'snabbare'],
 }
+// Standalone soft providers — their own one-provider "cluster". Listed so they
+// always appear in the UI even when fully untouched (no balance / bonus / pending).
+const SOFT_STANDALONES: string[] = [
+  'interwetten', 'vbet', '10bet', 'tipwin', 'coolbet', 'bethard',
+]
 const PROVIDER_TO_SOFT_CLUSTER: Record<string, string> = {}
 for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
   for (const m of members) PROVIDER_TO_SOFT_CLUSTER[m] = c
 }
-// Resolve a soft provider's cluster (fallback to pid for standalones like interwetten, vbet).
+// Resolve a soft provider's cluster (fallback to pid for standalones).
 const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
 
 interface BatchBet {
@@ -640,7 +645,7 @@ export default function PlayPage() {
       {/* Placement toast */}
       {placementToast && (
         <div className="flex items-center gap-3 px-3 py-2 border-b bg-green-900/30 border-green-700/50 animate-pulse">
-          <span className="text-xs text-green-400 font-semibold">{placementToast.count}/{placementToast.cap}</span>
+          <span className="text-xs text-green-400 font-semibold">PLACED</span>
           <span className="text-xs text-zinc-200 truncate">
             {placementToast.bet?.display_home} v {placementToast.bet?.display_away}
           </span>
@@ -736,15 +741,21 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
-          // Group ALL known soft providers by cluster — includes every sibling from
-          // SOFT_CLUSTER_MEMBERS plus any standalone provider that appears in
-          // providerBalances or providerBonuses. Done/drained siblings stay visible.
+          // Group ALL known soft providers by cluster — every sibling from
+          // SOFT_CLUSTER_MEMBERS, every standalone from SOFT_STANDALONES, and any
+          // additional provider we have balance / bonus / pending data for.
+          // Even untouched providers stay visible (rendered as ✕ done) so the
+          // user can see the full universe at a glance.
           const softByCluster: Record<string, string[]> = {}
           // Seed with all canonical siblings
           for (const [cluster, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
             softByCluster[cluster] = [...members]
           }
-          // Add any standalone provider we have balance/bonus/pending data for
+          // Seed standalones — each is its own one-provider "cluster"
+          for (const pid of SOFT_STANDALONES) {
+            if (!softByCluster[pid]) softByCluster[pid] = [pid]
+          }
+          // Add any extra provider we have data for that wasn't in the canonical lists
           const allKnownPids = new Set([
             ...Object.keys(providerBalances),
             ...Object.keys(providerBonuses),
@@ -834,73 +845,6 @@ export default function PlayPage() {
                           </span>
                         </div>
 
-                        {/* Pending bets for this cluster — aggregates across all siblings */}
-                        {(() => {
-                          const clusterPending = members.flatMap(pid =>
-                            (pendingByProvider[pid] ?? []).map((p: any) => ({ ...p, _pid: pid }))
-                          )
-                          if (clusterPending.length === 0) return null
-                          const clusterSettled = clusterPending.filter((p: any) => detectedSettlements[p.bet_id ?? p.id])
-                          const clusterPnl = clusterSettled.reduce((s: number, p: any) => {
-                            const det = detectedSettlements[p.bet_id ?? p.id]
-                            return s + ((det?.payout ?? 0) - (p.stake ?? 0))
-                          }, 0)
-                          return (
-                            <div className="border-b border-zinc-800 bg-amber-900/5">
-                              <div className="flex items-center gap-2 px-3 py-0.5 border-b border-zinc-800/30">
-                                <span className="text-[10px] text-amber-500 uppercase font-medium">Pending</span>
-                                <span className="text-[10px] text-zinc-600">
-                                  {clusterPending.length} bets · {Math.round(clusterPending.reduce((s: number, p: any) => s + (p.stake ?? 0), 0))} kr
-                                </span>
-                                {clusterSettled.length > 0 && (
-                                  <>
-                                    <span className={`text-[10px] font-mono font-semibold ${clusterPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                      {clusterPnl >= 0 ? '+' : ''}{Math.round(clusterPnl)} kr
-                                    </span>
-                                    <button onClick={handleConfirmSettlements}
-                                      className="ml-auto px-2 py-0.5 text-[10px] font-semibold bg-green-900/40 text-green-400 border border-green-700/50 rounded hover:bg-green-900/60 transition-colors">
-                                      Confirm {clusterSettled.length}
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                              {clusterPending.map((p: any) => {
-                                const betId = p.bet_id ?? p.id
-                                const det = detectedSettlements[betId]
-                                const eventLabel = p.home_team && p.away_team
-                                  ? `${p.home_team} v ${p.away_team}`
-                                  : p.event_id?.split(':').slice(1, 3).join(' v ') ?? p.event_id
-                                const profit = det ? (det.payout - (p.stake ?? 0)) : 0
-                                return (
-                                  <div key={`pending-${p.id}`} className={`flex items-center gap-2 px-3 pl-6 py-0.5 border-b border-zinc-800/20 text-xs ${
-                                    det ? (det.result === 'won' ? 'bg-green-900/10' : det.result === 'lost' ? 'bg-red-900/10' : 'bg-zinc-800/20') : ''
-                                  }`}>
-                                    <span className="text-[10px] text-zinc-600 uppercase w-[80px]">{p._pid}</span>
-                                    <span className={`truncate flex-1 ${det ? 'text-zinc-400' : 'text-amber-300/70'}`}>{eventLabel}</span>
-                                    <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
-                                    <span className="text-zinc-500 font-mono text-[10px]">@ {(p.odds ?? 0).toFixed(2)}</span>
-                                    <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(p.stake ?? 0)} kr</span>
-                                    {det && (
-                                      <>
-                                        <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
-                                          det.result === 'won' ? 'text-green-400 bg-green-900/30' :
-                                          det.result === 'lost' ? 'text-red-400 bg-red-900/30' :
-                                          'text-zinc-400 bg-zinc-800'
-                                        }`}>{det.result}</span>
-                                        <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                          {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
-                                        </span>
-                                        <button onClick={() => handleDismissSettlement(betId)}
-                                          className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
-                                      </>
-                                    )}
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          )
-                        })()}
-
                         {/* One card per funded sibling — same opps, different balance/active context */}
                         {funded.map(pid => {
                           const bal = providerBalances[pid] ?? 0
@@ -932,6 +876,70 @@ export default function PlayPage() {
                                   </span>
                                 )}
                               </div>
+
+                              {/* Per-provider pending list */}
+                              {(() => {
+                                const providerPending = pendingByProvider[pid] ?? []
+                                if (providerPending.length === 0) return null
+                                const providerSettled = providerPending.filter((p: any) => detectedSettlements[p.bet_id ?? p.id])
+                                const providerPnl = providerSettled.reduce((s: number, p: any) => {
+                                  const det = detectedSettlements[p.bet_id ?? p.id]
+                                  return s + ((det?.payout ?? 0) - (p.stake ?? 0))
+                                }, 0)
+                                return (
+                                  <div className="bg-amber-900/5 border-b border-zinc-800/40">
+                                    <div className="flex items-center gap-2 px-6 py-0.5 border-b border-zinc-800/30">
+                                      <span className="text-[10px] text-amber-500 uppercase font-medium">Pending</span>
+                                      <span className="text-[10px] text-zinc-600">
+                                        {providerPending.length} bets · {Math.round(providerPending.reduce((s: number, p: any) => s + (p.stake ?? 0), 0))} kr
+                                      </span>
+                                      {providerSettled.length > 0 && (
+                                        <>
+                                          <span className={`text-[10px] font-mono font-semibold ${providerPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                            {providerPnl >= 0 ? '+' : ''}{Math.round(providerPnl)} kr
+                                          </span>
+                                          <button onClick={handleConfirmSettlements}
+                                            className="ml-auto px-2 py-0.5 text-[10px] font-semibold bg-green-900/40 text-green-400 border border-green-700/50 rounded hover:bg-green-900/60 transition-colors">
+                                            Confirm {providerSettled.length}
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                    {providerPending.map((p: any) => {
+                                      const betId = p.bet_id ?? p.id
+                                      const det = detectedSettlements[betId]
+                                      const eventLabel = p.home_team && p.away_team
+                                        ? `${p.home_team} v ${p.away_team}`
+                                        : p.event_id?.split(':').slice(1, 3).join(' v ') ?? p.event_id
+                                      const profit = det ? (det.payout - (p.stake ?? 0)) : 0
+                                      return (
+                                        <div key={`pending-${p.id}`} className={`flex items-center gap-2 px-6 pl-9 py-0.5 border-b border-zinc-800/20 text-xs ${
+                                          det ? (det.result === 'won' ? 'bg-green-900/10' : det.result === 'lost' ? 'bg-red-900/10' : 'bg-zinc-800/20') : ''
+                                        }`}>
+                                          <span className={`truncate flex-1 ${det ? 'text-zinc-400' : 'text-amber-300/70'}`}>{eventLabel}</span>
+                                          <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
+                                          <span className="text-zinc-500 font-mono text-[10px]">@ {(p.odds ?? 0).toFixed(2)}</span>
+                                          <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(p.stake ?? 0)} kr</span>
+                                          {det && (
+                                            <>
+                                              <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
+                                                det.result === 'won' ? 'text-green-400 bg-green-900/30' :
+                                                det.result === 'lost' ? 'text-red-400 bg-red-900/30' :
+                                                'text-zinc-400 bg-zinc-800'
+                                              }`}>{det.result}</span>
+                                              <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
+                                              </span>
+                                              <button onClick={() => handleDismissSettlement(betId)}
+                                                className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
+                                            </>
+                                          )}
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )
+                              })()}
 
                               {/* Arb table — same opps for all siblings, anchor shown as THIS provider */}
                               {opps.length === 0 ? (
@@ -1041,7 +1049,7 @@ export default function PlayPage() {
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
-                    const uncapped = ['pinnacle', 'polymarket', 'cloudbet'].includes(pid)
+                    const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
                     return (
                       <button key={pid}
