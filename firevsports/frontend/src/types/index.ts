@@ -261,18 +261,34 @@ export interface ProfileUpdate {
 }
 
 // Fund Allocation
-export interface AllocationRecommendation {
+export interface AllocationDeposit {
+  priority: 1 | 2 | 3;
   provider_id: string;
   provider_name: string;
-  action: 'deposit' | 'withdraw';
+  amount: number;
+  amount_sek: number;
+  unlocks: string;   // "bonus_claim" | "wagering_topup" | "<N> valuebets"
+  expected_ev: number;
+  reason: string;
+  bonus_type: string | null;
+}
+
+export interface AllocationWithdrawal {
+  provider_id: string;
+  provider_name: string;
   amount: number;
   amount_sek: number;
   reason: string;
-  priority: number;
-  expected_ev: number;
-  bonus_type: string | null;
-  current_balance: number;
-  current_balance_sek: number;
+}
+
+export interface AllocationEnvelope {
+  current_liquid: number;
+  deposit_input: number | null;
+  withdrawals: AllocationWithdrawal[];
+  effective_budget: number | null;  // null = unbounded (deposit_input was null)
+  deposits: AllocationDeposit[];
+  keep_liquid: number;
+  recommended_total: number;
 }
 
 // Bankroll Exposure
