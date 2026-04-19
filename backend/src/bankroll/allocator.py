@@ -23,14 +23,44 @@ from ..services.batch_builder import BatchBuilder
 
 logger = logging.getLogger(__name__)
 
-# EV retention estimates (conservative)
-FREEBET_EV_RATE = 0.65  # 65% of freebet face value is expected profit
-BONUSDEPOSIT_EV_RATE = 0.40  # 40% of bonusdeposit after wagering costs
+# EV retention estimates
+FREEBET_EV_RATE = 0.65  # 65% of freebet face value is expected profit (stake-not-returned)
+# Bonusdeposit EV is computed from bonus config (trigger + wagering multipliers
+# and a typical per-bet house edge). When wagering_multiplier is missing in
+# config, we assume this default — conservative for bonuses with unwritten wagering terms.
+DEFAULT_WAGERING_MULTIPLIER = 10.0
+BONUS_BET_HOUSE_EDGE = 0.025  # 2.5% per bet at ~1.80 odds with min_odds constraint
 
 DEFAULT_MIN_DEPOSIT = 100.0  # Minimum deposit amount (SEK)
 LOW_BALANCE_THRESHOLD = 200.0
 WAGERING_TOPUP_AMOUNT = 500.0
-WITHDRAW_MIN_SEK = 50.0  # floor for suggesting a withdrawal (was 10)
+WITHDRAW_MIN_SEK = 50.0  # floor for suggesting a withdrawal
+
+
+def _compute_bonus_ev(bonus_cfg: dict) -> float:
+    """Expected profit from a bonus offer, in the bonus's native currency.
+
+    For freebets: flat FREEBET_EV_RATE (well-established empirically).
+    For bonusdeposit: face value minus expected wagering cost computed from
+    trigger_multiplier + wagering_multiplier + BONUS_BET_HOUSE_EDGE. If
+    wagering_multiplier is missing, assumes DEFAULT_WAGERING_MULTIPLIER.
+    """
+    bonus_amount = bonus_cfg.get("amount", 0) or 0
+    bonus_type = bonus_cfg.get("type", "bonusdeposit")
+    if bonus_amount <= 0:
+        return 0.0
+    if bonus_type == "freebet":
+        return bonus_amount * FREEBET_EV_RATE
+
+    trigger_mult = bonus_cfg.get("trigger_multiplier", 0) or 0
+    trigger_amount = bonus_cfg.get("trigger_amount", bonus_amount) or bonus_amount
+    wagering_mult = bonus_cfg.get("wagering_multiplier")
+    if wagering_mult is None or wagering_mult <= 0:
+        wagering_mult = DEFAULT_WAGERING_MULTIPLIER
+
+    total_wager = (trigger_mult * trigger_amount) + (wagering_mult * bonus_amount)
+    expected_loss = total_wager * BONUS_BET_HOUSE_EDGE
+    return max(0.0, bonus_amount - expected_loss)
 
 
 @dataclass
@@ -84,18 +114,25 @@ class AllocationEngine:
         providers = {p.id: p for p in self.db.query(Provider).filter(Provider.is_enabled == True).all()}
 
         # ── Phase A: withdrawals ──
+        # Start with BatchBuilder's suggestions (its capital_plan knows about shortfalls),
+        # then supplement with any profile balance that is clearly idle (no active bonus,
+        # no pending bets) that BatchBuilder missed.
+        from ..db.models import Bet, ProfileProviderBalance
+
         withdrawals: list[dict] = []
         withdrawal_total_sek = 0.0
-        withdraw_actions = [a for a in actions if a.get("type") == "withdraw"]
-        for action in withdraw_actions:
-            pid = action.get("provider_id", "")
+        seen_withdrawal_pids: set[str] = set()
+
+        def _add_withdrawal(pid: str, balance: float, reason: str) -> None:
+            nonlocal withdrawal_total_sek
+            if pid in seen_withdrawal_pids:
+                return
             rate = get_exchange_rate(pid)
             if rate <= 0:
-                continue
-            balance = provider_balances_map.get(pid, 0.0)
+                return
             balance_sek = balance * rate
             if balance_sek < WITHDRAW_MIN_SEK:
-                continue
+                return
             p = providers.get(pid)
             withdrawals.append(
                 {
@@ -103,10 +140,43 @@ class AllocationEngine:
                     "provider_name": p.name if p else pid,
                     "amount": round(balance, 2),
                     "amount_sek": round(balance_sek, 2),
-                    "reason": "No active bets — withdraw to recycle",
+                    "reason": reason,
                 }
             )
             withdrawal_total_sek += balance_sek
+            seen_withdrawal_pids.add(pid)
+
+        withdraw_actions = [a for a in actions if a.get("type") == "withdraw"]
+        for action in withdraw_actions:
+            pid = action.get("provider_id", "")
+            balance = provider_balances_map.get(pid, 0.0)
+            _add_withdrawal(pid, balance, "No active bets — withdraw to recycle")
+
+        # Supplementary scan: idle providers with balance, no active bonus, no pending bets.
+        # Catches cases BatchBuilder's shortfall logic skips (e.g., unibet with bonus_status=completed).
+        pending_pids = {
+            row[0]
+            for row in self.db.query(Bet.provider_id)
+            .filter(Bet.profile_id == self.profile.id, Bet.result == "pending")
+            .distinct()
+            .all()
+        }
+        balance_rows = (
+            self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == self.profile.id).all()
+        )
+        for row in balance_rows:
+            pid = row.provider_id
+            if pid in seen_withdrawal_pids:
+                continue
+            cfg = self.config.get_provider(pid)
+            if not cfg or cfg.sharp:
+                continue
+            if pid in pending_pids:
+                continue
+            bonus = bonuses.get(pid)
+            if bonus and bonus.bonus_status in ("available", "trigger_needed", "in_progress"):
+                continue
+            _add_withdrawal(pid, row.balance or 0.0, "Idle balance — withdraw to redeploy")
 
         # Effective budget
         unbounded = deposit_input is None
@@ -144,7 +214,7 @@ class AllocationEngine:
             trigger_sek = trigger_amount * rate
             if trigger_sek < DEFAULT_MIN_DEPOSIT:
                 continue
-            ev = bonus_amount * (FREEBET_EV_RATE if bonus_type == "freebet" else BONUSDEPOSIT_EV_RATE)
+            ev = _compute_bonus_ev(bonus_cfg)
             ev_per_kr = ev / max(trigger_sek, 1.0)
             reason = f"Freebet {bonus_amount:.0f}kr" if bonus_type == "freebet" else f"Bonus {bonus_amount:.0f}kr"
             wager_mult = bonus_cfg.get("wagering_multiplier", 0)
