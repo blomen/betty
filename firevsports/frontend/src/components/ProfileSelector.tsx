@@ -8,12 +8,24 @@ export function ProfileSelector() {
   const [createError, setCreateError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const closeAndReset = () => {
+    setOpen(false);
+    activate.reset();
+    create.reset();
+    setCreateError(null);
+  };
+
+  const handleToggle = () => {
+    if (open) closeAndReset();
+    else setOpen(true);
+  };
+
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeAndReset();
       }
     };
     document.addEventListener('mousedown', onDown);
@@ -22,12 +34,12 @@ export function ProfileSelector() {
 
   const handleActivate = async (id: number) => {
     if (id === activeProfile?.id) {
-      setOpen(false);
+      closeAndReset();
       return;
     }
     try {
       await activate.mutateAsync(id);
-      setOpen(false);
+      closeAndReset();
     } catch {
       // error surfaced via activate.error; keep dropdown open
     }
@@ -61,7 +73,7 @@ export function ProfileSelector() {
   return (
     <div className="relative" ref={rootRef}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         className="flex items-center gap-2 px-2 py-1 text-xs border border-border bg-panel hover:border-tabBankroll transition-colors"
       >
         <span
