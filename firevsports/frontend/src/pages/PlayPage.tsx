@@ -730,7 +730,16 @@ export default function PlayPage() {
                 </>
               )}
               {status.state === 'ready' && (
-                <button onClick={() => api.skipCurrent(pid)} className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto">Skip</button>
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={() => api.placeCurrent()}
+                    className="px-2.5 py-0.5 text-[10px] font-semibold rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
+                  >Place</button>
+                  <button
+                    onClick={() => api.skipCurrent(pid)}
+                    className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                  >Skip</button>
+                </div>
               )}
             </div>
           ))}
