@@ -2,13 +2,14 @@
 
 import logging
 from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
-from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Profile, Provider, ProfileProviderBonus
-from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
+from ..bankroll.stake_calculator import BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP, StakeCalculator
 from ..config import get_exchange_rate, get_provider_currency
 from ..constants import PLATFORM_MAP
+from ..db.models import Profile, ProfileProviderBonus, Provider
+from ..repositories import BetRepo, ProfileRepo
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +38,16 @@ class BankrollService:
             currency = get_provider_currency(p.id)
             rate = get_exchange_rate(p.id)
             total_sek += balance * rate
-            provider_data.append({
-                "id": p.id,
-                "name": p.name,
-                "balance": balance,
-                "currency": currency,
-                "exchange_rate_sek": rate,
-                "balance_sek": round(balance * rate, 2),
-            })
+            provider_data.append(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "balance": balance,
+                    "currency": currency,
+                    "exchange_rate_sek": rate,
+                    "balance_sek": round(balance * rate, 2),
+                }
+            )
 
         return {
             "total": total_sek,
@@ -113,10 +116,14 @@ class BankrollService:
         providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
 
         # Load active bonus statuses for all providers
-        active_bonuses = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile.id,
-            ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"]),
-        ).all()
+        active_bonuses = (
+            self.db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == profile.id,
+                ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"]),
+            )
+            .all()
+        )
         bonus_map = {b.provider_id: b for b in active_bonuses}
 
         exposure_data = []
@@ -133,8 +140,9 @@ class BankrollService:
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
             # Convert non-SEK stakes (e.g. Polymarket USDC) to SEK
             pending_exposure = sum(
-                (b.stake * rate if getattr(b, 'currency', 'SEK') != 'SEK' else b.stake)
-                for b in pending_bets if not b.is_bonus
+                (b.stake * rate if getattr(b, "currency", "SEK") != "SEK" else b.stake)
+                for b in pending_bets
+                if not b.is_bonus
             )
 
             # Wagering progress for this provider
@@ -170,20 +178,22 @@ class BankrollService:
                 total_free_sek += balance_sek
 
             pending_native = pending_exposure / rate  # Convert SEK pending to native currency
-            exposure_data.append({
-                "provider_id": provider.id,
-                "provider_name": provider.name,
-                "total_balance": balance + pending_native,
-                "balance_sek": round(balance_sek + pending_exposure, 2),
-                "currency": currency,
-                "exchange_rate_sek": rate,
-                "pending_exposure": pending_exposure,
-                "pending_bets_count": len(pending_bets),
-                "available": balance,
-                "platform": PLATFORM_MAP.get(provider.id, provider.id),
-                "is_locked": is_locked,
-                "wagering": wagering_info,
-            })
+            exposure_data.append(
+                {
+                    "provider_id": provider.id,
+                    "provider_name": provider.name,
+                    "total_balance": balance + pending_native,
+                    "balance_sek": round(balance_sek + pending_exposure, 2),
+                    "currency": currency,
+                    "exchange_rate_sek": rate,
+                    "pending_exposure": pending_exposure,
+                    "pending_bets_count": len(pending_bets),
+                    "available": balance,
+                    "platform": PLATFORM_MAP.get(provider.id, provider.id),
+                    "is_locked": is_locked,
+                    "wagering": wagering_info,
+                }
+            )
 
         total_pending = sum(e["pending_exposure"] for e in exposure_data)
 
@@ -224,10 +234,14 @@ class BankrollService:
 
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()
-        bonuses = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"])
-        ).all()
+        bonuses = (
+            self.db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == profile_id,
+                ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"]),
+            )
+            .all()
+        )
 
         for bonus in bonuses:
             if bonus.wagering_requirement and bonus.wagering_requirement > 0:
@@ -245,11 +259,10 @@ class BankrollService:
         profile = self.profile_repo.get_active()
         calc = self.get_stake_calculator(profile.id)
 
-        bonuses = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile.id
-        ).all()
+        bonuses = self.db.query(ProfileProviderBonus).filter(ProfileProviderBonus.profile_id == profile.id).all()
 
         from ..api.routes.providers import load_provider_bonuses
+
         all_bonus_configs = load_provider_bonuses()
 
         active_statuses = ("in_progress", "trigger_needed")
@@ -265,8 +278,7 @@ class BankrollService:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
 
             # Auto-expire active bonuses past deadline
-            if (bonus.bonus_status in active_statuses and expires_at
-                    and now > expires_at):
+            if bonus.bonus_status in active_statuses and expires_at and now > expires_at:
                 bonus.bonus_status = "completed"
                 bonus.updated_at = now
 
@@ -296,8 +308,10 @@ class BankrollService:
 
             # Compute action_needed
             action_needed = self._compute_action_needed(
-                bonus.bonus_status, bonus_type,
-                bonus_amount, provider_min_odds,
+                bonus.bonus_status,
+                bonus_type,
+                bonus_amount,
+                provider_min_odds,
             )
 
             # Compute prognosis for active wagering
@@ -312,14 +326,9 @@ class BankrollService:
                 "wagering_requirement": wagering_req,
                 "wagered_amount": wagered,
                 "min_odds": provider_min_odds,
-                "progress_pct": (
-                    min(100.0, wagered / wagering_req * 100)
-                    if wagering_req > 0
-                    else 100.0
-                ),
+                "progress_pct": (min(100.0, wagered / wagering_req * 100) if wagering_req > 0 else 100.0),
                 "is_cleared": (
-                    bonus.bonus_status in ("completed", "available") or
-                    (wagering_req > 0 and wagered >= wagering_req)
+                    bonus.bonus_status in ("completed", "available") or (wagering_req > 0 and wagered >= wagering_req)
                 ),
                 "claimed_at": bonus.claimed_at.isoformat() if bonus.claimed_at else None,
                 "expires_at": bonus.expires_at.isoformat() if bonus.expires_at else None,
@@ -345,24 +354,28 @@ class BankrollService:
             return None
 
         from ..api.routes.providers import load_provider_bonuses
+
         bonus_config = load_provider_bonuses().get(provider_id, {})
         active_profile = self.profile_repo.get_active()
 
-        bonus_record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == active_profile.id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        bonus_record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == active_profile.id, ProfileProviderBonus.provider_id == provider_id
+            )
+            .first()
+        )
 
-        bonus_type = bonus_config.get('type')
-        is_available = not bonus_record or bonus_record.bonus_status == 'available'
+        bonus_type = bonus_config.get("type")
+        is_available = not bonus_record or bonus_record.bonus_status == "available"
 
         deposit_amount = amount
         bonus_amount = 0.0
-        bonus_limit = bonus_config.get('amount', 0)
-        trigger_odds = bonus_config.get('trigger_odds')
+        bonus_limit = bonus_config.get("amount", 0)
+        trigger_odds = bonus_config.get("trigger_odds")
 
         # Bonusdeposit: match deposit with bonus money
-        if bonus_type == 'bonusdeposit' and is_available and bonus_limit > 0:
+        if bonus_type == "bonusdeposit" and is_available and bonus_limit > 0:
             bonus_amount = min(deposit_amount, bonus_limit)
 
         # Track cumulative deposits for ROI calculation
@@ -381,15 +394,17 @@ class BankrollService:
         new_balance = self.profile_repo.adjust_balance(active_profile.id, provider_id, total_added)
 
         bonus_info = None
-        if bonus_type == 'bonusdeposit' and bonus_amount > 0:
-            wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
-            bonus_min_odds = bonus_config.get('min_odds', 1.80)
-            deadline_days = bonus_config.get('deadline_days')
+        if bonus_type == "bonusdeposit" and bonus_amount > 0:
+            wagering_multiplier = bonus_config.get("wagering_multiplier", 10.0)
+            bonus_min_odds = bonus_config.get("min_odds", 1.80)
+            deadline_days = bonus_config.get("deadline_days")
             if trigger_odds:
                 # Two-phase: start in trigger_needed, wager deposit×trigger_multiplier at trigger_odds
-                trigger_multiplier = bonus_config.get('trigger_multiplier', 1)
+                trigger_multiplier = bonus_config.get("trigger_multiplier", 1)
                 bonus_info = self.profile_repo.start_bonus_trigger(
-                    active_profile.id, provider_id, bonus_amount,
+                    active_profile.id,
+                    provider_id,
+                    bonus_amount,
                     trigger_wagering=deposit_amount * trigger_multiplier,
                     trigger_min_odds=trigger_odds,
                     main_wagering_multiplier=wagering_multiplier,
@@ -399,25 +414,30 @@ class BankrollService:
                 )
             else:
                 bonus_info = self.profile_repo.start_bonus_wagering(
-                    active_profile.id, provider_id, bonus_amount,
-                    wagering_multiplier, min_odds=bonus_min_odds,
+                    active_profile.id,
+                    provider_id,
+                    bonus_amount,
+                    wagering_multiplier,
+                    min_odds=bonus_min_odds,
                     deadline_days=deadline_days,
                 )
-        elif bonus_type == 'freebet' and is_available and bonus_limit > 0:
+        elif bonus_type == "freebet" and is_available and bonus_limit > 0:
             # Freebet: start trigger tracking (no bonus money added to balance)
-            bonus_min_odds = bonus_config.get('min_odds', 1.80)
-            trigger_multiplier = bonus_config.get('trigger_multiplier', 1)
+            bonus_min_odds = bonus_config.get("min_odds", 1.80)
+            trigger_multiplier = bonus_config.get("trigger_multiplier", 1)
             bonus_info = self.profile_repo.start_freebet_tracking(
-                active_profile.id, provider_id,
+                active_profile.id,
+                provider_id,
                 bonus_amount=bonus_limit,
                 min_odds=bonus_min_odds,
                 trigger_wagering=deposit_amount * trigger_multiplier,
-                deadline_days=bonus_config.get('deadline_days'),
+                deadline_days=bonus_config.get("deadline_days"),
             )
 
         # Invalidate planner cache on deposit (triggers re-plan on next request)
         try:
             from .planner_service import BankrollPlannerService
+
             BankrollPlannerService.invalidate_cache(active_profile.id)
         except Exception:
             pass
@@ -440,8 +460,10 @@ class BankrollService:
 
     @staticmethod
     def _compute_action_needed(
-        status: str, bonus_type: str | None,
-        bonus_amount: float, min_odds: float,
+        status: str,
+        bonus_type: str | None,
+        bonus_amount: float,
+        min_odds: float,
     ) -> str:
         """Compute human-readable action string for a bonus."""
         amt = int(bonus_amount)
@@ -460,17 +482,17 @@ class BankrollService:
                 return f"Deposit up to {amt}kr for matched bonus"
         return ""
 
-    def allocate(self, liquid_amount: float) -> list[dict]:
-        """Run allocation engine and return recommendations. Persists liquid_balance."""
-        from dataclasses import asdict
+    def allocate(self, liquid_amount: float | None) -> dict:
+        """Run allocation engine and return envelope. Persists liquid_balance when numeric."""
         from ..bankroll.allocator import AllocationEngine
 
         profile = self.profile_repo.get_active()
-        profile.liquid_balance = liquid_amount
-        self.db.commit()
+        if liquid_amount is not None:
+            profile.liquid_balance = liquid_amount
+            self.db.commit()
 
         engine = AllocationEngine(self.db, profile)
-        return [asdict(r) for r in engine.allocate(liquid_amount)]
+        return engine.allocate(liquid_amount)
 
     def get_liquid_balance(self) -> float:
         """Return last-known liquid balance from profile."""
