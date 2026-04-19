@@ -2,6 +2,7 @@ import { useState } from 'react'
 import PlayPage from './pages/PlayPage'
 import { BankrollPage } from './pages/BankrollPage'
 import { StatsPage } from './pages/StatsPage'
+import { ProfileSelector } from './components/ProfileSelector'
 
 type Tab = 'play' | 'bankroll' | 'stats'
 
@@ -31,6 +32,9 @@ export default function App() {
             {tab.label}
           </button>
         ))}
+        <div className="ml-auto">
+          <ProfileSelector />
+        </div>
       </div>
       <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden">
         {activeTab === 'play' && <PlayPage />}
