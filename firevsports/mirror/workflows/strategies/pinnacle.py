@@ -116,18 +116,36 @@ _PINNACLE_HEADERS = {
     "Origin": "https://www.pinnacle.se",
     "Referer": "https://www.pinnacle.se/",
     "Accept": "application/json",
+    # Public web-SDK key — constant across sessions (captured from intercepted XHR).
+    "X-Api-Key": "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R",
 }
 
 
 async def _build_headers(page: Page) -> dict:
+    """Harvest X-Device-UUID + X-Session from localStorage['Main:User']. Pinnacle sets
+    these at login; every authenticated XHR needs them alongside cookies and the
+    static X-Api-Key."""
+    headers = dict(_PINNACLE_HEADERS)
+    try:
+        main_user = await page.evaluate(
+            r"""() => { try { const r = localStorage.getItem('Main:User'); return r ? JSON.parse(r) : null; } catch { return null; } }"""
+        )
+        if isinstance(main_user, dict):
+            uuid_val = main_user.get("uuid") or main_user.get("deviceId")
+            token = main_user.get("token")
+            if uuid_val:
+                headers["X-Device-UUID"] = str(uuid_val)
+            if token:
+                headers["X-Session"] = str(token)
+    except Exception as e:
+        logger.warning(f"[pinnacle] harvest Main:User failed: {e}")
     try:
         cookies = await page.context.cookies()
         cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "pinnacle" in c.get("domain", ""))
+        if cookie_str:
+            headers["Cookie"] = cookie_str
     except Exception:
-        cookie_str = ""
-    headers = dict(_PINNACLE_HEADERS)
-    if cookie_str:
-        headers["Cookie"] = cookie_str
+        pass
     return headers
 
 

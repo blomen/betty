@@ -534,16 +534,27 @@ class MirrorBrowser:
                 # Capture request body — contains the actual stake submitted by the browser
                 # (may differ from requested stake if WSDK/site capped it)
                 request_body: dict | None = None
+                request_headers: dict = {}
                 try:
                     post_data = response.request.post_data
                     if post_data:
                         request_body = json.loads(post_data)
                 except Exception:
                     pass
+                try:
+                    # Record request headers so we can replay auth on scripted calls
+                    # (Pinnacle requires per-session JWT/fingerprint — capture once here).
+                    request_headers = await response.request.all_headers()
+                except Exception:
+                    pass
 
                 body_text = await response.text()
                 body_parsed = json.loads(body_text)
-                logger.info(f"[browser] {provider_id} BET PLACED: {url[:80]}")
+                logger.warning(
+                    f"[browser] {provider_id} BET PLACED\n  URL: {url}\n"
+                    f"  HEADERS: {json.dumps(request_headers, indent=2)[:2000]}\n"
+                    f"  BODY: {json.dumps(request_body, indent=2)[:1200] if request_body else '(none)'}"
+                )
                 if self._on_event:
                     self._on_event(
                         "bet_intercepted",
