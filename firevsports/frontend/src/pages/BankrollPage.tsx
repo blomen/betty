@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
 import { Card } from '@/components/Card';
+import { DepositAllocator } from '@/components/DepositAllocator';
 import { SortableHeader } from '@/components/SortableHeader';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { ProviderName } from '@/components/ProviderName';
 import { useTableSort } from '@/hooks/useTableSort';
-import type { ProviderExposure } from '@/types';
+import type { AllocationEnvelope, ProviderExposure } from '@/types';
 import { useBankrollQuery } from '@/hooks/useBankrollQuery';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast, ToastContainer } from '@/components/Toast';
@@ -19,64 +20,35 @@ export function BankrollPage() {
   const providers = providersData?.providers ?? [];
   const { toasts, addToast, dismissToast } = useToast();
 
-  // Fetch play batch for capital plan (deposit recommendations)
+  // Fetch play batch for Overview stats (deployed bets + EV)
   const { data: batchData } = useQuery({
     queryKey: ['opportunities', 'play', 'batch'],
     queryFn: () => api.getPlayBatch(),
     staleTime: 30_000,
   });
 
-  // Calculate deposit needed per provider: total stake - current balance
-  // Shows the shortfall to cover ALL bets, not just "missed" ones
-  const depositMap = useMemo(() => {
-    const map = new Map<string, { amount: number; unlocks: number; ev: number; currency: string }>();
-    if (!batchData?.batch) return map;
-    const balances = batchData.provider_balances ?? {};
+  // Fetch allocation envelope (recommended deposits per provider)
+  const { data: allocation } = useQuery<AllocationEnvelope>({
+    queryKey: ['bankroll', 'allocate', null],
+    queryFn: () => api.allocate(null),
+    staleTime: 30_000,
+  });
+  const recommendedTotal = allocation?.recommended_total ?? 0;
+  const recommendedEv = allocation?.deposits.reduce((sum, d) => sum + d.expected_ev, 0) ?? 0;
 
-    // Sum total stake and EV per provider
-    const totals = new Map<string, { stake: number; bets: number; ev: number }>();
-    for (const bet of batchData.batch) {
-      const pid = bet.provider_id;
-      const t = totals.get(pid) || { stake: 0, bets: 0, ev: 0 };
-      t.stake += bet.stake || 0;
-      t.bets += 1;
-      t.ev += bet.expected_profit || 0;
-      totals.set(pid, t);
-    }
-
-    // Shortfall = total stake - current balance
-    for (const [pid, t] of totals) {
-      const balance = balances[pid] ?? 0;
-      const shortfall = t.stake - balance;
-      if (shortfall <= 0) continue; // Fully funded
-      map.set(pid, {
-        amount: Math.ceil(shortfall),
-        unlocks: t.bets,
-        ev: t.ev,
-        currency: pid === 'polymarket' ? 'USDC' : 'SEK',
+  const depositByProvider = useMemo(() => {
+    const map = new Map<string, { amount: number; unlocks: string; ev: number; currency: string }>();
+    for (const d of allocation?.deposits ?? []) {
+      map.set(d.provider_id, {
+        amount: d.amount,
+        unlocks: d.unlocks,
+        ev: d.expected_ev,
+        currency: d.provider_id === 'polymarket' ? 'USDC' : 'SEK',
       });
     }
     return map;
-  }, [batchData]);
+  }, [allocation]);
 
-  // Summary stats
-  const totalDepositsNeeded = useMemo(() => {
-    let total = 0;
-    for (const d of depositMap.values()) {
-      total += d.currency === 'USDC' ? d.amount * 10.5 : d.amount;
-    }
-    return total;
-  }, [depositMap]);
-  const totalBetsUnlocked = useMemo(() => {
-    let total = 0;
-    for (const d of depositMap.values()) total += d.unlocks;
-    return total;
-  }, [depositMap]);
-  const totalEV = useMemo(() => {
-    let total = 0;
-    for (const d of depositMap.values()) total += d.ev;
-    return total;
-  }, [depositMap]);
   const batchTotal = batchData?.summary?.total_bets ?? 0;
   const batchEV = batchData?.summary?.total_expected_profit ?? 0;
 
@@ -123,9 +95,14 @@ export function BankrollPage() {
       return (n.charCodeAt(0) || 0) * 10000 + (n.charCodeAt(1) || 0) * 100 + (n.charCodeAt(2) || 0);
     },
     balance: (p) => p.total_balance,
-    deposit: (p) => depositMap.get(p.provider_id)?.amount ?? 0,
-    bets: (p) => depositMap.get(p.provider_id)?.unlocks ?? 0,
-    ev: (p) => depositMap.get(p.provider_id)?.ev ?? 0,
+    deposit: (p) => depositByProvider.get(p.provider_id)?.amount ?? 0,
+    bets: (p) => {
+      const u = depositByProvider.get(p.provider_id)?.unlocks;
+      if (!u) return 0;
+      const match = u.match(/^(\d+)/);
+      return match ? parseInt(match[1], 10) : 0;
+    },
+    ev: (p) => depositByProvider.get(p.provider_id)?.ev ?? 0,
   };
 
   // Hide signal-only providers (no balance, no bets, not playable)
@@ -134,9 +111,9 @@ export function BankrollPage() {
     const list = exposure?.providers ?? [];
     return list.filter(p =>
       !SIGNAL_ONLY.has(p.provider_id) &&
-      (p.total_balance > 0 || depositMap.has(p.provider_id) || p.pending_exposure > 0)
+      (p.total_balance > 0 || depositByProvider.has(p.provider_id) || p.pending_exposure > 0)
     );
-  }, [exposure, depositMap]);
+  }, [exposure, depositByProvider]);
   const { sorted: tableSorted, sort: provSort, toggle: toggleProvSort } =
     useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'deposit', direction: 'desc' }, 'bbq_bankroll_sort');
 
@@ -144,8 +121,8 @@ export function BankrollPage() {
   const sortedProviders = useMemo(() => {
     if (provSort.column !== null) return tableSorted;
     return [...tableSorted].sort((a, b) => {
-      const da = depositMap.get(a.provider_id);
-      const db = depositMap.get(b.provider_id);
+      const da = depositByProvider.get(a.provider_id);
+      const db = depositByProvider.get(b.provider_id);
       // Providers needing deposits first
       if (da && !db) return -1;
       if (!da && db) return 1;
@@ -153,7 +130,7 @@ export function BankrollPage() {
       // Then by balance desc
       return b.total_balance - a.total_balance;
     });
-  }, [tableSorted, provSort.column, depositMap]);
+  }, [tableSorted, provSort.column, depositByProvider]);
 
   if (isLoading) {
     return (
@@ -187,18 +164,23 @@ export function BankrollPage() {
                 <div className="text-muted">{batchTotal} bets · +{batchEV.toFixed(0)} kr EV</div>
               </div>
               <div>
-                <div className="text-muted mb-1">TO UNLOCK ALL BETS</div>
+                <div className="text-muted mb-1">RECOMMENDED DEPOSIT</div>
                 <div className="text-tabBankroll text-xl font-semibold">
-                  {totalDepositsNeeded > 0 ? `${totalDepositsNeeded.toFixed(0)} kr` : 'Fully funded'}
+                  {recommendedTotal > 0 ? `${recommendedTotal.toFixed(0)} kr` : 'Fully funded'}
                 </div>
-                {totalDepositsNeeded > 0 && (
-                  <div className="text-muted">
-                    +{totalBetsUnlocked} bets · +{totalEV.toFixed(0)} kr EV
-                  </div>
+                {recommendedTotal > 0 && (
+                  <div className="text-muted">→ +{recommendedEv.toFixed(0)} kr EV</div>
                 )}
               </div>
             </div>
           </Card>
+        </div>
+      )}
+
+      {/* Deposit Allocator */}
+      {exposure && (
+        <div className="border-l-2 border-tabBankroll">
+          <DepositAllocator />
         </div>
       )}
 
@@ -219,7 +201,7 @@ export function BankrollPage() {
               </thead>
               <tbody>
                 {sortedProviders.map(provider => {
-                  const dep = depositMap.get(provider.provider_id);
+                  const dep = depositByProvider.get(provider.provider_id);
                   const bonus = getProviderBonus(provider.provider_id);
                   return (
                     <tr key={provider.provider_id}>
@@ -266,7 +248,7 @@ export function BankrollPage() {
                         )}
                       </td>
                       <td className="text-right">
-                        {dep && dep.unlocks > 0 ? (
+                        {dep && dep.unlocks ? (
                           <span className="text-text">{dep.unlocks}</span>
                         ) : (
                           <span className="text-muted2">—</span>
