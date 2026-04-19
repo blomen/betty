@@ -194,16 +194,16 @@ async def _check_login(page: Page, intel: dict | None) -> bool:
         try:
             result = await page.evaluate(
                 r"""() => {
-                    for (const btn of document.querySelectorAll('button, a')) {
-                        const t = (btn.textContent || '').trim().toUpperCase();
-                        if (t === 'LOG IN' || t === 'SIGN IN' || t === 'REGISTER') {
-                            if (btn.offsetParent !== null) return {logged_in: false};
+                    // Pinnacle stores auth state in localStorage['Main:User'] as JSON.
+                    // loggedIn: true AND a token present means the session is live.
+                    try {
+                        const raw = localStorage.getItem('Main:User');
+                        if (raw) {
+                            const u = JSON.parse(raw);
+                            if (u && u.loggedIn === true && u.token) return {logged_in: true};
                         }
-                    }
-                    const body = document.body.innerText || '';
-                    const cust = body.match(/SS\d{6,}/);
-                    const bal = body.match(/\b(SEK|EUR|USD|GBP|NOK|DKK)\s+\d+(?:[.,]\d{2})\b/);
-                    return {logged_in: !!(cust && bal)};
+                    } catch {}
+                    return {logged_in: false};
                 }"""
             )
             if isinstance(result, dict) and result.get("logged_in"):
@@ -215,23 +215,25 @@ async def _check_login(page: Page, intel: dict | None) -> bool:
 
 
 async def _sync_balance(page: Page, intel: dict | None) -> float:
-    """Scrape SEK/EUR/USD + amount from the header row — same pattern as 'SEK 0.00DEPOSIT'."""
+    """Read balance from localStorage['Main:User'].balance — set by the site at login
+    and refreshed with every /wallet/balance XHR. Survives UI language switch."""
     try:
         amount = await page.evaluate(
             r"""() => {
-                const body = document.body.innerText || '';
-                // Currency + amount with required decimal point — avoids false matches on names
-                const m = body.match(/\b(SEK|EUR|USD|GBP|NOK|DKK)\s+(\d+(?:[.,]\d{2}))\b/);
-                if (m) {
-                    const n = parseFloat(m[2].replace(/,/g, ''));
-                    if (!isNaN(n)) return n;
-                }
+                try {
+                    const raw = localStorage.getItem('Main:User');
+                    if (raw) {
+                        const u = JSON.parse(raw);
+                        if (u && typeof u.balance === 'number') return u.balance;
+                        if (u && u.balance && typeof u.balance.amount === 'number') return u.balance.amount;
+                    }
+                } catch {}
                 return null;
             }"""
         )
         return float(amount) if amount is not None else -1.0
     except Exception as e:
-        logger.warning(f"[pinnacle] sync_balance DOM failed: {e}")
+        logger.warning(f"[pinnacle] sync_balance via localStorage failed: {e}")
         return -1.0
 
 
