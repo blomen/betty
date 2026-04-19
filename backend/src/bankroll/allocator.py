@@ -90,6 +90,8 @@ class AllocationEngine:
         for action in withdraw_actions:
             pid = action.get("provider_id", "")
             rate = get_exchange_rate(pid)
+            if rate <= 0:
+                continue
             balance = provider_balances_map.get(pid, 0.0)
             balance_sek = balance * rate
             if balance_sek < WITHDRAW_MIN_SEK:
@@ -137,6 +139,8 @@ class AllocationEngine:
             trigger_amount = bonus_cfg.get("trigger_amount", bonus_amount)  # fallback to face value
             bonus_type = bonus_cfg.get("type", "bonusdeposit")
             rate = get_exchange_rate(pid)
+            if rate <= 0:
+                continue
             trigger_sek = trigger_amount * rate
             if trigger_sek < DEFAULT_MIN_DEPOSIT:
                 continue
@@ -181,6 +185,8 @@ class AllocationEngine:
             if bonus.bonus_status not in ("in_progress", "trigger_needed"):
                 continue
             rate = get_exchange_rate(pid)
+            if rate <= 0:
+                continue
             balance = provider_balances_map.get(pid, 0.0)
             balance_sek = balance * rate
             if balance_sek >= LOW_BALANCE_THRESHOLD:
@@ -215,12 +221,16 @@ class AllocationEngine:
             if pid in handled_providers:
                 continue
             rate = get_exchange_rate(pid)
+            if rate <= 0:
+                continue
             currency = action.get("currency", "SEK")
             amount_native = action.get("amount", 0)
             needed_sek = amount_native * rate if currency != "SEK" else amount_native
             if needed_sek < DEFAULT_MIN_DEPOSIT:
                 continue
             deposit_sek = min(liquid_remaining, needed_sek)
+            if deposit_sek < DEFAULT_MIN_DEPOSIT:
+                continue
             deposit = deposit_sek / rate
             missed_count = action.get("unlocks", 0)
             missed_ev = action.get("expected_ev", 0)
