@@ -1,4 +1,4 @@
-import type { BankrollInfo, BankrollStats, BankrollExposure, AllocationRecommendation } from '@/types';
+import type { BankrollInfo, BankrollStats, BankrollExposure, AllocationEnvelope } from '@/types';
 import { fetchJson } from './client';
 
 export const bankrollApi = {
@@ -38,11 +38,8 @@ export const bankrollApi = {
     });
   },
 
-  async allocate(liquidAmount: number): Promise<{
-    recommendations: AllocationRecommendation[];
-    liquid_amount: number;
-  }> {
-    return fetchJson('/bankroll/allocate', {
+  async allocate(liquidAmount: number | null): Promise<AllocationEnvelope> {
+    return fetchJson<AllocationEnvelope>('/bankroll/allocate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ liquid_amount: liquidAmount }),

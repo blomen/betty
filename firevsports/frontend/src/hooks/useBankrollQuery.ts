@@ -60,7 +60,7 @@ export function useBankrollQuery() {
 
   // ─── Mutations ───
   const allocateMutation = useMutation({
-    mutationFn: (liquidAmount: number) => api.allocate(liquidAmount),
+    mutationFn: (liquidAmount: number | null) => api.allocate(liquidAmount),
     retry: false,
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
