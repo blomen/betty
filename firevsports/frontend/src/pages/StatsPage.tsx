@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useBetMutations } from '@/hooks/useBetMutations';
 import { api } from '@/services/api';
@@ -6,7 +7,7 @@ import { displayTeamName } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
 import { ProviderName } from '@/components/ProviderName';
 import { TabIcon, TAB_COLORS } from '@/components/TabBar';
-import type { Bet, BankrollStats } from '@/types';
+import type { Bet } from '@/types';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
@@ -387,9 +388,24 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
 
 export function BetsPage() {
   const { editBet } = useBetMutations();
-  const [bets, setBets] = useState<Bet[]>([]);
-  const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+
+  const {
+    data: betsData,
+    isLoading,
+    refetch: refetchBets,
+  } = useQuery({
+    queryKey: ['bets', 'all'],
+    queryFn: () => api.getBets(undefined, 500),
+    staleTime: 30_000,
+  });
+  const bets = betsData?.bets ?? [];
+
+  const { data: bankrollStats } = useQuery({
+    queryKey: ['bankroll', 'stats'],
+    queryFn: () => api.getBankrollStats(),
+    staleTime: 60_000,
+  });
+
   // Sort & search (for history table)
   const [sort, setSort] = usePersistedState<{ key: SortKey; dir: SortDir } | null>('bbq_bets_sort', null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -407,29 +423,6 @@ export function BetsPage() {
 
   // Collapsed states
   const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', true);
-
-  const fetchBets = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const response = await api.getBets(undefined, 500);
-      setBets(response.bets);
-    } catch (err) {
-      console.error('Failed to fetch bets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  const fetchStats = useCallback(async () => {
-    try {
-      const statsData = await api.getBankrollStats();
-      setBankrollStats(statsData);
-    } catch {
-      // Stats are supplementary
-    }
-  }, []);
-
-  useEffect(() => { fetchBets(); fetchStats(); }, [fetchBets, fetchStats]);
 
   // ── History (settled bets only) ─────────────────────────────────
 
@@ -528,8 +521,7 @@ export function BetsPage() {
     try {
       await editBet.mutateAsync({ betId, data: changes });
       cancelEditing();
-      fetchBets();
-      fetchStats();
+      refetchBets();
     } catch (err) {
       console.error('Edit bet failed:', err);
     }
@@ -551,8 +543,7 @@ export function BetsPage() {
     try {
       await editBet.mutateAsync({ betId, data: { result: 'void', payout: amount } });
       cancelCashout();
-      fetchBets();
-      fetchStats();
+      refetchBets();
     } catch (err) {
       console.error('Cashout failed:', err);
     }
