@@ -237,15 +237,14 @@ export default function PlayPage() {
     return () => clearInterval(id)
   }, [loadArbOpps])
 
-  // Continuously poll login state for every active provider. Green = logged in
-  // AND loop running (only active providers have runners). Debounced: 2 consecutive
-  // false polls to drop green, so transient DOM scrape failures don't flap.
+  // Continuously poll login state for every UNLIMITED provider — whenever one is
+  // logged in with a positive balance, auto-activate it (start the play loop).
+  // Green = logged in + runner active. Manual Place/Skip still gates each bet.
   useEffect(() => {
-    if (activeProviders.size === 0) return
     let cancelled = false
     const missCount: Record<string, number> = {}
     const check = async () => {
-      for (const pid of activeProviders) {
+      for (const pid of UNLIMITED_PROVIDERS) {
         try {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
           const d = await r.json()
@@ -253,6 +252,10 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+            // Auto-activate if logged in with usable balance and not already running
+            if (!activeProviders.has(pid) && (d.balance ?? 0) > 0) {
+              startSkin(pid)
+            }
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
             if (missCount[pid] >= 2) {
@@ -268,7 +271,10 @@ export default function PlayPage() {
     check()
     const id = setInterval(check, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [activeProviders])
+  // startSkin captures activeProviders via closure each render — depending on activeProviders
+  // would cause loop restart on every activation. Intentional shallow deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // SSE event handler
   useEffect(() => {
