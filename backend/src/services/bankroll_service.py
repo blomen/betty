@@ -483,16 +483,16 @@ class BankrollService:
         return ""
 
     def allocate(self, liquid_amount: float | None) -> dict:
-        """Run allocation engine and return envelope. Persists liquid_balance when numeric."""
+        """Run allocation engine and return envelope. Persists liquid_balance on success when numeric."""
         from ..bankroll.allocator import AllocationEngine
 
         profile = self.profile_repo.get_active()
+        engine = AllocationEngine(self.db, profile)
+        envelope = engine.allocate(liquid_amount)
         if liquid_amount is not None:
             profile.liquid_balance = liquid_amount
             self.db.commit()
-
-        engine = AllocationEngine(self.db, profile)
-        return engine.allocate(liquid_amount)
+        return envelope
 
     def get_liquid_balance(self) -> float:
         """Return last-known liquid balance from profile."""

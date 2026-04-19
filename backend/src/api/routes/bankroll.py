@@ -1,5 +1,6 @@
 """Bankroll API routes."""
 
+import math
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -113,7 +114,8 @@ def allocate_funds(
         raise HTTPException(400, "liquid_amount must be non-negative")
     envelope = service.allocate(data.liquid_amount)
     # effective_budget is float('inf') for unbounded mode — coerce to None for JSON
-    if envelope.get("effective_budget") == float("inf"):
+    eb = envelope.get("effective_budget")
+    if isinstance(eb, float) and math.isinf(eb):
         envelope["effective_budget"] = None
     return envelope
 
