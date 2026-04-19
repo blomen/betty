@@ -2,14 +2,22 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ...services import BankrollService
+from ...db.models import ProfileProviderBonus, Provider
 from ...repositories import ProfileRepo
-from ...db.models import Provider, ProfileProviderBonus
+from ...services import BankrollService
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceSet, DepositRequest, AllocateRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
+from ..schemas import (
+    AllocateRequest,
+    BalanceSet,
+    BonusTransitionRequest,
+    BulkBalanceUpdate,
+    DepositRequest,
+    RecordBetRequest,
+    StakePreviewRequest,
+)
 from .providers import load_provider_bonuses
 
 router = APIRouter(prefix="/api/bankroll", tags=["bankroll"])
@@ -100,11 +108,14 @@ def allocate_funds(
     data: AllocateRequest,
     service: BankrollService = Depends(_get_service),
 ):
-    """Given liquid amount, return optimal allocation recommendations."""
-    if data.liquid_amount < 0:
+    """Given liquid amount (or null for unbounded), return allocation envelope."""
+    if data.liquid_amount is not None and data.liquid_amount < 0:
         raise HTTPException(400, "liquid_amount must be non-negative")
-    recommendations = service.allocate(data.liquid_amount)
-    return {"recommendations": recommendations, "liquid_amount": data.liquid_amount}
+    envelope = service.allocate(data.liquid_amount)
+    # effective_budget is float('inf') for unbounded mode — coerce to None for JSON
+    if envelope.get("effective_budget") == float("inf"):
+        envelope["effective_budget"] = None
+    return envelope
 
 
 @router.get("/liquid")
@@ -207,9 +218,7 @@ def record_bet_exposure(data: RecordBetRequest, service: BankrollService = Depen
         odds=data.odds,
     )
 
-    wagering_status = service.profile_repo.record_wagering(
-        profile.id, data.provider_id, data.stake, data.odds
-    )
+    wagering_status = service.profile_repo.record_wagering(profile.id, data.provider_id, data.stake, data.odds)
 
     return {
         "success": True,
@@ -234,17 +243,22 @@ def bonus_transition(
     if data.action == "start_freebet":
         bonus_config = load_provider_bonuses().get(provider_id, {})
         result = profile_repo.start_freebet_tracking(
-            profile.id, provider_id,
+            profile.id,
+            provider_id,
             bonus_amount=bonus_config.get("amount", 0),
             min_odds=bonus_config.get("min_odds", 1.80),
         )
     elif data.action == "trigger_settled":
         # Check bonus type to decide next state
-        bonus_record = db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile.id,
-            ProfileProviderBonus.provider_id == provider_id,
-            ProfileProviderBonus.bonus_status == "trigger_needed",
-        ).first()
+        bonus_record = (
+            db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == profile.id,
+                ProfileProviderBonus.provider_id == provider_id,
+                ProfileProviderBonus.bonus_status == "trigger_needed",
+            )
+            .first()
+        )
         if not bonus_record:
             raise HTTPException(400, f"No trigger_needed bonus for {provider_id}")
 
@@ -322,8 +336,9 @@ def backfill_wagering(db: Session = Depends(get_db)):
     Fixes bonuses where wagering wasn't tracked (e.g., bets settled via edit_bet).
     Replays all settled bets in chronological order through record_wagering().
     """
-    from ...db.models import Bet
     import logging
+
+    from ...db.models import Bet
 
     logger = logging.getLogger(__name__)
     profile_repo = ProfileRepo(db)
@@ -361,16 +376,11 @@ def backfill_wagering(db: Session = Depends(get_db)):
         )
 
         # Only count bets settled after the bonus was claimed
-        qualifying_bets = [
-            b for b in settled_bets
-            if not bonus.claimed_at or b.settled_at >= bonus.claimed_at
-        ]
+        qualifying_bets = [b for b in settled_bets if not bonus.claimed_at or b.settled_at >= bonus.claimed_at]
 
         # Replay each bet through record_wagering
         for bet in qualifying_bets:
-            profile_repo.record_wagering(
-                profile.id, bonus.provider_id, bet.stake, bet.odds
-            )
+            profile_repo.record_wagering(profile.id, bonus.provider_id, bet.stake, bet.odds)
             # If bonus transitioned (trigger_needed → in_progress), stop replaying
             # since remaining bets belong to the new phase
             db.refresh(bonus)
@@ -379,14 +389,16 @@ def backfill_wagering(db: Session = Depends(get_db)):
                 old_status = bonus.bonus_status
 
         db.refresh(bonus)
-        results.append({
-            "provider_id": bonus.provider_id,
-            "old_wagered": old_wagered,
-            "new_wagered": bonus.wagered_amount,
-            "status": bonus.bonus_status,
-            "total_bets_replayed": len(qualifying_bets),
-            "wagering_requirement": bonus.wagering_requirement,
-        })
+        results.append(
+            {
+                "provider_id": bonus.provider_id,
+                "old_wagered": old_wagered,
+                "new_wagered": bonus.wagered_amount,
+                "status": bonus.bonus_status,
+                "total_bets_replayed": len(qualifying_bets),
+                "wagering_requirement": bonus.wagering_requirement,
+            }
+        )
 
         logger.info(
             f"[Backfill] {bonus.provider_id}: wagered {old_wagered} → {bonus.wagered_amount} "
@@ -397,6 +409,7 @@ def backfill_wagering(db: Session = Depends(get_db)):
 
 
 # ── Bankroll Planner ──
+
 
 @router.get("/plan")
 def get_bankroll_plan(db: Session = Depends(get_db)):
