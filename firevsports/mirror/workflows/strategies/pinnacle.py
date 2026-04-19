@@ -154,20 +154,32 @@ async def _post_api(page: "Page", url: str, body: dict) -> dict | None:
 # ------------------------------------------------------------------
 
 async def _check_login(page: "Page", intel: dict | None) -> bool:
+    """DOM scrape — API /wallet/balance requires JWT+fingerprint we can't replicate.
+    Logged-in header: '0,00 SEK DEPOSIT SSnnnnnnn'. Logged-out: visible 'LOG IN' button."""
     import asyncio
 
-    api = _api_base(intel)
-    # Give the page a moment to settle after nav (cookies may not be attached yet)
     await asyncio.sleep(1)
-    last_result = None
-    for attempt in range(3):
-        result = await _evaluate_api(page, f"{api}/wallet/balance")
-        last_result = result
-        if result and isinstance(result, dict) and "amount" in result and "__error" not in result:
-            return True
-        if attempt < 2:
-            await asyncio.sleep(1.5)
-    logger.warning(f"[pinnacle] check_login failed — last response: {last_result}")
+    for _ in range(3):
+        try:
+            result = await page.evaluate(
+                r"""() => {
+                    for (const btn of document.querySelectorAll('button, a')) {
+                        const t = (btn.textContent || '').trim().toUpperCase();
+                        if ((t === 'LOG IN' || t === 'SIGN IN' || t === 'REGISTER')
+                            && btn.offsetParent !== null) return {logged_in: false};
+                    }
+                    const body = document.body.innerText || '';
+                    const cust = body.match(/SS\d{6,}/);
+                    // Pinnacle shows 'X,YY SEK' (amount-first, European format)
+                    const bal = body.match(/\b(?:SEK|EUR|USD|GBP|NOK|DKK)\s+\d+[.,]\d{2}/);
+                    return {logged_in: !!(cust && bal)};
+                }"""
+            )
+            if isinstance(result, dict) and result.get("logged_in"):
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(1.5)
     return False
 
 
@@ -176,14 +188,23 @@ async def _check_login(page: "Page", intel: dict | None) -> bool:
 # ------------------------------------------------------------------
 
 async def _sync_balance(page: "Page", intel: dict | None) -> float:
-    api = _api_base(intel)
-    result = await _evaluate_api(page, f"{api}/wallet/balance")
-    if result and isinstance(result, dict) and "amount" in result:
-        try:
-            return float(result["amount"])
-        except (TypeError, ValueError):
-            pass
-    return -1.0
+    """Scrape 'X,YY SEK' from header — European amount-first format."""
+    try:
+        amount = await page.evaluate(
+            r"""() => {
+                const body = document.body.innerText || '';
+                const m = body.match(/\b(?:SEK|EUR|USD|GBP|NOK|DKK)\s+(\d+[.,]\d{2})/);
+                if (m) {
+                    const n = parseFloat(m[1].replace(',', '.'));
+                    if (!isNaN(n)) return n;
+                }
+                return null;
+            }"""
+        )
+        return float(amount) if amount is not None else -1.0
+    except Exception as e:
+        logger.warning(f"[pinnacle] sync_balance DOM failed: {e}")
+        return -1.0
 
 
 # ------------------------------------------------------------------

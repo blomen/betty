@@ -37,7 +37,7 @@ class DepositRequest(BaseModel):
 
 
 class AllocateRequest(BaseModel):
-    liquid_amount: float  # Cash in bank to allocate across providers
+    liquid_amount: float | None = None  # Cash in bank to allocate; None = unbounded "recommended" mode
 
 
 class BonusTransitionRequest(BaseModel):
