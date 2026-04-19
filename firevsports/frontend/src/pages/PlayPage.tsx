@@ -238,8 +238,9 @@ export default function PlayPage() {
   }, [loadArbOpps])
 
   // Continuously poll login state for every UNLIMITED provider — whenever one is
-  // logged in with a positive balance, auto-activate it (start the play loop).
-  // Green = logged in + runner active. Manual Place/Skip still gates each bet.
+  // logged in with a positive balance AND has bets queued in the current batch,
+  // auto-activate it (start the play loop). Green = logged in + runner active.
+  // Manual Place/Skip still gates each bet.
   useEffect(() => {
     let cancelled = false
     const missCount: Record<string, number> = {}
@@ -252,8 +253,13 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            // Auto-activate if logged in with usable balance and not already running
-            if (!activeProviders.has(pid) && (d.balance ?? 0) > 0) {
+            // Auto-activate only when: not active yet, has balance, and the current
+            // batch has positive-edge bets for this provider (else the runner
+            // would start with an empty queue and flip to idle instantly).
+            const hasBetsForProvider = batch.some(
+              (b: any) => b.provider_id === pid && (b.edge_pct ?? 0) > 0
+            )
+            if (!activeProviders.has(pid) && (d.balance ?? 0) > 0 && hasBetsForProvider) {
               startSkin(pid)
             }
           } else {
@@ -271,10 +277,9 @@ export default function PlayPage() {
     check()
     const id = setInterval(check, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  // startSkin captures activeProviders via closure each render — depending on activeProviders
-  // would cause loop restart on every activation. Intentional shallow deps.
+  // Intentional shallow deps — startSkin/batch come through closure each render
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [batch.length])
 
   // SSE event handler
   useEffect(() => {
