@@ -230,10 +230,11 @@ def _simulate_trade_lifecycle(
 
     stop_distance = stop_ticks * TICK_SIZE
     stop_price = touch_price - direction * stop_distance
+    be_target = touch_price + direction * stop_distance  # +1R move to trigger lock
+    be_lock_price = touch_price + direction * stop_distance * 0.5  # lock at +0.5R
     captured = 0
     level_idx = 0
     be_reached = False
-    be_target = touch_price + direction * stop_distance  # +1R
     exit_price = touch_price
     exit_reason = "session_close"
 
@@ -241,10 +242,16 @@ def _simulate_trade_lifecycle(
         tick = ticks[j]
         price = tick["price"]
 
-        # Track BE-reached for analytics (not for reward modification)
+        # Partial BE-lock: at +1R move, ratchet stop up to +0.5R. This protects
+        # small winners from round-tripping to -1R and is a core element of
+        # realistic discretionary trading. Upside stays uncapped — the trail
+        # takes over once levels are captured.
         if not be_reached:
             if (direction == 1 and price >= be_target) or (direction == -1 and price <= be_target):
                 be_reached = True
+                # Move stop to +0.5R (only if that's better than current stop)
+                if (direction == 1 and be_lock_price > stop_price) or (direction == -1 and be_lock_price < stop_price):
+                    stop_price = be_lock_price
 
         # Stop hit?
         if (direction == 1 and price <= stop_price) or (direction == -1 and price >= stop_price):
