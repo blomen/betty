@@ -260,7 +260,8 @@ def open_window(
             db = get_session()
             try:
                 service = BankrollService(db)
-                _window.deposit_recommendations = service.allocate(liquid_amount)
+                envelope = service.allocate(liquid_amount)
+                _window.deposit_recommendations = envelope.get("deposits", [])
             finally:
                 db.close()
         except Exception as e:
