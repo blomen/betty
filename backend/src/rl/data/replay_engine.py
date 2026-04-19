@@ -339,14 +339,10 @@ class ReplayEngine:
                 prior_price = norm_ticks[lookback_idx]["price"]
                 approach_direction = "up" if price > prior_price else "down"
 
-                # Forward ticks: scan to end of session data (no artificial timeout).
-                # Phase-1 session-simulator training wants trades to run their
-                # full lifecycle — stop-out or session close, whichever comes
-                # first. The simulator in episode_builder breaks as soon as the
-                # trail stop is hit, so no-stop scans only happen for genuine
-                # runners (rare but valuable tail signal).
+                # Forward ticks: scan up to 30 min of data (TIMEOUT_MINUTES)
+                # NQ averages ~6k ticks/min, 30 min ≈ 180k ticks max.
                 fwd_start = i + 1
-                fwd_end = len(norm_ticks)
+                fwd_end = min(len(norm_ticks), fwd_start + 180_000)
 
                 # Last 50 ticks for raw tick sequence (temporal stream)
                 micro_start = max(0, i - 50)

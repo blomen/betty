@@ -181,100 +181,60 @@ def _count_levels_captured(
     levels_ahead: list[float],
     be_trigger_r: float = _BE_TRIGGER_R,
 ) -> tuple[int, bool]:
-    """DEPRECATED wrapper — kept for live_collector.py and analyze-be CLI.
+    """Count levels captured with full stop lifecycle: initial → profit lock → trail.
 
-    New training uses _simulate_trade_lifecycle directly (full lifecycle
-    simulation with uncapped upside). This wrapper just returns the
-    levels_captured + breakeven_reached fields the old API exposed.
+    Stop lifecycle:
+    1. INITIAL: stop at `initial_stop_ticks` behind entry
+    2. PROFIT LOCK: at be_trigger_r (1R), stop moves to entry + _BE_LOCK_R (0.5R)
+       This locks a small profit ($36 after fees) — no winner turns into a loser
+    3. TRAIL: each new level captured → stop moves to that level minus 2 ticks
 
-    The touch_ts and be_trigger_r params are IGNORED — the new simulator
-    does not do BE-lock (that's handled by the live session manager now).
+    Returns (levels_captured, profit_locked) tuple.
     """
-    _, captured, be_reached, _ = _simulate_trade_lifecycle(
-        touch_price, ticks, start, end, direction=direction, levels_ahead=levels_ahead
-    )
-    return captured, be_reached
-
-
-def _simulate_trade_lifecycle(
-    touch_price: float,
-    ticks: list[dict],
-    start: int,
-    end: int,
-    direction: int,
-    levels_ahead: list[float],
-    stop_ticks: float = _STOP_TICKS_TRAIL,
-) -> tuple[float, int, bool, str]:
-    """Simulate a full trade lifecycle: fixed initial stop + structural trail.
-
-    Lifecycle:
-    1. Entry at touch_price, stop at -stop_ticks behind entry.
-    2. Each time price touches a structural level ahead of entry → trail stop
-       to that level minus 2 ticks (lock gains at each structural support).
-    3. Exit on stop-hit OR end of forward-tick window (session close).
-
-    No BE-lock, no upper cap on captured levels, no timeout. The live broker
-    stop (-1R) bounds downside at stop-out; structural trail keeps upside
-    uncapped so the model can learn the asymmetric-payoff distribution the
-    user actually wants: lose small, catch tails.
-
-    Returns (realized_r, levels_captured, breakeven_reached, exit_reason):
-      - realized_r: signed R-multiple of the final exit (≥ -1, unbounded upside
-        minus cost/dd applied by caller).
-      - levels_captured: number of structural levels crossed before exit.
-      - breakeven_reached: true if price reached +1R in favor at any point.
-      - exit_reason: 'stop', 'session_close', 'no_ticks'.
-    """
-    if end <= start:
-        return 0.0, 0, False, "no_ticks"
-
-    stop_distance = stop_ticks * TICK_SIZE
-    stop_price = touch_price - direction * stop_distance
-    be_target = touch_price + direction * stop_distance  # +1R move to trigger lock
-    be_lock_price = touch_price + direction * stop_distance * 0.5  # lock at +0.5R
+    initial_stop_ticks = _STOP_TICKS_TRAIL
+    stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
+    profit_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE * be_trigger_r
+    profit_locked = False
     captured = 0
-    level_idx = 0
-    be_reached = False
-    exit_price = touch_price
-    exit_reason = "session_close"
+    next_level_idx = 0
+
+    timeout = touch_ts + timedelta(seconds=_TRAIL_TIMEOUT_S)
 
     for j in range(start, end):
         tick = ticks[j]
-        price = tick["price"]
-
-        # Partial BE-lock: at +1R move, ratchet stop up to +0.5R. This protects
-        # small winners from round-tripping to -1R and is a core element of
-        # realistic discretionary trading. Upside stays uncapped — the trail
-        # takes over once levels are captured.
-        if not be_reached:
-            if (direction == 1 and price >= be_target) or (direction == -1 and price <= be_target):
-                be_reached = True
-                # Move stop to +0.5R (only if that's better than current stop)
-                if (direction == 1 and be_lock_price > stop_price) or (direction == -1 and be_lock_price < stop_price):
-                    stop_price = be_lock_price
-
-        # Stop hit?
-        if (direction == 1 and price <= stop_price) or (direction == -1 and price >= stop_price):
-            exit_price = stop_price
-            exit_reason = "stop"
+        if tick["ts"] > timeout:
             break
 
-        # Level captured → trail stop (no cap on how many)
-        while level_idx < len(levels_ahead):
-            target = levels_ahead[level_idx]
+        price = tick["price"]
+
+        # Phase 1→2: Lock profit once price reaches trigger R in favor
+        if not profit_locked:
+            if direction == 1 and price >= profit_trigger:
+                # Move stop to entry + 0.5R (lock small profit, cover fees)
+                lock_distance = initial_stop_ticks * TICK_SIZE * _BE_LOCK_R
+                stop_price = touch_price + direction * lock_distance
+                profit_locked = True
+            elif direction == -1 and price <= profit_trigger:
+                lock_distance = initial_stop_ticks * TICK_SIZE * _BE_LOCK_R
+                stop_price = touch_price + direction * lock_distance
+                profit_locked = True
+
+        # Check stop hit
+        if direction == 1 and price <= stop_price or direction == -1 and price >= stop_price:
+            break
+
+        # Phase 2→3: Check if we captured a new level → trail stop there
+        if next_level_idx < len(levels_ahead):
+            target = levels_ahead[next_level_idx]
             if (direction == 1 and price >= target) or (direction == -1 and price <= target):
                 captured += 1
+                # Trail stop to this level minus 2 ticks (lock profit at level)
                 stop_price = target - direction * 2 * TICK_SIZE
-                level_idx += 1
-            else:
-                break
-    else:
-        # Reached end of tick window without a stop — exit at last price
-        exit_price = float(ticks[end - 1]["price"])
+                next_level_idx += 1
+                if captured >= _MAX_TRAIL_LEVELS:
+                    break
 
-    realized_ticks = direction * (exit_price - touch_price) / TICK_SIZE
-    realized_r = realized_ticks / max(stop_ticks, 1.0)
-    return realized_r, captured, be_reached, exit_reason
+    return captured, profit_locked
 
 
 def _compute_rewards(
@@ -311,44 +271,68 @@ def label_outcome_from_array(
         be_trigger_r: R-multiple at which stop moves to breakeven (default _BE_TRIGGER_R).
             Pass different values to sweep the optimal threshold via analyze-be.
     """
-    # Round-trip cost in R units (tied to the trail-stop basis).
+    # Cost_r must use the same stop basis as dd_penalty below (both use
+    # _STOP_TICKS_TRAIL). Mixing STOP_TICKS (10) here with _STOP_TICKS_TRAIL
+    # (20) in dd_penalty produced an inconsistent R scale in training rewards.
     cost_r = COST_PER_TRADE_TICKS / max(_STOP_TICKS_TRAIL, 1)
 
-    # Full lifecycle simulation — uncapped upside, trail-stop enforces -1R floor.
-    # This replaces the old fragmented reward (velocity + 0.5R × min(levels, 6))
-    # which capped tails at +6R and artificially locked BE at +0.5R. The user's
-    # thesis is asymmetric payoffs — lose small (-1R hard floor), catch tails
-    # unbounded on the upside. Training reward must expose the true right tail
-    # of the R distribution; previously clipped to +6R, losing every runner.
+    # Base velocity scores
+    long_profiles = _measure_movement(touch_price, ticks, start, end, touch_ts, direction=+1)
+    short_profiles = _measure_movement(touch_price, ticks, start, end, touch_ts, direction=-1)
+
+    base_long = _score_velocity(long_profiles)
+    base_short = _score_velocity(short_profiles)
+
+    # Trail bonus: count levels captured in each direction
     levels_up = levels_above or []
     levels_dn = levels_below or []
 
-    long_r, long_levels, long_be, long_exit = _simulate_trade_lifecycle(
-        touch_price, ticks, start, end, direction=+1, levels_ahead=levels_up
+    long_levels, long_be = _count_levels_captured(
+        touch_price,
+        ticks,
+        start,
+        end,
+        touch_ts,
+        direction=+1,
+        levels_ahead=levels_up,
+        be_trigger_r=be_trigger_r,
     )
-    short_r, short_levels, short_be, short_exit = _simulate_trade_lifecycle(
-        touch_price, ticks, start, end, direction=-1, levels_ahead=levels_dn
+    short_levels, short_be = _count_levels_captured(
+        touch_price,
+        ticks,
+        start,
+        end,
+        touch_ts,
+        direction=-1,
+        levels_ahead=levels_dn,
+        be_trigger_r=be_trigger_r,
     )
 
-    # MAE still useful for optimal-stop computation further below.
+    # Measure breathing room (MAE) for each direction
+    # MAE = max adverse ticks BEFORE price reaches its MFE
+    # This tells the model how much room the trade needs to work
     long_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=+1)
     short_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=-1)
 
-    # Drawdown penalty — kept as a soft penalty for choppy paths. Even a trade
-    # that ends +3R but took -0.9R of heat is worse than a clean +3R. 0.15 weight.
-    _DD_LAMBDA = 0.15
+    # Drawdown penalty: penalize choppy paths where MAE is large relative to reward.
+    # A clean 2R move (low MAE) scores higher than a choppy 2R with -1.5R drawdown.
+    _DD_LAMBDA = 0.15  # penalty weight
     long_dd_penalty = _DD_LAMBDA * max(0.0, long_mae / max(_STOP_TICKS_TRAIL, 1))
     short_dd_penalty = _DD_LAMBDA * max(0.0, short_mae / max(_STOP_TICKS_TRAIL, 1))
 
-    reward_long = long_r - cost_r - long_dd_penalty
-    reward_short = short_r - cost_r - short_dd_penalty
+    reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty
+    reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty
 
-    # Only a DOWNSIDE floor at -1R (matches live broker stop). UPSIDE IS UNCAPPED.
-    # The lifecycle simulator already enforces -1R via the trail stop exit — this
-    # floor just guards against cost+dd pushing a stopped-out trade below -1R.
+    # Cap rewards to what a live trade can actually realize. The broker stops at
+    # ~1R (20 ticks = _STOP_TICKS_TRAIL), so no live loss can exceed -1R — cap
+    # downside accordingly. Upside cap is generous (+6R = 3 levels of trail
+    # after the 1R breakeven lock) so the model still learns to hold winners.
+    # Without this cap, CV eval on raw forward-tick rewards shows phantom -15R
+    # losses that could never happen live, inflating max drawdown metrics.
     _REWARD_LIVE_MIN = -1.0
-    reward_long = float(max(_REWARD_LIVE_MIN, reward_long))
-    reward_short = float(max(_REWARD_LIVE_MIN, reward_short))
+    _REWARD_LIVE_MAX = 6.0
+    reward_long = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_long)))
+    reward_short = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_short)))
 
     reward_cont, reward_rev = _compute_rewards(
         touch_price,
