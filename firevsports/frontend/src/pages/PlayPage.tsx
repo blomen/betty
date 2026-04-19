@@ -238,12 +238,13 @@ export default function PlayPage() {
   }, [loadArbOpps])
 
   // Continuously poll login state for every UNLIMITED provider — whenever one is
-  // logged in with a positive balance AND has bets queued in the current batch,
-  // auto-activate it (start the play loop). Green = logged in + runner active.
-  // Manual Place/Skip still gates each bet.
+  // logged in with a positive balance AND the batch has positive-edge bets, auto-
+  // activate (start the play loop). Green = logged in + runner active. Manual
+  // Place/Skip still gates each bet.
   useEffect(() => {
     let cancelled = false
     const missCount: Record<string, number> = {}
+    const activated: Set<string> = new Set()
     const check = async () => {
       for (const pid of UNLIMITED_PROVIDERS) {
         try {
@@ -253,14 +254,26 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            // Auto-activate only when: not active yet, has balance, and the current
-            // batch has positive-edge bets for this provider (else the runner
-            // would start with an empty queue and flip to idle instantly).
-            const hasBetsForProvider = batch.some(
-              (b: any) => b.provider_id === pid && (b.edge_pct ?? 0) > 0
-            )
-            if (!activeProviders.has(pid) && (d.balance ?? 0) > 0 && hasBetsForProvider) {
-              startSkin(pid)
+            // Auto-activate once per page lifetime; use this effect's own `activated`
+            // set rather than activeProviders so we avoid React state-closure races.
+            if (!activated.has(pid) && (d.balance ?? 0) > 0) {
+              // Fetch fresh batch + balances and start the loop directly — bypasses
+              // startSkin which reads `bets` from a potentially stale render closure.
+              try {
+                const bResp = await fetch('/api/opportunities/play/batch', {
+                  method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+                })
+                const bData = await bResp.json()
+                const full: any[] = bData.batch || []
+                const myBets = full.filter((b: any) => b.provider_id === pid && (b.edge_pct ?? 0) > 0)
+                if (myBets.length === 0) continue
+                activated.add(pid)
+                setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+                try { await api.startMirror() } catch {}
+                try { await api.openTab(pid) } catch {}
+                setLoopRunning(true)
+                await api.startPlayLoop(myBets, bData.provider_balances || {}, [pid])
+              } catch { /* retry next tick */ }
             }
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
@@ -269,6 +282,7 @@ export default function PlayPage() {
                 if (!prev.has(pid)) return prev
                 const n = new Set(prev); n.delete(pid); return n
               })
+              activated.delete(pid)
             }
           }
         } catch { /* swallow — retry next tick */ }
@@ -277,9 +291,7 @@ export default function PlayPage() {
     check()
     const id = setInterval(check, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  // Intentional shallow deps — startSkin/batch come through closure each render
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batch.length])
+  }, [])
 
   // SSE event handler
   useEffect(() => {
