@@ -89,7 +89,14 @@ def _classify_cluster(
         return SetupType.ROTATION_TO_POC.value
     if excess_ratio > 0.15:
         return SetupType.EXCESS_TEST.value
-    if avg_balance > 0.25 and cont_better > 0.55:
+    # balance_break: tuned 2026-04-20. Previous avg_balance>0.25 threshold
+    # still produced 0 positives — the AMT balance_width feature (obs idx 243)
+    # is structurally low across the dataset. Replaced with a strength-based
+    # heuristic: cluster is a "break" if continuation clearly wins more than
+    # reversal AND price is already displaced from value (|pvv| > 0.3 = moved
+    # out of value area). This captures the framework definition of
+    # "initiative breakout" without relying on the sparse balance_width dim.
+    if cont_better > 0.58 and avg_pvv > 0.3:
         return SetupType.BALANCE_BREAK.value
 
     return SetupType.UNKNOWN.value

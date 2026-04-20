@@ -242,7 +242,80 @@ def build_observation(state: dict) -> np.ndarray:
             lvn_dist = float(np.clip((nearest_lvn - price) / (price * 0.002 + 1e-6), -1.0, 1.0))
     seg_hvn_lvn = np.array([hvn_dist, lvn_dist], dtype=np.float32)
 
-    # 15. Zone touch memory (3) — session-level zone interaction history
+    # 15b. Absolute big-trade features (2) — Fabio's literal rule: institutional
+    # activity filter at ≥25 contracts per trade (not relative threshold).
+    # - count_25: fraction of last 50 ticks with size ≥25 (0-1)
+    # - net_delta_25: signed net size of ≥25-contract trades / 100, clipped ±1
+    big_abs_count = 0.0
+    big_abs_net = 0.0
+    if recent_ticks:
+        window = recent_ticks[-50:] if len(recent_ticks) >= 50 else recent_ticks
+        tot = len(window)
+        if tot > 0:
+            big_count = 0
+            big_net = 0.0
+            for t in window:
+                sz = t.get("size", 0) if isinstance(t, dict) else getattr(t, "size", 0)
+                if sz >= 25:
+                    big_count += 1
+                    side = t.get("side", "B") if isinstance(t, dict) else getattr(t, "side", "B")
+                    # "B" = buy aggressor → +, "A" = sell aggressor → -
+                    big_net += sz if side == "B" else -sz
+            big_abs_count = float(big_count / tot)
+            big_abs_net = float(np.clip(big_net / 100.0, -1.0, 1.0))
+    seg_big_abs = np.array([big_abs_count, big_abs_net], dtype=np.float32)
+
+    # 16. Orderflow-zone alignment (3) — framework cornerstone: zone quality
+    # AND orderflow confluence both required for real trade signal.
+    # - of_score_rev: orderflow score for REVERSAL trade at this touch [0,1]
+    # - zone_strength: normalized zone hierarchy (members / 8)
+    # - zone_of_alignment: of_score × zone_strength (AND gate)
+    zone_strength = 0.0
+    if zone is not None:
+        zone_strength = min(getattr(zone, "member_count", 0) / 8.0, 1.0)
+
+    # Compute orderflow score for the REV direction at this touch (model
+    # always picks REV per FORCE_REV_ONLY live + training analysis).
+    # approach=up → REV is SHORT (dir=-1); approach=down → REV is LONG (dir=+1).
+    approach_str = state.get("approach_direction", "up")
+    rev_dir = -1 if approach_str == "up" else 1
+
+    # Feature components reuse signals/candles already extracted earlier.
+    of_score = 0.0
+    if candles:
+        last_c = candles[-1]
+        vol_c = max(getattr(last_c, "volume", 1), 1)
+        delta_pct_c = getattr(last_c, "delta", 0) / vol_c
+        dscore = max(-1.0, min(1.0, delta_pct_c * rev_dir / 0.15))
+        if dscore > 0:
+            of_score += 0.20 * dscore
+    if orderflow_signals is not None:
+        _cvd_trend = getattr(orderflow_signals, "cvd_trend", "flat")
+        if (rev_dir == 1 and _cvd_trend == "rising") or (rev_dir == -1 and _cvd_trend == "falling"):
+            of_score += 0.20
+        elif _cvd_trend == "flat":
+            of_score += 0.05
+        _sic = getattr(orderflow_signals, "stacked_imbalance_count", 0) or 0
+        _sdir = getattr(orderflow_signals, "stacked_direction", None)
+        _wants_buy = rev_dir == 1
+        _matches = (_wants_buy and _sdir == "buy") or (not _wants_buy and _sdir == "sell")
+        if _matches:
+            of_score += 0.25 * min(_sic / 3.0, 1.0)
+        _vsa = float(getattr(orderflow_signals, "vsa_absorption", 0) or 0)
+        _abs = float(getattr(orderflow_signals, "absorption_strength", 0) or 0)
+        of_score += 0.20 * min(max(_vsa, _abs), 1.0)
+        _big = float(getattr(orderflow_signals, "big_trades_net_delta", 0) or 0)
+        if rev_dir == 1 and _big > 0:
+            of_score += 0.15 * min(_big / 100.0, 1.0)
+        elif rev_dir == -1 and _big < 0:
+            of_score += 0.15 * min(-_big / 100.0, 1.0)
+    of_score = float(max(0.0, min(1.0, of_score)))
+    seg_of_alignment = np.array(
+        [of_score, zone_strength, of_score * zone_strength],
+        dtype=np.float32,
+    )
+
+    # 17. Zone touch memory (3) — session-level zone interaction history
     zone_memory = state.get("zone_memory", {})
     zone_key = None
     if zone is not None:
@@ -278,6 +351,8 @@ def build_observation(state: dict) -> np.ndarray:
             seg_execution,  # 7
             seg_session_cvd,  # 2 (RTH-session CVD ratio + sign)
             seg_hvn_lvn,  # 2 (signed distance to nearest HVN/LVN)
+            seg_big_abs,  # 2 (absolute ≥25-contract activity)
+            seg_of_alignment,  # 3 (of_score, zone_strength, their product)
             seg_zone_memory,  # 3
         ]
     )

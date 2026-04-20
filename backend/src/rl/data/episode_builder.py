@@ -32,7 +32,7 @@ _WINDOW_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
 
 # Trailing reward params
 _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
-_MAX_TRAIL_LEVELS = 6  # cap at 6 levels (3.0R max trail bonus)
+_MAX_TRAIL_LEVELS = 10  # raised from 6 — audit showed 15 episodes hitting the ceiling
 _TRAIL_TIMEOUT_S = 1200  # 20 min max to scan for levels (was 10 min — missed slow moves)
 _STOP_TICKS_TRAIL = 20  # initial stop distance in ticks (was 10 — too tight, got stopped before moves)
 _BE_TRIGGER_R = 1.0  # price must move this many R before stop moves to +0.5R
@@ -376,18 +376,30 @@ def label_outcome_from_array(
         else:
             struct_dist = float(_STOP_TICKS_TRAIL)
 
-        # Blend structural distance with MAE rather than hard-clamping. Previous
-        # approach produced a bimodal stop_target distribution (50% at floor 6,
-        # 45% at cap 40) which left the stop head with almost no gradient.
-        # Blend gives a smoother target distribution the GBT can learn.
+        # Blend structural distance with MAE rather than hard-clamping. Audit
+        # of previous training showed stop_targets were STILL bimodal (52% at
+        # floor 4.5, 9% at cap 49.5) which gave the stop-head no gradient to
+        # learn from.
         mae = long_mae if direction == 1 else short_mae
         if mae > 0:
             mae_floor = mae + 2.0
-            # Weighted average: structural is primary anchor, MAE softens it
             optimal_stop = 0.7 * max(struct_dist, mae_floor) + 0.3 * min(struct_dist, mae_floor)
         else:
             optimal_stop = struct_dist
-        optimal_stop = float(max(4.0, min(50.0, optimal_stop)))
+
+        # Orderflow-aware stop adjustment (framework: strong orderflow →
+        # tighter invalidation; weak orderflow → need more breathing room).
+        # of_score sits in observation slot 282 (seg_of_alignment[0]).
+        try:
+            of_score = float(observation[282]) if observation is not None and len(observation) > 282 else 0.5
+        except (IndexError, TypeError):
+            of_score = 0.5
+        # scale factor: 1.0 at of_score=0.5, 0.8 at 1.0 (tighten), 1.2 at 0.0 (widen)
+        of_factor = 1.2 - 0.4 * of_score
+        optimal_stop = optimal_stop * of_factor
+
+        # Tighter floor + lower cap reduces extreme-cluster bimodality.
+        optimal_stop = float(max(6.0, min(35.0, optimal_stop)))
 
     # Best direction stats — use breakeven from _count_levels_captured
     if best_action == Action.CONTINUATION:
