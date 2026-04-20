@@ -46,6 +46,67 @@ class MonitoredLevel:
         return abs(self.distance_ticks(price))
 
 
+def _compute_orderflow_score_live(state: dict, zone, price: float, action: str) -> float:
+    """Orderflow confluence score [0, 1] for live gating.
+
+    Returns how strongly orderflow confirms the trade direction implied by
+    action (REVERSAL = fade approach). Score < 0.30 → veto entry.
+
+    Mirrors the logic in session_manager._compute_orderflow_score so training
+    and live gate use the same metric.
+    """
+    # Determine trade direction: REV fades the approach.
+    approach_up = price < zone.center_price if zone is not None else True
+    if action in ("REVERSAL", "reversal"):
+        # Short if approach up, long if approach down
+        trade_dir = -1 if approach_up else 1
+    else:
+        trade_dir = 1 if approach_up else -1
+
+    candles = state.get("candles") or []
+    signals = state.get("orderflow_signals")
+    score = 0.0
+
+    # 1. Delta direction match (0.20)
+    if candles:
+        last = candles[-1]
+        vol = max(getattr(last, "volume", 1), 1)
+        delta_pct = getattr(last, "delta", 0) / vol
+        delta_score = max(-1.0, min(1.0, delta_pct * trade_dir / 0.15))
+        if delta_score > 0:
+            score += 0.20 * delta_score
+
+    if signals is not None:
+        # 2. CVD trend alignment (0.20)
+        cvd_trend = getattr(signals, "cvd_trend", "flat")
+        if (trade_dir == 1 and cvd_trend == "rising") or (trade_dir == -1 and cvd_trend == "falling"):
+            score += 0.20
+        elif cvd_trend == "flat":
+            score += 0.05
+
+        # 3. Stacked imbalance cluster (0.25)
+        sic = getattr(signals, "stacked_imbalance_count", 0) or 0
+        sdir = getattr(signals, "stacked_direction", None)
+        wants_buy = trade_dir == 1
+        matches = (wants_buy and sdir == "buy") or (not wants_buy and sdir == "sell")
+        if matches:
+            score += 0.25 * min(sic / 3.0, 1.0)
+
+        # 4. Absorption at level (0.20)
+        vsa = float(getattr(signals, "vsa_absorption", 0) or 0)
+        absorb_strength = float(getattr(signals, "absorption_strength", 0) or 0)
+        score += 0.20 * min(max(vsa, absorb_strength), 1.0)
+
+        # 5. Big-trade net delta alignment (0.15)
+        big_net = float(getattr(signals, "big_trades_net_delta", 0) or 0)
+        if trade_dir == 1 and big_net > 0:
+            score += 0.15 * min(big_net / 100.0, 1.0)
+        elif trade_dir == -1 and big_net < 0:
+            score += 0.15 * min(-big_net / 100.0, 1.0)
+
+    return max(0.0, min(1.0, score))
+
+
 class LevelMonitor:
     """Monitors price proximity to structural levels. Called on each tick."""
 
@@ -1020,17 +1081,26 @@ class LevelMonitor:
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                if action not in ("SKIP", "skip") and confidence >= 0.15:
+                # Phase 1 live gate: confidence + orderflow confluence
+                # FORCE_REV_ONLY: training data shows CONT is effectively a weak REV
+                # (~0% argmax). Convert CONT → equivalent REV direction.
+                if action == "CONTINUATION":
+                    action = "REVERSAL"  # same direction in practice; REV label only
+                # Orderflow confluence score — compute from state features already
+                # present in the rl_state we just passed to inference.
+                of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
+                if action not in ("SKIP", "skip") and confidence >= 0.15 and of_score >= 0.30:
                     import asyncio
 
                     try:
                         approach = "up" if price < zone.center_price else "down"
-                        if action == "CONTINUATION":
-                            sig_action = "enter_long" if approach == "up" else "enter_short"
-                        else:
-                            sig_action = "enter_short" if approach == "up" else "enter_long"
+                        # With FORCE_REV_ONLY above, action is always REVERSAL here.
+                        sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
                         stop_ticks = int(max(15, min(40, result.get("stop_ticks") or 25)))
+                        # Weak-but-passing orderflow → widen stop (more room)
+                        if of_score < 0.70:
+                            stop_ticks = max(stop_ticks, 23)  # mid-range of [15, 40]
                         stop_offset = stop_ticks * 0.25
                         raw_stop = price - stop_offset if is_long else price + stop_offset
                         broker_signal = {
@@ -1039,6 +1109,7 @@ class LevelMonitor:
                             "stop_price": round(raw_stop * 4) / 4,  # NQ tick = 0.25
                             "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
                             "confidence": confidence,
+                            "orderflow_score": of_score,
                         }
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:

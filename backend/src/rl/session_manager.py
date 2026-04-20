@@ -119,6 +119,16 @@ class SessionManager:
         8  # Framework: 3 trades is ideal; 8 allows for wider interpretation but caps over-trading
     )
     NEWS_BLACKOUT_MINUTES: float = 15.0  # Avoid trading ±15 min around high-importance news (FOMC/NFP/CPI)
+    # Orderflow confluence gate (Fabio framework): veto entries with weak orderflow
+    # regardless of model confidence. Zone + orderflow must BOTH align.
+    ORDERFLOW_SCORE_MIN: float = 0.30  # Below → entry vetoed
+    ORDERFLOW_SCORE_TIGHT: float = 0.70  # Above → allow tighter entry stop
+    # Model decision: drop CONT from live selection — CONT is a weaker REV and
+    # training shows ~0% argmax-CONT. Force REV-only direction.
+    FORCE_REV_ONLY: bool = True
+    # Entry stop sanity bounds (veto trades with stops outside this range)
+    MIN_ENTRY_STOP_TICKS: float = 6.0
+    MAX_ENTRY_STOP_TICKS: float = 40.0
 
     def __init__(
         self,
@@ -239,12 +249,17 @@ class SessionManager:
 
         # Determine model's preferred direction
         approach = state.get("approach_direction", "up")
-        if q_cont > q_rev:
-            # Model says continuation
-            model_side = PositionSide.LONG if approach == "up" else PositionSide.SHORT
-        else:
-            # Model says reversal
+        if self.FORCE_REV_ONLY:
+            # Force REV — CONT is a weaker REV per training analysis (~0% argmax-CONT
+            # and Q(CONT) is always more negative than Q(REV)).
             model_side = PositionSide.SHORT if approach == "up" else PositionSide.LONG
+            is_reversal = True
+        elif q_cont > q_rev:
+            model_side = PositionSide.LONG if approach == "up" else PositionSide.SHORT
+            is_reversal = False
+        else:
+            model_side = PositionSide.SHORT if approach == "up" else PositionSide.LONG
+            is_reversal = True
 
         # Compute stop price
         if model_side == PositionSide.LONG:
@@ -258,10 +273,14 @@ class SessionManager:
         # Compute size
         size = self._compute_size(confidence)
 
+        # Compute orderflow score FOR THIS DIRECTION — framework gate requires
+        # both zone quality (from GBT confidence) AND orderflow confluence.
+        trade_dir_sign = 1 if model_side == PositionSide.LONG else -1
+        of_score = self._compute_orderflow_score(state, trade_dir_sign)
+
         # --- Decision logic ---
 
         # Reversal cushion: only take reversal trades after session profit (Fabio's rule)
-        is_reversal = q_rev > q_cont
         if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
             return self._signal(
                 "skip", current_price, q_spread=q_spread, confidence=confidence, reason="reversal_no_cushion"
@@ -294,6 +313,40 @@ class SessionManager:
                 return self._signal(
                     "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
                 )
+
+            # Orderflow confluence gate — Fabio framework: zone + orderflow must align.
+            # A high-confidence GBT signal without orderflow confirmation is noise.
+            if of_score < self.ORDERFLOW_SCORE_MIN:
+                return self._signal(
+                    "skip",
+                    current_price,
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    orderflow_score=of_score,
+                    reason="orderflow_weak",
+                )
+
+            # Entry stop sanity bounds — reject trades where GBT-predicted stop
+            # is implausible (too tight = noise-stop, too wide = unclear structure).
+            if stop_ticks < self.MIN_ENTRY_STOP_TICKS or stop_ticks > self.MAX_ENTRY_STOP_TICKS:
+                return self._signal(
+                    "skip",
+                    current_price,
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    stop_ticks=stop_ticks,
+                    reason="stop_out_of_bounds",
+                )
+
+            # Strong orderflow → allow the GBT-predicted stop. Weak orderflow that
+            # still cleared the gate → clamp stop to the wider half of [MIN, MAX]
+            # (give more breathing room since conviction is borderline).
+            if of_score < self.ORDERFLOW_SCORE_TIGHT:
+                stop_ticks = max(stop_ticks, (self.MIN_ENTRY_STOP_TICKS + self.MAX_ENTRY_STOP_TICKS) / 2)
+                if model_side == PositionSide.LONG:
+                    stop_price = current_price - stop_ticks * TICK_SIZE
+                else:
+                    stop_price = current_price + stop_ticks * TICK_SIZE
 
             action = f"enter_{model_side.value}"
             import time
@@ -390,8 +443,6 @@ class SessionManager:
 
             if model_side == self.position.side:
                 # Same direction at the ENTRY level = exit into strength.
-                # Price retested our entry with a continuation signal — the
-                # continuation crowd provides liquidity to close profitably.
                 entry_dist_ticks = abs(current_price - self.position.entry_price) / TICK_SIZE
                 is_entry_retest = entry_dist_ticks <= STOP_TICKS  # within 1R of entry
                 if is_entry_retest and q_cont > q_rev:
@@ -406,8 +457,20 @@ class SessionManager:
                         reason="entry_retest_cont_exit",
                     )
 
-                # Same direction at a NEW level — trail the stop
-                new_stop = self._trail_stop(current_price, stop_price)
+                # Graduated trail: modulate stop-tightness by orderflow confluence.
+                # Strong OF → trail tight (level - 2t, lock gains)
+                # Weak OF → trail normal (let it breathe)
+                trail_ticks = 2.0 if of_score < self.ORDERFLOW_SCORE_TIGHT else 1.0
+                aggressive_stop = (
+                    current_price - (trade_dir_sign * trail_ticks * TICK_SIZE) * -1
+                )  # stop at level - trail_ticks (opposite dir)
+                # Actually: stop is behind the trade, so subtract trail_ticks from level
+                if self.position.side == PositionSide.LONG:
+                    candidate = current_price - trail_ticks * TICK_SIZE
+                    new_stop = max(self.position.stop_price, candidate, stop_price)
+                else:
+                    candidate = current_price + trail_ticks * TICK_SIZE
+                    new_stop = min(self.position.stop_price, candidate, stop_price)
                 if new_stop != self.position.stop_price:
                     self.position.stop_price = new_stop
                     self.position.levels_captured += 1
@@ -417,9 +480,48 @@ class SessionManager:
                         q_values=[q_cont, q_rev],
                         q_spread=q_spread,
                         confidence=confidence,
+                        orderflow_score=of_score,
                         stop_price=new_stop,
-                        reason=f"level_{self.position.levels_captured}_captured",
+                        reason=f"level_{self.position.levels_captured}_captured_trail_{trail_ticks:.0f}t",
                     )
+
+            # OPPOSING signal in position — graduated response by signal strength
+            else:
+                opposing_ratio = q_spread / max(self.position.entry_q_spread, 0.01)
+                mode, tight_ticks = self._graduated_trail_ticks(opposing_ratio)
+
+                if mode == "hold":
+                    # Weak opposing signal → let position ride, no adjustment
+                    return self._signal(
+                        "hold",
+                        current_price,
+                        q_values=[q_cont, q_rev],
+                        q_spread=q_spread,
+                        confidence=confidence,
+                        orderflow_score=of_score,
+                        opposing_ratio=opposing_ratio,
+                        reason="weak_opposing_ride",
+                    )
+                elif mode == "tight":
+                    # Strong opposing → tighten stop to lock gains (level - 5 ticks)
+                    if self.position.side == PositionSide.LONG:
+                        candidate = current_price - tight_ticks * TICK_SIZE
+                        new_stop = max(self.position.stop_price, candidate)
+                    else:
+                        candidate = current_price + tight_ticks * TICK_SIZE
+                        new_stop = min(self.position.stop_price, candidate)
+                    if new_stop != self.position.stop_price:
+                        self.position.stop_price = new_stop
+                        return self._signal(
+                            "trail_stop",
+                            current_price,
+                            q_values=[q_cont, q_rev],
+                            q_spread=q_spread,
+                            confidence=confidence,
+                            opposing_ratio=opposing_ratio,
+                            stop_price=new_stop,
+                            reason="strong_opposing_tight_trail",
+                        )
 
             # Model agrees but no stop improvement — hold
             return self._signal(
@@ -479,12 +581,17 @@ class SessionManager:
             q_spread = abs(q_cont - q_rev)
             stop_ticks = float(stop_pred[0, 0])
 
-        # Determine model's preferred direction
+        # Determine model's preferred direction — FORCE_REV_ONLY drops CONT selection
         approach = state.get("approach_direction", "up")
-        if q_cont > q_rev:
+        if self.FORCE_REV_ONLY:
+            model_side = PositionSide.SHORT if approach == "up" else PositionSide.LONG
+            is_reversal = True
+        elif q_cont > q_rev:
             model_side = PositionSide.LONG if approach == "up" else PositionSide.SHORT
+            is_reversal = False
         else:
             model_side = PositionSide.SHORT if approach == "up" else PositionSide.LONG
+            is_reversal = True
 
         # Compute stop price from zone BOUNDARY (not center)
         if model_side == PositionSide.LONG:
@@ -495,8 +602,11 @@ class SessionManager:
         confidence = min(q_spread / 0.10, 1.0) if not self._use_gbt else q_spread
         size = self._compute_size(confidence)
 
+        # Orderflow confluence score for this direction
+        trade_dir_sign = 1 if model_side == PositionSide.LONG else -1
+        of_score = self._compute_orderflow_score(state, trade_dir_sign)
+
         # Reversal cushion check
-        is_reversal = q_rev > q_cont
         if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
             return self._signal(
                 "skip", current_price, q_spread=q_spread, confidence=confidence, reason="reversal_no_cushion"
@@ -527,6 +637,39 @@ class SessionManager:
                     "skip", current_price, q_spread=q_spread, confidence=confidence, reason="low_confidence"
                 )
 
+            # Orderflow confluence gate — zone quality alone is not enough
+            if of_score < self.ORDERFLOW_SCORE_MIN:
+                return self._signal(
+                    "skip",
+                    current_price,
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    orderflow_score=of_score,
+                    zone_members=zone.member_count,
+                    reason="orderflow_weak",
+                )
+
+            # Entry stop sanity bounds
+            if stop_ticks < self.MIN_ENTRY_STOP_TICKS or stop_ticks > self.MAX_ENTRY_STOP_TICKS:
+                return self._signal(
+                    "skip",
+                    current_price,
+                    q_spread=q_spread,
+                    confidence=confidence,
+                    stop_ticks=stop_ticks,
+                    reason="stop_out_of_bounds",
+                )
+
+            # Widen stop on weak-but-passing orderflow (more breathing room for borderline)
+            if of_score < self.ORDERFLOW_SCORE_TIGHT:
+                widened = max(stop_ticks, (self.MIN_ENTRY_STOP_TICKS + self.MAX_ENTRY_STOP_TICKS) / 2)
+                if widened != stop_ticks:
+                    stop_ticks = widened
+                    if model_side == PositionSide.LONG:
+                        stop_price = zone.lower_bound - stop_ticks * TICK_SIZE
+                    else:
+                        stop_price = zone.upper_bound + stop_ticks * TICK_SIZE
+
             action = f"enter_{model_side.value}"
             import time
 
@@ -545,6 +688,7 @@ class SessionManager:
                 q_values=[q_cont, q_rev],
                 q_spread=q_spread,
                 confidence=confidence,
+                orderflow_score=of_score,
                 stop_price=stop_price,
                 size=size,
                 zone_members=zone.member_count,
@@ -722,6 +866,95 @@ class SessionManager:
         else:
             # For shorts, stop can only move DOWN
             return min(self.position.stop_price, new_stop_from_model)
+
+    # --- Orderflow confluence gate (Phase 1 live) -----------------------------
+
+    @staticmethod
+    def _compute_orderflow_score(state: dict, trade_direction: int) -> float:
+        """Orderflow confluence score [0.0, 1.0] — how strongly orderflow
+        confirms the intended trade direction.
+
+        Components (Fabio's framework):
+        - delta_pct direction match (0.20 weight): initiative in our direction
+        - CVD trend alignment (0.20): cumulative flow supports us
+        - Stacked imbalance cluster (0.25): 3+ consecutive imbalances
+        - Absorption at level (0.20): large wall pattern confirming rejection
+        - Big-trade net delta alignment (0.15): institutional flow with us
+
+        Returns score ∈ [0, 1]. Score < 0.30 = too weak to trade.
+        trade_direction: +1 for long, -1 for short.
+        """
+        candles = state.get("candles") or []
+        signals = state.get("orderflow_signals")
+
+        score = 0.0
+
+        # 1. Delta direction match (weight 0.20)
+        if candles:
+            last = candles[-1]
+            vol = max(getattr(last, "volume", 1), 1)
+            delta_pct = getattr(last, "delta", 0) / vol  # signed
+            # Full credit if delta >15% in our direction
+            delta_score = max(-1.0, min(1.0, delta_pct * trade_direction / 0.15))
+            if delta_score > 0:
+                score += 0.20 * delta_score
+
+        # 2. CVD trend alignment (weight 0.20)
+        if signals is not None:
+            cvd_trend = getattr(signals, "cvd_trend", "flat")
+            # For long trade (dir=+1): "rising" is good. For short (dir=-1): "falling".
+            if (trade_direction == 1 and cvd_trend == "rising") or (trade_direction == -1 and cvd_trend == "falling"):
+                score += 0.20
+            elif cvd_trend == "flat":
+                score += 0.05  # neutral — partial credit
+
+        # 3. Stacked imbalance cluster (weight 0.25)
+        if signals is not None:
+            sic = getattr(signals, "stacked_imbalance_count", 0) or 0
+            sdir = getattr(signals, "stacked_direction", None)
+            # direction map: "buy" = up-push (good for long), "sell" = down-push (good for short)
+            wants_buy = trade_direction == 1
+            matches = (wants_buy and sdir == "buy") or (not wants_buy and sdir == "sell")
+            if matches:
+                score += 0.25 * min(sic / 3.0, 1.0)  # full credit at 3+ stacked
+
+        # 4. Absorption at level (weight 0.20) — reversal confirmation
+        if signals is not None:
+            vsa = float(getattr(signals, "vsa_absorption", 0) or 0)
+            absorb_strength = float(getattr(signals, "absorption_strength", 0) or 0)
+            # Absorption confirms reversal: large volume + small body = wall
+            abs_score = max(vsa, absorb_strength)
+            score += 0.20 * min(abs_score, 1.0)
+
+        # 5. Big-trade net delta alignment (weight 0.15)
+        if signals is not None:
+            big_net = float(getattr(signals, "big_trades_net_delta", 0) or 0)
+            if trade_direction == 1 and big_net > 0:
+                score += 0.15 * min(big_net / 100.0, 1.0)  # >100 net contracts = full
+            elif trade_direction == -1 and big_net < 0:
+                score += 0.15 * min(-big_net / 100.0, 1.0)
+
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _graduated_trail_ticks(opposing_spread_ratio: float, base_trail_ticks: float = 2.0) -> tuple[str, float]:
+        """Graduated trail behavior based on opposing signal strength at a new level.
+
+        opposing_spread_ratio = new_signal_spread / position_entry_spread
+
+        Returns (mode, trail_ticks_behind_level):
+          - "hold"  = no adjustment, leave stop where it was
+          - "normal" = trail to level - 2 ticks (current default)
+          - "tight"  = trail to level - 5 ticks (strong opposing → lock gains)
+          - "flip"   = caller should close and flip (very strong opposing)
+        """
+        if opposing_spread_ratio < 0.5:
+            return "hold", 0.0
+        if opposing_spread_ratio < 1.0:
+            return "normal", base_trail_ticks
+        if opposing_spread_ratio < 2.0:
+            return "tight", 5.0
+        return "flip", 0.0
 
     def _compute_size(self, confidence: float) -> float:
         """Compute position size based on composite confidence + session P&L."""
