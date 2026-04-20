@@ -315,6 +315,48 @@ def build_observation(state: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
+    # 16b. Post-touch reaction features (Phase 3a — 8 dims)
+    # Measures HOW THE MARKET REACTED to the level touch, not how it arrived.
+    # In training: reaction_ticks = peek at norm_ticks[i:i+50] from replay_engine.
+    # In live: session_manager waits N ticks after touch then rebuilds state.
+    from .reaction_features import extract_reaction_features
+
+    _touch_px = float(state.get("touch_price", price))
+    seg_reaction = extract_reaction_features(
+        state.get("reaction_ticks"),
+        recent_ticks,
+        _touch_px,
+        approach_str,
+        stop_ticks=20.0,
+    )
+
+    # 16c. Pattern detectors (Phase 3a — 5 dims)
+    # Explicit Fabio-style patterns: pin_bar, absorption_wall, imbalance_cluster,
+    # delta_divergence, trapped_breakout. Each 0-1 float.
+    from .pattern_features import extract_pattern_features
+
+    seg_pattern = extract_pattern_features(
+        state.get("touch_bar_partial"),
+        state.get("reaction_ticks"),
+        recent_ticks,
+        orderflow_signals,
+        _touch_px,
+        approach_str,
+    )
+
+    # 16d. Unified zone quality score (Phase 3a — 1 dim)
+    # Combines hierarchy + member count + freshness into a single [0,1] signal.
+    # Framework: zone "quality" is the PRECONDITION to trade. Model reads this
+    # directly instead of inferring from 4 separate zone features.
+    zq = 0.0
+    if zone is not None:
+        _mc = min(getattr(zone, "member_count", 0) / 8.0, 1.0)
+        _hs = float(getattr(zone, "hierarchy_score", 0.0))
+        # Time freshness: if touch_count is high, zone is being tested a lot
+        # (could be good OR bad). We just weight by confluence primarily.
+        zq = 0.5 * _mc + 0.5 * _hs
+    seg_zone_quality = np.array([zq], dtype=np.float32)
+
     # 17. Zone touch memory (3) — session-level zone interaction history
     zone_memory = state.get("zone_memory", {})
     zone_key = None
@@ -353,6 +395,9 @@ def build_observation(state: dict) -> np.ndarray:
             seg_hvn_lvn,  # 2 (signed distance to nearest HVN/LVN)
             seg_big_abs,  # 2 (absolute ≥25-contract activity)
             seg_of_alignment,  # 3 (of_score, zone_strength, their product)
+            seg_reaction,  # 8 (Phase 3a — post-touch market reaction)
+            seg_pattern,  # 5 (Phase 3a — explicit pattern detectors)
+            seg_zone_quality,  # 1 (Phase 3a — unified level quality score)
             seg_zone_memory,  # 3
         ]
     )

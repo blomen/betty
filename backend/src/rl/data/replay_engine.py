@@ -348,8 +348,53 @@ class ReplayEngine:
                 micro_start = max(0, i - 50)
                 recent_ticks = norm_ticks[micro_start : i + 1]
 
+                # Post-touch reaction window — 50 ticks AFTER touch (~5-10s of NQ).
+                # The model reads these to measure HOW THE MARKET REACTED to the
+                # level (vs just how price arrived). In live, we'll wait N ticks
+                # after touch before inference; in replay we peek ahead.
+                reaction_end = min(len(norm_ticks), i + 51)
+                reaction_ticks = norm_ticks[i:reaction_end]
+
+                # In-progress touch candle — partial CandleFlow reflecting the
+                # ticks in the current 1m bar UP TO AND INCLUDING the touch tick.
+                # Exposes wick-into-level, touch-bar delta, touch-bar volume that
+                # the closed-candle view can't see.
+                partial_candle = None
+                try:
+                    from ..data.candle_aggregator import CandleFlow as _CF
+
+                    if self._candle_ticks:
+                        ct = list(self._candle_ticks)
+                        if ct:
+                            partial_open = float(ct[0]["price"])
+                            partial_high = max(float(t["price"]) for t in ct)
+                            partial_low = min(float(t["price"]) for t in ct)
+                            partial_close = float(tick["price"])
+                            partial_vol = int(sum(t.get("size", 1) for t in ct))
+                            partial_buy = int(sum(t.get("size", 1) for t in ct if t.get("side") == "B"))
+                            partial_sell = partial_vol - partial_buy
+                            partial_delta = partial_buy - partial_sell
+                            partial_candle = _CF(
+                                ts=tick["ts"],
+                                open=partial_open,
+                                high=partial_high,
+                                low=partial_low,
+                                close=partial_close,
+                                volume=partial_vol,
+                                buy_volume=partial_buy,
+                                sell_volume=partial_sell,
+                                delta=partial_delta,
+                                tick_count=len(ct),
+                                spread=partial_high - partial_low,
+                            )
+                except Exception:
+                    partial_candle = None
+
                 state = self._build_state(tick, zone, session_date, date_str)
                 state["recent_ticks"] = recent_ticks
+                state["reaction_ticks"] = reaction_ticks
+                state["touch_bar_partial"] = partial_candle
+                state["touch_price"] = float(tick["price"])
                 state["approach_direction"] = approach_direction
                 observation = build_observation(state)
 

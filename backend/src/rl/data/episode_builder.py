@@ -376,30 +376,47 @@ def label_outcome_from_array(
         else:
             struct_dist = float(_STOP_TICKS_TRAIL)
 
-        # Blend structural distance with MAE rather than hard-clamping. Audit
-        # of previous training showed stop_targets were STILL bimodal (52% at
-        # floor 4.5, 9% at cap 49.5) which gave the stop-head no gradient to
-        # learn from.
+        # Blend structural distance + MAE + ATR-volatility. Framework (Fabio):
+        # stop = structural invalidation widened by current volatility. ATR
+        # gives macro volatility context (high-vol days need more room), MAE
+        # gives realized breathing-room, structural gives the actual
+        # invalidation level. Weighted blend across all three.
         mae = long_mae if direction == 1 else short_mae
+
+        # Session ATR lives in observation as part of execution features (~idx
+        # 273 = execution[4] = session_atr_norm, normalized by /100 in ticks).
+        try:
+            atr_norm = float(observation[273]) if observation is not None and len(observation) > 273 else 0.3
+            # Denormalize: atr_norm was clipped to [0, 1] after /100
+            atr_ticks = atr_norm * 100.0
+        except (IndexError, TypeError):
+            atr_ticks = 30.0  # fallback ~1 pt
+
+        # k*ATR reference: 1.0 × ATR gives ~session-typical move room.
+        atr_stop = atr_ticks * 1.0
+
         if mae > 0:
             mae_floor = mae + 2.0
-            optimal_stop = 0.7 * max(struct_dist, mae_floor) + 0.3 * min(struct_dist, mae_floor)
+            struct_mae_blend = 0.7 * max(struct_dist, mae_floor) + 0.3 * min(struct_dist, mae_floor)
         else:
-            optimal_stop = struct_dist
+            struct_mae_blend = struct_dist
 
-        # Orderflow-aware stop adjustment (framework: strong orderflow →
-        # tighter invalidation; weak orderflow → need more breathing room).
-        # of_score sits in observation slot 282 (seg_of_alignment[0]).
+        # 60% structural/MAE + 40% ATR. ATR keeps stop calibrated to current
+        # volatility regime regardless of specific zone layout.
+        optimal_stop = 0.6 * struct_mae_blend + 0.4 * atr_stop
+
+        # Orderflow-aware adjustment (Phase 2 logic retained): strong OF →
+        # tighter invalidation, weak OF → more breathing room.
         try:
             of_score = float(observation[282]) if observation is not None and len(observation) > 282 else 0.5
         except (IndexError, TypeError):
             of_score = 0.5
-        # scale factor: 1.0 at of_score=0.5, 0.8 at 1.0 (tighten), 1.2 at 0.0 (widen)
         of_factor = 1.2 - 0.4 * of_score
         optimal_stop = optimal_stop * of_factor
 
-        # Tighter floor + lower cap reduces extreme-cluster bimodality.
-        optimal_stop = float(max(6.0, min(35.0, optimal_stop)))
+        # Widened cap (back to 50) so high-vol regime trades can get appropriate
+        # stops; floor at 6 remains to prevent noise-stops.
+        optimal_stop = float(max(6.0, min(50.0, optimal_stop)))
 
     # Best direction stats — use breakeven from _count_levels_captured
     if best_action == Action.CONTINUATION:

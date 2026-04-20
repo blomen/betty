@@ -1930,6 +1930,18 @@ def train(
     agent.save(model_path, epoch=epochs)
     typer.echo(f"\nModel saved to: {model_path}")
 
+    # Persist feature schema alongside model for compatibility checks.
+    # Lets live_inference fail fast on dim/version mismatch instead of crashing
+    # in a matmul deep inside PyTorch.
+    try:
+        from src.rl.features.registry import save_schema
+
+        schema_path = models_dir / f"dqn_{checkpoint}_schema.json"
+        save_schema(schema_path)
+        typer.echo(f"Feature schema saved to: {schema_path}")
+    except Exception as exc:
+        typer.echo(f"Warning: could not save feature schema: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # train-specialists

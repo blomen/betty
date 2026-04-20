@@ -254,6 +254,21 @@ class LiveInferenceV5:
                         ckpt = torch.load(dqn_path, weights_only=False, map_location="cpu")
                         w = ckpt["q_network"]["encoder.0.weight"]
                         dqn_dim = w.shape[1]
+                        # Schema compatibility check — warn if the model was
+                        # trained on a different feature schema than current code.
+                        schema_path = search_dir / "dqn_v5_schema.json"
+                        if schema_path.exists():
+                            try:
+                                from src.rl.features.registry import check_compatibility
+
+                                ok, msg = check_compatibility(schema_path)
+                                if not ok:
+                                    log.warning(
+                                        "DQN feature schema drift detected: %s. Inference may degrade — retrain recommended.",
+                                        msg,
+                                    )
+                            except Exception as exc:
+                                log.debug("schema check skipped: %s", exc)
                         self._dqn = DQNetwork(input_dim=dqn_dim)
                         self._dqn.load_state_dict(ckpt["q_network"])
                         self._dqn.eval()
