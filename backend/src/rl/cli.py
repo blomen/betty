@@ -449,6 +449,67 @@ def fetch(
 # ---------------------------------------------------------------------------
 
 
+@rl_app.command("compare-models")
+def compare_models() -> None:
+    """List archived training runs with CV metrics for A/B comparison.
+
+    Each pipeline run archives models + metrics to data/rl/archive/{timestamp}.
+    This command prints a summary sorted by total R to make regressions obvious.
+    """
+    import json
+    from pathlib import Path
+
+    archive = Path("/app/backend/data/rl/archive")
+    if not archive.exists():
+        archive = Path("backend/data/rl/archive")
+    if not archive.exists():
+        typer.echo("No archive directory found. Runs archive after step 8.")
+        return
+
+    rows = []
+    for d in sorted(archive.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        m_path = d / "metrics.json"
+        if not m_path.exists():
+            continue
+        try:
+            m = json.loads(m_path.read_text())
+            rows.append(
+                {
+                    "ts": m.get("timestamp", d.name),
+                    "trades": m.get("trades", "?"),
+                    "win": m.get("win_rate_pct", "?"),
+                    "avgR": m.get("avg_r", "?"),
+                    "totalR": m.get("total_r", "?"),
+                    "PF": m.get("profit_factor", "?"),
+                    "maxDD": m.get("max_dd_r", "?"),
+                }
+            )
+        except Exception:
+            continue
+
+    if not rows:
+        typer.echo("No archived metrics found.")
+        return
+
+    typer.echo(f"{'Timestamp':<20} {'Trades':>10} {'Win%':>6} {'AvgR':>8} {'TotalR':>10} {'PF':>5} {'MaxDD':>8}")
+    typer.echo("-" * 78)
+
+    # Sort by total_r descending so best runs are at top
+    def _to_float(v: str) -> float:
+        try:
+            return float(str(v).replace(",", "").replace("+", ""))
+        except Exception:
+            return 0.0
+
+    for r in sorted(rows, key=lambda x: -_to_float(x["totalR"])):
+        typer.echo(
+            f"{r['ts']:<20} {r['trades']:>10} {r['win']:>5}% {r['avgR']:>8} "
+            f"{r['totalR']:>10} {r['PF']:>5} {r['maxDD']:>7}R"
+        )
+
+
 @rl_app.command("export-trades")
 def export_trades(
     symbol: str = typer.Option("NQ", help="Symbol to export"),

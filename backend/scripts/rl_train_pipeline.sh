@@ -141,14 +141,64 @@ step_run "6/8" "Training Trigger DQN v5 (30 epochs, batch 4096)" "critical" \
 step_run "7/8" "Evaluating DQN v5" "optional" \
     python -m src.app rl eval --checkpoint v5 --skip-threshold 0.15
 
-# Step 8: Deploy
+# Step 8: Deploy + archive
 if ! step_done "8/8"; then
     echo ""
     echo "[8/8] Deploying v5 models..."
-    cp -f /app/backend/data/rl/models/narrative_gbt_v5.joblib /app/backend/data/rl/models/narrative_gbt_latest.joblib 2>/dev/null || true
-    cp -f /app/backend/data/rl/models/trigger_gbt_v5.joblib /app/backend/data/rl/models/trigger_gbt_latest.joblib 2>/dev/null || true
-    cp -f /app/backend/data/rl/models/dqn_v5.pt /app/backend/data/rl/models/dqn_latest.pt 2>/dev/null || true
-    echo "[8/8] Models deployed."
+    MODELS=/app/backend/data/rl/models
+    ARCHIVE_ROOT=/app/backend/data/rl/archive
+    TS=$(date -u '+%Y%m%d_%H%M%S')
+    ARCHIVE_DIR="$ARCHIVE_ROOT/$TS"
+
+    # Archive this run: models + eval report extracted from pipeline.log.
+    # Keeps full history for A/B comparison across training iterations.
+    mkdir -p "$ARCHIVE_DIR"
+    cp -f "$MODELS/narrative_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
+    cp -f "$MODELS/trigger_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
+    cp -f "$MODELS/dqn_v5.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
+    cp -f "$MODELS/dqn_v5_best.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
+    # Extract the most recent RL AGENT EVALUATION REPORT from pipeline.log
+    awk '/RL AGENT EVALUATION REPORT/{flag=1; buf=""} flag{buf=buf $0 ORS} /^\[7\/8\] Done\./{if (flag){print buf; flag=0}}' \
+        "$LOG" 2>/dev/null | tail -n +$(awk 'END{c=0; for(i=1;i<=NR;i++) if($0 ~ /RL AGENT EVALUATION REPORT/) c=i; print c}' "$LOG" 2>/dev/null || echo 1) \
+        > "$ARCHIVE_DIR/eval_report.txt" 2>/dev/null || true
+    # Also save a machine-readable metrics line (grepped from report)
+    python -c "
+import re
+from pathlib import Path
+log = Path('$LOG').read_text() if Path('$LOG').exists() else ''
+# find last RL AGENT EVALUATION REPORT block
+blocks = log.split('RL AGENT EVALUATION REPORT')
+if len(blocks) > 1:
+    last = blocks[-1]
+    def _grab(pat):
+        m = re.search(pat, last)
+        return m.group(1) if m else ''
+    metrics = {
+        'timestamp': '$TS',
+        'episodes': _grab(r'Episodes\s*:\s*([\d,]+)'),
+        'trades': _grab(r'Trades taken\s*:\s*([\d,]+)'),
+        'win_rate_pct': _grab(r'Win rate\s*:\s*([\d.]+)'),
+        'avg_r': _grab(r'Avg R / trade\s*:\s*([+\-\d.]+)'),
+        'total_r': _grab(r'Total R\s*:\s*([+\-\d.]+)'),
+        'profit_factor': _grab(r'Profit factor\s*:\s*([\d.]+)'),
+        'max_dd_r': _grab(r'Max drawdown\s*:\s*([\d.]+)'),
+    }
+    import json
+    Path('$ARCHIVE_DIR/metrics.json').write_text(json.dumps(metrics, indent=2))
+    print('metrics.json saved:', metrics)
+" 2>/dev/null || true
+
+    # Deploy latest pointers (prod)
+    cp -f "$MODELS/narrative_gbt_v5.joblib" "$MODELS/narrative_gbt_latest.joblib" 2>/dev/null || true
+    cp -f "$MODELS/trigger_gbt_v5.joblib" "$MODELS/trigger_gbt_latest.joblib" 2>/dev/null || true
+    cp -f "$MODELS/dqn_v5.pt" "$MODELS/dqn_latest.pt" 2>/dev/null || true
+
+    # Prune archive: keep newest 10 runs
+    if [ -d "$ARCHIVE_ROOT" ]; then
+        cd "$ARCHIVE_ROOT" && ls -1t | tail -n +11 | xargs -r rm -rf
+    fi
+
+    echo "[8/8] Models deployed + archived to $ARCHIVE_DIR"
     step_mark "8/8"
 fi
 
