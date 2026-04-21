@@ -1,7 +1,7 @@
 """Live episode collector — captures zone touches and measures outcomes.
 
 Hooks into LevelMonitor zone touches. For each touch:
-1. Builds 276-dim observation + 144-dim trigger observation at touch time
+1. Builds 302-dim base observation + 118-dim trigger observation at touch time
 2. Schedules outcome measurement after OUTCOME_DELAY seconds
 3. Queries market_trades for price movement to compute reward
 4. Computes full trailing reward with structural levels (same as replay engine)

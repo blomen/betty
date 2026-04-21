@@ -1416,7 +1416,7 @@ def replay(
     obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
     np.save(episodes_dir / "observations.npy", obs_array)
 
-    # Trigger observations (144-dim) — used by train-trigger-gbt
+    # Trigger observations (118-dim, Phase 3b) — used by train-trigger-gbt
     trig_chunks = [chunk_dir / f"trig_{i:04d}.npy" for i in chunk_indices]
     if all(p.exists() for p in trig_chunks):
         trig_array = np.concatenate([np.load(p) for p in trig_chunks])
@@ -1713,16 +1713,18 @@ def train(
     stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
 
     # HYBRID MODE: augment base observation with GBT forecast + position state
-    # base (279) + gbt_forecast (8) + position_state (8) = 295-dim
+    # base (302) + gbt_forecast (8) + position_state (8) = 318-dim
     trigger_path = episodes_dir / "trigger_observations.npy"
     if trigger_path.exists():
         trigger_obs = np.load(trigger_path)
         if len(trigger_obs) == len(observations):
-            # Extract GBT forecast from trigger_obs (last 8 dims before exec passthrough)
-            # Layout: narrative(18) + setup(8) + pass(10) + micro(20) + of(21) + cdl(15)
-            #       + zone_f(4) + zone_c(5) + zone_cmp(31) + approach(1) + gbt(8) + exec(3)
-            # GBT forecast is at index 133:141
-            gbt_forecast = trigger_obs[:, 133:141]  # (N, 8)
+            # Derive the GBT forecast slot from the current trigger schema instead
+            # of hardcoding — keeps this aligned with augment-trigger-obs.
+            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+            _gbt_end = _gbt_start + TRIGGER_GBT_DIM
+            gbt_forecast = trigger_obs[:, _gbt_start:_gbt_end]  # (N, 8)
             # Session-aware position state: simulate greedy execution across touches in
             # chronological order, carrying position/session context forward. Previously
             # this was zeros, which made the 8 position dims dead weight.
@@ -2301,7 +2303,11 @@ def eval(
     if trigger_path.exists():
         trigger_obs = np.load(trigger_path)
         if len(trigger_obs) == len(observations):
-            gbt_forecast = trigger_obs[:, 133:141]
+            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+            _gbt_end = _gbt_start + TRIGGER_GBT_DIM
+            gbt_forecast = trigger_obs[:, _gbt_start:_gbt_end]
             position_state = np.zeros((len(observations), 8), dtype=np.float32)
             observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
             typer.echo(f"HYBRID: augmented eval obs → {observations.shape[1]}-dim")
@@ -2877,7 +2883,7 @@ def train_trigger_gbt(
 
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
-    # --- Load trigger observations (144-dim, built during replay) ---
+    # --- Load trigger observations (118-dim, built during replay) ---
     trig_path = episodes_dir / "trigger_observations.npy"
     if not trig_path.exists():
         typer.echo(
