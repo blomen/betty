@@ -208,6 +208,7 @@ class LiveInferenceV5:
         self._narrative_gbt = None  # optional; used only if present for narrative alignment
         self._trigger_gbt = None
         self._dqn = None
+        self._size_model = None  # Phase 3c: optional trained size tier head
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
@@ -217,12 +218,13 @@ class LiveInferenceV5:
         return self._loaded
 
     def try_load(self) -> bool:
-        """Load v5 models (trigger GBT mandatory; narrative GBT optional)."""
+        """Load v5 models (trigger GBT mandatory; narrative GBT + size model optional)."""
         from .agent.narrative_gbt import NarrativeGBT
         from .agent.trigger_gbt import TriggerGBT
 
         narrative_loaded = False
         trigger_loaded = False
+        size_loaded = False
 
         for search_dir in _MODEL_SEARCH_DIRS:
             if not search_dir.exists():
@@ -247,6 +249,18 @@ class LiveInferenceV5:
                         log.info("TriggerGBT loaded from %s", trigger_path)
                     except Exception:
                         log.exception("Failed to load TriggerGBT from %s", trigger_path)
+
+            if not size_loaded:
+                size_path = search_dir / "size_model_latest.joblib"
+                if size_path.exists():
+                    try:
+                        from .agent.size_model import SizeModel
+
+                        self._size_model = SizeModel.load(size_path)
+                        size_loaded = True
+                        log.info("SizeModel loaded from %s", size_path)
+                    except Exception:
+                        log.exception("Failed to load SizeModel from %s", size_path)
 
             # Try to load DQN for hybrid decision layer (optional — falls back to pure GBT)
             if self._dqn is None:
@@ -472,6 +486,25 @@ class LiveInferenceV5:
             trade_direction=trade_direction,
         )
 
+        # Phase 3c: prefer SizeModel (trained) over the composite-tier heuristic.
+        # Builds the same 318-dim augmented obs shape the SizeModel trained on.
+        size_source = "heuristic"
+        size_mult = size_multiplier(composite)
+        if self._size_model is not None and action_idx != 2:
+            try:
+                ps_raw = state.get("position_state")
+                if ps_raw is not None:
+                    pos = np.asarray(ps_raw, dtype=np.float32).flatten()
+                    if pos.size != 8:
+                        pos = np.zeros(8, dtype=np.float32)
+                else:
+                    pos = np.zeros(8, dtype=np.float32)
+                augmented = np.concatenate([base_obs.astype(np.float32), gbt_forecast.astype(np.float32), pos])
+                size_mult = float(self._size_model.predict_size(augmented))
+                size_source = "size_model"
+            except Exception:
+                log.debug("SizeModel predict failed; falling back to heuristic", exc_info=True)
+
         return {
             "inputs": base_obs.tolist(),
             "action": Action(action_idx).name,
@@ -480,7 +513,8 @@ class LiveInferenceV5:
             "stop_ticks": float(stop_ticks),
             "narrative": narrative_dict,
             "composite_confidence": composite,
-            "size_multiplier": size_multiplier(composite),
+            "size_multiplier": size_mult,
+            "size_source": size_source,
             "dqn_action": dqn_action,
             "dqn_agrees": dqn_agrees,
             "gbt_action": gbt_action,

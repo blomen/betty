@@ -2971,3 +2971,106 @@ def train_trigger_gbt(
     save_path = models_dir / f"trigger_gbt_{checkpoint}.joblib"
     model.save(save_path)
     typer.echo(f"\n  Saved to {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# train-size-model (Phase 3c: trained position-sizing head)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("train-size-model")
+def train_size_model(
+    checkpoint: str = typer.Option("v5", help="Checkpoint name"),
+    trees: int = typer.Option(400, help="Number of trees"),
+    depth: int = typer.Option(4, help="Max depth"),
+    lr: float = typer.Option(0.05, help="Learning rate"),
+) -> None:
+    """Train the SizeModel — 5-class LGBM classifier predicting position size tier.
+
+    Trains on the augmented observation (base + GBT forecast + position state)
+    that the DQN consumes. Labels are derived from realized R by bucketing
+    into {0.0, 0.3, 0.6, 1.0, 1.5}x size tiers.
+    """
+    import numpy as np
+
+    from src.rl.agent.size_model import SizeModel
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(obs_path)
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+
+    # Augment with GBT forecast + zero position state to mirror DQN input.
+    # If trigger_observations.npy has the forecast already, use it; else zeros.
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists():
+        trigger_obs = np.load(trigger_path)
+        if len(trigger_obs) == len(observations):
+            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+            gbt_forecast = trigger_obs[:, _gbt_start : _gbt_start + TRIGGER_GBT_DIM]
+            position_state = np.zeros((len(observations), 8), dtype=np.float32)
+            X = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+        else:
+            X = observations.astype(np.float32)
+            typer.echo("Warning: trigger_obs size mismatch, training on base obs only.")
+    else:
+        X = observations.astype(np.float32)
+        typer.echo("No trigger_observations.npy — training on base obs only.")
+
+    # Best-realized-R target per episode (max of continuation/reversal reward).
+    # This assumes the trader took the better side — i.e. this is the
+    # upper-bound of what the policy could have achieved, which is the
+    # right target for "optimal size".
+    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+
+    n = len(X)
+    typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
+    typer.echo(f"Realized R: mean={realized_R.mean():+.3f}, median={np.median(realized_R):+.3f}")
+
+    MAX_SAMPLES = 300_000
+    if n > MAX_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_SAMPLES, replace=False)
+        idx.sort()
+        X = X[idx]
+        realized_R = realized_R[idx]
+        n = MAX_SAMPLES
+        typer.echo(f"Subsampled to {n:,} for memory safety.")
+
+    model = SizeModel()
+    typer.echo(f"\nTraining SizeModel (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
+    metrics = model.train(
+        X=X,
+        realized_R=realized_R,
+        n_estimators=trees,
+        max_depth=depth,
+        learning_rate=lr,
+    )
+
+    typer.echo("\n  Results:")
+    typer.echo(f"    Engine           : {metrics['engine']}")
+    typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Train accuracy   : {metrics['train_accuracy']}%")
+    typer.echo(f"    Val accuracy     : {metrics['val_accuracy']}%")
+    typer.echo(f"    Class distrib    : {metrics['class_distribution']}")
+    typer.echo(f"    Val mean mult    : {metrics['val_mean_size_multiplier']}")
+    typer.echo(f"    Val weighted R   : {metrics['val_mean_weighted_R']}")
+
+    top_features = model.feature_importance(top_n=10)
+    typer.echo("\n  Top 10 feature importances:")
+    for idx, imp in top_features:
+        typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
+
+    save_path = models_dir / f"size_model_{checkpoint}.joblib"
+    model.save(save_path)
+    typer.echo(f"\n  Saved to {save_path}")

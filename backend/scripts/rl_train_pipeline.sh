@@ -125,10 +125,16 @@ step_run "4/8" "Training Trigger GBT v5" "critical" \
 # Step 5: Augment trigger observations with GBT forecast (FAST — ~1 min)
 # Replaces the old "re-replay all 39 parquets with --gbt" which took ~5h.
 # Instead: load saved trigger_observations.npy, run GBT inference in batch,
-# write 8-dim forecast into slots [133:141]. Same result, 300x faster.
+# write 8-dim forecast into the trigger_gbt slot (schema-derived). Same
+# result, 300x faster.
 step_run "5/8" "Augmenting trigger obs with GBT forecast (fast, batch inference)" "critical" \
     python -m src.app rl augment-trigger-obs --gbt-name trigger_gbt_v5.joblib
 [ $FAILED -eq 1 ] && exit 1
+
+# Step 5b: Train SizeModel — Phase 3c trained position-sizing head.
+# Optional so it can't block DQN training if it fails on an edge case.
+step_run "5b/8" "Training SizeModel v5 (Phase 3c)" "optional" \
+    nice -n 19 python -m src.app rl train-size-model --checkpoint v5 --trees 400 --depth 4 --lr 0.05
 
 # Step 6: Train Trigger DQN (critical)
 step_run "6/8" "Training Trigger DQN v5 (30 epochs, batch 4096)" "critical" \
@@ -155,6 +161,7 @@ if ! step_done "8/8"; then
     mkdir -p "$ARCHIVE_DIR"
     cp -f "$MODELS/narrative_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
+    cp -f "$MODELS/size_model_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5_best.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
     # Extract the most recent RL AGENT EVALUATION REPORT from pipeline.log
@@ -191,6 +198,7 @@ if len(blocks) > 1:
     # Deploy latest pointers (prod)
     cp -f "$MODELS/narrative_gbt_v5.joblib" "$MODELS/narrative_gbt_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$MODELS/trigger_gbt_latest.joblib" 2>/dev/null || true
+    cp -f "$MODELS/size_model_v5.joblib" "$MODELS/size_model_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5.pt" "$MODELS/dqn_latest.pt" 2>/dev/null || true
 
     # Prune archive: keep newest 10 runs
