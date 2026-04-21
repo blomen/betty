@@ -209,6 +209,7 @@ class LiveInferenceV5:
         self._trigger_gbt = None
         self._dqn = None
         self._size_model = None  # Phase 3c: optional trained size tier head
+        self._early_exit_model = None  # Phase 3c: optional pump-and-retrace detector
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
@@ -261,6 +262,17 @@ class LiveInferenceV5:
                         log.info("SizeModel loaded from %s", size_path)
                     except Exception:
                         log.exception("Failed to load SizeModel from %s", size_path)
+
+            if self._early_exit_model is None:
+                ee_path = search_dir / "early_exit_model_latest.joblib"
+                if ee_path.exists():
+                    try:
+                        from .agent.early_exit_model import EarlyExitModel
+
+                        self._early_exit_model = EarlyExitModel.load(ee_path)
+                        log.info("EarlyExitModel loaded from %s", ee_path)
+                    except Exception:
+                        log.exception("Failed to load EarlyExitModel from %s", ee_path)
 
             # Try to load DQN for hybrid decision layer (optional — falls back to pure GBT)
             if self._dqn is None:
@@ -487,10 +499,12 @@ class LiveInferenceV5:
         )
 
         # Phase 3c: prefer SizeModel (trained) over the composite-tier heuristic.
-        # Builds the same 318-dim augmented obs shape the SizeModel trained on.
+        # Builds the same 318-dim augmented obs shape SizeModel/EarlyExitModel
+        # trained on. Reused by the early_exit head below.
         size_source = "heuristic"
         size_mult = size_multiplier(composite)
-        if self._size_model is not None and action_idx != 2:
+        augmented = None
+        if action_idx != 2:
             try:
                 ps_raw = state.get("position_state")
                 if ps_raw is not None:
@@ -500,10 +514,24 @@ class LiveInferenceV5:
                 else:
                     pos = np.zeros(8, dtype=np.float32)
                 augmented = np.concatenate([base_obs.astype(np.float32), gbt_forecast.astype(np.float32), pos])
+            except Exception:
+                log.debug("Failed to build augmented obs for size/early-exit heads", exc_info=True)
+
+        if self._size_model is not None and augmented is not None:
+            try:
                 size_mult = float(self._size_model.predict_size(augmented))
                 size_source = "size_model"
             except Exception:
                 log.debug("SizeModel predict failed; falling back to heuristic", exc_info=True)
+
+        # Phase 3c: early_exit probability — downstream session manager
+        # attaches a +0.5R locked exit when this exceeds its threshold.
+        early_exit_prob = 0.0
+        if self._early_exit_model is not None and augmented is not None:
+            try:
+                early_exit_prob = float(self._early_exit_model.predict_proba(augmented))
+            except Exception:
+                log.debug("EarlyExitModel predict failed", exc_info=True)
 
         return {
             "inputs": base_obs.tolist(),
@@ -515,6 +543,7 @@ class LiveInferenceV5:
             "composite_confidence": composite,
             "size_multiplier": size_mult,
             "size_source": size_source,
+            "early_exit_prob": early_exit_prob,
             "dqn_action": dqn_action,
             "dqn_agrees": dqn_agrees,
             "gbt_action": gbt_action,

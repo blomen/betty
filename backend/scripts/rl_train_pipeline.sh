@@ -136,6 +136,12 @@ step_run "5/8" "Augmenting trigger obs with GBT forecast (fast, batch inference)
 step_run "5b/8" "Training SizeModel v5 (Phase 3c)" "optional" \
     nice -n 19 python -m src.app rl train-size-model --checkpoint v5 --trees 400 --depth 4 --lr 0.05
 
+# Step 5c: Train EarlyExitModel — Phase 3c pump-and-retrace detector.
+# Requires peak_R_cont.npy / peak_R_rev.npy (written by Phase 3c replay).
+# Optional: a missing label file or an edge case must not block the DQN.
+step_run "5c/8" "Training EarlyExitModel v5 (Phase 3c)" "optional" \
+    nice -n 19 python -m src.app rl train-early-exit-model --checkpoint v5 --trees 400 --depth 4 --lr 0.05
+
 # Step 6: Train Trigger DQN (critical)
 step_run "6/8" "Training Trigger DQN v5 (30 epochs, batch 4096)" "critical" \
     nice -n 19 python -m src.app rl train --epochs 30 --checkpoint v5
@@ -162,6 +168,7 @@ if ! step_done "8/8"; then
     cp -f "$MODELS/narrative_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/size_model_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
+    cp -f "$MODELS/early_exit_model_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5_best.pt" "$ARCHIVE_DIR/" 2>/dev/null || true
     # Extract the most recent RL AGENT EVALUATION REPORT from pipeline.log
@@ -199,6 +206,7 @@ if len(blocks) > 1:
     cp -f "$MODELS/narrative_gbt_v5.joblib" "$MODELS/narrative_gbt_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$MODELS/trigger_gbt_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/size_model_v5.joblib" "$MODELS/size_model_latest.joblib" 2>/dev/null || true
+    cp -f "$MODELS/early_exit_model_v5.joblib" "$MODELS/early_exit_model_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/dqn_v5.pt" "$MODELS/dqn_latest.pt" 2>/dev/null || true
 
     # Prune archive: keep newest 10 runs

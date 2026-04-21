@@ -67,6 +67,8 @@ class Episode:
     optimal_stop_ticks: float  # MAE-optimal initial stop distance
     breakeven_reached: bool = False  # did price reach 1R before retracing?
     levels_captured_best: int = 0  # levels captured by best action with full lifecycle
+    peak_R_cont: float = 0.0  # Max favorable excursion in R units, continuation side
+    peak_R_rev: float = 0.0  # Max favorable excursion in R units, reversal side
     state: dict | None = None  # original state dict (for backtest/session manager)
 
 
@@ -431,6 +433,20 @@ def label_outcome_from_array(
         best_levels = 0
         best_be = False
 
+    # Peak favorable R per side — max_favorable from the last movement profile
+    # is the cumulative MFE across all windows, normalized by the trail stop.
+    # Feeds Phase 3c early_exit_model: if peak_R ≥ 0.5 but realized_R is
+    # small/negative, the trade pumped then retraced.
+    _R_BASIS = float(max(_STOP_TICKS_TRAIL, 1))
+    long_peak = float(long_profiles[-1].max_favorable) / _R_BASIS if long_profiles else 0.0
+    short_peak = float(short_profiles[-1].max_favorable) / _R_BASIS if short_profiles else 0.0
+    # Align with reward_cont/reward_rev mapping: continuation follows the
+    # approach direction, reversal is opposite.
+    if approach_direction == "up":
+        peak_R_cont, peak_R_rev = long_peak, short_peak
+    else:
+        peak_R_cont, peak_R_rev = short_peak, long_peak
+
     return Episode(
         observation=observation,
         level_type=level_type,
@@ -444,6 +460,8 @@ def label_outcome_from_array(
         optimal_stop_ticks=optimal_stop,
         breakeven_reached=best_be,
         levels_captured_best=best_levels,
+        peak_R_cont=peak_R_cont,
+        peak_R_rev=peak_R_rev,
     )
 
 

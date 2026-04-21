@@ -1090,6 +1090,7 @@ def _replay_single_file(
     month_obs, month_trig, month_rc, month_rr = [], [], [], []
     month_lt, month_st, month_be, month_lc = [], [], [], []
     month_gap, month_te = [], []  # overnight_gap, touch_epoch for labeler
+    month_peak_c, month_peak_r = [], []  # Phase 3c peak_R per side for early_exit_model
     session_count = 0
     prior_levels = None
 
@@ -1177,6 +1178,8 @@ def _replay_single_file(
             month_lc.append(float(ep.levels_captured_best))
             month_gap.append(overnight_gap)
             month_te.append(touch_epoch)
+            month_peak_c.append(float(getattr(ep, "peak_R_cont", 0.0)))
+            month_peak_r.append(float(getattr(ep, "peak_R_rev", 0.0)))
 
         del episodes
         gc.collect()
@@ -1196,6 +1199,8 @@ def _replay_single_file(
         np.save(out_dir / f"lc_{chunk_idx:04d}.npy", np.array(month_lc, dtype=np.float32))
         np.save(out_dir / f"gap_{chunk_idx:04d}.npy", np.array(month_gap, dtype=np.float32))
         np.save(out_dir / f"te_{chunk_idx:04d}.npy", np.array(month_te, dtype=np.float64))
+        np.save(out_dir / f"peakc_{chunk_idx:04d}.npy", np.array(month_peak_c, dtype=np.float32))
+        np.save(out_dir / f"peakr_{chunk_idx:04d}.npy", np.array(month_peak_r, dtype=np.float32))
 
     return n_eps, len(sorted_dates)
 
@@ -1464,6 +1469,13 @@ def replay(
     if all(p.exists() for p in gap_chunks) and all(p.exists() for p in te_chunks):
         np.save(episodes_dir / "overnight_gap.npy", np.concatenate([np.load(p) for p in gap_chunks]))
         np.save(episodes_dir / "touch_epochs.npy", np.concatenate([np.load(p) for p in te_chunks]))
+
+    # Phase 3c: peak_R arrays (max favorable R per side) for early_exit_model.
+    peakc_chunks = [chunk_dir / f"peakc_{i:04d}.npy" for i in chunk_indices]
+    peakr_chunks = [chunk_dir / f"peakr_{i:04d}.npy" for i in chunk_indices]
+    if all(p.exists() for p in peakc_chunks) and all(p.exists() for p in peakr_chunks):
+        np.save(episodes_dir / "peak_R_cont.npy", np.concatenate([np.load(p) for p in peakc_chunks]))
+        np.save(episodes_dir / "peak_R_rev.npy", np.concatenate([np.load(p) for p in peakr_chunks]))
 
     # Clean up chunks
     for old in chunk_dir.glob("*.npy"):
@@ -3072,5 +3084,120 @@ def train_size_model(
         typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
 
     save_path = models_dir / f"size_model_{checkpoint}.joblib"
+    model.save(save_path)
+    typer.echo(f"\n  Saved to {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# train-early-exit-model (Phase 3c: pump-and-retrace detector)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("train-early-exit-model")
+def train_early_exit_model(
+    checkpoint: str = typer.Option("v5", help="Checkpoint name"),
+    trees: int = typer.Option(400, help="Number of trees"),
+    depth: int = typer.Option(4, help="Max depth"),
+    lr: float = typer.Option(0.05, help="Learning rate"),
+) -> None:
+    """Train the EarlyExitModel — predicts P(trade pumps then retraces).
+
+    Requires peak_R_cont.npy + peak_R_rev.npy (written during replay in
+    Phase 3c). Labels each episode 1 if peak_R ≥ 0.5 AND realized_R < 0.5.
+    """
+    import numpy as np
+
+    from src.rl.agent.early_exit_model import EarlyExitModel
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    peakc_path = episodes_dir / "peak_R_cont.npy"
+    peakr_path = episodes_dir / "peak_R_rev.npy"
+    if not (peakc_path.exists() and peakr_path.exists()):
+        typer.echo(
+            f"Missing peak_R_cont.npy / peak_R_rev.npy in {episodes_dir}. "
+            "These are written during replay in Phase 3c — re-replay first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    observations = np.load(obs_path)
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    peak_R_cont = np.load(peakc_path)
+    peak_R_rev = np.load(peakr_path)
+
+    # Augment with GBT forecast + zero position state (same shape as size_model input).
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists():
+        trigger_obs = np.load(trigger_path)
+        if len(trigger_obs) == len(observations):
+            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+            gbt_forecast = trigger_obs[:, _gbt_start : _gbt_start + TRIGGER_GBT_DIM]
+            position_state = np.zeros((len(observations), 8), dtype=np.float32)
+            X = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+        else:
+            X = observations.astype(np.float32)
+            typer.echo("Warning: trigger_obs size mismatch, training on base obs only.")
+    else:
+        X = observations.astype(np.float32)
+        typer.echo("No trigger_observations.npy — training on base obs only.")
+
+    # Use the best-side peak + best-side realized — same convention as size_model.
+    peak_R = np.maximum(peak_R_cont, peak_R_rev).astype(np.float32)
+    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+
+    n = len(X)
+    typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
+    typer.echo(f"peak_R: mean={peak_R.mean():+.3f}, median={np.median(peak_R):+.3f}")
+    typer.echo(f"realized_R: mean={realized_R.mean():+.3f}, median={np.median(realized_R):+.3f}")
+
+    MAX_SAMPLES = 300_000
+    if n > MAX_SAMPLES:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n, MAX_SAMPLES, replace=False)
+        idx.sort()
+        X = X[idx]
+        peak_R = peak_R[idx]
+        realized_R = realized_R[idx]
+        n = MAX_SAMPLES
+        typer.echo(f"Subsampled to {n:,} for memory safety.")
+
+    model = EarlyExitModel()
+    typer.echo(f"\nTraining EarlyExitModel (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
+    metrics = model.train(
+        X=X,
+        peak_R=peak_R,
+        realized_R=realized_R,
+        n_estimators=trees,
+        max_depth=depth,
+        learning_rate=lr,
+    )
+
+    typer.echo("\n  Results:")
+    typer.echo(f"    Engine           : {metrics['engine']}")
+    typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Train positives  : {metrics['train_positive_pct']}%")
+    typer.echo(f"    Val positives    : {metrics['val_positive_pct']}%")
+    typer.echo(f"    Train accuracy   : {metrics['train_accuracy']}%")
+    typer.echo(f"    Val accuracy     : {metrics['val_accuracy']}%")
+    typer.echo(f"    Val precision    : {metrics['val_precision']}")
+    typer.echo(f"    Val recall       : {metrics['val_recall']}")
+
+    top_features = model.feature_importance(top_n=10)
+    typer.echo("\n  Top 10 feature importances:")
+    for idx, imp in top_features:
+        typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
+
+    save_path = models_dir / f"early_exit_model_{checkpoint}.joblib"
     model.save(save_path)
     typer.echo(f"\n  Saved to {save_path}")
