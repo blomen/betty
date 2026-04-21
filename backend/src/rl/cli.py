@@ -1041,7 +1041,6 @@ def _replay_single_file(
     from src.rl.data.replay_engine import ReplayEngine
     from src.rl.data.session_store import compute_precomputed_levels
     from src.rl.data.tick_array import TickArray
-    from src.rl.features.narrative_features import extract_narrative_features
     from src.rl.features.observation import augment_observation, build_position_state
     from src.rl.features.trigger_features import build_trigger_observation
 
@@ -1052,20 +1051,15 @@ def _replay_single_file(
     # Load GBT in this subprocess if needed
     gbt_model = None
     gbt_is_trigger = False
-    narrative_gbt = None
     if gbt_path:
         import joblib as _jl
 
         _gbt_data = _jl.load(Path(gbt_path))
         if isinstance(_gbt_data, dict) and str(_gbt_data.get("version", "")).startswith("v5_trigger"):
-            from src.rl.agent.narrative_gbt import NarrativeGBT
             from src.rl.agent.trigger_gbt import TriggerGBT
 
             gbt_model = TriggerGBT.load(Path(gbt_path))
             gbt_is_trigger = True
-            ngbt_path = Path(gbt_path).parent / "narrative_gbt_v5.joblib"
-            if ngbt_path.exists():
-                narrative_gbt = NarrativeGBT.load(ngbt_path)
         else:
             from src.rl.agent.gbt_model import GBTModel
 
@@ -1151,33 +1145,16 @@ def _replay_single_file(
         for ep in episodes:
             obs = ep.observation
 
-            # Build proper 144-dim trigger observation using stored state.
-            # extract_narrative_features and build_trigger_observation use the
-            # same state dict that produced ep.observation, so features are
-            # consistent between training (here) and live inference.
-            narrative = extract_narrative_features(ep.state)
-            narr_feats = np.concatenate(
-                [
-                    obs[52:116],  # structure (64)
-                    obs[116:154],  # tpo (38)
-                    obs[178:189],  # macro (11)
-                    obs[208:228],  # amt (20)
-                    obs[228:248],  # amt_dynamics (20)
-                ]
-            )
-            setup_probs_ep = (
-                narrative_gbt.predict_setup_probs(narr_feats)
-                if narrative_gbt is not None
-                else np.zeros(8, dtype=np.float32)
-            )
-            # trigger_obs without GBT forecast (zeros in trigger_gbt segment)
-            trigger_obs = build_trigger_observation(narrative, setup_probs_ep, ep.state, obs)
+            # Build 118-dim trigger observation from the stored state. Phase 3b:
+            # trigger obs no longer includes narrative or narrative-derived
+            # setup_probs — the trigger layer identifies setups from
+            # orderflow+level alignment, not narrative priors.
+            trigger_obs = build_trigger_observation(ep.state, obs)
 
             if gbt_model is not None:
                 if gbt_is_trigger:
-                    # Feed proper 144-dim obs → get GBT forecast → rebuild with forecast
                     gbt_forecast = gbt_model.predict_full(trigger_obs)
-                    trigger_obs = build_trigger_observation(narrative, setup_probs_ep, ep.state, obs, gbt_forecast)
+                    trigger_obs = build_trigger_observation(ep.state, obs, gbt_forecast)
                 else:
                     gbt_forecast = gbt_model.predict_full(obs)
                     pos_state = build_position_state()
@@ -1537,29 +1514,30 @@ def augment_trigger_obs(
     typer.echo(f"Loading {gbt_path}...")
     gbt = TriggerGBT.load(gbt_path)
 
-    # Zero out the GBT forecast slot (indices 133:141) before prediction
-    # so the model sees "no forecast" baseline during inference
-    trigger_obs_no_forecast = trigger_obs.copy()
-    trigger_obs_no_forecast[:, 133:141] = 0.0
+    # Derive the GBT forecast slot from the trigger schema instead of hardcoding.
+    from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
 
-    # Batch inference — predict_full_batch returns (N, 8) forecast
+    gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+    gbt_end = gbt_start + TRIGGER_GBT_DIM
+
+    trigger_obs_no_forecast = trigger_obs.copy()
+    trigger_obs_no_forecast[:, gbt_start:gbt_end] = 0.0
+
     typer.echo("Running GBT inference in batches...")
     batch_size = 50000
     forecasts = []
     for i in range(0, len(trigger_obs_no_forecast), batch_size):
         chunk = trigger_obs_no_forecast[i : i + batch_size]
-        # predict_full returns 8-dim: [prob_cont, prob_rev, confidence, best_r, worst_r, be, levels, stop]
         fc = gbt.predict_full_batch(chunk)
         forecasts.append(fc)
         typer.echo(f"  {min(i + batch_size, len(trigger_obs_no_forecast)):,} / {len(trigger_obs_no_forecast):,}")
     forecasts = np.concatenate(forecasts, axis=0).astype(np.float32)
 
-    # Inject forecast into trigger_obs at slots 133:141
-    trigger_obs[:, 133:141] = forecasts
+    trigger_obs[:, gbt_start:gbt_end] = forecasts
 
     typer.echo(f"Saving augmented trigger_obs to {trigger_path}...")
     np.save(trigger_path, trigger_obs)
-    typer.echo(f"Done. {len(trigger_obs):,} episodes × 144 dims with GBT forecast embedded.")
+    typer.echo(f"Done. {len(trigger_obs):,} episodes × {TRIGGER_DIM} dims with GBT forecast embedded.")
 
 
 # ---------------------------------------------------------------------------
@@ -2765,11 +2743,15 @@ def train_narrative_gbt(
     depth: int = typer.Option(5, help="Max depth"),
     lr: float = typer.Option(0.05, help="Learning rate"),
 ) -> None:
-    """Train the Narrative GBT on slow features -> day type + setup probs."""
+    """Train the Narrative GBT on slow features -> day type (Phase 3b).
+
+    Phase 3b note: setup probability heads were removed. Setup identification
+    is done by the trigger layer; this model paints the big-picture day type
+    only and will grow bias/risk heads in Phase 3c.
+    """
     import numpy as np
 
     from src.rl.agent.narrative_gbt import NarrativeGBT
-    from src.rl.labeling.setup_types import NUM_SETUP_TYPES, SetupType
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -2780,25 +2762,16 @@ def train_narrative_gbt(
         typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
         raise typer.Exit(1)
 
-    labels_path = episodes_dir / "setup_labels.npy"
-    if not labels_path.exists():
-        typer.echo("No setup_labels.npy. Run 'rl label-setups' first.", err=True)
-        raise typer.Exit(1)
-
     observations = np.load(obs_path)
-    setup_labels_raw = np.load(labels_path, allow_pickle=True)
-
     n = len(observations)
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
-    # Subsample to fit in memory (LightGBM duplicates data per thread)
     MAX_GBT_SAMPLES = 250_000
     if n > MAX_GBT_SAMPLES:
         rng = np.random.RandomState(42)
         idx = rng.choice(n, MAX_GBT_SAMPLES, replace=False)
         idx.sort()
         observations = observations[idx]
-        setup_labels_raw = setup_labels_raw[idx]
         n = MAX_GBT_SAMPLES
         typer.echo(f"Subsampled to {n:,} episodes for memory safety.")
 
@@ -2808,65 +2781,43 @@ def train_narrative_gbt(
     #   macro     178:189  (11)
     #   AMT       208:228  (20)
     #   AMT_dyn   228:248  (20)
-    #   Total: 153 dims
     X = np.concatenate(
         [
-            observations[:, 52:116],  # structure (64)
-            observations[:, 116:154],  # TPO (38)
-            observations[:, 178:189],  # macro (11)
-            observations[:, 208:228],  # AMT (20)
-            observations[:, 228:248],  # AMT dynamics (20)
+            observations[:, 52:116],
+            observations[:, 116:154],
+            observations[:, 178:189],
+            observations[:, 208:228],
+            observations[:, 228:248],
         ],
         axis=1,
     )
     typer.echo(f"Narrative features: {X.shape[1]} dims")
 
-    # Day type labels: AMT day type one-hot at AMT indices 0-5 → obs indices 208:214
     day_type_onehot = observations[:, 208:214]
     day_type_labels = np.argmax(day_type_onehot, axis=1).astype(np.int32)
     n_day_types = len(np.unique(day_type_labels))
     typer.echo(f"Day types: {n_day_types} classes")
 
-    # Setup labels: convert string labels → binary matrix (N, NUM_SETUP_TYPES)
-    setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
-    setup_binary = np.zeros((n, NUM_SETUP_TYPES), dtype=np.int32)
-    for i, lbl in enumerate(setup_labels_raw):
-        for j, name in enumerate(setup_names):
-            if lbl == name:
-                setup_binary[i, j] = 1
-                break
-
-    pos_counts = setup_binary.sum(axis=0)
-    for j, name in enumerate(setup_names):
-        typer.echo(f"  Setup '{name}': {int(pos_counts[j]):,} positive samples")
-
-    # Train
     model = NarrativeGBT()
     typer.echo(f"\nTraining NarrativeGBT (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
     metrics = model.train(
         X=X,
         day_type_labels=day_type_labels,
-        setup_labels=setup_binary,
         n_estimators=trees,
         max_depth=depth,
         learning_rate=lr,
     )
 
-    # Print metrics
     typer.echo("\n  Results:")
     typer.echo(f"    Engine           : {metrics['engine']}")
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
     typer.echo(f"    Day type acc     : {metrics['day_type_accuracy']}%")
-    typer.echo(f"    Trained setups   : {metrics['trained_setups']}")
-    typer.echo(f"    Skipped setups   : {metrics['skipped_setups']}")
 
-    # Feature importance
     top_features = model.feature_importance(top_n=10)
     typer.echo("\n  Top 10 feature importances (day type head):")
     for idx, imp in top_features:
         typer.echo(f"    feature[{idx:3d}] = {imp:.4f}")
 
-    # Save
     save_path = models_dir / f"narrative_gbt_{checkpoint}.joblib"
     model.save(save_path)
     typer.echo(f"\n  Saved to {save_path}")

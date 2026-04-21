@@ -1,50 +1,39 @@
 """Tests for composite confidence scoring (backend/src/rl/confidence.py)."""
+
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from src.rl.confidence import (
+    _compute_micro_alignment,
+    _compute_narrative_alignment,
     compute_composite_confidence,
     size_multiplier,
-    _compute_narrative_alignment,
-    _compute_micro_alignment,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _max_signals(trade_direction: int = 1) -> dict:
     """Return all signals at their maximum (most confident) values."""
-    # setup_probs: one setup at max probability
-    setup_probs = np.zeros(8, dtype=np.float32)
-    setup_probs[0] = 1.0
+    narrative = np.ones(18, dtype=np.float32) * 0.9
 
-    # narrative: bullish signals (positive values for a long trade)
-    narrative = np.ones(15, dtype=np.float32) * 0.9
-
-    # trigger_forecast: high confidence
     trigger_forecast = np.zeros(8, dtype=np.float32)
     trigger_forecast[0] = 0.95
 
-    # q_spread: large spread = very decisive
     q_spread = 3.0
-
-    # zone: high quality
     zone_confluence_weight = 1.0
     zone_member_count = 5
 
-    # micro: smooth acceleration into the level (continuation)
     micro = np.zeros(20, dtype=np.float32)
-    micro[1] = 0.8   # approach_accel > 0 (accelerating)
-    micro[11] = 0.9  # last5_velocity > 0 (fast)
-    micro[9] = 0.1   # reversal_count_norm < 0.3 (smooth)
-    micro[19] = 0.5  # last5_acceleration > 0
+    micro[1] = 0.8
+    micro[11] = 0.9
+    micro[9] = 0.1
+    micro[19] = 0.5
 
     return dict(
-        setup_probs=setup_probs,
         narrative=narrative,
         trigger_forecast=trigger_forecast,
         q_spread=q_spread,
@@ -57,22 +46,19 @@ def _max_signals(trade_direction: int = 1) -> dict:
 
 def _min_signals(trade_direction: int = 1) -> dict:
     """Return all signals at their minimum (least confident) values."""
-    setup_probs = np.zeros(8, dtype=np.float32)  # all zero
-    narrative = np.zeros(15, dtype=np.float32)   # neutral
+    narrative = np.zeros(18, dtype=np.float32)
     trigger_forecast = np.zeros(8, dtype=np.float32)
     q_spread = 0.0
     zone_confluence_weight = 0.0
     zone_member_count = 1
 
-    # micro: decelerating approach but trade is continuation — signals disagree
     micro = np.zeros(20, dtype=np.float32)
-    micro[1] = -0.5   # accel < 0 (decelerating)
+    micro[1] = -0.5
     micro[11] = 0.0
-    micro[9] = 0.5    # reversal_count > 0.3 (choppy)
+    micro[9] = 0.5
     micro[19] = -0.3
 
     return dict(
-        setup_probs=setup_probs,
         narrative=narrative,
         trigger_forecast=trigger_forecast,
         q_spread=q_spread,
@@ -86,6 +72,7 @@ def _min_signals(trade_direction: int = 1) -> dict:
 # ---------------------------------------------------------------------------
 # Composite confidence tests
 # ---------------------------------------------------------------------------
+
 
 class TestCompositeConfidence:
     def test_max_signals_near_one(self):
@@ -108,9 +95,7 @@ class TestCompositeConfidence:
         """Composite score must always be in [0, 1]."""
         rng = np.random.default_rng(42)
         for _ in range(100):
-            setup = rng.random(8).astype(np.float32)
-            setup /= setup.sum() + 1e-9  # normalize to sum ≤ 1
-            narrative = rng.uniform(-1, 1, 15).astype(np.float32)
+            narrative = rng.uniform(-1, 1, 18).astype(np.float32)
             trigger = rng.random(8).astype(np.float32)
             q_spread = float(rng.uniform(0, 5))
             zone_w = float(rng.uniform(0, 1))
@@ -119,7 +104,6 @@ class TestCompositeConfidence:
             direction = int(rng.choice([-1, 0, 1]))
 
             score = compute_composite_confidence(
-                setup_probs=setup,
                 narrative=narrative,
                 trigger_forecast=trigger,
                 q_spread=q_spread,
@@ -145,6 +129,7 @@ class TestCompositeConfidence:
 # ---------------------------------------------------------------------------
 # Size multiplier tier tests
 # ---------------------------------------------------------------------------
+
 
 class TestSizeMultiplier:
     def test_a_plus_setup(self):
@@ -181,21 +166,22 @@ class TestSizeMultiplier:
 # Narrative alignment tests
 # ---------------------------------------------------------------------------
 
+
 class TestNarrativeAlignment:
     def test_long_with_bullish_signals_high_alignment(self):
         """Long trade with all bullish narrative signals → alignment = 1.0."""
-        narrative = np.zeros(15, dtype=np.float32)
-        narrative[0] = 0.8   # regime_score bullish
-        narrative[1] = 0.7   # htf_trend up
-        narrative[8] = 0.6   # initiative_direction buying
-        narrative[3] = 0.5   # day_type trend
+        narrative = np.zeros(18, dtype=np.float32)
+        narrative[0] = 0.8  # regime_score bullish
+        narrative[1] = 0.7  # htf_trend up
+        narrative[8] = 0.6  # initiative_direction buying
+        narrative[3] = 0.5  # day_type trend
 
         alignment = _compute_narrative_alignment(narrative, trade_direction=1)
         assert alignment == 1.0, f"Expected 1.0, got {alignment}"
 
     def test_long_with_bearish_signals_low_alignment(self):
         """Long trade with all bearish narrative signals → alignment = 0.0."""
-        narrative = np.zeros(15, dtype=np.float32)
+        narrative = np.zeros(18, dtype=np.float32)
         narrative[0] = -0.8  # regime_score bearish
         narrative[1] = -0.7  # htf_trend down
         narrative[8] = -0.6  # initiative_direction selling
@@ -206,7 +192,7 @@ class TestNarrativeAlignment:
 
     def test_short_with_bearish_signals_high_alignment(self):
         """Short trade with all bearish narrative signals → alignment = 1.0."""
-        narrative = np.zeros(15, dtype=np.float32)
+        narrative = np.zeros(18, dtype=np.float32)
         narrative[0] = -0.8
         narrative[1] = -0.7
         narrative[8] = -0.6
@@ -217,15 +203,15 @@ class TestNarrativeAlignment:
 
     def test_skip_direction_neutral(self):
         """trade_direction=0 → neutral alignment = 0.5."""
-        narrative = np.ones(15, dtype=np.float32)
+        narrative = np.ones(18, dtype=np.float32)
         alignment = _compute_narrative_alignment(narrative, trade_direction=0)
         assert alignment == 0.5
 
     def test_partial_agreement(self):
         """2 out of 4 signals agree → 0.5."""
-        narrative = np.zeros(15, dtype=np.float32)
-        narrative[0] = 0.5   # agrees with long
-        narrative[1] = 0.5   # agrees with long
+        narrative = np.zeros(18, dtype=np.float32)
+        narrative[0] = 0.5  # agrees with long
+        narrative[1] = 0.5  # agrees with long
         narrative[8] = -0.5  # disagrees
         narrative[3] = -0.5  # disagrees
 
@@ -237,6 +223,7 @@ class TestNarrativeAlignment:
 # Micro alignment tests
 # ---------------------------------------------------------------------------
 
+
 class TestMicroAlignment:
     def test_skip_direction_neutral(self):
         micro = np.zeros(20, dtype=np.float32)
@@ -245,9 +232,9 @@ class TestMicroAlignment:
     def test_reversal_approach_all_confirming(self):
         """Decelerating approach with choppy price → 3/3 reversal signals."""
         micro = np.zeros(20, dtype=np.float32)
-        micro[1] = -0.5   # approach_accel < 0 (decelerating, reversal approach)
+        micro[1] = -0.5  # approach_accel < 0 (decelerating, reversal approach)
         micro[19] = -0.3  # last5_acceleration < 0
-        micro[9] = 0.7    # reversal_count_norm > 0.5
+        micro[9] = 0.7  # reversal_count_norm > 0.5
 
         score = _compute_micro_alignment(micro, trade_direction=1)
         assert score == 1.0, f"Expected 1.0, got {score}"
@@ -255,9 +242,9 @@ class TestMicroAlignment:
     def test_continuation_approach_all_confirming(self):
         """Accelerating approach, fast, smooth → 3/3 continuation signals."""
         micro = np.zeros(20, dtype=np.float32)
-        micro[1] = 0.5    # approach_accel > 0 (continuation approach)
-        micro[11] = 0.8   # last5_velocity > 0
-        micro[9] = 0.1    # reversal_count_norm < 0.3
+        micro[1] = 0.5  # approach_accel > 0 (continuation approach)
+        micro[11] = 0.8  # last5_velocity > 0
+        micro[9] = 0.1  # reversal_count_norm < 0.3
 
         score = _compute_micro_alignment(micro, trade_direction=1)
         assert score == 1.0, f"Expected 1.0, got {score}"

@@ -523,28 +523,20 @@ def build_position_state(
 from .narrative_features import NARRATIVE_DIM, extract_narrative_features
 from .trigger_features import TRIGGER_DIM, build_trigger_observation
 
-# V5 dimensions
+# V5 dimensions (Phase 3b: trigger obs is 118-dim)
 NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 18
-TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 144
+TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 118
 
 
 def build_narrative(state: dict) -> np.ndarray:
-    """Build the narrative observation (Stage 1 input)."""
+    """Build the narrative observation (slow-layer bias/risk)."""
     return extract_narrative_features(state)
 
 
 def build_trigger(
-    narrative: np.ndarray,
-    setup_probs: np.ndarray,
     state: dict,
     trigger_gbt_forecast: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Build the trigger observation (Stage 2 input)."""
+    """Build the trigger observation (Phase 3b: no narrative/setup_probs)."""
     base_obs = build_observation(state)
-    return build_trigger_observation(
-        narrative,
-        setup_probs,
-        state,
-        base_obs,
-        trigger_gbt_forecast,
-    )
+    return build_trigger_observation(state, base_obs, trigger_gbt_forecast)

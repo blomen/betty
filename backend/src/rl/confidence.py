@@ -1,40 +1,44 @@
-"""Composite confidence scoring — combines all v5 signals into sizing decisions.
+"""Composite confidence scoring — combines v5 signals into sizing decisions.
 
-6 signals weighted into a 0-1 composite score:
-  setup_confidence     (0.25) — max setup probability from narrative GBT
+Phase 3b: narrative-derived setup probabilities removed. Setup identification
+is now done by the trigger GBT (orderflow + level alignment). Narrative's role
+is bias + risk-on/off alignment with the trade direction — that feeds into
+position sizing, not setup identification.
+
+5 signals weighted into a 0-1 composite score:
   narrative_alignment  (0.20) — regime/trend/initiative agreeing with trade direction
-  trigger_confidence   (0.20) — trigger GBT directional conviction
-  dqn_q_spread         (0.15) — DQN policy uncertainty
-  zone_quality         (0.10) — structural importance of the zone
-  micro_alignment      (0.10) — tick-level confirmation of trade direction
+  trigger_confidence   (0.30) — trigger GBT directional conviction (setup strength)
+  dqn_q_spread         (0.20) — DQN policy uncertainty
+  zone_quality         (0.15) — structural importance of the zone
+  micro_alignment      (0.15) — tick-level confirmation of trade direction
 """
+
 from __future__ import annotations
 
 import numpy as np
 
 # Signal weights must sum to 1.0
 _WEIGHTS = {
-    "setup_confidence":    0.25,
     "narrative_alignment": 0.20,
-    "trigger_confidence":  0.20,
-    "dqn_q_spread":        0.15,
-    "zone_quality":        0.10,
-    "micro_alignment":     0.10,
+    "trigger_confidence": 0.30,
+    "dqn_q_spread": 0.20,
+    "zone_quality": 0.15,
+    "micro_alignment": 0.15,
 }
 
 assert abs(sum(_WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
 # Narrative indices for directional alignment check
-_REGIME_IDX = 0           # regime_score: >0 bullish, <0 bearish
-_HTF_TREND_IDX = 1        # htf_trend: >0 up, <0 down
-_INITIATIVE_IDX = 8       # initiative_direction: >0 initiative buying, <0 selling
-_DAY_TYPE_IDX = 3         # day_type: >0 trend day, <0 balanced/non-trend
+_REGIME_IDX = 0  # regime_score: >0 bullish, <0 bearish
+_HTF_TREND_IDX = 1  # htf_trend: >0 up, <0 down
+_INITIATIVE_IDX = 8  # initiative_direction: >0 initiative buying, <0 selling
+_DAY_TYPE_IDX = 3  # day_type: >0 trend day, <0 balanced/non-trend
 
 # Micro feature indices
-_MICRO_APPROACH_ACCEL_IDX = 1   # approach_accel: acceleration of approach
-_MICRO_LAST5_VEL_IDX = 11       # last5_velocity: recent velocity
-_MICRO_REVERSAL_IDX = 9         # reversal_count_norm: choppy=high, smooth=low
-_MICRO_LAST5_ACCEL_IDX = 19     # last5_acceleration: final acceleration
+_MICRO_APPROACH_ACCEL_IDX = 1  # approach_accel: acceleration of approach
+_MICRO_LAST5_VEL_IDX = 11  # last5_velocity: recent velocity
+_MICRO_REVERSAL_IDX = 9  # reversal_count_norm: choppy=high, smooth=low
+_MICRO_LAST5_ACCEL_IDX = 19  # last5_acceleration: final acceleration
 
 
 def _compute_narrative_alignment(
@@ -62,10 +66,7 @@ def _compute_narrative_alignment(
         narrative[_DAY_TYPE_IDX],
     ]
 
-    agreements = sum(
-        1 for s in signals
-        if (trade_direction > 0 and s > 0) or (trade_direction < 0 and s < 0)
-    )
+    agreements = sum(1 for s in signals if (trade_direction > 0 and s > 0) or (trade_direction < 0 and s < 0))
     return agreements / len(signals)
 
 
@@ -102,15 +103,15 @@ def _compute_micro_alignment(
     if is_reversal_approach:
         # For REVERSAL: want approach decelerating, approach slowing, high reversal_count
         signals = [
-            accel < 0,           # index 1: approach decelerating
-            last5_accel < 0,     # index 19: approach slowing in last 5 ticks
+            accel < 0,  # index 1: approach decelerating
+            last5_accel < 0,  # index 19: approach slowing in last 5 ticks
             reversal_count > 0.5,  # index 9: choppy (lots of direction changes)
         ]
     else:
         # For CONTINUATION: want approach accelerating, fast last5, low reversal_count
         signals = [
-            accel > 0,           # index 1: approach accelerating
-            last5_vel > 0,       # index 11: last 5 ticks moving fast
+            accel > 0,  # index 1: approach accelerating
+            last5_vel > 0,  # index 11: last 5 ticks moving fast
             reversal_count < 0.3,  # index 9: smooth approach (few reversals)
         ]
 
@@ -144,7 +145,6 @@ def _compute_zone_quality(
 
 
 def compute_composite_confidence(
-    setup_probs: np.ndarray,
     narrative: np.ndarray,
     trigger_forecast: np.ndarray,
     q_spread: float,
@@ -153,11 +153,10 @@ def compute_composite_confidence(
     micro_features: np.ndarray,
     trade_direction: int,
 ) -> float:
-    """Compute composite confidence score combining all v5 signals.
+    """Compute composite confidence score combining v5 signals (Phase 3b).
 
     Args:
-        setup_probs: 8-dim setup probabilities from narrative GBT.
-        narrative: 15-dim narrative signals (from extract_narrative_features).
+        narrative: 18-dim narrative signals (from extract_narrative_features).
         trigger_forecast: 8-dim trigger GBT forecast (direction probabilities).
         q_spread: DQN Q-value spread |max_q - min_q| (0 = uncertain, large = confident).
         zone_confluence_weight: Zone.hierarchy_score [0, 1].
@@ -168,31 +167,18 @@ def compute_composite_confidence(
     Returns:
         Composite confidence score in [0, 1].
     """
-    # 1. Setup confidence: max probability across setup types
-    setup_conf = float(np.clip(np.max(setup_probs), 0.0, 1.0))
-
-    # 2. Narrative alignment: fraction of regime signals agreeing with direction
     narrative_align = _compute_narrative_alignment(narrative, trade_direction)
-
-    # 3. Trigger confidence: the max of the directional forecast probabilities
     trigger_conf = float(np.clip(np.max(trigger_forecast), 0.0, 1.0))
-
-    # 4. DQN Q-spread: higher spread = more decisive policy
     q_conf = _compute_q_spread_score(q_spread)
-
-    # 5. Zone quality: structural importance
     zone_qual = _compute_zone_quality(zone_confluence_weight, zone_member_count)
-
-    # 6. Micro alignment: tick-level confirmation
     micro_align = _compute_micro_alignment(micro_features, trade_direction)
 
     composite = (
-        _WEIGHTS["setup_confidence"]    * setup_conf
-        + _WEIGHTS["narrative_alignment"] * narrative_align
-        + _WEIGHTS["trigger_confidence"]  * trigger_conf
-        + _WEIGHTS["dqn_q_spread"]        * q_conf
-        + _WEIGHTS["zone_quality"]        * zone_qual
-        + _WEIGHTS["micro_alignment"]     * micro_align
+        _WEIGHTS["narrative_alignment"] * narrative_align
+        + _WEIGHTS["trigger_confidence"] * trigger_conf
+        + _WEIGHTS["dqn_q_spread"] * q_conf
+        + _WEIGHTS["zone_quality"] * zone_qual
+        + _WEIGHTS["micro_alignment"] * micro_align
     )
 
     return float(np.clip(composite, 0.0, 1.0))

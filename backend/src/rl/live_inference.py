@@ -194,18 +194,20 @@ class LiveInference:
 
 
 class LiveInferenceV5:
-    """Three-stage hybrid inference: narrative (slow) → trigger (fast) → DQN (decision).
+    """Two-stage hybrid inference: trigger (fast) → DQN (decision).
 
-    Implements the GBT-finds-edge, DQN-decides hybrid model from the design doc.
-    - NarrativeGBT: 153-dim structural features → setup probabilities
-    - TriggerGBT: 144-dim trigger obs → direction + expected R + stop
-    - DQN: 295-dim augmented obs (base + GBT forecast + position state) → action Q-values
+    Phase 3b: narrative GBT is decoupled from the trigger path and used only
+    for narrative-alignment scoring in composite confidence. Setup
+    identification is done by the trigger GBT from orderflow + level
+    alignment, not from narrative-derived setup probabilities.
+    - TriggerGBT: 118-dim trigger obs → direction + expected R + stop
+    - DQN: augmented obs (base + GBT forecast + position state) → Q-values
     """
 
     def __init__(self) -> None:
-        self._narrative_gbt = None
+        self._narrative_gbt = None  # optional; used only if present for narrative alignment
         self._trigger_gbt = None
-        self._dqn = None  # optional DQN for hybrid decision layer
+        self._dqn = None
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
@@ -215,7 +217,7 @@ class LiveInferenceV5:
         return self._loaded
 
     def try_load(self) -> bool:
-        """Load v5 models (narrative + trigger GBTs)."""
+        """Load v5 models (trigger GBT mandatory; narrative GBT optional)."""
         from .agent.narrative_gbt import NarrativeGBT
         from .agent.trigger_gbt import TriggerGBT
 
@@ -309,18 +311,15 @@ class LiveInferenceV5:
                         norm_dim,
                     )
 
-        if narrative_loaded and trigger_loaded:
+        if trigger_loaded:
             self._loaded = True
             log.info(
-                "LiveInferenceV5: loaded (narrative+trigger+DQN=%s)",
+                "LiveInferenceV5: loaded (trigger+narrative=%s+DQN=%s)",
+                narrative_loaded,
                 self._dqn is not None,
             )
         else:
-            log.info(
-                "LiveInferenceV5: narrative=%s trigger=%s",
-                narrative_loaded,
-                trigger_loaded,
-            )
+            log.info("LiveInferenceV5: trigger_loaded=False")
         return self._loaded
 
     def update_narrative(self, state: dict) -> None:
@@ -330,11 +329,11 @@ class LiveInferenceV5:
         self._narrative_cache = extract_narrative_features(state)
 
     def infer(self, state: dict) -> dict | None:
-        """Run two-stage inference at a zone touch."""
-        if self._narrative_gbt is None or self._trigger_gbt is None:
+        """Run two-stage inference at a zone touch (Phase 3b)."""
+        if self._trigger_gbt is None:
             return None
 
-        # 1. Ensure narrative is up to date
+        # 1. Ensure narrative cache is populated for confidence scoring
         if self._narrative_cache is None:
             self.update_narrative(state)
 
@@ -348,49 +347,28 @@ class LiveInferenceV5:
 
         base_obs = build_observation(state)
         if self._normalizer is not None:
-            # Normalizer may be 295-dim (hybrid DQN) but base_obs is 279-dim.
-            # Use only the base slice of the normalizer stats.
             if self._normalizer.dim == len(base_obs):
                 base_obs = self._normalizer.normalize(base_obs)
             else:
                 std = np.sqrt(np.maximum(self._normalizer.ewm_var[: len(base_obs)], 1e-8))
                 base_obs = ((base_obs - self._normalizer.ewm_mean[: len(base_obs)]) / std).astype(np.float32)
 
-        # 3. Get narrative features for trigger observation
         narrative = self._narrative_cache
 
-        # 4. Get setup_probs from narrative GBT
-        # NarrativeGBT was trained on 153-dim narr_feats (structure+tpo+macro+amt),
-        # NOT the 18-dim narrative array.
-        narr_feats = np.concatenate(
-            [
-                base_obs[52:116],  # structure (64)
-                base_obs[116:154],  # tpo (38)
-                base_obs[178:189],  # macro (11)
-                base_obs[208:228],  # amt (20)
-                base_obs[228:248],  # amt_dynamics (20)
-            ]
-        )  # 153-dim
-        setup_probs_arr = self._narrative_gbt.predict_setup_probs(narr_feats)
-
-        # 5. Build trigger observation without GBT forecast
+        # 3. Build trigger observation (no narrative / no setup_probs in Phase 3b)
         from .features.trigger_features import build_trigger_observation
 
         trigger_obs_no_gbt = build_trigger_observation(
-            narrative=narrative,
-            setup_probs=setup_probs_arr,
             state=state,
             base_observation=base_obs,
             trigger_gbt_forecast=None,
         )
 
-        # 6. Get trigger GBT forecast
+        # 4. Get trigger GBT forecast
         gbt_forecast = self._trigger_gbt.predict_full(trigger_obs_no_gbt)
 
-        # 7. Rebuild trigger observation WITH GBT forecast
+        # 5. Rebuild trigger observation WITH GBT forecast
         trigger_obs = build_trigger_observation(
-            narrative=narrative,
-            setup_probs=setup_probs_arr,
             state=state,
             base_observation=base_obs,
             trigger_gbt_forecast=gbt_forecast,
@@ -453,12 +431,6 @@ class LiveInferenceV5:
         else:
             confidence = gbt_conf
 
-        # Build setup_probs dict
-        from .labeling.setup_types import SetupType
-
-        setup_names = [s.value for s in SetupType if s != SetupType.UNKNOWN]
-        setup_probs_dict = {name: float(setup_probs_arr[i]) for i, name in enumerate(setup_names)}
-
         # Build narrative dict
         from .features.narrative_features import NARRATIVE_NAMES
 
@@ -487,11 +459,10 @@ class LiveInferenceV5:
         price = float(state.get("price", 0.0))
         micro_features = extract_micro_features(recent_ticks, price)
 
-        # Q-spread: use directional conviction from trigger GBT (|prob_cont - prob_rev|)
+        # Q-spread: directional conviction from trigger GBT
         q_spread = abs(prob_cont - prob_rev)
 
         composite = compute_composite_confidence(
-            setup_probs=setup_probs_arr,
             narrative=narrative,
             trigger_forecast=gbt_forecast,
             q_spread=q_spread,
@@ -507,7 +478,6 @@ class LiveInferenceV5:
             "confidence": float(confidence),
             "q_values": dqn_q_values if dqn_q_values is not None else [prob_cont, prob_rev, 0.0],
             "stop_ticks": float(stop_ticks),
-            "setup_probs": setup_probs_dict,
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_multiplier(composite),

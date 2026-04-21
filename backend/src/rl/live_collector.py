@@ -107,63 +107,39 @@ class LiveEpisodeCollector:
         # Load existing count
         self._chunk_idx = len(list(self._live_dir.glob("obs_*.npy")))
 
-        # Lazy-load models for trigger observation building
-        self._narrative_gbt = None
+        # Lazy-load trigger GBT for trigger observation building (Phase 3b)
         self._trigger_gbt = None
         self._models_loaded = False
 
         log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d", self._live_dir, self._chunk_idx)
 
     def _ensure_models(self) -> None:
-        """Lazy-load GBT models for trigger observation building."""
+        """Lazy-load TriggerGBT for building trigger observations."""
         if self._models_loaded:
             return
         self._models_loaded = True
         try:
-            from .agent.narrative_gbt import NarrativeGBT
             from .agent.trigger_gbt import TriggerGBT
 
             models_dir = self._data_dir / "models"
-            ngbt_path = models_dir / "narrative_gbt_latest.joblib"
             tgbt_path = models_dir / "trigger_gbt_latest.joblib"
-
-            if ngbt_path.exists():
-                self._narrative_gbt = NarrativeGBT.load(ngbt_path)
-                log.info("Live collector loaded NarrativeGBT from %s", ngbt_path)
             if tgbt_path.exists():
                 self._trigger_gbt = TriggerGBT.load(tgbt_path)
                 log.info("Live collector loaded TriggerGBT from %s", tgbt_path)
         except Exception:
-            log.warning("Failed to load GBT models for live trigger obs", exc_info=True)
+            log.warning("Failed to load TriggerGBT for live trigger obs", exc_info=True)
 
     def _build_trigger_obs(self, rl_state: dict, base_obs: np.ndarray) -> np.ndarray | None:
-        """Build 144-dim trigger observation matching the training pipeline."""
+        """Build 118-dim trigger observation matching the training pipeline (Phase 3b)."""
         self._ensure_models()
-        if self._narrative_gbt is None or self._trigger_gbt is None:
+        if self._trigger_gbt is None:
             return None
         try:
-            from .features.narrative_features import extract_narrative_features
             from .features.trigger_features import build_trigger_observation
 
-            narrative = extract_narrative_features(rl_state)
-
-            # Narrative features for setup prob prediction (same slice as cli.py)
-            narr_feats = np.concatenate(
-                [
-                    base_obs[52:116],  # structure (64)
-                    base_obs[116:154],  # tpo (38)
-                    base_obs[178:189],  # macro (11)
-                    base_obs[208:228],  # amt (20)
-                    base_obs[228:248],  # amt_dynamics (20)
-                ]
-            )
-            setup_probs = self._narrative_gbt.predict_setup_probs(narr_feats)
-
-            # Two-pass trigger construction (same as LiveInferenceV5)
-            trigger_no_gbt = build_trigger_observation(narrative, setup_probs, rl_state, base_obs)
+            trigger_no_gbt = build_trigger_observation(rl_state, base_obs)
             gbt_forecast = self._trigger_gbt.predict_full(trigger_no_gbt)
-            trigger_obs = build_trigger_observation(narrative, setup_probs, rl_state, base_obs, gbt_forecast)
-
+            trigger_obs = build_trigger_observation(rl_state, base_obs, gbt_forecast)
             return trigger_obs
         except Exception:
             log.debug("Failed to build trigger obs for live episode", exc_info=True)

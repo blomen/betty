@@ -95,6 +95,26 @@ AUGMENTED_SCHEMA: list[FeatureSchema] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Trigger observation schema (Phase 3b: 144 → 118, narrative + setup_probs dropped)
+# ---------------------------------------------------------------------------
+
+TRIGGER_OBSERVATION_SCHEMA_VERSION = 2  # v2: narrative + setup_probs removed
+
+TRIGGER_OBSERVATION_SCHEMA: list[FeatureSchema] = [
+    FeatureSchema("structural_passthrough", 1, 10, "10 structural dims carried over from base obs"),
+    FeatureSchema("micro", 1, 20, "tick-level approach features"),
+    FeatureSchema("orderflow", 1, 21, "candle-level orderflow"),
+    FeatureSchema("candles", 1, 15, "last 5 candles × 3 features"),
+    FeatureSchema("zone_features", 1, 4, "zone hierarchy + member_count + strength"),
+    FeatureSchema("zone_confluence", 1, 5, "zone-level FVG + single-print overlap"),
+    FeatureSchema("zone_composition", 1, 31, "level composition multi-hot"),
+    FeatureSchema("approach_dir", 1, 1, "+1 up / -1 down"),
+    FeatureSchema("trigger_gbt_forecast", 1, 8, "TriggerGBT 8-dim forecast"),
+    FeatureSchema("exec_passthrough", 1, 3, "trades_today + time_to_close + session_pnl"),
+]
+
+
 def base_observation_dim() -> int:
     """Total dim of the base observation (pre-augmentation)."""
     return sum(s.dim for s in BASE_OBSERVATION_SCHEMA)
@@ -105,6 +125,11 @@ def augmented_observation_dim() -> int:
     return base_observation_dim() + sum(s.dim for s in AUGMENTED_SCHEMA)
 
 
+def trigger_observation_dim() -> int:
+    """Total dim of the trigger observation."""
+    return sum(s.dim for s in TRIGGER_OBSERVATION_SCHEMA)
+
+
 def schema_hash(schema: list[FeatureSchema]) -> str:
     """Stable content hash of a schema list — used for compatibility checks."""
     key = "|".join(f"{s.name}:v{s.version}:{s.dim}" for s in schema)
@@ -113,6 +138,10 @@ def schema_hash(schema: list[FeatureSchema]) -> str:
 
 def current_schema_hash() -> str:
     return schema_hash(BASE_OBSERVATION_SCHEMA + AUGMENTED_SCHEMA)
+
+
+def current_trigger_schema_hash() -> str:
+    return schema_hash(TRIGGER_OBSERVATION_SCHEMA)
 
 
 def schema_to_dict(schema: list[FeatureSchema]) -> list[dict]:
@@ -134,9 +163,13 @@ def save_schema(path: Path | str) -> None:
         "base_version": BASE_OBSERVATION_SCHEMA_VERSION,
         "base_schema": schema_to_dict(BASE_OBSERVATION_SCHEMA),
         "augmented_schema": schema_to_dict(AUGMENTED_SCHEMA),
+        "trigger_version": TRIGGER_OBSERVATION_SCHEMA_VERSION,
+        "trigger_schema": schema_to_dict(TRIGGER_OBSERVATION_SCHEMA),
         "base_dim": base_observation_dim(),
         "augmented_dim": augmented_observation_dim(),
+        "trigger_dim": trigger_observation_dim(),
         "schema_hash": current_schema_hash(),
+        "trigger_schema_hash": current_trigger_schema_hash(),
     }
     path.write_text(json.dumps(payload, indent=2))
 

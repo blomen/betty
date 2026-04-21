@@ -1,24 +1,25 @@
-"""Trigger feature assembler — 141-dim fast observation for the DQN.
+"""Trigger feature assembler — 118-dim fast observation for the Trigger GBT.
 
-Combines all fast-moving features into the observation consumed by the trigger
-DQN.  "Fast" here means features that can change on every candle/tick, as
-opposed to the slow narrative layer (updated every ~15 minutes).
+Combines fast-moving features consumed by the Trigger GBT.  "Fast" here means
+features that can change on every candle/tick.
 
-Feature layout (141 dims):
-  0:15    narrative signals       15  (from narrative_features.py)
-  15:23   setup probabilities      8  (from narrative GBT)
-  23:33   structural passthrough  10  (from passthrough_features.py)
-  33:53   micro features          20  (from micro_features.py)
-  53:74   orderflow               21  (from orderflow_features.py)
-  74:89   candles                 15  (5 candles x 3 features)
-  89:93   zone features            4  (from level_features.py)
-  93:98   zone confluence          5  (from level_features.py)
-  98:129  zone composition        31  (from level_features.py)
- 129:130  approach direction       1
- 130:138  trigger GBT forecast     8  (optional, zeros if not available)
- 138:141  execution passthrough    3  (trades_today, time_to_close, session_pnl)
- ─────────────────────────────────────────────────────────────────────────────
-          total                  141
+**Phase 3b architecture** — the trigger layer is responsible for setup
+identification (direction + stop + levels) from orderflow + level alignment.
+Narrative signals and narrative-derived setup probabilities are NOT fed to
+this layer. Narrative (bias + risk-on/off) influences the *risk heads*
+(size, add, early-exit) in the decision layer, not direction identification.
+
+Feature layout (118 dims):
+  0:10    structural passthrough  10  (from passthrough_features.py)
+  10:30   micro features          20  (from micro_features.py)
+  30:51   orderflow               21  (from orderflow_features.py)
+  51:66   candles                 15  (5 candles x 3 features)
+  66:70   zone features            4  (from level_features.py)
+  70:75   zone confluence          5  (from level_features.py)
+  75:106  zone composition        31  (from level_features.py)
+ 106:107  approach direction       1
+ 107:115  trigger GBT forecast     8  (optional, zeros if not available)
+ 115:118  execution passthrough    3  (trades_today, time_to_close, session_pnl)
 """
 
 from __future__ import annotations
@@ -31,14 +32,12 @@ from .level_features import (
     encode_zone_features,
 )
 from .micro_features import extract_micro_features
-from .narrative_features import NARRATIVE_DIM
 from .orderflow_features import extract_orderflow_features
 from .passthrough_features import PASSTHROUGH_DIM, extract_passthrough
 
 # ---------------------------------------------------------------------------
 # Segment dimensions
 # ---------------------------------------------------------------------------
-SETUP_PROB_DIM: int = 8
 TRIGGER_GBT_DIM: int = 8
 EXEC_PASSTHROUGH_DIM: int = 3
 
@@ -51,9 +50,7 @@ _ZONE_COMP_DIM: int = 31
 _APPROACH_DIM: int = 1
 
 TRIGGER_DIM: int = (
-    NARRATIVE_DIM  # 18
-    + SETUP_PROB_DIM  #  8
-    + PASSTHROUGH_DIM  # 10
+    PASSTHROUGH_DIM  # 10
     + _MICRO_DIM  # 20
     + _ORDERFLOW_DIM  # 21
     + _CANDLE_DIM  # 15
@@ -63,14 +60,12 @@ TRIGGER_DIM: int = (
     + _APPROACH_DIM  #  1
     + TRIGGER_GBT_DIM  #  8
     + EXEC_PASSTHROUGH_DIM  #  3
-)  # 144 (18 narrative + 8 setup + 10 passthrough + 20 micro + 21 orderflow + 15 candles + 4 zone + 5 conf + 31 comp + 1 approach + 8 gbt + 3 exec)
+)  # 118
 
-assert TRIGGER_DIM == 144, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
+assert TRIGGER_DIM == 118, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
 
 # Ordered segment map — (name: dim) preserving layout order
 TRIGGER_SEGMENTS: dict[str, int] = {
-    "narrative": NARRATIVE_DIM,
-    "setup_probs": SETUP_PROB_DIM,
     "structural_passthrough": PASSTHROUGH_DIM,
     "micro": _MICRO_DIM,
     "orderflow": _ORDERFLOW_DIM,
@@ -112,37 +107,27 @@ def _build_candle_window(candles: list, avg_vol: float) -> np.ndarray:
 
 
 def build_trigger_observation(
-    narrative: np.ndarray,
-    setup_probs: np.ndarray,
     state: dict,
     base_observation: np.ndarray,
     trigger_gbt_forecast: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Assemble the 141-dim trigger observation.
+    """Assemble the 118-dim trigger observation.
 
     Args:
-        narrative: ``(15,)`` float32 array from ``extract_narrative_features()``.
-        setup_probs: ``(8,)`` float32 array of narrative GBT setup probabilities.
         state: Full RL state dict (same as passed to ``build_observation()``).
                Expected keys: ``candles``, ``recent_ticks``, ``price``,
                ``orderflow_signals``, ``zone``, ``all_zones``, ``fvgs``,
                ``single_print_zones``, ``approach_direction``,
                ``session_context``, ``trades_today``, ``time_to_close``,
                ``session_pnl``.
-        base_observation: ``(276,)`` float32 array from ``build_observation()``
+        base_observation: float32 array from ``build_observation()``
                           — used by ``extract_passthrough()``.
         trigger_gbt_forecast: Optional ``(8,)`` float32 array of trigger GBT
                               multi-target predictions.  Zeros if not provided.
 
     Returns:
-        np.ndarray of shape ``(141,)`` with dtype ``float32``.
+        np.ndarray of shape ``(118,)`` with dtype ``float32``.
     """
-    # --- Validate / sanitise inputs ---
-    if narrative.shape != (NARRATIVE_DIM,):
-        raise ValueError(f"narrative must be shape ({NARRATIVE_DIM},), got {narrative.shape}")
-    if setup_probs.shape != (SETUP_PROB_DIM,):
-        raise ValueError(f"setup_probs must be shape ({SETUP_PROB_DIM},), got {setup_probs.shape}")
-
     price: float = float(state.get("price", 0.0))
     candles: list = state.get("candles", [])
     recent_ticks: list = state.get("recent_ticks", [])
@@ -166,13 +151,7 @@ def build_trigger_observation(
     else:
         avg_vol = 1.0
 
-    # 1. Narrative signals (15)
-    seg_narrative = narrative.astype(np.float32, copy=False)
-
-    # 2. Setup probabilities (8)
-    seg_setup_probs = setup_probs.astype(np.float32, copy=False)
-
-    # 3. Structural passthrough (10)
+    # 1. Structural passthrough (10)
     seg_passthrough = extract_passthrough(base_observation)
 
     # 4. Micro features (20)
@@ -236,8 +215,6 @@ def build_trigger_observation(
 
     obs = np.concatenate(
         [
-            seg_narrative,  # 15
-            seg_setup_probs,  #  8
             seg_passthrough,  # 10
             seg_micro,  # 20
             seg_orderflow,  # 21
