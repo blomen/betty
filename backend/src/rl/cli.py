@@ -1383,25 +1383,33 @@ def replay(
                 except Exception as exc:
                     typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
-        # Large files: subprocess-isolated (OOM kills only the subprocess)
+        # Large files: subprocess-isolated (OOM kills only the subprocess).
+        # Run up to `workers` files in parallel — each subprocess is independent,
+        # so a crash in one doesn't affect the others. Caps at len(large_todo) so
+        # we never spawn idle workers.
         if large_todo:
-            typer.echo(f"\nSubprocess replay for {len(large_todo)} large file(s)...")
-            for idx, pfile in large_todo:
-                try:
-                    with ProcessPoolExecutor(max_workers=1) as single:
-                        future = single.submit(
-                            _replay_single_file,
-                            pfile_path=str(pfile),
-                            chunk_dir=str(chunk_dir),
-                            chunk_idx=idx,
-                            macro_data=macro_data,
-                            summaries=summaries,
-                            gbt_path=gbt_path_str,
-                        )
+            n_parallel = min(workers, len(large_todo))
+            typer.echo(f"\nSubprocess replay for {len(large_todo)} large file(s) ({n_parallel} parallel)...")
+            with ProcessPoolExecutor(max_workers=n_parallel) as pool:
+                future_to_file = {
+                    pool.submit(
+                        _replay_single_file,
+                        pfile_path=str(pfile),
+                        chunk_dir=str(chunk_dir),
+                        chunk_idx=idx,
+                        macro_data=macro_data,
+                        summaries=summaries,
+                        gbt_path=gbt_path_str,
+                    ): pfile
+                    for idx, pfile in large_todo
+                }
+                for future in as_completed(future_to_file):
+                    pfile = future_to_file[future]
+                    try:
                         n_eps, n_sessions = future.result(timeout=7200)
-                    typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
-                except Exception as exc:
-                    typer.echo(f"  {pfile.name}: FAILED — {exc}")
+                        typer.echo(f"  {pfile.name}: {n_eps} episodes across {n_sessions} session(s)")
+                    except Exception as exc:
+                        typer.echo(f"  {pfile.name}: FAILED — {exc}")
 
     # Concatenate all chunks from disk (including previously completed + new)
     chunk_indices = sorted(int(f.stem.split("_")[1]) for f in chunk_dir.glob("obs_*.npy"))
@@ -1486,7 +1494,8 @@ def augment_trigger_obs(
 
     Instead of re-replaying 39 parquets (~5h), this loads the saved
     trigger_observations.npy, runs TriggerGBT inference in batch to get
-    the 8-dim forecast, and writes the forecast into slots 133:141.
+    the 8-dim forecast, and writes the forecast into the trigger_gbt slot
+    (derived from the schema: TRIGGER_DIM − EXEC − TRIGGER_GBT_DIM = 107 in Phase 3b).
 
     Takes ~1 minute for 500K episodes vs 5 hours for re-replay.
     """
