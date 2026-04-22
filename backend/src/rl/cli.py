@@ -3747,3 +3747,210 @@ def tune_early_exit_threshold(
             f"  {thr:>7.2f}  {n_fires:>7,d}  {pct_fires:>5.1f}%  {tp_flag:>8,d}  {fp_flag:>8,d}  "
             f"{float(new_R.sum()):>+10.1f}  {delta:>+9.1f}  {'(net saved R)' if delta > 0 else '(net cost R)'}"
         )
+
+
+# ---------------------------------------------------------------------------
+# per-day-report — daily R / trades / DD breakdown on the OOS split
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("per-day-report")
+def per_day_report(
+    apply_size_model: bool = typer.Option(True, help="Multiply each trade's R by SizeModel's predicted multiplier"),
+    skip_threshold: float = typer.Option(0.15, help="Skip trade if TriggerGBT confidence below this"),
+    summary_only: bool = typer.Option(False, help="Print summary stats only, no per-day rows"),
+    head: int = typer.Option(40, help="Show first N + last N days when not summary-only"),
+    output_csv: str | None = typer.Option(None, help="Optional CSV output path"),
+) -> None:
+    """Per-day breakdown of model performance on the OOS split.
+
+    Loads the last 17% chronological slice (matches `rl eval`), runs the
+    TriggerGBT to get per-episode actions + confidence, optionally applies
+    SizeModel's size multiplier, then groups by trading day (US/Eastern
+    cash session) and reports:
+
+      day | trades | win% | day_R | running_R | day_max_R | day_DD
+
+    Plus summary: total days, % positive, best day, worst day, max single-day
+    DD, max running-equity DD across the OOS window.
+    """
+    from datetime import datetime, timezone
+
+    import numpy as np
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    obs_path = episodes_dir / "observations.npy"
+    te_path = episodes_dir / "touch_epochs.npy"
+    if not (obs_path.exists() and te_path.exists()):
+        typer.echo("Need observations.npy + touch_epochs.npy. Run replay first.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Loading episodes...")
+    observations = np.load(obs_path)
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    touch_epochs = np.load(te_path)
+
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
+
+    # Align all arrays to the shortest one — touch_epochs / trigger_observations
+    # can lag observations by a tail (interrupted writes). Truncate to min len.
+    n_align = min(
+        len(X),
+        len(rewards_cont),
+        len(rewards_rev),
+        len(touch_epochs),
+        len(trigger_obs) if trigger_obs is not None else len(X),
+    )
+    if n_align != len(X):
+        typer.echo(f"Aligned to min length: {n_align:,} (was {len(X):,})")
+    X = X[:n_align]
+    rewards_cont = rewards_cont[:n_align]
+    rewards_rev = rewards_rev[:n_align]
+    touch_epochs = touch_epochs[:n_align]
+    if trigger_obs is not None:
+        trigger_obs = trigger_obs[:n_align]
+
+    # OOS split: last 17% chronologically (matches eval convention)
+    val_split = int(n_align * 0.83)
+    Xv = X[val_split:]
+    rcv = rewards_cont[val_split:]
+    rrv = rewards_rev[val_split:]
+    tev = touch_epochs[val_split:]
+    trigv = trigger_obs[val_split:] if trigger_obs is not None else None
+    n_oos = len(Xv)
+    typer.echo(f"OOS slice: {n_oos:,} episodes")
+
+    # Run TriggerGBT for actions + confidence
+    if trigv is None:
+        typer.echo("Need trigger_observations.npy + trained TriggerGBT.", err=True)
+        raise typer.Exit(1)
+
+    from src.rl.agent.trigger_gbt import TriggerGBT
+
+    tgbt_path = models_dir / "trigger_gbt_v5.joblib"
+    if not tgbt_path.exists():
+        typer.echo(f"No {tgbt_path}", err=True)
+        raise typer.Exit(1)
+
+    gbt = TriggerGBT.load(tgbt_path)
+    actions, confs, _probs = gbt.predict_direction_batch(trigv.astype(np.float32))
+    realized_R = np.where(actions == 0, rcv, rrv).astype(np.float32)
+
+    # Skip threshold gate — confidence below threshold = no trade
+    take = confs >= skip_threshold
+    realized_R = np.where(take, realized_R, 0.0)
+
+    # Optional: apply SizeModel multiplier
+    size_mults = np.ones(n_oos, dtype=np.float32)
+    if apply_size_model:
+        sm_path = models_dir / "size_model_latest.joblib"
+        if sm_path.exists():
+            from src.rl.agent.size_model import SizeModel
+
+            sm = SizeModel.load(sm_path)
+            size_mults = sm.predict_size_batch(Xv).astype(np.float32)
+            realized_R = realized_R * size_mults
+            typer.echo(f"Applied SizeModel: mean mult = {size_mults.mean():.3f}")
+        else:
+            typer.echo("No size_model_latest.joblib; using uniform size 1.0")
+
+    # Group by trading day (US/Eastern cash session — calendar day in ET)
+    # touch_epochs are unix UTC. Subtract 5h to land in ET (rough, ignores DST).
+    # For per-day grouping that's good enough; we're not measuring intraday.
+    et_dates = []
+    for ts in tev:
+        if ts > 0:
+            d = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            # Roughly bucket by ET day: subtract 5h (good enough, DST-agnostic)
+            et_d = d.toordinal() if d.hour >= 5 else d.toordinal() - 1
+            et_dates.append(et_d)
+        else:
+            et_dates.append(0)
+    et_dates = np.array(et_dates, dtype=np.int64)
+
+    unique_days = sorted(set(int(d) for d in et_dates if d > 0))
+    typer.echo(f"OOS spans {len(unique_days)} trading days")
+
+    rows = []
+    cumulative = 0.0
+    peak_cum = 0.0
+    max_drawdown = 0.0
+    for day_ord in unique_days:
+        mask = et_dates == day_ord
+        day_R = realized_R[mask]
+        # Filter to actual trades (R != 0 means we took the trade)
+        taken = day_R != 0
+        n_trades = int(taken.sum())
+        wins = int((day_R > 0).sum())
+        sum_R = float(day_R.sum())
+        cumulative += sum_R
+        # Within-day intraday peak / trough for day_DD
+        intraday = np.cumsum(day_R)
+        intraday_peak = float(intraday.max()) if len(intraday) > 0 else 0.0
+        intraday_trough = float(intraday.min()) if len(intraday) > 0 else 0.0
+        day_DD = intraday_trough - intraday_peak  # negative if drawdown happened
+        # Equity-curve DD across days
+        peak_cum = max(peak_cum, cumulative)
+        equity_dd = cumulative - peak_cum  # negative if below peak
+        if equity_dd < max_drawdown:
+            max_drawdown = equity_dd
+        date_str = datetime.fromordinal(day_ord).strftime("%Y-%m-%d") if day_ord > 0 else "—"
+        rows.append((date_str, n_trades, wins, sum_R, cumulative, intraday_peak, day_DD, equity_dd))
+
+    # Summary
+    day_R_arr = np.array([r[3] for r in rows], dtype=np.float64)
+    n_pos = int((day_R_arr > 0).sum())
+    n_neg = int((day_R_arr < 0).sum())
+    n_flat = len(rows) - n_pos - n_neg
+    best_day = max(rows, key=lambda r: r[3]) if rows else None
+    worst_day = min(rows, key=lambda r: r[3]) if rows else None
+    typer.echo(f"\nSUMMARY (OOS, threshold={skip_threshold}, size_model={apply_size_model})")
+    typer.echo("-" * 78)
+    typer.echo(f"  Trading days        : {len(rows)}")
+    typer.echo(f"  Positive days       : {n_pos} ({100 * n_pos / max(len(rows), 1):.1f}%)")
+    typer.echo(f"  Negative days       : {n_neg} ({100 * n_neg / max(len(rows), 1):.1f}%)")
+    typer.echo(f"  Flat days           : {n_flat}")
+    typer.echo(f"  Total R             : {cumulative:+.1f}")
+    typer.echo(f"  Mean R / day        : {day_R_arr.mean():+.2f}")
+    typer.echo(f"  Median R / day      : {float(np.median(day_R_arr)):+.2f}")
+    typer.echo(f"  Std R / day         : {day_R_arr.std():.2f}")
+    typer.echo(f"  Sharpe (R/day)      : {day_R_arr.mean() / max(day_R_arr.std(), 0.01):.2f}")
+    typer.echo(f"  Max equity drawdown : {max_drawdown:+.2f} R (peak-to-trough)")
+    if best_day:
+        typer.echo(f"  Best day            : {best_day[0]}  {best_day[3]:+.1f} R  ({best_day[1]} trades)")
+    if worst_day:
+        typer.echo(f"  Worst day           : {worst_day[0]}  {worst_day[3]:+.1f} R  ({worst_day[1]} trades)")
+
+    if not summary_only:
+        typer.echo(
+            f"\n{'date':<12s}  {'tr':>4s}  {'win':>4s}  {'win%':>5s}  {'day_R':>8s}  {'cum_R':>10s}  {'day_DD':>8s}  {'eq_DD':>8s}"
+        )
+        typer.echo("-" * 78)
+        head_n = head
+        if len(rows) <= 2 * head_n:
+            display = rows
+        else:
+            display = rows[:head_n] + [("...", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)] + rows[-head_n:]
+        for r in display:
+            date_str, n_tr, wins, sum_R, cum_R, intra_peak, day_DD, eq_DD = r
+            if date_str == "...":
+                typer.echo(f"{'...':<12s}  {'...':>4s}")
+                continue
+            win_pct = 100 * wins / max(n_tr, 1)
+            typer.echo(
+                f"{date_str:<12s}  {n_tr:>4d}  {wins:>4d}  {win_pct:>4.0f}%  "
+                f"{sum_R:>+8.2f}  {cum_R:>+10.2f}  {day_DD:>+8.2f}  {eq_DD:>+8.2f}"
+            )
+
+    if output_csv:
+        from pathlib import Path as _P
+
+        csv_path = _P(output_csv)
+        with csv_path.open("w") as f:
+            f.write("date,trades,wins,day_R,cumulative_R,intraday_peak,day_DD,equity_DD\n")
+            for r in rows:
+                f.write(",".join(str(x) for x in r) + "\n")
+        typer.echo(f"\nWrote per-day table to {csv_path}")
