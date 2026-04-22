@@ -1,8 +1,9 @@
 """Tests for zone builder — ATR-adaptive level clustering."""
 
 import pytest
-from src.rl.config import LevelType, TICK_SIZE
-from src.rl.zone_builder import Zone, ZoneMember, build_zones
+
+from src.rl.config import TICK_SIZE, LevelType
+from src.rl.zone_builder import build_zones
 
 
 class TestBuildZonesEmpty:
@@ -91,19 +92,24 @@ class TestComposition:
 
 
 class TestHierarchyScore:
-    def test_poc_cluster_beats_sd_cluster(self):
-        """POC levels (weight 1.0) should score higher than SD levels (0.4, 0.3)."""
-        poc_levels = [
-            ("a", LevelType.DAILY_POC, 4500.0),
-            ("b", LevelType.WEEKLY_POC, 4500.5),
+    def test_stronger_levels_score_higher(self):
+        """Zones with clearly stronger level types score above clearly weaker.
+
+        Uses large empirical-weight gaps (weekly_swing_low ≈1.14 /
+        nyib_high ≈1.08 vs monthly_swing_low ≈0.74 / naked_poc ≈0.83)
+        so ordering is robust when the empirical YAML is regenerated.
+        """
+        strong = [
+            ("a", LevelType.WEEKLY_SWING_LOW, 4500.0),
+            ("b", LevelType.NYIB_HIGH, 4500.5),
         ]
-        sd_levels = [
-            ("c", LevelType.VWAP_SD2, 4600.0),
-            ("d", LevelType.VWAP_SD3, 4600.5),
+        weak = [
+            ("c", LevelType.MONTHLY_SWING_LOW, 4600.0),
+            ("d", LevelType.NAKED_POC, 4600.5),
         ]
-        poc_zones = build_zones(poc_levels, session_atr=40.0)
-        sd_zones = build_zones(sd_levels, session_atr=40.0)
-        assert poc_zones[0].hierarchy_score > sd_zones[0].hierarchy_score
+        strong_zones = build_zones(strong, session_atr=40.0)
+        weak_zones = build_zones(weak, session_atr=40.0)
+        assert strong_zones[0].hierarchy_score > weak_zones[0].hierarchy_score
 
 
 class TestZoneBounds:

@@ -3207,3 +3207,386 @@ def train_early_exit_model(
     save_path = models_dir / f"early_exit_model_{checkpoint}.joblib"
     model.save(save_path)
     typer.echo(f"\n  Saved to {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# analyze-dim-correlation — per-dim R-correlation scan
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("analyze-dim-correlation")
+def analyze_dim_correlation(
+    top_n: int = typer.Option(25, help="Top N positive/negative dims to report"),
+    output_csv: str | None = typer.Option(None, help="Optional CSV output path"),
+) -> None:
+    """Compute per-dim Pearson correlation with realized R.
+
+    Uses the 318-dim augmented observation (base + GBT forecast + position
+    state) and matches it against max(rewards_cont, rewards_rev). Cross-checks
+    top dims with feature_importance from a saved SizeModel to see whether
+    the model is actually using the dims that correlate with R.
+
+    Read-only. Takes ~30s for 524k episodes.
+    """
+
+    import numpy as np
+
+    from src.rl.features.feature_names import pretty_augmented
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Loading observations + rewards...")
+    observations = np.load(obs_path, mmap_mode="r")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists() and len(np.load(trigger_path, mmap_mode="r")) == len(observations):
+        from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+        trigger_obs = np.load(trigger_path, mmap_mode="r")
+        _gs = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+        gbt_forecast = np.array(trigger_obs[:, _gs : _gs + TRIGGER_GBT_DIM])
+        position_state = np.zeros((len(observations), 8), dtype=np.float32)
+        X = np.concatenate([np.array(observations), gbt_forecast, position_state], axis=1).astype(np.float32)
+        typer.echo(f"Built augmented obs: {X.shape[1]}-dim (base + GBT forecast + position state)")
+    else:
+        X = np.array(observations).astype(np.float32)
+        typer.echo(f"Using base obs: {X.shape[1]}-dim (no trigger_observations.npy)")
+
+    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+    typer.echo(f"Aligned {len(X):,} episodes vs realized R (mean={realized_R.mean():+.3f}, std={realized_R.std():.3f})")
+
+    # Vectorized Pearson correlation via np.corrcoef on subsample for memory
+    rng = np.random.default_rng(42)
+    sample_n = min(len(X), 250_000)
+    idx = rng.choice(len(X), sample_n, replace=False) if len(X) > sample_n else slice(None)
+    Xs = X[idx]
+    Rs = realized_R[idx]
+
+    # Standardize
+    x_mean = Xs.mean(axis=0)
+    x_std = Xs.std(axis=0) + 1e-10
+    r_mean = Rs.mean()
+    r_std = Rs.std() + 1e-10
+
+    # Pearson correlation per dim (vectorized)
+    corr = ((Xs - x_mean) * (Rs - r_mean)[:, None]).mean(axis=0) / (x_std * r_std)
+    # Dead features have zero variance; mask
+    alive = Xs.std(axis=0) > 1e-8
+    corr_masked = np.where(alive, corr, 0.0)
+
+    # Rank
+    order_pos = np.argsort(-corr_masked)
+    order_neg = np.argsort(corr_masked)
+
+    typer.echo(f"\n  Alive dims: {int(alive.sum())} / {X.shape[1]}")
+    typer.echo(
+        f"  |corr| distribution: median={np.median(np.abs(corr_masked[alive])):.4f}, max={np.max(np.abs(corr_masked[alive])):.4f}"
+    )
+
+    typer.echo(f"\n  Top {top_n} POSITIVE correlations with realized R:")
+    for rank in range(min(top_n, X.shape[1])):
+        i = int(order_pos[rank])
+        typer.echo(f"    [{i:>3d}]  corr={corr_masked[i]:+.4f}  {pretty_augmented(i)}")
+
+    typer.echo(f"\n  Top {top_n} NEGATIVE correlations with realized R:")
+    for rank in range(min(top_n, X.shape[1])):
+        i = int(order_neg[rank])
+        typer.echo(f"    [{i:>3d}]  corr={corr_masked[i]:+.4f}  {pretty_augmented(i)}")
+
+    # Cross-check with SizeModel importance if available
+    size_path = models_dir / "size_model_latest.joblib"
+    if size_path.exists():
+        from src.rl.agent.size_model import SizeModel
+
+        m = SizeModel.load(size_path)
+        imps = m.feature_importance(top_n=top_n)
+        typer.echo(f"\n  SizeModel top-{top_n} feature importances vs corr rank:")
+        for rank_i, (idx_abs, imp_val) in enumerate(imps):
+            corr_val = float(corr_masked[idx_abs])
+            abs_rank = int(np.argsort(-np.abs(corr_masked))[idx_abs]) if idx_abs < len(corr_masked) else -1
+            typer.echo(
+                f"    #{rank_i + 1:>2d}  imp={imp_val:>8.1f}  corr={corr_val:+.4f}  "
+                f"[{idx_abs:>3d}] {pretty_augmented(idx_abs)}"
+            )
+
+    if output_csv:
+        from pathlib import Path as _P
+
+        csv_path = _P(output_csv)
+        with csv_path.open("w") as f:
+            f.write("idx,corr_with_R,alive,segment_feature\n")
+            for i in range(X.shape[1]):
+                f.write(f"{i},{corr_masked[i]:.6f},{int(alive[i])},{pretty_augmented(i)}\n")
+        typer.echo(f"\n  Wrote full table to {csv_path}")
+
+
+# ---------------------------------------------------------------------------
+# analyze-combinations — empirical level-type combination table (I1)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("analyze-combinations")
+def analyze_combinations(
+    top_n: int = typer.Option(30, help="Top N combinations to report by avg R"),
+    min_samples: int = typer.Option(50, help="Min sample count for a combination to report"),
+    output_csv: str | None = typer.Option(None, help="Optional CSV output path"),
+) -> None:
+    """Mine the empirical (level composition) → realized R table.
+
+    Reads obs[0:31] (level_composition multi-hot) + rewards and buckets every
+    episode by its exact composition pattern + member count. Produces:
+    - per-combination stats (count, mean_R, win%, peak_R)
+    - per-single-level stats (marginal effect of each level type)
+    - confluence sensitivity (how R scales with member count)
+
+    Read-only, no retrain.
+    """
+    import numpy as np
+
+    from src.rl.features.feature_names import level_composition_names
+
+    episodes_dir = _EPISODES_DIR
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Loading composition + rewards...")
+    observations = np.load(obs_path, mmap_mode="r")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    peakc_path = episodes_dir / "peak_R_cont.npy"
+    peakr_path = episodes_dir / "peak_R_rev.npy"
+    peak_cont = np.load(peakc_path) if peakc_path.exists() else None
+    peak_rev = np.load(peakr_path) if peakr_path.exists() else None
+
+    comp = np.array(observations[:, 0:31]).astype(np.int8)
+    comp = (comp > 0.5).astype(np.int8)  # binarize to multi-hot
+    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+    peak_R = (
+        np.maximum(peak_cont, peak_rev).astype(np.float32) if (peak_cont is not None and peak_rev is not None) else None
+    )
+    member_count = comp.sum(axis=1)
+
+    n = len(comp)
+    typer.echo(f"Loaded {n:,} episodes")
+    typer.echo(f"Member-count distribution: {dict(zip(*np.unique(member_count, return_counts=True)))}")
+
+    names = level_composition_names()
+    # ------------------------------------------------------------------
+    # 1. Per-single-level MARGINAL stats (each level type separately)
+    # ------------------------------------------------------------------
+    typer.echo(f"\n  PER-LEVEL-TYPE MARGINAL (episode count ≥ {min_samples}):")
+    typer.echo(f"    {'level':<24s}  {'present_n':>9s}  {'mean_R':>8s}  {'win%':>6s}  {'peak_R':>8s}")
+    typer.echo(f"    {'─' * 24}  {'─' * 9}  {'─' * 8}  {'─' * 6}  {'─' * 8}")
+
+    marg_stats = []
+    for i, name in enumerate(names):
+        mask = comp[:, i] == 1
+        count = int(mask.sum())
+        if count < min_samples:
+            continue
+        mean_r = float(realized_R[mask].mean())
+        win_r = float((realized_R[mask] > 0).mean() * 100)
+        peak_mean = float(peak_R[mask].mean()) if peak_R is not None else 0.0
+        marg_stats.append((name, count, mean_r, win_r, peak_mean))
+
+    # sort by mean_R desc
+    marg_stats.sort(key=lambda r: -r[2])
+    for name, count, mean_r, win_r, peak_mean in marg_stats:
+        typer.echo(f"    {name:<24s}  {count:>9,d}  {mean_r:>+8.3f}  {win_r:>5.1f}%  {peak_mean:>+8.3f}")
+
+    # ------------------------------------------------------------------
+    # 2. Per-member-count confluence stats (1m / 2m / ...)
+    # ------------------------------------------------------------------
+    typer.echo("\n  CONFLUENCE-COUNT STATS:")
+    typer.echo(f"    {'members':>8s}  {'count':>8s}  {'mean_R':>8s}  {'win%':>6s}  {'peak_R':>8s}")
+    typer.echo(f"    {'─' * 8}  {'─' * 8}  {'─' * 8}  {'─' * 6}  {'─' * 8}")
+    for k in sorted(np.unique(member_count)):
+        mask = member_count == k
+        c = int(mask.sum())
+        if c < min_samples:
+            continue
+        mean_r = float(realized_R[mask].mean())
+        win_r = float((realized_R[mask] > 0).mean() * 100)
+        peak_mean = float(peak_R[mask].mean()) if peak_R is not None else 0.0
+        typer.echo(f"    {k:>8d}  {c:>8,d}  {mean_r:>+8.3f}  {win_r:>5.1f}%  {peak_mean:>+8.3f}")
+
+    # ------------------------------------------------------------------
+    # 3. Top EXACT combinations (unique composition signature)
+    # ------------------------------------------------------------------
+    # Pack the multi-hot into int64 signatures for fast grouping
+    # 31 dims → fits in int64 trivially
+    sig = np.zeros(n, dtype=np.int64)
+    for i in range(31):
+        sig += comp[:, i].astype(np.int64) << i
+
+    unique_sigs, inv, counts = np.unique(sig, return_inverse=True, return_counts=True)
+    typer.echo(f"\n  Unique exact combinations: {len(unique_sigs):,}")
+
+    # Aggregate per combination
+    sums_r = np.zeros(len(unique_sigs), dtype=np.float64)
+    wins = np.zeros(len(unique_sigs), dtype=np.int64)
+    sums_peak = np.zeros(len(unique_sigs), dtype=np.float64)
+    np.add.at(sums_r, inv, realized_R)
+    np.add.at(wins, inv, (realized_R > 0).astype(np.int64))
+    if peak_R is not None:
+        np.add.at(sums_peak, inv, peak_R)
+
+    mean_r = sums_r / counts
+    win_r = 100.0 * wins / counts
+    peak_mean = sums_peak / counts if peak_R is not None else np.zeros_like(counts, dtype=float)
+
+    # Filter by min_samples, sort by mean_R
+    ok = counts >= min_samples
+    rows = [(unique_sigs[i], counts[i], mean_r[i], win_r[i], peak_mean[i]) for i in np.where(ok)[0]]
+    rows.sort(key=lambda r: -r[2])
+
+    def _decode(sig_val: int) -> str:
+        members = [names[i] for i in range(31) if (sig_val >> i) & 1]
+        if not members:
+            return "(empty)"
+        return "+".join(members)
+
+    typer.echo(f"\n  TOP {top_n} COMBINATIONS (n ≥ {min_samples}):")
+    typer.echo(f"    {'count':>7s}  {'mbrs':>4s}  {'mean_R':>8s}  {'win%':>6s}  {'peak_R':>8s}  composition")
+    typer.echo(f"    {'─' * 7}  {'─' * 4}  {'─' * 8}  {'─' * 6}  {'─' * 8}  {'─' * 40}")
+    for i, (sig_val, c, m_r, w_r, p_m) in enumerate(rows[:top_n]):
+        n_members = bin(int(sig_val)).count("1")
+        comp_str = _decode(int(sig_val))
+        typer.echo(
+            f"    {int(c):>7,d}  {n_members:>4d}  {float(m_r):>+8.3f}  {float(w_r):>5.1f}%  {float(p_m):>+8.3f}  {comp_str}"
+        )
+
+    typer.echo(f"\n  BOTTOM 10 COMBINATIONS (n ≥ {min_samples}):")
+    for i, (sig_val, c, m_r, w_r, p_m) in enumerate(rows[-10:]):
+        n_members = bin(int(sig_val)).count("1")
+        comp_str = _decode(int(sig_val))
+        typer.echo(
+            f"    {int(c):>7,d}  {n_members:>4d}  {float(m_r):>+8.3f}  {float(w_r):>5.1f}%  {float(p_m):>+8.3f}  {comp_str}"
+        )
+
+    if output_csv:
+        from pathlib import Path as _P
+
+        csv_path = _P(output_csv)
+        with csv_path.open("w") as f:
+            f.write("count,member_count,mean_R,win_pct,peak_R,composition\n")
+            for sig_val, c, m_r, w_r, p_m in rows:
+                n_members = bin(int(sig_val)).count("1")
+                comp_str = _decode(int(sig_val))
+                f.write(f"{int(c)},{n_members},{float(m_r):.4f},{float(w_r):.2f},{float(p_m):.4f},{comp_str}\n")
+        typer.echo(f"\n  Wrote full table to {csv_path}")
+
+
+# ---------------------------------------------------------------------------
+# derive-hierarchy-weights — empirical per-level-type weights (I2 + I7)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("derive-hierarchy-weights")
+def derive_hierarchy_weights(
+    min_samples: int = typer.Option(100, help="Min episodes a level must be present in to get a learned weight"),
+    output_yaml: str = typer.Option(
+        "/app/backend/src/rl/config/empirical_level_weights.yaml",
+        help="YAML path to write (relative to container)",
+    ),
+    compare_hand_tuned: bool = typer.Option(True, help="Compare to hand-tuned _HIERARCHY_WEIGHTS"),
+) -> None:
+    """Derive empirical per-level-type hierarchy weights from realized R.
+
+    Weight formula:  empirical_w_i = mean_R_when_level_i_present / global_mean_R
+
+    This gives ratios centered on 1.0: strong levels >1, weak levels <1.
+    The hand-tuned _HIERARCHY_WEIGHTS currently uses 0.3-1.0 caps; the
+    empirical weights rank by actual realized outcomes.
+
+    Low-sample levels (<min_samples present) fall back to weight=1.0 so they
+    don't get penalized just for being rare.
+    """
+    from pathlib import Path as _P
+
+    import numpy as np
+    import yaml as _yaml
+
+    from src.rl.config import LevelType
+    from src.rl.features.feature_names import level_composition_names
+    from src.rl.zone_builder import _DEFAULT_WEIGHT, _HIERARCHY_WEIGHTS
+
+    episodes_dir = _EPISODES_DIR
+    obs_path = episodes_dir / "observations.npy"
+    if not obs_path.exists():
+        typer.echo(f"No observations.npy in {episodes_dir}. Run 'rl replay' first.", err=True)
+        raise typer.Exit(1)
+
+    observations = np.load(obs_path, mmap_mode="r")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+
+    comp = (np.array(observations[:, 0:31]) > 0.5).astype(np.int8)
+    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+    global_mean = float(realized_R.mean())
+    typer.echo(f"Global mean realized R = {global_mean:+.4f} (n={len(realized_R):,})")
+
+    names = level_composition_names()
+    rows = []
+    for i, name in enumerate(names):
+        mask = comp[:, i] == 1
+        count = int(mask.sum())
+        if count < min_samples:
+            emp_w = 1.0
+            mean_r = float("nan")
+            note = f"insufficient samples (n={count}), fallback=1.0"
+        else:
+            mean_r = float(realized_R[mask].mean())
+            emp_w = mean_r / global_mean if global_mean > 0 else 1.0
+            note = ""
+        hand_w = _HIERARCHY_WEIGHTS.get(LevelType(name), _DEFAULT_WEIGHT)
+        rows.append((name, count, mean_r, emp_w, hand_w, note))
+
+    # Normalize empirical weights so their mean equals 1.0 (robust to baseline drift)
+    valid = [r[3] for r in rows if not np.isnan(r[2])]
+    if valid:
+        scale = float(np.mean(valid))
+        rows = [(n, c, m, w / scale, hw, note) for (n, c, m, w, hw, note) in rows]
+
+    # ------------------------------------------------------------------
+    # Print side-by-side comparison
+    # ------------------------------------------------------------------
+    typer.echo("\n  EMPIRICAL vs HAND-TUNED weights:")
+    typer.echo(
+        f"    {'level_type':<24s}  {'n':>7s}  {'mean_R':>8s}  {'emp_w':>6s}  {'hand_w':>6s}  {'delta':>6s}  note"
+    )
+    typer.echo(f"    {'─' * 24}  {'─' * 7}  {'─' * 8}  {'─' * 6}  {'─' * 6}  {'─' * 6}  ────")
+    for name, count, mean_r, emp_w, hand_w, note in sorted(rows, key=lambda r: -r[3]):
+        mean_r_s = f"{mean_r:+.3f}" if not np.isnan(mean_r) else "  n/a"
+        delta = emp_w - hand_w
+        typer.echo(
+            f"    {name:<24s}  {count:>7,d}  {mean_r_s:>8s}  {emp_w:>6.3f}  {hand_w:>6.3f}  {delta:>+6.3f}  {note}"
+        )
+
+    # ------------------------------------------------------------------
+    # Write YAML config
+    # ------------------------------------------------------------------
+    out_path = _P(output_yaml)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_from": "realized_R = max(rewards_cont, rewards_rev)",
+        "n_episodes": int(len(realized_R)),
+        "global_mean_R": round(global_mean, 4),
+        "normalization": "emp_w = (mean_R_when_present / global_mean) / mean_of_valid",
+        "min_samples_for_learned_weight": min_samples,
+        "fallback_weight": 1.0,
+        "weights": {name: round(emp_w, 4) for (name, _, _, emp_w, _, _) in rows},
+    }
+    out_path.write_text(_yaml.safe_dump(payload, sort_keys=False))
+    typer.echo(f"\n  Wrote empirical weights to {out_path}")

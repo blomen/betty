@@ -1,19 +1,32 @@
-"""Zone builder — cluster nearby structural levels into zones."""
+"""Zone builder — cluster nearby structural levels into zones.
+
+Hierarchy weights come from two layers:
+  1. Empirical weights derived from realized R on 524k+ episodes
+     (`config/empirical_level_weights.yaml`, produced by
+     `rl derive-hierarchy-weights`). Preferred when available.
+  2. Hand-tuned fallback weights retained for safety when the YAML is
+     missing or a newly-added level type isn't in it yet.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
+from pathlib import Path
 from statistics import mean
 
 from .config import (
     ATR_FRACTION,
-    LevelType,
     MAX_ZONE_RADIUS_TICKS,
     MIN_ZONE_RADIUS_TICKS,
     TICK_SIZE,
+    LevelType,
 )
 
-# Hierarchy weights — structural importance per level type.
+log = logging.getLogger(__name__)
+
+# Hand-tuned fallback — used only for level types missing from the empirical YAML
+# or when the YAML itself can't be loaded.
 _HIERARCHY_WEIGHTS: dict[LevelType, float] = {
     LevelType.DAILY_POC: 1.0,
     LevelType.WEEKLY_POC: 1.0,
@@ -51,8 +64,44 @@ _HIERARCHY_WEIGHTS: dict[LevelType, float] = {
 _DEFAULT_WEIGHT = 0.3
 
 
+def _load_empirical_weights() -> dict[LevelType, float]:
+    """Load empirical level weights from YAML. Returns {} if unavailable."""
+    yaml_path = Path(__file__).parent / "config" / "empirical_level_weights.yaml"
+    if not yaml_path.exists():
+        log.info("zone_builder: no empirical weights YAML at %s, using hand-tuned fallback", yaml_path)
+        return {}
+    try:
+        import yaml as _yaml
+
+        data = _yaml.safe_load(yaml_path.read_text())
+        raw_weights = data.get("weights", {}) if isinstance(data, dict) else {}
+        out: dict[LevelType, float] = {}
+        for name, w in raw_weights.items():
+            try:
+                out[LevelType(name)] = float(w)
+            except ValueError:
+                log.debug("zone_builder: unknown level type in YAML: %s", name)
+        log.info(
+            "zone_builder: loaded %d empirical level weights from %s (global_mean_R=%.3f, n_episodes=%s)",
+            len(out),
+            yaml_path,
+            data.get("global_mean_R", float("nan")),
+            data.get("n_episodes", "?"),
+        )
+        return out
+    except Exception:
+        log.exception("zone_builder: failed to load empirical weights; using hand-tuned fallback")
+        return {}
+
+
+# Empirical weights override hand-tuned at module import. The merged dict is the
+# source of truth for _weight().
+_EMPIRICAL_WEIGHTS: dict[LevelType, float] = _load_empirical_weights()
+_MERGED_WEIGHTS: dict[LevelType, float] = {**_HIERARCHY_WEIGHTS, **_EMPIRICAL_WEIGHTS}
+
+
 def _weight(lt: LevelType) -> float:
-    return _HIERARCHY_WEIGHTS.get(lt, _DEFAULT_WEIGHT)
+    return _MERGED_WEIGHTS.get(lt, _DEFAULT_WEIGHT)
 
 
 @dataclass
@@ -101,9 +150,15 @@ def _build_zone(members: list[ZoneMember], radius: float) -> Zone:
     width_ticks = (upper - lower) / TICK_SIZE
     composition = _build_composition(members)
 
-    total_weight = sum(_weight(m.level_type) for m in members)
-    max_possible = len(members) * 1.0  # max weight is 1.0
-    hierarchy_score = total_weight / max_possible if max_possible > 0 else 0.0
+    # Mean weight across the members — bounded to [0, ~max_empirical_weight].
+    # Empirical weights can exceed 1.0 (the strongest level type today is
+    # weekly_swing_low ≈ 1.14) so we clip to a generous ceiling to keep the
+    # feature on roughly [0, 1] for downstream normalizers/models.
+    if members:
+        mean_weight = sum(_weight(m.level_type) for m in members) / len(members)
+    else:
+        mean_weight = 0.0
+    hierarchy_score = min(max(mean_weight / 1.2, 0.0), 1.0)
 
     return Zone(
         center_price=center,
@@ -142,9 +197,7 @@ def build_zones(
 
     for name, level_type, price in sorted_levels:
         member = ZoneMember(name=name, level_type=level_type, price=price)
-        if not current_members:
-            current_members.append(member)
-        elif abs(price - current_members[-1].price) <= radius:
+        if not current_members or abs(price - current_members[-1].price) <= radius:
             current_members.append(member)
         else:
             zones.append(_build_zone(current_members, radius))
