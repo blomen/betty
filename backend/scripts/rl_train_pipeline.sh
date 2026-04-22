@@ -112,10 +112,10 @@ step_run "1/8" "Replaying historical ticks → base episodes" "critical" \
 step_run "2/8" "Labeling episodes with setup types" "optional" \
     python -m src.app rl label-setups
 
-# Step 3: Train Narrative GBT (critical for v5)
-step_run "3/8" "Training Narrative GBT v5" "critical" \
-    nice -n 19 python -m src.app rl train-narrative-gbt --checkpoint v5 --trees 500 --depth 5 --lr 0.05
-[ $FAILED -eq 1 ] && exit 1
+# Step 3: (retired) NarrativeGBT — the day_type label was the obs's own
+# one-hot slice, producing 100% val_acc with no real predictive signal.
+# extract_narrative_features is still used for composite-confidence
+# alignment; the trained GBT head added nothing and was removed in H3.
 
 # Step 4: Train Trigger GBT (critical for v5)
 step_run "4/8" "Training Trigger GBT v5" "critical" \
@@ -165,7 +165,6 @@ if ! step_done "8/8"; then
     # Archive this run: models + eval report extracted from pipeline.log.
     # Keeps full history for A/B comparison across training iterations.
     mkdir -p "$ARCHIVE_DIR"
-    cp -f "$MODELS/narrative_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/size_model_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
     cp -f "$MODELS/early_exit_model_v5.joblib" "$ARCHIVE_DIR/" 2>/dev/null || true
@@ -203,7 +202,6 @@ if len(blocks) > 1:
 " 2>/dev/null || true
 
     # Deploy latest pointers (prod)
-    cp -f "$MODELS/narrative_gbt_v5.joblib" "$MODELS/narrative_gbt_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/trigger_gbt_v5.joblib" "$MODELS/trigger_gbt_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/size_model_v5.joblib" "$MODELS/size_model_latest.joblib" 2>/dev/null || true
     cp -f "$MODELS/early_exit_model_v5.joblib" "$MODELS/early_exit_model_latest.joblib" 2>/dev/null || true

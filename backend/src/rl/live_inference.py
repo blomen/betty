@@ -205,7 +205,11 @@ class LiveInferenceV5:
     """
 
     def __init__(self) -> None:
-        self._narrative_gbt = None  # optional; used only if present for narrative alignment
+        # NarrativeGBT retired in Phase 3c cleanup (H3): its day_type label
+        # was the obs's own one-hot slice, giving a circular 100% val-acc
+        # with no real predictive signal. The narrative *features* are still
+        # used — `_narrative_cache` is populated by `extract_narrative_features`
+        # for composite-confidence alignment, no GBT needed.
         self._trigger_gbt = None
         self._dqn = None
         self._size_model = None  # Phase 3c: optional trained size tier head
@@ -219,27 +223,15 @@ class LiveInferenceV5:
         return self._loaded
 
     def try_load(self) -> bool:
-        """Load v5 models (trigger GBT mandatory; narrative GBT + size model optional)."""
-        from .agent.narrative_gbt import NarrativeGBT
+        """Load v5 models (trigger GBT mandatory; size + early_exit optional)."""
         from .agent.trigger_gbt import TriggerGBT
 
-        narrative_loaded = False
         trigger_loaded = False
         size_loaded = False
 
         for search_dir in _MODEL_SEARCH_DIRS:
             if not search_dir.exists():
                 continue
-
-            if not narrative_loaded:
-                narrative_path = search_dir / "narrative_gbt_latest.joblib"
-                if narrative_path.exists():
-                    try:
-                        self._narrative_gbt = NarrativeGBT.load(narrative_path)
-                        narrative_loaded = True
-                        log.info("NarrativeGBT loaded from %s", narrative_path)
-                    except Exception:
-                        log.exception("Failed to load NarrativeGBT from %s", narrative_path)
 
             if not trigger_loaded:
                 trigger_path = search_dir / "trigger_gbt_latest.joblib"
@@ -307,7 +299,7 @@ class LiveInferenceV5:
                         self._dqn = None
 
             # Also try to load normalizer from first search dir that has models
-            if narrative_loaded and self._normalizer is None:
+            if self._normalizer is None:
                 episodes_dir = search_dir / "episodes"
                 norm_path = episodes_dir / "normalizer.json"
                 if norm_path.exists():
@@ -340,9 +332,10 @@ class LiveInferenceV5:
         if trigger_loaded:
             self._loaded = True
             log.info(
-                "LiveInferenceV5: loaded (trigger+narrative=%s+DQN=%s)",
-                narrative_loaded,
+                "LiveInferenceV5: loaded (trigger+DQN=%s+size=%s+early_exit=%s)",
                 self._dqn is not None,
+                self._size_model is not None,
+                self._early_exit_model is not None,
             )
         else:
             log.info("LiveInferenceV5: trigger_loaded=False")

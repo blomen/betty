@@ -24,7 +24,6 @@ _MODELS = Path("data/rl/models")
 _EPISODES = Path("data/rl/episodes")
 
 _REQUIRED = [
-    _MODELS / "narrative_gbt_latest.joblib",
     _MODELS / "trigger_gbt_latest.joblib",
     _MODELS / "dqn_latest.pt",
     _EPISODES / "normalizer.json",
@@ -42,17 +41,18 @@ skip_no_artifacts = pytest.mark.skipif(
 
 @skip_no_artifacts
 def test_live_inference_v5_loads_hybrid():
-    """LiveInferenceV5.try_load returns True and wires all three components."""
+    """LiveInferenceV5.try_load returns True and wires the required components.
+
+    NarrativeGBT was retired in H3 (Phase 3c) — label was circular.
+    """
     from src.rl.live_inference import LiveInferenceV5
 
     engine = LiveInferenceV5()
     assert engine.try_load(), "try_load returned False with v5 artifacts present"
-    assert engine._narrative_gbt is not None
     assert engine._trigger_gbt is not None
     assert engine._dqn is not None
-    # DQN input dim should be augmented (295) or at least divisible-friendly
+    # DQN input dim should be augmented (318) or base (302)
     assert engine._dqn_input_dim in (OBSERVATION_DIM, AUGMENTED_OBSERVATION_DIM)
-    # Normalizer should be reshaped to match DQN input
     assert engine._normalizer is not None
     assert engine._normalizer.dim == engine._dqn_input_dim
 
