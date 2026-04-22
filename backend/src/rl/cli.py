@@ -1707,9 +1707,18 @@ def merge_live() -> None:
 def train(
     epochs: int = typer.Option(100, help="Number of training epochs"),
     checkpoint: str = typer.Option("v1", help="Checkpoint name for saved model"),
-    resume: bool = typer.Option(False, help="Resume from existing checkpoint"),
+    warm_start: bool = typer.Option(
+        True,
+        "--warm-start/--fresh",
+        help="Warm-start from dqn_latest.pt if compatible (ONLINE1). Use --fresh to force random init.",
+    ),
 ) -> None:
-    """Train the DQN agent on replayed episodes."""
+    """Train the DQN agent on replayed episodes.
+
+    Warm-starts from dqn_latest.pt by default when the input dim matches —
+    each retrain refines the prior model instead of restarting from scratch,
+    which kills the ~8% run-to-run variance we had from random init.
+    """
     import numpy as np
 
     from src.rl.agent.dqn import DQNAgent
@@ -1830,21 +1839,38 @@ def train(
 
     agent = DQNAgent(observation_dim=obs_dim)
 
-    # Resume from checkpoint if requested
+    # ONLINE1: warm-start from dqn_latest.pt if present + compatible.
+    # Tries `dqn_{checkpoint}.pt` first (same-checkpoint resume), then
+    # `dqn_latest.pt` (cross-checkpoint warm-start). Shape mismatch → cold start.
     start_epoch = 1
     model_path = models_dir / f"dqn_{checkpoint}.pt"
-    if resume and model_path.exists():
+    latest_path = models_dir / "dqn_latest.pt"
+
+    warm_start_source = None
+    if warm_start:
         import torch as _torch
 
-        ckpt = _torch.load(model_path, weights_only=False, map_location="cpu")
-        agent.load(model_path)
-        start_epoch = ckpt.get("epoch", 0) + 1
-        typer.echo(
-            f"Resumed from {model_path} (epoch {start_epoch - 1}, "
-            f"epsilon={agent.epsilon:.3f}, steps={agent.train_steps})"
-        )
-    elif resume:
-        typer.echo(f"No checkpoint found at {model_path} — starting fresh.")
+        for candidate in [model_path, latest_path]:
+            if not candidate.exists():
+                continue
+            try:
+                ckpt = _torch.load(candidate, weights_only=False, map_location="cpu")
+                ckpt_dim = ckpt["q_network"]["encoder.0.weight"].shape[1]
+                if ckpt_dim != obs_dim:
+                    typer.echo(f"Skipping warm-start from {candidate.name}: input_dim {ckpt_dim} != {obs_dim}")
+                    continue
+                agent.load(candidate)
+                start_epoch = ckpt.get("epoch", 0) + 1
+                warm_start_source = candidate
+                typer.echo(
+                    f"Warm-started from {candidate.name} (epoch {start_epoch - 1}, "
+                    f"epsilon={agent.epsilon:.3f}, steps={agent.train_steps})"
+                )
+                break
+            except Exception as exc:
+                typer.echo(f"Warm-start from {candidate.name} failed: {exc}", err=True)
+    if warm_start_source is None:
+        typer.echo("Cold start (no compatible checkpoint found or --fresh specified).")
 
     for i in range(len(train_obs)):
         rc = float(train_rc[i])
@@ -3020,6 +3046,12 @@ def train_size_model(
         n = MAX_SAMPLES
         typer.echo(f"Subsampled to {n:,} for memory safety.")
 
+    # ONLINE1: warm-start from prior _latest.joblib if it exists. Kills random-init
+    # variance — each retrain refines the prior model instead of starting fresh.
+    init_path = models_dir / "size_model_latest.joblib"
+    if not init_path.exists():
+        init_path = None
+
     model = SizeModel()
     typer.echo(f"\nTraining SizeModel (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
     metrics = model.train(
@@ -3028,11 +3060,13 @@ def train_size_model(
         n_estimators=trees,
         max_depth=depth,
         learning_rate=lr,
+        init_model_path=init_path,
     )
 
     typer.echo("\n  Results:")
     typer.echo(f"    Engine           : {metrics['engine']}")
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Warm-start       : {metrics.get('warm_start', False)}  ({init_path})")
     typer.echo(f"    Train accuracy   : {metrics['train_accuracy']}%")
     typer.echo(f"    Val accuracy     : {metrics['val_accuracy']}%")
     typer.echo(f"    Class distrib    : {metrics['class_distribution']}")
@@ -3136,6 +3170,11 @@ def train_early_exit_model(
         n = MAX_SAMPLES
         typer.echo(f"Subsampled to {n:,} for memory safety.")
 
+    # ONLINE1: warm-start from prior _latest.joblib if it exists.
+    init_path = models_dir / "early_exit_model_latest.joblib"
+    if not init_path.exists():
+        init_path = None
+
     model = EarlyExitModel()
     typer.echo(f"\nTraining EarlyExitModel (engine={model.engine}, trees={trees}, depth={depth}, lr={lr})...")
     metrics = model.train(
@@ -3145,11 +3184,13 @@ def train_early_exit_model(
         n_estimators=trees,
         max_depth=depth,
         learning_rate=lr,
+        init_model_path=init_path,
     )
 
     typer.echo("\n  Results:")
     typer.echo(f"    Engine           : {metrics['engine']}")
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
+    typer.echo(f"    Warm-start       : {metrics.get('warm_start', False)}  ({init_path})")
     typer.echo(f"    Train positives  : {metrics['train_positive_pct']}%")
     typer.echo(f"    Val positives    : {metrics['val_positive_pct']}%")
     typer.echo(f"    Val AUC          : {metrics['val_auc']}")

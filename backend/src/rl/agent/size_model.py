@@ -93,8 +93,16 @@ class SizeModel:
         max_depth: int = 4,
         learning_rate: float = 0.05,
         subsample: float = 0.8,
+        init_model_path: Path | str | None = None,
     ) -> dict:
-        """Train the size tier classifier with chronological 80/20 split."""
+        """Train the size tier classifier with chronological 80/20 split.
+
+        If `init_model_path` points at a saved SizeModel joblib, the LightGBM
+        booster is warm-started from that prior: new data refines the model
+        instead of training from a random init. Shape mismatches (different
+        alive-feature count between prior and current) fall back to cold start
+        with a log line.
+        """
         n = len(X)
         val_split = int(n * 0.80)
 
@@ -152,6 +160,29 @@ class SizeModel:
 
         self.model = _Classifier(**params)
         fit_kwargs = {"sample_weight": sample_weight}
+
+        # Optional warm-start from a prior booster (ONLINE1).
+        warm_start_used = False
+        if init_model_path is not None and _ENGINE == "lightgbm":
+            try:
+                prior = joblib.load(Path(init_model_path))
+                prior_model = prior.get("model") if isinstance(prior, dict) else None
+                prior_mask = prior.get("alive_mask") if isinstance(prior, dict) else None
+                # Require matching alive-feature count — LightGBM booster is
+                # tied to a fixed feature dim.
+                if prior_model is not None and prior_mask is not None and int(prior_mask.sum()) == alive_count:
+                    fit_kwargs["init_model"] = prior_model.booster_
+                    warm_start_used = True
+                    log.info("SizeModel: warm-starting from %s", init_model_path)
+                else:
+                    log.warning(
+                        "SizeModel: skipping warm-start — prior alive_count=%s vs current=%d",
+                        int(prior_mask.sum()) if prior_mask is not None else "None",
+                        alive_count,
+                    )
+            except Exception:
+                log.exception("SizeModel: warm-start failed, falling back to cold start")
+
         if _ENGINE == "lightgbm":
             fit_kwargs["eval_set"] = [(X_val, y_val)]
             fit_kwargs["callbacks"] = [
@@ -171,6 +202,7 @@ class SizeModel:
             "train_accuracy": train_acc,
             "val_accuracy": val_acc,
             "class_distribution": {int(c): int(n) for c, n in zip(unique, counts)},
+            "warm_start": warm_start_used,
         }
         log.info("SizeModel: train=%.1f%% val=%.1f%%", train_acc, val_acc)
 

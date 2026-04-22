@@ -81,8 +81,15 @@ class EarlyExitModel:
         max_depth: int = 4,
         learning_rate: float = 0.05,
         subsample: float = 0.8,
+        init_model_path: Path | str | None = None,
     ) -> dict:
-        """Train on the 318-dim observation with pump-and-retrace labels."""
+        """Train on the 318-dim observation with pump-and-retrace labels.
+
+        Optional warm-start from a prior EarlyExitModel joblib (ONLINE1):
+        if `init_model_path` is set and the prior's alive-feature count
+        matches, we continue LightGBM training from that booster instead
+        of a fresh random init.
+        """
         n = len(X)
         val_split = int(n * 0.80)
 
@@ -147,6 +154,26 @@ class EarlyExitModel:
 
         self.model = _Classifier(**params)
         fit_kwargs: dict = {}
+
+        warm_start_used = False
+        if init_model_path is not None and _ENGINE == "lightgbm":
+            try:
+                prior = joblib.load(Path(init_model_path))
+                prior_model = prior.get("model") if isinstance(prior, dict) else None
+                prior_mask = prior.get("alive_mask") if isinstance(prior, dict) else None
+                if prior_model is not None and prior_mask is not None and int(prior_mask.sum()) == alive_count:
+                    fit_kwargs["init_model"] = prior_model.booster_
+                    warm_start_used = True
+                    log.info("EarlyExitModel: warm-starting from %s", init_model_path)
+                else:
+                    log.warning(
+                        "EarlyExitModel: skipping warm-start — prior alive_count=%s vs current=%d",
+                        int(prior_mask.sum()) if prior_mask is not None else "None",
+                        alive_count,
+                    )
+            except Exception:
+                log.exception("EarlyExitModel: warm-start failed, falling back to cold start")
+
         if _ENGINE == "lightgbm":
             fit_kwargs["eval_set"] = [(X_val, y_val)]
             fit_kwargs["callbacks"] = [
@@ -198,6 +225,7 @@ class EarlyExitModel:
             "train_accuracy": train_acc,
             "val_accuracy": val_acc,
             "val_auc": round(auc, 4),
+            "warm_start": warm_start_used,
             "val_precision@0.5": round(p05, 3),
             "val_recall@0.5": round(r05, 3),
             "val_flagged@0.5": n05,
