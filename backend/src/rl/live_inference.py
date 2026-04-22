@@ -480,6 +480,30 @@ class LiveInferenceV5:
             trade_direction=trade_direction,
         )
 
+        # A2 (framework): orderflow-contradiction sanity veto. If the delta
+        # sign contradicts the intended trade direction AND the magnitude is
+        # strong, halve the composite confidence. Catches cases where the
+        # level direction says "fade the level" but the tape is decisively
+        # pushing into the level — those trades are traps.
+        # Reads orderflow[0] = delta_ratio_signed from base obs[31:52].
+        of_veto_applied = False
+        if trade_direction != 0:
+            try:
+                delta_ratio_signed = float(base_obs[31])  # orderflow[0]
+                # Contradiction: sign mismatch AND strong magnitude
+                if trade_direction * delta_ratio_signed < 0 and abs(delta_ratio_signed) > 0.3:
+                    composite = composite * 0.5
+                    of_veto_applied = True
+                    log.info(
+                        "A2 OF-contradiction veto: trade_dir=%+d delta=%+.3f → composite %.3f → %.3f",
+                        trade_direction,
+                        delta_ratio_signed,
+                        composite * 2,
+                        composite,
+                    )
+            except (IndexError, TypeError):
+                pass
+
         # Phase 3c: prefer SizeModel (trained) over the composite-tier heuristic.
         # Builds the same 318-dim augmented obs shape SizeModel/EarlyExitModel
         # trained on. Reused by the early_exit head below.
@@ -532,6 +556,7 @@ class LiveInferenceV5:
             "composite_confidence": composite,
             "size_multiplier": size_mult,
             "size_source": size_source,
+            "of_veto_applied": of_veto_applied,
             "early_exit_prob": early_exit_prob,
             "early_exit_threshold": early_exit_threshold,
             "dqn_action": dqn_action,
