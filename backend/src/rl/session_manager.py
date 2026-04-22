@@ -5,6 +5,7 @@ Sits on top of a frozen model (DQN or GBT) and manages the execution layer:
 - Flips position when model signals opposite direction at a new level
 - Trails stop using the stop head prediction
 - Sizes based on confidence + running session P&L (compounding)
+- Optional wick-tolerant stop invalidation (STOP2 / framework rule)
 
 The model itself never changes — SessionManager is pure execution logic.
 """
@@ -785,10 +786,51 @@ class SessionManager:
                 reason="hold_position",
             )
 
+    # STOP2 (framework "close required, not wick"): configurable wick buffer.
+    # When >0, price must push past stop_price by this many ticks before the
+    # stop triggers. Gives the trade room to wick through the stop level
+    # without exiting. Set to 0 for strict tick-level stops (legacy).
+    # Pick a value that matches your typical MAE tolerance — e.g. 2 ticks
+    # lets small wicks pass, 5 ticks tolerates aggressive fake-outs.
+    STOP_WICK_BUFFER_TICKS: float = 0.0
+
     def on_price_update(self, current_price: float) -> dict | None:
         """Check if stop was hit on a price update (called on every tick/bar).
 
+        When STOP_WICK_BUFFER_TICKS > 0, the stop fires only if the price has
+        travelled past the stop level by that many ticks — matching the
+        framework rule that a wick through the stop doesn't invalidate the
+        trade, only a clean push beyond does.
+
         Returns signal dict if stop hit, None otherwise.
+        """
+        if not self.position.is_open:
+            return None
+
+        buffer_px = self.STOP_WICK_BUFFER_TICKS * TICK_SIZE
+        stopped = False
+        if self.position.side == PositionSide.LONG:
+            if current_price <= self.position.stop_price - buffer_px:
+                stopped = True
+        elif self.position.side == PositionSide.SHORT:
+            if current_price >= self.position.stop_price + buffer_px:
+                stopped = True
+
+        if stopped:
+            pnl = self._close_position(current_price, "stop")
+            return self._signal("stopped_out", current_price, closed_pnl_r=pnl, reason="stop_hit")
+        return None
+
+    def on_bar_close(self, close_price: float) -> dict | None:
+        """Strict close-only stop invalidation — framework "close required" rule.
+
+        Fires the stop only when a CANDLE CLOSE is beyond the stop level. Use
+        in place of per-tick `on_price_update` when you want the framework-pure
+        semantics: wicks through the stop level are tolerated, only a bar
+        closing beyond the stop invalidates the trade.
+
+        Intended pairing: disable `on_price_update` stop checks (or set
+        STOP_WICK_BUFFER_TICKS very high) and call this on every bar close.
         """
         if not self.position.is_open:
             return None
@@ -796,15 +838,15 @@ class SessionManager:
         stopped = False
         if (
             self.position.side == PositionSide.LONG
-            and current_price <= self.position.stop_price
+            and close_price <= self.position.stop_price
             or self.position.side == PositionSide.SHORT
-            and current_price >= self.position.stop_price
+            and close_price >= self.position.stop_price
         ):
             stopped = True
 
         if stopped:
-            pnl = self._close_position(current_price, "stop")
-            return self._signal("stopped_out", current_price, closed_pnl_r=pnl, reason="stop_hit")
+            pnl = self._close_position(close_price, "stop_close")
+            return self._signal("stopped_out", close_price, closed_pnl_r=pnl, reason="stop_close")
         return None
 
     def on_session_end(self, current_price: float) -> dict | None:
