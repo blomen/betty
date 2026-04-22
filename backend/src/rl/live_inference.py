@@ -397,14 +397,18 @@ class LiveInferenceV5:
         gbt_action, gbt_conf, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
         stop_ticks = self._trigger_gbt.predict_stop(trigger_obs)
 
-        # 9. DQN ensemble (optional) — hybrid decision layer
+        # 9. DQN observability (H6). The DQN plateaus at 53.2% val-acc —
+        # worse than TriggerGBT's 65% — so its "vote" against GBT was net
+        # harmful: it wrongly disagreed with ~25% of GBT's correct calls,
+        # halving confidence on trades that should have been taken at full
+        # size. Current policy: compute Q-values for observability, but do
+        # NOT veto the GBT's direction call. Confidence comes purely from
+        # gbt_conf. Revisit if a future DQN retrain gets above ~60% val-acc.
         dqn_q_values = None
         dqn_action = None
-        dqn_agrees = True
+        dqn_agrees = True  # kept in payload for backward compat; always True now
         if self._dqn is not None:
             try:
-                # Build augmented obs: base + GBT forecast + position state
-                # Use caller-provided position_state if available, else flat zeros.
                 ps_raw = state.get("position_state")
                 if ps_raw is not None:
                     position_state = np.asarray(ps_raw, dtype=np.float32).flatten()
@@ -415,40 +419,25 @@ class LiveInferenceV5:
                 augmented_obs = np.concatenate(
                     [base_obs.astype(np.float32), gbt_forecast.astype(np.float32), position_state]
                 )
-                # Pad or truncate to match DQN's trained input dim
                 if len(augmented_obs) != self._dqn_input_dim:
                     if len(augmented_obs) < self._dqn_input_dim:
                         pad = np.zeros(self._dqn_input_dim - len(augmented_obs), dtype=np.float32)
                         augmented_obs = np.concatenate([augmented_obs, pad])
                     else:
                         augmented_obs = augmented_obs[: self._dqn_input_dim]
-                # base_obs is already normalized above; GBT forecast is probabilities
-                # in [0,1] and position_state is zeros — both already in model-friendly
-                # scale, so no second normalization pass.
                 obs_tensor = torch.from_numpy(augmented_obs).unsqueeze(0)
                 with torch.no_grad():
                     q_values = self._dqn(obs_tensor)[0].numpy()
                 dqn_q_values = q_values.tolist()
                 dqn_action = int(np.argmax(q_values))
-                # 0=CONT, 1=REV, 2=SKIP
+                # Informational only — not used for veto logic.
                 dqn_agrees = (dqn_action == gbt_action) or (dqn_action == 2)
             except Exception:
                 log.debug("DQN inference failed", exc_info=True)
 
-        # Decision: GBT primary. DQN disagreement reduces confidence (veto mechanism).
+        # Decision: GBT primary, full confidence. DQN veto neutered (H6).
         action_idx = gbt_action
-        if self._dqn is not None and not dqn_agrees:
-            # DQN disagrees strongly with GBT — reduce effective confidence
-            confidence = gbt_conf * 0.5
-            log.info(
-                "DQN disagrees with GBT: gbt=%d dqn=%d — reducing confidence %.3f → %.3f",
-                gbt_action,
-                dqn_action,
-                gbt_conf,
-                confidence,
-            )
-        else:
-            confidence = gbt_conf
+        confidence = gbt_conf
 
         # Build narrative dict
         from .features.narrative_features import NARRATIVE_NAMES
