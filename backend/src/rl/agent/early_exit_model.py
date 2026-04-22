@@ -102,6 +102,11 @@ class EarlyExitModel:
         scale_pos_weight = (neg / max(pos, 1)) if pos > 0 else 1.0
 
         if _ENGINE == "lightgbm":
+            # Use AUC as the eval metric for early stopping; default multiclass
+            # logloss happily converges to the all-negative prediction on this
+            # imbalanced label (~8% positives), producing 0 precision / recall.
+            # AUC is threshold-free so early stopping actually rewards learning
+            # the positive class.
             params = dict(
                 n_estimators=n_estimators,
                 max_depth=max_depth,
@@ -113,9 +118,10 @@ class EarlyExitModel:
                 min_split_gain=0.01,
                 reg_alpha=0.1,
                 reg_lambda=1.0,
-                scale_pos_weight=scale_pos_weight,
+                is_unbalance=True,
                 n_jobs=2,
                 verbose=-1,
+                metric="auc",
             )
         else:
             params = dict(
@@ -155,15 +161,31 @@ class EarlyExitModel:
         train_acc = round(self.model.score(X_train, y_train) * 100, 1)
         val_acc = round(self.model.score(X_val, y_val) * 100, 1)
 
-        # Precision / recall at the default 0.5 cut — more informative than
-        # accuracy with an unbalanced label.
+        # Report precision/recall at multiple thresholds — with an imbalanced
+        # label the default 0.5 cut often yields zero positives. AUC is the
+        # real "did it learn?" metric; P/R at tuned thresholds tell downstream
+        # callers what threshold to use for actual early-exit decisions.
         val_probs = self.model.predict_proba(X_val)[:, 1]
-        val_pred = (val_probs >= 0.5).astype(np.int32)
-        tp = int(((val_pred == 1) & (y_val == 1)).sum())
-        fp = int(((val_pred == 1) & (y_val == 0)).sum())
-        fn = int(((val_pred == 0) & (y_val == 1)).sum())
-        precision = tp / max(tp + fp, 1)
-        recall = tp / max(tp + fn, 1)
+
+        def _pr(threshold: float) -> tuple[float, float, int]:
+            pred = (val_probs >= threshold).astype(np.int32)
+            tp = int(((pred == 1) & (y_val == 1)).sum())
+            fp = int(((pred == 1) & (y_val == 0)).sum())
+            fn = int(((pred == 0) & (y_val == 1)).sum())
+            prec = tp / max(tp + fp, 1)
+            rec = tp / max(tp + fn, 1)
+            return prec, rec, int(pred.sum())
+
+        try:
+            from sklearn.metrics import roc_auc_score
+
+            auc = float(roc_auc_score(y_val, val_probs))
+        except Exception:
+            auc = float("nan")
+
+        p05, r05, n05 = _pr(0.5)
+        p03, r03, n03 = _pr(0.3)
+        p07, r07, n07 = _pr(0.7)
 
         metrics = {
             "engine": _ENGINE,
@@ -175,15 +197,24 @@ class EarlyExitModel:
             "val_positive_pct": round(100.0 * float(y_val.sum()) / max(len(y_val), 1), 2),
             "train_accuracy": train_acc,
             "val_accuracy": val_acc,
-            "val_precision": round(precision, 3),
-            "val_recall": round(recall, 3),
+            "val_auc": round(auc, 4),
+            "val_precision@0.5": round(p05, 3),
+            "val_recall@0.5": round(r05, 3),
+            "val_flagged@0.5": n05,
+            "val_precision@0.3": round(p03, 3),
+            "val_recall@0.3": round(r03, 3),
+            "val_flagged@0.3": n03,
+            "val_precision@0.7": round(p07, 3),
+            "val_recall@0.7": round(r07, 3),
+            "val_flagged@0.7": n07,
         }
         log.info(
-            "EarlyExitModel: train=%.1f%% val=%.1f%% (precision=%.3f recall=%.3f)",
+            "EarlyExitModel: train=%.1f%% val=%.1f%% AUC=%.3f (P@.5=%.2f R@.5=%.2f)",
             train_acc,
             val_acc,
-            precision,
-            recall,
+            auc,
+            p05,
+            r05,
         )
         return metrics
 

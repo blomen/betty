@@ -3188,10 +3188,16 @@ def train_early_exit_model(
     typer.echo(f"    Alive features   : {metrics['alive_features']} / {metrics['total_features']}")
     typer.echo(f"    Train positives  : {metrics['train_positive_pct']}%")
     typer.echo(f"    Val positives    : {metrics['val_positive_pct']}%")
-    typer.echo(f"    Train accuracy   : {metrics['train_accuracy']}%")
-    typer.echo(f"    Val accuracy     : {metrics['val_accuracy']}%")
-    typer.echo(f"    Val precision    : {metrics['val_precision']}")
-    typer.echo(f"    Val recall       : {metrics['val_recall']}")
+    typer.echo(f"    Val AUC          : {metrics['val_auc']}")
+    typer.echo(
+        f"    P/R @ 0.3        : {metrics['val_precision@0.3']} / {metrics['val_recall@0.3']}  (flagged={metrics['val_flagged@0.3']})"
+    )
+    typer.echo(
+        f"    P/R @ 0.5        : {metrics['val_precision@0.5']} / {metrics['val_recall@0.5']}  (flagged={metrics['val_flagged@0.5']})"
+    )
+    typer.echo(
+        f"    P/R @ 0.7        : {metrics['val_precision@0.7']} / {metrics['val_recall@0.7']}  (flagged={metrics['val_flagged@0.7']})"
+    )
 
     top_features = model.feature_importance(top_n=10)
     typer.echo("\n  Top 10 feature importances:")

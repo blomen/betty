@@ -60,11 +60,12 @@ class TestEarlyExitModelTraining:
         X, peak, real = self._synthetic_data()
         m = EarlyExitModel()
         metrics = m.train(X, peak, real, n_estimators=40, max_depth=3)
-        assert "val_precision" in metrics
-        assert "val_recall" in metrics
+        assert "val_auc" in metrics
+        assert "val_precision@0.5" in metrics
+        assert "val_recall@0.5" in metrics
         assert 0 <= metrics["val_accuracy"] <= 100
-        assert 0 <= metrics["val_precision"] <= 1
-        assert 0 <= metrics["val_recall"] <= 1
+        assert 0 <= metrics["val_precision@0.5"] <= 1
+        assert 0 <= metrics["val_recall@0.5"] <= 1
 
     def test_predict_proba_in_unit_interval(self):
         X, peak, real = self._synthetic_data()
