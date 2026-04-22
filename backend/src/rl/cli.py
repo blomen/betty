@@ -2946,6 +2946,31 @@ def _build_augmented_obs(observations, episodes_dir):
     return observations.astype(_np.float32), None
 
 
+def _compute_confluence_weights(
+    observations,
+    *,
+    min_weight: float = 1.0,
+    max_weight: float = 3.0,
+) -> np.ndarray:
+    """Per-episode sample weight based on zone member count (H8).
+
+    Reads obs[0:31] (level_composition multi-hot), counts members, maps to
+    an upweight factor in [min_weight, max_weight]. Formula:
+        w = min_weight + (members - 1) * 0.5, clamped to [min, max]
+
+    Concretely: 1m→1.0, 2m→1.5, 3m→2.0, 4m→2.5, 5m→3.0, anything beyond 5m→3.0.
+    Designed so multi-member zones (trades worth ≥+1R/trade per I1 analysis)
+    get enough weight that the 74%-dominant 1m-zone volume doesn't dictate
+    the fit.
+    """
+    import numpy as _np
+
+    comp = (_np.asarray(observations[:, 0:31]) > 0.5).astype(_np.int8)
+    members = comp.sum(axis=1).astype(_np.float32)
+    w = min_weight + (members - 1.0) * 0.5
+    return _np.clip(w, min_weight, max_weight).astype(_np.float32)
+
+
 def _compute_action_conditioned_R(
     trigger_obs,
     rewards_cont,
@@ -3032,6 +3057,14 @@ def train_size_model(
     )
     typer.echo(f"Label source: {label_source}")
 
+    # H8: confluence-weighted per-sample training weights — multi-member
+    # zones are ~10% of episodes but produce ~+1R/trade vs single-member's
+    # noisier +0.93. Upweight them so they pull their weight in the fit.
+    confluence_w = _compute_confluence_weights(observations)
+    typer.echo(
+        f"Confluence weights: mean={confluence_w.mean():.2f}, min={confluence_w.min():.2f}, max={confluence_w.max():.2f}"
+    )
+
     n = len(X)
     typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
     typer.echo(f"Realized R: mean={realized_R.mean():+.3f}, median={np.median(realized_R):+.3f}")
@@ -3043,6 +3076,7 @@ def train_size_model(
         idx.sort()
         X = X[idx]
         realized_R = realized_R[idx]
+        confluence_w = confluence_w[idx]
         n = MAX_SAMPLES
         typer.echo(f"Subsampled to {n:,} for memory safety.")
 
@@ -3061,6 +3095,7 @@ def train_size_model(
         max_depth=depth,
         learning_rate=lr,
         init_model_path=init_path,
+        confluence_weights=confluence_w,
     )
 
     typer.echo("\n  Results:")
@@ -3154,6 +3189,12 @@ def train_early_exit_model(
 
     typer.echo(f"Label source: {label_source}")
 
+    # H8: confluence sample weights
+    confluence_w = _compute_confluence_weights(observations)
+    typer.echo(
+        f"Confluence weights: mean={confluence_w.mean():.2f}, min={confluence_w.min():.2f}, max={confluence_w.max():.2f}"
+    )
+
     n = len(X)
     typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
     typer.echo(f"peak_R: mean={peak_R.mean():+.3f}, median={np.median(peak_R):+.3f}")
@@ -3167,6 +3208,7 @@ def train_early_exit_model(
         X = X[idx]
         peak_R = peak_R[idx]
         realized_R = realized_R[idx]
+        confluence_w = confluence_w[idx]
         n = MAX_SAMPLES
         typer.echo(f"Subsampled to {n:,} for memory safety.")
 
@@ -3185,6 +3227,7 @@ def train_early_exit_model(
         max_depth=depth,
         learning_rate=lr,
         init_model_path=init_path,
+        confluence_weights=confluence_w,
     )
 
     typer.echo("\n  Results:")

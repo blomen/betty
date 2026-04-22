@@ -94,14 +94,18 @@ class SizeModel:
         learning_rate: float = 0.05,
         subsample: float = 0.8,
         init_model_path: Path | str | None = None,
+        confluence_weights: np.ndarray | None = None,
     ) -> dict:
         """Train the size tier classifier with chronological 80/20 split.
 
         If `init_model_path` points at a saved SizeModel joblib, the LightGBM
-        booster is warm-started from that prior: new data refines the model
-        instead of training from a random init. Shape mismatches (different
-        alive-feature count between prior and current) fall back to cold start
-        with a log line.
+        booster is warm-started from that prior (ONLINE1). Shape mismatches
+        fall back to cold start.
+
+        If `confluence_weights` is supplied (shape (N,), per-episode) it is
+        MULTIPLIED with the class-balance weights — used to upweight trades
+        from strong multi-member zones so the model isn't dominated by the
+        74%-of-volume 1-member-zone noise (H8).
         """
         n = len(X)
         val_split = int(n * 0.80)
@@ -121,6 +125,13 @@ class SizeModel:
         unique, counts = np.unique(y_train, return_counts=True)
         weights = {int(c): float(len(y_train) / (len(unique) * n)) for c, n in zip(unique, counts)}
         sample_weight = np.array([weights[int(c)] for c in y_train], dtype=np.float64)
+
+        # H8: confluence-weighted sample weights — multiply class weights by
+        # per-episode confluence factor so multi-member zones aren't drowned
+        # out by the 74% single-member zone volume.
+        if confluence_weights is not None:
+            assert len(confluence_weights) == len(X), "confluence_weights must align with X"
+            sample_weight = sample_weight * confluence_weights[:val_split].astype(np.float64)
 
         if _ENGINE == "lightgbm":
             params = dict(

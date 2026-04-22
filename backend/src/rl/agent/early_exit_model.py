@@ -82,13 +82,14 @@ class EarlyExitModel:
         learning_rate: float = 0.05,
         subsample: float = 0.8,
         init_model_path: Path | str | None = None,
+        confluence_weights: np.ndarray | None = None,
     ) -> dict:
         """Train on the 318-dim observation with pump-and-retrace labels.
 
-        Optional warm-start from a prior EarlyExitModel joblib (ONLINE1):
-        if `init_model_path` is set and the prior's alive-feature count
-        matches, we continue LightGBM training from that booster instead
-        of a fresh random init.
+        - `init_model_path` warm-starts from a prior EarlyExitModel booster
+          (ONLINE1).
+        - `confluence_weights` (per-episode) upweights multi-member-zone
+          trades so the model isn't drowned out by 1-member zone volume (H8).
         """
         n = len(X)
         val_split = int(n * 0.80)
@@ -173,6 +174,13 @@ class EarlyExitModel:
                     )
             except Exception:
                 log.exception("EarlyExitModel: warm-start failed, falling back to cold start")
+
+        # H8: optional confluence sample weights. Already have is_unbalance for
+        # class balance; this adds a multiplicative per-sample factor so
+        # multi-member-zone trades count more.
+        if confluence_weights is not None:
+            assert len(confluence_weights) == len(X), "confluence_weights must align with X"
+            fit_kwargs["sample_weight"] = confluence_weights[:val_split].astype(np.float64)
 
         if _ENGINE == "lightgbm":
             fit_kwargs["eval_set"] = [(X_val, y_val)]
