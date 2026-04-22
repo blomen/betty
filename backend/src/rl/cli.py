@@ -3638,3 +3638,112 @@ def derive_hierarchy_weights(
     }
     out_path.write_text(_yaml.safe_dump(payload, sort_keys=False))
     typer.echo(f"\n  Wrote empirical weights to {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# tune-early-exit-threshold — sweep EE threshold on net-R-saved (H5)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("tune-early-exit-threshold")
+def tune_early_exit_threshold(
+    lock_r: float = typer.Option(0.5, help="Partial-profit locked if EE fires (+0.5R default)"),
+    thresholds: str = typer.Option(
+        "0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
+        help="Comma-separated thresholds to sweep",
+    ),
+) -> None:
+    """Sweep EarlyExit thresholds on net-R-saved across the OOS split.
+
+    Counter-factual: at each threshold τ, for every episode:
+      - If P(pump-and-retrace) >= τ AND peak_R >= lock_r: "early-exit fires"
+        → realized_R → lock_r (we locked partial profit)
+      - Otherwise: realized_R stays as-is
+
+    Net-R-saved = sum((new_R - original_R) where EE fired). Positive means
+    the EE rule saved R (we avoided larger retraces); negative means the
+    rule cost R (we cut winners too early).
+    """
+
+    import numpy as np
+
+    from src.rl.agent.early_exit_model import EarlyExitModel
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    ee_path = models_dir / "early_exit_model_latest.joblib"
+    if not ee_path.exists():
+        typer.echo(f"No {ee_path} — train one first.", err=True)
+        raise typer.Exit(1)
+
+    obs_path = episodes_dir / "observations.npy"
+    peakc_path = episodes_dir / "peak_R_cont.npy"
+    peakr_path = episodes_dir / "peak_R_rev.npy"
+    if not all(p.exists() for p in [obs_path, peakc_path, peakr_path]):
+        typer.echo("Need observations.npy + peak_R_cont.npy + peak_R_rev.npy", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Loading episodes + EE model ({ee_path.name})...")
+    observations = np.load(obs_path)
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    peak_c = np.load(peakc_path)
+    peak_r = np.load(peakr_path)
+
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
+
+    # Action-conditioned realized + peak (H4) — same convention the EE head trained on
+    realized_R, label_source = _compute_action_conditioned_R(
+        trigger_obs=trigger_obs,
+        rewards_cont=rewards_cont,
+        rewards_rev=rewards_rev,
+        models_dir=models_dir,
+    )
+    if trigger_obs is not None:
+        try:
+            from src.rl.agent.trigger_gbt import TriggerGBT as _TGBT
+
+            gbt = _TGBT.load(models_dir / "trigger_gbt_v5.joblib")
+            actions, _c, _p = gbt.predict_direction_batch(trigger_obs.astype(np.float32))
+            peak_R = np.where(actions == 0, peak_c, peak_r).astype(np.float32)
+        except Exception:
+            peak_R = np.maximum(peak_c, peak_r).astype(np.float32)
+    else:
+        peak_R = np.maximum(peak_c, peak_r).astype(np.float32)
+
+    typer.echo(f"Label source: {label_source}")
+    typer.echo(f"Loaded {len(X):,} episodes")
+
+    # Use the last 20% as OOS (matches chronological split used everywhere else)
+    val_split = int(len(X) * 0.80)
+    Xv = X[val_split:]
+    Rv = realized_R[val_split:]
+    Pv = peak_R[val_split:]
+    typer.echo(f"OOS split: {len(Xv):,} episodes")
+
+    ee = EarlyExitModel.load(ee_path)
+    probs = ee.predict_proba_batch(Xv)
+
+    thresh_list = [float(t) for t in thresholds.split(",") if t.strip()]
+    baseline_total = float(Rv.sum())
+    typer.echo(f"\nBaseline total R (no EE): {baseline_total:+.1f}")
+    typer.echo(f"Lock R on EE fire: +{lock_r}")
+    typer.echo(
+        f"\n  {'thresh':>7s}  {'flags':>7s}  {'flag%':>6s}  {'TP_flag':>8s}  {'FP_flag':>8s}  {'sum_new_R':>10s}  {'Δ_R':>9s}  note"
+    )
+    typer.echo(f"  {'─' * 7}  {'─' * 7}  {'─' * 6}  {'─' * 8}  {'─' * 8}  {'─' * 10}  {'─' * 9}  ────")
+
+    for thr in thresh_list:
+        fires = (probs >= thr) & (Pv >= lock_r)  # only counts if trade actually reached lock_r
+        new_R = np.where(fires, lock_r, Rv)
+        delta = float(new_R.sum() - baseline_total)
+        n_fires = int(fires.sum())
+        pct_fires = 100.0 * n_fires / max(len(Xv), 1)
+        # TP_flag = EE fired AND realized_R < lock_r (retrace saved)
+        tp_flag = int(((fires) & (Rv < lock_r)).sum())
+        fp_flag = int(((fires) & (Rv >= lock_r)).sum())
+        typer.echo(
+            f"  {thr:>7.2f}  {n_fires:>7,d}  {pct_fires:>5.1f}%  {tp_flag:>8,d}  {fp_flag:>8,d}  "
+            f"{float(new_R.sum()):>+10.1f}  {delta:>+9.1f}  {'(net saved R)' if delta > 0 else '(net cost R)'}"
+        )

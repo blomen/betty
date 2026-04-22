@@ -3,9 +3,7 @@
 Problem: some trades pump to a partial profit (e.g. +0.5R) and then retrace to
 breakeven or worse. Exiting at the peak would have locked those trades as
 small winners instead of scratches or losers. This head predicts, at entry,
-the probability that THIS trade will be a "pump-and-retrace" — if high, the
-session manager can attach an early-exit rule that closes the position when
-it first reaches +0.5R.
+the probability that THIS trade will be a "pump-and-retrace".
 
 Label (derived at training time from tick path stats already computed by
 episode_builder):
@@ -13,15 +11,34 @@ episode_builder):
     early_exit_label = 1  if peak_R >= 0.5 AND realized_R < 0.5
                      = 0  otherwise
 
-- peak_R is Maximum Favorable Excursion in R units (added in Phase 3c).
-- realized_R is the best-side reward (max of continuation/reversal).
+- peak_R is Maximum Favorable Excursion in R units.
+- realized_R is the best-side reward (action-conditioned after H4).
 
 The threshold 0.5 matches the level at which the session manager would
-actually take the early exit — a natural breakeven-plus-small-profit level
-given the 20-tick stop basis.
+take the early exit — a natural breakeven-plus-small-profit level.
 
 Input: same 318-dim augmented observation the DQN and SizeModel use.
 Output: P(early_exit is optimal) ∈ [0, 1].
+
+=== H5 FINDING — head is net R-NEGATIVE at every threshold on OOS ===
+On the 104k-episode OOS split, a `rl tune-early-exit-threshold --lock-r 0.5`
+sweep shows the EE-as-partial-exit rule costs R at every threshold:
+    τ=0.5: -7,923 R     (flags 46% of trades, cuts winners)
+    τ=0.7: -1,290 R     (flags 7%, better but still net-negative)
+    τ=0.8:    -34 R     (flags 0.4%, essentially off)
+
+Why: TP (correct-flag retrace) saves ≤ 0.5R per trade. FP (wrong-flag on a
+winner extending past 1R) costs the entire upside beyond 0.5R. TP and FP
+counts are roughly parity at any threshold, so the asymmetric payoff
+dominates and the rule cuts winners more than it saves losers.
+
+Practical consequence: the `EARLY_EXIT_DEFAULT_THRESHOLD` below is set to
+0.95 so the head is effectively OFF in live inference. The head is kept
+around because (a) the AUC=0.69 says the signal is real, (b) a different
+lock_r (e.g. +1R or adaptive by zone strength) may flip the sign, and
+(c) downstream consumers can still read `early_exit_prob` from the infer
+payload if they want their own rule. Don't use it as a hard-exit trigger
+without re-running the sweep.
 """
 
 from __future__ import annotations
@@ -44,10 +61,15 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# Pump-then-retrace definition. These thresholds match what the live session
-# manager would key off: a "+0.5R locked" early-exit rule.
-PUMP_R_THRESHOLD: float = 0.5  # peak_R must reach this to consider "pump"
+# Pump-then-retrace label thresholds. See H5 finding in module docstring —
+# the fixed +0.5R lock is net R-negative at every firing threshold.
+PUMP_R_THRESHOLD: float = 0.5  # peak_R must reach this to be labelled "pump"
 REALIZED_R_MAX: float = 0.5  # realized_R must stay below this to be "retrace"
+
+# Effective-off default for the live inference threshold. Don't fire the
+# early-exit rule unless a future re-design (higher lock_r, zone-adaptive,
+# regime-gated) proves net-positive in the sweep.
+EARLY_EXIT_DEFAULT_THRESHOLD: float = 0.95
 
 # Small tolerance for float32 boundary noise (matches size_model convention).
 _EPS: float = 1e-6
@@ -266,8 +288,14 @@ class EarlyExitModel:
         X = self.scaler.transform(obs[:, self._alive_mask])
         return self.model.predict_proba(X)[:, 1].astype(np.float32)
 
-    def should_early_exit(self, obs: np.ndarray, threshold: float = 0.5) -> bool:
-        """Convenience: True if P(pump-and-retrace) ≥ threshold."""
+    def should_early_exit(self, obs: np.ndarray, threshold: float = EARLY_EXIT_DEFAULT_THRESHOLD) -> bool:
+        """Convenience: True if P(pump-and-retrace) ≥ threshold.
+
+        Default threshold 0.95 keeps the head effectively off — per H5, the
+        partial-exit rule is net R-negative at every lower cut. Callers that
+        want to experiment should pass an explicit lower threshold AND re-run
+        `rl tune-early-exit-threshold` first.
+        """
         return self.predict_proba(obs) >= threshold
 
     def feature_importance(self, top_n: int = 20) -> list[tuple[int, float]]:

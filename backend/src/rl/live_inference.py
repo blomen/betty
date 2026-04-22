@@ -517,12 +517,19 @@ class LiveInferenceV5:
             except Exception:
                 log.debug("SizeModel predict failed; falling back to heuristic", exc_info=True)
 
-        # Phase 3c: early_exit probability — downstream session manager
-        # attaches a +0.5R locked exit when this exceeds its threshold.
+        # Phase 3c: early_exit probability. H5 found the fixed +0.5R-lock
+        # rule is net R-negative at every firing threshold, so the default
+        # threshold is 0.95 (effectively off). Session manager can read
+        # `early_exit_prob` and `early_exit_threshold` and decide how to use
+        # them — but don't fire on the default 0.5 without re-tuning.
         early_exit_prob = 0.0
+        early_exit_threshold = 0.95  # EarlyExitModel.EARLY_EXIT_DEFAULT_THRESHOLD
         if self._early_exit_model is not None and augmented is not None:
             try:
                 early_exit_prob = float(self._early_exit_model.predict_proba(augmented))
+                from .agent.early_exit_model import EARLY_EXIT_DEFAULT_THRESHOLD
+
+                early_exit_threshold = EARLY_EXIT_DEFAULT_THRESHOLD
             except Exception:
                 log.debug("EarlyExitModel predict failed", exc_info=True)
 
@@ -537,6 +544,7 @@ class LiveInferenceV5:
             "size_multiplier": size_mult,
             "size_source": size_source,
             "early_exit_prob": early_exit_prob,
+            "early_exit_threshold": early_exit_threshold,
             "dqn_action": dqn_action,
             "dqn_agrees": dqn_agrees,
             "gbt_action": gbt_action,
