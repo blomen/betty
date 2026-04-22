@@ -2894,6 +2894,71 @@ def train_trigger_gbt(
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers for Phase 3c risk heads — action-conditioned reward labels
+# ---------------------------------------------------------------------------
+
+
+def _build_augmented_obs(observations, episodes_dir):
+    """Return (X, trigger_obs_or_None) where X is the 318-dim DQN input.
+
+    If trigger_observations.npy is missing or misaligned, falls back to the
+    base observations only (the heads then train on 302-dim instead of 318).
+    """
+    import numpy as _np
+
+    trigger_path = episodes_dir / "trigger_observations.npy"
+    if trigger_path.exists():
+        trigger_obs = _np.load(trigger_path)
+        if len(trigger_obs) == len(observations):
+            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+
+            _gs = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
+            gbt_forecast = trigger_obs[:, _gs : _gs + TRIGGER_GBT_DIM]
+            position_state = _np.zeros((len(observations), 8), dtype=_np.float32)
+            X = _np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(_np.float32)
+            return X, trigger_obs
+    return observations.astype(_np.float32), None
+
+
+def _compute_action_conditioned_R(
+    trigger_obs,
+    rewards_cont,
+    rewards_rev,
+    models_dir,
+):
+    """Return (R, source_tag).
+
+    H4 fix: use the reward of the action the TriggerGBT WOULD pick, not the
+    post-hoc max(cont, rev). That's the realistic label — the policy can't
+    see which side will win.
+
+    Falls back to max(cont, rev) if trigger_gbt_v5.joblib isn't on disk yet
+    (e.g. first pipeline run where step 4 hasn't produced it or standalone
+    H4 backfill on an older checkpoint).
+    """
+    import numpy as _np
+
+    tgbt_path = models_dir / "trigger_gbt_v5.joblib"
+    if trigger_obs is None or not tgbt_path.exists():
+        return _np.maximum(rewards_cont, rewards_rev).astype(_np.float32), "max(cont,rev) fallback"
+
+    try:
+        from src.rl.agent.trigger_gbt import TriggerGBT
+
+        gbt = TriggerGBT.load(tgbt_path)
+        # predict_direction_batch returns (actions, confidences, probs).
+        # action=0 → continuation, action=1 → reversal.
+        actions, _conf, _probs = gbt.predict_direction_batch(trigger_obs.astype(_np.float32))
+        R = _np.where(actions == 0, rewards_cont, rewards_rev).astype(_np.float32)
+        cont_frac = float((actions == 0).mean())
+        return R, f"action-conditioned (TriggerGBT: {cont_frac:.1%} CONT / {1 - cont_frac:.1%} REV)"
+    except Exception as exc:
+        log = logging.getLogger(__name__)
+        log.warning("action-conditioned R fallback due to: %s", exc)
+        return _np.maximum(rewards_cont, rewards_rev).astype(_np.float32), f"max fallback ({exc})"
+
+
+# ---------------------------------------------------------------------------
 # train-size-model (Phase 3c: trained position-sizing head)
 # ---------------------------------------------------------------------------
 
@@ -2928,30 +2993,18 @@ def train_size_model(
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
 
-    # Augment with GBT forecast + zero position state to mirror DQN input.
-    # If trigger_observations.npy has the forecast already, use it; else zeros.
-    trigger_path = episodes_dir / "trigger_observations.npy"
-    if trigger_path.exists():
-        trigger_obs = np.load(trigger_path)
-        if len(trigger_obs) == len(observations):
-            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
 
-            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
-            gbt_forecast = trigger_obs[:, _gbt_start : _gbt_start + TRIGGER_GBT_DIM]
-            position_state = np.zeros((len(observations), 8), dtype=np.float32)
-            X = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
-        else:
-            X = observations.astype(np.float32)
-            typer.echo("Warning: trigger_obs size mismatch, training on base obs only.")
-    else:
-        X = observations.astype(np.float32)
-        typer.echo("No trigger_observations.npy — training on base obs only.")
-
-    # Best-realized-R target per episode (max of continuation/reversal reward).
-    # This assumes the trader took the better side — i.e. this is the
-    # upper-bound of what the policy could have achieved, which is the
-    # right target for "optimal size".
-    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+    # H4: action-conditioned realized R — the reward on the side the
+    # TriggerGBT WOULD pick, not the post-hoc best. Falls back to max()
+    # if no trigger_gbt checkpoint is available yet (first-ever run).
+    realized_R, label_source = _compute_action_conditioned_R(
+        trigger_obs=trigger_obs,
+        rewards_cont=rewards_cont,
+        rewards_rev=rewards_rev,
+        models_dir=models_dir,
+    )
+    typer.echo(f"Label source: {label_source}")
 
     n = len(X)
     typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
@@ -3042,27 +3095,30 @@ def train_early_exit_model(
     peak_R_cont = np.load(peakc_path)
     peak_R_rev = np.load(peakr_path)
 
-    # Augment with GBT forecast + zero position state (same shape as size_model input).
-    trigger_path = episodes_dir / "trigger_observations.npy"
-    if trigger_path.exists():
-        trigger_obs = np.load(trigger_path)
-        if len(trigger_obs) == len(observations):
-            from src.rl.features.trigger_features import EXEC_PASSTHROUGH_DIM, TRIGGER_DIM, TRIGGER_GBT_DIM
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
 
-            _gbt_start = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
-            gbt_forecast = trigger_obs[:, _gbt_start : _gbt_start + TRIGGER_GBT_DIM]
-            position_state = np.zeros((len(observations), 8), dtype=np.float32)
-            X = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+    # H4: action-conditioned peak + realized — use the side the TriggerGBT
+    # actually picks, not max(cont, rev). That's the realistic pump-and-
+    # retrace outcome given the policy's direction choice, so training
+    # teaches the EarlyExit head to flag trades on the REAL side taken.
+    try:
+        from src.rl.agent.trigger_gbt import TriggerGBT as _TGBT
+
+        tgbt_path = models_dir / "trigger_gbt_v5.joblib"
+        if trigger_obs is not None and tgbt_path.exists():
+            gbt = _TGBT.load(tgbt_path)
+            actions, _conf, _probs = gbt.predict_direction_batch(trigger_obs.astype(np.float32))
+            peak_R = np.where(actions == 0, peak_R_cont, peak_R_rev).astype(np.float32)
+            realized_R = np.where(actions == 0, rewards_cont, rewards_rev).astype(np.float32)
+            label_source = f"action-conditioned ({(actions == 0).mean():.1%} CONT / {(actions == 1).mean():.1%} REV)"
         else:
-            X = observations.astype(np.float32)
-            typer.echo("Warning: trigger_obs size mismatch, training on base obs only.")
-    else:
-        X = observations.astype(np.float32)
-        typer.echo("No trigger_observations.npy — training on base obs only.")
+            raise RuntimeError("trigger_gbt not available")
+    except Exception as exc:
+        peak_R = np.maximum(peak_R_cont, peak_R_rev).astype(np.float32)
+        realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+        label_source = f"max(cont,rev) fallback ({exc})"
 
-    # Use the best-side peak + best-side realized — same convention as size_model.
-    peak_R = np.maximum(peak_R_cont, peak_R_rev).astype(np.float32)
-    realized_R = np.maximum(rewards_cont, rewards_rev).astype(np.float32)
+    typer.echo(f"Label source: {label_source}")
 
     n = len(X)
     typer.echo(f"Loaded {n:,} episodes ({X.shape[1]}-dim)")
