@@ -85,6 +85,7 @@ class BetCreate(BaseModel):
     boost_title: str | None = None  # For boosts: LLM-simplified title at placement
     bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
     start_time: str | None = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
+    provider_bet_id: str | None = None  # Coupon/bet ref from placement response — enables exact-ID settlement matching
 
 
 class BatchBetLeg(BaseModel):
@@ -102,6 +103,7 @@ class BatchBetLeg(BaseModel):
     utility_score: float | None = None
     selection_probability: float | None = None
     bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
+    provider_bet_id: str | None = None  # Coupon/bet ref from placement response
 
 
 class BatchBetCreate(BaseModel):

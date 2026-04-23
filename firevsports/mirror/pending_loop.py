@@ -268,13 +268,23 @@ class PendingLoop:
                 logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
                 return
 
-            # Skip if the user's tab is currently on an event page — a play runner
-            # likely has the betslip prepped and waiting for confirmation. Navigating
-            # the tab to /portfolio?tab=history here would clobber that state.
+            # Skip if the tab is on an event page — a play runner likely has the betslip
+            # prepped and waiting for confirmation. A bet history sync would clobber it.
+            # Safe pages: landing, /portfolio (history on many sites), and Kambi's
+            # /betting or /betting/sports lobbies (hash-based history nav does not leave
+            # the page, so syncing here is safe).
             current_url = (page.url or "").lower()
-            on_portfolio = "/portfolio" in current_url or current_url.endswith(workflow.domain) \
-                or current_url == f"https://{workflow.domain}/" or current_url == "about:blank"
-            if not on_portfolio:
+            has_event = "/event/" in current_url or "#/event/" in current_url
+            safe_to_sync = not has_event and (
+                "/portfolio" in current_url
+                or current_url.endswith(workflow.domain)
+                or current_url == f"https://{workflow.domain}/"
+                or current_url == "about:blank"
+                or current_url.rstrip("/").endswith("/betting")
+                or "/betting/sports" in current_url
+                or "/sv-se/betting" in current_url
+            )
+            if not safe_to_sync:
                 logger.debug(
                     f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
                     f"skipping sync to avoid clobbering an active betslip"

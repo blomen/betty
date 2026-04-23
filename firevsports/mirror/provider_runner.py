@@ -939,6 +939,7 @@ class ProviderRunner:
                 "odds": entry.get("odds", 0),
                 "stake": entry.get("stake", 0),
                 "is_bonus": False,
+                "provider_bet_id": entry.get("provider_bet_id") or None,
             }
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1018,6 +1019,7 @@ class ProviderRunner:
 
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
         url = f"{self._proxy_url}/api/bets"
+        provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         payload = {
             "event_id": bet.get("event_id", ""),
             "provider_id": bet.get("provider_id", ""),
@@ -1028,6 +1030,7 @@ class ProviderRunner:
             "point": bet.get("point"),
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
+            "provider_bet_id": provider_bet_id,
         }
         for attempt in range(3):
             try:

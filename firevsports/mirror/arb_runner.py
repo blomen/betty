@@ -791,6 +791,7 @@ class ArbRunner:
     async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
         """Record a bet to the server DB with arb group linkage."""
         url = f"{self._proxy_url}/api/bets"
+        provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         payload = {
             "event_id": bet.get("event_id", ""),
             "provider_id": bet.get("provider_id", ""),
@@ -801,6 +802,7 @@ class ArbRunner:
             "point": bet.get("point"),
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
+            "provider_bet_id": provider_bet_id,
             "notes": f"arb_group:{arb_group_id}",
         }
         for attempt in range(3):

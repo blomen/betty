@@ -1,5 +1,6 @@
 """Bet service - bet recording and settlement with risk management."""
 
+import contextlib
 import logging
 from datetime import datetime, timezone
 
@@ -61,6 +62,7 @@ class BetService:
         boost_title: str | None = None,
         bet_type: str | None = None,
         start_time_str: str | None = None,
+        provider_bet_id: str | None = None,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -155,17 +157,13 @@ class BetService:
             if ev and ev.start_time:
                 start_time = ev.start_time
         if start_time is None and start_time_str:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
         if start_time is None and bet_type == "boost" and outcome:
             sp = self.db.query(SpecialOdds).filter(SpecialOdds.title == outcome).first()
             if sp and sp.event_time:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     start_time = datetime.fromisoformat(sp.event_time.replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    pass
 
         bet = self.bet_repo.create(
             profile_id=profile.id,
@@ -193,6 +191,7 @@ class BetService:
             boost_title=boost_title,
             confirmation_id=confirmation_id,
             bet_type=bet_type,
+            provider_bet_id=provider_bet_id,
         )
 
         # Balance is managed manually via Adjust — no auto-deduct on placement

@@ -822,9 +822,13 @@ class KambiWorkflow(ProviderWorkflow):
 
     @staticmethod
     def parse_placement_details(body: dict) -> dict:
-        """Extract actual odds/stake from Kambi placement response."""
+        """Extract actual odds/stake from Kambi placement response.
+
+        Kambi always returns stake and odds in millis (e.g. 10000 = 10.0 SEK,
+        1850 = 1.85). Matches the history parser convention in
+        _parse_kambi_cdn_coupons.
+        """
         details: dict = {}
-        # Look in top-level and nested structures
         for src in (body, body.get("data", {}), body.get("result", {}), body.get("coupon", {})):
             if not isinstance(src, dict):
                 continue
@@ -833,7 +837,7 @@ class KambiWorkflow(ProviderWorkflow):
                     val = src.get(key)
                     if val:
                         try:
-                            details["actual_stake"] = float(val)
+                            details["actual_stake"] = float(val) / 1000.0
                         except (TypeError, ValueError):
                             pass
             if not details.get("actual_odds"):
@@ -841,7 +845,11 @@ class KambiWorkflow(ProviderWorkflow):
                     val = src.get(key)
                     if val:
                         try:
-                            details["actual_odds"] = float(val)
+                            num = float(val)
+                            # oddsDecimal key is decimal; others are millis.
+                            if key != "oddsDecimal" and num >= 100:
+                                num /= 1000.0
+                            details["actual_odds"] = num
                         except (TypeError, ValueError):
                             pass
         return details

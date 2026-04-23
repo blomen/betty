@@ -1,6 +1,7 @@
 """Bets API routes."""
 
 import asyncio
+import contextlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -102,10 +103,8 @@ def _predict_result(bet, event) -> str | None:
         parts = market.split("_", 1)
         market = parts[0]
         if point is None:
-            try:
+            with contextlib.suppress(ValueError, IndexError):
                 point = float(parts[1])
-            except (ValueError, IndexError):
-                pass
 
     # Path 0: Market resolution (Polymarket total/spread — bypasses stale scores)
     if market in ("total", "spread") and event.stats_json:
@@ -358,6 +357,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             boost_title=bet.boost_title,
             bet_type=bet.bet_type,
             start_time_str=bet.start_time,
+            provider_bet_id=bet.provider_bet_id,
         )
 
         if "error" in result:
@@ -425,6 +425,7 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
                 utility_score=leg.utility_score,
                 selection_probability=leg.selection_probability,
                 bet_type=leg.bet_type,
+                provider_bet_id=leg.provider_bet_id,
             )
 
             if "error" in result:
