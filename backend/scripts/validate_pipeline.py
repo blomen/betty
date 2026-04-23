@@ -21,7 +21,7 @@ from pathlib import Path
 # Paths
 SCRIPT_DIR = Path(__file__).parent
 BASELINE_PATH = SCRIPT_DIR / "baseline_metrics.json"
-DB_PATH = SCRIPT_DIR.parent / "data" / "firev.db"
+DB_PATH = SCRIPT_DIR.parent / "data" / "arnold.db"
 
 
 def load_baseline() -> dict:

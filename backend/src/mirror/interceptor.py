@@ -230,8 +230,8 @@ class BetInterceptor:
             """Inject JS that exposes click/input events via console.log for recording."""
             try:
                 await page.evaluate("""() => {
-                    if (window.__firevRecorder) return;
-                    window.__firevRecorder = true;
+                    if (window.__arnoldRecorder) return;
+                    window.__arnoldRecorder = true;
                     document.addEventListener('click', (e) => {
                         const el = e.target;
                         const tag = el.tagName?.toLowerCase() || '?';
@@ -239,7 +239,7 @@ class BetInterceptor:
                         const cls = (el.className || '').toString().slice(0, 60);
                         const href = el.href || '';
                         console.log(JSON.stringify({
-                            __firev: 'click', tag, text, cls, href: href.slice(0, 100),
+                            __arnold: 'click', tag, text, cls, href: href.slice(0, 100),
                             x: e.clientX, y: e.clientY, url: location.href.slice(0, 100)
                         }));
                     }, true);
@@ -249,7 +249,7 @@ class BetInterceptor:
                         const name = el.name || el.id || '';
                         const val = el.type === 'password' ? '***' : (el.value || '').slice(0, 30);
                         console.log(JSON.stringify({
-                            __firev: 'input', tag, name, value: val, url: location.href.slice(0, 100)
+                            __arnold: 'input', tag, name, value: val, url: location.href.slice(0, 100)
                         }));
                     }, true);
                 }""")
@@ -259,13 +259,13 @@ class BetInterceptor:
         # Record console messages from injected DOM recorder
         def _on_console(msg):
             text = msg.text
-            if not text.startswith('{"__firev"'):
+            if not text.startswith('{"__arnold"'):
                 return
             try:
                 import json as _json
 
                 data = _json.loads(text)
-                event_type = data.pop("__firev", "unknown")
+                event_type = data.pop("__arnold", "unknown")
                 self.recorder.record_dom_event(event_type, data)
             except Exception:
                 pass

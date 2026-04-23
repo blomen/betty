@@ -73,7 +73,7 @@ def _kalshi_key_path(pem_body: str):
     try:
         from ...paths import get_data_dir  # type: ignore
     except ImportError:
-        # Fallback for firevsports copy, which has no ...paths — use a
+        # Fallback for arnoldsports copy, which has no ...paths — use a
         # sibling `data/` folder next to the mirror root.
         import pathlib
 

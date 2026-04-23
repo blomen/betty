@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 def ensure_recording_tables(db_session_factory) -> None:
     """Create recording tables if they don't exist.
 
-    Called on firevstocks startup. Uses the market database.
+    Called on arnoldstocks startup. Uses the market database.
     """
     db = db_session_factory()
     try:

@@ -535,7 +535,7 @@ def export_trades(
     import os
 
     pw = os.environ.get("DB_PASSWORD", "")
-    db_url = f"postgresql://firev:{pw}@postgres:5432/market"
+    db_url = f"postgresql://arnold:{pw}@postgres:5432/market"
     try:
         engine = create_engine(db_url)
         with engine.connect() as conn:

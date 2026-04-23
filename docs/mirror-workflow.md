@@ -11,14 +11,14 @@ The **mirror** is a headed Playwright Chromium browser that runs locally on your
 
 | File | Purpose |
 |------|---------|
-| `firevsports/mirror/browser.py` | Playwright lifecycle, network interception, provider detection |
-| `firevsports/mirror/play_loop.py` | Multi-provider coordinator, cluster queues, event blocking |
-| `firevsports/mirror/provider_runner.py` | Per-provider state machine (login → settle → navigate → place) |
-| `firevsports/mirror/pending_loop.py` | Background settlement sync (60s poll) |
-| `firevsports/mirror/data_stream.py` | Continuous per-provider polling (balance/positions/history) |
-| `firevsports/mirror/sse.py` | Server-Sent Events broadcaster to frontend |
-| `firevsports/mirror/router.py` | `/mirror/*` API endpoints for browser/play/settlement control |
-| `firevsports/mirror/workflows/` | Per-platform workflow implementations |
+| `arnoldsports/mirror/browser.py` | Playwright lifecycle, network interception, provider detection |
+| `arnoldsports/mirror/play_loop.py` | Multi-provider coordinator, cluster queues, event blocking |
+| `arnoldsports/mirror/provider_runner.py` | Per-provider state machine (login → settle → navigate → place) |
+| `arnoldsports/mirror/pending_loop.py` | Background settlement sync (60s poll) |
+| `arnoldsports/mirror/data_stream.py` | Continuous per-provider polling (balance/positions/history) |
+| `arnoldsports/mirror/sse.py` | Server-Sent Events broadcaster to frontend |
+| `arnoldsports/mirror/router.py` | `/mirror/*` API endpoints for browser/play/settlement control |
+| `arnoldsports/mirror/workflows/` | Per-platform workflow implementations |
 
 ---
 
@@ -404,7 +404,7 @@ GET   interwetten.se/.../refreshaccountbalance                         # balance
 
 Either a **dedicated workflow class** (if platform has unique API/DOM patterns) or an **intel JSON** for GenericWorkflow.
 
-**Dedicated workflow** (`firevsports/mirror/workflows/{platform}.py`):
+**Dedicated workflow** (`arnoldsports/mirror/workflows/{platform}.py`):
 ```python
 class PlatformWorkflow(BaseWorkflow):
     async def check_login(self, page) -> bool

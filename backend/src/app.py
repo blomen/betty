@@ -1,5 +1,5 @@
 """
-Firev Interactive Terminal Application
+Arnold Interactive Terminal Application
 
 A Rich + Typer based terminal UI for betting analytics.
 """
@@ -21,7 +21,7 @@ from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 
 console = Console(force_terminal=True)
-app = typer.Typer(help="Firev - Betting Analytics Platform")
+app = typer.Typer(help="Arnold - Betting Analytics Platform")
 app.add_typer(rl_app, name="rl")
 
 
@@ -29,7 +29,7 @@ def show_banner():
     """Display the app banner."""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║                    Firev                              ║
+    ║                    Arnold                              ║
     ║           Betting Analytics Platform                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """

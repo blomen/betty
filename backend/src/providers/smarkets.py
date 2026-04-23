@@ -52,7 +52,7 @@ def type_scope_to_sport(scope: str) -> str | None:
     """Resolve a Smarkets type-slug to our canonical sport name.
 
     Returns None for non-sport scopes (politics, entertainment, etc.)
-    which Firev doesn't track.
+    which Arnold doesn't track.
     """
     return SMARKETS_TYPE_SCOPE_TO_SPORT.get(scope)
 

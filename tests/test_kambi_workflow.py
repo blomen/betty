@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from firevsports.mirror.play_loop import _bet_ns
+from arnoldsports.mirror.play_loop import _bet_ns
 
 
 def test_bet_ns_kambi_event_id_does_not_collide_with_canonical():
@@ -33,7 +33,7 @@ def test_bet_ns_kambi_fields_empty_when_no_provider_meta():
     assert ns.kambi_outcome_id == ""
 
 
-from firevsports.mirror.workflows.kambi import _parse_graphql_balance
+from arnoldsports.mirror.workflows.kambi import _parse_graphql_balance
 
 
 def test_parse_graphql_balance_standard():

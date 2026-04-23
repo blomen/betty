@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "firev"
+name = "arnold"
 version = "0.1.0"
-description = "Firev - Betting analytics platform comparing odds across 40+ sportsbooks"
+description = "Arnold - Betting analytics platform comparing odds across 40+ sportsbooks"
 requires-python = ">=3.10"
 dependencies = [
     # HTTP/API
@@ -79,7 +79,7 @@ ml = [
 ]
 
 [project.scripts]
-firev = "src.cli:app"
+arnold = "src.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

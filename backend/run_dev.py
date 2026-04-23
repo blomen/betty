@@ -14,7 +14,7 @@ import uvicorn
 
 if __name__ == "__main__":
     # Local dev: no extraction scheduler, no trading, no RL — server handles all of that
-    os.environ.setdefault("FIREV_MIRROR_ONLY", "1")
+    os.environ.setdefault("ARNOLD_MIRROR_ONLY", "1")
     use_reload = "--reload" in sys.argv
 
     # Windows: ProactorEventLoop supports subprocesses (Playwright mirror).

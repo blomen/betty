@@ -1,5 +1,5 @@
 """
-Firev — Single Bet Cap Comparison Simulation
+Arnold — Single Bet Cap Comparison Simulation
 =============================================================
 Compare 1%, 2%, 3% single bet caps across bankroll levels.
 
@@ -278,7 +278,7 @@ def run_comparison():
     bankrolls = [5000, 7500, 10000, 15000]
 
     print("=" * 100)
-    print("  FIREV — SINGLE BET CAP COMPARISON (1% vs 2% vs 3%)")
+    print("  ARNOLD — SINGLE BET CAP COMPARISON (1% vs 2% vs 3%)")
     print(f"  {NUM_SIMS:,} MC runs | {BETS_PER_WEEK} bets/week | {WEEKS} weeks | Kelly 0.25-0.75")
     print("=" * 100)
 
@@ -514,7 +514,7 @@ def run_worst_case_streaks():
 
 def main():
     print("=" * 100)
-    print("  FIREV — BET CAP COMPARISON: 1% vs 2% vs 3%")
+    print("  ARNOLD — BET CAP COMPARISON: 1% vs 2% vs 3%")
     print("  Does lowering the cap reduce variance without killing growth?")
     print("=" * 100)
 

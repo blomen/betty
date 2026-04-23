@@ -1,4 +1,4 @@
-"""Local firevstocks dashboard — serves UI + provides live data endpoints."""
+"""Local arnoldstocks dashboard — serves UI + provides live data endpoints."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 log = logging.getLogger(__name__)
 
 SERVER_URL = "http://127.0.0.1:18000"
-_SERVER_API_KEY = os.environ.get("FIREV_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI")
+_SERVER_API_KEY = os.environ.get("ARNOLD_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI")
 
 # Persistent HTTP client — reuses TCP connections through SSH tunnel
 _http_client: httpx.AsyncClient | None = None
@@ -87,14 +87,14 @@ _dash_loop: asyncio.AbstractEventLoop | None = None
 
 
 def create_dashboard_app() -> FastAPI:
-    app = FastAPI(title="firevstocks Dashboard")
+    app = FastAPI(title="arnoldstocks Dashboard")
 
     @app.on_event("startup")
     async def _capture_loop():
         global _dash_loop
         _dash_loop = asyncio.get_running_loop()
 
-    dist_path = Path(__file__).parent.parent.parent.parent / "firevstocks" / "frontend" / "dist"
+    dist_path = Path(__file__).parent.parent.parent.parent / "arnoldstocks" / "frontend" / "dist"
     if dist_path.exists() and (dist_path / "index.html").exists():
         app.mount("/assets", StaticFiles(directory=dist_path / "assets"), name="assets")
 

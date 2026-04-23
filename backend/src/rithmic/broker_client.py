@@ -56,7 +56,7 @@ class RithmicBrokerClient:
     async def place_market_order(self, action: str, quantity: int) -> dict:
         """Place a market order. action: 'Buy' or 'Sell'."""
         tx_type = TransactionType.BUY if action == "Buy" else TransactionType.SELL
-        order_id = f"firev-{uuid.uuid4().hex[:8]}"
+        order_id = f"arnold-{uuid.uuid4().hex[:8]}"
 
         await self._client.submit_order(
             order_id=order_id,
@@ -72,7 +72,7 @@ class RithmicBrokerClient:
     async def place_stop_order(self, action: str, quantity: int, stop_price: float) -> dict:
         """Place a stop-market order (for stop-loss)."""
         tx_type = TransactionType.BUY if action == "Buy" else TransactionType.SELL
-        order_id = f"firev-stop-{uuid.uuid4().hex[:8]}"
+        order_id = f"arnold-stop-{uuid.uuid4().hex[:8]}"
 
         await self._client.submit_order(
             order_id=order_id,

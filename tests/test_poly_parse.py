@@ -1,6 +1,6 @@
 import json, re
 
-d = json.load(open("c:/Users/rasmu/firev/tmp_poly.json"))
+d = json.load(open("c:/Users/rasmu/arnold/tmp_poly.json"))
 dom = d.get("dom_preview", "")
 lines = dom.split("\n")
 print(f"Total lines: {len(lines)}")

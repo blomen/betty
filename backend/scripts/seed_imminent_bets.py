@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import random
 
-DB_PATH = "data/firev.db"
+DB_PATH = "data/arnold.db"
 PROFILE_ID = 6  # test profile
 
 

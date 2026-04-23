@@ -1,4 +1,4 @@
-"""SignalRelayClient — WebSocket bridge between firev server and TopstepX.
+"""SignalRelayClient — WebSocket bridge between arnold server and TopstepX.
 
 Connects to the server's /ws/signals endpoint, forwards ticks from TopstepX,
 and executes orders on TopstepX when the server emits a signal.

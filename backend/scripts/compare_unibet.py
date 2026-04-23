@@ -3,7 +3,7 @@ import sqlite3
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
-db = sqlite3.connect("data/firev.db")
+db = sqlite3.connect("data/arnold.db")
 
 # Scraped from unibet DOM (56 bets from earlier successful scrape)
 scraped = [

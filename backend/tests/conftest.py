@@ -1,4 +1,4 @@
-"""Shared test fixtures for Firev tests."""
+"""Shared test fixtures for Arnold tests."""
 import os
 import pytest
 from sqlalchemy import create_engine

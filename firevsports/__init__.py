@@ -1,1 +1,0 @@
-# FirevSports — local betting client

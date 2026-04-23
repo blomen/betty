@@ -1365,7 +1365,7 @@ if __name__ == "__main__":
     full_only = "--full" in sys.argv
 
     print("+" + "="*88 + "+")
-    print("|" + " FIREV -- BANKROLL SNOWBALL SIMULATOR (EV-ONLY) ".center(88) + "|")
+    print("|" + " ARNOLD -- BANKROLL SNOWBALL SIMULATOR (EV-ONLY) ".center(88) + "|")
     print("+" + "="*88 + "+")
 
     if grind_only or "--growth" in sys.argv:

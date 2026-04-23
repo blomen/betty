@@ -166,7 +166,7 @@ class MarketRecorder:
                 log.error(
                     "MarketRecorder disabled after %d consecutive failures — "
                     "DB unreachable, ticks will not be recorded. "
-                    "Restart firevstocks to retry.",
+                    "Restart arnoldstocks to retry.",
                     self._consecutive_failures,
                 )
                 self._disabled = True
