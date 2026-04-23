@@ -1099,7 +1099,10 @@ class LevelMonitor:
                     zone_members=zone.member_count,
                 )
             except Exception:
-                pass  # Never block inference for collection
+                # Previously `except: pass` — which masked why live_episodes/
+                # stayed empty even though signals were firing. Log at warning
+                # so root-logger=WARNING still surfaces it. Never block inference.
+                logger.warning("live_collector.on_zone_touch failed", exc_info=True)
 
             # Execute via broker if enabled (server-side path).
             broker = getattr(self, "_broker_adapter", None)

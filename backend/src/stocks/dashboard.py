@@ -553,6 +553,15 @@ def record_exit(exit_info: dict) -> None:
     _emit({"type": "exit", **exit_info})
 
 
+def record_trade(trade: dict) -> None:
+    """Called from broker_adapter._log_broker_trade when a round-trip closes.
+    Carries full P&L/context fields (entry_price, exit_price, pnl_dollars, pnl_r,
+    was_stop, trail_count, signal_*). Front-end consumers render this as the
+    trade-closed event; fills/exits already tracked separately.
+    """
+    _emit({"type": "trade", **trade})
+
+
 def update_zones(zones: list) -> None:
     """Called from pipeline when zone data is received from server."""
     _state["zones"] = zones
