@@ -232,7 +232,10 @@ class SmarketsRetriever(Retriever):
 
     DEFAULT_BASE_URL = "https://api.smarkets.com/v3"
     MAX_PAGES = 20
-    CONCURRENT_MARKET_FETCHES = 8
+    # Was 8; smarkets' rate limit fires at that concurrency and every
+    # /markets/{id}/quotes/ call came back 429. 3 keeps us inside the
+    # limit while still being ~2x faster than serial.
+    CONCURRENT_MARKET_FETCHES = 3
 
     def __init__(
         self,
