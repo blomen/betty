@@ -504,6 +504,28 @@ class LiveInferenceV5:
             except (IndexError, TypeError):
                 pass
 
+        # NARRATIVE-BIAS (replaces retired NarrativeGBT with the role the
+        # framework actually wanted): turn macro/regime context into a
+        # directional bias + risk-modulation scalar, then nudge composite
+        # confidence and prepare a size scalar for the SizeModel output below.
+        from .narrative_bias import (
+            apply_bias_to_confidence,
+            compute_narrative_bias,
+        )
+
+        nb = compute_narrative_bias(narrative, trade_direction=trade_direction)
+        composite_pre_bias = composite
+        composite = apply_bias_to_confidence(composite, nb.bias_agreement)
+        if abs(composite - composite_pre_bias) > 0.001:
+            log.debug(
+                "narrative-bias: bias=%+.3f agreement=%+.3f conf %.3f → %.3f, risk_mod=%.3f",
+                nb.bias_score,
+                nb.bias_agreement,
+                composite_pre_bias,
+                composite,
+                nb.risk_modulation,
+            )
+
         # Phase 3c: prefer SizeModel (trained) over the composite-tier heuristic.
         # Builds the same 318-dim augmented obs shape SizeModel/EarlyExitModel
         # trained on. Reused by the early_exit head below.
@@ -530,6 +552,15 @@ class LiveInferenceV5:
             except Exception:
                 log.debug("SizeModel predict failed; falling back to heuristic", exc_info=True)
 
+        # NARRATIVE-BIAS risk modulation: scale the SizeModel/heuristic output
+        # by the regime risk scalar. Friendly regime (clear trend, low VIX,
+        # OD opening) → up to 1.5×; hostile (high VIX, ORR open, non-trend) →
+        # down to 0.5×. This is the framework "increase position size on
+        # risk-on, lower on risk-off" rule the user originally specified.
+        size_mult_pre_bias = size_mult
+        if action_idx != 2:
+            size_mult = apply_risk_modulation_to_size(size_mult, nb.risk_modulation)
+
         # Phase 3c: early_exit probability. H5 found the fixed +0.5R-lock
         # rule is net R-negative at every firing threshold, so the default
         # threshold is 0.95 (effectively off). Session manager can read
@@ -555,7 +586,11 @@ class LiveInferenceV5:
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_mult,
+            "size_multiplier_pre_bias": size_mult_pre_bias,
             "size_source": size_source,
+            "narrative_bias_score": nb.bias_score,
+            "narrative_risk_modulation": nb.risk_modulation,
+            "narrative_bias_agreement": nb.bias_agreement,
             "of_veto_applied": of_veto_applied,
             "early_exit_prob": early_exit_prob,
             "early_exit_threshold": early_exit_threshold,
