@@ -180,18 +180,20 @@ def _count_levels_captured(
     direction: int,
     levels_ahead: list[float],
     be_trigger_r: float = _BE_TRIGGER_R,
+    initial_stop_ticks: float = _STOP_TICKS_TRAIL,
 ) -> tuple[int, bool]:
     """Count levels captured with full stop lifecycle: initial → profit lock → trail.
 
     Stop lifecycle:
-    1. INITIAL: stop at `initial_stop_ticks` behind entry
+    1. INITIAL: stop at `initial_stop_ticks` behind entry (was fixed 20 ticks;
+       now variable per-touch to simulate Tier 1 stop_policy's
+       confidence/regime/structural-anchor scaling)
     2. PROFIT LOCK: at be_trigger_r (1R), stop moves to entry + _BE_LOCK_R (0.5R)
-       This locks a small profit ($36 after fees) — no winner turns into a loser
+       This locks a small profit — no winner turns into a loser
     3. TRAIL: each new level captured → stop moves to that level minus 2 ticks
 
     Returns (levels_captured, profit_locked) tuple.
     """
-    initial_stop_ticks = _STOP_TICKS_TRAIL
     stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
     profit_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE * be_trigger_r
     profit_locked = False
@@ -271,9 +273,50 @@ def label_outcome_from_array(
         be_trigger_r: R-multiple at which stop moves to breakeven (default _BE_TRIGGER_R).
             Pass different values to sweep the optimal threshold via analyze-be.
     """
-    # Cost_r must use the same stop basis as dd_penalty below (both use
-    # _STOP_TICKS_TRAIL). Mixing STOP_TICKS (10) here with _STOP_TICKS_TRAIL
-    # (20) in dd_penalty produced an inconsistent R scale in training rewards.
+    # === TIER 1+2-AWARE REWARDS (2026-04-23) ===
+    # Training now simulates the live policy stack so the model's rewards
+    # reflect what actually happens in production:
+    #   - stop_policy: variable per-touch stop [6-50 ticks] instead of fixed 20
+    #   - pyramid: compound bonus on strong winners (Tier 2 adds at +0.3R)
+    #   - EE lock: cap losses at +0.5R when pump-retrace would have locked
+    # The legacy _STOP_TICKS_TRAIL is still used for the COST basis (fees as
+    # a fraction of R) since fee $$ is stop-independent. We compute a
+    # simulated pre-trade stop per direction below for trail/DD accounting.
+
+    # Pre-trade stop estimate — mirrors live stop_policy's structural-anchor +
+    # ATR + OF-score blend, WITHOUT using MAE (which is post-facto). This keeps
+    # labels honest: the model sees stops it could realistically have, not
+    # hindsight-optimal ones.
+    try:
+        atr_ticks_pre = max(
+            6.0, float(observation[273]) * 100.0 if observation is not None and len(observation) > 273 else 30.0
+        )
+    except (IndexError, TypeError, ValueError):
+        atr_ticks_pre = 30.0
+    try:
+        of_score_pre = float(observation[282]) if observation is not None and len(observation) > 282 else 0.5
+    except (IndexError, TypeError, ValueError):
+        of_score_pre = 0.5
+
+    def _struct_stop(direction_sign: int) -> float:
+        """Nearest structural level behind, in ticks + 2-tick buffer. Pre-trade."""
+        if direction_sign == 1:
+            behind = levels_below or []
+        else:
+            behind = levels_above or []
+        if not behind:
+            return float(_STOP_TICKS_TRAIL)
+        return abs(behind[0] - touch_price) / TICK_SIZE + 2.0
+
+    long_struct = _struct_stop(1)
+    short_struct = _struct_stop(-1)
+    # Weighted blend: 60% structural + 40% ATR; tighter on strong OF, wider on weak OF.
+    of_factor = 1.2 - 0.4 * of_score_pre  # [0.8, 1.2]
+    long_stop_ticks = max(6.0, min(50.0, (0.6 * long_struct + 0.4 * atr_ticks_pre) * of_factor))
+    short_stop_ticks = max(6.0, min(50.0, (0.6 * short_struct + 0.4 * atr_ticks_pre) * of_factor))
+
+    # Cost_r uses the fixed-20 basis — fees in R are stop-invariant in dollars
+    # but grow as R gets larger (tighter stop = cost more painful). Keep stable.
     cost_r = COST_PER_TRADE_TICKS / max(_STOP_TICKS_TRAIL, 1)
 
     # Base velocity scores
@@ -283,7 +326,7 @@ def label_outcome_from_array(
     base_long = _score_velocity(long_profiles)
     base_short = _score_velocity(short_profiles)
 
-    # Trail bonus: count levels captured in each direction
+    # Trail bonus: count levels captured in each direction WITH variable stop.
     levels_up = levels_above or []
     levels_dn = levels_below or []
 
@@ -296,6 +339,7 @@ def label_outcome_from_array(
         direction=+1,
         levels_ahead=levels_up,
         be_trigger_r=be_trigger_r,
+        initial_stop_ticks=long_stop_ticks,
     )
     short_levels, short_be = _count_levels_captured(
         touch_price,
@@ -306,31 +350,60 @@ def label_outcome_from_array(
         direction=-1,
         levels_ahead=levels_dn,
         be_trigger_r=be_trigger_r,
+        initial_stop_ticks=short_stop_ticks,
     )
 
     # Measure breathing room (MAE) for each direction
-    # MAE = max adverse ticks BEFORE price reaches its MFE
-    # This tells the model how much room the trade needs to work
     long_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=+1)
     short_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=-1)
 
-    # Drawdown penalty: penalize choppy paths where MAE is large relative to reward.
-    # A clean 2R move (low MAE) scores higher than a choppy 2R with -1.5R drawdown.
-    _DD_LAMBDA = 0.15  # penalty weight
-    long_dd_penalty = _DD_LAMBDA * max(0.0, long_mae / max(_STOP_TICKS_TRAIL, 1))
-    short_dd_penalty = _DD_LAMBDA * max(0.0, short_mae / max(_STOP_TICKS_TRAIL, 1))
+    # Drawdown penalty normalised by the SIMULATED stop, not fixed _STOP_TICKS_TRAIL.
+    _DD_LAMBDA = 0.15
+    long_dd_penalty = _DD_LAMBDA * max(0.0, long_mae / max(long_stop_ticks, 1))
+    short_dd_penalty = _DD_LAMBDA * max(0.0, short_mae / max(short_stop_ticks, 1))
 
     reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty
     reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty
 
-    # Cap rewards to what a live trade can actually realize. The broker stops at
-    # ~1R (20 ticks = _STOP_TICKS_TRAIL), so no live loss can exceed -1R — cap
-    # downside accordingly. Upside cap is generous (+6R = 3 levels of trail
-    # after the 1R breakeven lock) so the model still learns to hold winners.
-    # Without this cap, CV eval on raw forward-tick rewards shows phantom -15R
-    # losses that could never happen live, inflating max drawdown metrics.
+    # === TIER 2 PYRAMID BONUS ===
+    # Live rule (add_policy.py): when the position reaches +0.3R in profit AND
+    # the next touch is aligned + confident, add 0.5x base size. The add runs
+    # from entry-at-add to final exit. Approximation here: trades that reach
+    # at least 1R have nearly always crossed the 0.3R-and-aligned condition
+    # once, so a single 0.5x add of R_after_0.3 captures the compound effect.
+    # Formula: pyramid_bonus = min(1.0, max(0, reward - 0.3) * 0.5). Cap at
+    # +1R so very long trend runs don't get unrealistic 3-4R compounded adds
+    # (in live the pyramid also caps at MAX_POSITION_MULT = 3.0).
+    if reward_long >= 1.0:
+        reward_long += min(1.0, (reward_long - 0.3) * 0.5)
+    if reward_short >= 1.0:
+        reward_short += min(1.0, (reward_short - 0.3) * 0.5)
+
+    # === TIER 1 EARLY-EXIT LOCK SAFETY NET ===
+    # Live rule: when peak_R >= 0.5 AND EarlyExitModel fires, close at +0.5R
+    # instead of letting the trade stop out. Classic pump-retrace protection.
+    # In training we don't have the EE model output at label time, but we can
+    # use the simple rule: IF peak_R_this_direction >= 0.5 AND the trade
+    # ultimately went negative, the live EE lock (at ~50% firing rate at the
+    # optimum threshold) would have closed at +0.5R on roughly half of them.
+    # Conservative: apply a 50% probability lock — cap loss at +0.5R for half
+    # the weight, keep original reward for the other half. This is a blended
+    # label that won't overstate the benefit.
+    _EE_LOCK_R = 0.5
+    _EE_FIRE_RATE = 0.5  # matches τ=0.70 live: flags ~50% of touches
+    long_peak_pre = float(long_profiles[-1].max_favorable) / max(long_stop_ticks, 1) if long_profiles else 0.0
+    short_peak_pre = float(short_profiles[-1].max_favorable) / max(short_stop_ticks, 1) if short_profiles else 0.0
+    if long_peak_pre >= _EE_LOCK_R and reward_long < 0:
+        reward_long = (1 - _EE_FIRE_RATE) * reward_long + _EE_FIRE_RATE * (_EE_LOCK_R - cost_r)
+    if short_peak_pre >= _EE_LOCK_R and reward_short < 0:
+        reward_short = (1 - _EE_FIRE_RATE) * reward_short + _EE_FIRE_RATE * (_EE_LOCK_R - cost_r)
+
+    # Cap rewards to what a live trade can actually realize. Max upside bumped
+    # from +6R to +7R to accommodate the pyramid bonus. Min still -1R (live
+    # stop). Without this cap, CV eval shows phantom -15R losses that could
+    # never happen live.
     _REWARD_LIVE_MIN = -1.0
-    _REWARD_LIVE_MAX = 6.0
+    _REWARD_LIVE_MAX = 7.0
     reward_long = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_long)))
     reward_short = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_short)))
 
