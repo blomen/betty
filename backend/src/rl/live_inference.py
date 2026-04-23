@@ -672,33 +672,6 @@ class LiveInferenceV5:
             except Exception:
                 log.debug("stop_policy failed; using raw trained stop", exc_info=True)
 
-        # PHASE 2 GATE: session circuit breaker + per-zone cooldown.
-        # Runs only when we'd actually take a trade (skip is already None).
-        # Caller is expected to set state["price"] (zone touch price) and
-        # state["touch_ts"] (epoch seconds). If either is missing we don't
-        # gate — falling back to the model's own decision.
-        session_skip_reason = None
-        if action_idx != 2:
-            zone_price = float(state.get("price", 0.0))
-            touch_ts = state.get("touch_ts")
-            if touch_ts is None:
-                # Live caller didn't pass timestamp — fall back to current time
-                import time as _time
-
-                touch_ts = _time.time()
-            else:
-                touch_ts = float(touch_ts)
-            sr = self.session_state.should_skip(zone_key=zone_price, now_ts=touch_ts)
-            if sr is not None:
-                session_skip_reason = {"code": sr.code, "detail": sr.detail}
-                action_idx = 2  # force SKIP
-                size_mult = 0.0
-                log.info(
-                    "Phase 2 gate skipped trade: %s — %s",
-                    sr.code,
-                    sr.detail,
-                )
-
         # TIER-2 PYRAMID / ADD policy: compound into winning positions when
         # aligned. If caller indicates a position is already open (via
         # state["position_state"] with live pos_side + unrealized_R) AND the
@@ -736,19 +709,17 @@ class LiveInferenceV5:
             composite_confidence=composite,
         )
 
-        # Phase 3c: early_exit probability. H5 found the fixed +0.5R-lock
-        # rule is net R-negative at every firing threshold, so the default
-        # threshold is 0.95 (effectively off). Session manager can read
-        # `early_exit_prob` and `early_exit_threshold` and decide how to use
-        # them — but don't fire on the default 0.5 without re-tuning.
+        # Phase 3c: early_exit probability. After the session_memory retrain
+        # (archive 20260423_110725) the rule is net-positive at τ=0.70 —
+        # flagging ~50% of touches nets +14,671 R on OOS. Session manager
+        # reads `early_exit_prob`/`early_exit_threshold` to close at +0.5R lock.
+        from .agent.early_exit_model import EARLY_EXIT_DEFAULT_THRESHOLD
+
         early_exit_prob = 0.0
-        early_exit_threshold = 0.95  # EarlyExitModel.EARLY_EXIT_DEFAULT_THRESHOLD
+        early_exit_threshold = EARLY_EXIT_DEFAULT_THRESHOLD
         if self._early_exit_model is not None and augmented is not None:
             try:
                 early_exit_prob = float(self._early_exit_model.predict_proba(augmented))
-                from .agent.early_exit_model import EARLY_EXIT_DEFAULT_THRESHOLD
-
-                early_exit_threshold = EARLY_EXIT_DEFAULT_THRESHOLD
             except Exception:
                 log.debug("EarlyExitModel predict failed", exc_info=True)
 
@@ -776,7 +747,6 @@ class LiveInferenceV5:
             "narrative_bias_agreement": nb.bias_agreement,
             "of_veto_applied": of_veto_applied,
             "session_state": self.session_state.snapshot(),
-            "session_skip_reason": session_skip_reason,
             "early_exit_prob": early_exit_prob,
             "early_exit_threshold": early_exit_threshold,
             "dqn_action": dqn_action,

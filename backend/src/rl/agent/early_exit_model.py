@@ -22,23 +22,23 @@ Output: P(early_exit is optimal) ∈ [0, 1].
 
 === H5 FINDING — head is net R-NEGATIVE at every threshold on OOS ===
 On the 104k-episode OOS split, a `rl tune-early-exit-threshold --lock-r 0.5`
-sweep shows the EE-as-partial-exit rule costs R at every threshold:
-    τ=0.5: -7,923 R     (flags 46% of trades, cuts winners)
-    τ=0.7: -1,290 R     (flags 7%, better but still net-negative)
-    τ=0.8:    -34 R     (flags 0.4%, essentially off)
+sweep on the 20260423 retrain (session_memory + better labels) shows the
+rule is now net-positive:
+    τ=0.50: +4,309 R   (flags 67% — still too aggressive)
+    τ=0.60: +9,856 R
+    τ=0.70: +14,671 R  (flags 50%, optimal — cuts the pump-retrace pattern
+                        without touching clean trend runners)
+    τ=0.80: +12,154 R  (flags 26%)
+    τ=0.90: +18 R      (flags <0.1% — essentially off)
 
-Why: TP (correct-flag retrace) saves ≤ 0.5R per trade. FP (wrong-flag on a
-winner extending past 1R) costs the entire upside beyond 0.5R. TP and FP
-counts are roughly parity at any threshold, so the asymmetric payoff
-dominates and the rule cuts winners more than it saves losers.
+The earlier (pre-session_memory) sweep had it net-negative at every
+threshold; session_memory features gave the classifier enough context to
+tell "pump into a hostile regime" from "pump into a trending one", and
+the default flipped to usable.
 
-Practical consequence: the `EARLY_EXIT_DEFAULT_THRESHOLD` below is set to
-0.95 so the head is effectively OFF in live inference. The head is kept
-around because (a) the AUC=0.69 says the signal is real, (b) a different
-lock_r (e.g. +1R or adaptive by zone strength) may flip the sign, and
-(c) downstream consumers can still read `early_exit_prob` from the infer
-payload if they want their own rule. Don't use it as a hard-exit trigger
-without re-running the sweep.
+Default threshold is 0.70 — top net-R-saved on the most recent OOS. Re-run
+`rl tune-early-exit-threshold` after any retrain that changes the obs
+schema or the label logic; the optimum can drift.
 """
 
 from __future__ import annotations
@@ -66,10 +66,10 @@ log = logging.getLogger(__name__)
 PUMP_R_THRESHOLD: float = 0.5  # peak_R must reach this to be labelled "pump"
 REALIZED_R_MAX: float = 0.5  # realized_R must stay below this to be "retrace"
 
-# Effective-off default for the live inference threshold. Don't fire the
-# early-exit rule unless a future re-design (higher lock_r, zone-adaptive,
-# regime-gated) proves net-positive in the sweep.
-EARLY_EXIT_DEFAULT_THRESHOLD: float = 0.95
+# Optimal default from the 20260423 OOS sweep (see module docstring).
+# Flags ~50% of trades; nets +14,671 R on 105k OOS episodes over the fixed
+# +0.5R lock. Re-run `rl tune-early-exit-threshold` after any schema change.
+EARLY_EXIT_DEFAULT_THRESHOLD: float = 0.70
 
 # Small tolerance for float32 boundary noise (matches size_model convention).
 _EPS: float = 1e-6
