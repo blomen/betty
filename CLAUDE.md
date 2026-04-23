@@ -1,5 +1,23 @@
 # Arnold - Betting Analytics Platform
 
+> **PROJECT RENAMED 2026-04-23: `firev` → `arnold`.** If your context still references `firev`, you're stale — re-read this file. Summary of changes below; full plan in [docs/superpowers/plans/2026-04-23-rename-firev-to-arnold.md](docs/superpowers/plans/2026-04-23-rename-firev-to-arnold.md).
+>
+> | Was | Now |
+> |---|---|
+> | `blomen/Firev` (GitHub) | `blomen/Arnold` (GitHub auto-redirects old URLs) |
+> | `/opt/firev` (server) | `/opt/arnold` |
+> | `c:\Users\rasmu\firev` (local) | `c:\Users\rasmu\arnold` (rename pending — may still be `firev` until user closes VS Code) |
+> | `firevsports/`, `firevstocks/` | `arnoldsports/`, `arnoldstocks/` |
+> | `firev-{backend,nginx,postgres}-1` | `arnold-{backend,nginx,postgres}-1` |
+> | `firev_*` Docker volumes | `arnold_*` (old volumes deleted) |
+> | DB role + name `firev` | `arnold` (market DB name unchanged) |
+> | env `FIREV_API_KEY` | `ARNOLD_API_KEY` |
+> | nginx basic-auth user `firev` | `arnold` (same password) |
+>
+> **Data loss to be aware of:** the historical Databento NQ tick parquets (~39 months in `/app/data/rl/ticks/*.parquet`) were lost during the rename's volume cleanup — `firev_firev_data` was deleted before we realized it held the only copy. Recovery via filesystem forensics failed (inode metadata already purged). Surviving: trained v5 RL models (in `arnold_arnold_data/rl/archive/20260423_200549/`), 748 pre-processed episodes, market DB (4M live trades), all event/odds data. Future RL re-processing of raw ticks is blocked unless the user re-downloads from Databento.
+>
+> **New backup script:** `/root/rl-backup.sh` runs daily at 04:00 UTC → `/root/rl-backups/` (rsyncs ticks/archive/episodes + pg_dumps both DBs). Same disk only — set up offsite if you care.
+
 ## WHAT This Project Is
 
 Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
