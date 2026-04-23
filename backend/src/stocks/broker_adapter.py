@@ -225,6 +225,53 @@ class TopstepXBrokerAdapter:
         log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
         return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
 
+    async def add_to_position(self, add_contracts: int, price: float) -> dict | None:
+        """Pyramid add — submit a market order in the same direction as the
+        existing position and update the tracker. Stop stays where it is
+        (risk unit unchanged; the add just compounds into the winner).
+        """
+        if self.tracker.is_flat or add_contracts <= 0:
+            return None
+        if self.tracker.size + add_contracts > self.config.max_position:
+            log.info(
+                "Pyramid add clipped: size=%d + add=%d > max=%d",
+                self.tracker.size,
+                add_contracts,
+                self.config.max_position,
+            )
+            add_contracts = max(0, self.config.max_position - self.tracker.size)
+            if add_contracts == 0:
+                return {"rejected": True, "reason": "pyramid_at_cap"}
+
+        order_action = "Buy" if self.tracker.side == "long" else "Sell"
+        try:
+            result = await self.client.place_market_order(order_action, add_contracts)
+        except Exception:
+            log.exception("Pyramid add order failed")
+            return {"rejected": True, "reason": "order_failed"}
+
+        if isinstance(result, dict) and not result.get("success", True):
+            err = result.get("errorMessage", "order_rejected")
+            log.warning("Pyramid add rejected: %s", err)
+            return {"rejected": True, "reason": err}
+
+        self.tracker.on_add(price=price, add_size=add_contracts)
+
+        # Widen the stop order to cover the new total size so a hit closes
+        # the whole position, not just the original contracts.
+        if self.tracker.stop_order_id and self.tracker.stop_price > 0:
+            try:
+                await self.client.modify_order(self.tracker.stop_order_id, size=self.tracker.size)
+            except Exception:
+                log.warning("Failed to resize stop after pyramid add", exc_info=True)
+
+        return {
+            "action": "pyramid_add",
+            "add_contracts": add_contracts,
+            "total_size": self.tracker.size,
+            "avg_entry": self.tracker.entry_price,
+        }
+
     async def modify_stop(self, new_stop_price: float) -> dict | None:
         """Move existing stop order to new price."""
         new_stop_price = _round_tick(new_stop_price)
@@ -348,10 +395,7 @@ class TopstepXBrokerAdapter:
         confidence = float(signal.get("confidence", 0) or 0)
 
         # Validate/adjust stop distance
-        if stop_price > 0:
-            stop_dist_ticks = abs(stop_price - price) / 0.25
-        else:
-            stop_dist_ticks = DEFAULT_STOP_TICKS
+        stop_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else DEFAULT_STOP_TICKS
         stop_dist_ticks = int(max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks)))
         offset = stop_dist_ticks * 0.25
         stop_price = _round_tick(price - offset if is_long else price + offset)

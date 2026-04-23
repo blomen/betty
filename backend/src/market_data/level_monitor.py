@@ -1,6 +1,7 @@
 """Level proximity monitor. Plugs into DatabentoLiveStream as a tick callback."""
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -582,6 +583,12 @@ class LevelMonitor:
 
     def _check_positions(self, price: float) -> None:
         """Check if any open position has reached a target level."""
+        # Tick-rate mark update so peak_R is accurate when a zone touch
+        # later consults it for the EarlyExit lock.
+        broker = getattr(self, "_broker_adapter", None)
+        if broker is not None and not broker.tracker.is_flat:
+            broker.tracker.update_mark(price)
+
         for pos in self._open_positions:
             for target in pos["targets"]:
                 if target["hit"]:
@@ -1030,6 +1037,25 @@ class LevelMonitor:
             if not dqn.is_loaded:
                 return
             rl_state = self._build_rl_state_zone(zone, price)
+
+            # Inject live position state so infer() can evaluate pyramid /
+            # reversal-exit / early-exit relative to the open trade. Without
+            # this the caller sees pos_side=flat and all three outputs are
+            # inert. Uses the server-side broker tracker; if running with no
+            # broker attached (relay-only) the fields stay empty and infer()
+            # falls back to flat behavior.
+            broker = getattr(self, "_broker_adapter", None)
+            if broker is not None and not broker.tracker.is_flat:
+                tr = broker.tracker
+                uR = tr.update_mark(price)
+                rl_state["position_state"] = [
+                    0.0,
+                    1.0 if tr.side == "long" else 0.0,
+                    1.0 if tr.side == "short" else 0.0,
+                    float(uR),
+                ]
+                rl_state["position_size"] = float(tr.size)
+
             result = dqn.infer(rl_state)
             if result is not None:
                 self._publish(
@@ -1075,38 +1101,85 @@ class LevelMonitor:
             except Exception:
                 pass  # Never block inference for collection
 
-            # Execute via broker if enabled (server-side Rithmic/Tradovate path)
-            # Note: the relay callback path above handles TopstepX via trading_service
+            # Execute via broker if enabled (server-side path).
             broker = getattr(self, "_broker_adapter", None)
+            if broker is not None and result is not None:
+                import asyncio
+
+                # In-position handling (pyramid / reversal exit / early-exit lock).
+                # Runs BEFORE on_signal so an aligned touch on a winner isn't
+                # misrouted to trail-stop when the framework says "add" or
+                # "reverse exit". Skips the entry-signal dispatch entirely when
+                # the position is already open.
+                if not broker.tracker.is_flat:
+                    try:
+                        tr = broker.tracker
+                        rev = result.get("reversal_signals") or {}
+                        pyr = result.get("pyramid_decision") or {}
+                        ee_prob = float(result.get("early_exit_prob") or 0.0)
+                        ee_thresh = float(result.get("early_exit_threshold") or 0.70)
+
+                        if rev.get("should_exit"):
+                            logger.info(
+                                "Reversal-signals exit: %d fired — flattening %s @ %.2f",
+                                rev.get("fired_count", 0),
+                                tr.side,
+                                price,
+                            )
+                            asyncio.create_task(broker.flatten("reversal_signals"))
+                        elif not tr.locked_half_R and tr.peak_R >= 0.5 and ee_prob >= ee_thresh:
+                            logger.info(
+                                "EarlyExit lock: peak_R=%.2f ee_prob=%.3f>=%.2f — flattening %s @ %.2f",
+                                tr.peak_R,
+                                ee_prob,
+                                ee_thresh,
+                                tr.side,
+                                price,
+                            )
+                            tr.locked_half_R = True
+                            asyncio.create_task(broker.flatten("early_exit_lock"))
+                        elif pyr.get("should_add"):
+                            add_size = int(max(1, round(float(pyr.get("add_size") or 0))))
+                            logger.info(
+                                "Pyramid add (%s): +%d @ %.2f (%s)",
+                                tr.side,
+                                add_size,
+                                price,
+                                pyr.get("detail", ""),
+                            )
+                            asyncio.create_task(broker.add_to_position(add_size, price))
+
+                        # Suppress the entry-signal dispatch while in-position —
+                        # trail/flip is replaced by the three decisions above.
+                        result = None
+                    except Exception:
+                        logger.warning("In-position handling failed", exc_info=True)
+
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                # Phase 1 live gate: confidence + orderflow confluence
                 # FORCE_REV_ONLY: training data shows CONT is effectively a weak REV
                 # (~0% argmax). Convert CONT → equivalent REV direction.
                 if action == "CONTINUATION":
-                    action = "REVERSAL"  # same direction in practice; REV label only
-                # Orderflow confluence score — compute from state features already
-                # present in the rl_state we just passed to inference.
+                    action = "REVERSAL"
                 of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
                 if action not in ("SKIP", "skip") and confidence >= 0.15 and of_score >= 0.30:
                     import asyncio
 
                     try:
                         approach = "up" if price < zone.center_price else "down"
-                        # With FORCE_REV_ONLY above, action is always REVERSAL here.
                         sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
-                        stop_ticks = int(max(15, min(40, result.get("stop_ticks") or 25)))
+                        stop_ticks = int(max(6, min(50, result.get("stop_ticks") or 25)))
                         # Weak-but-passing orderflow → widen stop (more room)
                         if of_score < 0.70:
-                            stop_ticks = max(stop_ticks, 23)  # mid-range of [15, 40]
+                            stop_ticks = max(stop_ticks, 23)
                         stop_offset = stop_ticks * 0.25
                         raw_stop = price - stop_offset if is_long else price + stop_offset
                         broker_signal = {
                             "action": sig_action,
                             "price": price,
-                            "stop_price": round(raw_stop * 4) / 4,  # NQ tick = 0.25
+                            "stop_price": round(raw_stop * 4) / 4,
                             "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
                             "confidence": confidence,
                             "orderflow_score": of_score,
@@ -1177,7 +1250,7 @@ class LevelMonitor:
                     is_long = "long" in sig_action
 
                     stop_ticks = result.get("stop_ticks") or 25  # default 25 ticks if None
-                    stop_ticks = int(max(15, min(40, stop_ticks)))  # clamp + round to whole ticks
+                    stop_ticks = int(max(6, min(50, stop_ticks)))  # match stop_policy bounds
                     stop_offset = stop_ticks * 0.25  # NQ tick = 0.25 points
                     stop_price = price - stop_offset if is_long else price + stop_offset
                     # Round to NQ tick increment (0.25)
@@ -1296,10 +1369,8 @@ class LevelMonitor:
         approach = "up" if price < zone.center_price else "down"
         recent_ticks = []
         if self._tick_buffer:
-            try:
+            with contextlib.suppress(Exception):
                 recent_ticks = self._tick_buffer.get_recent(50)
-            except Exception:
-                pass
 
         # Record this zone touch in memory
         zone_key = round(zone.center_price * 4) / 4
@@ -1394,10 +1465,8 @@ class LevelMonitor:
         # Recent ticks from tick buffer (for micro features)
         recent_ticks = []
         if self._tick_buffer:
-            try:
+            with contextlib.suppress(Exception):
                 recent_ticks = self._tick_buffer.get_recent(50)
-            except Exception:
-                pass
 
         return {
             "level_type": lt,

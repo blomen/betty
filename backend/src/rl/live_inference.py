@@ -709,6 +709,24 @@ class LiveInferenceV5:
             composite_confidence=composite,
         )
 
+        # TIER-1 HOLD-UNTIL-REVERSAL: when a position is open, count the 4
+        # framework reversal signals on this touch. Caller flattens when
+        # fired_count >= 2. Skipped for flat positions (no trade to exit).
+        reversal_signals_payload = {"fired_count": 0, "should_exit": False}
+        if pos_live.get("side") in ("long", "short"):
+            from .exit_signals import count_reversal_signals
+
+            pos_dir = 1 if pos_live["side"] == "long" else -1
+            rs = count_reversal_signals(base_obs, trade_direction=pos_dir)
+            reversal_signals_payload = {
+                "fired_count": int(rs.fired_count),
+                "cvd_flip": bool(rs.cvd_flip),
+                "absorption_at_target": bool(rs.absorption_at_target),
+                "imbalance_flip": bool(rs.imbalance_flip),
+                "big_trades_against": bool(rs.big_trades_against),
+                "should_exit": int(rs.fired_count) >= 2,
+            }
+
         # Phase 3c: early_exit probability. After the session_memory retrain
         # (archive 20260423_110725) the rule is net-positive at τ=0.70 —
         # flagging ~50% of touches nets +14,671 R on OOS. Session manager
@@ -737,6 +755,7 @@ class LiveInferenceV5:
                 "reason": pyramid_decision.reason,
                 "detail": pyramid_decision.detail,
             },
+            "reversal_signals": reversal_signals_payload,
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_mult,
