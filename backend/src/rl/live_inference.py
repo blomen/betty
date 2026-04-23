@@ -353,6 +353,48 @@ class LiveInferenceV5:
 
         self._narrative_cache = extract_narrative_features(state)
 
+    def check_reversal(self, state: dict, trade_direction: int, min_signals: int = 2) -> dict:
+        """Poll the framework's 4 reversal signals while a position is open.
+
+        Caller (session_manager) invokes this periodically while holding a
+        trade. Returns a dict with per-signal booleans, fired_count, and
+        `should_exit` at the caller's threshold. Does NOT close the position
+        — that's the caller's decision. This is the "let winners ride / exit
+        only on clear reversal" API.
+
+        Args:
+            state: RL state dict — build_observation(state) is used to read
+                the latest orderflow / micro features.
+            trade_direction: +1 long, -1 short, 0 → no signals returned.
+            min_signals: threshold at which `should_exit` becomes True
+                (2 = framework default, 1 = aggressive, 3 = conservative).
+        """
+        from .exit_signals import count_reversal_signals
+        from .features.observation import build_observation
+
+        try:
+            obs = build_observation(state)
+        except Exception:
+            return {
+                "should_exit": False,
+                "fired_count": 0,
+                "error": "build_observation failed",
+            }
+
+        signals = count_reversal_signals(obs, trade_direction)
+        return {
+            "should_exit": signals.fired_count >= min_signals,
+            "fired_count": signals.fired_count,
+            "min_signals_threshold": min_signals,
+            "signals": {
+                "cvd_flip": signals.cvd_flip,
+                "absorption_at_target": signals.absorption_at_target,
+                "imbalance_flip": signals.imbalance_flip,
+                "big_trades_against": signals.big_trades_against,
+            },
+            "details": signals.details,
+        }
+
     def infer(self, state: dict) -> dict | None:
         """Run two-stage inference at a zone touch (Phase 3b)."""
         if self._trigger_gbt is None:
@@ -604,6 +646,32 @@ class LiveInferenceV5:
         if action_idx != 2:
             size_mult = apply_risk_modulation_to_size(size_mult, nb.risk_modulation)
 
+        # TIER-1 STOP POLICY: confidence + regime + structural-anchor
+        # adjustments to the trained stop prediction. Tightens stops when
+        # we're confident and regime is clean; widens them when we're not.
+        # Anchors stop behind structural levels (swing hi/lo, PDH/PDL,
+        # naked POC, NYIB) when zone members include one in the stop
+        # direction — so stop fires on real invalidation, not noise.
+        stop_ticks_raw = float(stop_ticks)
+        stop_breakdown = {"base_ticks": stop_ticks_raw, "final_ticks": stop_ticks_raw}
+        if action_idx != 2:
+            try:
+                from .stop_policy import apply_stop_adjustments
+
+                zone_obj = state.get("zone")
+                zone_members = getattr(zone_obj, "members", None) if zone_obj is not None else None
+                stop_breakdown = apply_stop_adjustments(
+                    base_stop_ticks=stop_ticks_raw,
+                    composite_confidence=composite,
+                    risk_modulation=nb.risk_modulation,
+                    zone_members=zone_members,
+                    trade_direction=trade_direction,
+                    entry_price=float(state.get("price", 0.0)),
+                )
+                stop_ticks = stop_breakdown["final_ticks"]
+            except Exception:
+                log.debug("stop_policy failed; using raw trained stop", exc_info=True)
+
         # PHASE 2 GATE: session circuit breaker + per-zone cooldown.
         # Runs only when we'd actually take a trade (skip is already None).
         # Caller is expected to set state["price"] (zone touch price) and
@@ -653,6 +721,8 @@ class LiveInferenceV5:
             "confidence": float(confidence),
             "q_values": dqn_q_values if dqn_q_values is not None else [prob_cont, prob_rev, 0.0],
             "stop_ticks": float(stop_ticks),
+            "stop_ticks_raw": stop_ticks_raw,
+            "stop_breakdown": stop_breakdown,
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_mult,
