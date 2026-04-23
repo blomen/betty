@@ -98,9 +98,12 @@ MAX_ZONE_RADIUS_TICKS = 20  # cap: never merge wider than 5 points
 # No fixed target/stop/timeout — rewards are continuous movement quality scores
 
 # --- Trading Costs (round-trip per trade, in ticks) ---
-SLIPPAGE_TICKS = 0.5  # 0.5 tick each side = 1 tick RT
-COMMISSION_TICKS = 0.5  # ~$1.04 per side on NQ ≈ 0.5 tick each side
-COST_PER_TRADE_TICKS = (SLIPPAGE_TICKS + COMMISSION_TICKS) * 2  # round-trip
+# Calibrated 2026-04-23 against real TopstepX fills: fees=$1.40 + commissions=$0.50
+# per side = $1.90/side = 0.38 ticks/side at $5/tick. Slippage kept at 0.5 tick/side
+# as a conservative estimate (NQ is liquid but not perfectly). RT = $8.80, 1.76 ticks.
+SLIPPAGE_TICKS = 0.5  # 0.5 tick each side — conservative for NQ RTH
+COMMISSION_TICKS = 0.38  # $1.90/side (was 0.5 = $2.50/side; overestimated by $1.20/RT)
+COST_PER_TRADE_TICKS = (SLIPPAGE_TICKS + COMMISSION_TICKS) * 2  # 1.76 ticks RT = $8.80
 
 # --- Data ---
 DATABENTO_DATASET = "GLBX.MDP3"

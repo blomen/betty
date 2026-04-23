@@ -353,48 +353,6 @@ class LiveInferenceV5:
 
         self._narrative_cache = extract_narrative_features(state)
 
-    def check_reversal(self, state: dict, trade_direction: int, min_signals: int = 2) -> dict:
-        """Poll the framework's 4 reversal signals while a position is open.
-
-        Caller (session_manager) invokes this periodically while holding a
-        trade. Returns a dict with per-signal booleans, fired_count, and
-        `should_exit` at the caller's threshold. Does NOT close the position
-        — that's the caller's decision. This is the "let winners ride / exit
-        only on clear reversal" API.
-
-        Args:
-            state: RL state dict — build_observation(state) is used to read
-                the latest orderflow / micro features.
-            trade_direction: +1 long, -1 short, 0 → no signals returned.
-            min_signals: threshold at which `should_exit` becomes True
-                (2 = framework default, 1 = aggressive, 3 = conservative).
-        """
-        from .exit_signals import count_reversal_signals
-        from .features.observation import build_observation
-
-        try:
-            obs = build_observation(state)
-        except Exception:
-            return {
-                "should_exit": False,
-                "fired_count": 0,
-                "error": "build_observation failed",
-            }
-
-        signals = count_reversal_signals(obs, trade_direction)
-        return {
-            "should_exit": signals.fired_count >= min_signals,
-            "fired_count": signals.fired_count,
-            "min_signals_threshold": min_signals,
-            "signals": {
-                "cvd_flip": signals.cvd_flip,
-                "absorption_at_target": signals.absorption_at_target,
-                "imbalance_flip": signals.imbalance_flip,
-                "big_trades_against": signals.big_trades_against,
-            },
-            "details": signals.details,
-        }
-
     def infer(self, state: dict) -> dict | None:
         """Run two-stage inference at a zone touch (Phase 3b)."""
         if self._trigger_gbt is None:

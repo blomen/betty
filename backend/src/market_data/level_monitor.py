@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -15,6 +16,16 @@ from .amt_dynamics import AMTDynamicsTracker
 logger = logging.getLogger(__name__)
 
 TICK_SIZE = 0.25  # NQ tick size
+
+# File-based kill switch: `touch /app/data/rl/trading_paused` to raise the
+# signal dispatch threshold to 0.99 without a rebuild. Used while we're
+# iterating on the model and don't want live orders firing. Remove the
+# file to resume normal trading.
+_TRADING_PAUSED_FLAG = "/app/data/rl/trading_paused"
+
+
+def _trading_paused() -> bool:
+    return os.path.exists(_TRADING_PAUSED_FLAG)
 
 
 class LevelStatus(str, Enum):
@@ -1166,7 +1177,10 @@ class LevelMonitor:
                 if action == "CONTINUATION":
                     action = "REVERSAL"
                 of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
-                if action not in ("SKIP", "skip") and confidence >= 0.15 and of_score >= 0.30:
+                # When trading_paused flag is set, the broker path also stops
+                # firing — raise the confidence bar above any realistic model output.
+                _broker_conf_floor = 0.99 if _trading_paused() else 0.15
+                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= 0.30:
                     import asyncio
 
                     try:
@@ -1232,7 +1246,9 @@ class LevelMonitor:
                 # Send trading signal — filter low confidence + fix stop calculation
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                MIN_SIGNAL_CONFIDENCE = 0.30
+                # 0.30 normally; 0.99 when the trading_paused flag is set so we
+                # collect signals + episodes without placing any orders.
+                MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else 0.30
 
                 if action in ("SKIP", "skip"):
                     logger.debug("SKIP for zone %.2f (conf=%.3f)", zone.center_price, confidence)
