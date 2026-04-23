@@ -699,6 +699,43 @@ class LiveInferenceV5:
                     sr.detail,
                 )
 
+        # TIER-2 PYRAMID / ADD policy: compound into winning positions when
+        # aligned. If caller indicates a position is already open (via
+        # state["position_state"] with live pos_side + unrealized_R) AND the
+        # new action direction matches AND we're confident AND in profit,
+        # expose a `pyramid_decision` in the payload. Live caller reads it
+        # and adds to position; otherwise treats as normal entry/trail.
+        from .add_policy import check_pyramid
+
+        pos_raw = state.get("position_state")
+        pos_live = {}
+        if isinstance(pos_raw, dict):
+            pos_live = pos_raw
+        elif hasattr(pos_raw, "__iter__"):
+            # numpy / list → decode the 8-dim layout: [flat, long, short, uR, ...]
+            try:
+                arr = np.asarray(pos_raw, dtype=np.float32).flatten()
+                if arr.size >= 4:
+                    if arr[1] > 0.5:
+                        pos_live["side"] = "long"
+                    elif arr[2] > 0.5:
+                        pos_live["side"] = "short"
+                    else:
+                        pos_live["side"] = "flat"
+                    pos_live["unrealized_R"] = float(arr[3])
+                    pos_live["size"] = float(state.get("position_size", 1.0))
+            except Exception:
+                pass
+
+        pyramid_decision = check_pyramid(
+            pos_side=pos_live.get("side", "flat"),
+            pos_size=float(pos_live.get("size", 1.0)),
+            unrealized_R=float(pos_live.get("unrealized_R", 0.0)),
+            action_direction=trade_direction,
+            base_size_mult=size_mult,
+            composite_confidence=composite,
+        )
+
         # Phase 3c: early_exit probability. H5 found the fixed +0.5R-lock
         # rule is net R-negative at every firing threshold, so the default
         # threshold is 0.95 (effectively off). Session manager can read
@@ -723,6 +760,12 @@ class LiveInferenceV5:
             "stop_ticks": float(stop_ticks),
             "stop_ticks_raw": stop_ticks_raw,
             "stop_breakdown": stop_breakdown,
+            "pyramid_decision": {
+                "should_add": pyramid_decision.should_add,
+                "add_size": pyramid_decision.add_size,
+                "reason": pyramid_decision.reason,
+                "detail": pyramid_decision.detail,
+            },
             "narrative": narrative_dict,
             "composite_confidence": composite,
             "size_multiplier": size_mult,
