@@ -1,5 +1,5 @@
 """
-Firev — Bankroll Coverage & Min Expected Profit Simulation
+Arnold — Bankroll Coverage & Min Expected Profit Simulation
 ================================================================
 How much bankroll do you need to play most value bets?
 What happens if you lower min_expected_profit from 2.0 to 0.5?
@@ -537,7 +537,7 @@ def main():
     random.seed(42)
 
     print("=" * 90)
-    print("  FIREV — BANKROLL COVERAGE & MIN EXPECTED PROFIT ANALYSIS")
+    print("  ARNOLD — BANKROLL COVERAGE & MIN EXPECTED PROFIT ANALYSIS")
     print("  How bankroll size and mEP threshold affect bet coverage and growth")
     print("=" * 90)
 

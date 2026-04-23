@@ -1,8 +1,8 @@
-# Firev - Betting Analytics Platform
+# Arnold - Betting Analytics Platform
 
 ## WHAT This Project Is
 
-Firev compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
+Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
 **Tech stack:** Python 3.10+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
@@ -13,20 +13,20 @@ The repo contains three independent programs sharing one codebase:
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
 | **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
-| **FirevSports** | Your PC | Local betting client: Play, Bankroll, Stats + Playwright mirror | `firevsports/firevsports.bat` |
-| **FirevStocks** | Your PC | Local trading client: Chart, DQN, Bankroll, Stats + TopstepX | `firevstocks/firevstocks.bat` |
+| **ArnoldSports** | Your PC | Local betting client: Play, Bankroll, Stats + Playwright mirror | `arnoldsports/arnoldsports.bat` |
+| **ArnoldStocks** | Your PC | Local trading client: Chart, DQN, Bankroll, Stats + TopstepX | `arnoldstocks/arnoldstocks.bat` |
 
 **Server** is a pure compute/data engine — no UI. It runs extraction, analysis, and serves the API.
 
-**FirevSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend. The **Play** tab is the unified betting view: arbitrage flow for soft books (via `ArbRunner`), value-bet flow for unlimited providers (pinnacle / polymarket / cloudbet) via `ProviderRunner`.
+**ArnoldSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend. The **Play** tab is the unified betting view: arbitrage flow for soft books (via `ArbRunner`), value-bet flow for unlimited providers (pinnacle / polymarket / cloudbet) via `ProviderRunner`.
 
-**FirevStocks** is the local trading app (managed by a separate agent).
+**ArnoldStocks** is the local trading app (managed by a separate agent).
 
 ## Architecture
 
 ```
 Hetzner Server (24/7, headless)              Your PC
-├── backend/src/                             ├── firevsports/        # Local betting client
+├── backend/src/                             ├── arnoldsports/        # Local betting client
 │   ├── providers/    # 16 extractors        │   ├── server.py       # Thin FastAPI proxy + mirror
 │   ├── pipeline/     # orchestrator         │   ├── mirror/         # Playwright browser + interceptor
 │   ├── analysis/     # scanner, devig       │   │   ├── browser.py  # Browser lifecycle + network interception
@@ -35,7 +35,7 @@ Hetzner Server (24/7, headless)              Your PC
 │   ├── api/          # FastAPI endpoints    │   │   ├── pending_loop.py # Settlement sync loop
 │   └── db/           # PostgreSQL ORM       │   │   └── workflows/  # Provider DOM automation
 └── docker-compose.yml                       │   └── frontend/      # React: Play, Bankroll, Stats
-                                             ├── firevstocks/        # Local trading client (separate agent)
+                                             ├── arnoldstocks/        # Local trading client (separate agent)
                                              │   ├── server.py
                                              │   └── frontend/
                                              │
@@ -46,8 +46,8 @@ Hetzner Server (24/7, headless)              Your PC
 
 | Frontend | Location | Purpose | Served by |
 |----------|----------|---------|-----------|
-| **FirevSports** | `firevsports/frontend/` | Betting: Play (unified arb + value), Bankroll, Stats + mirror control | Local FastAPI |
-| **FirevStocks** | `firevstocks/frontend/` | Trading: Chart, DQN, Bankroll, Stats | Local FastAPI |
+| **ArnoldSports** | `arnoldsports/frontend/` | Betting: Play (unified arb + value), Bankroll, Stats + mirror control | Local FastAPI |
+| **ArnoldStocks** | `arnoldstocks/frontend/` | Trading: Chart, DQN, Bankroll, Stats | Local FastAPI |
 
 **The server is API-only — no visual UI.** All betting/trading happens through the local clients.
 
@@ -70,34 +70,34 @@ backend/src/
 
 ## Production Deployment (IMPORTANT — READ FIRST)
 
-**Firev runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
+**Arnold runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
 
 ### Server Details
 - **Server**: Hetzner Dedicated i7-7700 (4c/8t, 64 GB RAM, 2x 256 GB SSD RAID 1), Ubuntu 24.04
 - **IP**: `148.251.40.251`
 - **SSH**: `ssh root@148.251.40.251`
 - **App URL**: `https://148.251.40.251` (behind nginx basic auth, self-signed cert)
-- **Repo on server**: `/opt/firev` (main branch)
+- **Repo on server**: `/opt/arnold` (main branch)
 
 ### Docker Containers
 3 containers via `docker-compose.yml`:
-- `firev-backend-1` — FastAPI + uvicorn + Playwright (internal only, no public port)
-- `firev-postgres-1` — PostgreSQL 16 (internal only, no public port)
-- `firev-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
+- `arnold-backend-1` — FastAPI + uvicorn + Playwright (internal only, no public port)
+- `arnold-postgres-1` — PostgreSQL 16 (internal only, no public port)
+- `arnold-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
 
 ### Security
 - **Nginx basic auth** protects all routes (credentials in `nginx/.htpasswd` on server, gitignored)
 - **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
-- **Non-root container** — backend runs as `firev` user (uid 1000), not root
+- **Non-root container** — backend runs as `arnold` user (uid 1000), not root
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
 - **Security headers**: CSP, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, `server_tokens off`
 - **CORS lockdown** — origins from `CORS_ORIGINS` env var (not hardcoded), explicit methods/headers only
 - `/health/*` endpoints are exempted from auth (nginx `location /health` block with `auth_basic off`)
-- To update the password: `ssh root@148.251.40.251 "openssl passwd -apr1 NEW_PASSWORD | xargs -I{} echo 'firev:{}' > /opt/firev/nginx/.htpasswd && cd /opt/firev && docker compose restart nginx"`
+- To update the password: `ssh root@148.251.40.251 "openssl passwd -apr1 NEW_PASSWORD | xargs -I{} echo 'arnold:{}' > /opt/arnold/nginx/.htpasswd && cd /opt/arnold && docker compose restart nginx"`
 
 ### Database
-- **Main DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/firev` (events, odds, bets, profiles, opportunities)
-- **Market DB**: `postgresql://firev:${DB_PASSWORD}@postgres:5432/market` (trades, candles — high-frequency tick data)
+- **Main DB**: `postgresql://arnold:${DB_PASSWORD}@postgres:5432/arnold` (events, odds, bets, profiles, opportunities)
+- **Market DB**: `postgresql://arnold:${DB_PASSWORD}@postgres:5432/market` (trades, candles — high-frequency tick data)
 - **No more SQLite** — fully migrated to PostgreSQL. SQLite fallback exists in code for local dev without Docker.
 
 ### Environment
@@ -112,22 +112,22 @@ backend/src/
 
 ```bash
 # After pushing to main (full rebuild — needed for ANY code/Dockerfile change):
-ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh rebuild backend"
+ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh rebuild backend"
 
 # For config/env-only changes (restart is NOT enough for code changes — code is baked into Docker image):
-ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh restart backend"
+ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh restart backend"
 
 # Check logs (no lock needed):
-ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh logs backend 30"
+ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh logs backend 30"
 
 # Check deploy status + containers + disk:
-ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh status"
+ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh status"
 
 # Clean up old Docker images and build cache:
-ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh cleanup"
+ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh cleanup"
 
 # Check extraction:
-ssh root@148.251.40.251 "cd /opt/firev && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
+ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
 
 ### Docker Build (Multi-Stage)
@@ -189,9 +189,9 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 - Disable daemon: `touch /app/data/rl/daemon_disabled` inside the container
 - Manual pipeline run: `taskset -c 0,1,4,5 nice -n 19 bash /app/backend/scripts/rl_train_pipeline.sh`
 
-## FirevSports — Local Betting Client
+## ArnoldSports — Local Betting Client
 
-**Run `firevsports/firevsports.bat` to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
+**Run `arnoldsports/arnoldsports.bat` to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
 
 ### How It Works
 1. SSH tunnel to server API (port 18000 → Docker backend:8000)
@@ -234,8 +234,8 @@ IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLA
 
 ### Key Files
 ```
-firevsports/
-├── firevsports.bat       # Windows launcher
+arnoldsports/
+├── arnoldsports.bat       # Windows launcher
 ├── launch.py             # SSH tunnel + uvicorn + browser open
 ├── server.py             # Thin FastAPI: proxy + mirror router + static
 ├── proxy.py              # Reverse proxy to server tunnel
@@ -251,9 +251,9 @@ firevsports/
 ```
 
 ### Frontends (IMPORTANT)
-- **`firevsports/frontend/`** — LOCAL betting client (Play, Bankroll, Stats). Runs on your PC only. Play is the unified view for all bet types.
-- **`firevstocks/frontend/`** — LOCAL trading client (separate agent manages this).
-- **The server has no frontend.** It's API-only. Any betting UI work goes in `firevsports/frontend/`.
+- **`arnoldsports/frontend/`** — LOCAL betting client (Play, Bankroll, Stats). Runs on your PC only. Play is the unified view for all bet types.
+- **`arnoldstocks/frontend/`** — LOCAL trading client (separate agent manages this).
+- **The server has no frontend.** It's API-only. Any betting UI work goes in `arnoldsports/frontend/`.
 
 ## WHY It's Structured This Way
 
@@ -273,7 +273,7 @@ firevsports/
 ### Commands
 ```bash
 # Production (on server via SSH):
-ssh root@148.251.40.251 "cd /opt/firev && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
+ssh root@148.251.40.251 "cd /opt/arnold && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
 
 # Local dev (only if needed — production runs on server):
 cd backend && python run_dev.py   # Starts uvicorn on localhost:8000

@@ -1,4 +1,4 @@
-"""WebSocket relay: local firevstocks client <-> server LevelMonitor."""
+"""WebSocket relay: local arnoldstocks client <-> server LevelMonitor."""
 
 from __future__ import annotations
 

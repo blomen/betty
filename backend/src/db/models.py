@@ -1,5 +1,5 @@
 """
-Firev Database Models
+Arnold Database Models
 
 Database schema for:
 - Canonical events (provider-agnostic)

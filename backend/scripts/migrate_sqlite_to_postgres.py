@@ -1,10 +1,10 @@
 """
 One-time migration: SQLite → PostgreSQL.
 
-Reads all data from SQLite firev.db and inserts into PostgreSQL.
+Reads all data from SQLite arnold.db and inserts into PostgreSQL.
 Run with both databases accessible:
 
-    SQLITE_PATH=/tmp/firev.db DATABASE_URL=postgresql+asyncpg://firev:pw@postgres:5432/firev \
+    SQLITE_PATH=/tmp/arnold.db DATABASE_URL=postgresql+asyncpg://arnold:pw@postgres:5432/arnold \
     python scripts/migrate_sqlite_to_postgres.py
 """
 
@@ -18,7 +18,7 @@ import sqlite3
 import psycopg2
 from psycopg2.extras import execute_values
 
-SQLITE_PATH = os.environ.get("SQLITE_PATH", "data/firev.db")
+SQLITE_PATH = os.environ.get("SQLITE_PATH", "data/arnold.db")
 PG_URL = os.environ["DATABASE_URL"].replace("+asyncpg", "").replace("+psycopg2", "")
 
 # Tables to migrate (in FK dependency order)

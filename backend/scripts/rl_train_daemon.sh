@@ -2,7 +2,7 @@
 # Continuous RL training daemon — runs forever, retrains periodically.
 #
 # Usage:
-#   docker exec -d firev-backend-1 bash /app/backend/scripts/rl_train_daemon.sh
+#   docker exec -d arnold-backend-1 bash /app/backend/scripts/rl_train_daemon.sh
 #
 # Behavior:
 #   - Runs the full pipeline on startup (with retry on failure)

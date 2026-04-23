@@ -1,4 +1,4 @@
-# Firev
+# Arnold
 
 Betting analytics and trading platform.
 
@@ -13,7 +13,7 @@ Betting analytics and trading platform.
 ## Tech Stack
 
 - **Server engine:** Python 3.10+ / FastAPI / PostgreSQL / Playwright / SQLAlchemy
-- **Local clients (firevsports / firevstocks):** React 19 / TypeScript / Vite / Tailwind
+- **Local clients (arnoldsports / arnoldstocks):** React 19 / TypeScript / Vite / Tailwind
 - **Infrastructure:** Docker / Nginx / Hetzner VPS
 - **Data:** Databento (market data) / Pinnacle (sharp odds)
 
@@ -32,8 +32,8 @@ backend/src/             # Server-side engine (Hetzner, 24/7). No visual UI.
 ├── api/                 # FastAPI routes
 └── db/                  # SQLAlchemy models
 
-firevsports/             # Local betting client (React + Playwright). Runs on your PC.
-firevstocks/             # Local trading client (React + TopstepX). Runs on your PC.
+arnoldsports/             # Local betting client (React + Playwright). Runs on your PC.
+arnoldstocks/             # Local trading client (React + TopstepX). Runs on your PC.
 ```
 
 ## Documentation

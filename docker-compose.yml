@@ -5,9 +5,9 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./docker/init-market-db.sql:/docker-entrypoint-initdb.d/01-market-db.sql
     environment:
-      - POSTGRES_USER=firev
+      - POSTGRES_USER=arnold
       - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=firev
+      - POSTGRES_DB=arnold
     # Tuned for bare metal with 64GB RAM — PostgreSQL gets ~12GB dedicated
     command:
       - postgres
@@ -36,7 +36,7 @@ services:
     mem_limit: 12g
     memswap_limit: 13g
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U firev"]
+      test: ["CMD-SHELL", "pg_isready -U arnold"]
       interval: 5s
       retries: 5
     restart: unless-stopped
@@ -51,24 +51,24 @@ services:
     build:
       context: .
       args:
-        - VITE_FIREV_API_KEY=${FIREV_API_KEY}
+        - VITE_ARNOLD_API_KEY=${ARNOLD_API_KEY}
     # Localhost-only for SSH tunnel — not public (nginx handles external traffic)
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      - firev_data:/app/data
-      - firev_logs:/app/logs
-      - firev_models:/app/models
+      - arnold_data:/app/data
+      - arnold_logs:/app/logs
+      - arnold_models:/app/models
       - chrome_profile:/app/chrome-profile
     env_file:
       - .env.docker
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - FIREV_DATA_DIR=/app/data
-      - FIREV_LOGS_DIR=/app/logs
-      - DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/firev
-      - MARKET_DATABASE_URL=postgresql+asyncpg://firev:${DB_PASSWORD}@postgres:5432/market
+      - ARNOLD_DATA_DIR=/app/data
+      - ARNOLD_LOGS_DIR=/app/logs
+      - DATABASE_URL=postgresql+asyncpg://arnold:${DB_PASSWORD}@postgres:5432/arnold
+      - MARKET_DATABASE_URL=postgresql+asyncpg://arnold:${DB_PASSWORD}@postgres:5432/market
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,8 +117,8 @@ services:
 
 volumes:
   pg_data:
-  firev_data:
-  firev_logs:
-  firev_models:
+  arnold_data:
+  arnold_logs:
+  arnold_models:
   chrome_profile:
   certs:

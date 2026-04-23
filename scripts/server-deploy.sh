@@ -1,6 +1,6 @@
 #!/bin/bash
 # Server-side deploy script with flock to prevent concurrent deploys
-# Usage: ssh root@148.251.40.251 "bash /opt/firev/scripts/server-deploy.sh <action> [args]"
+# Usage: ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh <action> [args]"
 #
 # Actions:
 #   pull              - git pull only
@@ -12,10 +12,10 @@
 
 set -euo pipefail
 
-LOCK_FILE="/opt/firev/.deploy.lock"
-STATUS_FILE="/opt/firev/.deploy-status"
-DEPLOY_DIR="/opt/firev"
-DEPLOY_COOLDOWN_FILE="/opt/firev/.last-deploy"
+LOCK_FILE="/opt/arnold/.deploy.lock"
+STATUS_FILE="/opt/arnold/.deploy-status"
+DEPLOY_DIR="/opt/arnold"
+DEPLOY_COOLDOWN_FILE="/opt/arnold/.last-deploy"
 DEPLOY_COOLDOWN_SECONDS=300  # 5 min minimum between rebuilds
 
 action="${1:-status}"
@@ -56,7 +56,7 @@ exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     echo "ERROR: Another deploy is in progress:"
     cat "$STATUS_FILE" 2>/dev/null || echo "(unknown)"
-    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/firev/scripts/server-deploy.sh status'"
+    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/arnold/scripts/server-deploy.sh status'"
     exit 1
 fi
 
@@ -81,7 +81,7 @@ record_deploy_time() {
 }
 
 # RL training protection — wait for active pipeline to finish before killing container
-RL_PROGRESS="/opt/firev/data/rl/pipeline_progress"
+RL_PROGRESS="/opt/arnold/data/rl/pipeline_progress"
 RL_MAX_WAIT=7200  # 2 hours max wait
 
 wait_for_rl_training() {

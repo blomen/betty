@@ -1,4 +1,4 @@
-"""Alembic Environment Configuration for Firev."""
+"""Alembic Environment Configuration for Arnold."""
 import os
 import sys
 from logging.config import fileConfig

@@ -1,5 +1,5 @@
 """
-Firev FastAPI Backend
+Arnold FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -174,11 +174,11 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
     # Mirror-only mode: skip scheduler, trading features, RL collector
-    _mirror_only = bool(os.environ.get("FIREV_MIRROR_ONLY"))
+    _mirror_only = bool(os.environ.get("ARNOLD_MIRROR_ONLY"))
     if _mirror_only:
         logger.info("[Startup] Mirror-only mode — skipping scheduler, trading, RL")
 
-    _stocks_mode = bool(os.environ.get("FIREV_STOCKS_MODE"))
+    _stocks_mode = bool(os.environ.get("ARNOLD_STOCKS_MODE"))
     if _stocks_mode:
         logger.info("[Startup] Stocks mode — LevelMonitor + Specialists active, no Databento, no local broker")
 
@@ -257,7 +257,7 @@ async def lifespan(app: FastAPI):
 
         threading.Thread(target=_start_trading_service, daemon=True, name="startup-trading").start()
     else:
-        logger.info("[Startup] Scheduler disabled (FIREV_NO_SCHEDULER set)")
+        logger.info("[Startup] Scheduler disabled (ARNOLD_NO_SCHEDULER set)")
 
     # ── Trading features (Databento stream, level monitor, candle backfill) ──
     # Everything is gated on market hours: when Globex is closed (weekend),
@@ -698,7 +698,7 @@ async def lifespan(app: FastAPI):
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
     # ── Stocks mode: LevelMonitor + full data pipeline without Databento stream ──
-    # Ticks arrive from local firevstocks client via /ws/signals WebSocket.
+    # Ticks arrive from local arnoldstocks client via /ws/signals WebSocket.
     # We wire up everything the Databento path does: tick buffer, candle flow,
     # session context, macro, AMT dynamics, orderflow — so the specialist
     # ensemble gets a full 276-dim observation vector, not zeros.
@@ -925,7 +925,7 @@ async def lifespan(app: FastAPI):
             _market_engine = create_engine(
                 os.environ.get(
                     "MARKET_DATABASE_URL",
-                    "postgresql://firev:firev2026secure@postgres:5432/market",
+                    "postgresql://arnold:arnold2026secure@postgres:5432/market",
                 ).replace("+asyncpg", ""),
                 pool_size=5,
                 max_overflow=5,
@@ -1025,7 +1025,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Firev API",
+    title="Arnold API",
     description="Betting analytics & value betting backend",
     version="0.1.0",
     lifespan=lifespan,
@@ -1060,7 +1060,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # App-level API key auth — defense-in-depth behind nginx basic auth
-_api_key = os.environ.get("FIREV_API_KEY")
+_api_key = os.environ.get("ARNOLD_API_KEY")
 _auth_exempt = {"/health", "/health/live", "/health/ready", "/health/extraction", "/debug/zones", "/ws/signals"}
 
 
@@ -1314,8 +1314,8 @@ async def get_version():
 
 @app.get("/")
 async def root():
-    """Backend is API-only. Visual clients (FirevSports / FirevStocks) run locally."""
-    return {"status": "firev-api", "version": app.version}
+    """Backend is API-only. Visual clients (ArnoldSports / ArnoldStocks) run locally."""
+    return {"status": "arnold-api", "version": app.version}
 
 
 # Dev entry point (no --reload). On Windows, --reload forces SelectorEventLoop

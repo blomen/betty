@@ -5,15 +5,15 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend
-      - firev_data:/app/data
-      - firev_logs:/app/logs
+      - arnold_data:/app/data
+      - arnold_logs:/app/logs
     env_file:
       - .env.docker
     environment:
-      - FIREV_DATA_DIR=/app/data
-      - FIREV_LOGS_DIR=/app/logs
+      - ARNOLD_DATA_DIR=/app/data
+      - ARNOLD_LOGS_DIR=/app/logs
     command: ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--loop", "uvloop"]
 
 volumes:
-  firev_data:
-  firev_logs:
+  arnold_data:
+  arnold_logs:

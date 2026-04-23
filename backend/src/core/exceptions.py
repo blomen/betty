@@ -1,12 +1,12 @@
 """
-Firev Exception Hierarchy
+Arnold Exception Hierarchy
 
 Structured exceptions for distinguishing retryable vs fatal errors.
 """
 
 
-class FirevError(Exception):
-    """Base exception for all Firev errors."""
+class ArnoldError(Exception):
+    """Base exception for all Arnold errors."""
 
     def __init__(self, message: str, provider_id: str | None = None):
         super().__init__(message)
@@ -14,7 +14,7 @@ class FirevError(Exception):
         self.message = message
 
 
-class RetryableError(FirevError):
+class RetryableError(ArnoldError):
     """
     Errors that can be retried (timeouts, rate limits, transient failures).
 
@@ -58,7 +58,7 @@ class TimeoutError(RetryableError):
         super().__init__(message, provider_id)
 
 
-class FatalError(FirevError):
+class FatalError(ArnoldError):
     """
     Errors that should not be retried (bad config, auth failed).
 

@@ -31,17 +31,17 @@ COPY backend/ backend/
 RUN pip install --no-cache-dir --no-deps -e ".[scrape]"
 
 # Non-root user
-RUN useradd -m -u 1000 -s /bin/bash firev && \
+RUN useradd -m -u 1000 -s /bin/bash arnold && \
     mkdir -p /app/data /app/logs /app/models /app/data/rl /app/backend/data && \
     ln -s /app/data/rl /app/backend/data/rl && \
-    chown -R firev:firev /app/data /app/logs /app/models /app/backend/data /app/.playwright && \
-    cp -r /root/.cache /home/firev/.cache 2>/dev/null; chown -R firev:firev /home/firev/.cache 2>/dev/null; true
+    chown -R arnold:arnold /app/data /app/logs /app/models /app/backend/data /app/.playwright && \
+    cp -r /root/.cache /home/arnold/.cache 2>/dev/null; chown -R arnold:arnold /home/arnold/.cache 2>/dev/null; true
 
-ENV FIREV_DATA_DIR=/app/data
-ENV FIREV_LOGS_DIR=/app/logs
+ENV ARNOLD_DATA_DIR=/app/data
+ENV ARNOLD_LOGS_DIR=/app/logs
 
 EXPOSE 8000
 
-USER firev
+USER arnold
 WORKDIR /app/backend
 CMD ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--loop", "uvloop"]

@@ -18,7 +18,7 @@ class BrokerConfig:
     password: str = ""
     app_id: str = ""
     cid: str = ""
-    device_id: str = "firev-agent"
+    device_id: str = "arnold-agent"
 
     # Trading
     symbol: str = "NQM5"
@@ -43,7 +43,7 @@ class BrokerConfig:
             password=os.environ.get("TRADOVATE_PASSWORD", ""),
             app_id=os.environ.get("TRADOVATE_APP_ID", ""),
             cid=os.environ.get("TRADOVATE_CID", ""),
-            device_id=os.environ.get("TRADOVATE_DEVICE_ID", "firev-agent"),
+            device_id=os.environ.get("TRADOVATE_DEVICE_ID", "arnold-agent"),
             symbol=os.environ.get("BROKER_SYMBOL", "NQM5"),
             max_position=int(os.environ.get("BROKER_MAX_POSITION", "2")),
             max_daily_loss=float(os.environ.get("BROKER_MAX_DAILY_LOSS", "1000")),

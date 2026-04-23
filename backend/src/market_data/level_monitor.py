@@ -1205,7 +1205,7 @@ class LevelMonitor:
                     except Exception:
                         logger.warning("Broker execution failed", exc_info=True)
 
-            # Send via relay callbacks (trading service + firevstocks clients)
+            # Send via relay callbacks (trading service + arnoldstocks clients)
             callbacks = getattr(self, "_signal_callbacks", set())
             if not callbacks and result is not None:
                 action = result.get("action", "SKIP")
@@ -1320,7 +1320,7 @@ class LevelMonitor:
         self._signal_callbacks.add(fn)
         # Clear debounce + last-fire history so zones re-evaluate immediately.
         # Prevents the case where a touch fired while no callbacks were registered
-        # (e.g. server started before firevstocks connected) from silently locking
+        # (e.g. server started before arnoldstocks connected) from silently locking
         # the zone for 60 seconds.
         self._zone_debounce = set()
         if hasattr(self, "_zone_last_fire"):

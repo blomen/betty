@@ -47,7 +47,7 @@ backend/scrap/
 *.png
 *.jpg
 
-# firevsports & firevstocks keep their own /data/ scratch dirs (ignored inside each).
+# arnoldsports & arnoldstocks keep their own /data/ scratch dirs (ignored inside each).
 # The root /data/ is reserved for config artefacts (mirror_intel JSONs etc.) — tracked.
 
 # Superpowers brainstorm cache

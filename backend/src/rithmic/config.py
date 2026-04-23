@@ -13,7 +13,7 @@ class RithmicConfig:
     user: str = ""
     password: str = ""
     system_name: str = "Rithmic Paper Trading"
-    app_name: str = "firev"
+    app_name: str = "arnold"
     app_version: str = "1.0"
     url: str = "rituz00100.rithmic.com:443"  # paper trading gateway
     symbol: str = "NQM5"
@@ -25,7 +25,7 @@ class RithmicConfig:
             user=os.environ.get("RITHMIC_USER", ""),
             password=os.environ.get("RITHMIC_PASSWORD", ""),
             system_name=os.environ.get("RITHMIC_SYSTEM_NAME", "Rithmic Paper Trading"),
-            app_name=os.environ.get("RITHMIC_APP_NAME", "firev"),
+            app_name=os.environ.get("RITHMIC_APP_NAME", "arnold"),
             app_version=os.environ.get("RITHMIC_APP_VERSION", "1.0"),
             url=os.environ.get("RITHMIC_URL", "rituz00100.rithmic.com:443"),
             symbol=os.environ.get("RITHMIC_SYMBOL", "NQM5"),

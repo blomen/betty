@@ -2,13 +2,13 @@
 # Container liveness watchdog — runs via cron every 5 minutes.
 # Checks if backend container is running and healthy, restarts if not.
 #
-# Install: echo "*/5 * * * * root bash /opt/firev/scripts/container-watchdog.sh >> /var/log/firev-watchdog.log 2>&1" > /etc/cron.d/firev-watchdog
+# Install: echo "*/5 * * * * root bash /opt/arnold/scripts/container-watchdog.sh >> /var/log/arnold-watchdog.log 2>&1" > /etc/cron.d/arnold-watchdog
 #
 # This catches the case where a deploy fails or the container crashes
 # and nobody notices for hours (13h gap on 2026-04-10).
 
-DEPLOY_DIR="/opt/firev"
-LOCK_FILE="/opt/firev/.deploy.lock"
+DEPLOY_DIR="/opt/arnold"
+LOCK_FILE="/opt/arnold/.deploy.lock"
 LOG_PREFIX="[$(date -u '+%Y-%m-%d %H:%M UTC')]"
 
 cd "$DEPLOY_DIR" || exit 1

@@ -1,10 +1,10 @@
 """
-Centralized path resolution for Firev.
+Centralized path resolution for Arnold.
 
 Uses environment variables with defaults:
-  FIREV_DATA_DIR  → /app/data   (Docker) or backend/data (dev)
-  FIREV_LOGS_DIR  → /app/logs   (Docker) or backend/logs (dev)
-  FIREV_CONFIG_DIR → src/config  (always relative to source)
+  ARNOLD_DATA_DIR  → /app/data   (Docker) or backend/data (dev)
+  ARNOLD_LOGS_DIR  → /app/logs   (Docker) or backend/logs (dev)
+  ARNOLD_CONFIG_DIR → src/config  (always relative to source)
 """
 
 import os
@@ -16,14 +16,14 @@ _BACKEND_DIR = Path(__file__).parent.parent
 
 def get_data_dir() -> Path:
     """Persistent data directory (DB files, exports)."""
-    d = Path(os.environ.get("FIREV_DATA_DIR", str(_BACKEND_DIR / "data")))
+    d = Path(os.environ.get("ARNOLD_DATA_DIR", str(_BACKEND_DIR / "data")))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_db_path() -> Path:
     """SQLite database path (used until Postgres migration)."""
-    return get_data_dir() / "firev.db"
+    return get_data_dir() / "arnold.db"
 
 
 def get_market_db_path() -> Path:
@@ -33,7 +33,7 @@ def get_market_db_path() -> Path:
 
 def get_logs_dir() -> Path:
     """Logs directory."""
-    d = Path(os.environ.get("FIREV_LOGS_DIR", str(_BACKEND_DIR / "logs")))
+    d = Path(os.environ.get("ARNOLD_LOGS_DIR", str(_BACKEND_DIR / "logs")))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -42,7 +42,7 @@ def get_config_path(filename: str) -> Path:
     """Config file path (providers.yaml, sports.yaml)."""
     config_dir = Path(
         os.environ.get(
-            "FIREV_CONFIG_DIR",
+            "ARNOLD_CONFIG_DIR",
             str(Path(__file__).parent / "config"),
         )
     )
@@ -53,7 +53,7 @@ def get_config_dir() -> Path:
     """Config directory."""
     return Path(
         os.environ.get(
-            "FIREV_CONFIG_DIR",
+            "ARNOLD_CONFIG_DIR",
             str(Path(__file__).parent / "config"),
         )
     )

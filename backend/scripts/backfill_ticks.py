@@ -7,7 +7,7 @@ import os
 
 db_url = os.environ.get(
     "MARKET_DATABASE_URL",
-    "postgresql://firev:firev2026secure@postgres:5432/market",
+    "postgresql://arnold:arnold2026secure@postgres:5432/market",
 ).replace("+asyncpg", "")
 
 engine = create_engine(db_url)
