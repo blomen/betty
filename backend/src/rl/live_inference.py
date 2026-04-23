@@ -422,9 +422,27 @@ class LiveInferenceV5:
                         position_state = np.zeros(8, dtype=np.float32)
                 else:
                     position_state = np.zeros(8, dtype=np.float32)
-                augmented_obs = np.concatenate(
-                    [base_obs.astype(np.float32), gbt_forecast.astype(np.float32), position_state]
+                # Phase 3c session_memory (v5 schema, augmented 324).
+                from .features.session_memory_features import extract_session_memory_live
+
+                session_memory_dqn = extract_session_memory_live(
+                    recent_outcomes=list(self.session_state._recent_outcomes),
+                    session_R=self.session_state.session_R,
+                    peak_session_R=self.session_state.peak_session_R,
+                    consecutive_losses=self.session_state.consecutive_losses,
+                    trades_taken=self.session_state.trades_taken,
                 )
+                augmented_obs = np.concatenate(
+                    [
+                        base_obs.astype(np.float32),
+                        gbt_forecast.astype(np.float32),
+                        position_state,
+                        session_memory_dqn,
+                    ]
+                )
+                # Pad / truncate for backward-compat: old DQN checkpoints were
+                # trained on 318-dim (no session_memory). New 324-dim DQN uses
+                # the full vector. Either works — we let shape drive behaviour.
                 if len(augmented_obs) != self._dqn_input_dim:
                     if len(augmented_obs) < self._dqn_input_dim:
                         pad = np.zeros(self._dqn_input_dim - len(augmented_obs), dtype=np.float32)
@@ -547,7 +565,26 @@ class LiveInferenceV5:
                         pos = np.zeros(8, dtype=np.float32)
                 else:
                     pos = np.zeros(8, dtype=np.float32)
-                augmented = np.concatenate([base_obs.astype(np.float32), gbt_forecast.astype(np.float32), pos])
+                # Session memory (Phase 3c): 6-dim rolling regime context from
+                # the live SessionState — must match the chronological
+                # simulation the heads trained on.
+                from .features.session_memory_features import extract_session_memory_live
+
+                session_memory = extract_session_memory_live(
+                    recent_outcomes=list(self.session_state._recent_outcomes),
+                    session_R=self.session_state.session_R,
+                    peak_session_R=self.session_state.peak_session_R,
+                    consecutive_losses=self.session_state.consecutive_losses,
+                    trades_taken=self.session_state.trades_taken,
+                )
+                augmented = np.concatenate(
+                    [
+                        base_obs.astype(np.float32),
+                        gbt_forecast.astype(np.float32),
+                        pos,
+                        session_memory,
+                    ]
+                )
             except Exception:
                 log.debug("Failed to build augmented obs for size/early-exit heads", exc_info=True)
 

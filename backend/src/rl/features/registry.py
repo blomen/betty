@@ -49,7 +49,7 @@ class FeatureSchema:
 #      "broken old feature"
 # ---------------------------------------------------------------------------
 
-BASE_OBSERVATION_SCHEMA_VERSION = 4  # bump on every change to the list below
+BASE_OBSERVATION_SCHEMA_VERSION = 5  # v5: session_memory added (augmented 318→324)
 
 BASE_OBSERVATION_SCHEMA: list[FeatureSchema] = [
     FeatureSchema("level_composition", 1, 31, "multi-hot (zone) or one-hot (legacy) level types"),
@@ -92,6 +92,16 @@ BASE_OBSERVATION_SCHEMA: list[FeatureSchema] = [
 AUGMENTED_SCHEMA: list[FeatureSchema] = [
     FeatureSchema("gbt_forecast", 1, 8, "TriggerGBT 8-dim forecast"),
     FeatureSchema("position_state", 1, 8, "pos_side + unrealized_R + time_in_trade + session P&L"),
+    # Phase 3c session-memory addition (augmented 318 → 324):
+    # stateful regime-awareness features computed chronologically per session.
+    # Teaches the heads to recognize hostile regimes from recent session context
+    # instead of relying on hard rules in live_inference.
+    FeatureSchema(
+        "session_memory",
+        1,
+        6,
+        "rolling_5 win_rate + avg_R + DD_from_peak + consec_loss + trade_count + R_vol",
+    ),
 ]
 
 

@@ -1768,11 +1768,25 @@ def train(
                     stop_targets=stop_targets,
                 )
                 typer.echo(f"Position state: session-aware simulation over {len(position_state)} episodes")
+                # SESSION MEMORY (Phase 3c): chronological rolling win-rate, DD
+                # from peak, consec-loss streak, etc. Teaches heads to recognise
+                # hostile regimes from session context.
+                from src.rl.features.session_memory_features import simulate_session_memory
+
+                session_memory = simulate_session_memory(
+                    touch_epochs=touch_epochs,
+                    rewards_cont=rewards_cont,
+                    rewards_rev=rewards_rev,
+                )
+                typer.echo(f"Session memory: {session_memory.shape[1]}-dim rolling context")
             else:
                 position_state = np.zeros((len(observations), 8), dtype=np.float32)
-                typer.echo("Position state: zeros (touch_epochs.npy missing — re-replay to enable)")
-            observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
-            typer.echo(f"HYBRID: augmented obs with GBT forecast + position state → {observations.shape[1]}-dim")
+                session_memory = np.zeros((len(observations), 6), dtype=np.float32)
+                typer.echo("Position state + session memory: zeros (touch_epochs.npy missing — re-replay to enable)")
+            observations = np.concatenate([observations, gbt_forecast, position_state, session_memory], axis=1).astype(
+                np.float32
+            )
+            typer.echo(f"HYBRID: augmented obs (base + GBT + position + session_memory) → {observations.shape[1]}-dim")
         else:
             typer.echo("Warning: trigger_obs size mismatch, training DQN on base obs only")
 
@@ -2356,7 +2370,23 @@ def eval(
             _gbt_end = _gbt_start + TRIGGER_GBT_DIM
             gbt_forecast = trigger_obs[:, _gbt_start:_gbt_end]
             position_state = np.zeros((len(observations), 8), dtype=np.float32)
-            observations = np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(np.float32)
+            # Session memory: use real simulation if touch_epochs are available,
+            # else zeros (match train behaviour).
+            _te_path = episodes_dir / "touch_epochs.npy"
+            if _te_path.exists():
+                from src.rl.features.session_memory_features import simulate_session_memory
+
+                _touch_epochs = np.load(_te_path)
+                session_memory = simulate_session_memory(
+                    touch_epochs=_touch_epochs[: len(observations)],
+                    rewards_cont=rewards_cont[: len(observations)],
+                    rewards_rev=rewards_rev[: len(observations)],
+                )
+            else:
+                session_memory = np.zeros((len(observations), 6), dtype=np.float32)
+            observations = np.concatenate([observations, gbt_forecast, position_state, session_memory], axis=1).astype(
+                np.float32
+            )
             typer.echo(f"HYBRID: augmented eval obs → {observations.shape[1]}-dim")
 
     n = len(observations)
@@ -2925,10 +2955,13 @@ def train_trigger_gbt(
 
 
 def _build_augmented_obs(observations, episodes_dir):
-    """Return (X, trigger_obs_or_None) where X is the 318-dim DQN input.
+    """Return (X, trigger_obs_or_None) where X is the 324-dim DQN input.
 
-    If trigger_observations.npy is missing or misaligned, falls back to the
-    base observations only (the heads then train on 302-dim instead of 318).
+    Augmented layout matches AUGMENTED_SCHEMA:
+        base (302) + gbt_forecast (8) + position_state (8) + session_memory (6)
+
+    Falls back to lower-dim combinations when the required files are missing
+    — callers/heads will detect alive_mask sizes at training time.
     """
     import numpy as _np
 
@@ -2941,7 +2974,49 @@ def _build_augmented_obs(observations, episodes_dir):
             _gs = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
             gbt_forecast = trigger_obs[:, _gs : _gs + TRIGGER_GBT_DIM]
             position_state = _np.zeros((len(observations), 8), dtype=_np.float32)
-            X = _np.concatenate([observations, gbt_forecast, position_state], axis=1).astype(_np.float32)
+            # Session memory: use the chronological simulator if touch_epochs
+            # + rewards exist, otherwise fall back to zeros.
+            # Action-conditioned when a TriggerGBT is available (mirrors H4),
+            # so the simulator produces realistic loss streaks the heads can
+            # learn to recognise. Falls back to greedy-best otherwise.
+            te_path = episodes_dir / "touch_epochs.npy"
+            rc_path = episodes_dir / "rewards_cont.npy"
+            rr_path = episodes_dir / "rewards_rev.npy"
+            if te_path.exists() and rc_path.exists() and rr_path.exists():
+                from src.rl.features.session_memory_features import simulate_session_memory
+
+                te = _np.load(te_path)
+                rc = _np.load(rc_path)
+                rr = _np.load(rr_path)
+                m = min(len(observations), len(te), len(rc), len(rr))
+
+                # Derive actions from TriggerGBT when available for realistic
+                # session state.
+                sim_actions = None
+                try:
+                    from src.rl.agent.trigger_gbt import TriggerGBT
+
+                    tgbt_path = _MODELS_DIR / "trigger_gbt_v5.joblib"
+                    if tgbt_path.exists() and trigger_obs is not None:
+                        gbt = TriggerGBT.load(tgbt_path)
+                        sim_actions, _c, _p = gbt.predict_direction_batch(trigger_obs[:m].astype(_np.float32))
+                except Exception:
+                    sim_actions = None
+
+                session_memory = simulate_session_memory(
+                    touch_epochs=te[:m],
+                    rewards_cont=rc[:m],
+                    rewards_rev=rr[:m],
+                    actions=sim_actions,
+                )
+                if m < len(observations):
+                    pad = _np.zeros((len(observations) - m, session_memory.shape[1]), dtype=_np.float32)
+                    session_memory = _np.concatenate([session_memory, pad], axis=0)
+            else:
+                session_memory = _np.zeros((len(observations), 6), dtype=_np.float32)
+            X = _np.concatenate([observations, gbt_forecast, position_state, session_memory], axis=1).astype(
+                _np.float32
+            )
             return X, trigger_obs
     return observations.astype(_np.float32), None
 
@@ -3302,8 +3377,27 @@ def analyze_dim_correlation(
         _gs = TRIGGER_DIM - EXEC_PASSTHROUGH_DIM - TRIGGER_GBT_DIM
         gbt_forecast = np.array(trigger_obs[:, _gs : _gs + TRIGGER_GBT_DIM])
         position_state = np.zeros((len(observations), 8), dtype=np.float32)
-        X = np.concatenate([np.array(observations), gbt_forecast, position_state], axis=1).astype(np.float32)
-        typer.echo(f"Built augmented obs: {X.shape[1]}-dim (base + GBT forecast + position state)")
+        # Session memory: chronological simulation when touch_epochs exist
+        te_path = episodes_dir / "touch_epochs.npy"
+        if te_path.exists():
+            from src.rl.features.session_memory_features import simulate_session_memory
+
+            te = np.load(te_path)
+            m = min(len(observations), len(te), len(rewards_cont), len(rewards_rev))
+            session_memory = simulate_session_memory(
+                touch_epochs=te[:m],
+                rewards_cont=rewards_cont[:m],
+                rewards_rev=rewards_rev[:m],
+            )
+            if m < len(observations):
+                pad = np.zeros((len(observations) - m, session_memory.shape[1]), dtype=np.float32)
+                session_memory = np.concatenate([session_memory, pad], axis=0)
+        else:
+            session_memory = np.zeros((len(observations), 6), dtype=np.float32)
+        X = np.concatenate([np.array(observations), gbt_forecast, position_state, session_memory], axis=1).astype(
+            np.float32
+        )
+        typer.echo(f"Built augmented obs: {X.shape[1]}-dim (base + GBT + position_state + session_memory)")
     else:
         X = np.array(observations).astype(np.float32)
         typer.echo(f"Using base obs: {X.shape[1]}-dim (no trigger_observations.npy)")
@@ -3954,3 +4048,410 @@ def per_day_report(
             for r in rows:
                 f.write(",".join(str(x) for x in r) + "\n")
         typer.echo(f"\nWrote per-day table to {csv_path}")
+
+
+# ---------------------------------------------------------------------------
+# inspect-day — drill into a specific date (regime event diagnosis)
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("inspect-day")
+def inspect_day(
+    date: str = typer.Argument(..., help="ET trading day to inspect, format YYYY-MM-DD"),
+    compare_with: str | None = typer.Option(None, help="Optional second date for side-by-side comparison"),
+    skip_threshold: float = typer.Option(0.15, help="TriggerGBT confidence cut for taking a trade"),
+) -> None:
+    """Drill into one trading day to diagnose regime events / bad days.
+
+    For each requested date:
+      - action distribution (CONT vs REV vs SKIP)
+      - level-type composition (which zones the touches happened on)
+      - confidence histogram
+      - delta-alignment (was the OF veto triggering? was tape against trade dir?)
+      - per-side win rate + R distribution
+
+    Use to figure out *why* a day was abnormal — was the model picking
+    the wrong side, was it sized too aggressively, were the level types
+    different from training distribution, etc.
+    """
+    from datetime import datetime, timezone
+
+    import numpy as np
+
+    from src.rl.features.feature_names import level_composition_names
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    typer.echo("Loading episodes...")
+    observations = np.load(episodes_dir / "observations.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    touch_epochs = np.load(episodes_dir / "touch_epochs.npy")
+
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
+
+    n_align = min(len(X), len(rewards_cont), len(touch_epochs), len(trigger_obs) if trigger_obs is not None else len(X))
+    X = X[:n_align]
+    rewards_cont = rewards_cont[:n_align]
+    rewards_rev = rewards_rev[:n_align]
+    touch_epochs = touch_epochs[:n_align]
+    if trigger_obs is not None:
+        trigger_obs = trigger_obs[:n_align]
+    observations = observations[:n_align]
+
+    from src.rl.agent.trigger_gbt import TriggerGBT
+
+    gbt = TriggerGBT.load(models_dir / "trigger_gbt_v5.joblib")
+
+    sm_path = models_dir / "size_model_latest.joblib"
+    size_model = None
+    if sm_path.exists():
+        from src.rl.agent.size_model import SizeModel
+
+        size_model = SizeModel.load(sm_path)
+
+    def _day_mask(target_date: str) -> np.ndarray:
+        d = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        # ET cash session: roughly 09:30-16:00 ET = 13:30-20:00 UTC (DST-agnostic).
+        # Bucket by UTC ordinal-day-1-if-before-05:00 (matches per-day-report).
+        target_ord = d.toordinal()
+        mask = np.zeros(len(touch_epochs), dtype=bool)
+        for i, ts in enumerate(touch_epochs):
+            if ts <= 0:
+                continue
+            t = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            day_ord = t.toordinal() if t.hour >= 5 else t.toordinal() - 1
+            if day_ord == target_ord:
+                mask[i] = True
+        return mask
+
+    def _report(label: str, mask: np.ndarray) -> None:
+        n = int(mask.sum())
+        if n == 0:
+            typer.echo(f"\n{label}: no episodes")
+            return
+        idx = np.where(mask)[0]
+        Xs = X[idx]
+        rcs = rewards_cont[idx]
+        rrs = rewards_rev[idx]
+        comp = (np.asarray(observations[idx, 0:31]) > 0.5).astype(np.int8)
+        member_count = comp.sum(axis=1)
+        trigs = trigger_obs[idx]
+        actions, confs, _probs = gbt.predict_direction_batch(trigs.astype(np.float32))
+        # Skip: confidence below threshold
+        take_mask = confs >= skip_threshold
+        # Action-conditioned R
+        R = np.where(actions == 0, rcs, rrs).astype(np.float32)
+        R_taken = R[take_mask]
+        # Size mult
+        if size_model is not None:
+            sizes = size_model.predict_size_batch(Xs).astype(np.float32)
+        else:
+            sizes = np.ones(n, dtype=np.float32)
+        R_sized = R * sizes
+        R_sized_taken = R_sized[take_mask]
+
+        # Delta alignment
+        delta_signed = Xs[:, 31]  # orderflow[0]
+        # Trade direction by approach + action
+        approach_dir = Xs[:, 268]  # approach_dir[0] (signed in obs)
+        # CONT in approach dir = same sign as approach_dir; REV = opposite
+        # In our config: action 0=CONT, 1=REV; approach +1=up, -1=down
+        # CONT+up=long, CONT+down=short, REV+up=short, REV+down=long
+        td = np.where(actions == 0, approach_dir, -approach_dir)
+        delta_aligned = (td * delta_signed) > 0
+        delta_against = (td * delta_signed < 0) & (np.abs(delta_signed) > 0.3)
+
+        # Level types most touched
+        level_names = level_composition_names()
+        level_counts = {level_names[i]: int(comp[:, i].sum()) for i in range(31) if comp[:, i].sum() > 0}
+        top_levels = sorted(level_counts.items(), key=lambda x: -x[1])[:10]
+
+        typer.echo(f"\n{'=' * 70}")
+        typer.echo(f"{label}  ({n} episodes)")
+        typer.echo(f"{'=' * 70}")
+        typer.echo(
+            f"  Actions       : CONT={int((actions == 0).sum())} ({100 * (actions == 0).mean():.1f}%) "
+            f"REV={int((actions == 1).sum())} ({100 * (actions == 1).mean():.1f}%)"
+        )
+        typer.echo(
+            f"  Confidence    : mean={confs.mean():.3f}  median={float(np.median(confs)):.3f}  >= {skip_threshold}: {int(take_mask.sum())} trades ({100 * take_mask.mean():.1f}%)"
+        )
+        if take_mask.sum() > 0:
+            wins = int((R_taken > 0).sum())
+            typer.echo(
+                f"  Win rate      : {100 * wins / max(take_mask.sum(), 1):.1f}%  ({wins} wins / {int(take_mask.sum())} trades)"
+            )
+            typer.echo(f"  Mean R/trade  : action_conditioned={R_taken.mean():+.3f}  sized={R_sized_taken.mean():+.3f}")
+            typer.echo(f"  Total R       : sized={R_sized_taken.sum():+.1f}  unsized={R_taken.sum():+.1f}")
+            typer.echo(
+                f"  R distribution: min={R_taken.min():+.2f} q25={float(np.quantile(R_taken, 0.25)):+.2f} median={float(np.median(R_taken)):+.2f} q75={float(np.quantile(R_taken, 0.75)):+.2f} max={R_taken.max():+.2f}"
+            )
+            typer.echo(
+                f"  Size mult     : mean={sizes[take_mask].mean():.2f}  unique tiers: {sorted(set(round(float(s), 2) for s in sizes[take_mask]))}"
+            )
+        typer.echo(
+            f"  Delta align   : aligned={int(delta_aligned.sum())} ({100 * delta_aligned.mean():.1f}%)  "
+            f"strongly against={int(delta_against.sum())} ({100 * delta_against.mean():.1f}%)"
+        )
+        typer.echo(f"  Member counts : {dict(zip(*np.unique(member_count, return_counts=True)))}")
+        typer.echo(f"  Top levels    : {top_levels}")
+
+    _report(date, _day_mask(date))
+    if compare_with:
+        _report(compare_with, _day_mask(compare_with))
+
+
+# ---------------------------------------------------------------------------
+# simulate-phase2-gate — counter-factual replay of SessionState gate on OOS
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("simulate-phase2-gate")
+def simulate_phase2_gate(
+    cooldown_seconds: int = typer.Option(300, help="Per-zone cooldown (default 300s = 5 min)"),
+    max_consec_losses: int = typer.Option(5, help="Trip circuit on N consecutive losses"),
+    rolling_window: int = typer.Option(10, help="Rolling window size for win-rate gate"),
+    min_rolling_win_rate: float = typer.Option(0.15, help="Trip if rolling win rate < this"),
+    max_session_dd_r: float = typer.Option(200.0, help="Trip if session DD < -this"),
+    wins_to_resume: int = typer.Option(2, help="Wins required to resume after circuit trip"),
+    skip_threshold: float = typer.Option(0.15, help="TriggerGBT confidence cut"),
+    apply_size_model: bool = typer.Option(True, help="Apply SizeModel multiplier"),
+) -> None:
+    """Counter-factual: replay SessionState gate on the OOS episodes.
+
+    Walks the OOS slice in chronological order. For each episode:
+      1. Compute model's action + R as `per-day-report` does
+      2. Ask SessionState.should_skip — record decision + reason
+      3. If allowed: count R; if blocked: count what we WOULD have made
+
+    Output: aggregate Δ R from skips broken into "saved losses" and
+    "missed winners", per-day breakdown, and tunable threshold view so
+    we can see whether the defaults are too tight.
+    """
+    from datetime import datetime, timezone
+
+    import numpy as np
+
+    from src.rl.session_state import SessionState
+
+    episodes_dir = _EPISODES_DIR
+    models_dir = _MODELS_DIR
+
+    obs_path = episodes_dir / "observations.npy"
+    te_path = episodes_dir / "touch_epochs.npy"
+    if not (obs_path.exists() and te_path.exists()):
+        typer.echo("Need observations.npy + touch_epochs.npy.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Loading OOS slice...")
+    observations = np.load(obs_path)
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
+    touch_epochs = np.load(te_path)
+
+    X, trigger_obs = _build_augmented_obs(observations, episodes_dir)
+
+    n_align = min(
+        len(X),
+        len(rewards_cont),
+        len(rewards_rev),
+        len(touch_epochs),
+        len(trigger_obs) if trigger_obs is not None else len(X),
+    )
+    X = X[:n_align]
+    rewards_cont = rewards_cont[:n_align]
+    rewards_rev = rewards_rev[:n_align]
+    touch_epochs = touch_epochs[:n_align]
+    if trigger_obs is not None:
+        trigger_obs = trigger_obs[:n_align]
+    observations = observations[:n_align]
+
+    val_split = int(n_align * 0.83)
+    Xv = X[val_split:]
+    rcv = rewards_cont[val_split:]
+    rrv = rewards_rev[val_split:]
+    tev = touch_epochs[val_split:]
+    trigv = trigger_obs[val_split:] if trigger_obs is not None else None
+    obsv = observations[val_split:]
+    n_oos = len(Xv)
+    typer.echo(f"OOS slice: {n_oos:,} episodes")
+
+    if trigv is None:
+        typer.echo("Need trigger_observations.npy", err=True)
+        raise typer.Exit(1)
+
+    from src.rl.agent.trigger_gbt import TriggerGBT
+
+    gbt = TriggerGBT.load(models_dir / "trigger_gbt_v5.joblib")
+    actions, confs, _probs = gbt.predict_direction_batch(trigv.astype(np.float32))
+    realized_R_unsized = np.where(actions == 0, rcv, rrv).astype(np.float32)
+
+    take_mask = confs >= skip_threshold
+
+    sizes = np.ones(n_oos, dtype=np.float32)
+    if apply_size_model:
+        sm_path = models_dir / "size_model_latest.joblib"
+        if sm_path.exists():
+            from src.rl.agent.size_model import SizeModel
+
+            sm = SizeModel.load(sm_path)
+            sizes = sm.predict_size_batch(Xv).astype(np.float32)
+    realized_R = realized_R_unsized * sizes
+
+    # Build SessionState with the requested thresholds
+    session_state = SessionState(
+        rolling_window=rolling_window,
+        min_rolling_win_rate=min_rolling_win_rate,
+        max_consecutive_losses=max_consec_losses,
+        max_session_drawdown_r=max_session_dd_r,
+        wins_to_resume=wins_to_resume,
+        min_zone_cooldown_seconds=cooldown_seconds,
+    )
+
+    # Walk chronologically. Reset SessionState at session boundary (ET day change).
+    last_day_ord = None
+    n_taken = 0
+    n_skip_threshold = 0
+    n_skip_cooldown = 0
+    n_skip_circuit = 0
+    R_taken_baseline = 0.0  # what model would have made without gate
+    R_taken_gated = 0.0  # what model makes with gate
+    R_saved_from_losers = 0.0  # losses we avoided
+    R_missed_from_winners = 0.0  # winners we cut
+    skips_were_winners = 0
+    skips_were_losers = 0
+
+    # Per-day aggregation
+    per_day = {}
+
+    for i in range(n_oos):
+        ts = float(tev[i])
+        if ts <= 0:
+            continue
+        zone_price = float(obsv[i, 0]) if False else 4500.0  # placeholder — see below
+        # We don't have the zone price from obs (level_composition is multi-hot).
+        # Use the touch_epoch-derived approximation: cluster trades by minute-bucket
+        # within the same hour, since trades close in time at a "zone" tend to be
+        # the same zone retested. Better proxy: use a small synthetic key derived
+        # from the structure passthrough features (price relative to VAH/VAL).
+        # For this counterfactual, use the zone_features hierarchy + member_count
+        # as a stand-in (similar zones in the same minute will have similar values).
+        # Simplest: use a hash of (minute_bucket, hierarchy_score, member_count).
+        # Actual zone PRICE isn't preserved in the observation tensor.
+        zone_feat = float(obsv[i, 169])  # zone_features.hierarchy_score
+        member_norm = float(obsv[i, 170])  # zone_features.member_count_norm
+        # Use the touch timestamp + zone features as a synthetic zone key.
+        # 60-second window: same hierarchy+members within 60s → same "zone".
+        minute_bucket = int(ts // 60)
+        zone_key = float(hash((minute_bucket // 5, round(zone_feat, 2), round(member_norm, 2))) % 10000)
+
+        # Reset SessionState at session boundary
+        d = datetime.fromtimestamp(ts, tz=timezone.utc)
+        day_ord = d.toordinal() if d.hour >= 5 else d.toordinal() - 1
+        if last_day_ord is not None and day_ord != last_day_ord:
+            session_state.reset_for_new_session()
+        last_day_ord = day_ord
+
+        if day_ord not in per_day:
+            per_day[day_ord] = {
+                "taken_baseline_R": 0.0,
+                "taken_gated_R": 0.0,
+                "skipped_R": 0.0,
+                "n_taken_baseline": 0,
+                "n_taken_gated": 0,
+                "n_skip_cooldown": 0,
+                "n_skip_circuit": 0,
+            }
+        d_stats = per_day[day_ord]
+
+        # Skip-threshold filter (pre-gate)
+        if not take_mask[i]:
+            n_skip_threshold += 1
+            continue
+
+        R = float(realized_R[i])
+        R_taken_baseline += R
+        d_stats["taken_baseline_R"] += R
+        d_stats["n_taken_baseline"] += 1
+
+        sr = session_state.should_skip(zone_key=zone_key, now_ts=ts)
+        if sr is None:
+            R_taken_gated += R
+            d_stats["taken_gated_R"] += R
+            d_stats["n_taken_gated"] += 1
+            n_taken += 1
+            session_state.record_trade(zone_key=zone_key, now_ts=ts, realized_R=R)
+        else:
+            d_stats["skipped_R"] += R
+            if sr.code == "cooldown":
+                n_skip_cooldown += 1
+                d_stats["n_skip_cooldown"] += 1
+            else:
+                n_skip_circuit += 1
+                d_stats["n_skip_circuit"] += 1
+            if R > 0:
+                R_missed_from_winners += R
+                skips_were_winners += 1
+            else:
+                R_saved_from_losers += -R  # turn negative R into positive "saved"
+                skips_were_losers += 1
+
+    delta_R = R_taken_gated - R_taken_baseline
+    typer.echo(f"\n{'=' * 70}")
+    typer.echo(f"Phase 2 gate counter-factual on {n_oos:,} OOS episodes")
+    typer.echo(
+        f"  cooldown={cooldown_seconds}s  consec={max_consec_losses}  rolling={rolling_window}@<{min_rolling_win_rate:.0%}  dd={max_session_dd_r:.0f}R"
+    )
+    typer.echo(f"{'=' * 70}")
+    typer.echo(
+        f"  Trades taken (baseline)    : {n_skip_threshold + R_taken_baseline / max(R_taken_baseline / 1, 1):.0f} above threshold"
+    )
+    n_above_threshold = int(take_mask.sum())
+    typer.echo(f"  Trades above conf threshold: {n_above_threshold:,}")
+    typer.echo(
+        f"  Trades taken (gated)       : {n_taken:,}  ({100 * n_taken / max(n_above_threshold, 1):.1f}% of above-threshold)"
+    )
+    typer.echo(
+        f"  Skipped by cooldown        : {n_skip_cooldown:,}  ({100 * n_skip_cooldown / max(n_above_threshold, 1):.1f}%)"
+    )
+    typer.echo(
+        f"  Skipped by circuit         : {n_skip_circuit:,}  ({100 * n_skip_circuit / max(n_above_threshold, 1):.1f}%)"
+    )
+    typer.echo("")
+    typer.echo(f"  Baseline total R           : {R_taken_baseline:+.1f}")
+    typer.echo(f"  Gated total R              : {R_taken_gated:+.1f}")
+    typer.echo(f"  Δ R (gated - baseline)     : {delta_R:+.1f}  ({'GATE HELPS' if delta_R > 0 else 'GATE HURTS'})")
+    typer.echo("")
+    typer.echo(f"  Skips that were losers     : {skips_were_losers:,}  → saved {R_saved_from_losers:+.1f} R")
+    typer.echo(f"  Skips that were winners    : {skips_were_winners:,}  → missed {R_missed_from_winners:+.1f} R")
+    typer.echo(
+        f"  Skip mix win rate          : {100 * skips_were_winners / max(skips_were_losers + skips_were_winners, 1):.1f}%"
+    )
+    typer.echo("")
+
+    # Best/worst day comparison
+    sorted_days = sorted(per_day.keys())
+    day_baselines = np.array([per_day[d]["taken_baseline_R"] for d in sorted_days])
+    day_gateds = np.array([per_day[d]["taken_gated_R"] for d in sorted_days])
+    typer.echo(
+        f"  Worst baseline day         : {datetime.fromordinal(sorted_days[int(np.argmin(day_baselines))]).strftime('%Y-%m-%d')}  "
+        f"baseline={day_baselines.min():+.1f}  gated={day_gateds[int(np.argmin(day_baselines))]:+.1f}"
+    )
+    typer.echo(
+        f"  Best baseline day          : {datetime.fromordinal(sorted_days[int(np.argmax(day_baselines))]).strftime('%Y-%m-%d')}  "
+        f"baseline={day_baselines.max():+.1f}  gated={day_gateds[int(np.argmax(day_baselines))]:+.1f}"
+    )
+
+    # Equity curve max DD comparison
+    cum_baseline = np.cumsum(day_baselines)
+    cum_gated = np.cumsum(day_gateds)
+    peak_b = np.maximum.accumulate(cum_baseline)
+    peak_g = np.maximum.accumulate(cum_gated)
+    dd_b = (cum_baseline - peak_b).min()
+    dd_g = (cum_gated - peak_g).min()
+    typer.echo(f"  Max equity DD (baseline)   : {dd_b:+.1f} R")
+    typer.echo(
+        f"  Max equity DD (gated)      : {dd_g:+.1f} R  ({'BETTER' if dd_g > dd_b else 'WORSE'} by {dd_g - dd_b:+.1f} R)"
+    )
