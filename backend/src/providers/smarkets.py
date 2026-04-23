@@ -292,11 +292,12 @@ class SmarketsRetriever(Retriever):
     # ------------------------------------------------------------------
 
     async def _fetch_json(self, session: aiohttp.ClientSession, url: str) -> dict | None:
+        # SOCKS5 proxies are wired via ProxyConnector at session construction,
+        # not via the aiohttp `proxy=` kwarg (which is HTTP-only). For HTTP/
+        # HTTPS proxies we pass `proxy=` as before.
         try:
-            kwargs: dict[str, Any] = {
-                "timeout": aiohttp.ClientTimeout(total=15),
-            }
-            if self.proxy_url:
+            kwargs: dict[str, Any] = {"timeout": aiohttp.ClientTimeout(total=15)}
+            if self.proxy_url and not self.proxy_url.startswith("socks"):
                 kwargs["proxy"] = self.proxy_url
             async with session.get(url, **kwargs) as resp:
                 if resp.status != 200:
@@ -318,7 +319,23 @@ class SmarketsRetriever(Retriever):
 
         events_raw: list[dict] = []
 
-        async with aiohttp.ClientSession() as session:
+        # Build a ProxyConnector for SOCKS5 proxies (the aiohttp native `proxy=`
+        # kwarg only speaks HTTP/HTTPS; smarkets requires Bahnhof SOCKS5 or
+        # every fetch dies with "Server disconnected" on the TLS handshake).
+        connector = None
+        if self.proxy_url and self.proxy_url.startswith("socks"):
+            try:
+                from aiohttp_socks import ProxyConnector
+
+                connector = ProxyConnector.from_url(self.proxy_url)
+            except ImportError:
+                logger.warning("[smarkets] aiohttp_socks not installed; proxy will not be used")
+
+        session_kwargs: dict[str, Any] = {}
+        if connector is not None:
+            session_kwargs["connector"] = connector
+
+        async with aiohttp.ClientSession(**session_kwargs) as session:
             url = self._get_sport_url(sport)
             for _ in range(self.MAX_PAGES):
                 body = await self._fetch_json(session, url)

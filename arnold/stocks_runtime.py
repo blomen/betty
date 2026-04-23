@@ -1,0 +1,164 @@
+"""Arnold stocks runtime — TopstepX client + relay + stream, bootstrapped by arnold/server.py.
+
+Replaces the standalone backend/run_arnoldstocks.py process: the TopstepX side
+now runs as asyncio tasks inside the unified Arnold FastAPI process.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+# Make backend.src.* importable from arnold/
+_BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+log = logging.getLogger("arnold.stocks")
+
+
+@dataclass
+class StocksRuntime:
+    client: Any
+    adapter: Any
+    relay: Any
+    stream: Any
+    flatten_scheduler: Any
+    relay_task: asyncio.Task
+    heartbeat_task: asyncio.Task
+
+    async def shutdown(self) -> None:
+        log.info("Stocks runtime shutting down...")
+        for task in (self.heartbeat_task, self.relay_task):
+            task.cancel()
+        for task in (self.heartbeat_task, self.relay_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            self.flatten_scheduler.stop()
+        except Exception:
+            log.exception("flatten_scheduler.stop failed")
+        try:
+            await self.stream.stop()
+        except Exception:
+            log.exception("stream.stop failed")
+        try:
+            await self.client.close()
+        except Exception:
+            log.exception("client.close failed")
+        log.info("Stocks runtime stopped")
+
+
+async def bootstrap_stocks() -> StocksRuntime | None:
+    """Authenticate TopstepX, start stream + relay, wire dashboard callbacks.
+
+    Returns None when TopstepX is not configured (sports-only mode).
+    """
+    from src.broker.flatten_scheduler import FlattenScheduler
+    from src.stocks.broker_adapter import TopstepXBrokerAdapter
+    from src.stocks.config import TopstepXConfig
+    from src.stocks.dashboard import (
+        _state as dash_state,
+    )
+    from src.stocks.dashboard import (
+        bind_loop,
+        record_dqn_inference,
+        record_fill,
+        record_quote,
+        record_signal,
+        record_tick,
+        update_status,
+        update_zones,
+    )
+    from src.stocks.signal_relay import SignalRelayClient
+    from src.stocks.topstepx_client import TopstepXClient
+    from src.stocks.topstepx_stream import TopstepXStream
+
+    config = TopstepXConfig.from_env()
+    if not config.is_configured:
+        log.warning("TopstepX not configured — stocks runtime disabled")
+        return None
+
+    # Bind the current event loop so sync callbacks can schedule WS broadcasts
+    bind_loop(asyncio.get_running_loop())
+
+    log.info("Authenticating with TopstepX...")
+    client = TopstepXClient(config)
+    if not await client.connect():
+        log.error("TopstepX authentication failed — stocks runtime disabled")
+        await client.close()
+        return None
+    log.info("TopstepX authenticated")
+
+    adapter = TopstepXBrokerAdapter(client, config)
+    relay = SignalRelayClient(config.server_ws_url, client, adapter=adapter)
+    stream = TopstepXStream(
+        token=client._token,
+        contract_id=config.contract_id,
+        account_id=client._account_id,
+        market_hub=config.market_hub_url,
+        user_hub=config.user_hub_url,
+    )
+
+    dash_state["stats"]["session_start"] = time.time()
+    dash_state["topstepx_client"] = client
+    dash_state["adapter"] = adapter
+
+    def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
+        asyncio.create_task(relay.forward_tick(price, size, ts, side))
+        record_tick(price, size, ts, side)
+
+    def on_fill(fill: dict) -> None:
+        side = "long" if fill.get("side", 0) == 0 else "short"
+        price = float(fill.get("price", 0))
+        size = int(fill.get("size", 1))
+        adapter.on_stream_fill(fill)
+        asyncio.create_task(relay.forward_fill(side, price, size, 0.0))
+        record_fill({"side": side, "price": price, "size": size, "ts": time.time()})
+
+    stream.on_tick = on_tick
+    stream.on_fill = on_fill
+    stream.on_quote = record_quote
+
+    relay.on_signal = record_signal
+    relay.on_dqn_inference = record_dqn_inference
+    relay.on_zone_update = lambda msg: update_zones(msg.get("zones", []))
+
+    relay_task = asyncio.create_task(relay.connect(), name="stocks-relay-connect")
+    await asyncio.sleep(2)
+
+    log.info("Starting TopstepX stream...")
+    await stream.start()
+
+    flatten_scheduler = FlattenScheduler(adapter, config.flatten_et)
+    flatten_scheduler.start()
+    log.info("FlattenScheduler started (flatten at %s ET)", config.flatten_et)
+
+    async def _heartbeat() -> None:
+        while True:
+            try:
+                await asyncio.sleep(30)
+                update_status(relay.is_connected, stream._running)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("stocks heartbeat iteration failed")
+
+    heartbeat_task = asyncio.create_task(_heartbeat(), name="stocks-heartbeat")
+
+    return StocksRuntime(
+        client=client,
+        adapter=adapter,
+        relay=relay,
+        stream=stream,
+        flatten_scheduler=flatten_scheduler,
+        relay_task=relay_task,
+        heartbeat_task=heartbeat_task,
+    )
