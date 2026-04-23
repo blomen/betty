@@ -185,8 +185,12 @@ async def signal_relay(ws: WebSocket):
 
     # Running VWAP tracker — anchored midnight CET, updated on every 1m candle close.
     # Seed from DB so reconnects start with correct accumulated VWAP, not zero.
+    # Runs in a thread so the blocking psycopg2 call can't freeze the event loop:
+    # py-spy dumps showed the event loop frozen on a pool checkout here during
+    # reconnect storms from trading_service, which wedged every other request.
     _vwap_tracker = _RunningVWAP()
-    try:
+
+    def _seed_vwap_sync() -> list:
         db_factory = _get_market_db(ws.app)
         db = db_factory()
         try:
@@ -194,23 +198,29 @@ async def signal_relay(ws: WebSocket):
 
             today_cet = datetime.now(timezone.utc).astimezone(_CET).date()
             day_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
-            seed_rows = MarketRepo(db).get_candles("NQ", "1m", day_start, datetime.now(timezone.utc))
-            bands = None
-            for r in seed_rows:
-                bands = _vwap_tracker.update({"h": r.h, "l": r.l, "c": r.c, "v": r.v or 1, "t": r.ts.timestamp()})
-            if bands:
-                level_monitor.update_vwap(
-                    vwap=bands["vwap"],
-                    sd1_upper=bands["sd1_u"],
-                    sd1_lower=bands["sd1_l"],
-                    sd2_upper=bands["sd2_u"],
-                    sd2_lower=bands["sd2_l"],
-                    sd3_upper=bands["sd3_u"],
-                    sd3_lower=bands["sd3_l"],
-                )
-                log.info("VWAP seeded from %d DB candles: %.2f", len(seed_rows), bands["vwap"])
+            rows = MarketRepo(db).get_candles("NQ", "1m", day_start, datetime.now(timezone.utc))
+            return [{"h": r.h, "l": r.l, "c": r.c, "v": r.v or 1, "t": r.ts.timestamp()} for r in rows]
         finally:
             db.close()
+
+    try:
+        import asyncio as _asyncio
+
+        seed_rows = await _asyncio.to_thread(_seed_vwap_sync)
+        bands = None
+        for row in seed_rows:
+            bands = _vwap_tracker.update(row)
+        if bands:
+            level_monitor.update_vwap(
+                vwap=bands["vwap"],
+                sd1_upper=bands["sd1_u"],
+                sd1_lower=bands["sd1_l"],
+                sd2_upper=bands["sd2_u"],
+                sd2_lower=bands["sd2_l"],
+                sd3_upper=bands["sd3_u"],
+                sd3_lower=bands["sd3_l"],
+            )
+            log.info("VWAP seeded from %d DB candles: %.2f", len(seed_rows), bands["vwap"])
     except Exception:
         log.warning("Failed to seed VWAP from DB — will accumulate from ticks", exc_info=True)
 
