@@ -217,6 +217,12 @@ class LiveInferenceV5:
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
+        # Phase 2: live session memory + circuit breaker + per-zone cooldown.
+        # Caller must invoke session_state.reset_for_new_session() at session
+        # boundaries and session_state.record_trade(...) after each fill.
+        from .session_state import SessionState
+
+        self.session_state = SessionState()
 
     @property
     def is_loaded(self) -> bool:
@@ -561,6 +567,33 @@ class LiveInferenceV5:
         if action_idx != 2:
             size_mult = apply_risk_modulation_to_size(size_mult, nb.risk_modulation)
 
+        # PHASE 2 GATE: session circuit breaker + per-zone cooldown.
+        # Runs only when we'd actually take a trade (skip is already None).
+        # Caller is expected to set state["price"] (zone touch price) and
+        # state["touch_ts"] (epoch seconds). If either is missing we don't
+        # gate — falling back to the model's own decision.
+        session_skip_reason = None
+        if action_idx != 2:
+            zone_price = float(state.get("price", 0.0))
+            touch_ts = state.get("touch_ts")
+            if touch_ts is None:
+                # Live caller didn't pass timestamp — fall back to current time
+                import time as _time
+
+                touch_ts = _time.time()
+            else:
+                touch_ts = float(touch_ts)
+            sr = self.session_state.should_skip(zone_key=zone_price, now_ts=touch_ts)
+            if sr is not None:
+                session_skip_reason = {"code": sr.code, "detail": sr.detail}
+                action_idx = 2  # force SKIP
+                size_mult = 0.0
+                log.info(
+                    "Phase 2 gate skipped trade: %s — %s",
+                    sr.code,
+                    sr.detail,
+                )
+
         # Phase 3c: early_exit probability. H5 found the fixed +0.5R-lock
         # rule is net R-negative at every firing threshold, so the default
         # threshold is 0.95 (effectively off). Session manager can read
@@ -592,6 +625,8 @@ class LiveInferenceV5:
             "narrative_risk_modulation": nb.risk_modulation,
             "narrative_bias_agreement": nb.bias_agreement,
             "of_veto_applied": of_veto_applied,
+            "session_state": self.session_state.snapshot(),
+            "session_skip_reason": session_skip_reason,
             "early_exit_prob": early_exit_prob,
             "early_exit_threshold": early_exit_threshold,
             "dqn_action": dqn_action,
