@@ -1094,10 +1094,7 @@ def _add_optional(
 def _date_key(session_date: datetime | Any) -> str:
     """Return "YYYY-MM-DD" string for macro_data lookup."""
     if isinstance(session_date, datetime):
-        if session_date.tzinfo:
-            d = session_date.astimezone(ET).date()
-        else:
-            d = session_date.date()
+        d = session_date.astimezone(ET).date() if session_date.tzinfo else session_date.date()
     else:
         d = session_date  # assume date object
     return d.isoformat()

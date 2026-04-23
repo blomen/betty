@@ -1,8 +1,17 @@
 """Profile and provider settings models."""
 
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean,
-    ForeignKey, UniqueConstraint, Text, JSON, Index
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -11,6 +20,7 @@ from .base import Base, _utcnow
 
 class Profile(Base):
     """User settings for stake calculation and filtering."""
+
     __tablename__ = "profiles"
 
     id = Column(Integer, primary_key=True)
@@ -21,27 +31,27 @@ class Profile(Base):
     currency = Column(String, default="USD")
 
     # Kelly criterion
-    kelly_fraction = Column(Float, default=0.75)    # Dynamic Kelly scales 0.25-0.75 based on edge
+    kelly_fraction = Column(Float, default=0.75)  # Dynamic Kelly scales 0.25-0.75 based on edge
 
     # Opportunity thresholds
-    min_edge_pct = Column(Float, default=2.0)       # Min edge for value bets
-    min_arb_pct = Column(Float, default=0.5)        # Min profit for arbs
+    min_edge_pct = Column(Float, default=2.0)  # Min edge for value bets
+    min_arb_pct = Column(Float, default=0.5)  # Min profit for arbs
 
     # Risk limits
-    max_stake_pct = Column(Float, default=5.0)      # Max % of bankroll per bet
+    max_stake_pct = Column(Float, default=5.0)  # Max % of bankroll per bet
 
     # Bonus settings
     min_retention_pct = Column(Float, default=80.0)  # Min % for free bet value
-    preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
+    preferred_counterparts = Column(String)  # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
-    bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
-    total_deposited = Column(Float, default=0.0)     # Cumulative real money deposited (for ROI calc)
-    total_withdrawn = Column(Float, default=0.0)     # Cumulative real money withdrawn (for ROI calc)
+    bonus_deposit = Column(Float, default=0.0)  # Max deposit match (0 = none)
+    total_deposited = Column(Float, default=0.0)  # Cumulative real money deposited (for ROI calc)
+    total_withdrawn = Column(Float, default=0.0)  # Cumulative real money withdrawn (for ROI calc)
 
     # Profile state
-    is_active = Column(Boolean, default=False)      # Currently selected profile
-    chrome_port = Column(Integer, nullable=True)     # CDP port (default: 9221 + id)
-    color = Column(String, nullable=True)            # Hex color for Chrome border (auto-assigned)
+    is_active = Column(Boolean, default=False)  # Currently selected profile
+    chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
+    color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -67,6 +77,7 @@ class ProfileProviderBonus(Base):
     - min_odds: Per-provider minimum odds for wagering qualification (from providers.yaml)
     - When wagered_amount >= wagering_requirement: bonus is "completed"
     """
+
     __tablename__ = "profile_provider_bonuses"
 
     id = Column(Integer, primary_key=True)
@@ -80,28 +91,28 @@ class ProfileProviderBonus(Base):
     # 'completed' = bonus fully wagered/used, no more min odds restriction
     # 'claimed' = bonus already used (e.g., from previous account), skip in workflows
     bonus_status = Column(String, default="available")
-    bonus_type = Column(String, nullable=True)          # "freebet" or "bonusdeposit"
+    bonus_type = Column(String, nullable=True)  # "freebet" or "bonusdeposit"
 
     # Bonus wagering tracking
-    bonus_amount = Column(Float, default=0.0)           # Bonus received
-    wagering_multiplier = Column(Float, default=10.0)   # Wagering requirement multiplier (default 10x)
-    wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
-    wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
-    min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
-    main_min_odds = Column(Float, nullable=True)        # Main wagering min_odds (used after trigger phase completes)
-    deposit_amount = Column(Float, nullable=True)       # Original deposit (for trigger→main phase wagering calc)
+    bonus_amount = Column(Float, default=0.0)  # Bonus received
+    wagering_multiplier = Column(Float, default=10.0)  # Wagering requirement multiplier (default 10x)
+    wagering_requirement = Column(Float, default=0.0)  # Total wagering required (bonus_amount * multiplier)
+    wagered_amount = Column(Float, default=0.0)  # Amount wagered so far (odds >= min_odds only)
+    min_odds = Column(Float, default=1.80)  # Minimum odds for wagering qualification (per-provider)
+    main_min_odds = Column(Float, nullable=True)  # Main wagering min_odds (used after trigger phase completes)
+    deposit_amount = Column(Float, nullable=True)  # Original deposit (for trigger→main phase wagering calc)
     trigger_mode = Column(String, default="cumulative")  # "single" or "cumulative"
 
     # Timer tracking
-    claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
-    expires_at = Column(DateTime, nullable=True)        # Deadline to complete wagering (claimed_at + 60 days)
+    claimed_at = Column(DateTime, nullable=True)  # When bonus was claimed/wagering started
+    expires_at = Column(DateTime, nullable=True)  # Deadline to complete wagering (claimed_at + 60 days)
 
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
-        Index('ix_bonus_profile_status', 'profile_id', 'bonus_status'),
-        Index('ix_bonus_profile_provider', 'profile_id', 'provider_id'),
+        UniqueConstraint("profile_id", "provider_id", name="uq_profile_provider_bonus"),
+        Index("ix_bonus_profile_status", "profile_id", "bonus_status"),
+        Index("ix_bonus_profile_provider", "profile_id", "provider_id"),
     )
 
     # Relationships
@@ -117,6 +128,7 @@ class ProfileProviderBalance(Base):
     This allows multiple profiles (e.g., different identity contexts)
     to have separate bankrolls.
     """
+
     __tablename__ = "profile_provider_balances"
 
     id = Column(Integer, primary_key=True)
@@ -133,8 +145,8 @@ class ProfileProviderBalance(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
-        Index('ix_balance_profile_id', 'profile_id'),
+        UniqueConstraint("profile_id", "provider_id", name="uq_profile_provider_balance"),
+        Index("ix_balance_profile_id", "profile_id"),
     )
 
     # Relationships
@@ -149,14 +161,15 @@ class ProfileProviderLimit(Base):
     Records when a bookmaker limits an account, with an immutable
     snapshot of betting stats at detection time for correlation analysis.
     """
+
     __tablename__ = "profile_provider_limits"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
 
-    limit_type = Column(String, nullable=False)     # LimitType enum value
-    limit_level = Column(Integer, nullable=False)   # 1=minor, 2=moderate, 3=severe, 4=gutted, 5=closed
+    limit_type = Column(String, nullable=False)  # LimitType enum value
+    limit_level = Column(Integer, nullable=False)  # 1=minor, 2=moderate, 3=severe, 4=gutted, 5=closed
     detected_at = Column(DateTime, nullable=False, default=_utcnow)
     notes = Column(Text, nullable=True)
 
@@ -167,8 +180,8 @@ class ProfileProviderLimit(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint('profile_id', 'provider_id', 'limit_type', name='uq_profile_provider_limit_type'),
-        Index('ix_limit_profile_provider', 'profile_id', 'provider_id'),
+        UniqueConstraint("profile_id", "provider_id", "limit_type", name="uq_profile_provider_limit_type"),
+        Index("ix_limit_profile_provider", "profile_id", "provider_id"),
     )
 
     # Relationships
@@ -182,6 +195,7 @@ class ProviderExtractionSetting(Base):
     If a row exists with enabled=False, the provider is excluded for that profile.
     If no row exists, the provider is enabled by default (YAML active list).
     """
+
     __tablename__ = "provider_extraction_settings"
 
     profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)

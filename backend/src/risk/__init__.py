@@ -12,12 +12,12 @@ Key components:
 - StakeNoiseInjector: Adds entropy to stake amounts
 """
 
-from .features import FeatureExtractor, BehavioralFeatures
-from .calculator import RiskCalculator, RiskAssessment
-from .regularizer import UtilityRegularizer, RegularizedOpportunity
+from .allocator import AllocationResult, ProviderAllocator
+from .calculator import RiskAssessment, RiskCalculator
+from .features import BehavioralFeatures, FeatureExtractor
+from .regularizer import RegularizedOpportunity, UtilityRegularizer
 from .selector import StochasticSelector
 from .stake_noise import StakeNoiseInjector
-from .allocator import ProviderAllocator, AllocationResult
 
 __all__ = [
     "FeatureExtractor",

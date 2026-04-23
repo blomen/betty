@@ -1,4 +1,5 @@
 """80% Rule: opens outside prior VA, trades back inside for 2+ TPO periods."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -18,9 +19,9 @@ def detect_rule_80(ctx: DetectorContext) -> list[SetupCandidate]:
         return []
 
     # Opened above VA, now trading inside → target VAL (80% chance)
-    if ctx.session_levels.ib_high and ctx.session_levels.ib_high > vah:
-        if val < ctx.last_price < vah:
-            candidates.append(SetupCandidate(
+    if ctx.session_levels.ib_high and ctx.session_levels.ib_high > vah and val < ctx.last_price < vah:
+        candidates.append(
+            SetupCandidate(
                 setup_type="rule_80",
                 setup_name="80% Rule Short (opened above VA)",
                 direction="short",
@@ -31,12 +32,13 @@ def detect_rule_80(ctx: DetectorContext) -> list[SetupCandidate]:
                 target_2=val,
                 target_3=ctx.session_levels.pdl,
                 base_score=78.0,  # High base: 80% historical probability
-            ))
+            )
+        )
 
     # Opened below VA, now trading inside → target VAH
-    if ctx.session_levels.ib_low and ctx.session_levels.ib_low < val:
-        if val < ctx.last_price < vah:
-            candidates.append(SetupCandidate(
+    if ctx.session_levels.ib_low and ctx.session_levels.ib_low < val and val < ctx.last_price < vah:
+        candidates.append(
+            SetupCandidate(
                 setup_type="rule_80",
                 setup_name="80% Rule Long (opened below VA)",
                 direction="long",
@@ -47,6 +49,7 @@ def detect_rule_80(ctx: DetectorContext) -> list[SetupCandidate]:
                 target_2=vah,
                 target_3=ctx.session_levels.pdh,
                 base_score=78.0,
-            ))
+            )
+        )
 
     return candidates

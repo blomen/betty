@@ -10,15 +10,14 @@ MATCHING PHILOSOPHY:
 - Cross-validate with multiple metrics
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from typing import Optional, List
-import logging
 
 from rapidfuzz import fuzz
 
-from .normalizer import normalize_team_name, generate_canonical_id
+from .normalizer import generate_canonical_id, normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MatchResult:
     """Result of an event matching attempt."""
+
     matched: bool
     canonical_id: str
     confidence: float  # 0-100
@@ -99,7 +99,7 @@ def fuzzy_match_teams(team1: str, team2: str, threshold: int = 85) -> int:
     return int(score) if score >= effective_threshold else 0
 
 
-def find_best_team_match(team: str, candidates: List[str], threshold: int = 80) -> Optional[str]:
+def find_best_team_match(team: str, candidates: list[str], threshold: int = 80) -> str | None:
     """
     Find the best matching team from a list of candidates.
 
@@ -232,8 +232,7 @@ def match_events(
     score_diff = abs(team1_score - team2_score)
     if score_diff > 25 and min(team1_score, team2_score) < 85:
         logger.debug(
-            f"Match rejected: asymmetric scores ({team1_score} vs {team2_score}). "
-            f"Likely partial team name collision."
+            f"Match rejected: asymmetric scores ({team1_score} vs {team2_score}). Likely partial team name collision."
         )
         return MatchResult(
             matched=False,

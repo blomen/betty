@@ -1,10 +1,12 @@
 """Market structure (Dow Theory) and session context feature extraction."""
+
 from __future__ import annotations
 
 import math
+
 import numpy as np
 
-from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
+from ...market_data.levels import SessionLevels, SwingStructure, VolumeProfile, VWAPBands
 from ..config import TICK_SIZE
 
 # 20 session/VWAP/VP/IB features  +  40 Dow Theory swing features  +  4 PDH/PDL
@@ -42,12 +44,15 @@ def _extract_swing_features(
       [39]    trend_alignment: -1.0 (all down) to +1.0 (all up)
     """
     feats = np.zeros(40, dtype=np.float32)
-    if swing is None or not hasattr(swing, 'daily'):
+    if swing is None or not hasattr(swing, "daily"):
         return feats
 
     trend_map = {
-        "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
-        "reversing_down": -0.5, "downtrend": -1.0,
+        "uptrend": 1.0,
+        "reversing_up": 0.5,
+        "ranging": 0.0,
+        "reversing_down": -0.5,
+        "downtrend": -1.0,
     }
 
     for i, tf in enumerate([swing.daily, swing.weekly, swing.monthly]):

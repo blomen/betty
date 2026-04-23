@@ -10,15 +10,14 @@ Utilities for parsing data from ComeOn's website DOM elements:
 - Market tab pill selection (sport-aware)
 """
 
-import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta
-from typing import Optional
 from zoneinfo import ZoneInfo
 
-from ..matching.normalizer import normalize_team_name
 from ..core import StandardEvent
+from ..matching.normalizer import normalize_team_name
 from . import comeon_dom_js as JS
 
 logger = logging.getLogger(__name__)
@@ -30,9 +29,22 @@ logger = logging.getLogger(__name__)
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
 SWEDISH_MONTHS: dict[str, int] = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "maj": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dec": 12,
-    "mars": 3, "juni": 6, "juli": 7, "oktober": 10,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "maj": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "okt": 10,
+    "nov": 11,
+    "dec": 12,
+    "mars": 3,
+    "juni": 6,
+    "juli": 7,
+    "oktober": 10,
 }
 
 DRAW_NAMES: set[str] = {"oavgjort", "draw", "x"}
@@ -63,7 +75,8 @@ _DATE_RE = re.compile(r"(\d{1,2})\s+(\w+)")
 # Task 1: Aria-Label Parser
 # ---------------------------------------------------------------------------
 
-def parse_aria_label(text: str) -> Optional[dict]:
+
+def parse_aria_label(text: str) -> dict | None:
     """Parse a ComeOn odds button aria-label into a structured dict.
 
     Input format: "Lag till val: {name}, Odds: {value}"
@@ -99,10 +112,8 @@ def parse_aria_label(text: str) -> Optional[dict]:
     elif name.startswith("Over ") or name.startswith("Under ") or name.startswith("Över "):
         parts = name.split(" ", 1)
         if len(parts) == 2:
-            try:
+            with contextlib.suppress(ValueError):
                 result["point"] = float(parts[1])
-            except ValueError:
-                pass
 
     return result
 
@@ -111,7 +122,8 @@ def parse_aria_label(text: str) -> Optional[dict]:
 # Task 2: Swedish DateTime Parser
 # ---------------------------------------------------------------------------
 
-def parse_swedish_datetime(text: str) -> Optional[datetime]:
+
+def parse_swedish_datetime(text: str) -> datetime | None:
     """Parse Swedish date/time text from ComeOn event listings.
 
     Supported formats:
@@ -159,6 +171,7 @@ def parse_swedish_datetime(text: str) -> Optional[datetime]:
         year = today_stockholm.year
         try:
             import datetime as _dt
+
             candidate = _dt.date(year, month, day)
         except ValueError:
             return None
@@ -168,6 +181,7 @@ def parse_swedish_datetime(text: str) -> Optional[datetime]:
         if delta < -60:
             try:
                 import datetime as _dt
+
                 candidate = _dt.date(year + 1, month, day)
             except ValueError:
                 return None
@@ -188,6 +202,7 @@ def parse_swedish_datetime(text: str) -> Optional[datetime]:
 # Task 3: Outcome Builder from Parsed Aria-Labels
 # ---------------------------------------------------------------------------
 
+
 def _fuzzy_team_match(name: str, team: str) -> bool:
     """Return True if name loosely matches team (after normalization)."""
     if not team:
@@ -202,7 +217,7 @@ def build_outcomes_from_labels(
     market_type: str,
     home_team: str,
     away_team: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Convert parsed aria-label dicts into a StandardEvent market dict.
 
     Args:
@@ -319,7 +334,7 @@ def _is_total_pill(pill: str) -> bool:
 def select_market_pills(
     pill_texts: list[str],
     sport: str,
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """Select the best spread and total tab pills for the given sport.
 
     For OT sports (ice_hockey, basketball): prefer OT-inclusive pills
@@ -343,7 +358,7 @@ def select_market_pills(
         elif _is_total_pill(pill):
             total_candidates.append(pill)
 
-    def pick_pill(candidates: list[str]) -> Optional[str]:
+    def pick_pill(candidates: list[str]) -> str | None:
         if not candidates:
             return None
         if prefer_ot:
@@ -363,6 +378,7 @@ def select_market_pills(
 # ---------------------------------------------------------------------------
 # League Page Scraper
 # ---------------------------------------------------------------------------
+
 
 async def scrape_league_page(
     page,
@@ -394,13 +410,16 @@ async def scrape_league_page(
 
     # Single JS call: parse 1x2 + discover pills + click spread/total + collect all odds
     try:
-        result = await page.evaluate(JS.JS_SCRAPE_ALL_MARKETS, {
-            "spreadKeywords": list(_SPREAD_KEYWORDS),
-            "totalKeywords": list(_TOTAL_KEYWORDS),
-            "otKeywords": list(OT_KEYWORDS),
-            "otSports": list(OT_SPORTS),
-            "sport": sport,
-        })
+        result = await page.evaluate(
+            JS.JS_SCRAPE_ALL_MARKETS,
+            {
+                "spreadKeywords": list(_SPREAD_KEYWORDS),
+                "totalKeywords": list(_TOTAL_KEYWORDS),
+                "otKeywords": list(OT_KEYWORDS),
+                "otSports": list(OT_SPORTS),
+                "sport": sport,
+            },
+        )
     except Exception as e:
         logger.debug(f"[{provider_id}] League {league_name}: combined scrape failed: {e}")
         return []
@@ -456,11 +475,6 @@ async def scrape_league_page(
         )
 
     pills = result.get("pills", [])
-    logger.debug(
-        f"[{provider_id}] League {league_name}: {len(events)} events, "
-        f"pills=[{', '.join(pills[:4])}...]"
-    )
+    logger.debug(f"[{provider_id}] League {league_name}: {len(events)} events, pills=[{', '.join(pills[:4])}...]")
 
     return list(events.values())
-
-

@@ -1,6 +1,5 @@
 """Monitoring API routes (circuit breaker, cache, health checks, provider monitor)."""
 
-from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from ..deps import get_pipeline
@@ -9,6 +8,7 @@ router = APIRouter(tags=["monitoring"])
 
 
 # ============ Circuit Breaker ============
+
 
 @router.get("/api/circuit-breaker/status")
 def get_circuit_breaker_status():
@@ -66,14 +66,11 @@ def reset_circuit_breaker(provider_id: str):
 
     pipeline.circuit_breaker.reset(provider_id)
 
-    return {
-        "success": True,
-        "provider_id": provider_id,
-        "message": "Circuit breaker reset to CLOSED"
-    }
+    return {"success": True, "provider_id": provider_id, "message": "Circuit breaker reset to CLOSED"}
 
 
 # ============ Cache ============
+
 
 @router.get("/api/cache/stats")
 def get_cache_stats():
@@ -98,14 +95,11 @@ def get_provider_cache_stats(provider_id: str):
 
     stats = pipeline.cache.get_provider_stats(provider_id)
 
-    return {
-        "provider_id": provider_id,
-        **stats
-    }
+    return {"provider_id": provider_id, **stats}
 
 
 @router.post("/api/cache/clear")
-def clear_cache(provider_id: Optional[str] = None):
+def clear_cache(provider_id: str | None = None):
     """Clear cache (all or specific provider)."""
     pipeline = get_pipeline()
 
@@ -114,10 +108,7 @@ def clear_cache(provider_id: Optional[str] = None):
 
     pipeline.cache.clear(provider_id=provider_id)
 
-    return {
-        "success": True,
-        "message": f"Cache cleared{' for ' + provider_id if provider_id else ' (all providers)'}"
-    }
+    return {"success": True, "message": f"Cache cleared{' for ' + provider_id if provider_id else ' (all providers)'}"}
 
 
 @router.post("/api/cache/evict-expired")
@@ -130,13 +121,11 @@ def evict_expired_cache():
 
     pipeline.cache.evict_expired()
 
-    return {
-        "success": True,
-        "message": "Expired cache entries evicted"
-    }
+    return {"success": True, "message": "Expired cache entries evicted"}
 
 
 # ============ Health Checks ============
+
 
 @router.get("/api/health-check/status")
 def get_health_check_status():
@@ -175,9 +164,7 @@ async def run_health_check(provider_id: str, force: bool = False):
         raise HTTPException(404, f"Provider {provider_id} not found")
 
     # Run check
-    status = await pipeline.health_checker.check_provider(
-        provider_id, extractor, force=force
-    )
+    status = await pipeline.health_checker.check_provider(provider_id, extractor, force=force)
 
     return {
         "provider_id": provider_id,
@@ -189,7 +176,7 @@ async def run_health_check(provider_id: str, force: bool = False):
 
 
 @router.post("/api/health-check/clear-cache")
-def clear_health_check_cache(provider_id: Optional[str] = None):
+def clear_health_check_cache(provider_id: str | None = None):
     """Clear health check cache."""
     pipeline = get_pipeline()
 
@@ -200,11 +187,12 @@ def clear_health_check_cache(provider_id: Optional[str] = None):
 
     return {
         "success": True,
-        "message": f"Health check cache cleared{' for ' + provider_id if provider_id else ' (all)'}"
+        "message": f"Health check cache cleared{' for ' + provider_id if provider_id else ' (all)'}",
     }
 
 
 # ============ Provider Monitoring ============
+
 
 @router.get("/api/monitor/providers")
 def monitor_all_providers(limit: int = 20):
@@ -246,6 +234,7 @@ def monitor_all_providers(limit: int = 20):
 
     # Assess providers
     from ...pipeline.provider_monitor import ProviderMonitor
+
     monitor = ProviderMonitor()
     assessments = monitor.assess_all_providers(history, cb_statuses, hc_statuses)
 
@@ -277,7 +266,7 @@ def monitor_all_providers(limit: int = 20):
             "healthy": sum(1 for h in assessments.values() if h.is_healthy),
             "unhealthy": sum(1 for h in assessments.values() if not h.is_healthy),
             "critical": sum(1 for h in assessments.values() if h.has_critical_issues),
-        }
+        },
     }
 
 
@@ -316,6 +305,7 @@ def monitor_provider(provider_id: str, limit: int = 20):
 
     # Assess provider
     from ...pipeline.provider_monitor import ProviderMonitor
+
     monitor = ProviderMonitor()
     health = monitor.assess_provider(provider_id, history, cb_status, hc_status)
 
@@ -366,15 +356,13 @@ def get_unhealthy_providers(limit: int = 20):
 
     # Assess all providers
     from ...pipeline.provider_monitor import ProviderMonitor
+
     monitor = ProviderMonitor()
 
     cb_statuses = {}
     if pipeline.circuit_breaker:
         statuses = pipeline.circuit_breaker.get_all_statuses()
-        cb_statuses = {
-            pid: {"state": s.state.value, "failure_count": s.failure_count}
-            for pid, s in statuses.items()
-        }
+        cb_statuses = {pid: {"state": s.state.value, "failure_count": s.failure_count} for pid, s in statuses.items()}
 
     assessments = monitor.assess_all_providers(history, cb_statuses)
     unhealthy = monitor.get_unhealthy_providers(assessments)
@@ -390,7 +378,7 @@ def get_unhealthy_providers(limit: int = 20):
             }
             for pid in unhealthy
         ],
-        "count": len(unhealthy)
+        "count": len(unhealthy),
     }
 
 
@@ -409,15 +397,13 @@ def get_critical_providers(limit: int = 20):
 
     # Assess all providers
     from ...pipeline.provider_monitor import ProviderMonitor
+
     monitor = ProviderMonitor()
 
     cb_statuses = {}
     if pipeline.circuit_breaker:
         statuses = pipeline.circuit_breaker.get_all_statuses()
-        cb_statuses = {
-            pid: {"state": s.state.value, "failure_count": s.failure_count}
-            for pid, s in statuses.items()
-        }
+        cb_statuses = {pid: {"state": s.state.value, "failure_count": s.failure_count} for pid, s in statuses.items()}
 
     assessments = monitor.assess_all_providers(history, cb_statuses)
     critical = monitor.get_critical_providers(assessments)
@@ -439,5 +425,5 @@ def get_critical_providers(limit: int = 20):
             }
             for pid in critical
         ],
-        "count": len(critical)
+        "count": len(critical),
     }

@@ -16,16 +16,15 @@ Where:
 This prevents predictable betting patterns that bookmakers can detect.
 """
 
-from dataclasses import dataclass
-from typing import Optional
+import logging
 import math
 import random
-import logging
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from ..db.models import RiskConfig, Profile
-from .regularizer import UtilityRegularizer, RegularizedOpportunity
+from ..db.models import Profile, RiskConfig
+from .regularizer import RegularizedOpportunity, UtilityRegularizer
 
 logger = logging.getLogger(__name__)
 
@@ -66,23 +65,19 @@ class StochasticSelector:
     def __init__(self, db: Session):
         self.db = db
         self._regularizer = UtilityRegularizer(db)
-        self._config: Optional[RiskConfig] = None
+        self._config: RiskConfig | None = None
 
     def _get_config(self) -> RiskConfig:
         """Get risk configuration for active profile."""
         if self._config is not None:
             return self._config
 
-        active_profile = self.db.query(Profile).filter(Profile.is_active == True).first()
+        active_profile = self.db.query(Profile).filter(Profile.is_active).first()
         if not active_profile:
             active_profile = self.db.query(Profile).first()
 
         if active_profile:
-            config = (
-                self.db.query(RiskConfig)
-                .filter(RiskConfig.profile_id == active_profile.id)
-                .first()
-            )
+            config = self.db.query(RiskConfig).filter(RiskConfig.profile_id == active_profile.id).first()
             if config:
                 self._config = config
                 return config
@@ -95,7 +90,7 @@ class StochasticSelector:
         self,
         opportunities: list[dict],
         stake: float,
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
     ) -> list[RankedOpportunity]:
         """
         Rank opportunities with selection probabilities.
@@ -128,7 +123,7 @@ class StochasticSelector:
                 selection_probability=prob,
                 rank=i + 1,
             )
-            for i, (reg, prob) in enumerate(zip(regularized, probabilities))
+            for i, (reg, prob) in enumerate(zip(regularized, probabilities, strict=False))
         ]
 
         return ranked
@@ -137,8 +132,8 @@ class StochasticSelector:
         self,
         opportunities: list[dict],
         stake: float,
-        temperature: Optional[float] = None,
-    ) -> Optional[RankedOpportunity]:
+        temperature: float | None = None,
+    ) -> RankedOpportunity | None:
         """
         Probabilistically select one opportunity.
 
@@ -178,7 +173,7 @@ class StochasticSelector:
         self,
         opportunities: list[dict],
         stake: float,
-    ) -> Optional[RankedOpportunity]:
+    ) -> RankedOpportunity | None:
         """
         Deterministically select the highest-utility opportunity.
 

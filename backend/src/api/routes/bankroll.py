@@ -55,7 +55,7 @@ def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db)):
     if data.provider_ids:
         providers = db.query(Provider).filter(Provider.id.in_(data.provider_ids)).all()
     else:
-        providers = db.query(Provider).filter(Provider.is_enabled == True).all()
+        providers = db.query(Provider).filter(Provider.is_enabled).all()
 
     if not providers:
         raise HTTPException(404, "No providers found")

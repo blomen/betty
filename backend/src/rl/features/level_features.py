@@ -1,9 +1,10 @@
 """Level type encoding and confluence feature extraction."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..config import LevelType, TICK_SIZE
+from ..config import TICK_SIZE, LevelType
 
 if TYPE_CHECKING:
     from ..zone_builder import Zone
@@ -48,24 +49,18 @@ def encode_confluence(
     """
     window = proximity_ticks * tick_size
 
-    levels_within = sum(
-        1 for p in all_levels
-        if p != touched_price and abs(p - touched_price) <= window
-    )
+    levels_within = sum(1 for p in all_levels if p != touched_price and abs(p - touched_price) <= window)
 
     # Nearest higher / lower
     higher = [p for p in all_levels if p > touched_price + tick_size * 0.5]
-    lower  = [p for p in all_levels if p < touched_price - tick_size * 0.5]
+    lower = [p for p in all_levels if p < touched_price - tick_size * 0.5]
 
     if higher:
         nearest_higher_dist = min(abs(p - touched_price) / tick_size for p in higher)
     else:
         nearest_higher_dist = 50.0  # far away default
 
-    if lower:
-        nearest_lower_dist = min(abs(p - touched_price) / tick_size for p in lower)
-    else:
-        nearest_lower_dist = 50.0
+    nearest_lower_dist = min(abs(p - touched_price) / tick_size for p in lower) if lower else 50.0
 
     # Cluster score: how close the nearest neighbour is within the window
     all_others = [p for p in all_levels if p != touched_price]
@@ -88,7 +83,7 @@ def encode_confluence(
     # FVG overlap: does an FVG zone contain the touched price?
     fvg_overlap = 0.0
     fvg_width_ticks = 0.0
-    for fvg in (fvgs or []):
+    for fvg in fvgs or []:
         lo = getattr(fvg, "price_low", 0.0)
         hi = getattr(fvg, "price_high", 0.0)
         if lo <= touched_price <= hi:
@@ -97,7 +92,7 @@ def encode_confluence(
 
     # Single print zone overlap
     sp_overlap = 0.0
-    for sp in (single_print_zones or []):
+    for sp in single_print_zones or []:
         sp_lo, sp_hi = sp[0], sp[1]
         if sp_lo <= touched_price <= sp_hi:
             sp_overlap = 1.0
@@ -128,9 +123,7 @@ def encode_zone_composition(zone: Zone) -> list[float]:
     return zone.composition
 
 
-def _compute_session_relevance(
-    level_type: LevelType, session_context: dict | None
-) -> float:
+def _compute_session_relevance(level_type: LevelType, session_context: dict | None) -> float:
     """How relevant is this level type to the current session? 0=stale, 1=active."""
     if session_context is None:
         return 0.5  # unknown
@@ -239,7 +232,7 @@ def encode_zone_confluence(
     # FVG overlap
     fvg_overlap = 0.0
     fvg_width = 0.0
-    for fvg in (fvgs or []):
+    for fvg in fvgs or []:
         lo = getattr(fvg, "price_low", 0.0)
         hi = getattr(fvg, "price_high", 0.0)
         if lo <= center <= hi:
@@ -250,7 +243,7 @@ def encode_zone_confluence(
 
     # Single print zone overlap
     sp_overlap = 0.0
-    for sp in (single_print_zones or []):
+    for sp in single_print_zones or []:
         if sp[0] <= center <= sp[1]:
             sp_overlap = 1.0
             break

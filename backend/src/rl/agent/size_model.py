@@ -123,7 +123,7 @@ class SizeModel:
 
         # class weights — rare A+ / skip classes get upweighted
         unique, counts = np.unique(y_train, return_counts=True)
-        weights = {int(c): float(len(y_train) / (len(unique) * n)) for c, n in zip(unique, counts)}
+        weights = {int(c): float(len(y_train) / (len(unique) * n)) for c, n in zip(unique, counts, strict=False)}
         sample_weight = np.array([weights[int(c)] for c in y_train], dtype=np.float64)
 
         # H8: confluence-weighted sample weights — multiply class weights by
@@ -212,7 +212,7 @@ class SizeModel:
             "val_size": n - val_split,
             "train_accuracy": train_acc,
             "val_accuracy": val_acc,
-            "class_distribution": {int(c): int(n) for c, n in zip(unique, counts)},
+            "class_distribution": {int(c): int(n) for c, n in zip(unique, counts, strict=False)},
             "warm_start": warm_start_used,
         }
         log.info("SizeModel: train=%.1f%% val=%.1f%%", train_acc, val_acc)

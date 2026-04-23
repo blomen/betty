@@ -23,6 +23,7 @@ Event outcome types:
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -160,18 +161,18 @@ class VbetRetriever(Retriever):
         if not isinstance(sport_data, dict):
             return events
 
-        for sport_id, sport_obj in sport_data.items():
+        for _sport_id, sport_obj in sport_data.items():
             regions = sport_obj.get("region", {})
             if not isinstance(regions, dict):
                 continue
 
-            for reg_id, region in regions.items():
+            for _reg_id, region in regions.items():
                 region_name = region.get("name", "")
                 competitions = region.get("competition", {})
                 if not isinstance(competitions, dict):
                     continue
 
-                for comp_id, comp in competitions.items():
+                for _comp_id, comp in competitions.items():
                     comp_name = comp.get("name", "")
                     league = f"{region_name} - {comp_name}" if region_name else comp_name
                     games = comp.get("game", {})
@@ -209,10 +210,8 @@ class VbetRetriever(Retriever):
             start_ts = game.get("start_ts")
             start_time = None
             if start_ts:
-                try:
+                with contextlib.suppress(ValueError, TypeError, OSError):
                     start_time = datetime.fromtimestamp(int(start_ts), tz=timezone.utc)
-                except (ValueError, TypeError, OSError):
-                    pass
 
             # Normalize team names
             home_team = normalize_team_name(team1)
@@ -229,7 +228,7 @@ class VbetRetriever(Retriever):
             spread_candidates = []  # [(order, mkt_base, market_dict)]
             total_candidates = []
 
-            for mkt_id, market in game_markets.items():
+            for _mkt_id, market in game_markets.items():
                 mkt_type_raw = market.get("type", "")
                 mkt_type = self.MARKET_TYPE_MAP.get(mkt_type_raw)
 
@@ -246,10 +245,8 @@ class VbetRetriever(Retriever):
                 mkt_base = market.get("base")
                 point = None
                 if mkt_type in ("spread", "total") and mkt_base is not None:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         point = float(mkt_base)
-                    except (ValueError, TypeError):
-                        pass
 
                 # Parse event outcomes
                 outcomes = []
@@ -259,12 +256,12 @@ class VbetRetriever(Retriever):
 
                 # Determine market order (lowest order = main line)
                 min_order = 999
-                for ev_id, ev in market_events.items():
+                for _ev_id, ev in market_events.items():
                     order = ev.get("order", 999)
                     if order < min_order:
                         min_order = order
 
-                for ev_id, ev in market_events.items():
+                for _ev_id, ev in market_events.items():
                     price = ev.get("price")
                     if not price or price <= 1.0:
                         continue

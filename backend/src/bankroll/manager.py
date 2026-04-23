@@ -5,9 +5,6 @@ Note: Primary stake calculation is now in stake_calculator.py
 This file contains utility functions for arbitrage and bonus calculations.
 """
 
-from dataclasses import dataclass
-from typing import Optional
-
 
 def arb_stakes(
     outcomes: list[dict],
@@ -35,11 +32,13 @@ def arb_stakes(
     for o in outcomes:
         stake = (1 / o["odds"]) / implied_sum * total_stake
         potential_return = stake * o["odds"]
-        stakes.append({
-            "outcome": o["outcome"],
-            "stake": round(stake, 2),
-            "return": round(potential_return, 2),
-        })
+        stakes.append(
+            {
+                "outcome": o["outcome"],
+                "stake": round(stake, 2),
+                "return": round(potential_return, 2),
+            }
+        )
 
     return stakes
 

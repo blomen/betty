@@ -462,7 +462,7 @@ class SessionManager:
                 # Strong OF → trail tight (level - 2t, lock gains)
                 # Weak OF → trail normal (let it breathe)
                 trail_ticks = 2.0 if of_score < self.ORDERFLOW_SCORE_TIGHT else 1.0
-                aggressive_stop = (
+                (
                     current_price - (trade_dir_sign * trail_ticks * TICK_SIZE) * -1
                 )  # stop at level - trail_ticks (opposite dir)
                 # Actually: stop is behind the trade, so subtract trail_ticks from level
@@ -812,9 +812,8 @@ class SessionManager:
         if self.position.side == PositionSide.LONG:
             if current_price <= self.position.stop_price - buffer_px:
                 stopped = True
-        elif self.position.side == PositionSide.SHORT:
-            if current_price >= self.position.stop_price + buffer_px:
-                stopped = True
+        elif self.position.side == PositionSide.SHORT and current_price >= self.position.stop_price + buffer_px:
+            stopped = True
 
         if stopped:
             pnl = self._close_position(current_price, "stop")

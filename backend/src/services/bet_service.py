@@ -108,7 +108,6 @@ class BetService:
         currency = get_provider_currency(provider_id)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
         if not is_bonus and current_balance < stake:
-            unit = "$" if currency != "SEK" else " kr"
             fmt = f"${current_balance:.2f}" if currency != "SEK" else f"{current_balance:.0f} kr"
             fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {"error": f"Insufficient balance: {fmt} available, {fmt_req} required"}

@@ -3,10 +3,12 @@
 Models loaded lazily from ml_model_registry.
 Falls back to None (rules-based) when model unavailable.
 """
+
 import logging
 import warnings
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ class Predictor:
         """Load a serialized model from disk."""
         try:
             import joblib
+
             data = joblib.load(file_path)
             self.models[model_name] = data
             logger.info(f"Loaded model {model_name} from {file_path}")
@@ -32,6 +35,7 @@ class Predictor:
     def load_from_registry(self, session) -> int:
         """Load all active models from ml_model_registry table."""
         from src.db.models import MlModelRegistry
+
         active = session.query(MlModelRegistry).filter_by(is_active=1).all()
         loaded = 0
         for entry in active:
@@ -55,9 +59,8 @@ class Predictor:
         loaded = 0
         for joblib_path in sorted(models_dir.glob("*_latest.joblib")):
             model_name = joblib_path.stem.replace("_latest", "")
-            if model_name not in self.models:
-                if self.load_model(model_name, str(joblib_path)):
-                    loaded += 1
+            if model_name not in self.models and self.load_model(model_name, str(joblib_path)):
+                loaded += 1
         if loaded:
             logger.info(f"Loaded {loaded} ML models from disk (registry was empty)")
         return loaded
@@ -81,6 +84,7 @@ class Predictor:
         try:
             if model_name == "level_classifier":
                 from src.ml.models.level_classifier import _encode_features
+
                 X = _encode_features(features).reshape(1, -1)
             else:
                 X = np.array([[features.get(f, 0.0) for f in feature_names]])
@@ -108,9 +112,7 @@ class Predictor:
                     if classes:
                         result["class_name"] = classes[best_idx]
                         result["confidence"] = float(proba[best_idx])
-                        result["probabilities"] = {
-                            cls: float(p) for cls, p in zip(classes, proba)
-                        }
+                        result["probabilities"] = {cls: float(p) for cls, p in zip(classes, proba, strict=False)}
                     return result
                 elif task == "classification":
                     proba = model.predict_proba(X)

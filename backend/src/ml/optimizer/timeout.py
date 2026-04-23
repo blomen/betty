@@ -4,7 +4,9 @@ Activates at 50+ runs per provider in provider_run_metrics.
 Uses duration percentiles (P95 + buffer) — statistical approach is more
 interpretable and robust for this use case than ML.
 """
+
 import logging
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -15,22 +17,28 @@ class TimeoutTuner:
 
     def check_and_train(self, session) -> dict | None:
         from sqlalchemy import text
-        rows = session.execute(text(
-            "SELECT provider_id, COUNT(*) as cnt FROM provider_run_metrics "
-            "WHERE duration_seconds IS NOT NULL AND status = 'success' "
-            "GROUP BY provider_id"
-        )).fetchall()
+
+        rows = session.execute(
+            text(
+                "SELECT provider_id, COUNT(*) as cnt FROM provider_run_metrics "
+                "WHERE duration_seconds IS NOT NULL AND status = 'success' "
+                "GROUP BY provider_id"
+            )
+        ).fetchall()
         ready = {pid: cnt for pid, cnt in rows if cnt >= self.activation_threshold}
         if not ready:
             return None
 
         provider_durations = {}
         for pid in ready:
-            dur_rows = session.execute(text(
-                "SELECT duration_seconds FROM provider_run_metrics "
-                "WHERE provider_id = :pid AND duration_seconds IS NOT NULL "
-                "AND status = 'success' ORDER BY start_time DESC LIMIT 200"
-            ), {"pid": pid}).fetchall()
+            dur_rows = session.execute(
+                text(
+                    "SELECT duration_seconds FROM provider_run_metrics "
+                    "WHERE provider_id = :pid AND duration_seconds IS NOT NULL "
+                    "AND status = 'success' ORDER BY start_time DESC LIMIT 200"
+                ),
+                {"pid": pid},
+            ).fetchall()
             provider_durations[pid] = [r[0] for r in dur_rows]
 
         recs = self.recommend_all(provider_durations)

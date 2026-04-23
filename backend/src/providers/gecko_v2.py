@@ -31,6 +31,7 @@ Selection template IDs:
 """
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -202,10 +203,8 @@ class GeckoV2Retriever(BrowserRetriever):
                     captured.update(dict(request.headers))
                     idx = url.find("/api/sb/")
                     api_base_holder.append(url[:idx])
-                try:
+                with contextlib.suppress(Exception):
                     await route.continue_()
-                except Exception:
-                    pass
 
             await page.route("**/api/sb/**", capture_route)
 
@@ -573,10 +572,8 @@ class GeckoV2Retriever(BrowserRetriever):
         start_time = None
         start_date_str = event_raw.get("startDate")
         if start_date_str:
-            try:
+            with contextlib.suppress(Exception):
                 start_time = datetime.fromisoformat(start_date_str.replace("Z", "+00:00"))
-            except Exception:
-                pass
 
         # League/competition
         league = event_raw.get("competitionName", "Unknown")

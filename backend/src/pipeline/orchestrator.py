@@ -1558,7 +1558,7 @@ class ExtractionPipeline:
                 events_new = poly_result["events_new"]
                 odds_processed = poly_result["odds_processed"]
                 odds_new = poly_result["odds_new"]
-                odds_updated = poly_result["odds_updated"]
+                poly_result["odds_updated"]
 
                 # Start metrics for discovered sports (must be on main thread)
                 if self.metrics:
@@ -1826,7 +1826,7 @@ class ExtractionPipeline:
                     events_matched = result["events_matched"]
                     events_unmatched = result["events_unmatched"]
                     odds_new = result["odds_new"]
-                    odds_updated = result["odds_updated"]
+                    result["odds_updated"]
                     market_counts = result["market_counts"]
                     self._changed_event_ids |= result["changed_event_ids"]
                     if odds_broadcaster.client_count > 0:

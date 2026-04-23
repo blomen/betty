@@ -3,8 +3,10 @@
 Queries existing tables (provider_run_metrics, sport_run_metrics, opportunities, bets)
 directly. No dependency on Phase 1 ML tables.
 """
+
 import logging
-from sqlalchemy import func, case
+
+from sqlalchemy import case, func
 
 from src.constants import PROVIDER_CANONICAL
 
@@ -22,7 +24,7 @@ def compute_provider_roi(session, limit_runs: int = 10) -> list[dict]:
     Groups alias providers under their canonical provider.
     Returns list of dicts sorted by total_opportunities descending.
     """
-    from src.db.models import Opportunity, Bet
+    from src.db.models import Bet, Opportunity
 
     # Get all value opportunities grouped by provider
     opp_rows = (
@@ -56,11 +58,13 @@ def compute_provider_roi(session, limit_runs: int = 10) -> list[dict]:
             func.count().label("total_bets"),
             func.sum(case((Bet.result == "won", 1), else_=0)).label("wins"),
             func.sum(case((Bet.result == "lost", 1), else_=0)).label("losses"),
-            func.sum(case(
-                (Bet.result == "won", Bet.payout - Bet.stake),
-                (Bet.result == "lost", -Bet.stake),
-                else_=0,
-            )).label("net_pnl"),
+            func.sum(
+                case(
+                    (Bet.result == "won", Bet.payout - Bet.stake),
+                    (Bet.result == "lost", -Bet.stake),
+                    else_=0,
+                )
+            ).label("net_pnl"),
         )
         .filter(Bet.result.in_(["won", "lost"]))
         .group_by(Bet.provider_id)
@@ -82,14 +86,16 @@ def compute_provider_roi(session, limit_runs: int = 10) -> list[dict]:
     for canon, opp_data in canonical_opps.items():
         bet_data = canonical_bets.get(canon, {"total_bets": 0, "wins": 0, "losses": 0, "net_pnl": 0.0})
         resolved = bet_data["wins"] + bet_data["losses"]
-        results.append({
-            "provider_id": canon,
-            "total_opportunities": opp_data["total_opportunities"],
-            "avg_edge": round(opp_data["sum_edge"] / opp_data["count"], 2) if opp_data["count"] > 0 else 0.0,
-            "total_bets": bet_data["total_bets"],
-            "win_rate": round(bet_data["wins"] / resolved, 3) if resolved > 0 else None,
-            "net_pnl": round(bet_data["net_pnl"], 2),
-        })
+        results.append(
+            {
+                "provider_id": canon,
+                "total_opportunities": opp_data["total_opportunities"],
+                "avg_edge": round(opp_data["sum_edge"] / opp_data["count"], 2) if opp_data["count"] > 0 else 0.0,
+                "total_bets": bet_data["total_bets"],
+                "win_rate": round(bet_data["wins"] / resolved, 3) if resolved > 0 else None,
+                "net_pnl": round(bet_data["net_pnl"], 2),
+            }
+        )
 
     results.sort(key=lambda x: x["total_opportunities"], reverse=True)
     return results
@@ -106,12 +112,14 @@ def compute_coverage_gaps(session) -> list[dict]:
     from sqlalchemy import text
 
     # Get Pinnacle baseline per sport (latest run)
-    pin_rows = session.execute(text("""
+    pin_rows = session.execute(
+        text("""
         SELECT sport, events_extracted, ml_count, spread_count, total_count
         FROM sport_run_metrics
         WHERE provider_id = 'pinnacle'
         AND run_id = (SELECT run_id FROM sport_run_metrics WHERE provider_id = 'pinnacle' ORDER BY id DESC LIMIT 1)
-    """)).fetchall()
+    """)
+    ).fetchall()
 
     if not pin_rows:
         return []
@@ -119,11 +127,15 @@ def compute_coverage_gaps(session) -> list[dict]:
     pinnacle_baseline = {}
     for sport, events, ml, spread, total in pin_rows:
         pinnacle_baseline[sport] = {
-            "events": events, "ml": ml, "spread": spread, "total": total,
+            "events": events,
+            "ml": ml,
+            "spread": spread,
+            "total": total,
         }
 
     # Get soft provider data (latest run per provider)
-    soft_rows = session.execute(text("""
+    soft_rows = session.execute(
+        text("""
         SELECT provider_id, sport, events_matched, ml_count, spread_count, total_count
         FROM sport_run_metrics
         WHERE provider_id NOT IN ('pinnacle', 'polymarket')
@@ -133,7 +145,8 @@ def compute_coverage_gaps(session) -> list[dict]:
             ORDER BY id DESC
             LIMIT 1
         )
-    """)).fetchall()
+    """)
+    ).fetchall()
 
     results = []
     for provider_id, sport, matched, ml, spread, total in soft_rows:
@@ -144,36 +157,38 @@ def compute_coverage_gaps(session) -> list[dict]:
         pin_events = pin["events"]
         coverage_pct = round(100 * matched / pin_events, 1) if pin_events > 0 else 0.0
 
-        results.append({
-            "provider_id": provider_id,
-            "sport": sport,
-            "pinnacle_events": pin_events,
-            "matched_events": matched,
-            "event_coverage_pct": coverage_pct,
-            "missing_events": pin_events - matched,
-            "ml_count": ml,
-            "spread_count": spread,
-            "total_count": total,
-            "pinnacle_ml_count": pin["ml"],
-            "pinnacle_spread_count": pin["spread"],
-            "pinnacle_total_count": pin["total"],
-            "missing_spread": pin["spread"] - spread,
-            "missing_total": pin["total"] - total,
-        })
+        results.append(
+            {
+                "provider_id": provider_id,
+                "sport": sport,
+                "pinnacle_events": pin_events,
+                "matched_events": matched,
+                "event_coverage_pct": coverage_pct,
+                "missing_events": pin_events - matched,
+                "ml_count": ml,
+                "spread_count": spread,
+                "total_count": total,
+                "pinnacle_ml_count": pin["ml"],
+                "pinnacle_spread_count": pin["spread"],
+                "pinnacle_total_count": pin["total"],
+                "missing_spread": pin["spread"] - spread,
+                "missing_total": pin["total"] - total,
+            }
+        )
 
     results.sort(key=lambda x: x["missing_events"], reverse=True)
     return results
 
 
 def compute_scheduling_efficiency(session) -> dict:
-
     """Compute per-tier scheduling metrics from extraction_runs.
 
     Returns dict keyed by trigger name with avg duration, events, odds, and events/sec.
     """
     from sqlalchemy import text
 
-    rows = session.execute(text("""
+    rows = session.execute(
+        text("""
         SELECT trigger,
             COUNT(*) as runs,
             AVG(duration_seconds) as avg_duration,
@@ -181,7 +196,8 @@ def compute_scheduling_efficiency(session) -> dict:
             AVG(total_odds) as avg_odds
         FROM extraction_runs
         GROUP BY trigger
-    """)).fetchall()
+    """)
+    ).fetchall()
 
     results = {}
     for trigger, runs, avg_dur, avg_events, avg_odds in rows:
@@ -214,9 +230,10 @@ class AnalyticsEngine:
 
         Returns dict with all analytics results.
         """
+        from sqlalchemy import text
+
         from .diagnostics import diagnose_provider
         from .recommendations import RecommendationManager
-        from sqlalchemy import text
 
         provider_roi = compute_provider_roi(session)
         coverage_gaps = compute_coverage_gaps(session)
@@ -225,7 +242,8 @@ class AnalyticsEngine:
         # Build per-provider diagnostic data from recent provider_run_metrics
         # Uses last 10 runs per provider (not all-time) to avoid stale historical data
         # dragging down match rates after issues have been fixed.
-        provider_metrics = session.execute(text("""
+        provider_metrics = session.execute(
+            text("""
             WITH recent AS (
                 SELECT provider_id, duration_seconds, events_processed,
                     events_matched, spread_count, total_count,
@@ -245,7 +263,8 @@ class AnalyticsEngine:
             FROM recent
             WHERE rn <= 10
             GROUP BY provider_id
-        """)).fetchall()
+        """)
+        ).fetchall()
 
         mgr = RecommendationManager(session)
         all_recs = []
@@ -302,8 +321,14 @@ class AnalyticsEngine:
             "coverage_gaps": coverage_gaps,
             "scheduling": scheduling,
             "recommendations": [
-                {"id": r.id, "provider_id": r.provider_id, "category": r.category,
-                 "severity": r.severity, "message": r.message, "status": r.status}
+                {
+                    "id": r.id,
+                    "provider_id": r.provider_id,
+                    "category": r.category,
+                    "severity": r.severity,
+                    "message": r.message,
+                    "status": r.status,
+                }
                 for r in all_recs
             ],
         }

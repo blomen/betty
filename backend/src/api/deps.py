@@ -39,5 +39,6 @@ def get_pipeline():
     global _pipeline_instance
     if _pipeline_instance is None:
         from ..pipeline import ExtractionPipeline
+
         _pipeline_instance = ExtractionPipeline()
     return _pipeline_instance

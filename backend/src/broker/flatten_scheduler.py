@@ -42,10 +42,9 @@ class FlattenScheduler:
             today = now_et.date()
 
             # Reset session at midnight on a new trading day (Mon–Fri)
-            if current_time < time(0, 5) and today.weekday() < 5:
-                if self._flattened_date != today:
-                    self._adapter.reset_session()
-                    log.info("Flatten scheduler: new trading day %s, session reset", today)
+            if current_time < time(0, 5) and today.weekday() < 5 and self._flattened_date != today:
+                self._adapter.reset_session()
+                log.info("Flatten scheduler: new trading day %s, session reset", today)
 
             # EOD flatten — only on weekdays, only within the 20-min window after
             # the scheduled time, only once per calendar date.

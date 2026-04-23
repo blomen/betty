@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 # EV retention estimates
 FREEBET_EV_RATE = 0.65  # 65% of freebet face value is expected profit (stake-not-returned)
+BONUSDEPOSIT_EV_RATE = (
+    0.50  # conservative retention for bonusdeposit top-ups (scaled by remaining wagering fraction at use-site)
+)
 # Bonusdeposit EV is computed from bonus config (trigger + wagering multipliers
 # and a typical per-bet house edge). When wagering_multiplier is missing in
 # config, we assume this default — conservative for bonuses with unwritten wagering terms.
@@ -111,7 +114,7 @@ class AllocationEngine:
             .filter(ProfileProviderBonus.profile_id == self.profile.id)
             .all()
         }
-        providers = {p.id: p for p in self.db.query(Provider).filter(Provider.is_enabled == True).all()}
+        providers = {p.id: p for p in self.db.query(Provider).filter(Provider.is_enabled).all()}
 
         # ── Phase A: withdrawals ──
         # Start with BatchBuilder's suggestions (its capital_plan knows about shortfalls),
@@ -180,10 +183,7 @@ class AllocationEngine:
 
         # Effective budget
         unbounded = deposit_input is None
-        if unbounded:
-            effective_budget = float("inf")
-        else:
-            effective_budget = current_liquid + deposit_input + withdrawal_total_sek
+        effective_budget = float("inf") if unbounded else current_liquid + deposit_input + withdrawal_total_sek
 
         liquid_remaining = effective_budget
         deposits: list[dict] = []

@@ -40,19 +40,23 @@ def get_logs_dir() -> Path:
 
 def get_config_path(filename: str) -> Path:
     """Config file path (providers.yaml, sports.yaml)."""
-    config_dir = Path(os.environ.get(
-        "FIREV_CONFIG_DIR",
-        str(Path(__file__).parent / "config"),
-    ))
+    config_dir = Path(
+        os.environ.get(
+            "FIREV_CONFIG_DIR",
+            str(Path(__file__).parent / "config"),
+        )
+    )
     return config_dir / filename
 
 
 def get_config_dir() -> Path:
     """Config directory."""
-    return Path(os.environ.get(
-        "FIREV_CONFIG_DIR",
-        str(Path(__file__).parent / "config"),
-    ))
+    return Path(
+        os.environ.get(
+            "FIREV_CONFIG_DIR",
+            str(Path(__file__).parent / "config"),
+        )
+    )
 
 
 def get_aliases_path() -> Path:

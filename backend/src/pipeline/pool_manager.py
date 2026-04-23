@@ -10,7 +10,6 @@ import asyncio
 import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional
 
 from ..config.loader import OrchestratorConfig, ProviderConfig, ProviderGroupConfig
 
@@ -36,11 +35,7 @@ class ProviderPoolManager:
             await extract_provider(provider_id)
     """
 
-    def __init__(
-        self,
-        config: OrchestratorConfig,
-        provider_configs: Dict[str, ProviderConfig]
-    ):
+    def __init__(self, config: OrchestratorConfig, provider_configs: dict[str, ProviderConfig]):
         """
         Initialize pool manager.
 
@@ -49,10 +44,10 @@ class ProviderPoolManager:
             provider_configs: Dictionary of provider ID -> ProviderConfig
         """
         self._config = config
-        self._group_semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._group_semaphores: dict[str, asyncio.Semaphore] = {}
         self._browser_semaphore = asyncio.Semaphore(config.max_browser_instances)
-        self._provider_to_group: Dict[str, ProviderGroupConfig] = {}
-        self._groups: Dict[str, ProviderGroupConfig] = {}
+        self._provider_to_group: dict[str, ProviderGroupConfig] = {}
+        self._groups: dict[str, ProviderGroupConfig] = {}
 
         # Build group lookup
         for group in config.provider_groups:
@@ -77,7 +72,7 @@ class ProviderPoolManager:
             f"max_browser_instances={config.max_browser_instances}"
         )
 
-    def get_group(self, provider_id: str) -> Optional[ProviderGroupConfig]:
+    def get_group(self, provider_id: str) -> ProviderGroupConfig | None:
         """Get the group configuration for a provider."""
         return self._provider_to_group.get(provider_id)
 
@@ -120,18 +115,14 @@ class ProviderPoolManager:
                 # If group uses browser, also acquire browser semaphore
                 if group.shared_resource == "browser":
                     async with self._browser_semaphore:
-                        logger.debug(
-                            f"[{provider_id}] Acquired group={group.name} + browser slot"
-                        )
+                        logger.debug(f"[{provider_id}] Acquired group={group.name} + browser slot")
                         yield
                         # Apply post-extraction delay before releasing slot
                         if group.post_extraction_delay_ms > 0:
                             delay_sec = group.post_extraction_delay_ms / 1000.0
                             logger.debug(f"[{provider_id}] Post-extraction delay: {delay_sec}s")
                             await asyncio.sleep(delay_sec)
-                        logger.debug(
-                            f"[{provider_id}] Released group={group.name} + browser slot"
-                        )
+                        logger.debug(f"[{provider_id}] Released group={group.name} + browser slot")
                 else:
                     logger.debug(f"[{provider_id}] Acquired group={group.name} slot")
                     yield
@@ -146,7 +137,7 @@ class ProviderPoolManager:
             logger.debug(f"[{provider_id}] No group restriction, running freely")
             yield
 
-    def get_interleaved_order(self, providers: List[str]) -> List[str]:
+    def get_interleaved_order(self, providers: list[str]) -> list[str]:
         """
         Order providers to maximize type mixing for optimal concurrency.
 
@@ -165,7 +156,7 @@ class ProviderPoolManager:
             Output: [kambi1, gecko1, pinnacle, kambi2, gecko2, kambi3]
         """
         # Group providers by their group name
-        by_group: Dict[str, List[str]] = defaultdict(list)
+        by_group: dict[str, list[str]] = defaultdict(list)
 
         for pid in providers:
             group = self._provider_to_group.get(pid)
@@ -189,7 +180,7 @@ class ProviderPoolManager:
 
         return result
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """
         Get current pool statistics.
 

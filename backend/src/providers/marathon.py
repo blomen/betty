@@ -4,11 +4,12 @@ Marathonbet serves pre-match odds as server-rendered HTML — no JavaScript need
 A single HTTP GET to e.g. https://www.marathonbet.com/en/betting/Football/ returns
 all events with odds embedded in data attributes.
 """
-from typing import List, Optional, Any
+
 import json
 import logging
 import os
 import re
+from typing import Any
 
 from ..core.retriever import Retriever, StandardEvent
 from ..core.transport import HttpTransport
@@ -60,7 +61,7 @@ _FULL_BLOCK_RE = re.compile(
 )
 
 # Regex: extract data-sel JSON blobs from within an event block
-_DATA_SEL_RE = re.compile(r'data-sel=\'({[^\']+})\'')
+_DATA_SEL_RE = re.compile(r"data-sel=\'({[^\']+})\'")
 
 # Regex: extract start time from "score-and-time" div (e.g. "14 Apr 20:00")
 _PREMATCH_TIME_RE = re.compile(
@@ -72,7 +73,7 @@ _PREMATCH_TIME_RE = re.compile(
 _TREE_NAME_RE = re.compile(r'data-event-treeName="([^"]+)"')
 
 
-def _parse_odds(epr: str) -> Optional[float]:
+def _parse_odds(epr: str) -> float | None:
     """Parse decimal odds string to float. Returns None if invalid or <= 1.0."""
     try:
         v = float(epr)
@@ -81,7 +82,7 @@ def _parse_odds(epr: str) -> Optional[float]:
         return None
 
 
-def _split_events(html: str) -> List[tuple]:
+def _split_events(html: str) -> list[tuple]:
     """Split HTML into (event_id, event_name, is_live, block_html) tuples.
 
     Since events are nested in a flat list, we split on the opening tag of each
@@ -109,7 +110,7 @@ def _split_events(html: str) -> List[tuple]:
     return results
 
 
-def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str) -> Optional[StandardEvent]:
+def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str) -> StandardEvent | None:
     """Parse one event block into a StandardEvent.
 
     Args:
@@ -174,26 +175,30 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
     if len(selections) >= offset + 2:
         over_odds = selections[offset]
         under_odds = selections[offset + 1]
-        markets.append({
-            "type": "total",
-            "outcomes": [
-                {"name": "over", "odds": over_odds},
-                {"name": "under", "odds": under_odds},
-            ],
-        })
+        markets.append(
+            {
+                "type": "total",
+                "outcomes": [
+                    {"name": "over", "odds": over_odds},
+                    {"name": "under", "odds": under_odds},
+                ],
+            }
+        )
 
     # Handicap (Spread) — next 2 after total
     offset += 2
     if len(selections) >= offset + 2:
         home_odds = selections[offset]
         away_odds = selections[offset + 1]
-        markets.append({
-            "type": "spread",
-            "outcomes": [
-                {"name": "home", "odds": home_odds},
-                {"name": "away", "odds": away_odds},
-            ],
-        })
+        markets.append(
+            {
+                "type": "spread",
+                "outcomes": [
+                    {"name": "home", "odds": home_odds},
+                    {"name": "away", "odds": away_odds},
+                ],
+            }
+        )
 
     if not markets:
         return None
@@ -216,6 +221,7 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
         raw_time = start_match.group(1)  # "14 Apr 20:00"
         try:
             from datetime import datetime as _dt
+
             # Parse "14 Apr 20:00" → ISO format with current year
             parsed = _dt.strptime(raw_time, "%d %b %H:%M")
             now = _dt.utcnow()
@@ -246,7 +252,7 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
     )
 
 
-def parse_page(html: str, sport: str, provider_id: str = "marathon") -> List[StandardEvent]:
+def parse_page(html: str, sport: str, provider_id: str = "marathon") -> list[StandardEvent]:
     """Parse a full Marathonbet sport page into a list of StandardEvents.
 
     Args:
@@ -266,9 +272,7 @@ def parse_page(html: str, sport: str, provider_id: str = "marathon") -> List[Sta
         if event:
             event.provider = provider_id
             events.append(event)
-    logger.debug(
-        f"[{provider_id}] Parsed {len(events)} events from {len(blocks)} blocks for sport '{sport}'"
-    )
+    logger.debug(f"[{provider_id}] Parsed {len(events)} events from {len(blocks)} blocks for sport '{sport}'")
     return events
 
 
@@ -289,11 +293,11 @@ class MarathonRetriever(Retriever):
         """Not used — we override extract() directly."""
         return ""
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — parsing is done inside extract()."""
         return []
 
-    async def extract(self, sport: str, limit: int = 200, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 200, **kwargs) -> list[StandardEvent]:
         """Extract pre-match events for a sport from Marathonbet."""
         url_segment = _SPORT_URL_MAP.get(sport)
         if not url_segment:

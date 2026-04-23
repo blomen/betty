@@ -6,6 +6,7 @@ zone oscillation.
 
 Log file: data/rl/signals/YYYY-MM-DD.jsonl (one file per session date)
 """
+
 from __future__ import annotations
 
 import json
@@ -75,8 +76,7 @@ def log_signal(
             "zone_members": zone_members,
             "zone_hierarchy": round(zone_hierarchy, 3),
             "approach": approach_direction,
-            **{k: round(v, 4) if isinstance(v, float) else v
-               for k, v in inference_result.items()},
+            **{k: round(v, 4) if isinstance(v, float) else v for k, v in inference_result.items()},
         }
 
         with open(filepath, "a") as f:

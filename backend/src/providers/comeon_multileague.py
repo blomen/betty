@@ -9,15 +9,15 @@ Replaces the previous WS-based approach which had ~70% reliability
 and only captured ~3-5% of football events.
 """
 
-from typing import Dict, Any, List, Optional, Set
 import asyncio
+import contextlib
 import logging
 import time
+from typing import Any
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..core.exceptions import RetryableError
 from ..core.transport import get_proxy_dict
-from ..matching.normalizer import normalize_team_name
 from . import comeon_dom_js as JS
 from .comeon_dom_parser import scrape_league_page
 
@@ -34,26 +34,34 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     """
 
     SPORT_URL_MAP = {
-        'football': '/sportsbook/sport/1-fotboll',
-        'basketball': '/sportsbook/sport/2-basket',
-        'american_football': '/sportsbook/sport/3-amerikansk-fotboll',
-        'ice_hockey': '/sportsbook/sport/4-ishockey',
-        'tennis': '/sportsbook/sport/6-tennis',
-        'mma': '/sportsbook/sport/7-mma',
-        'esports': '/sportsbook/sport/130-esport',
-        'baseball': '/sportsbook/sport/12-baseboll',
-        'handball': '/sportsbook/sport/10-handboll',
-        'rugby': '/sportsbook/sport/16-rugby',
-        'cricket': '/sportsbook/sport/17-cricket',
-        'table_tennis': '/sportsbook/sport/26-bordtennis',
+        "football": "/sportsbook/sport/1-fotboll",
+        "basketball": "/sportsbook/sport/2-basket",
+        "american_football": "/sportsbook/sport/3-amerikansk-fotboll",
+        "ice_hockey": "/sportsbook/sport/4-ishockey",
+        "tennis": "/sportsbook/sport/6-tennis",
+        "mma": "/sportsbook/sport/7-mma",
+        "esports": "/sportsbook/sport/130-esport",
+        "baseball": "/sportsbook/sport/12-baseboll",
+        "handball": "/sportsbook/sport/10-handboll",
+        "rugby": "/sportsbook/sport/16-rugby",
+        "cricket": "/sportsbook/sport/17-cricket",
+        "table_tennis": "/sportsbook/sport/26-bordtennis",
     }
 
     # Sport key → ComeOn API sport ID (extracted from SPORT_URL_MAP paths)
     SPORT_API_IDS = {
-        'football': 1, 'basketball': 2, 'american_football': 3,
-        'ice_hockey': 4, 'tennis': 6, 'mma': 7, 'handball': 10,
-        'baseball': 12, 'rugby': 16, 'cricket': 17, 'table_tennis': 26,
-        'esports': 130,
+        "football": 1,
+        "basketball": 2,
+        "american_football": 3,
+        "ice_hockey": 4,
+        "tennis": 6,
+        "mma": 7,
+        "handball": 10,
+        "baseball": 12,
+        "rugby": 16,
+        "cricket": 17,
+        "table_tennis": 26,
+        "esports": 130,
     }
 
     API_BASE = "/sportsbook-api/api"
@@ -63,13 +71,18 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Tennis/handball/mma complete in <60s. Football/basketball often timeout at 360s.
     # Extracting fast sports first ensures we get data before provider timeout hits.
     SPORT_PRIORITY = [
-        'mma', 'handball', 'tennis', 'esports',
-        'ice_hockey', 'basketball', 'football',
+        "mma",
+        "handball",
+        "tennis",
+        "esports",
+        "ice_hockey",
+        "basketball",
+        "football",
     ]
 
     _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
@@ -126,7 +139,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
             self._camoufox_page = await self._camoufox_browser.new_page()
             proxy_msg = " with residential proxy" if proxy else ""
-            logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time()-t0:.1f}s")
+            logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time() - t0:.1f}s")
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
@@ -160,12 +173,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         return None
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         raise NotImplementedError("ComeOnMultiLeagueRetriever uses extract() directly")
 
-    async def extract(self, sport: str | List[str], limit: Optional[int] = None, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str | list[str], limit: int | None = None, **kwargs) -> list[StandardEvent]:
         """Extract events from one or more sports via league page DOM scraping."""
-        target_leagues: Optional[Set[str]] = kwargs.get("target_leagues")
+        target_leagues: set[str] | None = kwargs.get("target_leagues")
         sports_to_extract = self._resolve_sports(sport)
         logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
@@ -179,9 +192,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         self._cookie_dismissed = False
 
         # Warm up: load homepage to pass Cloudflare + dismiss cookies
-        if self._camoufox_page and not getattr(self, '_warmed_up', False):
+        if self._camoufox_page and not getattr(self, "_warmed_up", False):
             try:
-                await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                await page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)
                 await self._dismiss_cookie_overlay(page)
                 self._warmed_up = True
@@ -199,7 +212,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         all_events = []
         sports_attempted = 0
-        provider_start = time.time()
+        time.time()
 
         # Sort sports by priority (fast sports first, heavy sports last)
         sports_to_extract = sorted(
@@ -208,7 +221,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         )
 
         for sport_idx, sport_key in enumerate(sports_to_extract):
-
             # Proactively recycle the Camoufox page between sports.
             # After 20+ page.goto() calls per sport, the page accumulates SPA state
             # and memory until it crashes. Recycling prevents the crash entirely
@@ -216,10 +228,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             if sport_idx > 0 and self._camoufox_browser:
                 # Close old page (may already be dead — that's fine)
                 if self._camoufox_page:
-                    try:
+                    with contextlib.suppress(Exception):
                         await self._camoufox_page.close()
-                    except Exception:
-                        pass
                     self._camoufox_page = None
 
                 # Create fresh page from existing browser
@@ -227,7 +237,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                     self._camoufox_page = await self._camoufox_browser.new_page()
                     self._page = self._camoufox_page
                     # Re-warm: visit homepage to pass Cloudflare + set cookies
-                    await self._page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                    await self._page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
                     await asyncio.sleep(2)
                     await self._dismiss_cookie_overlay(self._page)
                     self._cookie_dismissed = True
@@ -239,7 +249,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                     if page:
                         self._page = page
                         try:
-                            await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                            await page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
                             await asyncio.sleep(2)
                             await self._dismiss_cookie_overlay(page)
                             self._warmed_up = True
@@ -252,9 +262,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
             try:
                 sports_attempted += 1
-                sport_events = await self._extract_single_sport(
-                    sport_key, target_leagues=target_leagues, limit=limit
-                )
+                sport_events = await self._extract_single_sport(sport_key, target_leagues=target_leagues, limit=limit)
                 logger.debug(f"[{self.provider_id}] {sport_key}: {len(sport_events)} events")
                 all_events.extend(sport_events)
             except Exception as e:
@@ -268,37 +276,35 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         return all_events
 
-    def _resolve_sports(self, sport: str | List[str]) -> List[str]:
+    def _resolve_sports(self, sport: str | list[str]) -> list[str]:
         if isinstance(sport, list):
             return sport
         if sport == "all":
             return list(self.SPORT_URL_MAP.keys())
-        return [sport.split('/')[0] if '/' in sport else sport]
+        return [sport.split("/")[0] if "/" in sport else sport]
 
     async def _dismiss_cookie_overlay(self, page) -> None:
         """Dismiss OneTrust cookie consent overlay."""
         try:
-            btn = await page.query_selector('#onetrust-accept-btn-handler')
+            btn = await page.query_selector("#onetrust-accept-btn-handler")
             if btn:
                 await btn.click()
-                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
                 await page.wait_for_timeout(1000)
         except Exception:
             pass
-        try:
-            await page.evaluate('''() => {
+        with contextlib.suppress(Exception):
+            await page.evaluate("""() => {
                 const filter = document.querySelector('.onetrust-pc-dark-filter');
                 if (filter) filter.remove();
                 const sdk = document.querySelector('#onetrust-consent-sdk');
                 if (sdk) sdk.remove();
-            }''')
-        except Exception:
-            pass
+            }""")
 
     # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
     # Sorted by eventCount (highest first) so we get the most valuable leagues.
-    SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 60,     # No provider timeout — extract all valuable leagues
+    SPORT_LEAGUE_CAPS: dict[str, int] = {
+        "football": 60,  # No provider timeout — extract all valuable leagues
         "basketball": 40,
         "ice_hockey": 30,
         "tennis": 30,
@@ -317,11 +323,14 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         url = f"{self.site_url}{self.API_BASE}/leagues?sportId={sport_id}&{self.API_PARAMS}"
         try:
-            leagues_raw = await asyncio.wait_for(page.evaluate(f"""async () => {{
+            leagues_raw = await asyncio.wait_for(
+                page.evaluate(f"""async () => {{
                 const resp = await fetch('{url}');
                 if (!resp.ok) return null;
                 return await resp.json();
-            }}"""), timeout=10)
+            }}"""),
+                timeout=10,
+            )
         except Exception as e:
             logger.warning(f"[{self.provider_id}] {sport}: API league discovery failed: {e}")
             return []
@@ -352,12 +361,14 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             # Get the sport slug from SPORT_URL_MAP (e.g., "1-fotboll")
             sport_slug = self.SPORT_URL_MAP.get(sport, "").split("/")[-1]
 
-            leagues.append({
-                "id": league_id,
-                "name": name,
-                "href": f"/sv/sportsbook/sport/{sport_slug}/leagues/{league_id}-{slug}",
-                "eventCount": event_count,
-            })
+            leagues.append(
+                {
+                    "id": league_id,
+                    "name": name,
+                    "href": f"/sv/sportsbook/sport/{sport_slug}/leagues/{league_id}-{slug}",
+                    "eventCount": event_count,
+                }
+            )
 
         # Sort by event count (highest first) — most valuable leagues first
         leagues.sort(key=lambda x: x["eventCount"], reverse=True)
@@ -372,7 +383,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         """Fallback: discover leagues via DOM accordion expansion (slow)."""
         leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
         try:
-            await page.goto(leagues_url, wait_until='domcontentloaded', timeout=30000)
+            await page.goto(leagues_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport}: {e}")
@@ -406,10 +417,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         try:
             country_count = await page.evaluate(JS.JS_GET_COUNTRY_COUNT)
             if country_count > 0:
-                logger.info(
-                    f"[{self.provider_id}] {sport}: "
-                    f"expanding {country_count} countries sequentially"
-                )
+                logger.info(f"[{self.provider_id}] {sport}: expanding {country_count} countries sequentially")
                 for i in range(country_count):
                     clicked = await page.evaluate(JS.JS_CLICK_COUNTRY_AT_INDEX, i)
                     if clicked:
@@ -432,11 +440,11 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     async def _extract_single_sport(
         self,
         sport: str,
-        target_leagues: Optional[Set[str]] = None,
-        limit: Optional[int] = None,
-    ) -> List[StandardEvent]:
+        target_leagues: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[StandardEvent]:
         """Extract events for a single sport via league page DOM scraping."""
-        sport_normalized = sport.split('/')[0] if '/' in sport else sport
+        sport_normalized = sport.split("/")[0] if "/" in sport else sport
         sport_path = self.SPORT_URL_MAP.get(sport_normalized)
         if not sport_path:
             logger.warning(f"[{self.provider_id}] Sport '{sport_normalized}' not supported")
@@ -460,36 +468,30 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             logger.warning(f"[{self.provider_id}] {sport_normalized}: no leagues found")
             return []
 
-        logger.debug(
-            f"[{self.provider_id}] {sport_normalized}: "
-            f"discovery took {time.time() - t_discovery:.1f}s"
-        )
+        logger.debug(f"[{self.provider_id}] {sport_normalized}: discovery took {time.time() - t_discovery:.1f}s")
 
         # Step 2: Filter leagues and enforce per-sport cap
         filtered_leagues = self._filter_leagues(all_leagues, target_leagues, sport_normalized)
         league_cap = self.SPORT_LEAGUE_CAPS.get(sport_normalized, self.DEFAULT_LEAGUE_CAP)
         if len(filtered_leagues) > league_cap:
             logger.info(
-                f"[{self.provider_id}] {sport_normalized}: capping from "
-                f"{len(filtered_leagues)} to {league_cap} leagues"
+                f"[{self.provider_id}] {sport_normalized}: capping from {len(filtered_leagues)} to {league_cap} leagues"
             )
             filtered_leagues = filtered_leagues[:league_cap]
 
         logger.info(
-            f"[{self.provider_id}] {sport_normalized}: "
-            f"scraping {len(filtered_leagues)}/{len(all_leagues)} leagues"
+            f"[{self.provider_id}] {sport_normalized}: scraping {len(filtered_leagues)}/{len(all_leagues)} leagues"
         )
 
         # Step 6: Scrape league pages sequentially on main page
         # ComeOn's SPA only renders fully on the active page — new tabs
         # don't hydrate the React app reliably. Sequential is required.
         all_events = []
-        sport_timeout = self.config.get("sport_timeout", 360)
+        self.config.get("sport_timeout", 360)
         sport_start = time.time()
         leagues_scraped = 0
 
         for league_info in filtered_leagues:
-
             try:
                 events = await scrape_league_page(
                     page=page,
@@ -515,7 +517,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     def _filter_leagues(
         self,
         all_leagues: list[dict],
-        target_leagues: Optional[Set[str]],
+        target_leagues: set[str] | None,
         sport: str,
     ) -> list[dict]:
         """Filter discovered leagues to those with Pinnacle coverage.

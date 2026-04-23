@@ -80,10 +80,9 @@ class ProviderWorkflow(ABC):
         best_len = 0
         for page in context.pages:
             url = page.url or ""
-            if self.domain and self.domain in url:
-                if len(url) > best_len:
-                    best = page
-                    best_len = len(url)
+            if self.domain and self.domain in url and len(url) > best_len:
+                best = page
+                best_len = len(url)
         return best
 
     @abstractmethod
@@ -123,9 +122,9 @@ class ProviderWorkflow(ABC):
         Override for DOM-based platforms where confirmation is async (e.g., Polymarket)."""
         return None
 
-    async def cleanup(self, page: Page) -> None:
+    async def cleanup(self, page: Page) -> None:  # noqa: B027  (optional override hook)
         """Called after all bets for this provider are done. Override to close extra tabs etc."""
-        pass
+        return
 
     async def _evaluate_api(self, page: Page, url: str, method: str = "GET", body: dict | None = None) -> dict | None:
         """Make an API call from the page's session (inherits cookies/auth)."""

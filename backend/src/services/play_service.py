@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from src.constants import PLATFORM_GROUPS, PLATFORM_MAP
 from src.bankroll.stake_calculator import dynamic_min_stake
+from src.constants import PLATFORM_GROUPS, PLATFORM_MAP
 from src.repositories.profile_repo import ProfileRepo
 from src.risk.allocator import ProviderAllocator
 
@@ -72,10 +72,16 @@ class PlaySessionService:
         clusters = []
         for group_name, group_info in PLATFORM_GROUPS.items():
             cluster = self._build_cluster(
-                group_name, group_info["members"], group_info["canonical"],
-                balances, wagering, limits,
+                group_name,
+                group_info["members"],
+                group_info["canonical"],
+                balances,
+                wagering,
+                limits,
                 cluster_opp_counts.get(group_name, 0),
-                min_stake, profile_id, total_bankroll,
+                min_stake,
+                profile_id,
+                total_bankroll,
             )
             if cluster:
                 clusters.append(cluster)
@@ -88,10 +94,16 @@ class PlaySessionService:
         for pid in PLATFORM_MAP:
             if pid not in grouped and pid not in ("pinnacle", "polymarket"):
                 cluster = self._build_cluster(
-                    pid, [pid], pid,
-                    balances, wagering, limits,
+                    pid,
+                    [pid],
+                    pid,
+                    balances,
+                    wagering,
+                    limits,
                     cluster_opp_counts.get(pid, 0),
-                    min_stake, profile_id, total_bankroll,
+                    min_stake,
+                    profile_id,
+                    total_bankroll,
                 )
                 if cluster:
                     clusters.append(cluster)
@@ -106,9 +118,16 @@ class PlaySessionService:
         }
 
     def _build_cluster(
-        self, name: str, members: list[str], canonical: str,
-        balances: dict, wagering: dict, limits: dict,
-        unique_opps: int, min_stake: float, profile_id: int,
+        self,
+        name: str,
+        members: list[str],
+        canonical: str,
+        balances: dict,
+        wagering: dict,
+        limits: dict,
+        unique_opps: int,
+        min_stake: float,
+        profile_id: int,
         total_bankroll: float = 0,
     ) -> dict | None:
         """Build cluster dict with active siblings and lifecycle states."""
@@ -125,20 +144,22 @@ class PlaySessionService:
             # get_bonus_status always returns a dict (never None)
             bonus_info = self.profile_repo.get_bonus_status(profile_id, pid)
 
-            siblings.append({
-                "provider_id": pid,
-                "balance": round(balance, 2),
-                "lifecycle": lifecycle,
-                "bonus_status": bonus_status,
-                "trigger_mode": bonus_info.get("trigger_mode", "cumulative"),
-                "wagering_remaining": round(wag.get("remaining", 0), 2),
-                "wagering_progress_pct": round(bonus_info.get("progress_pct", 0), 1),
-                "min_odds": bonus_info.get("min_odds", 1.80),
-                "bonus_amount": bonus_info.get("bonus_amount", 0),
-                "limit_level": limit_level,
-                "expires_at": bonus_info.get("expires_at"),
-                "days_remaining": bonus_info.get("days_remaining"),
-            })
+            siblings.append(
+                {
+                    "provider_id": pid,
+                    "balance": round(balance, 2),
+                    "lifecycle": lifecycle,
+                    "bonus_status": bonus_status,
+                    "trigger_mode": bonus_info.get("trigger_mode", "cumulative"),
+                    "wagering_remaining": round(wag.get("remaining", 0), 2),
+                    "wagering_progress_pct": round(bonus_info.get("progress_pct", 0), 1),
+                    "min_odds": bonus_info.get("min_odds", 1.80),
+                    "bonus_amount": bonus_info.get("bonus_amount", 0),
+                    "limit_level": limit_level,
+                    "expires_at": bonus_info.get("expires_at"),
+                    "days_remaining": bonus_info.get("days_remaining"),
+                }
+            )
 
         # No sibling cap — fund every sibling you can afford
         active_states = ("deposited", "wagering", "freebet", "playing", "limited")
@@ -217,11 +238,13 @@ class PlaySessionService:
             if pid not in grouped and pid not in ("pinnacle", "polymarket"):
                 provider_cluster[pid] = pid
 
-        result = self.db.execute(text("""
+        result = self.db.execute(
+            text("""
             SELECT provider1_id, event_id, market, outcome1
             FROM opportunities
             WHERE type = 'value' AND is_active = 1
-        """))
+        """)
+        )
 
         cluster_unique: dict[str, set] = {}
         for row in result:

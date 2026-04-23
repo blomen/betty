@@ -1,6 +1,6 @@
 """SSE broadcast channel for real-time odds/opportunity updates."""
+
 import asyncio
-import json
 import logging
 from typing import Any
 

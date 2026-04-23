@@ -1,20 +1,21 @@
 """L2 orderflow confirmation signals computed from tick data."""
+
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-
 TICK_SIZE = 0.25  # NQ futures minimum tick
 
 
-IMBALANCE_THRESHOLD = 3.0   # ratio threshold for diagonal imbalance
-IMBALANCE_MIN_VOL = 5       # minimum volume on dominant side to qualify
-STACKED_MIN_COUNT = 3       # minimum consecutive imbalances to form a stack
+IMBALANCE_THRESHOLD = 3.0  # ratio threshold for diagonal imbalance
+IMBALANCE_MIN_VOL = 5  # minimum volume on dominant side to qualify
+STACKED_MIN_COUNT = 3  # minimum consecutive imbalances to form a stack
 
 
 @dataclass
 class PriceLevelFlow:
     """Aggressor volume at a single price level within a candle."""
+
     price: float
     buy_volume: int = 0
     sell_volume: int = 0
@@ -33,14 +34,16 @@ class PriceLevelFlow:
 @dataclass
 class DiagonalImbalance:
     """A single price level with a diagonal imbalance (buy@N vs sell@N+1)."""
+
     price: float
-    direction: str   # "buy" or "sell"
-    ratio: float     # dominant / weak (capped at 99)
+    direction: str  # "buy" or "sell"
+    ratio: float  # dominant / weak (capped at 99)
 
 
 @dataclass
 class StackedImbalance:
     """Consecutive price levels with same-direction diagonal imbalance."""
+
     direction: str
     price_low: float
     price_high: float
@@ -50,6 +53,7 @@ class StackedImbalance:
 @dataclass
 class CandleFlow:
     """Orderflow data for a single candle."""
+
     ts: datetime
     open: float
     high: float
@@ -141,42 +145,47 @@ class CandleFlow:
                 # Flush current run if long enough
                 run_len = i - run_start
                 if run_len >= STACKED_MIN_COUNT:
-                    stacks.append(StackedImbalance(
-                        direction=diags_sorted[run_start].direction,
-                        price_low=diags_sorted[run_start].price,
-                        price_high=diags_sorted[i - 1].price,
-                        count=run_len,
-                    ))
+                    stacks.append(
+                        StackedImbalance(
+                            direction=diags_sorted[run_start].direction,
+                            price_low=diags_sorted[run_start].price,
+                            price_high=diags_sorted[i - 1].price,
+                            count=run_len,
+                        )
+                    )
                 run_start = i
         # Final run
         run_len = len(diags_sorted) - run_start
         if run_len >= STACKED_MIN_COUNT:
-            stacks.append(StackedImbalance(
-                direction=diags_sorted[run_start].direction,
-                price_low=diags_sorted[run_start].price,
-                price_high=diags_sorted[-1].price,
-                count=run_len,
-            ))
+            stacks.append(
+                StackedImbalance(
+                    direction=diags_sorted[run_start].direction,
+                    price_low=diags_sorted[run_start].price,
+                    price_high=diags_sorted[-1].price,
+                    count=run_len,
+                )
+            )
         return stacks
 
 
 @dataclass
 class OrderflowSignals:
     """Aggregated orderflow confirmation signals."""
+
     delta: int
-    delta_aligned: bool        # Delta matches expected trade direction
-    delta_divergence: bool     # Price vs delta disagree
-    delta_unwind: bool         # Rapid delta flip at extreme
+    delta_aligned: bool  # Delta matches expected trade direction
+    delta_divergence: bool  # Price vs delta disagree
+    delta_unwind: bool  # Rapid delta flip at extreme
     cvd: int
-    cvd_trend: str             # "rising", "falling", "flat"
-    vsa_absorption: bool       # High volume + narrow spread
+    cvd_trend: str  # "rising", "falling", "flat"
+    vsa_absorption: bool  # High volume + narrow spread
     tick_vol_accelerating: bool
     trapped_traders: bool
     passive_active_ratio: float  # > 1.0 = more passive (limit) orders than aggressive
     # Footprint signals
-    big_trades_count: int = 0       # Ticks with size >= 3× median
-    big_trades_net_delta: int = 0   # Net direction of big trades (+ = buy, - = sell)
-    stop_run_detected: bool = False # Price spike on high vol that reversed quickly
+    big_trades_count: int = 0  # Ticks with size >= 3× median
+    big_trades_net_delta: int = 0  # Net direction of big trades (+ = buy, - = sell)
+    stop_run_detected: bool = False  # Price spike on high vol that reversed quickly
     # Imbalance stacking
     imbalance_ratio_max: float = 0.5  # Most extreme imbalance across recent candles
     stacked_imbalance_count: int = 0  # Consecutive candles with same-direction imbalance
@@ -254,10 +263,16 @@ def compute_signals(
     """Compute orderflow confirmation signals from recent candle flow data."""
     if len(candles) < 3:
         return OrderflowSignals(
-            delta=0, delta_aligned=False, delta_divergence=False,
-            delta_unwind=False, cvd=0, cvd_trend="flat",
-            vsa_absorption=False, tick_vol_accelerating=False,
-            trapped_traders=False, passive_active_ratio=0.0,
+            delta=0,
+            delta_aligned=False,
+            delta_divergence=False,
+            delta_unwind=False,
+            cvd=0,
+            cvd_trend="flat",
+            vsa_absorption=False,
+            tick_vol_accelerating=False,
+            trapped_traders=False,
+            passive_active_ratio=0.0,
         )
 
     recent = candles[-lookback:] if len(candles) >= lookback else candles
@@ -274,16 +289,15 @@ def compute_signals(
     delta_divergence = (price_up and not delta_positive) or (not price_up and delta_positive)
 
     # Delta unwind: sign flipped from previous candle + magnitude > 50% of prev
-    delta_unwind = (
-        (last.delta > 0 and prev.delta < 0 and abs(last.delta) > abs(prev.delta) * 0.5) or
-        (last.delta < 0 and prev.delta > 0 and abs(last.delta) > abs(prev.delta) * 0.5)
+    delta_unwind = (last.delta > 0 and prev.delta < 0 and abs(last.delta) > abs(prev.delta) * 0.5) or (
+        last.delta < 0 and prev.delta > 0 and abs(last.delta) > abs(prev.delta) * 0.5
     )
 
     # CVD
     cvd = sum(c.delta for c in recent)
     if len(recent) >= 5:
-        cvd_first_half = sum(c.delta for c in recent[:len(recent)//2])
-        cvd_second_half = sum(c.delta for c in recent[len(recent)//2:])
+        cvd_first_half = sum(c.delta for c in recent[: len(recent) // 2])
+        cvd_second_half = sum(c.delta for c in recent[len(recent) // 2 :])
         if cvd_second_half > cvd_first_half * 1.2:
             cvd_trend = "rising"
         elif cvd_second_half < cvd_first_half * 0.8:
@@ -328,12 +342,10 @@ def compute_signals(
         spike = recent[-2]  # The candle before last
         reversal = recent[-1]  # Current candle
         # Bullish stop run: spike below range, snaps back
-        if (spike.low < prior_low and reversal.close > spike.close
-                and spike.volume > avg_volume * 1.5):
+        if spike.low < prior_low and reversal.close > spike.close and spike.volume > avg_volume * 1.5:
             stop_run_detected = True
         # Bearish stop run: spike above range, snaps back
-        if (spike.high > prior_high and reversal.close < spike.close
-                and spike.volume > avg_volume * 1.5):
+        if spike.high > prior_high and reversal.close < spike.close and spike.volume > avg_volume * 1.5:
             stop_run_detected = True
 
     # Imbalance stacking: consecutive candles with same-direction imbalance (>0.65 buy or <0.35 sell)

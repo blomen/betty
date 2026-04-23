@@ -11,7 +11,6 @@ Methods:
 Most common use: Multiplicative for Pinnacle odds.
 """
 
-from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -128,7 +127,7 @@ def devig_power(odds_list: list[float]) -> list[float]:
     k_low, k_high = 0.5, 2.0
     for _ in range(50):  # Max iterations
         k = (k_low + k_high) / 2
-        adjusted_sum = sum(p ** k for p in implied_probs)
+        adjusted_sum = sum(p**k for p in implied_probs)
 
         if abs(adjusted_sum - 1.0) < 0.0001:
             break
@@ -138,7 +137,7 @@ def devig_power(odds_list: list[float]) -> list[float]:
             k_high = k
 
     # Apply power adjustment
-    fair_probs = [p ** k for p in implied_probs]
+    fair_probs = [p**k for p in implied_probs]
     total = sum(fair_probs)
     fair_probs = [p / total for p in fair_probs]  # Normalize
 
@@ -146,10 +145,8 @@ def devig_power(odds_list: list[float]) -> list[float]:
 
 
 def get_fair_odds_for_outcome(
-    outcome: str,
-    market_odds: dict[str, float],
-    method: str = "multiplicative"
-) -> Optional[float]:
+    outcome: str, market_odds: dict[str, float], method: str = "multiplicative"
+) -> float | None:
     """
     Get fair odds for a specific outcome from a market.
 
@@ -195,7 +192,7 @@ def compute_consensus_fair_odds(
     outcome: str,
     odds_by_outcome: dict[str, list[dict]],
     platform_map: dict[str, str],
-    sharp_providers: set[str] = frozenset({'pinnacle'}),
+    sharp_providers: set[str] = frozenset({"pinnacle"}),
     min_platforms: int = 5,
 ) -> tuple[float, int] | None:
     """
@@ -271,5 +268,3 @@ def compute_consensus_fair_odds(
     hm = n / sum(1.0 / v for v in platform_values)
 
     return (hm, n)
-
-

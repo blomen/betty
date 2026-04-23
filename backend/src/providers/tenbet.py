@@ -29,6 +29,7 @@ URL structure:
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta
@@ -230,7 +231,7 @@ class TenBetRetriever(BrowserRetriever):
         concurrency = 2 if len(competitions) > 20 else 4
         sem = asyncio.Semaphore(concurrency)
         batch_size = 15
-        sport_timeout = self.config.get("sport_timeout", 600)
+        self.config.get("sport_timeout", 600)
 
         async def process_competition(comp):
             async with sem:
@@ -580,10 +581,7 @@ class TenBetRetriever(BrowserRetriever):
         # Build event ID from href or participants
         href = item.get("href", "")
         event_id_match = re.search(r"/events/(\d+)", href)
-        if event_id_match:
-            ev_id = f"10bet-{event_id_match.group(1)}"
-        else:
-            ev_id = f"10bet-{home}-{away}-{comp_id}"
+        ev_id = f"10bet-{event_id_match.group(1)}" if event_id_match else f"10bet-{home}-{away}-{comp_id}"
 
         start_time = self._parse_time(item.get("timing", ""))
 
@@ -1035,10 +1033,8 @@ class TenBetRetriever(BrowserRetriever):
 
         # Close extra pages
         for p in extra_pages:
-            try:
+            with contextlib.suppress(Exception):
                 await p.close()
-            except Exception:
-                pass
 
         return enriched
 

@@ -1,4 +1,5 @@
 """Broker configuration from environment variables."""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 @dataclass
 class BrokerConfig:
     """All broker settings. Same rules for demo and live."""
+
     enabled: bool = False
     env: str = "demo"
 

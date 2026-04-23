@@ -5,10 +5,12 @@ Macro regimes: bull, bear, neutral
 
 Uses LightGBM multiclass with walk-forward validation via trainer.
 """
+
 import json
 import logging
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +18,30 @@ MIN_SAMPLES = 100
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
 
 DAY_TYPE_FEATURE_NAMES = [
-    "rf_after_ib", "ib_range", "ib_range_vs_avg",
-    "opening_type_encoded", "first_hour_delta_total",
-    "first_hour_volume_vs_avg", "overnight_range_pct",
-    "gap_filled_pct", "yesterday_market_type_encoded",
-    "poor_high_or_low_in_ib", "first_hour_big_trades_count",
-    "session_volume_first_hour", "vix_level", "gex",
-    "value_migration_encoded", "ib_tpo_count",
+    "rf_after_ib",
+    "ib_range",
+    "ib_range_vs_avg",
+    "opening_type_encoded",
+    "first_hour_delta_total",
+    "first_hour_volume_vs_avg",
+    "overnight_range_pct",
+    "gap_filled_pct",
+    "yesterday_market_type_encoded",
+    "poor_high_or_low_in_ib",
+    "first_hour_big_trades_count",
+    "session_volume_first_hour",
+    "vix_level",
+    "gex",
+    "value_migration_encoded",
+    "ib_tpo_count",
 ]
 
 DAY_TYPE_MAP = {
-    "trend": 0, "normal": 1, "normal_variation": 2,
-    "neutral": 3, "composite": 4,
+    "trend": 0,
+    "normal": 1,
+    "normal_variation": 2,
+    "neutral": 3,
+    "composite": 4,
 }
 DAY_TYPE_LABELS = {v: k for k, v in DAY_TYPE_MAP.items()}
 
@@ -53,8 +67,12 @@ class GateClassifierModel:
             return None
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(
-            X, y, task="multiclass", min_samples=MIN_SAMPLES,
+            X,
+            y,
+            task="multiclass",
+            min_samples=MIN_SAMPLES,
             feature_names=DAY_TYPE_FEATURE_NAMES,
             num_class=len(DAY_TYPE_MAP),
         )
@@ -62,13 +80,17 @@ class GateClassifierModel:
             return None
 
         import joblib
+
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         path = MODELS_DIR / "gate_classifier_latest.joblib"
-        joblib.dump({
-            "model": result["model"],
-            "feature_names": DAY_TYPE_FEATURE_NAMES,
-            "task": "multiclass",
-        }, path)
+        joblib.dump(
+            {
+                "model": result["model"],
+                "feature_names": DAY_TYPE_FEATURE_NAMES,
+                "task": "multiclass",
+            },
+            path,
+        )
 
         return {
             "file_path": str(path),

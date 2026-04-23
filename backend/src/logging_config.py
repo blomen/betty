@@ -1,4 +1,5 @@
 """Centralized logging configuration with rotation."""
+
 import logging
 import logging.handlers
 import sys
@@ -36,24 +37,20 @@ def setup_logging(name: str = None, level: str = "INFO"):
     # Console handler (INFO+)
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level.upper(), logging.INFO))
-    console_fmt = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        datefmt='%H:%M:%S'
-    )
+    console_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
     console.setFormatter(console_fmt)
     root.addHandler(console)
 
     # Extraction file handler (DEBUG+, rotating)
     extraction_file = logging.handlers.RotatingFileHandler(
         LOGS_DIR / "extraction.log",
-        maxBytes=10*1024*1024,  # 10MB
+        maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=5,
         encoding="utf-8",
     )
     extraction_file.setLevel(logging.DEBUG)
     file_fmt = logging.Formatter(
-        '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
     extraction_file.setFormatter(file_fmt)
     root.addHandler(extraction_file)
@@ -61,7 +58,7 @@ def setup_logging(name: str = None, level: str = "INFO"):
     # Error file handler (ERROR+ only)
     error_file = logging.handlers.RotatingFileHandler(
         LOGS_DIR / "errors.log",
-        maxBytes=5*1024*1024,  # 5MB
+        maxBytes=5 * 1024 * 1024,  # 5MB
         backupCount=3,
         encoding="utf-8",
     )
@@ -70,10 +67,10 @@ def setup_logging(name: str = None, level: str = "INFO"):
     root.addHandler(error_file)
 
     # API file handler (if running API server)
-    if name == 'api':
+    if name == "api":
         api_file = logging.handlers.RotatingFileHandler(
             LOGS_DIR / "api.log",
-            maxBytes=10*1024*1024,
+            maxBytes=10 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
         )

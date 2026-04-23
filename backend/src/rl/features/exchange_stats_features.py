@@ -1,4 +1,5 @@
 """CME exchange statistics feature extraction (OI, settlement, volume)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -31,18 +32,18 @@ def extract_exchange_stats_features(macro: dict | None, price: float = 0.0) -> n
     block_vol = float(macro.get("block_volume", 0))
 
     # Settlement distance in ticks, normalised
-    if settlement > 0 and price > 0:
-        settlement_dist = (price - settlement) / (_TICK_SIZE * 200)
-    else:
-        settlement_dist = 0.0
+    settlement_dist = (price - settlement) / (_TICK_SIZE * 200) if settlement > 0 and price > 0 else 0.0
 
     # Block volume ratio
     block_ratio = block_vol / max(cleared_vol, 1.0) if cleared_vol > 0 else 0.0
 
-    return np.array([
-        np.clip(oi / 1_000_000, 0.0, 1.0),
-        np.clip(oi_change / 50_000, -1.0, 1.0),
-        np.clip(settlement_dist, -1.0, 1.0),
-        np.clip(cleared_vol / 500_000, 0.0, 1.0),
-        np.clip(block_ratio, 0.0, 1.0),
-    ], dtype=np.float32)
+    return np.array(
+        [
+            np.clip(oi / 1_000_000, 0.0, 1.0),
+            np.clip(oi_change / 50_000, -1.0, 1.0),
+            np.clip(settlement_dist, -1.0, 1.0),
+            np.clip(cleared_vol / 500_000, 0.0, 1.0),
+            np.clip(block_ratio, 0.0, 1.0),
+        ],
+        dtype=np.float32,
+    )

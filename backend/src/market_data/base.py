@@ -8,6 +8,7 @@ from datetime import datetime
 @dataclass
 class BarData:
     """Single OHLCV bar with delta."""
+
     timestamp: datetime
     open: float
     high: float
@@ -20,6 +21,7 @@ class BarData:
 @dataclass
 class TickData:
     """Single trade tick with aggressor side."""
+
     timestamp: datetime
     price: float
     size: int
@@ -29,6 +31,7 @@ class TickData:
 @dataclass
 class MarketSnapshot:
     """Collection of bars and ticks for a session."""
+
     symbol: str
     date: str
     bars: list[BarData] = field(default_factory=list)
@@ -40,16 +43,12 @@ class MarketDataProvider(ABC):
     """Abstract base for market data providers (Databento, IB, etc.)."""
 
     @abstractmethod
-    async def get_bars(
-        self, symbol: str, interval: str, start: datetime, end: datetime
-    ) -> list[BarData]:
+    async def get_bars(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[BarData]:
         """Fetch OHLCV bars. interval: '1m', '5m', '15m', '1h', '1d'."""
         ...
 
     @abstractmethod
-    async def get_ticks(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> list[TickData]:
+    async def get_ticks(self, symbol: str, start: datetime, end: datetime) -> list[TickData]:
         """Fetch tick-level trades with aggressor side."""
         ...
 

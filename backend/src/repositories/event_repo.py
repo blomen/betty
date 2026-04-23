@@ -35,28 +35,12 @@ class EventRepo:
         ids = [eid for (eid,) in event_ids]
         if not ids:
             return []
-        return (
-            self.db.query(Event)
-            .options(joinedload(Event.odds))
-            .filter(Event.id.in_(ids))
-            .all()
-        )
+        return self.db.query(Event).options(joinedload(Event.odds)).filter(Event.id.in_(ids)).all()
 
     def get_events_with_provider(self, provider_id: str) -> list[Event]:
         """Get events where a specific provider has odds, eager-loading odds."""
-        event_ids = (
-            self.db.query(Event.id)
-            .join(Odds)
-            .filter(Odds.provider_id == provider_id)
-            .distinct()
-            .all()
-        )
+        event_ids = self.db.query(Event.id).join(Odds).filter(Odds.provider_id == provider_id).distinct().all()
         ids = [eid for (eid,) in event_ids]
         if not ids:
             return []
-        return (
-            self.db.query(Event)
-            .options(joinedload(Event.odds))
-            .filter(Event.id.in_(ids))
-            .all()
-        )
+        return self.db.query(Event).options(joinedload(Event.odds)).filter(Event.id.in_(ids)).all()

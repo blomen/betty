@@ -5,11 +5,11 @@ Parses event detail JSON returned by interwetten when called with
 X-Requested-With: XMLHttpRequest header. Extracts 1x2/moneyline,
 spread (Asian Handicap), and total (How many goals / Over/Under).
 """
+
 from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from ..core import StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -23,9 +23,7 @@ _POINT_RE = re.compile(r"\(([+-]?\d+\.?\d*)\)")
 _TOTAL_POINT_RE = re.compile(r"(\d+\.?\d*)")
 
 
-def parse_main_market(
-    main_market: dict, home_team: str, away_team: str
-) -> Optional[dict]:
+def parse_main_market(main_market: dict, home_team: str, away_team: str) -> dict | None:
     outcomes_raw = main_market.get("outcomes", [])
     outcomes = []
     has_draw = False
@@ -52,7 +50,7 @@ def parse_main_market(
     }
 
 
-def parse_spread_from_template(template: dict) -> Optional[dict]:
+def parse_spread_from_template(template: dict) -> dict | None:
     markets = template.get("markets", [])
     if not markets:
         return None
@@ -87,7 +85,7 @@ def parse_spread_from_template(template: dict) -> Optional[dict]:
     return {"type": "spread", "outcomes": outcomes}
 
 
-def parse_total_from_template(template: dict) -> Optional[dict]:
+def parse_total_from_template(template: dict) -> dict | None:
     markets = template.get("markets", [])
     if not markets:
         return None
@@ -129,18 +127,18 @@ def parse_top_leagues_response(data: dict) -> list[dict]:
     for league in data.get("leagues", []):
         league_name = league.get("name", "")
         for ev in league.get("events", []):
-            results.append({
-                "id": ev.get("id"),
-                "href": ev.get("href", ""),
-                "league": league_name,
-                "name": ev.get("name", ""),
-            })
+            results.append(
+                {
+                    "id": ev.get("id"),
+                    "href": ev.get("href", ""),
+                    "league": league_name,
+                    "name": ev.get("name", ""),
+                }
+            )
     return results
 
 
-def parse_event_json(
-    data: dict, provider_id: str = "interwetten"
-) -> Optional[StandardEvent]:
+def parse_event_json(data: dict, provider_id: str = "interwetten") -> StandardEvent | None:
     event_data = data.get("event")
     if not event_data:
         return None
@@ -164,12 +162,18 @@ def parse_event_json(
     sport_name = sport_data.get("name", "").lower()
 
     sport_map = {
-        "football": "football", "basketball": "basketball",
-        "ice hockey": "ice_hockey", "tennis": "tennis",
-        "handball": "handball", "volleyball": "volleyball",
+        "football": "football",
+        "basketball": "basketball",
+        "ice hockey": "ice_hockey",
+        "tennis": "tennis",
+        "handball": "handball",
+        "volleyball": "volleyball",
         "american football": "american_football",
-        "baseball": "baseball", "rugby": "rugby",
-        "cricket": "cricket", "darts": "darts", "boxing": "boxing",
+        "baseball": "baseball",
+        "rugby": "rugby",
+        "cricket": "cricket",
+        "darts": "darts",
+        "boxing": "boxing",
     }
     sport = sport_map.get(sport_name, sport_name)
 

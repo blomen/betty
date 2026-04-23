@@ -3,6 +3,7 @@
 Uses a SumTree for O(log n) proportional sampling and O(log n) priority updates.
 Falls back to uniform sampling when all priorities are zero.
 """
+
 from __future__ import annotations
 
 import random
@@ -117,7 +118,7 @@ class ReplayBuffer:
         self._stop_targets[idx] = float(stop_target)
 
         # New transitions get max priority so they're sampled at least once
-        priority = self._max_priority ** self._alpha
+        priority = self._max_priority**self._alpha
         self._tree.add(priority)
 
         self._write_idx = (self._write_idx + 1) % self._capacity
@@ -138,10 +139,7 @@ class ReplayBuffer:
             ValueError: if buffer contains fewer than batch_size items.
         """
         if self._size < batch_size:
-            raise ValueError(
-                f"Not enough samples: requested {batch_size}, "
-                f"buffer has {self._size}."
-            )
+            raise ValueError(f"Not enough samples: requested {batch_size}, buffer has {self._size}.")
 
         indices = np.empty(batch_size, dtype=np.int64)
         priorities = np.empty(batch_size, dtype=np.float64)
@@ -184,7 +182,7 @@ class ReplayBuffer:
 
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
         """Update priorities based on TD errors from the last training step."""
-        for idx, td_err in zip(indices, td_errors):
+        for idx, td_err in zip(indices, td_errors, strict=False):
             priority = (abs(float(td_err)) + self._epsilon) ** self._alpha
             self._tree.update(int(idx), priority)
             self._max_priority = max(self._max_priority, abs(float(td_err)) + self._epsilon)

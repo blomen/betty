@@ -7,6 +7,7 @@ and executes orders on TopstepX when the server emits a signal.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -65,16 +66,12 @@ class SignalRelayClient:
         self._connected = False
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._listen_task
-            except asyncio.CancelledError:
-                pass
             self._listen_task = None
         if self._ws:
-            try:
+            with contextlib.suppress(Exception):
                 await self._ws.close()
-            except Exception:
-                pass
             self._ws = None
 
     async def forward_tick(self, price: float, size: int, ts: float, side: str = "B") -> None:

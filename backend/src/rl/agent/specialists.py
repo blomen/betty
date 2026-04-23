@@ -12,6 +12,7 @@ confidence wins. If neither is confident, skip.
 This separates the "will price break through?" question from
 "will price bounce?" — the features that predict each are different.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,25 +29,27 @@ class _Specialist:
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.classifier = None       # P(action succeeds)
-        self.reward_model = None      # E[R | action succeeds]
+        self.classifier = None  # P(action succeeds)
+        self.reward_model = None  # E[R | action succeeds]
         self.scaler: StandardScaler | None = None
         self._alive_mask: np.ndarray | None = None
 
     def train(
         self,
         X: np.ndarray,
-        y_success: np.ndarray,      # 1 = action was profitable, 0 = loss
-        rewards: np.ndarray,         # actual R for this action direction
+        y_success: np.ndarray,  # 1 = action was profitable, 0 = loss
+        rewards: np.ndarray,  # actual R for this action direction
         n_estimators: int = 300,
         max_depth: int = 5,
         learning_rate: float = 0.05,
     ) -> dict:
         try:
             from lightgbm import LGBMClassifier, LGBMRegressor
+
             _Cls, _Reg = LGBMClassifier, LGBMRegressor
         except ImportError:
             from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+
             _Cls, _Reg = GradientBoostingClassifier, GradientBoostingRegressor
 
         # Remove dead features
@@ -58,9 +61,12 @@ class _Specialist:
         X_scaled = self.scaler.fit_transform(X_alive)
 
         params = dict(
-            n_estimators=n_estimators, max_depth=max_depth,
-            learning_rate=learning_rate, subsample=0.8,
-            n_jobs=2, verbose=-1,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=0.8,
+            n_jobs=2,
+            verbose=-1,
         )
 
         # Binary classifier: will this action succeed?
@@ -70,9 +76,12 @@ class _Specialist:
 
         # Reward regressor: how much R if it succeeds?
         self.reward_model = _Reg(
-            n_estimators=min(200, n_estimators), max_depth=min(4, max_depth),
-            learning_rate=learning_rate, subsample=0.8,
-            n_jobs=2, verbose=-1,
+            n_estimators=min(200, n_estimators),
+            max_depth=min(4, max_depth),
+            learning_rate=learning_rate,
+            subsample=0.8,
+            n_jobs=2,
+            verbose=-1,
         )
         self.reward_model.fit(X_scaled, rewards)
 
@@ -163,9 +172,11 @@ class StopSpecialist:
     ) -> dict:
         try:
             from lightgbm import LGBMRegressor
+
             _Reg = LGBMRegressor
         except ImportError:
             from sklearn.ensemble import GradientBoostingRegressor
+
             _Reg = GradientBoostingRegressor
 
         stds = X.std(axis=0)
@@ -176,9 +187,12 @@ class StopSpecialist:
         X_scaled = self.scaler.fit_transform(X_alive)
 
         self.model = _Reg(
-            n_estimators=n_estimators, max_depth=max_depth,
-            learning_rate=learning_rate, subsample=0.8,
-            n_jobs=2, verbose=-1,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=0.8,
+            n_jobs=2,
+            verbose=-1,
         )
         self.model.fit(X_scaled, stop_targets)
 
@@ -221,8 +235,8 @@ class SpecialistEnsemble:
     4. Skip if both EVs are below threshold
     """
 
-    MIN_CONFIDENCE = 0.50   # minimum p_success to consider a trade
-    MIN_EV = 0.1            # minimum expected R to take the trade
+    MIN_CONFIDENCE = 0.50  # minimum p_success to consider a trade
+    MIN_EV = 0.1  # minimum expected R to take the trade
 
     def __init__(
         self,
@@ -316,6 +330,7 @@ class SpecialistEnsemble:
 
     def save(self, path: Path) -> None:
         import joblib
+
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -338,6 +353,7 @@ class SpecialistEnsemble:
     @classmethod
     def load(cls, path: Path) -> SpecialistEnsemble:
         import joblib
+
         data = joblib.load(path)
         cont = ContinuationSpecialist()
         cont.classifier = data["cont_classifier"]

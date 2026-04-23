@@ -21,24 +21,44 @@ Each line is a JSON object:
   }
 """
 
+import contextlib
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Skip recording these — static assets, tracking pixels, noise
-_SKIP_EXTENSIONS = frozenset({
-    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot", ".map",
-})
+_SKIP_EXTENSIONS = frozenset(
+    {
+        ".js",
+        ".css",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".map",
+    }
+)
 
 _SKIP_PATTERNS = (
-    "/analytics", "/tracking", "/pixel", "/beacon",
-    "google-analytics", "googletagmanager", "facebook.com/tr",
-    "hotjar", "clarity.ms", "doubleclick",
+    "/analytics",
+    "/tracking",
+    "/pixel",
+    "/beacon",
+    "google-analytics",
+    "googletagmanager",
+    "facebook.com/tr",
+    "hotjar",
+    "clarity.ms",
+    "doubleclick",
 )
 
 
@@ -49,6 +69,7 @@ class NetworkRecorder:
         self.provider_id = provider_id
         if data_dir is None:
             from ..paths import get_data_dir
+
             data_dir = get_data_dir()
         self._recordings_dir = data_dir / "mirror_recordings" / provider_id
         self._file = None
@@ -95,17 +116,13 @@ class NetworkRecorder:
             response_body = None
             content_type = response.headers.get("content-type", "")
             if "json" in content_type or "text" in content_type:
-                try:
+                with contextlib.suppress(Exception):
                     response_body = await response.text()
-                except Exception:
-                    pass
 
             # Read request body
             request_body = None
-            try:
+            with contextlib.suppress(Exception):
                 request_body = response.request.post_data
-            except Exception:
-                pass
 
             entry = {
                 "ts": datetime.now(timezone.utc).isoformat(),

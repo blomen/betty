@@ -42,17 +42,20 @@ def deduplicate_specials(specials: list[dict]) -> list[dict]:
 
     result = []
     for group in groups.values():
-        group.sort(key=lambda s: (
-            s.get("original_odds") is not None,
-            sum(1 for v in s.values() if v is not None and v != ""),
-        ), reverse=True)
+        group.sort(
+            key=lambda s: (
+                s.get("original_odds") is not None,
+                sum(1 for v in s.values() if v is not None and v != ""),
+            ),
+            reverse=True,
+        )
         best = dict(group[0])
 
         all_providers: set[str] = set()
         for s in group:
             if s.get("provider"):
                 all_providers.add(s["provider"])
-            for sp in (s.get("shared_providers") or []):
+            for sp in s.get("shared_providers") or []:
                 if sp:
                     all_providers.add(sp)
 
@@ -106,11 +109,7 @@ def _match_boosts_to_events(specials: list[dict], db: Session) -> int:
     now = datetime.now(timezone.utc)
 
     # Load upcoming events (+ events from last 2 hours to catch just-started ones)
-    events = (
-        db.query(Event)
-        .filter(Event.start_time > now.replace(hour=0, minute=0, second=0))
-        .all()
-    )
+    events = db.query(Event).filter(Event.start_time > now.replace(hour=0, minute=0, second=0)).all()
     if not events:
         return 0
 
@@ -190,10 +189,9 @@ def _fill_pinnacle_proxy_odds(specials: list[dict], db: Session) -> int:
     from ..analysis.llm_enrichment import _detect_legs_from_title
 
     needs_proxy = [
-        s for s in specials
-        if not s.get("original_odds")
-        and s.get("matched_event_id")
-        and _detect_legs_from_title(s.get("title", "")) == 1
+        s
+        for s in specials
+        if not s.get("original_odds") and s.get("matched_event_id") and _detect_legs_from_title(s.get("title", "")) == 1
     ]
     if not needs_proxy:
         return 0
@@ -258,10 +256,11 @@ def _fill_pinnacle_fair_odds(specials: list[dict], db: Session) -> int:
     from ..analysis.llm_enrichment import _detect_legs_from_title
 
     needs_fair = [
-        s for s in specials
+        s
+        for s in specials
         if s.get("matched_event_id")
-        and s.get("original_odds")       # already has scraped original
-        and not s.get("fair_odds")        # but no fair_odds yet
+        and s.get("original_odds")  # already has scraped original
+        and not s.get("fair_odds")  # but no fair_odds yet
         and _detect_legs_from_title(s.get("title", "")) == 1
     ]
     if not needs_fair:
@@ -348,6 +347,7 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
 # ── Expiry filter ──────────────────────────────────────────────────────
 
+
 def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict]:
     """Remove specials whose event has started, expires_at is past, or matched event is past."""
     now = datetime.now(timezone.utc)
@@ -369,9 +369,8 @@ def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict
     for s in specials:
         # Check matched event start_time (most authoritative)
         mid = s.get("matched_event_id")
-        if mid and mid in matched_event_times:
-            if matched_event_times[mid] <= now:
-                continue
+        if mid and mid in matched_event_times and matched_event_times[mid] <= now:
+            continue
 
         # Check scraped event_time
         event_time = s.get("event_time")
@@ -402,6 +401,7 @@ def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict
 
 
 # ── DB storage ─────────────────────────────────────────────────────────
+
 
 def store_specials_to_db(specials: list[dict], session: Session) -> int:
     """Full-replace specials in DB: delete all existing, insert new."""

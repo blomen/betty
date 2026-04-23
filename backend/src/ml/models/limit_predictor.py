@@ -5,27 +5,44 @@ Uses logistic regression at low data (<50 events), graduates to LightGBM at 50+.
 
 Min training data: 20 limit events.
 """
-import logging
+
 import json
+import logging
 import warnings
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 LOW_DATA_FEATURES = [
-    "clv_score", "total_bets", "max_single_bet_edge",
-    "stake_entropy", "similar_platform_limits",
+    "clv_score",
+    "total_bets",
+    "max_single_bet_edge",
+    "stake_entropy",
+    "similar_platform_limits",
 ]
 
 FULL_FEATURES = [
-    "clv_score", "total_bets", "max_single_bet_edge",
-    "stake_entropy", "market_diversity", "timing_regularity",
-    "outcome_correlation", "bonus_usage_ratio", "win_rate_deviation",
-    "account_age_days", "total_turnover", "similar_platform_limits",
-    "bet_frequency_trend", "sport_concentration_top3", "has_used_freebet",
-    "avg_stake_vs_provider_median", "time_between_bets_cv",
-    "time_from_odds_change_to_bet", "same_side_as_sharp_movement_pct",
+    "clv_score",
+    "total_bets",
+    "max_single_bet_edge",
+    "stake_entropy",
+    "market_diversity",
+    "timing_regularity",
+    "outcome_correlation",
+    "bonus_usage_ratio",
+    "win_rate_deviation",
+    "account_age_days",
+    "total_turnover",
+    "similar_platform_limits",
+    "bet_frequency_trend",
+    "sport_concentration_top3",
+    "has_used_freebet",
+    "avg_stake_vs_provider_median",
+    "time_between_bets_cv",
+    "time_from_odds_change_to_bet",
+    "same_side_as_sharp_movement_pct",
     "deposit_withdrawal_ratio",
 ]
 
@@ -50,6 +67,7 @@ class LimitPredictorModel:
 
         if use_lgbm:
             from src.ml.optimizer.trainer import train_model
+
             result = train_model(X, y, task="classification", min_samples=MIN_SAMPLES, feature_names=self.feature_names)
             if result is None:
                 return None
@@ -57,6 +75,7 @@ class LimitPredictorModel:
             self.algorithm = "lightgbm"
         else:
             from sklearn.linear_model import LogisticRegression
+
             model = LogisticRegression(C=0.1, max_iter=1000)
             model.fit(X, y)
             self.model = model
@@ -66,12 +85,16 @@ class LimitPredictorModel:
         file_path = str(MODELS_DIR / "limit_predictor_latest.joblib")
         try:
             import joblib
-            joblib.dump({
-                "model": self.model,
-                "feature_names": self.feature_names,
-                "task": "classification",
-                "algorithm": self.algorithm,
-            }, file_path)
+
+            joblib.dump(
+                {
+                    "model": self.model,
+                    "feature_names": self.feature_names,
+                    "task": "classification",
+                    "algorithm": self.algorithm,
+                },
+                file_path,
+            )
         except ImportError:
             return None
 

@@ -15,8 +15,8 @@ Real API schema (discovered 2026-03-20):
     s-m-f-abc123-M2WHCP-1.5-HANDICAPHOME               (spread home -1.5)
 """
 
-import logging
 import json
+import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,7 @@ class GeckoBetParser:
             return result
 
         # Everything after 'f' needs to be split into: eventId, template, [line], outcome
-        remaining = parts[f_idx + 1:]
+        remaining = parts[f_idx + 1 :]
         if not remaining:
             return result
 
@@ -217,7 +217,7 @@ class GeckoBetParser:
         template = remaining[template_idx].upper()
         result["market"] = _MARKET_TEMPLATE_MAP.get(template)
 
-        after_template = remaining[template_idx + 1:]
+        after_template = remaining[template_idx + 1 :]
 
         if not after_template:
             return result

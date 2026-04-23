@@ -6,23 +6,37 @@ Cross-domain: serves both sports betting and trading.
 Replaces linear Kelly interpolation by edge (sports) / fixed 1% risk (trading).
 Min training data: 300 bets/trades.
 """
-import logging
+
 import json
+import logging
 import warnings
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 FEATURE_NAMES = [
-    "domain_betting", "domain_trading",
-    "model_confidence", "predicted_edge",
-    "historical_win_rate", "historical_avg_return",
-    "recent_drawdown_pct", "consecutive_wins", "consecutive_losses",
-    "daily_pnl", "weekly_pnl", "account_utilization",
-    "volatility_regime", "time_of_day",
-    "provider_remaining_lifetime", "is_freebet", "bonus_wagering_remaining",
-    "gex", "correlation_with_open", "session_volume_regime",
+    "domain_betting",
+    "domain_trading",
+    "model_confidence",
+    "predicted_edge",
+    "historical_win_rate",
+    "historical_avg_return",
+    "recent_drawdown_pct",
+    "consecutive_wins",
+    "consecutive_losses",
+    "daily_pnl",
+    "weekly_pnl",
+    "account_utilization",
+    "volatility_regime",
+    "time_of_day",
+    "provider_remaining_lifetime",
+    "is_freebet",
+    "bonus_wagering_remaining",
+    "gex",
+    "correlation_with_open",
+    "session_volume_regime",
 ]
 
 MIN_SAMPLES = 300
@@ -41,6 +55,7 @@ class AdaptiveKellyModel:
         X, y = self._prepare_data(data)
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES, feature_names=self.feature_names)
         if result is None:
             return None
@@ -51,11 +66,15 @@ class AdaptiveKellyModel:
         file_path = str(MODELS_DIR / "adaptive_kelly_latest.joblib")
         try:
             import joblib
-            joblib.dump({
-                "model": self.model,
-                "feature_names": self.feature_names,
-                "task": "regression",
-            }, file_path)
+
+            joblib.dump(
+                {
+                    "model": self.model,
+                    "feature_names": self.feature_names,
+                    "task": "regression",
+                },
+                file_path,
+            )
         except ImportError:
             return None
 

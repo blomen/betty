@@ -16,7 +16,6 @@ from ..constants import (
     ENRICHMENT_MARKETS,
     EXTENDED_MARKET_PROVIDERS,
     PROVIDER_CANONICAL,
-    SHARP_PROVIDERS,
 )
 from ..core import StandardEvent
 from ..db.models import DeferredEvent, Event, Odds
@@ -1001,8 +1000,6 @@ def store_provider_event(
 
     if should_swap:
         logger.debug(f"[{provider}] Swapping outcomes for {final_id} to align with canonical event")
-
-    is_sharp = provider.lower() in SHARP_PROVIDERS
 
     # Store odds
     odds_processed = 0

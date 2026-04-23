@@ -11,9 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ OBSERVATION_WINDOW_CANDLES: int = 30
 # ---------------------------------------------------------------------------
 # Core detection
 # ---------------------------------------------------------------------------
+
 
 def detect_virtual_touches(
     candles: list[dict],
@@ -57,9 +58,7 @@ def detect_virtual_touches(
 
     # Track the last candle index at which each level was touched.
     # Key: level_name → candle_index of last touch (-DEDUP_WINDOW_CANDLES - 1 to force first touch)
-    last_touch_index: dict[str, int] = {
-        lv["name"]: -(DEDUP_WINDOW_CANDLES + 1) for lv in levels
-    }
+    last_touch_index: dict[str, int] = {lv["name"]: -(DEDUP_WINDOW_CANDLES + 1) for lv in levels}
 
     touches: list[dict] = []
 
@@ -84,14 +83,16 @@ def detect_virtual_touches(
                 approach_direction = "from_above"
 
             if approach_direction is not None:
-                touches.append({
-                    "level_name": level_name,
-                    "level_type": lv["type"],
-                    "level_category": lv["category"],
-                    "level_price": level_price,
-                    "approach_direction": approach_direction,
-                    "candle_index": i,
-                })
+                touches.append(
+                    {
+                        "level_name": level_name,
+                        "level_type": lv["type"],
+                        "level_category": lv["category"],
+                        "level_price": level_price,
+                        "approach_direction": approach_direction,
+                        "candle_index": i,
+                    }
+                )
                 last_touch_index[level_name] = i
 
     return touches
@@ -100,6 +101,7 @@ def detect_virtual_touches(
 # ---------------------------------------------------------------------------
 # Per-session backfill
 # ---------------------------------------------------------------------------
+
 
 def backfill_session(
     session_date: str,
@@ -123,9 +125,9 @@ def backfill_session(
     Returns:
         List of result dicts with features + outcome fields.
     """
-    from .compute import compute_temporal_derivatives, compute_candle_pattern_features
-    from .outcomes import classify_outcome
     from ..features.level_touch_features import extract_level_touch_features
+    from .compute import compute_candle_pattern_features, compute_temporal_derivatives
+    from .outcomes import classify_outcome
 
     if not candles_1m or not levels:
         return []
@@ -177,7 +179,7 @@ def backfill_session(
         )
 
         # --- Outcome: from the next 30 candles ---
-        obs_candles = candles_1m[idx + 1: idx + 1 + OBSERVATION_WINDOW_CANDLES]
+        obs_candles = candles_1m[idx + 1 : idx + 1 + OBSERVATION_WINDOW_CANDLES]
         highs = [c["h"] for c in obs_candles]
         lows = [c["l"] for c in obs_candles]
         outcome_data = classify_outcome(lp, touch["approach_direction"], highs, lows)
@@ -198,19 +200,21 @@ def backfill_session(
         else:
             touch_ts = float(idx * 60)
 
-        results.append({
-            "session_date": session_date,
-            "level_name": touch["level_name"],
-            "level_type": touch["level_type"],
-            "level_price": lp,
-            "approach_direction": touch["approach_direction"],
-            "candle_index": idx,
-            "touch_ts": touch_ts,
-            "features": features,
-            "outcome": outcome_data["outcome"],
-            "max_continuation_ticks": outcome_data["max_continuation_ticks"],
-            "max_reversal_ticks": outcome_data["max_reversal_ticks"],
-        })
+        results.append(
+            {
+                "session_date": session_date,
+                "level_name": touch["level_name"],
+                "level_type": touch["level_type"],
+                "level_price": lp,
+                "approach_direction": touch["approach_direction"],
+                "candle_index": idx,
+                "touch_ts": touch_ts,
+                "features": features,
+                "outcome": outcome_data["outcome"],
+                "max_continuation_ticks": outcome_data["max_continuation_ticks"],
+                "max_reversal_ticks": outcome_data["max_reversal_ticks"],
+            }
+        )
 
     return results
 
@@ -218,6 +222,7 @@ def backfill_session(
 # ---------------------------------------------------------------------------
 # Level computation helper
 # ---------------------------------------------------------------------------
+
 
 def _compute_levels_for_date(
     candles: list,
@@ -243,9 +248,9 @@ def _compute_levels_for_date(
         List of level dicts, each with: name, price, type, category.
     """
     from ...market_data.levels import (
+        compute_session_levels,
         compute_volume_profile,
         compute_vwap_bands,
-        compute_session_levels,
     )
 
     levels: list[dict] = []
@@ -271,6 +276,7 @@ def _compute_levels_for_date(
 
     # --- Volume Profile ---
     from ...market_data.levels import bars_to_trades
+
     try:
         trades = bars_to_trades(bars)
         vp = compute_volume_profile(trades)
@@ -331,6 +337,7 @@ def _compute_levels_for_date(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def run_backfill(
     db_session_factory: Callable,
     start_date: str,
@@ -350,8 +357,8 @@ def run_backfill(
     Returns:
         Total number of training rows written.
     """
+    from ...db.models import LevelTouchFeature, LevelTouchOutcome
     from ...repositories.market_repo import MarketRepo
-    from ...db.models import LevelTouchOutcome, LevelTouchFeature
 
     if end_date is None:
         end_date = date.today().isoformat()
@@ -450,7 +457,10 @@ def run_backfill(
             total_rows += len(rows)
             log.info(
                 "Backfilled %s %s: %d levels, %d touches written",
-                symbol, date_str, len(levels), len(rows),
+                symbol,
+                date_str,
+                len(levels),
+                len(rows),
             )
 
         except Exception:
@@ -465,6 +475,7 @@ def run_backfill(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 @contextmanager
 def _open_session(factory: Callable):

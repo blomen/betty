@@ -154,10 +154,7 @@ def _build_zone(members: list[ZoneMember], radius: float) -> Zone:
     # Empirical weights can exceed 1.0 (the strongest level type today is
     # weekly_swing_low ≈ 1.14) so we clip to a generous ceiling to keep the
     # feature on roughly [0, 1] for downstream normalizers/models.
-    if members:
-        mean_weight = sum(_weight(m.level_type) for m in members) / len(members)
-    else:
-        mean_weight = 0.0
+    mean_weight = sum(_weight(m.level_type) for m in members) / len(members) if members else 0.0
     hierarchy_score = min(max(mean_weight / 1.2, 0.0), 1.0)
 
     return Zone(

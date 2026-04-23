@@ -19,13 +19,12 @@ Validation Criteria (must pass before integration):
 - Score-like outcomes: 0 (correct score markets leaking)
 """
 
-from typing import Dict, Any, List, Optional
 import logging
-import aiohttp
 from datetime import datetime
+from typing import Any
 
 from ..core import Retriever, StandardEvent
-from ..matching.normalizer import normalize_team_name, normalize_outcome
+from ..matching.normalizer import normalize_outcome, normalize_team_name
 from .shared.metrics import ExtractionMetrics
 
 logger = logging.getLogger(__name__)
@@ -47,22 +46,22 @@ class NewProviderRetriever(Retriever):
     # Map our sport keys to provider's sport identifiers
     # Update these values based on the provider's API
     SPORT_MAPPING = {
-        'football': 1,       # Replace with actual sport ID
-        'basketball': 2,     # Replace with actual sport ID
-        'tennis': 3,         # Replace with actual sport ID
-        'ice_hockey': 4,     # Replace with actual sport ID
+        "football": 1,  # Replace with actual sport ID
+        "basketball": 2,  # Replace with actual sport ID
+        "tennis": 3,  # Replace with actual sport ID
+        "ice_hockey": 4,  # Replace with actual sport ID
         # Add more sports as discovered
     }
 
     # Map provider's market type IDs to our standard types
     # ONLY 1x2 and moneyline are supported
     MARKET_TYPE_MAPPING = {
-        1: '1x2',           # Match result (with draw) - football
-        2: 'moneyline',     # Winner (no draw) - basketball, etc.
+        1: "1x2",  # Match result (with draw) - football
+        2: "moneyline",  # Winner (no draw) - basketball, etc.
         # Add provider-specific market type IDs here
     }
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         """
         Initialize the retriever.
 
@@ -96,7 +95,7 @@ class NewProviderRetriever(Retriever):
             return ""
         return f"{self.api_base}/events?sport={sport_id}"
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """
         Parse API response into StandardEvents.
 
@@ -117,7 +116,7 @@ class NewProviderRetriever(Retriever):
         events = []
 
         # Adapt this based on API response structure
-        raw_events = data.get('events', []) if isinstance(data, dict) else data
+        raw_events = data.get("events", []) if isinstance(data, dict) else data
 
         for raw_event in raw_events:
             try:
@@ -132,12 +131,7 @@ class NewProviderRetriever(Retriever):
         metrics.log_summary(self.provider_id, sport, len(raw_events))
         return events
 
-    def _parse_single_event(
-        self,
-        raw_event: Dict,
-        sport: str,
-        metrics: ExtractionMetrics
-    ) -> Optional[StandardEvent]:
+    def _parse_single_event(self, raw_event: dict, sport: str, metrics: ExtractionMetrics) -> StandardEvent | None:
         """
         Parse a single event from API response.
 
@@ -152,12 +146,12 @@ class NewProviderRetriever(Retriever):
             StandardEvent or None if invalid/filtered
         """
         # Skip live events
-        if raw_event.get('is_live') or raw_event.get('state') == 'STARTED':
+        if raw_event.get("is_live") or raw_event.get("state") == "STARTED":
             metrics.events_skipped_live += 1
             return None
 
         # Extract event ID
-        event_id = str(raw_event.get('id', ''))
+        event_id = str(raw_event.get("id", ""))
         if not event_id:
             return None
 
@@ -166,8 +160,8 @@ class NewProviderRetriever(Retriever):
         #   raw_event['home_team'], raw_event['away_team']
         #   raw_event['participants'][0], raw_event['participants'][1]
         #   raw_event['name'].split(' vs ')
-        home_raw = raw_event.get('home_team', '')
-        away_raw = raw_event.get('away_team', '')
+        home_raw = raw_event.get("home_team", "")
+        away_raw = raw_event.get("away_team", "")
 
         if not home_raw or not away_raw:
             metrics.events_skipped_no_teams += 1
@@ -178,18 +172,18 @@ class NewProviderRetriever(Retriever):
         away_team = normalize_team_name(away_raw)
 
         # Extract league/competition
-        league = raw_event.get('league', '') or raw_event.get('competition', '') or 'Unknown'
+        league = raw_event.get("league", "") or raw_event.get("competition", "") or "Unknown"
 
         # Extract start time - adapt to API date format
         start_time = None
-        start_time_raw = raw_event.get('start_time') or raw_event.get('startDate')
+        start_time_raw = raw_event.get("start_time") or raw_event.get("startDate")
         if start_time_raw:
             try:
                 # Common formats: ISO 8601, Unix timestamp
                 if isinstance(start_time_raw, int):
                     start_time = datetime.utcfromtimestamp(start_time_raw)
                 else:
-                    start_time = datetime.fromisoformat(start_time_raw.replace('Z', '+00:00'))
+                    start_time = datetime.fromisoformat(start_time_raw.replace("Z", "+00:00"))
             except Exception as e:
                 logger.debug(f"[{self.provider_id}] Failed to parse start time: {e}")
 
@@ -210,15 +204,10 @@ class NewProviderRetriever(Retriever):
             away_team=away_team,
             start_time=start_time,
             markets=markets,
-            url=raw_event.get('url', '')
+            url=raw_event.get("url", ""),
         )
 
-    def _parse_markets(
-        self,
-        raw_event: Dict,
-        home_raw: str,
-        away_raw: str
-    ) -> List[Dict]:
+    def _parse_markets(self, raw_event: dict, home_raw: str, away_raw: str) -> list[dict]:
         """
         Parse markets from event data.
 
@@ -237,24 +226,24 @@ class NewProviderRetriever(Retriever):
 
         # Adapt to API structure - common patterns:
         #   raw_event['markets'], raw_event['odds'], raw_event['bet_offers']
-        raw_markets = raw_event.get('markets', [])
+        raw_markets = raw_event.get("markets", [])
 
         for raw_market in raw_markets:
             # Check market type - ONLY 1x2/moneyline
-            market_type_id = raw_market.get('type_id') or raw_market.get('marketTypeId')
-            market_type = self.MARKET_TYPE_MAPPING.get(market_type_id, 'other')
+            market_type_id = raw_market.get("type_id") or raw_market.get("marketTypeId")
+            market_type = self.MARKET_TYPE_MAPPING.get(market_type_id, "other")
 
-            if market_type == 'other':
+            if market_type == "other":
                 # Skip non-1x2/moneyline markets
                 continue
 
             # Parse outcomes
             outcomes = []
-            raw_outcomes = raw_market.get('outcomes', []) or raw_market.get('odds', [])
+            raw_outcomes = raw_market.get("outcomes", []) or raw_market.get("odds", [])
 
             for raw_outcome in raw_outcomes:
-                outcome_name = raw_outcome.get('name', '') or raw_outcome.get('label', '')
-                odds = raw_outcome.get('odds', 0) or raw_outcome.get('price', 0)
+                outcome_name = raw_outcome.get("name", "") or raw_outcome.get("label", "")
+                odds = raw_outcome.get("odds", 0) or raw_outcome.get("price", 0)
 
                 if odds <= 1.0:
                     continue  # Invalid odds
@@ -262,16 +251,10 @@ class NewProviderRetriever(Retriever):
                 # Normalize outcome to home/away/draw
                 normalized = normalize_outcome(outcome_name, home_raw, away_raw)
 
-                outcomes.append({
-                    'name': normalized,
-                    'odds': float(odds)
-                })
+                outcomes.append({"name": normalized, "odds": float(odds)})
 
             # Only add market if we have valid outcomes
             if outcomes:
-                markets.append({
-                    'type': market_type,
-                    'outcomes': outcomes
-                })
+                markets.append({"type": market_type, "outcomes": outcomes})
 
         return markets

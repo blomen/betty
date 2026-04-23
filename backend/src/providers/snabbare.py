@@ -31,12 +31,13 @@ Notes:
 - Event separator is " - " (dash), not " vs "
 """
 
-from typing import Dict, Any, List, Optional
+import asyncio
+import contextlib
 import json
 import logging
 import re
 from datetime import datetime
-import asyncio
+from typing import Any
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -54,22 +55,22 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     """
 
     # Snabbare sport ID → (canonical name, URL slug)
-    SPORT_MAP: Dict[int, tuple] = {
-        1:   ("football",          "fotboll"),
-        2:   ("basketball",        "basket"),
-        3:   ("american_football", "amerikansk-fotboll"),
-        4:   ("ice_hockey",        "ishockey"),
-        5:   ("rugby",             "rugby"),
-        6:   ("tennis",            "tennis"),
-        7:   ("handball",          "handboll"),
-        8:   ("volleyball",        "volleyboll"),
-        10:  ("table_tennis",      "bordtennis"),
-        12:  ("baseball",          "baseboll"),
-        17:  ("cricket",           "cricket"),
-        31:  ("boxing",            "boxning"),
-        37:  ("mma",               "mma"),
-        130: ("esports",           "esport"),
-        48:  ("darts",             "dart"),
+    SPORT_MAP: dict[int, tuple] = {
+        1: ("football", "fotboll"),
+        2: ("basketball", "basket"),
+        3: ("american_football", "amerikansk-fotboll"),
+        4: ("ice_hockey", "ishockey"),
+        5: ("rugby", "rugby"),
+        6: ("tennis", "tennis"),
+        7: ("handball", "handboll"),
+        8: ("volleyball", "volleyboll"),
+        10: ("table_tennis", "bordtennis"),
+        12: ("baseball", "baseboll"),
+        17: ("cricket", "cricket"),
+        31: ("boxing", "boxning"),
+        37: ("mma", "mma"),
+        130: ("esports", "esport"),
+        48: ("darts", "dart"),
     }
 
     # Reverse: canonical name → sport ID
@@ -77,15 +78,15 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
     # Outcome type → standard name (include lowercase for inconsistent WS data)
     OUTCOME_MAP = {
-        "Home":  "home",
-        "Away":  "away",
-        "Draw":  "draw",
-        "Over":  "over",
+        "Home": "home",
+        "Away": "away",
+        "Draw": "draw",
+        "Over": "over",
         "Under": "under",
-        "home":  "home",
-        "away":  "away",
-        "draw":  "draw",
-        "over":  "over",
+        "home": "home",
+        "away": "away",
+        "draw": "draw",
+        "over": "over",
         "under": "under",
     }
 
@@ -94,29 +95,29 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         # 1x2 (3-way)
         1: "1x2",
         # Moneyline (2-way)
-        175: "moneyline",   # Winner
-        206: "moneyline",   # Winner (incl. overtime)
-        376: "moneyline",   # Winner (incl. overtime and penalties)
+        175: "moneyline",  # Winner
+        206: "moneyline",  # Winner (incl. overtime)
+        376: "moneyline",  # Winner (incl. overtime and penalties)
         # Total (over/under)
-        18: "total",         # Over/Under (generic — football, handball)
-        202: "total",        # Total Goals
-        212: "total",        # Total (incl. overtime) — basketball
-        225: "total",        # Total Points O/U — basketball
-        1621: "total",       # Total Goals Over/Under (Regular Time) — ice hockey
-        1622: "total",       # Total Goals Over/Under — ice hockey
+        18: "total",  # Over/Under (generic — football, handball)
+        202: "total",  # Total Goals
+        212: "total",  # Total (incl. overtime) — basketball
+        225: "total",  # Total Points O/U — basketball
+        1621: "total",  # Total Goals Over/Under (Regular Time) — ice hockey
+        1622: "total",  # Total Goals Over/Under — ice hockey
         # Spread (handicap)
-        16: "spread",        # Asian Handicap (generic — football)
-        187: "spread",       # Handicap — basketball
-        203: "spread",       # Handicap
-        213: "spread",       # Handicap (incl. overtime)
-        1619: "spread",      # Puck Line (Regular Time) — ice hockey
-        1625: "spread",      # Puck Line — ice hockey
+        16: "spread",  # Asian Handicap (generic — football)
+        187: "spread",  # Handicap — basketball
+        203: "spread",  # Handicap
+        213: "spread",  # Handicap (incl. overtime)
+        1619: "spread",  # Puck Line (Regular Time) — ice hockey
+        1625: "spread",  # Puck Line — ice hockey
     }
 
     # Track unknown market type IDs for discovery (class-level set to avoid noise)
     _logged_unknown_market_ids: set = set()
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.snabbare.com")
         self.api_base = "https://www.snabbare.com/sportsbook-api/api"
@@ -125,7 +126,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             "locale": "sv",
         }
 
-    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> list[StandardEvent]:
         """
         Extract events for a given sport via SPA league-link clicking.
 
@@ -140,7 +141,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         events = await self._extract_sport(sport)
         return events[:limit]
 
-    async def _quick_health_check(self) -> List[StandardEvent]:
+    async def _quick_health_check(self) -> list[StandardEvent]:
         """Quick health check: verify site is accessible."""
         try:
             if not isinstance(self.transport, BrowserTransport):
@@ -165,7 +166,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     # Per-sport league caps — football has 170+ leagues in DOM but most have 0-1 prematch events.
     # After REST pre-filter ~130 remain. Higher caps don't yield more events — platform has ~30-35
     # unique prematch football events total. Caps below match actual yields while staying under timeout.
-    SPORT_LEAGUE_CAPS: Dict[str, int] = {
+    SPORT_LEAGUE_CAPS: dict[str, int] = {
         "football": 60,
         "basketball": 40,
         "ice_hockey": 40,
@@ -178,7 +179,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     PARALLEL_TABS = 3
     MIN_LEAGUES_FOR_PARALLEL = 6
 
-    async def _extract_sport(self, sport: str) -> List[StandardEvent]:
+    async def _extract_sport(self, sport: str) -> list[StandardEvent]:
         """
         Extract events for one sport by navigating to the sport page and
         clicking each league link via React Router (SPA, no page reload).
@@ -212,17 +213,14 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             page = self.transport.page
 
             # WS message store for this sport
-            ws_messages: List = []
+            ws_messages: list = []
 
             # Setup WS interception (handles binary RSocket + text JSON)
             self._setup_snabbare_ws(page, ws_messages)
 
             # Initial session setup (cookie consent, etc.) — only once
             if not self._session_ready:
-                await page.goto(
-                    f"{self.site_url}/sv/sportsbook",
-                    wait_until="domcontentloaded", timeout=30000
-                )
+                await page.goto(f"{self.site_url}/sv/sportsbook", wait_until="domcontentloaded", timeout=30000)
                 await self._handle_cookie_consent(page)
                 await self._remove_overlays(page)
                 await asyncio.sleep(2)
@@ -236,9 +234,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as nav_err:
                 if "Connection closed" in str(nav_err) or "closed" in str(nav_err).lower():
-                    logger.warning(
-                        f"[{self.provider_id}] Browser connection lost for {sport}, reconnecting..."
-                    )
+                    logger.warning(f"[{self.provider_id}] Browser connection lost for {sport}, reconnecting...")
                     page = await self._reconnect_browser()
                     await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                 else:
@@ -251,9 +247,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Football has 60+ leagues — React needs extra time to hydrate the sidebar
             link_timeout = 8000 if sport == "football" else 5000
             try:
-                await page.wait_for_selector(
-                    'a[href*="/leagues/"]', timeout=link_timeout
-                )
+                await page.wait_for_selector('a[href*="/leagues/"]', timeout=link_timeout)
             except Exception:
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links after {link_timeout}ms wait")
             await asyncio.sleep(0.5)
@@ -323,8 +317,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             if valid_league_ids is not None:
                 before_filter = len(league_links)
                 league_links = [
-                    link for link in league_links
-                    if self._extract_league_id(link.get("href", "")) in valid_league_ids
+                    link for link in league_links if self._extract_league_id(link.get("href", "")) in valid_league_ids
                 ]
                 skipped = before_filter - len(league_links)
                 if skipped > 0:
@@ -341,23 +334,27 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             max_leagues = self.SPORT_LEAGUE_CAPS.get(sport, self.DEFAULT_LEAGUE_CAP)
             if len(league_links) > max_leagues:
                 logger.info(
-                    f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
-                    f"to top {max_leagues}"
+                    f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues to top {max_leagues}"
                 )
                 league_links = league_links[:max_leagues]
 
-            logger.debug(
-                f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process"
-            )
+            logger.debug(f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process")
 
             # Click league links (parallel across tabs if enough leagues)
             if len(league_links) >= self.MIN_LEAGUES_FOR_PARALLEL:
                 leagues_processed, leagues_with_data, errors = await self._click_leagues_parallel(
-                    sport_url, league_links, ws_messages, page, canonical,
+                    sport_url,
+                    league_links,
+                    ws_messages,
+                    page,
+                    canonical,
                 )
             else:
                 leagues_processed, leagues_with_data, errors = await self._click_league_group(
-                    page, league_links, sport_url, ws_messages,
+                    page,
+                    league_links,
+                    sport_url,
+                    ws_messages,
                 )
 
             # Parse WS messages into events
@@ -379,29 +376,31 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     if event_urls:
                         logger.info(f"[{self.provider_id}] Pass 2: found {len(event_urls)} event URLs in DOM")
                         enriched_count = await self._enrich_with_detail_markets(page, events, event_urls)
-                        logger.info(f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs")
+                        logger.info(
+                            f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs"
+                        )
                     else:
                         logger.debug(f"[{self.provider_id}] No event URLs found in DOM for enrichment")
                 except Exception as e:
                     logger.error(f"[{self.provider_id}] Pass 2 enrichment failed: {e}")
                 finally:
                     # Navigate back to sport page so SPA state is clean for next sport
-                    try:
+                    with contextlib.suppress(Exception):
                         await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
-                    except Exception:
-                        pass
 
             return events
 
         except Exception as e:
-            logger.error(
-                f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True
-            )
+            logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
     async def _click_leagues_parallel(
-        self, sport_url: str, league_links: list, ws_messages: list,
-        main_page, canonical: str,
+        self,
+        sport_url: str,
+        league_links: list,
+        ws_messages: list,
+        main_page,
+        canonical: str,
     ) -> tuple:
         """Click league links in parallel across multiple browser tabs.
 
@@ -436,10 +435,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             )
 
             results = await asyncio.gather(
-                *[
-                    self._click_league_group(all_pages[i], groups[i], sport_url, ws_messages)
-                    for i in range(num_tabs)
-                ],
+                *[self._click_league_group(all_pages[i], groups[i], sport_url, ws_messages) for i in range(num_tabs)],
                 return_exceptions=True,
             )
 
@@ -459,13 +455,15 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         finally:
             for p in extra_pages:
-                try:
+                with contextlib.suppress(Exception):
                     await p.close()
-                except Exception:
-                    pass
 
     async def _click_league_group(
-        self, page, links: list, sport_url: str, ws_messages: list,
+        self,
+        page,
+        links: list,
+        sport_url: str,
+        ws_messages: list,
     ) -> tuple:
         """Click a group of league links on a single page.
 
@@ -533,10 +531,11 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     def _extract_league_id(href: str) -> str:
         """Extract league ID from a URL like /sv/sportsbook/sport/1-fotboll/leagues/123-premier-league."""
         import re as _re
-        match = _re.search(r'/leagues/(\d+)', href)
+
+        match = _re.search(r"/leagues/(\d+)", href)
         return match.group(1) if match else ""
 
-    async def _get_valid_league_ids(self, page, sport_id: int) -> Optional[set]:
+    async def _get_valid_league_ids(self, page, sport_id: int) -> set | None:
         """Fetch league metadata from REST API and return IDs of leagues worth clicking.
 
         Filters out:
@@ -584,16 +583,14 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
     async def _remove_overlays(self, page) -> None:
         """Remove OneTrust cookie overlay and other blocking elements."""
-        try:
+        with contextlib.suppress(Exception):
             await page.evaluate("""() => {
                 document.querySelectorAll(
                     '.onetrust-pc-dark-filter, #onetrust-consent-sdk, .ot-fade-in'
                 ).forEach(e => e.remove());
             }""")
-        except Exception:
-            pass
 
-    def _parse_ws_data(self, ws_messages: List) -> Dict[str, List[StandardEvent]]:
+    def _parse_ws_data(self, ws_messages: list) -> dict[str, list[StandardEvent]]:
         """
         Parse WebSocket messages into StandardEvents grouped by sport.
 
@@ -601,9 +598,9 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         Each message is a list of dicts with 'payload' containing events/markets/selections.
         """
         # Collect all raw data (dedup by ID to avoid duplicates from repeated WS messages)
-        all_events: Dict[str, Dict] = {}
-        all_markets_by_id: Dict[str, Dict] = {}  # market_id -> market dict
-        all_selections_by_id: Dict[str, Dict] = {}  # selection unique key -> selection dict
+        all_events: dict[str, dict] = {}
+        all_markets_by_id: dict[str, dict] = {}  # market_id -> market dict
+        all_selections_by_id: dict[str, dict] = {}  # selection unique key -> selection dict
 
         for msg_list in ws_messages:
             if not isinstance(msg_list, list):
@@ -633,13 +630,13 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         all_selections_by_id[sel_key] = sel
 
         # Rebuild grouped structures from deduped data
-        all_markets: Dict[str, List[Dict]] = {}
+        all_markets: dict[str, list[dict]] = {}
         for mkt in all_markets_by_id.values():
             eid = str(mkt.get("eventId", ""))
             if eid:
                 all_markets.setdefault(eid, []).append(mkt)
 
-        all_selections: Dict[str, List[Dict]] = {}
+        all_selections: dict[str, list[dict]] = {}
         for sel in all_selections_by_id.values():
             mid = str(sel.get("marketId", ""))
             if mid:
@@ -653,7 +650,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         )
 
         # Build StandardEvents
-        events_by_sport: Dict[str, List[StandardEvent]] = {}
+        events_by_sport: dict[str, list[StandardEvent]] = {}
         seen: set = set()
 
         for eid, ev in all_events.items():
@@ -673,20 +670,20 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     def _build_event(
         self,
         event_id: str,
-        ev: Dict,
-        markets_raw: List[Dict],
-        all_selections: Dict[str, List[Dict]],
-    ) -> Optional[StandardEvent]:
+        ev: dict,
+        markets_raw: list[dict],
+        all_selections: dict[str, list[dict]],
+    ) -> StandardEvent | None:
         """Build a StandardEvent from WS event + markets + selections data."""
         event_name = ev.get("eventName", "")
         if not event_name:
             return None
 
         # Snabbare uses " - " as separator
-        parts = re.split(r'\s+-\s+', event_name, maxsplit=1)
+        parts = re.split(r"\s+-\s+", event_name, maxsplit=1)
         if len(parts) != 2:
             # Fallback: try other separators
-            parts = re.split(r'\s+(?:vs\.?|–|—)\s+', event_name, maxsplit=1)
+            parts = re.split(r"\s+(?:vs\.?|–|—)\s+", event_name, maxsplit=1)
             if len(parts) != 2:
                 return None
 
@@ -734,18 +731,18 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
     def _parse_markets(
         self,
-        markets_raw: List[Dict],
-        all_selections: Dict[str, List[Dict]],
+        markets_raw: list[dict],
+        all_selections: dict[str, list[dict]],
         home_raw: str,
         away_raw: str,
         canonical_sport: str = "",
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Parse markets and their selections into standardized format.
 
         For 1x2/moneyline: keep the appropriate one based on sport.
         For spread/total: store ALL lines — storage pipeline filters to Pinnacle's point.
         """
-        markets: List[Dict] = []
+        markets: list[dict] = []
         has_1x2 = False
         has_moneyline = False
 
@@ -800,21 +797,17 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 outcome_name = self.OUTCOME_MAP.get(sel.get("outcomeType", ""))
                 if not outcome_name:
                     # Try matching by selection name
-                    outcome_name = self._match_outcome_by_name(
-                        sel.get("name", ""), home_raw, away_raw
-                    )
+                    outcome_name = self._match_outcome_by_name(sel.get("name", ""), home_raw, away_raw)
                 if not outcome_name:
                     continue
 
                 # Extract point value for spread/total
                 points = sel.get("points")
                 if points is not None and points != 0.0:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         point_value = float(points)
-                    except (ValueError, TypeError):
-                        pass
 
-                outcome_dict: Dict[str, Any] = {"name": outcome_name, "odds": odds_val}
+                outcome_dict: dict[str, Any] = {"name": outcome_name, "odds": odds_val}
                 if point_value is not None and market_type in ("spread", "total"):
                     outcome_dict["point"] = point_value
                 outcomes.append(outcome_dict)
@@ -831,8 +824,17 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         if "1x2" in types and "moneyline" in types:
             # No-draw sports: keep moneyline (2-way), remove 1x2
             # Draw sports (football, rugby, cricket): keep 1x2 (3-way)
-            no_draw_sports = {"basketball", "ice_hockey", "tennis", "esports",
-                              "mma", "table_tennis", "american_football", "baseball", "handball"}
+            no_draw_sports = {
+                "basketball",
+                "ice_hockey",
+                "tennis",
+                "esports",
+                "mma",
+                "table_tennis",
+                "american_football",
+                "baseball",
+                "handball",
+            }
             if canonical_sport in no_draw_sports:
                 markets = [m for m in markets if m["type"] != "1x2"]
             else:
@@ -840,7 +842,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         return markets
 
-    def _classify_market_by_name(self, name: str) -> Optional[str]:
+    def _classify_market_by_name(self, name: str) -> str | None:
         """Fallback: classify market type from name string.
 
         Enhanced to catch sport-specific market names across football, basketball,
@@ -853,24 +855,56 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         if "1x2" in nl:
             return "1x2"
         # Moneyline (2-way winner)
-        if any(w in nl for w in ("vinnare", "matchvinnare", "winner", "match result",
-                                  "to win", "att vinna", "money line", "moneyline")):
+        if any(
+            w in nl
+            for w in (
+                "vinnare",
+                "matchvinnare",
+                "winner",
+                "match result",
+                "to win",
+                "att vinna",
+                "money line",
+                "moneyline",
+            )
+        ):
             return "moneyline"
         # Total (over/under)
-        if any(w in nl for w in ("över/under", "over/under", "totalt", "total goals",
-                                  "total points", "total maps", "total sets",
-                                  "total games", "o/u", "antal mål")):
+        if any(
+            w in nl
+            for w in (
+                "över/under",
+                "over/under",
+                "totalt",
+                "total goals",
+                "total points",
+                "total maps",
+                "total sets",
+                "total games",
+                "o/u",
+                "antal mål",
+            )
+        ):
             return "total"
         # Spread (handicap)
-        if any(w in nl for w in ("handikapp", "handicap", "spread", "puck line",
-                                  "pucklinje", "run line", "asian handicap",
-                                  "poänghandikapp", "game handicap")):
+        if any(
+            w in nl
+            for w in (
+                "handikapp",
+                "handicap",
+                "spread",
+                "puck line",
+                "pucklinje",
+                "run line",
+                "asian handicap",
+                "poänghandikapp",
+                "game handicap",
+            )
+        ):
             return "spread"
         return None
 
-    def _match_outcome_by_name(
-        self, sel_name: str, home_raw: str, away_raw: str
-    ) -> Optional[str]:
+    def _match_outcome_by_name(self, sel_name: str, home_raw: str, away_raw: str) -> str | None:
         """Match selection name to outcome when outcomeType isn't standard."""
         sel_lower = sel_name.lower().strip()
         home_lower = home_raw.lower().strip()
@@ -888,7 +922,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             return "under"
         return None
 
-    def _parse_start_time(self, dt_val: Any) -> Optional[datetime]:
+    def _parse_start_time(self, dt_val: Any) -> datetime | None:
         """Parse ISO datetime string from WS data."""
         if not dt_val:
             return None
@@ -912,11 +946,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         def on_websocket(ws):
             ws_count[0] += 1
-            ws_url = ws.url if hasattr(ws, 'url') else 'unknown'
-            logger.debug(
-                f"[{self.provider_id}] WS #{ws_count[0]} connected: "
-                f"{ws_url[:80]}"
-            )
+            ws_url = ws.url if hasattr(ws, "url") else "unknown"
+            logger.debug(f"[{self.provider_id}] WS #{ws_count[0]} connected: {ws_url[:80]}")
 
             def on_frame_received(payload):
                 if isinstance(payload, bytes):
@@ -926,7 +957,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 elif isinstance(payload, str):
                     # Text frame — try direct JSON parse
                     try:
-                        if payload.startswith('[{') or payload.startswith('{"'):
+                        if payload.startswith("[{") or payload.startswith('{"'):
                             data = json.loads(payload)
                             if isinstance(data, list):
                                 messages.append(data)
@@ -955,10 +986,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         self.transport.context = None
         self.transport.browser = None
         if self.transport.playwright:
-            try:
+            with contextlib.suppress(Exception):
                 await self.transport.playwright.stop()
-            except Exception:
-                pass
             self.transport.playwright = None
 
         # Start fresh browser
@@ -1003,9 +1032,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         return links;
     }"""
 
-    async def _enrich_with_detail_markets(
-        self, page, events: List[StandardEvent], event_urls: Dict[str, str]
-    ) -> int:
+    async def _enrich_with_detail_markets(self, page, events: list[StandardEvent], event_urls: dict[str, str]) -> int:
         """Navigate to event detail pages to extract spread and total markets.
 
         Uses sequential single-page navigation — the SPA only establishes WS
@@ -1013,16 +1040,16 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         Returns count of markets added.
         """
         # Map event IDs (strip snabbare_ prefix for URL matching)
-        event_by_ws_id: Dict[str, StandardEvent] = {}
+        event_by_ws_id: dict[str, StandardEvent] = {}
         for ev in events:
-            ws_id = ev.id.replace('snabbare_', '')
+            ws_id = ev.id.replace("snabbare_", "")
             event_by_ws_id[ws_id] = ev
 
         # Filter to events missing spread or total AND having a URL
         todo = []
         for eid_str, ev in event_by_ws_id.items():
-            existing_types = {m['type'] for m in ev.markets}
-            if 'spread' not in existing_types or 'total' not in existing_types:
+            existing_types = {m["type"] for m in ev.markets}
+            if "spread" not in existing_types or "total" not in existing_types:
                 url = event_urls.get(eid_str)
                 if url:
                     todo.append((ev, url))
@@ -1033,10 +1060,9 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         if len(todo) > self.MAX_DETAIL_EVENTS:
             logger.info(
-                f"[{self.provider_id}] Capping detail enrichment from "
-                f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
+                f"[{self.provider_id}] Capping detail enrichment from {len(todo)} to {self.MAX_DETAIL_EVENTS} events"
             )
-            todo = todo[:self.MAX_DETAIL_EVENTS]
+            todo = todo[: self.MAX_DETAIL_EVENTS]
 
         logger.info(f"[{self.provider_id}] Enriching {len(todo)} events with spread/total from detail pages")
 
@@ -1044,13 +1070,15 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         errors = 0
         consecutive_errors = 0
 
-        for idx, (event, href) in enumerate(todo):
+        for _idx, (event, href) in enumerate(todo):
             if consecutive_errors > 10:
-                logger.warning(f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors")
+                logger.warning(
+                    f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors"
+                )
                 break
 
             try:
-                detail_ws_messages: List[list] = []
+                detail_ws_messages: list[list] = []
 
                 def on_ws(ws, msgs=detail_ws_messages):
                     def on_frame(payload, m=msgs):
@@ -1060,7 +1088,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                                 m.append(decoded)
                         elif isinstance(payload, str):
                             try:
-                                if payload.startswith('[{') or payload.startswith('{"'):
+                                if payload.startswith("[{") or payload.startswith('{"'):
                                     data = json.loads(payload)
                                     if isinstance(data, list):
                                         m.append(data)
@@ -1068,12 +1096,14 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                                         m.append([data])
                             except (json.JSONDecodeError, ValueError):
                                 pass
+
                     ws.on("framereceived", on_frame)
+
                 page.on("websocket", on_ws)
 
-                url = f"{self.site_url}{href}" if href.startswith('/') else href
+                url = f"{self.site_url}{href}" if href.startswith("/") else href
                 try:
-                    await page.goto(url, wait_until='domcontentloaded', timeout=20000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Detail {event.id}: navigation failed: {e}")
                     page.remove_listener("websocket", on_ws)
@@ -1102,97 +1132,97 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 consecutive_errors = 0
 
                 # Parse markets and selections from WS frames
-                detail_markets: Dict[int, dict] = {}
-                detail_selections: Dict[int, dict] = {}
+                detail_markets: dict[int, dict] = {}
+                detail_selections: dict[int, dict] = {}
                 for msg_data in detail_ws_messages:
                     if not isinstance(msg_data, list):
                         continue
                     for msg in msg_data:
                         if not isinstance(msg, dict):
                             continue
-                        payload = msg.get('payload', {})
-                        for mkt in payload.get('markets', []):
-                            mid = mkt.get('id')
+                        payload = msg.get("payload", {})
+                        for mkt in payload.get("markets", []):
+                            mid = mkt.get("id")
                             if mid:
                                 detail_markets[mid] = mkt
-                        for sel in payload.get('selections', []):
-                            sid = sel.get('id')
+                        for sel in payload.get("selections", []):
+                            sid = sel.get("id")
                             if sid:
                                 detail_selections[sid] = sel
 
-                mkt_sel_map: Dict[int, List[dict]] = {}
+                mkt_sel_map: dict[int, list[dict]] = {}
                 for sid, sel in detail_selections.items():
-                    mid = sel.get('marketId')
+                    mid = sel.get("marketId")
                     if mid:
                         mkt_sel_map.setdefault(mid, []).append(sel)
 
                 # Extract home/away raw names from event name for outcome matching
-                home_raw = event.home_team.lower() if event.home_team else ''
-                away_raw = event.away_team.lower() if event.away_team else ''
+                home_raw = event.home_team.lower() if event.home_team else ""
+                away_raw = event.away_team.lower() if event.away_team else ""
 
                 # Extract only spread/total markets
                 added = []
                 for mid, mkt in detail_markets.items():
-                    mt = mkt.get('marketType', {})
-                    mt_id = mt.get('id', 0)
+                    mt = mkt.get("marketType", {})
+                    mt_id = mt.get("id", 0)
                     market_type = self.MARKET_TYPE_MAP.get(mt_id)
 
-                    if market_type not in ('spread', 'total'):
+                    if market_type not in ("spread", "total"):
                         continue
-                    if mkt.get('isSuspended'):
+                    if mkt.get("isSuspended"):
                         continue
 
                     sels = mkt_sel_map.get(mid, [])
                     outcomes = []
                     for sel in sels:
-                        if sel.get('status') == 'Suspended':
+                        if sel.get("status") == "Suspended":
                             continue
-                        odds = sel.get('trueOdds')
+                        odds = sel.get("trueOdds")
                         if not odds or float(odds) <= 1.0:
                             continue
 
-                        outcome_type = (sel.get('outcomeType') or '').lower()
-                        sel_name = (sel.get('name') or '').lower()
-                        points = sel.get('points')
+                        outcome_type = (sel.get("outcomeType") or "").lower()
+                        sel_name = (sel.get("name") or "").lower()
+                        points = sel.get("points")
 
-                        if market_type == 'total':
+                        if market_type == "total":
                             if points is None or points == 0.0:
                                 continue
-                            if outcome_type == 'over' or 'över' in sel_name or 'over' in sel_name:
-                                outcomes.append({'name': 'over', 'odds': float(odds), 'point': float(points)})
-                            elif outcome_type == 'under' or 'under' in sel_name:
-                                outcomes.append({'name': 'under', 'odds': float(odds), 'point': float(points)})
+                            if outcome_type == "over" or "över" in sel_name or "over" in sel_name:
+                                outcomes.append({"name": "over", "odds": float(odds), "point": float(points)})
+                            elif outcome_type == "under" or "under" in sel_name:
+                                outcomes.append({"name": "under", "odds": float(odds), "point": float(points)})
 
-                        elif market_type == 'spread':
+                        elif market_type == "spread":
                             if points is None:
                                 continue
-                            if outcome_type == 'home':
-                                outcomes.append({'name': 'home', 'odds': float(odds), 'point': float(points)})
-                            elif outcome_type == 'away':
-                                outcomes.append({'name': 'away', 'odds': float(odds), 'point': float(points)})
+                            if outcome_type == "home":
+                                outcomes.append({"name": "home", "odds": float(odds), "point": float(points)})
+                            elif outcome_type == "away":
+                                outcomes.append({"name": "away", "odds": float(odds), "point": float(points)})
                             # Fallback: match by team name (detail pages often have empty outcomeType)
                             elif home_raw and home_raw in sel_name:
-                                outcomes.append({'name': 'home', 'odds': float(odds), 'point': float(points)})
+                                outcomes.append({"name": "home", "odds": float(odds), "point": float(points)})
                             elif away_raw and away_raw in sel_name:
-                                outcomes.append({'name': 'away', 'odds': float(odds), 'point': float(points)})
+                                outcomes.append({"name": "away", "odds": float(odds), "point": float(points)})
 
                     if outcomes:
-                        added.append({'type': market_type, 'outcomes': outcomes})
+                        added.append({"type": market_type, "outcomes": outcomes})
 
                 if added:
                     # Don't duplicate: check existing market types+points
                     existing = set()
                     for m in event.markets:
-                        key = m['type']
-                        for o in m.get('outcomes', []):
-                            if 'point' in o:
+                        key = m["type"]
+                        for o in m.get("outcomes", []):
+                            if "point" in o:
                                 key = f"{m['type']}_{o['point']}"
                         existing.add(key)
 
                     for m in added:
-                        key = m['type']
-                        for o in m.get('outcomes', []):
-                            if 'point' in o:
+                        key = m["type"]
+                        for o in m.get("outcomes", []):
+                            if "point" in o:
                                 key = f"{m['type']}_{o['point']}"
                         if key not in existing:
                             event.markets.append(m)
@@ -1208,6 +1238,6 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         return enriched
 
-    def parse(self, events_data: List[Dict], sport: str) -> List[StandardEvent]:
+    def parse(self, events_data: list[dict], sport: str) -> list[StandardEvent]:
         """Not used - extract() is overridden."""
         raise NotImplementedError("SnabbareRetriever uses extract() directly")

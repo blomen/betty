@@ -137,7 +137,9 @@ class DQNAgent:
         # Polyak soft target update
         if self.train_steps % TARGET_NET_UPDATE_FREQ == 0:
             with torch.no_grad():
-                for p_online, p_target in zip(self.q_network.parameters(), self.target_network.parameters()):
+                for p_online, p_target in zip(
+                    self.q_network.parameters(), self.target_network.parameters(), strict=False
+                ):
                     p_target.data.mul_(1.0 - TAU).add_(p_online.data * TAU)
 
         return loss.item()

@@ -4,7 +4,9 @@ Walk-forward: train on [0..t], test on [t+embargo..t+embargo+window].
 Prevents temporal leakage by ensuring train data always precedes test data
 with a purge/embargo gap.
 """
+
 import logging
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -102,12 +104,12 @@ def train_model(
     final_model.fit(X, y)
 
     # Use real feature names if provided
-    names = feature_names if feature_names and len(feature_names) == X.shape[1] else [
-        f"f{i}" for i in range(X.shape[1])
-    ]
+    names = (
+        feature_names if feature_names and len(feature_names) == X.shape[1] else [f"f{i}" for i in range(X.shape[1])]
+    )
 
     return {
         "model": final_model,
         "validation_score": float(np.mean(scores)) if scores else None,
-        "feature_importance": dict(zip(names, final_model.feature_importances_.tolist())),
+        "feature_importance": dict(zip(names, final_model.feature_importances_.tolist(), strict=False)),
     }

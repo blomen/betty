@@ -24,13 +24,11 @@ Monte Carlo optimal parameters (0% ruin, ~271% median growth at 7.5k):
 """
 
 from dataclasses import dataclass
-from typing import Optional
-
 
 # ── Sim-optimal constants (from Monte Carlo: 3k runs, 52 weeks, 0% ruin) ──
-OPTIMAL_MAX_KELLY = 0.75          # 3/4 Kelly ceiling (converges here at high bankroll)
-OPTIMAL_MIN_KELLY = 0.25          # Quarter Kelly floor for low-edge bets (≤2%)
-OPTIMAL_SINGLE_BET_CAP = 0.02    # 2% of bankroll max per bet (MC-optimal: 86% of 3% growth, 40% less DD)
+OPTIMAL_MAX_KELLY = 0.75  # 3/4 Kelly ceiling (converges here at high bankroll)
+OPTIMAL_MIN_KELLY = 0.25  # Quarter Kelly floor for low-edge bets (≤2%)
+OPTIMAL_SINGLE_BET_CAP = 0.02  # 2% of bankroll max per bet (MC-optimal: 86% of 3% growth, 40% less DD)
 
 # Default minimum stake (skip bets below this)
 DEFAULT_MIN_STAKE = 25.0
@@ -106,6 +104,7 @@ DYNAMIC_KELLY_BOOST = 1.5  # Multiply profile kelly by this at low bankroll
 @dataclass
 class StakeResult:
     """Result of stake calculation with full transparency."""
+
     stake: float
     kelly_fraction: float
     edge_used: float
@@ -118,7 +117,7 @@ class StakeResult:
     was_capped_single: bool
 
     # Reasoning
-    skip_reason: Optional[str] = None
+    skip_reason: str | None = None
 
     # Whether this bet counts toward bonus wagering (False when odds < bonus min_odds)
     counts_toward_wagering: bool = True
@@ -274,7 +273,7 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            skip_reason=f"Odds {odds:.2f} below sanity minimum {min_odds_sanity}"
+            skip_reason=f"Odds {odds:.2f} below sanity minimum {min_odds_sanity}",
         )
 
     # Track whether bet counts toward wagering (odds below bonus min_odds don't count)
@@ -290,7 +289,7 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            skip_reason=f"Edge {edge_raw*100:.1f}% below minimum {min_edge*100:.1f}%"
+            skip_reason=f"Edge {edge_raw * 100:.1f}% below minimum {min_edge * 100:.1f}%",
         )
 
     if bankroll_total <= 0:
@@ -303,7 +302,7 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            skip_reason="No bankroll"
+            skip_reason="No bankroll",
         )
 
     edge_used = edge_raw
@@ -345,7 +344,7 @@ def calculate_stake(
             additional_for_stake = max(0.0, needed - bankroll_total)
         expected_profit = stake * edge_used
         if min_expected_profit > 0 and expected_profit < min_expected_profit:
-            needed = min_expected_profit * (odds - 1) / (stable_kelly * edge_used ** 2)
+            needed = min_expected_profit * (odds - 1) / (stable_kelly * edge_used**2)
             additional_for_ev = max(0.0, needed - bankroll_total)
 
     additional = max(additional_for_stake, additional_for_ev)
@@ -360,10 +359,7 @@ def calculate_stake(
             # too small-Kelly for the current strategy — not a "deposit more" situation.
             skip_reason = "Kelly too small"
         else:
-            if additional >= 1000:
-                add_str = f"+{additional / 1000:.0f}k kr"
-            else:
-                add_str = f"+{additional:.0f} kr"
+            add_str = f"+{additional / 1000:.0f}k kr" if additional >= 1000 else f"+{additional:.0f} kr"
             skip_reason = f"add {add_str} to play"
 
         return StakeResult(
@@ -460,7 +456,9 @@ class BonusTracker:
             "wagered": bonus["wagered"],
             "requirement": bonus["requirement"],
             "bonus_amount": bonus.get("bonus_amount", 0.0),
-            "progress_pct": min(100.0, bonus["wagered"] / bonus["requirement"] * 100) if bonus["requirement"] > 0 else 100.0,
+            "progress_pct": min(100.0, bonus["wagered"] / bonus["requirement"] * 100)
+            if bonus["requirement"] > 0
+            else 100.0,
             "cleared": bonus["wagered"] >= bonus["requirement"],
         }
 
@@ -539,10 +537,10 @@ class StakeCalculator:
         self,
         edge_raw: float,
         odds: float,
-        event_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
+        event_id: str | None = None,
+        provider_id: str | None = None,
         high_confidence: bool = True,
-        min_odds: Optional[float] = None,
+        min_odds: float | None = None,
     ) -> StakeResult:
         """
         Calculate stake for a bet.
@@ -645,9 +643,9 @@ def quick_stake(
 
 if __name__ == "__main__":
     # Demo
-    print("="*60)
+    print("=" * 60)
     print("STAKE CALCULATOR DEMO")
-    print("="*60)
+    print("=" * 60)
 
     calc = StakeCalculator(bankroll=10000)
 
@@ -667,19 +665,19 @@ if __name__ == "__main__":
     print("-" * 60)
 
     examples = [
-        (0.02, 2.0),   # Low edge
-        (0.03, 2.0),   # Normal edge
-        (0.05, 2.0),   # Good edge
-        (0.05, 1.5),   # Below min odds
-        (0.02, 2.0),   # Edge too low after stake calc -> min stake
+        (0.02, 2.0),  # Low edge
+        (0.03, 2.0),  # Normal edge
+        (0.05, 2.0),  # Good edge
+        (0.05, 1.5),  # Below min odds
+        (0.02, 2.0),  # Edge too low after stake calc -> min stake
     ]
 
     for edge, odds in examples:
         result = calc.calculate(edge, odds, event_id="test", min_odds=1.80)
         if result.stake > 0:
-            print(f"{edge*100:.0f}%{'':<6} {odds:<8.2f} {result.stake:<10.0f} {result.kelly_fraction:<8.2f} -")
+            print(f"{edge * 100:.0f}%{'':<6} {odds:<8.2f} {result.stake:<10.0f} {result.kelly_fraction:<8.2f} -")
         else:
-            print(f"{edge*100:.0f}%{'':<6} {odds:<8.2f} {'SKIP':<10} {'-':<8} {result.skip_reason}")
+            print(f"{edge * 100:.0f}%{'':<6} {odds:<8.2f} {'SKIP':<10} {'-':<8} {result.skip_reason}")
 
     print("\n[BONUS CLEARED - NO MIN ODDS RESTRICTION]")
     print("-" * 60)
@@ -689,9 +687,12 @@ if __name__ == "__main__":
 
     # Bet at 1.50 odds (below 1.80) - plays but doesn't count toward wagering
     result_with_bonus = calc2.calculate(0.05, 1.50, min_odds=1.80)
-    print(f"With bonus (min 1.80): odds=1.50 -> {result_with_bonus.stake:.0f} kr (wagering={result_with_bonus.counts_toward_wagering})")
+    print(
+        f"With bonus (min 1.80): odds=1.50 -> {result_with_bonus.stake:.0f} kr (wagering={result_with_bonus.counts_toward_wagering})"
+    )
 
     # Same bet without bonus requirement
     result_cleared = calc2.calculate(0.05, 1.50, min_odds=0.0)
-    print(f"Bonus cleared (no min): odds=1.50 -> {result_cleared.stake:.0f} kr (wagering={result_cleared.counts_toward_wagering})")
-
+    print(
+        f"Bonus cleared (no min): odds=1.50 -> {result_cleared.stake:.0f} kr (wagering={result_cleared.counts_toward_wagering})"
+    )

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import re
@@ -677,10 +678,8 @@ class PolymarketRetriever(Retriever):
 
         elapsed = item.get("elapsed")
         if elapsed:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 live_state["match_minute"] = int(elapsed)
-            except (ValueError, TypeError):
-                pass
 
         if item.get("ended") is True:
             live_state["match_status"] = "finished"
@@ -867,10 +866,7 @@ class PolymarketRetriever(Retriever):
                             winner_side = normalize_outcome(winner_outcome, home, away)
                             if winner_side in ("home", "away") and favored_side in ("home", "away"):
                                 # Store with home-perspective point (matching DB convention)
-                                if favored_side == "home":
-                                    home_point = favored_point
-                                else:
-                                    home_point = -favored_point
+                                home_point = favored_point if favored_side == "home" else -favored_point
                                 pt_str = str(int(home_point)) if home_point == int(home_point) else str(home_point)
                                 resolved_markets[f"spread_{pt_str}"] = winner_side
                 except (json.JSONDecodeError, ValueError, TypeError, StopIteration):
@@ -1257,7 +1253,7 @@ class PolymarketRetriever(Retriever):
             # Convert to odds (skip over/under outcomes - these are totals markets)
             clob_ids = self._parse_clob_token_ids(data)
             formatted_outcomes = []
-            for i, (name, p) in enumerate(zip(outcomes, prices)):
+            for i, (name, p) in enumerate(zip(outcomes, prices, strict=False)):
                 if p > 0.02:
                     name_lower = name.lower()
                     # Skip over/under outcomes (totals markets that slipped through)
@@ -1342,7 +1338,7 @@ class PolymarketRetriever(Retriever):
             # Determine the other team's normalized label
             other_norm = "away" if favored_norm == "home" else "home"
             result_outcomes = []
-            for i, (name, p) in enumerate(zip(outcomes, prices)):
+            for i, (name, p) in enumerate(zip(outcomes, prices, strict=False)):
                 if p <= 0.02:
                     continue
                 # "Yes" = favored team covers the spread, "No" = other team.
@@ -1359,10 +1355,7 @@ class PolymarketRetriever(Retriever):
                 if norm not in ("home", "away"):
                     continue
                 # Favored team gets the point from the question, other gets opposite
-                if norm == favored_norm:
-                    point = favored_point
-                else:
-                    point = -favored_point
+                point = favored_point if norm == favored_norm else -favored_point
                 token_id = clob_ids[i] if i < len(clob_ids) else None
                 if not self._is_liquid(token_id):
                     return None
@@ -1435,7 +1428,7 @@ class PolymarketRetriever(Retriever):
 
             clob_ids = self._parse_clob_token_ids(data)
             result_outcomes = []
-            for i, (name, p) in enumerate(zip(outcomes, prices)):
+            for i, (name, p) in enumerate(zip(outcomes, prices, strict=False)):
                 if p <= 0.02:
                     continue
                 name_lower = name.lower().strip()
@@ -1524,7 +1517,7 @@ class PolymarketRetriever(Retriever):
             from ..matching import normalize_outcome
 
             formatted_outcomes = []
-            for i, (name, p) in enumerate(zip(outcomes, prices)):
+            for i, (name, p) in enumerate(zip(outcomes, prices, strict=False)):
                 if p <= 0.02:
                     continue
                 norm = normalize_outcome(name, home, away)
@@ -1593,7 +1586,7 @@ class PolymarketRetriever(Retriever):
 
             clob_ids = self._parse_clob_token_ids(data)
             result_outcomes = []
-            for i, (name, p) in enumerate(zip(outcomes, prices)):
+            for i, (name, p) in enumerate(zip(outcomes, prices, strict=False)):
                 if p <= 0.02:
                     continue
                 norm = normalize_outcome(name, home, away)

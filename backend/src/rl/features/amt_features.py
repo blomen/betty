@@ -19,6 +19,7 @@ and session context enrichment:
   Index  18     : prior_poor_low        (0/1, prior session had poor low)
   Index  19     : prior_excess_quality  (-1 to +1, normalised excess quality)
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -86,8 +87,7 @@ def _classify_dalton_day(
 
     # range_ratio > 2.0
     # Trend: one side dominates (> 3x the other)
-    if extensions_up > 3.0 * max(extensions_down, 1e-9) or \
-       extensions_down > 3.0 * max(extensions_up, 1e-9):
+    if extensions_up > 3.0 * max(extensions_down, 1e-9) or extensions_down > 3.0 * max(extensions_up, 1e-9):
         return _IDX_TREND
 
     return _IDX_DOUBLE_DIST
@@ -209,8 +209,12 @@ def extract_amt_features(
 
     if open_price is not None and prior_vah is not None and prior_val is not None:
         opening_idx = _classify_opening(
-            open_price, ib_high, ib_low,
-            prior_vah, prior_val, ib_range,
+            open_price,
+            ib_high,
+            ib_low,
+            prior_vah,
+            prior_val,
+            ib_range,
         )
         feats[opening_idx] = 1.0
 
@@ -219,11 +223,7 @@ def extract_amt_features(
     feats[_IDX_RANGE_EXT] = range_extension
 
     # --- Scalar: VA overlap with prior VA (index 11) ---
-    if (
-        volume_profile is not None
-        and prior_vah is not None
-        and prior_val is not None
-    ):
+    if volume_profile is not None and prior_vah is not None and prior_val is not None:
         curr_vah = volume_profile.vah
         curr_val = volume_profile.val
         curr_width = max(curr_vah - curr_val, 1e-9)
@@ -233,11 +233,7 @@ def extract_amt_features(
         feats[_IDX_VA_OVERLAP] = float(np.clip(va_overlap, 0.0, 1.0))
 
     # --- Scalar: value migration (index 12) ---
-    if (
-        volume_profile is not None
-        and prior_vah is not None
-        and prior_val is not None
-    ):
+    if volume_profile is not None and prior_vah is not None and prior_val is not None:
         poc = volume_profile.poc
         if poc > prior_vah:
             feats[_IDX_VALUE_MIG] = 1.0

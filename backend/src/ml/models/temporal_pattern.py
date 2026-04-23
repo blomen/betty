@@ -7,10 +7,12 @@ and feeds into LightGBM multiclass via walk-forward validation.
 Input: 20-candle sequence (via candle_features.snapshot_candles).
 Output: {direction, probability, confidence}.
 """
+
 import json
 import logging
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +21,22 @@ MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
 
 # Raw per-candle features (must match candle_features.snapshot_candles output)
 CANDLE_FEATURE_NAMES = [
-    "delta", "delta_pct", "cvd", "volume", "volume_ratio",
-    "spread_ticks", "body_ratio", "close_position", "tick_count",
-    "passive_active_ratio", "vwap_distance_ticks", "poc_distance_ticks",
-    "imbalance_ratio_max", "stacked_imbalance_count",
-    "big_trades_count", "big_trades_net_delta",
+    "delta",
+    "delta_pct",
+    "cvd",
+    "volume",
+    "volume_ratio",
+    "spread_ticks",
+    "body_ratio",
+    "close_position",
+    "tick_count",
+    "passive_active_ratio",
+    "vwap_distance_ticks",
+    "poc_distance_ticks",
+    "imbalance_ratio_max",
+    "stacked_imbalance_count",
+    "big_trades_count",
+    "big_trades_net_delta",
 ]
 SEQ_LEN = 20
 
@@ -41,9 +54,9 @@ for cf in CANDLE_FEATURE_NAMES:
 # Cross-feature interactions
 FLATTENED_FEATURE_NAMES += [
     "momentum_consistency",  # How many consecutive same-sign deltas at end
-    "volume_acceleration",   # Second derivative of volume
+    "volume_acceleration",  # Second derivative of volume
     "cvd_delta_divergence",  # CVD trend vs delta trend disagreement
-    "spread_expansion",      # Spread trend (widening = volatility)
+    "spread_expansion",  # Spread trend (widening = volatility)
 ]
 N_FLATTENED = len(FLATTENED_FEATURE_NAMES)
 
@@ -73,8 +86,12 @@ class TemporalPatternModel:
         y = np.array(y_list, dtype=np.int64)
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(
-            X, y, task="multiclass", min_samples=MIN_SAMPLES,
+            X,
+            y,
+            task="multiclass",
+            min_samples=MIN_SAMPLES,
             feature_names=FLATTENED_FEATURE_NAMES,
             num_class=N_CLASSES,
         )
@@ -85,11 +102,15 @@ class TemporalPatternModel:
         path = MODELS_DIR / "temporal_pattern_latest.joblib"
         try:
             import joblib
-            joblib.dump({
-                "model": result["model"],
-                "feature_names": FLATTENED_FEATURE_NAMES,
-                "task": "multiclass",
-            }, path)
+
+            joblib.dump(
+                {
+                    "model": result["model"],
+                    "feature_names": FLATTENED_FEATURE_NAMES,
+                    "task": "multiclass",
+                },
+                path,
+            )
         except ImportError:
             return None
 
@@ -108,7 +129,7 @@ class TemporalPatternModel:
         flat = _flatten_sequence(candle_sequence[-SEQ_LEN:])
         if flat is None:
             return None
-        return {"flattened_features": dict(zip(FLATTENED_FEATURE_NAMES, flat.tolist()))}
+        return {"flattened_features": dict(zip(FLATTENED_FEATURE_NAMES, flat.tolist(), strict=False))}
 
 
 def _flatten_sequence(candles: list[dict]) -> np.ndarray | None:
@@ -131,14 +152,14 @@ def _flatten_sequence(candles: list[dict]) -> np.ndarray | None:
         features.append(np.min(col))
         features.append(np.max(col))
         features.append(col[-1])  # last candle value
-        features.append(np.mean(col[:half]))   # first half mean
-        features.append(np.mean(col[half:]))   # second half mean
+        features.append(np.mean(col[:half]))  # first half mean
+        features.append(np.mean(col[half:]))  # second half mean
 
     # Cross-feature interactions
     delta_col = seq[:, 0]  # delta
-    cvd_col = seq[:, 2]    # cvd
-    volume_col = seq[:, 3] # volume
-    spread_col = seq[:, 5] # spread_ticks
+    cvd_col = seq[:, 2]  # cvd
+    volume_col = seq[:, 3]  # volume
+    spread_col = seq[:, 5]  # spread_ticks
 
     # Momentum consistency: consecutive same-sign deltas at end of window
     momentum = 0

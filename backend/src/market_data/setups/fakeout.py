@@ -1,4 +1,5 @@
 """Fakeout / Head Fake: convincing break that reverses, POC/VWAP holds."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -30,18 +31,20 @@ def detect_fakeout(ctx: DetectorContext) -> list[SetupCandidate]:
                 # Confirm POC/VWAP is holding (price above both)
                 anchor_holds = (vwap and ctx.last_price > vwap * 0.998) or ctx.last_price > poc * 0.998
                 if anchor_holds or ctx.orderflow.vsa_absorption:
-                    candidates.append(SetupCandidate(
-                        setup_type="fakeout",
-                        setup_name=f"Fakeout Short at {level_name.upper()}",
-                        direction="short",
-                        level_touched=level_name,
-                        entry_price=ctx.last_price,
-                        stop_price=level_price * 1.003,
-                        target_1=poc,
-                        target_2=ctx.vp.val,
-                        target_3=ctx.session_levels.pdl,
-                        base_score=68.0,
-                    ))
+                    candidates.append(
+                        SetupCandidate(
+                            setup_type="fakeout",
+                            setup_name=f"Fakeout Short at {level_name.upper()}",
+                            direction="short",
+                            level_touched=level_name,
+                            entry_price=ctx.last_price,
+                            stop_price=level_price * 1.003,
+                            target_1=poc,
+                            target_2=ctx.vp.val,
+                            target_3=ctx.session_levels.pdl,
+                            base_score=68.0,
+                        )
+                    )
 
     # Fakeout below support → long
     support_levels = [
@@ -56,17 +59,19 @@ def detect_fakeout(ctx: DetectorContext) -> list[SetupCandidate]:
             if ctx.macro_bias != "bear":
                 anchor_holds = (vwap and ctx.last_price < vwap * 1.002) or ctx.last_price < poc * 1.002
                 if anchor_holds or ctx.orderflow.vsa_absorption:
-                    candidates.append(SetupCandidate(
-                        setup_type="fakeout",
-                        setup_name=f"Fakeout Long at {level_name.upper()}",
-                        direction="long",
-                        level_touched=level_name,
-                        entry_price=ctx.last_price,
-                        stop_price=level_price * 0.997,
-                        target_1=poc,
-                        target_2=ctx.vp.vah,
-                        target_3=ctx.session_levels.pdh,
-                        base_score=68.0,
-                    ))
+                    candidates.append(
+                        SetupCandidate(
+                            setup_type="fakeout",
+                            setup_name=f"Fakeout Long at {level_name.upper()}",
+                            direction="long",
+                            level_touched=level_name,
+                            entry_price=ctx.last_price,
+                            stop_price=level_price * 0.997,
+                            target_1=poc,
+                            target_2=ctx.vp.vah,
+                            target_3=ctx.session_levels.pdh,
+                            base_score=68.0,
+                        )
+                    )
 
     return candidates

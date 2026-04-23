@@ -17,18 +17,19 @@ Sport category IDs (discovered via /s/sbgate/category/by-slug/sv/):
 - American Football: 58, Baseball: 96, MMA: 20491, Esports: 65035, Handball: 68
 """
 
-from typing import Dict, Any, List, Optional
 import asyncio
-import logging
+import contextlib
 import json
+import logging
 import time
 from datetime import datetime
+from typing import Any
 
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
 from ..core.exceptions import RetryableError
 from ..core.transport import BrowserTransport, get_proxy_dict
-from ..matching.normalizer import normalize_team_name, normalize_outcome
+from ..matching.normalizer import normalize_outcome, normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -48,48 +49,48 @@ class CoolbetRetriever(BrowserRetriever):
     to Imperva's Reese84 challenge. Falls back to CDP if unavailable.
     """
 
-    SPORT_CONFIG: Dict[str, Dict] = {
-        "football":          {"slug": "fotboll",             "category_id": 62},
-        "basketball":        {"slug": "basket",              "category_id": 77},
-        "tennis":            {"slug": "tennis",              "category_id": 72},
-        "ice_hockey":        {"slug": "ishockey",            "category_id": 85},
-        "american_football": {"slug": "amerikansk-fotboll",  "category_id": 58},
-        "baseball":          {"slug": "baseboll",            "category_id": 96},
-        "mma":               {"slug": "mma",                 "category_id": 20491},
-        "esports":           {"slug": "esports",             "category_id": 65035},
-        "handball":          {"slug": "handboll",            "category_id": 68},
-        "volleyball":        {"slug": "volleyboll",          "category_id": 73},
-        "boxing":            {"slug": "boxning",             "category_id": 78},
-        "rugby":             {"slug": "rugby-union",         "category_id": 76},
+    SPORT_CONFIG: dict[str, dict] = {
+        "football": {"slug": "fotboll", "category_id": 62},
+        "basketball": {"slug": "basket", "category_id": 77},
+        "tennis": {"slug": "tennis", "category_id": 72},
+        "ice_hockey": {"slug": "ishockey", "category_id": 85},
+        "american_football": {"slug": "amerikansk-fotboll", "category_id": 58},
+        "baseball": {"slug": "baseboll", "category_id": 96},
+        "mma": {"slug": "mma", "category_id": 20491},
+        "esports": {"slug": "esports", "category_id": 65035},
+        "handball": {"slug": "handboll", "category_id": 68},
+        "volleyball": {"slug": "volleyboll", "category_id": 73},
+        "boxing": {"slug": "boxning", "category_id": 78},
+        "rugby": {"slug": "rugby-union", "category_id": 76},
     }
 
     # Exact market name → standard type (all observed names from API)
     MARKET_MAP = {
         # 1x2 (3-way)
-        "Match Result (1X2)":           "1x2",
+        "Match Result (1X2)": "1x2",
         # Moneyline (2-way)
-        "Match Winner":                 "moneyline",
-        "Match Winner (2-way)":         "moneyline",
-        "Moneyline":                    "moneyline",
-        "Money Line":                   "moneyline",
-        "Match Result":                 "moneyline",
-        "Fight Result (Draw No Bet)":   "moneyline",
+        "Match Winner": "moneyline",
+        "Match Winner (2-way)": "moneyline",
+        "Moneyline": "moneyline",
+        "Money Line": "moneyline",
+        "Match Result": "moneyline",
+        "Fight Result (Draw No Bet)": "moneyline",
         # Total
-        "Total Goals Over / Under":     "total",
-        "Total Goals Over/Under":       "total",
-        "Total Points Over/Under":      "total",
-        "Total Points Over / Under":    "total",
-        "Total Over / Under":           "total",
-        "Total Over/Under":             "total",
-        "Total Games Over/Under":       "total",
-        "Total Maps Played":            "total",
+        "Total Goals Over / Under": "total",
+        "Total Goals Over/Under": "total",
+        "Total Points Over/Under": "total",
+        "Total Points Over / Under": "total",
+        "Total Over / Under": "total",
+        "Total Over/Under": "total",
+        "Total Games Over/Under": "total",
+        "Total Maps Played": "total",
         # Spread
-        "Asian Handicap":               "spread",
-        "Handicap (2 Way)":             "spread",
-        "Handicap":                     "spread",
-        "Spread":                       "spread",
-        "Game Handicap":                "spread",
-        "Match Handicap":               "spread",
+        "Asian Handicap": "spread",
+        "Handicap (2 Way)": "spread",
+        "Handicap": "spread",
+        "Spread": "spread",
+        "Game Handicap": "spread",
+        "Match Handicap": "spread",
     }
 
     # Market names to explicitly skip (3-way handicap not useful)
@@ -97,7 +98,7 @@ class CoolbetRetriever(BrowserRetriever):
 
     _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.coolbet.com")
         self._camoufox_browser = None
@@ -113,10 +114,8 @@ class CoolbetRetriever(BrowserRetriever):
         if not self._camoufox_browser:
             return
         if self._camoufox_page:
-            try:
+            with contextlib.suppress(Exception):
                 await self._camoufox_page.close()
-            except Exception:
-                pass
             self._camoufox_page = None
         try:
             self._camoufox_page = await self._camoufox_browser.new_page()
@@ -173,12 +172,14 @@ class CoolbetRetriever(BrowserRetriever):
         t0 = time.time()
         try:
             import random
+
             proxy = get_proxy_dict()
 
             # Rotate fingerprint per launch to avoid Imperva flagging
             try:
                 from browserforge.fingerprints import FingerprintGenerator
-                fg = FingerprintGenerator(browser='firefox', os=('windows', 'macos'))
+
+                fg = FingerprintGenerator(browser="firefox", os=("windows", "macos"))
                 fingerprint = fg.generate()
                 logger.debug(f"[{self.provider_id}] Generated fresh BrowserForge fingerprint")
             except ImportError:
@@ -197,7 +198,7 @@ class CoolbetRetriever(BrowserRetriever):
                 logger.info(f"[{self.provider_id}] Camoufox launched with proxy + fresh fingerprint")
 
             self._camoufox_page = await self._camoufox_browser.new_page()
-            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")
+            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time() - t0:.1f}s")
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
@@ -218,7 +219,7 @@ class CoolbetRetriever(BrowserRetriever):
                 self._camoufox_browser = None
                 self._camoufox_page = None
 
-    async def _get_page(self) -> Optional[Any]:
+    async def _get_page(self) -> Any | None:
         """Get a browser page — tries Camoufox first, falls back to CDP transport."""
         # Strategy 1: Camoufox (anti-detect Firefox, bypasses Imperva)
         page = await self._ensure_camoufox()
@@ -239,7 +240,7 @@ class CoolbetRetriever(BrowserRetriever):
         )
         return None
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """Extract events using Coolbet's internal API via browser context."""
         sport_conf = self.SPORT_CONFIG.get(sport)
         if not sport_conf:
@@ -259,7 +260,7 @@ class CoolbetRetriever(BrowserRetriever):
                 sport_url = f"{self.site_url}/sv/odds/{sport_conf['slug']}"
                 logger.debug(f"[{self.provider_id}] Loading {sport_url}")
 
-                await page.goto(sport_url, wait_until='load', timeout=60000)
+                await page.goto(sport_url, wait_until="load", timeout=60000)
 
                 # Human-like behavior: scroll + wait for Imperva Reese84 challenge
                 # Imperva tracks mouse/scroll to distinguish bots from humans
@@ -269,11 +270,13 @@ class CoolbetRetriever(BrowserRetriever):
                 await page.evaluate("window.scrollTo(0, 600)")
                 await asyncio.sleep(2)
                 await page.evaluate("window.scrollTo(0, 0)")
-                body_text = await page.evaluate(
-                    'document.body ? document.body.innerText.substring(0, 500) : ""'
-                )
-                if 'Incapsula' in body_text or 'security check' in body_text.lower() or \
-                   'Access denied' in body_text or 'Error 15' in body_text:
+                body_text = await page.evaluate('document.body ? document.body.innerText.substring(0, 500) : ""')
+                if (
+                    "Incapsula" in body_text
+                    or "security check" in body_text.lower()
+                    or "Access denied" in body_text
+                    or "Error 15" in body_text
+                ):
                     raise RetryableError(
                         "Imperva block detected even with Camoufox",
                         provider_id=self.provider_id,
@@ -284,7 +287,7 @@ class CoolbetRetriever(BrowserRetriever):
 
             # Strategy: discover leaf-level league IDs from fo-tree, then fetch each
             # This bypasses the sport-level pagination cap (MAX_OFFSET=500)
-            league_ids = await self._discover_league_ids(page, sport_conf['category_id'])
+            league_ids = await self._discover_league_ids(page, sport_conf["category_id"])
 
             if league_ids:
                 # Fetch categories per league in throttled batches (Imperva blocks burst)
@@ -322,9 +325,7 @@ class CoolbetRetriever(BrowserRetriever):
                     self._session_ready = False
             else:
                 # Fallback to sport-level pagination
-                category_data = await self._fetch_all_categories(
-                    page, sport_conf['category_id']
-                )
+                category_data = await self._fetch_all_categories(page, sport_conf["category_id"])
 
             if not category_data:
                 logger.warning(f"[{self.provider_id}] No category data for {sport}")
@@ -348,7 +349,8 @@ class CoolbetRetriever(BrowserRetriever):
 
             logger.info(
                 f"[{self.provider_id}] {sport}: {len(market_ids)} market IDs, "
-                f"{len(odds_data)} odds entries ({len(odds_data)*100//max(len(market_ids),1)}% coverage)")
+                f"{len(odds_data)} odds entries ({len(odds_data) * 100 // max(len(market_ids), 1)}% coverage)"
+            )
             logger.debug(
                 f"[{self.provider_id}] {sport}: {len(category_data)} categories, "
                 f"{len(market_ids)} markets, {len(odds_data)} odds entries"
@@ -372,7 +374,7 @@ class CoolbetRetriever(BrowserRetriever):
 
     CONCURRENT_CATEGORY_FETCHES = 4  # Reduced from 8 — Imperva flags burst patterns
 
-    async def _discover_league_ids(self, page, sport_category_id: int) -> List[int]:
+    async def _discover_league_ids(self, page, sport_category_id: int) -> list[int]:
         """Discover all leaf-level league IDs from the fo-tree endpoint.
 
         The fo-tree returns a nested tree of sports → regions → leagues.
@@ -380,7 +382,9 @@ class CoolbetRetriever(BrowserRetriever):
         Returns league IDs that have matches, for the given sport.
         """
         try:
-            tree_data = await asyncio.wait_for(page.evaluate("""
+            tree_data = await asyncio.wait_for(
+                page.evaluate(
+                    """
                 async (sportCatId) => {
                     const resp = await fetch('/s/sbgate/category/fo-tree/sv?country=SE');
                     const tree = await resp.json();
@@ -399,21 +403,25 @@ class CoolbetRetriever(BrowserRetriever):
                     }
                     return leagues;
                 }
-            """, sport_category_id), timeout=15000)
+            """,
+                    sport_category_id,
+                ),
+                timeout=15000,
+            )
 
             if tree_data:
-                total_matches = sum(l.get('matches', 0) for l in tree_data)
+                total_matches = sum(l.get("matches", 0) for l in tree_data)
                 logger.info(
                     f"[{self.provider_id}] fo-tree: {len(tree_data)} leagues with "
                     f"{total_matches} matches for category {sport_category_id}"
                 )
-            return [l['id'] for l in (tree_data or [])]
+            return [l["id"] for l in (tree_data or [])]
 
         except Exception as e:
             logger.debug(f"[{self.provider_id}] fo-tree discovery failed: {e}")
             return []
 
-    async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
+    async def _fetch_all_categories(self, page, category_id: int) -> list[dict]:
         """Fetch all categories with pagination (API returns 10 per page).
 
         Uses concurrent fetching for massive speedup on sports with many leagues
@@ -451,10 +459,7 @@ class CoolbetRetriever(BrowserRetriever):
                     batch_offsets.append(o)
 
             # Fetch all pages in this batch concurrently
-            tasks = [
-                self._fetch_category_page(page, category_id, o)
-                for o in batch_offsets
-            ]
+            tasks = [self._fetch_category_page(page, category_id, o) for o in batch_offsets]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             batch_has_data = False
@@ -479,14 +484,11 @@ class CoolbetRetriever(BrowserRetriever):
             offset += len(batch_offsets) * CATEGORY_PAGE_SIZE
 
         logger.debug(
-            f"[{self.provider_id}] Category API: {len(all_categories)} categories "
-            f"(paginated to offset={offset})"
+            f"[{self.provider_id}] Category API: {len(all_categories)} categories (paginated to offset={offset})"
         )
         return all_categories
 
-    async def _fetch_category_page(
-        self, page, category_id: int, offset: Optional[int] = None
-    ) -> List[Dict]:
+    async def _fetch_category_page(self, page, category_id: int, offset: int | None = None) -> list[dict]:
         """Fetch a single page of categories with retry on 403 (Imperva not ready)."""
         url = (
             f"{self.site_url}/s/sbgate/sports/fo-category/"
@@ -499,13 +501,16 @@ class CoolbetRetriever(BrowserRetriever):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = await asyncio.wait_for(page.evaluate(f"""
+                resp = await asyncio.wait_for(
+                    page.evaluate(f"""
                     (async () => {{
                         const resp = await fetch('{url}', {{credentials: 'include'}});
                         if (!resp.ok) return {{__status: resp.status, __ok: false}};
                         return await resp.json();
                     }})();
-                """), timeout=30)
+                """),
+                    timeout=30,
+                )
 
                 # Check for HTTP error response
                 if isinstance(resp, dict) and resp.get("__ok") is False:
@@ -528,22 +533,20 @@ class CoolbetRetriever(BrowserRetriever):
                     return resp
 
                 logger.warning(
-                    f"[{self.provider_id}] Unexpected response type "
-                    f"{type(resp).__name__} for categoryId={category_id}"
+                    f"[{self.provider_id}] Unexpected response type {type(resp).__name__} for categoryId={category_id}"
                 )
                 return []
 
             except Exception as e:
                 logger.warning(
-                    f"[{self.provider_id}] Category page "
-                    f"categoryId={category_id} offset={offset} failed: {e}"
+                    f"[{self.provider_id}] Category page categoryId={category_id} offset={offset} failed: {e}"
                 )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2)
                     continue
         return []
 
-    async def _fetch_odds_api(self, page, market_ids: List) -> Dict:
+    async def _fetch_odds_api(self, page, market_ids: list) -> dict:
         """Fetch odds values for market IDs via the sb-odds fo-line endpoint."""
         if not market_ids:
             return {}
@@ -552,10 +555,11 @@ class CoolbetRetriever(BrowserRetriever):
             all_odds = {}
             chunk_size = 500
             for i in range(0, len(unique_ids), chunk_size):
-                chunk = unique_ids[i:i + chunk_size]
+                chunk = unique_ids[i : i + chunk_size]
                 market_arrays = [[mid] for mid in chunk]
                 body = json.dumps({"marketIds": market_arrays})
-                resp = await asyncio.wait_for(page.evaluate(f"""
+                resp = await asyncio.wait_for(
+                    page.evaluate(f"""
                     (async () => {{
                         const resp = await fetch('/s/sb-odds/odds/current/fo-line/', {{
                             method: 'POST',
@@ -565,13 +569,12 @@ class CoolbetRetriever(BrowserRetriever):
                         }});
                         return await resp.json();
                     }})();
-                """), timeout=30)
+                """),
+                    timeout=30,
+                )
                 if isinstance(resp, dict):
                     all_odds.update(resp)
-            logger.debug(
-                f"[{self.provider_id}] Odds API: {len(all_odds)} entries "
-                f"for {len(unique_ids)} markets"
-            )
+            logger.debug(f"[{self.provider_id}] Odds API: {len(all_odds)} entries for {len(unique_ids)} markets")
             return all_odds
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Odds API failed: {e}")
@@ -579,10 +582,10 @@ class CoolbetRetriever(BrowserRetriever):
 
     def _parse_categories(
         self,
-        categories: List[Dict],
-        odds_data: Dict,
+        categories: list[dict],
+        odds_data: dict,
         sport: str,
-    ) -> List[StandardEvent]:
+    ) -> list[StandardEvent]:
         """Parse category API response into StandardEvents."""
         events = []
         seen_ids = set()
@@ -604,11 +607,11 @@ class CoolbetRetriever(BrowserRetriever):
 
     def _parse_match(
         self,
-        match: Dict,
-        odds_data: Dict,
+        match: dict,
+        odds_data: dict,
         sport: str,
         league: str,
-    ) -> Optional[StandardEvent]:
+    ) -> StandardEvent | None:
         """Parse a single match from Coolbet category API."""
         if match.get("inplay"):
             return None
@@ -629,20 +632,20 @@ class CoolbetRetriever(BrowserRetriever):
         start_str = match.get("match_start")
         if start_str:
             try:
-                start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                start_time = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 logger.debug(f"[{self.provider_id}] Invalid start_time: {start_str}")
 
         # Fallback: use current time so fuzzy matching has a valid date
         if not start_time:
             from datetime import timezone
+
             start_time = datetime.now(timezone.utc)
             logger.debug(f"[{self.provider_id}] No start_time for match {match.get('id')}, using now()")
 
         # Parse markets — store ALL spread/total lines (storage layer filters to Pinnacle's point)
         # Previously picked "most balanced" line which rarely matched Pinnacle → 0 spread/total stored
         markets = []
-        seen_winner_type = None  # Track 1x2/moneyline dedup
 
         for raw_market in match.get("markets", []):
             market_name = raw_market.get("name", "")
@@ -656,14 +659,11 @@ class CoolbetRetriever(BrowserRetriever):
             line = raw_market.get("line")
             point = None
             if line is not None:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     point = float(line)
-                except (ValueError, TypeError):
-                    pass
 
             outcomes = self._parse_outcomes(
-                raw_market.get("outcomes", []),
-                odds_data, market_type, home_team_raw, away_team_raw
+                raw_market.get("outcomes", []), odds_data, market_type, home_team_raw, away_team_raw
             )
 
             if not outcomes:
@@ -704,12 +704,12 @@ class CoolbetRetriever(BrowserRetriever):
 
     def _parse_outcomes(
         self,
-        raw_outcomes: List[Dict],
-        odds_data: Dict,
+        raw_outcomes: list[dict],
+        odds_data: dict,
         market_type: str,
         home_raw: str,
         away_raw: str,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Parse outcomes for a market, looking up odds from odds_data."""
         outcomes = []
         for raw_outcome in raw_outcomes:
@@ -744,10 +744,7 @@ class CoolbetRetriever(BrowserRetriever):
             if odds_val <= 1.0:
                 continue
 
-            outcome_name = self._normalize_outcome(
-                result_key, outcome_name_raw, market_type,
-                home_raw, away_raw
-            )
+            outcome_name = self._normalize_outcome(result_key, outcome_name_raw, market_type, home_raw, away_raw)
             if not outcome_name:
                 continue
 
@@ -757,16 +754,14 @@ class CoolbetRetriever(BrowserRetriever):
             if market_type in ("spread", "total"):
                 o_line = raw_outcome.get("line")
                 if o_line is not None:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         outcome_dict["point"] = float(o_line)
-                    except (ValueError, TypeError):
-                        pass
 
             outcomes.append(outcome_dict)
 
         return outcomes
 
-    def _normalize_market_type(self, market_name: str) -> Optional[str]:
+    def _normalize_market_type(self, market_name: str) -> str | None:
         """Map Coolbet market name to standard type."""
         if market_name in self.MARKET_MAP:
             return self.MARKET_MAP[market_name]
@@ -804,7 +799,7 @@ class CoolbetRetriever(BrowserRetriever):
         market_type: str,
         home_raw: str,
         away_raw: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Normalize outcome name from Coolbet result_key/name."""
         rk = result_key.lower().strip("[]")
 
@@ -838,6 +833,6 @@ class CoolbetRetriever(BrowserRetriever):
         await self._cleanup_camoufox()
         await super().close()
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — browser-based extraction."""
         return []

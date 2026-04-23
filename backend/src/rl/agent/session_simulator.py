@@ -11,6 +11,7 @@ Usage:
     sim = SessionSimulator(ensemble)
     results = sim.run(observations, rewards_cont, rewards_rev)
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,20 +25,22 @@ log = logging.getLogger(__name__)
 @dataclass
 class Trade:
     """A single trade from entry to exit (may span multiple levels)."""
-    entry_idx: int              # episode index where we entered
-    exit_idx: int = -1          # episode index where we exited
-    direction: str = ""         # "long" or "short"
-    entry_signal: str = ""      # "continuation" or "reversal"
-    levels_captured: int = 0    # number of CONT signals that extended this trade
-    pnl_r: float = 0.0         # total R for this trade
-    max_pnl_r: float = 0.0     # peak R (for drawdown calculation)
-    flipped: bool = False       # closed by a reversal (vs timeout/end)
-    added_size: int = 0         # number of times we added to the position
+
+    entry_idx: int  # episode index where we entered
+    exit_idx: int = -1  # episode index where we exited
+    direction: str = ""  # "long" or "short"
+    entry_signal: str = ""  # "continuation" or "reversal"
+    levels_captured: int = 0  # number of CONT signals that extended this trade
+    pnl_r: float = 0.0  # total R for this trade
+    max_pnl_r: float = 0.0  # peak R (for drawdown calculation)
+    flipped: bool = False  # closed by a reversal (vs timeout/end)
+    added_size: int = 0  # number of times we added to the position
 
 
 @dataclass
 class SimulationResult:
     """Results from a full simulation run."""
+
     trades: list[Trade] = field(default_factory=list)
     total_r: float = 0.0
     total_trades: int = 0
@@ -74,9 +77,9 @@ class SessionSimulator:
     - Trailing stop: if accumulated R drops below -1R from peak, close
     """
 
-    TRAILING_STOP_R = 1.5   # close if R drops this much from peak
+    TRAILING_STOP_R = 1.5  # close if R drops this much from peak
     ADD_SIZE_THRESHOLD = 1.0  # add size after capturing 1R+
-    MAX_HOLD_EPISODES = 50   # force close after this many touches
+    MAX_HOLD_EPISODES = 50  # force close after this many touches
 
     def __init__(self, ensemble) -> None:
         self.ensemble = ensemble
@@ -126,7 +129,6 @@ class SessionSimulator:
                 continue
 
             signal = "continuation" if action == 0 else "reversal"
-            signal_dir = None  # will be determined by context
 
             if action == 0:
                 result.cont_signals_total += 1

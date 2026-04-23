@@ -1,4 +1,5 @@
 """Break from Balance: 3+ days of overlapping VAs, ASPR compressed, then breakout."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -7,7 +8,6 @@ def detect_break_from_balance(ctx: DetectorContext) -> list[SetupCandidate]:
     candidates = []
     vah = ctx.vp.vah
     val = ctx.vp.val
-    poc = ctx.vp.poc
 
     if not vah or not val or vah <= val:
         return []
@@ -15,10 +15,10 @@ def detect_break_from_balance(ctx: DetectorContext) -> list[SetupCandidate]:
     va_range = vah - val
 
     # Break above balance → long
-    if ctx.last_price > vah:
-        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
-            if ctx.day_type != "neutral":  # Neutral = still balanced
-                candidates.append(SetupCandidate(
+    if ctx.last_price > vah and ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+        if ctx.day_type != "neutral":  # Neutral = still balanced
+            candidates.append(
+                SetupCandidate(
                     setup_type="break_from_balance",
                     setup_name="Break from Balance Long",
                     direction="long",
@@ -29,13 +29,14 @@ def detect_break_from_balance(ctx: DetectorContext) -> list[SetupCandidate]:
                     target_2=vah + va_range * 1.0,
                     target_3=ctx.session_levels.weekly_high,
                     base_score=72.0,
-                ))
+                )
+            )
 
     # Break below balance → short
-    if ctx.last_price < val:
-        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
-            if ctx.day_type != "neutral":
-                candidates.append(SetupCandidate(
+    if ctx.last_price < val and ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+        if ctx.day_type != "neutral":
+            candidates.append(
+                SetupCandidate(
                     setup_type="break_from_balance",
                     setup_name="Break from Balance Short",
                     direction="short",
@@ -46,6 +47,7 @@ def detect_break_from_balance(ctx: DetectorContext) -> list[SetupCandidate]:
                     target_2=val - va_range * 1.0,
                     target_3=ctx.session_levels.weekly_low,
                     base_score=72.0,
-                ))
+                )
+            )
 
     return candidates

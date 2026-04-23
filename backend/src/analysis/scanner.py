@@ -1097,10 +1097,7 @@ class OpportunityScanner:
                     continue
 
             # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
-            if odds.point is not None:
-                market_key = f"{odds.market}_{odds.point}"
-            else:
-                market_key = odds.market
+            market_key = f"{odds.market}_{odds.point}" if odds.point is not None else odds.market
 
             # Normalize outcome labels: 10bet stores "Home +4.5" / "Away -4.5"
             # and "Over 163.5" / "Under 163.5" instead of "home"/"away"/"over"/"under".
@@ -1243,14 +1240,13 @@ class OpportunityScanner:
                 # "away team gives 1.5" while Pinnacle's home@-1.5 means "home
                 # team gives 1.5" — completely different bets). Apply a much
                 # tighter ratio to prevent cross-outcome false positives.
-                if len(entries) == 1 and best_label != pin_outcome:
-                    if not (0.80 < ratio < 1.25):
-                        logger.debug(
-                            f"Rejected {provider} {market_key}: single entry with "
-                            f"label '{best_label}' != Pinnacle '{pin_outcome}', "
-                            f"ratio {ratio:.2f} outside tight range (0.80-1.25)"
-                        )
-                        continue
+                if len(entries) == 1 and best_label != pin_outcome and not (0.80 < ratio < 1.25):
+                    logger.debug(
+                        f"Rejected {provider} {market_key}: single entry with "
+                        f"label '{best_label}' != Pinnacle '{pin_outcome}', "
+                        f"ratio {ratio:.2f} outside tight range (0.80-1.25)"
+                    )
+                    continue
 
                 # Cross-check: if the complement Pinnacle odds exist, verify the
                 # soft entry is closer to THIS point's Pinnacle than to the complement.
@@ -1337,7 +1333,7 @@ class OpportunityScanner:
 
         # Pre-compute probability sums per soft provider (used in completeness check)
         soft_prob_sums = defaultdict(float)
-        for out, providers in odds_by_outcome.items():
+        for _out, providers in odds_by_outcome.items():
             for p in providers:
                 if p["provider"] not in SHARP_PROVIDERS:
                     soft_prob_sums[p["provider"]] += 1.0 / p["odds"]
@@ -1665,7 +1661,7 @@ class OpportunityScanner:
         is_spread = market.startswith("spread") or market.startswith("total")
         threshold = MAX_ODDS_RATIO_SPREAD if is_spread else MAX_ODDS_RATIO
 
-        for outcome, provider_odds_list in odds_by_outcome.items():
+        for _outcome, provider_odds_list in odds_by_outcome.items():
             if exclude_providers:
                 odds_values = [po["odds"] for po in provider_odds_list if po["provider"] not in exclude_providers]
             else:

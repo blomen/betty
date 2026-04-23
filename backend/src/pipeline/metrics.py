@@ -10,7 +10,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +17,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SportMetrics:
     """Per-sport extraction metrics."""
+
     sport: str
     start_time: float = field(default_factory=time.time)
-    end_time: Optional[float] = None
+    end_time: float | None = None
     duration_seconds: float = 0.0
     events_processed: int = 0
     events_new: int = 0
@@ -29,11 +29,11 @@ class SportMetrics:
     odds_processed: int = 0
     odds_new: int = 0
     success: bool = False
-    error: Optional[str] = None
+    error: str | None = None
     # Market breakdown (set by MetricsCollector.end_sport)
-    market_counts: Dict[str, int] = field(default_factory=dict)
+    market_counts: dict[str, int] = field(default_factory=dict)
 
-    def end(self, success: bool = True, error: Optional[str] = None):
+    def end(self, success: bool = True, error: str | None = None):
         """Mark sport extraction complete."""
         self.end_time = time.time()
         self.duration_seconds = self.end_time - self.start_time
@@ -49,17 +49,18 @@ class SportMetrics:
 @dataclass
 class ProviderMetrics:
     """Per-provider extraction metrics."""
+
     provider_id: str
     start_time: float = field(default_factory=time.time)
-    end_time: Optional[float] = None
+    end_time: float | None = None
     duration_seconds: float = 0.0
-    sports: Dict[str, SportMetrics] = field(default_factory=dict)
+    sports: dict[str, SportMetrics] = field(default_factory=dict)
     total_sports_configured: int = 0  # Total sports this provider will extract
     retries: int = 0
     cache_hits: int = 0
     rate_limit_hits: int = 0  # 429 errors encountered
     success: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
     def start_sport(self, sport: str) -> SportMetrics:
         """Start tracking sport extraction."""
@@ -75,7 +76,7 @@ class ProviderMetrics:
         odds_processed: int = 0,
         odds_new: int = 0,
         success: bool = True,
-        error: Optional[str] = None
+        error: str | None = None,
     ):
         """Mark sport extraction complete."""
         if sport in self.sports:
@@ -86,7 +87,7 @@ class ProviderMetrics:
             metrics.odds_new = odds_new
             metrics.end(success=success, error=error)
 
-    def end(self, success: bool = True, error: Optional[str] = None):
+    def end(self, success: bool = True, error: str | None = None):
         """Mark provider extraction complete."""
         self.end_time = time.time()
         self.duration_seconds = self.end_time - self.start_time
@@ -165,11 +166,12 @@ class ProviderMetrics:
 @dataclass
 class PipelineMetrics:
     """Full pipeline run metrics."""
+
     run_id: str
     start_time: float = field(default_factory=time.time)
-    end_time: Optional[float] = None
+    end_time: float | None = None
     duration_seconds: float = 0.0
-    providers: Dict[str, ProviderMetrics] = field(default_factory=dict)
+    providers: dict[str, ProviderMetrics] = field(default_factory=dict)
     polymarket_events: int = 0
     polymarket_odds: int = 0
 
@@ -179,12 +181,7 @@ class PipelineMetrics:
         self.providers[provider_id] = provider_metrics
         return provider_metrics
 
-    def end_provider(
-        self,
-        provider_id: str,
-        success: bool = True,
-        error: Optional[str] = None
-    ):
+    def end_provider(self, provider_id: str, success: bool = True, error: str | None = None):
         """Mark provider extraction complete."""
         if provider_id in self.providers:
             self.providers[provider_id].end(success=success, error=error)
@@ -261,10 +258,7 @@ class PipelineMetrics:
             "overall_success_rate": self.overall_success_rate,
             "total_retries": self.total_retries,
             "total_cache_hits": self.total_cache_hits,
-            "polymarket": {
-                "events": self.polymarket_events,
-                "odds": self.polymarket_odds
-            },
+            "polymarket": {"events": self.polymarket_events, "odds": self.polymarket_odds},
             "providers": {
                 pid: {
                     "duration_seconds": p.duration_seconds,
@@ -295,13 +289,13 @@ class PipelineMetrics:
                             "odds_new": s.odds_new,
                             "market_counts": s.market_counts,
                             "success": s.success,
-                            "error": s.error
+                            "error": s.error,
                         }
                         for sport, s in p.sports.items()
-                    }
+                    },
                 }
                 for pid, p in self.providers.items()
-            }
+            },
         }
 
 
@@ -322,7 +316,7 @@ class MetricsCollector:
         self.max_history = max_history
         self._lock = Lock()
         self._history: deque[PipelineMetrics] = deque(maxlen=max_history)
-        self._current_run: Optional[PipelineMetrics] = None
+        self._current_run: PipelineMetrics | None = None
 
     def start_run(self, run_id: str) -> PipelineMetrics:
         """
@@ -353,12 +347,12 @@ class MetricsCollector:
                 )
                 self._current_run = None
 
-    def get_current_run(self) -> Optional[PipelineMetrics]:
+    def get_current_run(self) -> PipelineMetrics | None:
         """Get current run metrics."""
         with self._lock:
             return self._current_run
 
-    def start_provider(self, provider_id: str) -> Optional[ProviderMetrics]:
+    def start_provider(self, provider_id: str) -> ProviderMetrics | None:
         """
         Start tracking provider extraction.
 
@@ -379,12 +373,7 @@ class MetricsCollector:
             if self._current_run and provider_id in self._current_run.providers:
                 self._current_run.providers[provider_id].total_sports_configured = total
 
-    def end_provider(
-        self,
-        provider_id: str,
-        success: bool = True,
-        error: Optional[str] = None
-    ):
+    def end_provider(self, provider_id: str, success: bool = True, error: str | None = None):
         """
         Mark provider extraction complete.
 
@@ -397,7 +386,7 @@ class MetricsCollector:
             if self._current_run:
                 self._current_run.end_provider(provider_id, success=success, error=error)
 
-    def start_sport(self, provider_id: str, sport: str) -> Optional[SportMetrics]:
+    def start_sport(self, provider_id: str, sport: str) -> SportMetrics | None:
         """
         Start tracking sport extraction.
 
@@ -424,8 +413,8 @@ class MetricsCollector:
         odds_processed: int = 0,
         odds_new: int = 0,
         success: bool = True,
-        error: Optional[str] = None,
-        market_counts: Optional[Dict[str, int]] = None,
+        error: str | None = None,
+        market_counts: dict[str, int] | None = None,
     ):
         """
         Mark sport extraction complete.
@@ -452,7 +441,7 @@ class MetricsCollector:
                     odds_processed=odds_processed,
                     odds_new=odds_new,
                     success=success,
-                    error=error
+                    error=error,
                 )
                 # Set match stats and market counts directly on sport metrics
                 sport_metrics = self._current_run.providers[provider_id].sports.get(sport)
@@ -509,7 +498,7 @@ class MetricsCollector:
                 self._current_run.polymarket_events = events
                 self._current_run.polymarket_odds = odds
 
-    def get_history(self, limit: int = 10) -> List[PipelineMetrics]:
+    def get_history(self, limit: int = 10) -> list[PipelineMetrics]:
         """
         Get historical run metrics.
 
@@ -537,11 +526,7 @@ class MetricsCollector:
         with self._lock:
             recent_runs = list(reversed(list(self._history)))[:limit]
 
-            provider_runs = [
-                run.providers[provider_id]
-                for run in recent_runs
-                if provider_id in run.providers
-            ]
+            provider_runs = [run.providers[provider_id] for run in recent_runs if provider_id in run.providers]
 
             if not provider_runs:
                 return {
@@ -551,7 +536,7 @@ class MetricsCollector:
                     "avg_events": 0.0,
                     "avg_success_rate": 0.0,
                     "total_retries": 0,
-                    "total_cache_hits": 0
+                    "total_cache_hits": 0,
                 }
 
             return {
@@ -561,10 +546,17 @@ class MetricsCollector:
                 "avg_events": sum(p.total_events for p in provider_runs) / len(provider_runs),
                 "avg_success_rate": sum(p.success_rate for p in provider_runs) / len(provider_runs),
                 "total_retries": sum(p.retries for p in provider_runs),
-                "total_cache_hits": sum(p.cache_hits for p in provider_runs)
+                "total_cache_hits": sum(p.cache_hits for p in provider_runs),
             }
 
-    def persist_to_db(self, run_metrics: PipelineMetrics, session, report: str = None, tier_name: str | None = None, max_runs_per_tier: int = 10):
+    def persist_to_db(
+        self,
+        run_metrics: PipelineMetrics,
+        session,
+        report: str = None,
+        tier_name: str | None = None,
+        max_runs_per_tier: int = 10,
+    ):
         """
         Persist pipeline metrics to database.
         Keeps the last `max_runs_per_tier` runs per tier — prunes oldest beyond that.
@@ -576,10 +568,12 @@ class MetricsCollector:
             tier_name: Tier name (sharp/api_soft/browser_soft) stored in trigger field
             max_runs_per_tier: Number of historical runs to keep per tier (default 10)
         """
-        from datetime import datetime as dt, timezone as tz
+        from datetime import datetime as dt
+        from datetime import timezone as tz
+
         from src.db.models import ExtractionRun, ProviderRunMetrics, SportRunMetrics
 
-        trigger = tier_name or 'manual'
+        trigger = tier_name or "manual"
 
         try:
             # Prune old runs beyond max_runs_per_tier (keep N-1 since we're about to add 1)
@@ -589,11 +583,15 @@ class MetricsCollector:
                 .order_by(ExtractionRun.start_time.desc())
                 .all()
             )
-            runs_to_delete = existing_runs[max_runs_per_tier - 1:]  # Keep N-1, adding 1 new = N total
+            runs_to_delete = existing_runs[max_runs_per_tier - 1 :]  # Keep N-1, adding 1 new = N total
             if runs_to_delete:
                 old_ids = [r.id for r in runs_to_delete]
-                session.query(SportRunMetrics).filter(SportRunMetrics.run_id.in_(old_ids)).delete(synchronize_session=False)
-                session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id.in_(old_ids)).delete(synchronize_session=False)
+                session.query(SportRunMetrics).filter(SportRunMetrics.run_id.in_(old_ids)).delete(
+                    synchronize_session=False
+                )
+                session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id.in_(old_ids)).delete(
+                    synchronize_session=False
+                )
                 session.query(ExtractionRun).filter(ExtractionRun.id.in_(old_ids)).delete(synchronize_session=False)
                 session.flush()
 
@@ -622,7 +620,7 @@ class MetricsCollector:
                 prov_spr = 0
                 prov_tot = 0
                 for smetrics in pmetrics.sports.values():
-                    mc = getattr(smetrics, 'market_counts', {}) or {}
+                    mc = getattr(smetrics, "market_counts", {}) or {}
                     prov_ml += mc.get("1x2", 0) + mc.get("moneyline", 0)
                     prov_spr += mc.get("spread", 0)
                     prov_tot += mc.get("total", 0)
@@ -646,15 +644,15 @@ class MetricsCollector:
                     total_count=prov_tot,
                     retries=pmetrics.retries,
                     cache_hits=pmetrics.cache_hits,
-                    status='success' if pmetrics.success else 'failed',
-                    error_message=pmetrics.error
+                    status="success" if pmetrics.success else "failed",
+                    error_message=pmetrics.error,
                 )
                 session.add(pm)
                 session.flush()  # Get pm.id for sport metrics
 
                 # Create sport metrics
                 for sport, smetrics in pmetrics.sports.items():
-                    mc = getattr(smetrics, 'market_counts', {}) or {}
+                    mc = getattr(smetrics, "market_counts", {}) or {}
                     sm = SportRunMetrics(
                         run_id=run_metrics.run_id,
                         provider_run_id=pm.id,
@@ -671,8 +669,8 @@ class MetricsCollector:
                         spread_count=mc.get("spread", 0),
                         total_count=mc.get("total", 0),
                         success=smetrics.success,
-                        error_type='extraction_error' if smetrics.error else None,
-                        error_message=smetrics.error
+                        error_type="extraction_error" if smetrics.error else None,
+                        error_message=smetrics.error,
                     )
                     session.add(sm)
 
@@ -685,6 +683,6 @@ class MetricsCollector:
             raise
 
     @property
-    def current_run(self) -> Optional[PipelineMetrics]:
+    def current_run(self) -> PipelineMetrics | None:
         """Get current run (property for backward compatibility)."""
         return self.get_current_run()

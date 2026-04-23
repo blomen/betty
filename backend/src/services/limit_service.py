@@ -2,9 +2,10 @@
 
 import logging
 from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
-from ..db.models import Bet, Provider, Profile, ProfileProviderLimit
+from ..db.models import Bet, Provider
 from ..repositories import LimitRepo
 
 logger = logging.getLogger(__name__)
@@ -19,10 +20,14 @@ class LimitService:
 
     def _build_snapshot(self, profile_id: int, provider_id: str) -> dict:
         """Build betting stats snapshot for a profile+provider."""
-        bets = self.db.query(Bet).filter(
-            Bet.profile_id == profile_id,
-            Bet.provider_id == provider_id,
-        ).all()
+        bets = (
+            self.db.query(Bet)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.provider_id == provider_id,
+            )
+            .all()
+        )
 
         if not bets:
             return {
@@ -132,8 +137,12 @@ class LimitService:
 
         logger.info(
             "Recorded %s (level %d) for %s on profile %d — snapshot: %d bets, %.0f stake",
-            limit_type, limit_level, provider_id, profile_id,
-            snapshot["total_bets"], snapshot["total_stake"],
+            limit_type,
+            limit_level,
+            provider_id,
+            profile_id,
+            snapshot["total_bets"],
+            snapshot["total_stake"],
         )
 
         return {
@@ -162,18 +171,25 @@ class LimitService:
 
         # Disable extraction for this profile+provider
         from ..db.models import ProviderExtractionSetting
-        existing = self.db.query(ProviderExtractionSetting).filter(
-            ProviderExtractionSetting.profile_id == profile_id,
-            ProviderExtractionSetting.provider_id == provider_id,
-        ).first()
+
+        existing = (
+            self.db.query(ProviderExtractionSetting)
+            .filter(
+                ProviderExtractionSetting.profile_id == profile_id,
+                ProviderExtractionSetting.provider_id == provider_id,
+            )
+            .first()
+        )
         if existing:
             existing.enabled = False
         else:
-            self.db.add(ProviderExtractionSetting(
-                profile_id=profile_id,
-                provider_id=provider_id,
-                enabled=False,
-            ))
+            self.db.add(
+                ProviderExtractionSetting(
+                    profile_id=profile_id,
+                    provider_id=provider_id,
+                    enabled=False,
+                )
+            )
         self.db.commit()
 
         logger.info("Banned provider %s for profile %d — extraction disabled", provider_id, profile_id)

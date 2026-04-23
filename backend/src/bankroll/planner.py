@@ -95,9 +95,7 @@ def generate_candidates(state: SimState, bonus_configs: dict) -> list[Action]:
             min_deposit = cfg.get("min_deposit", 100)
             if deposit_amount < min_deposit:
                 continue
-            candidates.append(
-                Action(type="DEPOSIT", provider_id=p.provider_id, amount=deposit_amount)
-            )
+            candidates.append(Action(type="DEPOSIT", provider_id=p.provider_id, amount=deposit_amount))
 
     # WITHDRAW: only for cleared/limited providers with balance > 0
     for p in state.providers.values():
@@ -127,18 +125,12 @@ class MonteCarloPlanner:
         self.horizon_days = horizon_days
         self._plan_lock = asyncio.Lock()
 
-    async def plan(
-        self, current_state: SimState, bonus_configs: dict
-    ) -> PlannerRecommendation:
+    async def plan(self, current_state: SimState, bonus_configs: dict) -> PlannerRecommendation:
         """Run Monte Carlo planning (async wrapper, runs in thread pool)."""
         async with self._plan_lock:
-            return await asyncio.to_thread(
-                self._plan_sync, current_state, bonus_configs
-            )
+            return await asyncio.to_thread(self._plan_sync, current_state, bonus_configs)
 
-    def _plan_sync(
-        self, current_state: SimState, bonus_configs: dict
-    ) -> PlannerRecommendation:
+    def _plan_sync(self, current_state: SimState, bonus_configs: dict) -> PlannerRecommendation:
         candidates = generate_candidates(current_state, bonus_configs)
         results: dict[Action, dict] = {}
 
@@ -167,10 +159,7 @@ class MonteCarloPlanner:
         return PlannerRecommendation(
             primary_action=best_action,
             routing_priority=routing_priority,
-            simulated_growth=(
-                best_stats["mean"] / max(1, current_state.total_wealth) - 1
-            )
-            * 100,
+            simulated_growth=(best_stats["mean"] / max(1, current_state.total_wealth) - 1) * 100,
             confidence=1 / (1 + best_stats["std"] / max(1, best_stats["mean"])),
             downside_p10=best_stats["p10"],
             all_results=results,
@@ -182,42 +171,30 @@ class MonteCarloPlanner:
         # Priority 1: Withdraw from cleared/limited providers
         for p in state.providers.values():
             if p.bonus_status in ("cleared", "limited") and p.balance > 0:
-                return Action(
-                    type="WITHDRAW", provider_id=p.provider_id, amount=p.balance
-                )
+                return Action(type="WITHDRAW", provider_id=p.provider_id, amount=p.balance)
 
         # Priority 2: Deposit at next best provider (highest bonus density)
         if state.undeployed_capital > 0:
-            not_started = [
-                p for p in state.providers.values() if p.bonus_status == "not_started"
-            ]
+            not_started = [p for p in state.providers.values() if p.bonus_status == "not_started"]
             if not_started:
 
                 def bonus_density(p: ProviderSimState) -> float:
                     cfg = bonus_configs.get(p.provider_id, {})
                     amount = cfg.get("amount", 0)
-                    wager_req = cfg.get("amount", 1) * cfg.get(
-                        "wagering_multiplier", 10
-                    )
+                    wager_req = cfg.get("amount", 1) * cfg.get("wagering_multiplier", 10)
                     return amount / max(1, wager_req)
 
                 not_started.sort(key=bonus_density, reverse=True)
                 best = not_started[0]
                 cfg = bonus_configs.get(best.provider_id, {})
                 amount = min(cfg.get("amount", 1000), state.undeployed_capital)
-                return Action(
-                    type="DEPOSIT", provider_id=best.provider_id, amount=amount
-                )
+                return Action(type="DEPOSIT", provider_id=best.provider_id, amount=amount)
 
         return Action(type="WAIT")
 
-    def _compute_routing_priority(
-        self, state: SimState, bonus_configs: dict
-    ) -> list[str]:
+    def _compute_routing_priority(self, state: SimState, bonus_configs: dict) -> list[str]:
         """Rank active wagering providers by urgency for bet routing tiebreaker."""
-        active = [
-            p for p in state.providers.values() if p.bonus_status == "wagering"
-        ]
+        active = [p for p in state.providers.values() if p.bonus_status == "wagering"]
 
         def urgency_score(p: ProviderSimState) -> float:
             remaining_pct = 1 - (p.wagered_amount / max(1, p.wagering_requirement))
@@ -228,9 +205,7 @@ class MonteCarloPlanner:
         active.sort(key=urgency_score, reverse=True)
         return [p.provider_id for p in active]
 
-    def recommend_freebet_usage(
-        self, state: SimState, opportunities: list[dict]
-    ) -> Action | None:
+    def recommend_freebet_usage(self, state: SimState, opportunities: list[dict]) -> Action | None:
         """Find highest-edge opportunity at a freebet-ready provider."""
         for p in state.providers.values():
             if not p.freebet_available:
@@ -238,8 +213,7 @@ class MonteCarloPlanner:
             provider_opps = [
                 o
                 for o in opportunities
-                if o.get("provider_id") == p.provider_id
-                or o.get("provider1_id") == p.provider_id
+                if o.get("provider_id") == p.provider_id or o.get("provider1_id") == p.provider_id
             ]
             if not provider_opps:
                 continue
@@ -252,9 +226,7 @@ class MonteCarloPlanner:
         return None
 
 
-def fallback_routing(
-    opportunities: list[dict], active_bonuses: list
-) -> list[dict]:
+def fallback_routing(opportunities: list[dict], active_bonuses: list) -> list[dict]:
     """Simple heuristic fallback: max EV, tiebreak on wagering urgency."""
     bonus_map: dict[str, object] = {}
     for b in active_bonuses:
@@ -267,22 +239,14 @@ def fallback_routing(
         bonus = bonus_map.get(pid)
         urgency = 0.0
         if bonus:
-            status = (
-                bonus.bonus_status
-                if hasattr(bonus, "bonus_status")
-                else bonus.get("bonus_status")
-            )
+            status = bonus.bonus_status if hasattr(bonus, "bonus_status") else bonus.get("bonus_status")
             if status == "in_progress":
                 req = (
                     bonus.wagering_requirement
                     if hasattr(bonus, "wagering_requirement")
                     else bonus.get("wagering_requirement", 0)
                 )
-                wagered = (
-                    bonus.wagered_amount
-                    if hasattr(bonus, "wagered_amount")
-                    else bonus.get("wagered_amount", 0)
-                )
+                wagered = bonus.wagered_amount if hasattr(bonus, "wagered_amount") else bonus.get("wagered_amount", 0)
                 remaining = max(0, req - wagered)
                 urgency = remaining * 0.0001  # Tiny tiebreaker
         return -edge + urgency

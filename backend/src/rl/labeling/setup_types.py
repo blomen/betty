@@ -1,4 +1,5 @@
 """Setup type taxonomy for AMT-based trade classification."""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -6,6 +7,7 @@ from enum import Enum
 
 class SetupType(str, Enum):
     """The 8 core setups the model learns to recognize."""
+
     # Rule-based (mechanical definitions)
     FAILED_AUCTION = "failed_auction"
     LOOK_ABOVE_BELOW_FAIL = "look_above_below_fail"

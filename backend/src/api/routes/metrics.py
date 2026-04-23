@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 
-from ..deps import get_pipeline
 from ...db.models import ExtractionRun, get_session
+from ..deps import get_pipeline
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -18,10 +18,7 @@ def get_metrics_history(limit: int = 10):
 
     history = pipeline.metrics.get_history(limit=limit)
 
-    return {
-        "history": [run.to_dict() for run in history],
-        "count": len(history)
-    }
+    return {"history": [run.to_dict() for run in history], "count": len(history)}
 
 
 @router.get("/provider/{provider_id}")

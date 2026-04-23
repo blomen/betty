@@ -33,6 +33,7 @@ Top 10 features (by GBT importance):
   Index 232 — amtdyn_4:       developing_day_type
   Index 240 — amtdyn_12:      poc_migration_speed
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -56,11 +57,11 @@ assert len(PASSTHROUGH_NAMES) == PASSTHROUGH_DIM, "PASSTHROUGH_NAMES length mism
 
 # Raw indices into the 276-dim base observation vector
 _PASSTHROUGH_INDICES: tuple[int, ...] = (
-    52,   # struct_0: price_vs_vwap in SD units
-    54,   # struct_2: VWAP position
-    55,   # struct_3: dist to swing high
-    56,   # struct_4: dist to swing low
-    57,   # struct_5: IB distance
+    52,  # struct_0: price_vs_vwap in SD units
+    54,  # struct_2: VWAP position
+    55,  # struct_3: dist to swing high
+    56,  # struct_4: dist to swing low
+    57,  # struct_5: IB distance
     140,  # tpo NY price_vs_poc
     141,  # tpo NY price_vs_vah
     142,  # tpo NY price_vs_val

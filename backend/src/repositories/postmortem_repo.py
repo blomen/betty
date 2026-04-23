@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session, joinedload
 
-from ..db.models import Bet, Trade, BetPostmortem, TradePostmortem, _utcnow
+from ..db.models import Bet, BetPostmortem, Trade, TradePostmortem, _utcnow
 
 
 class PostmortemRepo:
@@ -42,17 +42,11 @@ class PostmortemRepo:
 
     def get_uncomputed_bets(self, profile_id: int, algo_version: int) -> list[Bet]:
         """Get settled bets missing postmortem or with outdated version."""
-        computed_ids = (
-            self.db.query(BetPostmortem.bet_id)
-            .filter(BetPostmortem.version >= algo_version)
-            .subquery()
-        )
+        computed_ids = self.db.query(BetPostmortem.bet_id).filter(BetPostmortem.version >= algo_version).subquery()
         return (
             self.db.query(Bet)
             .filter(
-                Bet.profile_id == profile_id,
-                Bet.result.in_(["won", "lost"]),
-                ~Bet.id.in_(self.db.query(computed_ids))
+                Bet.profile_id == profile_id, Bet.result.in_(["won", "lost"]), ~Bet.id.in_(self.db.query(computed_ids))
             )
             .all()
         )
@@ -88,16 +82,14 @@ class PostmortemRepo:
     def get_uncomputed_trades(self, account_id: int, algo_version: int) -> list[Trade]:
         """Get closed trades missing postmortem or with outdated version."""
         computed_ids = (
-            self.db.query(TradePostmortem.trade_id)
-            .filter(TradePostmortem.version >= algo_version)
-            .subquery()
+            self.db.query(TradePostmortem.trade_id).filter(TradePostmortem.version >= algo_version).subquery()
         )
         return (
             self.db.query(Trade)
             .filter(
                 Trade.account_id == account_id,
                 Trade.state.in_(["closed", "reviewed"]),
-                ~Trade.id.in_(self.db.query(computed_ids))
+                ~Trade.id.in_(self.db.query(computed_ids)),
             )
             .all()
         )

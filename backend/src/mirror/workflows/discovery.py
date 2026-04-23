@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -21,8 +20,14 @@ _PLACEMENT_KEYWORDS = ("/place", "/placewidget", "/placebet")
 
 # Domains to ignore (CDNs, tracking, etc.)
 _IGNORE_DOMAINS = (
-    "google", "facebook", "hotjar", "clarity", "analytics",
-    "doubleclick", "cloudflare", "fonts.googleapis",
+    "google",
+    "facebook",
+    "hotjar",
+    "clarity",
+    "analytics",
+    "doubleclick",
+    "cloudflare",
+    "fonts.googleapis",
 )
 
 
@@ -41,6 +46,7 @@ def analyze_recordings(
     """
     if recordings_dir is None:
         from ...paths import get_data_dir
+
         recordings_dir = get_data_dir() / "mirror_recordings"
 
     provider_dir = recordings_dir / provider_id
@@ -52,7 +58,7 @@ def analyze_recordings(
 
     for jsonl_file in sorted(provider_dir.glob("*.jsonl")):
         try:
-            with open(jsonl_file, "r", encoding="utf-8") as f:
+            with open(jsonl_file, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -128,7 +134,7 @@ def _infer_balance_path(response: dict, depth: int = 0, prefix: str = "") -> str
     return None
 
 
-async def discover_balance_dom(page: "Page") -> dict | None:
+async def discover_balance_dom(page: Page) -> dict | None:
     """Scan the current page DOM for balance-like elements in nav/header."""
     result = await page.evaluate("""
         () => {
@@ -185,7 +191,7 @@ async def discover_balance_dom(page: "Page") -> dict | None:
 
 
 async def discover(
-    page: "Page",
+    page: Page,
     provider_id: str,
     recordings_dir: Path | None = None,
     intel_dir: Path | None = None,
@@ -197,9 +203,11 @@ async def discover(
 
     # Phase 1: Analyze recordings
     endpoints = analyze_recordings(provider_id, recordings_dir)
-    logger.info(f"[discovery] {provider_id} recordings: balance={len(endpoints['balance'])}, "
-                f"history={len(endpoints['history'])}, placement={len(endpoints['placement'])}, "
-                f"other={len(endpoints['other_api'])}")
+    logger.info(
+        f"[discovery] {provider_id} recordings: balance={len(endpoints['balance'])}, "
+        f"history={len(endpoints['history'])}, placement={len(endpoints['placement'])}, "
+        f"other={len(endpoints['other_api'])}"
+    )
 
     # Phase 2: Discover balance (recordings first, DOM fallback)
     balance_intel = None
@@ -277,7 +285,9 @@ async def discover(
         "login": {
             "method": "balance_api" if (balance_intel and balance_intel.get("method") == "api") else "dom",
             "indicator": balance_intel.get("dom") if balance_intel else None,
-        } if balance_intel else None,
+        }
+        if balance_intel
+        else None,
         "balance": balance_intel,
         "history": history_intel,
         "betslip": None,

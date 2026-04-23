@@ -4,7 +4,15 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..db.models import MarketSession, TradingSignal, MarketTrade, MarketLevel, MarketContext, SessionMetric, MarketCandle
+from ..db.models import (
+    MarketCandle,
+    MarketContext,
+    MarketLevel,
+    MarketSession,
+    MarketTrade,
+    SessionMetric,
+    TradingSignal,
+)
 
 
 class MarketRepo:
@@ -28,6 +36,7 @@ class MarketRepo:
         if self._lazy_market_db is None:
             try:
                 from ..db.models import get_market_session
+
                 self._lazy_market_db = get_market_session()
             except Exception:
                 return self.db  # Fallback to main DB
@@ -42,11 +51,7 @@ class MarketRepo:
     # ---- Sessions ----
 
     def get_session(self, date: str, symbol: str) -> MarketSession | None:
-        return (
-            self.db.query(MarketSession)
-            .filter(MarketSession.date == date, MarketSession.symbol == symbol)
-            .first()
-        )
+        return self.db.query(MarketSession).filter(MarketSession.date == date, MarketSession.symbol == symbol).first()
 
     @staticmethod
     def _sanitize_for_json(val):
@@ -56,11 +61,12 @@ class MarketRepo:
         Applied at the repo boundary so callers never need to worry about it.
         """
         # numpy scalar (float64, int64, bool_)
-        if hasattr(val, 'item'):
+        if hasattr(val, "item"):
             return val.item()
         # dataclass → dict
-        if hasattr(val, '__dataclass_fields__'):
+        if hasattr(val, "__dataclass_fields__"):
             from dataclasses import asdict
+
             return MarketRepo._sanitize_for_json(asdict(val))
         # dict — recurse
         if isinstance(val, dict):
@@ -110,7 +116,7 @@ class MarketRepo:
     # ---- Signals ----
 
     def get_active_signals(self, symbol: str | None = None) -> list[TradingSignal]:
-        q = self.db.query(TradingSignal).filter(TradingSignal.is_active == True)
+        q = self.db.query(TradingSignal).filter(TradingSignal.is_active)
         if symbol:
             q = q.join(MarketSession).filter(MarketSession.symbol == symbol)
         return q.order_by(TradingSignal.score.desc()).all()
@@ -129,13 +135,15 @@ class MarketRepo:
         count = (
             self.db.query(TradingSignal)
             .filter(
-                TradingSignal.is_active == True,
+                TradingSignal.is_active,
                 TradingSignal.triggered_at < cutoff_dt,
             )
-            .update({
-                TradingSignal.is_active: False,
-                TradingSignal.expired_at: datetime.now(timezone.utc),
-            })
+            .update(
+                {
+                    TradingSignal.is_active: False,
+                    TradingSignal.expired_at: datetime.now(timezone.utc),
+                }
+            )
         )
         return count
 
@@ -161,21 +169,31 @@ class MarketRepo:
         self.market_db.commit()
 
     def get_trades(self, symbol: str, start: datetime, end: datetime) -> list[MarketTrade]:
-        return self.market_db.query(MarketTrade).filter(
-            MarketTrade.symbol == symbol,
-            MarketTrade.ts >= start,
-            MarketTrade.ts <= end,
-        ).order_by(MarketTrade.ts).all()
+        return (
+            self.market_db.query(MarketTrade)
+            .filter(
+                MarketTrade.symbol == symbol,
+                MarketTrade.ts >= start,
+                MarketTrade.ts <= end,
+            )
+            .order_by(MarketTrade.ts)
+            .all()
+        )
 
     # ---- MarketCandle ----
 
     def get_candles(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[MarketCandle]:
-        return self.market_db.query(MarketCandle).filter(
-            MarketCandle.symbol == symbol,
-            MarketCandle.interval == interval,
-            MarketCandle.ts >= start,
-            MarketCandle.ts <= end,
-        ).order_by(MarketCandle.ts).all()
+        return (
+            self.market_db.query(MarketCandle)
+            .filter(
+                MarketCandle.symbol == symbol,
+                MarketCandle.interval == interval,
+                MarketCandle.ts >= start,
+                MarketCandle.ts <= end,
+            )
+            .order_by(MarketCandle.ts)
+            .all()
+        )
 
     def get_latest_candle(self, symbol: str, interval: str) -> MarketCandle | None:
         return (
@@ -221,17 +239,26 @@ class MarketRepo:
         # (SQLite stores naive, Databento returns tz-aware UTC)
         existing = {
             row.ts.replace(tzinfo=None) if row.ts.tzinfo else row.ts
-            for row in self.market_db.query(MarketCandle.ts).filter(
+            for row in self.market_db.query(MarketCandle.ts)
+            .filter(
                 MarketCandle.symbol == symbol,
                 MarketCandle.interval == interval,
                 MarketCandle.ts >= start,
                 MarketCandle.ts <= end,
-            ).all()
+            )
+            .all()
         }
         new_rows = [
-            MarketCandle(symbol=symbol, interval=interval, ts=b.timestamp,
-                         o=float(b.open), h=float(b.high), l=float(b.low),
-                         c=float(b.close), v=int(b.volume))
+            MarketCandle(
+                symbol=symbol,
+                interval=interval,
+                ts=b.timestamp,
+                o=float(b.open),
+                h=float(b.high),
+                l=float(b.low),
+                c=float(b.close),
+                v=int(b.volume),
+            )
             for b in bars
             if (b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp) not in existing
         ]
@@ -257,17 +284,25 @@ class MarketRepo:
         self.db.commit()
 
     def get_levels(self, symbol: str, date: str) -> list[MarketLevel]:
-        return self.db.query(MarketLevel).filter(
-            MarketLevel.symbol == symbol,
-            MarketLevel.date == date,
-        ).all()
+        return (
+            self.db.query(MarketLevel)
+            .filter(
+                MarketLevel.symbol == symbol,
+                MarketLevel.date == date,
+            )
+            .all()
+        )
 
     # ---- MarketContext ----
 
     def get_context(self, symbol: str) -> MarketContext | None:
-        return self.db.query(MarketContext).filter(
-            MarketContext.symbol == symbol,
-        ).first()
+        return (
+            self.db.query(MarketContext)
+            .filter(
+                MarketContext.symbol == symbol,
+            )
+            .first()
+        )
 
     def upsert_context(self, symbol: str, data: dict):
         """Create or update context for a symbol."""
@@ -288,10 +323,14 @@ class MarketRepo:
         """Insert or update session metric for ASPR/RF baselines."""
         rf = self._sanitize_for_json(rf)
         aspr = self._sanitize_for_json(aspr)
-        existing = self.db.query(SessionMetric).filter(
-            SessionMetric.symbol == symbol,
-            SessionMetric.date == date,
-        ).first()
+        existing = (
+            self.db.query(SessionMetric)
+            .filter(
+                SessionMetric.symbol == symbol,
+                SessionMetric.date == date,
+            )
+            .first()
+        )
         if existing:
             existing.rotation_factor = rf
             existing.aspr = aspr
@@ -301,19 +340,31 @@ class MarketRepo:
 
     def get_historical_asprs(self, symbol: str, limit: int = 20) -> list[float]:
         """Get recent ASPR values for percentile computation."""
-        rows = self.db.query(SessionMetric.aspr).filter(
-            SessionMetric.symbol == symbol,
-            SessionMetric.aspr.isnot(None),
-        ).order_by(SessionMetric.date.desc()).limit(limit).all()
+        rows = (
+            self.db.query(SessionMetric.aspr)
+            .filter(
+                SessionMetric.symbol == symbol,
+                SessionMetric.aspr.isnot(None),
+            )
+            .order_by(SessionMetric.date.desc())
+            .limit(limit)
+            .all()
+        )
         return [r[0] for r in rows]
 
     def get_historical_ib_ranges(self, symbol: str, limit: int = 20) -> list[float]:
         """Get recent IB ranges for percentile computation."""
-        rows = self.db.query(MarketSession.ib_range).filter(
-            MarketSession.symbol == symbol,
-            MarketSession.ib_range.isnot(None),
-            MarketSession.ib_range > 0,
-        ).order_by(MarketSession.date.desc()).limit(limit).all()
+        rows = (
+            self.db.query(MarketSession.ib_range)
+            .filter(
+                MarketSession.symbol == symbol,
+                MarketSession.ib_range.isnot(None),
+                MarketSession.ib_range > 0,
+            )
+            .order_by(MarketSession.date.desc())
+            .limit(limit)
+            .all()
+        )
         return [r[0] for r in rows]
 
     def get_recent_sessions(self, symbol: str, days: int = 5) -> list:

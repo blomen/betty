@@ -1,8 +1,9 @@
 """Databento REST historical data fetch utilities."""
+
 import logging
-from datetime import datetime, date, timezone
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
+from datetime import date, datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +46,16 @@ async def fetch_ohlcv_1d(
     )
     bars = []
     for record in data:
-        bars.append(OHLCVBar(
-            ts=datetime.fromtimestamp(record.ts_event / 1e9),
-            open=record.open / 1e9,
-            high=record.high / 1e9,
-            low=record.low / 1e9,
-            close=record.close / 1e9,
-            volume=record.volume,
-        ))
+        bars.append(
+            OHLCVBar(
+                ts=datetime.fromtimestamp(record.ts_event / 1e9),
+                open=record.open / 1e9,
+                high=record.high / 1e9,
+                low=record.low / 1e9,
+                close=record.close / 1e9,
+                volume=record.volume,
+            )
+        )
     return bars
 
 
@@ -76,14 +79,16 @@ async def fetch_ohlcv_1m(
     )
     bars = []
     for record in data:
-        bars.append(OHLCVBar(
-            ts=datetime.fromtimestamp(record.ts_event / 1e9),
-            open=record.open / 1e9,
-            high=record.high / 1e9,
-            low=record.low / 1e9,
-            close=record.close / 1e9,
-            volume=record.volume,
-        ))
+        bars.append(
+            OHLCVBar(
+                ts=datetime.fromtimestamp(record.ts_event / 1e9),
+                open=record.open / 1e9,
+                high=record.high / 1e9,
+                low=record.low / 1e9,
+                close=record.close / 1e9,
+                volume=record.volume,
+            )
+        )
     return bars
 
 
@@ -115,12 +120,14 @@ async def fetch_trades_historical(
         ts = datetime.fromtimestamp(rec.ts_event / 1e9, tz=timezone.utc)
         side_char = getattr(rec, "side", "")
         side = "A" if side_char == "A" else "B"
-        ticks.append(HistoricalTick(
-            ts=ts,
-            price=rec.price / 1e9,
-            size=rec.size,
-            side=side,
-        ))
+        ticks.append(
+            HistoricalTick(
+                ts=ts,
+                price=rec.price / 1e9,
+                size=rec.size,
+                side=side,
+            )
+        )
     logger.info("Fetched %d historical ticks for %s (%s to %s)", len(ticks), symbol, start, end)
     return ticks
 
@@ -158,6 +165,7 @@ async def backfill_trades_to_db(
         session = db_session_factory()
         try:
             from ..repositories.market_repo import MarketRepo
+
             repo = MarketRepo(session)
             repo.bulk_insert_trades(batch)
             total += len(batch)

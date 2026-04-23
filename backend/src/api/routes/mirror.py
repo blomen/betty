@@ -1,6 +1,7 @@
 """Mirror API routes — start/stop bet interception browser."""
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -307,10 +308,9 @@ async def scrape_poly_portfolio():
         if not best_match:
             continue
 
-        if result == "won" and best_match["stake"] > 0:
-            if 0.85 <= payout / best_match["stake"] <= 1.15:
-                result = "void"
-                payout = best_match["stake"]
+        if result == "won" and best_match["stake"] > 0 and 0.85 <= payout / best_match["stake"] <= 1.15:
+            result = "void"
+            payout = best_match["stake"]
 
         staged.append(
             {
@@ -1115,10 +1115,8 @@ async def close_poly_tabs():
         pages = context.pages
         if len(pages) > 1:
             for page in pages[1:]:
-                try:
+                with contextlib.suppress(Exception):
                     await page.close()
-                except Exception:
-                    pass
 
     remaining = len(context.pages) if context else 0
     return {"closed": True, "remaining_pages": remaining}

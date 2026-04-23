@@ -1,4 +1,5 @@
 """News Directional: post-release directional candle with VSA confirmation."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -21,9 +22,9 @@ def detect_news_directional(ctx: DetectorContext) -> list[SetupCandidate]:
         return []  # Absorption = rejection, not directional
 
     # Bullish news candle → long
-    if ctx.orderflow.delta > 0 and ctx.orderflow.cvd_trend == "rising":
-        if ctx.macro_bias != "bear":
-            candidates.append(SetupCandidate(
+    if ctx.orderflow.delta > 0 and ctx.orderflow.cvd_trend == "rising" and ctx.macro_bias != "bear":
+        candidates.append(
+            SetupCandidate(
                 setup_type="news_directional",
                 setup_name="News Directional Long",
                 direction="long",
@@ -34,12 +35,13 @@ def detect_news_directional(ctx: DetectorContext) -> list[SetupCandidate]:
                 target_2=ctx.session_levels.pdh,
                 target_3=ctx.session_levels.weekly_high,
                 base_score=65.0,  # Lower base: news is noisy
-            ))
+            )
+        )
 
     # Bearish news candle → short
-    if ctx.orderflow.delta < 0 and ctx.orderflow.cvd_trend == "falling":
-        if ctx.macro_bias != "bull":
-            candidates.append(SetupCandidate(
+    if ctx.orderflow.delta < 0 and ctx.orderflow.cvd_trend == "falling" and ctx.macro_bias != "bull":
+        candidates.append(
+            SetupCandidate(
                 setup_type="news_directional",
                 setup_name="News Directional Short",
                 direction="short",
@@ -50,6 +52,7 @@ def detect_news_directional(ctx: DetectorContext) -> list[SetupCandidate]:
                 target_2=ctx.session_levels.pdl,
                 target_3=ctx.session_levels.weekly_low,
                 base_score=65.0,
-            ))
+            )
+        )
 
     return candidates

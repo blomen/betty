@@ -6,9 +6,9 @@ actionable insights (losing segments, winning segments, erosion hotspots, etc.).
 """
 
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-from ..db.models import Bet, Trade, BetPostmortem, TradePostmortem
+from ..db.models import Bet, BetPostmortem, Trade, TradePostmortem
 
 MIN_BET_SAMPLE = 10
 MIN_TRADE_SAMPLE = 5
@@ -19,6 +19,7 @@ SEVERITY_ORDER = {"red": 0, "amber": 1, "purple": 2, "green": 3}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _edge_band(edge: float | None) -> str:
     if edge is None:
@@ -83,6 +84,7 @@ def _sorted_patterns(patterns: list[dict]) -> list[dict]:
 # Bet patterns
 # ---------------------------------------------------------------------------
 
+
 def detect_bet_patterns(rows: list[tuple[Bet, BetPostmortem]]) -> list[dict]:
     """
     Segment bet postmortem data and return pattern insights.
@@ -130,21 +132,25 @@ def detect_bet_patterns(rows: list[tuple[Bet, BetPostmortem]]) -> list[dict]:
             seg_label = f"{dim_name}={key}"
 
             if roi < -10:
-                patterns.append({
-                    "rule": "losing_segment",
-                    "severity": "red",
-                    "message": f"ROI {roi:+.1f}% in {seg_label} ({len(entries)} bets)",
-                    "segment": seg_label,
-                    "sample_size": len(entries),
-                })
+                patterns.append(
+                    {
+                        "rule": "losing_segment",
+                        "severity": "red",
+                        "message": f"ROI {roi:+.1f}% in {seg_label} ({len(entries)} bets)",
+                        "segment": seg_label,
+                        "sample_size": len(entries),
+                    }
+                )
             elif roi > 5:
-                patterns.append({
-                    "rule": "winning_segment",
-                    "severity": "green",
-                    "message": f"ROI {roi:+.1f}% in {seg_label} ({len(entries)} bets)",
-                    "segment": seg_label,
-                    "sample_size": len(entries),
-                })
+                patterns.append(
+                    {
+                        "rule": "winning_segment",
+                        "severity": "green",
+                        "message": f"ROI {roi:+.1f}% in {seg_label} ({len(entries)} bets)",
+                        "segment": seg_label,
+                        "sample_size": len(entries),
+                    }
+                )
 
     # Rule 3 & 4: Classification concentration in provider x market segments
     provider_market: dict[str, list] = defaultdict(list)
@@ -165,48 +171,51 @@ def detect_bet_patterns(rows: list[tuple[Bet, BetPostmortem]]) -> list[dict]:
         # Rule 3: Edge erosion hotspot
         erosion_count = sum(1 for _, p in losses if p.classification == "edge_erosion")
         if erosion_count / n_losses >= 0.40:
-            patterns.append({
-                "rule": "edge_erosion_hotspot",
-                "severity": "amber",
-                "message": (
-                    f"{erosion_count}/{n_losses} losses are edge_erosion "
-                    f"in {pm_key} ({len(entries)} bets)"
-                ),
-                "segment": pm_key,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "edge_erosion_hotspot",
+                    "severity": "amber",
+                    "message": (
+                        f"{erosion_count}/{n_losses} losses are edge_erosion in {pm_key} ({len(entries)} bets)"
+                    ),
+                    "segment": pm_key,
+                    "sample_size": len(entries),
+                }
+            )
 
         # Rule 4: False edge concentration
         false_edge_count = sum(1 for _, p in losses if p.classification == "false_edge")
         if false_edge_count / n_losses >= 0.30:
-            patterns.append({
-                "rule": "false_edge_concentration",
-                "severity": "red",
-                "message": (
-                    f"{false_edge_count}/{n_losses} losses are false_edge "
-                    f"in {pm_key} ({len(entries)} bets)"
-                ),
-                "segment": pm_key,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "false_edge_concentration",
+                    "severity": "red",
+                    "message": (
+                        f"{false_edge_count}/{n_losses} losses are false_edge in {pm_key} ({len(entries)} bets)"
+                    ),
+                    "segment": pm_key,
+                    "sample_size": len(entries),
+                }
+            )
 
     # Rule 5: Sizing alert — >=3 sizing_error in trailing 30 days
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=30)
     recent_sizing = [
-        (b, p) for b, p in rows
-        if p.classification == "sizing_error"
-        and b.placed_at is not None
-        and b.placed_at >= cutoff
+        (b, p)
+        for b, p in rows
+        if p.classification == "sizing_error" and b.placed_at is not None and b.placed_at >= cutoff
     ]
     if len(recent_sizing) >= 3:
-        patterns.append({
-            "rule": "sizing_alert",
-            "severity": "amber",
-            "message": f"{len(recent_sizing)} sizing errors in trailing 30 days",
-            "segment": "trailing_30d",
-            "sample_size": len(recent_sizing),
-        })
+        patterns.append(
+            {
+                "rule": "sizing_alert",
+                "severity": "amber",
+                "message": f"{len(recent_sizing)} sizing errors in trailing 30 days",
+                "segment": "trailing_30d",
+                "sample_size": len(recent_sizing),
+            }
+        )
 
     return _sorted_patterns(patterns)
 
@@ -214,6 +223,7 @@ def detect_bet_patterns(rows: list[tuple[Bet, BetPostmortem]]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Trade patterns
 # ---------------------------------------------------------------------------
+
 
 def detect_trade_patterns(rows: list[tuple[Trade, TradePostmortem]]) -> list[dict]:
     """
@@ -252,21 +262,25 @@ def detect_trade_patterns(rows: list[tuple[Trade, TradePostmortem]]) -> list[dic
         seg_label = f"setup={setup}"
 
         if avg_r < 0:
-            patterns.append({
-                "rule": "setup_underperformer",
-                "severity": "red",
-                "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
-                "segment": seg_label,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "setup_underperformer",
+                    "severity": "red",
+                    "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
+                    "segment": seg_label,
+                    "sample_size": len(entries),
+                }
+            )
         elif avg_r > 0.5:
-            patterns.append({
-                "rule": "setup_performer",
-                "severity": "green",
-                "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
-                "segment": seg_label,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "setup_performer",
+                    "severity": "green",
+                    "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
+                    "segment": seg_label,
+                    "sample_size": len(entries),
+                }
+            )
 
     # Rule 3: Direction x instrument
     for di_key, entries in dir_inst_seg.items():
@@ -280,25 +294,32 @@ def detect_trade_patterns(rows: list[tuple[Trade, TradePostmortem]]) -> list[dic
         seg_label = f"dir_inst={di_key}"
 
         if avg_r < -0.3:
-            patterns.append({
-                "rule": "direction_instrument_underperformer",
-                "severity": "red",
-                "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
-                "segment": seg_label,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "direction_instrument_underperformer",
+                    "severity": "red",
+                    "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
+                    "segment": seg_label,
+                    "sample_size": len(entries),
+                }
+            )
         elif avg_r > 0.5:
-            patterns.append({
-                "rule": "direction_instrument_performer",
-                "severity": "green",
-                "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
-                "segment": seg_label,
-                "sample_size": len(entries),
-            })
+            patterns.append(
+                {
+                    "rule": "direction_instrument_performer",
+                    "severity": "green",
+                    "message": f"Avg R {avg_r:+.2f} in {seg_label} ({len(entries)} trades)",
+                    "segment": seg_label,
+                    "sample_size": len(entries),
+                }
+            )
 
     # Rule 4: Streak impact — win rate after 2+ consecutive losses vs baseline
-    all_r = [(pm.r_multiple, pm.streak_position) for _, pm in rows
-             if pm.r_multiple is not None and pm.streak_position is not None]
+    all_r = [
+        (pm.r_multiple, pm.streak_position)
+        for _, pm in rows
+        if pm.r_multiple is not None and pm.streak_position is not None
+    ]
 
     if len(all_r) >= MIN_TRADE_SAMPLE:
         wins_total = sum(1 for r, _ in all_r if r > 0)
@@ -312,27 +333,31 @@ def detect_trade_patterns(rows: list[tuple[Trade, TradePostmortem]]) -> list[dic
             deviation_pp = (streak_wr - baseline_wr) * 100
 
             if abs(deviation_pp) > 15:
-                patterns.append({
-                    "rule": "streak_impact",
-                    "severity": "red",
-                    "message": (
-                        f"Win rate after 2+ losses: {streak_wr:.0%} vs "
-                        f"baseline {baseline_wr:.0%} ({deviation_pp:+.0f}pp, "
-                        f"{len(after_streak)} trades)"
-                    ),
-                    "segment": "post_losing_streak",
-                    "sample_size": len(after_streak),
-                })
+                patterns.append(
+                    {
+                        "rule": "streak_impact",
+                        "severity": "red",
+                        "message": (
+                            f"Win rate after 2+ losses: {streak_wr:.0%} vs "
+                            f"baseline {baseline_wr:.0%} ({deviation_pp:+.0f}pp, "
+                            f"{len(after_streak)} trades)"
+                        ),
+                        "segment": "post_losing_streak",
+                        "sample_size": len(after_streak),
+                    }
+                )
 
     # Rule 5: Psych correlation — avg R differs >0.5R between psych <6 and >=7
-    low_psych = [pm.r_multiple for _, pm in rows
-                 if pm.routine_psych_avg is not None
-                 and pm.routine_psych_avg < 6
-                 and pm.r_multiple is not None]
-    high_psych = [pm.r_multiple for _, pm in rows
-                  if pm.routine_psych_avg is not None
-                  and pm.routine_psych_avg >= 7
-                  and pm.r_multiple is not None]
+    low_psych = [
+        pm.r_multiple
+        for _, pm in rows
+        if pm.routine_psych_avg is not None and pm.routine_psych_avg < 6 and pm.r_multiple is not None
+    ]
+    high_psych = [
+        pm.r_multiple
+        for _, pm in rows
+        if pm.routine_psych_avg is not None and pm.routine_psych_avg >= 7 and pm.r_multiple is not None
+    ]
 
     if len(low_psych) >= MIN_TRADE_SAMPLE and len(high_psych) >= MIN_TRADE_SAMPLE:
         avg_low = sum(low_psych) / len(low_psych)
@@ -340,15 +365,14 @@ def detect_trade_patterns(rows: list[tuple[Trade, TradePostmortem]]) -> list[dic
         diff = avg_high - avg_low
 
         if abs(diff) > 0.5:
-            patterns.append({
-                "rule": "psych_correlation",
-                "severity": "purple",
-                "message": (
-                    f"Psych >=7 avg R {avg_high:+.2f} vs <6 avg R {avg_low:+.2f} "
-                    f"(delta {diff:+.2f}R)"
-                ),
-                "segment": "psych_band",
-                "sample_size": len(low_psych) + len(high_psych),
-            })
+            patterns.append(
+                {
+                    "rule": "psych_correlation",
+                    "severity": "purple",
+                    "message": (f"Psych >=7 avg R {avg_high:+.2f} vs <6 avg R {avg_low:+.2f} (delta {diff:+.2f}R)"),
+                    "segment": "psych_band",
+                    "sample_size": len(low_psych) + len(high_psych),
+                }
+            )
 
     return _sorted_patterns(patterns)

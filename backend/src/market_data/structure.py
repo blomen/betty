@@ -25,40 +25,40 @@ Trend states (5-state machine):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SwingLevel:
     price: float
-    timestamp: int        # epoch seconds
-    type: str             # "swing_high" or "swing_low"
-    timeframe: str = ""   # set by caller
+    timestamp: int  # epoch seconds
+    type: str  # "swing_high" or "swing_low"
+    timeframe: str = ""  # set by caller
 
 
 @dataclass
 class StructureEvent:
-    price: float          # candle close that triggered the confirmation
-    timestamp: int        # epoch seconds of the triggering candle
-    event_type: str       # "bos_bullish" | "bos_bearish" | "choch_bullish" | "choch_bearish"
-    swing_type: str       # "swing_high" | "swing_low" — the swing that was confirmed
-    swing_price: float    # price of the confirmed swing point
+    price: float  # candle close that triggered the confirmation
+    timestamp: int  # epoch seconds of the triggering candle
+    event_type: str  # "bos_bullish" | "bos_bearish" | "choch_bullish" | "choch_bearish"
+    swing_type: str  # "swing_high" | "swing_low" — the swing that was confirmed
+    swing_price: float  # price of the confirmed swing point
 
 
 @dataclass
 class StructureResult:
-    structure: str        # "uptrend" | "downtrend" | "reversing_up" | "reversing_down" | "ranging"
-    swing_highs: list[SwingLevel]      # confirmed, newest first, max 3
-    swing_lows: list[SwingLevel]       # confirmed, newest first, max 3
+    structure: str  # "uptrend" | "downtrend" | "reversing_up" | "reversing_down" | "ranging"
+    swing_highs: list[SwingLevel]  # confirmed, newest first, max 3
+    swing_lows: list[SwingLevel]  # confirmed, newest first, max 3
     last_bos: StructureEvent | None
     last_choch: StructureEvent | None
-    bos_active: bool                   # True if last BOS is within recency window
-    choch_active: bool                 # True if last CHoCH is within recency window
-    events: list[StructureEvent]       # all events in chronological order
+    bos_active: bool  # True if last BOS is within recency window
+    choch_active: bool  # True if last CHoCH is within recency window
+    events: list[StructureEvent]  # all events in chronological order
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,7 @@ _MAX_SWINGS = 3
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
+
 
 class MarketStructureEngine:
     """
@@ -175,7 +176,7 @@ class MarketStructureEngine:
         Confirmation trigger: price breaks BELOW the last confirmed swing low.
         """
         # Track whether potential_high advances this bar (used for bootstrap reset)
-        high_advanced = (self._potential_high_price is None or hi > self._potential_high_price)
+        high_advanced = self._potential_high_price is None or hi > self._potential_high_price
 
         # Update running potential high
         if high_advanced:
@@ -198,14 +199,14 @@ class MarketStructureEngine:
             if self._confirmed_highs and self._potential_low_price is not None:
                 last_sh = self._confirmed_highs[0]
                 break_price_up = cl if self._use_close_only else hi
-                if (
-                    break_price_up > last_sh.price
-                    and self._potential_high_ts != self._potential_low_ts
-                ):
+                if break_price_up > last_sh.price and self._potential_high_ts != self._potential_low_ts:
                     self._force_swing_pair(
-                        sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
-                        sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
-                        trigger_close=cl, trigger_ts=ts,
+                        sh_price=self._potential_high_price,
+                        sh_ts=self._potential_high_ts or ts,
+                        sl_price=self._potential_low_price,
+                        sl_ts=self._potential_low_ts or ts,
+                        trigger_close=cl,
+                        trigger_ts=ts,
                     )
                     return
 
@@ -269,14 +270,14 @@ class MarketStructureEngine:
         # Guard: require high and low from different bars (real bounce, not same-bar noise).
         if self._confirmed_lows and self._potential_low_price is not None and self._potential_high_price is not None:
             last_sl = self._confirmed_lows[0]
-            if (
-                break_price_dn < last_sl.price
-                and self._potential_high_ts != self._potential_low_ts
-            ):
+            if break_price_dn < last_sl.price and self._potential_high_ts != self._potential_low_ts:
                 self._force_swing_pair(
-                    sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
-                    sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
-                    trigger_close=cl, trigger_ts=ts,
+                    sh_price=self._potential_high_price,
+                    sh_ts=self._potential_high_ts or ts,
+                    sl_price=self._potential_low_price,
+                    sl_ts=self._potential_low_ts or ts,
+                    trigger_close=cl,
+                    trigger_ts=ts,
                 )
         elif not self._confirmed_lows and self._confirmed_highs:
             # Bootstrap: first confirmed high but no confirmed lows yet.
@@ -380,9 +381,12 @@ class MarketStructureEngine:
 
     def _force_swing_pair(
         self,
-        sh_price: float, sh_ts: int,
-        sl_price: float, sl_ts: int,
-        trigger_close: float, trigger_ts: int,
+        sh_price: float,
+        sh_ts: int,
+        sl_price: float,
+        sl_ts: int,
+        trigger_close: float,
+        trigger_ts: int,
     ) -> None:
         """Force-confirm a swing high + swing low pair in a persistent trend.
 
@@ -401,8 +405,11 @@ class MarketStructureEngine:
         sh_event_type = self._classify_event(is_high=True)
         self._update_trend(sh_event_type)
         sh_event = StructureEvent(
-            price=trigger_close, timestamp=trigger_ts,
-            event_type=sh_event_type, swing_type="swing_high", swing_price=sh_price,
+            price=trigger_close,
+            timestamp=trigger_ts,
+            event_type=sh_event_type,
+            swing_type="swing_high",
+            swing_price=sh_price,
         )
         self._events.append(sh_event)
         if "bos" in sh_event_type:
@@ -421,8 +428,11 @@ class MarketStructureEngine:
         sl_event_type = self._classify_event(is_high=False)
         self._update_trend(sl_event_type)
         sl_event = StructureEvent(
-            price=trigger_close, timestamp=trigger_ts,
-            event_type=sl_event_type, swing_type="swing_low", swing_price=sl_price,
+            price=trigger_close,
+            timestamp=trigger_ts,
+            event_type=sl_event_type,
+            swing_type="swing_low",
+            swing_price=sl_price,
         )
         self._events.append(sl_event)
         if "bos" in sl_event_type:
@@ -453,15 +463,15 @@ class MarketStructureEngine:
         if is_high:
             # Bearish event — price broke below a swing low, confirming a swing high
             if self._trend in (_UPTREND, _REVERSING_UP):
-                return "choch_bearish"   # breaking against prevailing up bias
+                return "choch_bearish"  # breaking against prevailing up bias
             else:
-                return "bos_bearish"     # continuation of down move or from ranging
+                return "bos_bearish"  # continuation of down move or from ranging
         else:
             # Bullish event — price broke above a swing high, confirming a swing low
             if self._trend in (_DOWNTREND, _REVERSING_DOWN):
-                return "choch_bullish"   # breaking against prevailing down bias
+                return "choch_bullish"  # breaking against prevailing down bias
             else:
-                return "bos_bullish"     # continuation of up move or from ranging
+                return "bos_bullish"  # continuation of up move or from ranging
 
     def _update_trend(self, event_type: str) -> None:
         """Advance the trend state machine."""
@@ -482,7 +492,7 @@ class MarketStructureEngine:
             if event_type == "bos_bearish":
                 self._trend = _DOWNTREND
             elif event_type == "bos_bullish":
-                self._trend = _UPTREND   # false break / failed reversal
+                self._trend = _UPTREND  # false break / failed reversal
             elif event_type == "choch_bullish":
                 self._trend = _REVERSING_UP  # reversal failed, swinging back up
 
@@ -509,7 +519,7 @@ class MarketStructureEngine:
 
         return StructureResult(
             structure=self._trend,
-            swing_highs=list(self._confirmed_highs),   # already newest-first, max 3
+            swing_highs=list(self._confirmed_highs),  # already newest-first, max 3
             swing_lows=list(self._confirmed_lows),
             last_bos=self._last_bos,
             last_choch=self._last_choch,

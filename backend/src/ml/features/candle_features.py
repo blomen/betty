@@ -1,4 +1,5 @@
 """Extract candle snapshot feature vectors for M6 temporal pattern model."""
+
 from src.market_data.orderflow import CandleFlow
 
 TICK_SIZE = 0.25  # NQ/ES futures minimum tick
@@ -32,17 +33,14 @@ def snapshot_candles(
         volume_ratio = volume / avg_volume if avg_volume > 0 else None
         abs_delta = abs(candle.delta)
         passive_active = (volume - abs_delta) / abs_delta if abs_delta > 0 else None
-        close_position = (
-            (candle.close - candle.low) / (candle.high - candle.low)
-            if candle.high != candle.low else None
-        )
+        close_position = (candle.close - candle.low) / (candle.high - candle.low) if candle.high != candle.low else None
         vwap_distance = (candle.close - vwap) / TICK_SIZE if vwap is not None else None
         poc_distance = (candle.close - poc) / TICK_SIZE if poc is not None else None
         # spread field on CandleFlow = high - low (candle range), not bid/ask spread
         spread_ticks = candle.spread / TICK_SIZE
 
         # Footprint: compute from price_levels if available
-        imb_max = candle.imbalance_ratio_max if hasattr(candle, 'imbalance_ratio_max') else None
+        imb_max = candle.imbalance_ratio_max if hasattr(candle, "imbalance_ratio_max") else None
         # Big trades: candles with volume >= 3× median
         big_count = None
         big_net = None
@@ -50,26 +48,28 @@ def snapshot_candles(
             big_count = 1 if volume >= avg_volume * 3 else 0
             big_net = candle.delta if big_count else 0
 
-        result.append({
-            "ts": candle.ts.isoformat(),
-            "delta": candle.delta,
-            "delta_pct": delta_pct,
-            "cvd": cvd_running,
-            "volume": volume,
-            "volume_ratio": volume_ratio,
-            "spread_ticks": spread_ticks,
-            "body_ratio": candle.body_ratio,
-            "close_position": close_position,
-            "tick_count": candle.tick_count,
-            "passive_active_ratio": passive_active,
-            "vwap_distance_ticks": vwap_distance,
-            "poc_distance_ticks": poc_distance,
-            # Footprint — computed from tick-level price flow
-            "imbalance_ratio_max": imb_max,
-            "stacked_imbalance_count": None,  # Set below after full window processed
-            "big_trades_count": big_count,
-            "big_trades_net_delta": big_net,
-        })
+        result.append(
+            {
+                "ts": candle.ts.isoformat(),
+                "delta": candle.delta,
+                "delta_pct": delta_pct,
+                "cvd": cvd_running,
+                "volume": volume,
+                "volume_ratio": volume_ratio,
+                "spread_ticks": spread_ticks,
+                "body_ratio": candle.body_ratio,
+                "close_position": close_position,
+                "tick_count": candle.tick_count,
+                "passive_active_ratio": passive_active,
+                "vwap_distance_ticks": vwap_distance,
+                "poc_distance_ticks": poc_distance,
+                # Footprint — computed from tick-level price flow
+                "imbalance_ratio_max": imb_max,
+                "stacked_imbalance_count": None,  # Set below after full window processed
+                "big_trades_count": big_count,
+                "big_trades_net_delta": big_net,
+            }
+        )
 
     # Backfill stacked_imbalance_count per candle (consecutive same-direction imbalances ending at each bar)
     for i in range(len(result)):

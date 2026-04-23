@@ -6,19 +6,24 @@ Falls back to JSON file if DB table is empty (first run before scheduler populat
 """
 
 import asyncio
-import sys
+import contextlib
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
-from ...db.models import SpecialOdds
-from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
+from ...analysis.ev_enrichment import (
+    deduplicate_specials,
+    enrich_specials_with_ev,
+    filter_expired,
+    store_specials_to_db,
+)
 from ...analysis.llm_enrichment import get_llm_health
+from ...db.models import SpecialOdds
+from ..deps import get_db
 
 # Ensure scripts/ package is importable (lives in backend/)
 _backend_root = str(Path(__file__).resolve().parent.parent.parent.parent)
@@ -77,6 +82,7 @@ def _load_from_db(db: Session) -> list[dict]:
 def _load_from_json_fallback(db: Session) -> list[dict]:
     """Fallback: load from JSON, enrich with EV, return. Used when DB is empty."""
     from scripts.scrape_specials import load_specials
+
     specials = filter_expired(load_specials(), db=db)
     if specials:
         specials = enrich_specials_with_ev(specials, db)
@@ -85,9 +91,9 @@ def _load_from_json_fallback(db: Session) -> list[dict]:
 
 @router.get("")
 def get_specials(
-    sport: Optional[str] = Query(None, description="Filter by sport (e.g. football)"),
-    provider: Optional[str] = Query(None, description="Filter by provider (matches provider + shared_providers)"),
-    category: Optional[str] = Query(None, description="Filter by category (boost, superboost)"),
+    sport: str | None = Query(None, description="Filter by sport (e.g. football)"),
+    provider: str | None = Query(None, description="Filter by provider (matches provider + shared_providers)"),
+    category: str | None = Query(None, description="Filter by category (boost, superboost)"),
     ev_only: bool = Query(False, description="Only return +EV boosts"),
     measurable_only: bool = Query(True, description="Only return boosts with verified EV measurement"),
     sort: str = Query("boost_pct", description="Sort field: boost_pct, edge_pct, boosted_odds, event_time"),
@@ -118,7 +124,8 @@ def get_specials(
     if provider:
         provider_lower = provider.lower()
         specials = [
-            s for s in specials
+            s
+            for s in specials
             if s.get("provider", "").lower() == provider_lower
             or provider_lower in [p.lower() for p in (s.get("shared_providers") or [])]
         ]
@@ -133,6 +140,7 @@ def get_specials(
     # --- Pre-compute Kelly stakes for all boosts ---
     try:
         from ...services.bankroll_service import BankrollService
+
         svc = BankrollService(db)
         profile = svc.profile_repo.get_active()
         calc = svc.get_stake_calculator(profile.id)
@@ -220,9 +228,9 @@ def get_specials(
 @router.post("/scrape")
 async def scrape_specials(db: Session = Depends(get_db)):
     """Run the specials scraper, enrich with EV, store to DB, and return fresh results."""
-    from scripts.scrape_specials import scrape_all, save_specials
-    import asyncio
     from dataclasses import asdict
+
+    from scripts.scrape_specials import save_specials, scrape_all
 
     loop = asyncio.get_running_loop()
     specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
@@ -240,6 +248,7 @@ async def scrape_specials(db: Session = Depends(get_db)):
 
     # LLM probability research (async — Brave Search + Claude Haiku)
     from ...analysis.llm_enrichment import enrich_specials_with_llm
+
     active = await enrich_specials_with_llm(active, db)
 
     try:
@@ -269,31 +278,29 @@ def _persist_boost_log(run_log):
         session.query(BoostExtractionLog).delete()
 
         for pl in run_log.providers:
-            session.add(BoostExtractionLog(
-                run_id=run_log.run_id,
-                scraped_at=scraped_at,
-                provider_id=pl.provider_id,
-                scraper_type=pl.scraper_type,
-                status=pl.status,
-                duration_seconds=pl.duration_seconds,
-                boosts_found=pl.boosts_found,
-                error_message=pl.error_message,
-                run_total_boosts=run_log.total_boosts,
-                run_duration_seconds=run_log.duration_seconds,
-            ))
+            session.add(
+                BoostExtractionLog(
+                    run_id=run_log.run_id,
+                    scraped_at=scraped_at,
+                    provider_id=pl.provider_id,
+                    scraper_type=pl.scraper_type,
+                    status=pl.status,
+                    duration_seconds=pl.duration_seconds,
+                    boosts_found=pl.boosts_found,
+                    error_message=pl.error_message,
+                    run_total_boosts=run_log.total_boosts,
+                    run_duration_seconds=run_log.duration_seconds,
+                )
+            )
 
         session.commit()
     except Exception as e:
         logger.error(f"Failed to persist boost log: {e}")
-        try:
+        with contextlib.suppress(Exception):
             session.rollback()
-        except Exception:
-            pass
     finally:
-        try:
+        with contextlib.suppress(Exception):
             session.close()
-        except Exception:
-            pass
 
 
 @router.get("/extraction-log")
@@ -307,14 +314,16 @@ def get_boost_extraction_log(db: Session = Depends(get_db)):
 
     providers = []
     for r in rows:
-        providers.append({
-            "provider_id": r.provider_id,
-            "scraper_type": r.scraper_type,
-            "status": r.status,
-            "duration_seconds": r.duration_seconds,
-            "boosts_found": r.boosts_found,
-            "error_message": r.error_message,
-        })
+        providers.append(
+            {
+                "provider_id": r.provider_id,
+                "scraper_type": r.scraper_type,
+                "status": r.status,
+                "duration_seconds": r.duration_seconds,
+                "boosts_found": r.boosts_found,
+                "error_message": r.error_message,
+            }
+        )
 
     first = rows[0]
     return {

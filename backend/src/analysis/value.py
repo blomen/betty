@@ -12,12 +12,12 @@ Formula:
 A bet has value if edge > 0 (provider odds > fair odds).
 """
 
-from dataclasses import dataclass
-from typing import Optional
 import logging
+from dataclasses import dataclass
+
+from src.constants import POLYMARKET_FEE_RATE
 
 from .devig import get_fair_odds_for_outcome
-from src.constants import POLYMARKET_FEE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ValueBet:
     """A detected value betting opportunity."""
+
     event_id: str
     market: str
     outcome: str
@@ -41,27 +42,27 @@ class ValueBet:
     edge_pct: float
 
     # Optional stake recommendation (filled by StakeCalculator integration)
-    recommended_stake: Optional[float] = None
-    kelly_fraction: Optional[float] = None
-    is_high_confidence: Optional[bool] = None
-    skip_reason: Optional[str] = None
+    recommended_stake: float | None = None
+    kelly_fraction: float | None = None
+    is_high_confidence: bool | None = None
+    skip_reason: str | None = None
 
     # Freshness tracking
-    odds_updated_at: Optional[str] = None  # ISO timestamp of when this provider's odds were last updated
+    odds_updated_at: str | None = None  # ISO timestamp of when this provider's odds were last updated
 
     # Point/line value (for spread/total markets)
-    point: Optional[float] = None
+    point: float | None = None
 
     # Event context (optional, for display)
-    home_team: Optional[str] = None
-    away_team: Optional[str] = None
-    sport: Optional[str] = None
-    start_time: Optional[str] = None
+    home_team: str | None = None
+    away_team: str | None = None
+    sport: str | None = None
+    start_time: str | None = None
 
     # ML feature data (populated by scanner, consumed by feature extractor)
-    prob_sum: Optional[float] = None
-    pinnacle_overround: Optional[float] = None
-    odds_snapshot: Optional[list] = None
+    prob_sum: float | None = None
+    pinnacle_overround: float | None = None
+    odds_snapshot: list | None = None
 
     @property
     def expected_value(self) -> float:
@@ -99,7 +100,7 @@ def find_value(
     fair_odds: float,
     min_edge_pct: float = 2.0,
     **kwargs,
-) -> Optional[ValueBet]:
+) -> ValueBet | None:
     """
     Check if a bet has positive expected value.
 
@@ -125,12 +126,12 @@ def find_value(
     edge_pct = compute_edge(provider, provider_odds, fair_odds)
     if edge_pct is None:
         return None
-    
+
     if edge_pct < min_edge_pct:
         return None
-    
+
     fair_probability = 1 / fair_odds
-    
+
     return ValueBet(
         event_id=event_id,
         market=market,
@@ -149,11 +150,11 @@ def scan_for_value(
     outcome: str,
     fair_odds: float,
     provider_odds_list: list[dict],
-    min_edge_pct: float = 2.0
+    min_edge_pct: float = 2.0,
 ) -> list[ValueBet]:
     """
     Find all value bets for an outcome across providers.
-    
+
     Args:
         event_id: Canonical event ID
         market: Market type
@@ -161,12 +162,12 @@ def scan_for_value(
         fair_odds: Fair odds (from Pinnacle de-vigged)
         provider_odds_list: [{provider, odds}, ...]
         min_edge_pct: Minimum edge threshold
-    
+
     Returns:
         List of ValueBet opportunities
     """
     value_bets = []
-    
+
     for po in provider_odds_list:
         vb = find_value(
             event_id=event_id,
@@ -180,7 +181,7 @@ def scan_for_value(
         if vb:
             value_bets.append(vb)
             logger.debug(f"Value bet: {vb.provider} {vb.outcome} @ {vb.provider_odds} (+{vb.edge_pct}%)")
-    
+
     return value_bets
 
 
@@ -190,27 +191,25 @@ def find_best_value(
     outcome: str,
     fair_odds: float,
     provider_odds_list: list[dict],
-    min_edge_pct: float = 2.0
-) -> Optional[ValueBet]:
+    min_edge_pct: float = 2.0,
+) -> ValueBet | None:
     """
     Find the single best value bet for an outcome.
-    
+
     Returns the provider with highest edge, or None if no value exists.
     """
-    value_bets = scan_for_value(
-        event_id, market, outcome, fair_odds, provider_odds_list, min_edge_pct
-    )
-    
+    value_bets = scan_for_value(event_id, market, outcome, fair_odds, provider_odds_list, min_edge_pct)
+
     if not value_bets:
         return None
-    
+
     return max(value_bets, key=lambda x: x.edge_pct)
 
 
 def get_fair_odds(
     outcome: str,
     market_odds: dict[str, list[dict]],
-) -> Optional[tuple[float, str]]:
+) -> tuple[float, str] | None:
     """
     Get de-vigged fair odds for an outcome from Pinnacle.
 
@@ -257,9 +256,7 @@ def get_fair_odds(
 
     if len(pinnacle_market) >= 2:
         # Full market available, de-vig properly
-        fair_odds = get_fair_odds_for_outcome(
-            outcome, pinnacle_market, method="multiplicative"
-        )
+        fair_odds = get_fair_odds_for_outcome(outcome, pinnacle_market, method="multiplicative")
         return (fair_odds, "pinnacle")
     else:
         # Single outcome, can't de-vig - use raw (not ideal)

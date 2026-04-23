@@ -6,25 +6,24 @@ Uses centralized ConfigLoader for configuration management.
 """
 
 import logging
-from typing import Dict
 
+from .config import ConfigLoader
 from .core import Retriever
-from .providers.kambi import KambiRetriever
-from .providers.polymarket import PolymarketRetriever
-from .providers.spectate import SpectateRetriever
-from .providers.gecko_v2 import GeckoV2Retriever
-from .providers.pinnacle import PinnacleRetriever
 from .providers.altenar import AltenarRetriever
-from .providers.vbet import VbetRetriever
-from .providers.interwetten import InterwettenRetriever
-from .providers.coolbet import CoolbetRetriever
-from .providers.tipwin import TipwinRetriever
-from .providers.stake import StakeRetriever
 from .providers.cloudbet import CloudbetRetriever
-from .providers.marathon import MarathonRetriever
+from .providers.coolbet import CoolbetRetriever
+from .providers.gecko_v2 import GeckoV2Retriever
+from .providers.interwetten import InterwettenRetriever
 from .providers.kalshi import KalshiRetriever
+from .providers.kambi import KambiRetriever
+from .providers.marathon import MarathonRetriever
+from .providers.pinnacle import PinnacleRetriever
+from .providers.polymarket import PolymarketRetriever
 from .providers.smarkets import SmarketsRetriever
-from .config import ConfigLoader, SportConfig, ProviderConfig
+from .providers.spectate import SpectateRetriever
+from .providers.stake import StakeRetriever
+from .providers.tipwin import TipwinRetriever
+from .providers.vbet import VbetRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +35,12 @@ class ExtractorFactory:
     Uses singleton pattern to ensure consistent config across the app.
     Delegates configuration loading to ConfigLoader.
     """
+
     _instance = None
 
     def __init__(self):
         self._config_loader = ConfigLoader.get_instance()
-        self._extractor_cache: Dict[str, Retriever] = {}
+        self._extractor_cache: dict[str, Retriever] = {}
         self._circuit_breaker = None  # Injected by orchestrator
 
     def set_circuit_breaker(self, circuit_breaker):
@@ -126,9 +126,7 @@ class ExtractorFactory:
 
         if retriever_type == "kambi":
             retriever = KambiRetriever(
-                config,
-                circuit_breaker=self._circuit_breaker,
-                rate_limit_config=rate_limit_config
+                config, circuit_breaker=self._circuit_breaker, rate_limit_config=rate_limit_config
             )
         elif retriever_type == "polymarket":
             retriever = PolymarketRetriever(
@@ -140,6 +138,7 @@ class ExtractorFactory:
             # Spectate providers (888sport, MrGreen) - headless mode works
             # Residential proxy reduces 403 rate-limit blocks
             from .core import BrowserTransport
+
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = SpectateRetriever(config, transport=transport)
         elif retriever_type == "gecko_v2":
@@ -147,6 +146,7 @@ class ExtractorFactory:
             # Using headless=True for better performance (2-3s faster per sport)
             # Swedish ISP proxy needed — Betsson 403s from German datacenter IPs
             from .core import BrowserTransport
+
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = GeckoV2Retriever(config, transport=transport)
         elif retriever_type == "snabbare":
@@ -154,6 +154,7 @@ class ExtractorFactory:
             # Headed required: headless drops from ~900 to ~249 events (WS data not delivered)
             from .core import BrowserTransport
             from .providers.snabbare import SnabbareRetriever
+
             transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
             retriever = SnabbareRetriever(config, transport=transport)
         elif retriever_type == "pinnacle":
@@ -167,6 +168,7 @@ class ExtractorFactory:
             # Headless works (no anti-bot protection) and is much faster
             from .core import BrowserTransport
             from .providers.tenbet import TenBetRetriever
+
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = TenBetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
@@ -183,6 +185,7 @@ class ExtractorFactory:
             # Interwetten SSR - browser-based DOM parsing (headless works fine)
             # Swedish ISP proxy needed — Cloudflare blocks datacenter IPs
             from .core import BrowserTransport
+
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
@@ -196,7 +199,10 @@ class ExtractorFactory:
             # PROXY: Cloudflare blocks datacenter IPs (added ~Apr 2026)
             # NO RESOURCE BLOCKING: context route handler conflicts with page.route()
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True, disable_resource_blocking=True)
+
+            transport = BrowserTransport(
+                headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True, disable_resource_blocking=True
+            )
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "stake":
             retriever = StakeRetriever(
@@ -231,13 +237,16 @@ class ExtractorFactory:
         elif retriever_type == "custom":
             # Custom provider implementations
             from .core import BrowserTransport
+
             transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
 
             if provider_id == "comeon":
                 from .providers.comeon_multileague import ComeOnMultiLeagueRetriever
+
                 retriever = ComeOnMultiLeagueRetriever(config, transport=transport)
             elif provider_id in ("hajper", "lyllo"):
                 from .providers.hajper import HajperRetriever
+
                 retriever = HajperRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown custom provider '{provider_id}'")

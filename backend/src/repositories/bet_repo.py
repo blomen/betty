@@ -1,9 +1,8 @@
 """Bet repository - bet data access."""
 
-from typing import Optional
 from sqlalchemy.orm import Session
 
-from ..db.models import Bet, Provider
+from ..db.models import Bet
 
 
 class BetRepo:
@@ -18,18 +17,26 @@ class BetRepo:
 
     def get_settled(self, profile_id: int) -> list[Bet]:
         """Get settled bets for a profile."""
-        return self.db.query(Bet).filter(
-            Bet.result != "pending",
-            Bet.profile_id == profile_id,
-        ).all()
+        return (
+            self.db.query(Bet)
+            .filter(
+                Bet.result != "pending",
+                Bet.profile_id == profile_id,
+            )
+            .all()
+        )
 
     def get_pending_for_provider(self, provider_id: str, profile_id: int) -> list[Bet]:
         """Get pending bets for a provider and profile."""
-        return self.db.query(Bet).filter(
-            Bet.provider_id == provider_id,
-            Bet.profile_id == profile_id,
-            Bet.result == "pending",
-        ).all()
+        return (
+            self.db.query(Bet)
+            .filter(
+                Bet.provider_id == provider_id,
+                Bet.profile_id == profile_id,
+                Bet.result == "pending",
+            )
+            .all()
+        )
 
     def list_for_profile(
         self,
@@ -43,7 +50,7 @@ class BetRepo:
         if status:
             query = query.filter(Bet.result == status)
         if exclude_bonus:
-            query = query.filter(Bet.is_bonus != True)
+            query = query.filter(not Bet.is_bonus)
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     def create(self, **kwargs) -> Bet:

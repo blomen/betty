@@ -1,19 +1,18 @@
 """Opportunities API routes - value betting opportunities."""
 
+import json
 import logging
 import time as _time
-from datetime import datetime, timezone
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Response
+
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-import json
 
-from ...services import OpportunityService
-from ...services.play_service import PlaySessionService
-from ...services.batch_builder import BatchBuilder
 from ...repositories import ProfileRepo
+from ...services import OpportunityService
+from ...services.batch_builder import BatchBuilder
+from ...services.play_service import PlaySessionService
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
 
@@ -35,14 +34,14 @@ def _get_service(db: Session = Depends(get_db)) -> OpportunityService:
 @router.get("")
 def list_opportunities(
     response: Response,
-    type: Optional[str] = None,
+    type: str | None = None,
     active_only: bool = True,
-    provider1: Optional[str] = None,
-    provider2: Optional[str] = None,
-    providers: Optional[str] = None,
-    market: Optional[str] = None,
-    sport: Optional[str] = None,
-    min_value: Optional[float] = None,
+    provider1: str | None = None,
+    provider2: str | None = None,
+    providers: str | None = None,
+    market: str | None = None,
+    sport: str | None = None,
+    min_value: float | None = None,
     limit: int = 2000,
     service: OpportunityService = Depends(_get_service),
 ):
@@ -109,10 +108,7 @@ def match_bonus_bet(
     )
 
     if not result:
-        raise HTTPException(
-            404,
-            "No suitable hedge found (all hedges are same-provider or no valid options)"
-        )
+        raise HTTPException(404, "No suitable hedge found (all hedges are same-provider or no valid options)")
 
     return result
 
@@ -121,7 +117,7 @@ def match_bonus_bet(
 def arb_workflow(
     providers: str,
     major_only: bool = False,
-    counterpart_providers: Optional[str] = None,
+    counterpart_providers: str | None = None,
     limit: int = 50,
     service: OpportunityService = Depends(_get_service),
 ):
@@ -130,8 +126,7 @@ def arb_workflow(
     if not provider_list:
         raise HTTPException(400, "At least one provider required")
     counterpart_list = (
-        [p.strip() for p in counterpart_providers.split(",") if p.strip()]
-        if counterpart_providers else None
+        [p.strip() for p in counterpart_providers.split(",") if p.strip()] if counterpart_providers else None
     )
     return service.scan_arb_workflow(
         anchor_providers=provider_list,
@@ -164,7 +159,6 @@ def get_play_session(db: Session = Depends(get_db)):
 
     service = PlaySessionService(db)
     return service.get_session(profile.id)
-
 
 
 class SettleBetRequest(BaseModel):
@@ -243,21 +237,27 @@ def blacklist_bet(body: BlacklistRequest, db: Session = Depends(get_db)):
     from ...db.models import BetBlacklist
 
     profile = ProfileRepo(db).get_active()
-    existing = db.query(BetBlacklist).filter(
-        BetBlacklist.profile_id == profile.id,
-        BetBlacklist.event_id == body.event_id,
-        BetBlacklist.provider_id == body.provider_id,
-    ).first()
+    existing = (
+        db.query(BetBlacklist)
+        .filter(
+            BetBlacklist.profile_id == profile.id,
+            BetBlacklist.event_id == body.event_id,
+            BetBlacklist.provider_id == body.provider_id,
+        )
+        .first()
+    )
     if existing:
         return {"status": "already_blacklisted"}
 
-    db.add(BetBlacklist(
-        profile_id=profile.id,
-        event_id=body.event_id,
-        provider_id=body.provider_id,
-        market=body.market,
-        outcome=body.outcome,
-    ))
+    db.add(
+        BetBlacklist(
+            profile_id=profile.id,
+            event_id=body.event_id,
+            provider_id=body.provider_id,
+            market=body.market,
+            outcome=body.outcome,
+        )
+    )
     db.commit()
     return {"status": "blacklisted", "event_id": body.event_id, "provider_id": body.provider_id}
 
@@ -289,33 +289,37 @@ def get_pending_bets(db: Session = Depends(get_db)):
     for bet, event in pending:
         pid = bet.provider_id
         by_provider.setdefault(pid, [])
-        by_provider[pid].append({
-            "id": bet.id,
-            "event_id": bet.event_id,
-            "provider_id": pid,
-            "market": bet.market,
-            "outcome": bet.outcome,
-            "point": bet.point,
-            "odds": bet.odds,
-            "stake": bet.stake,
-            "currency": bet.currency or "SEK",
-            "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
-            "start_time": bet.start_time.isoformat() if bet.start_time else None,
-            "home_team": (event.display_home or event.home_team) if event else None,
-            "away_team": (event.display_away or event.away_team) if event else None,
-            "sport": event.sport if event else None,
-        })
+        by_provider[pid].append(
+            {
+                "id": bet.id,
+                "event_id": bet.event_id,
+                "provider_id": pid,
+                "market": bet.market,
+                "outcome": bet.outcome,
+                "point": bet.point,
+                "odds": bet.odds,
+                "stake": bet.stake,
+                "currency": bet.currency or "SEK",
+                "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
+                "start_time": bet.start_time.isoformat() if bet.start_time else None,
+                "home_team": (event.display_home or event.home_team) if event else None,
+                "away_team": (event.display_away or event.away_team) if event else None,
+                "sport": event.sport if event else None,
+            }
+        )
 
     providers = []
     for pid, bets in by_provider.items():
         total_stake = sum(b["stake"] for b in bets)
-        providers.append({
-            "provider_id": pid,
-            "bet_count": len(bets),
-            "total_stake": total_stake,
-            "currency": bets[0]["currency"],
-            "bets": bets,
-        })
+        providers.append(
+            {
+                "provider_id": pid,
+                "bet_count": len(bets),
+                "total_stake": total_stake,
+                "currency": bets[0]["currency"],
+                "bets": bets,
+            }
+        )
     providers.sort(key=lambda p: p["bet_count"], reverse=True)
 
     return {"providers": providers, "total_bets": sum(p["bet_count"] for p in providers)}
@@ -325,6 +329,7 @@ def get_pending_bets(db: Session = Depends(get_db)):
 async def settle_scan():
     """Scan pending bets for resolved events. Returns proposals for confirmation."""
     from ...services.auto_settle import scan_settlements
+
     proposals = await scan_settlements()
     return {"proposals": proposals, "count": len(proposals)}
 
@@ -338,8 +343,10 @@ class ConfirmSettleRequest(BaseModel):
 def settle_confirm(body: ConfirmSettleRequest):
     """Confirm settlement of a single bet."""
     from ...services.auto_settle import confirm_settlement
+
     if body.result not in ("won", "lost", "void"):
         from fastapi import HTTPException
+
         raise HTTPException(400, f"Invalid result: {body.result}")
     return confirm_settlement(body.bet_id, body.result)
 
@@ -348,6 +355,7 @@ def settle_confirm(body: ConfirmSettleRequest):
 async def settle_batch(body: list[ConfirmSettleRequest]):
     """Confirm settlement of multiple bets at once."""
     from ...services.auto_settle import confirm_settlement
+
     results = []
     for item in body:
         if item.result not in ("won", "lost", "void"):
@@ -357,5 +365,3 @@ async def settle_batch(body: list[ConfirmSettleRequest]):
         results.append(resp)
     settled = sum(1 for r in results if r.get("status") == "settled")
     return {"results": results, "settled": settled, "total": len(body)}
-
-

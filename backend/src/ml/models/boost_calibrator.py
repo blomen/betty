@@ -5,21 +5,33 @@ Adjusts LLM's self-reported probability based on historical accuracy.
 
 Min training data: 100 resolved boosts.
 """
-import logging
+
 import json
+import logging
 import warnings
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 FEATURE_NAMES = [
-    "llm_raw_probability", "llm_confidence",
-    "boost_type_single", "boost_type_combo", "sport",
-    "num_legs", "has_pinnacle_match", "pinnacle_implied_prob",
-    "original_odds", "boosted_odds",
-    "boost_margin", "hours_to_event", "llm_reasoning_length",
-    "keyword_anytime_scorer", "keyword_both_teams", "keyword_over",
+    "llm_raw_probability",
+    "llm_confidence",
+    "boost_type_single",
+    "boost_type_combo",
+    "sport",
+    "num_legs",
+    "has_pinnacle_match",
+    "pinnacle_implied_prob",
+    "original_odds",
+    "boosted_odds",
+    "boost_margin",
+    "hours_to_event",
+    "llm_reasoning_length",
+    "keyword_anytime_scorer",
+    "keyword_both_teams",
+    "keyword_over",
     "day_of_week",
 ]
 
@@ -40,16 +52,22 @@ class BoostCalibratorModel:
         X, y = self._prepare_data(data)
 
         from sklearn.isotonic import IsotonicRegression
+
         llm_probs = X[:, 0]  # First feature is llm_raw_probability
         self.isotonic_model = IsotonicRegression(out_of_bounds="clip")
         self.isotonic_model.fit(llm_probs, y)
 
         try:
             import lightgbm as lgb
+
             params = {
-                "objective": "binary", "metric": "binary_logloss",
-                "num_leaves": 10, "learning_rate": 0.05,
-                "n_estimators": 50, "verbose": -1, "min_child_samples": 5,
+                "objective": "binary",
+                "metric": "binary_logloss",
+                "num_leaves": 10,
+                "learning_rate": 0.05,
+                "n_estimators": 50,
+                "verbose": -1,
+                "min_child_samples": 5,
             }
             self.lgbm_model = lgb.LGBMClassifier(**params)
             self.lgbm_model.fit(X, y)
@@ -60,13 +78,17 @@ class BoostCalibratorModel:
         file_path = str(MODELS_DIR / "boost_calibrator_latest.joblib")
         try:
             import joblib
-            joblib.dump({
-                "isotonic_model": self.isotonic_model,
-                "lgbm_model": self.lgbm_model,
-                "feature_names": self.feature_names,
-                "feature_count": len(self.feature_names),
-                "task": "calibration",
-            }, file_path)
+
+            joblib.dump(
+                {
+                    "isotonic_model": self.isotonic_model,
+                    "lgbm_model": self.lgbm_model,
+                    "feature_names": self.feature_names,
+                    "feature_count": len(self.feature_names),
+                    "task": "calibration",
+                },
+                file_path,
+            )
         except ImportError:
             return None
 

@@ -3,15 +3,22 @@
 Uses existing BehavioralFeatures from risk/features.py plus new features
 for predicting how many bets remain before a provider limits the account.
 """
+
 from src.constants import PLATFORM_MAP
 
 
 def extract_limit_features(
-    stake_entropy: float, market_diversity: float,
-    timing_regularity: float, outcome_correlation: float,
-    bonus_usage_ratio: float, clv_score: float, win_rate_deviation: float,
-    total_bets: int, account_age_days: int,
-    total_turnover: float, provider_id: str,
+    stake_entropy: float,
+    market_diversity: float,
+    timing_regularity: float,
+    outcome_correlation: float,
+    bonus_usage_ratio: float,
+    clv_score: float,
+    win_rate_deviation: float,
+    total_bets: int,
+    account_age_days: int,
+    total_turnover: float,
+    provider_id: str,
     similar_platform_limits: int,
     max_single_bet_edge: float = 0.0,
     bet_frequency_trend: float = 0.0,

@@ -90,8 +90,17 @@ target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+select = ["F", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length — formatter handles wrapping
+    "B008",  # FastAPI Depends()/Query() default pattern
+    "B007",  # unused loop control variable
+    "B023",  # closure-over-loop-var — many false positives
+    "B904",  # raise-from chain
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]  # re-exports
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]

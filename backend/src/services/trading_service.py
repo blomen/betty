@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from ..constants import TRADE_STATE_TRANSITIONS, PSYCH_GATE_THRESHOLD
-from ..config.trading_loader import get_instruments, get_setups, get_routine_config
+from ..config.trading_loader import get_instruments
+from ..constants import PSYCH_GATE_THRESHOLD, TRADE_STATE_TRANSITIONS
 from ..repositories.trading_repo import TradingRepo
 
 
@@ -151,22 +151,17 @@ class TradingService:
             # Check risk exceeds policy
             if risk_amount > max_risk_dollars * 1.5:
                 errors.append(
-                    f"Risk ${risk_amount:.0f} exceeds {acct.risk_per_trade_pct}% policy "
-                    f"(max ${max_risk_dollars:.0f})"
+                    f"Risk ${risk_amount:.0f} exceeds {acct.risk_per_trade_pct}% policy (max ${max_risk_dollars:.0f})"
                 )
 
             # Daily DD check
             if acct.balance > 0:
                 daily_dd_pct = abs(acct.daily_pnl) / acct.balance * 100 if acct.daily_pnl < 0 else 0
                 if daily_dd_pct >= acct.max_daily_loss_pct:
-                    errors.append(
-                        f"Daily drawdown {daily_dd_pct:.1f}% >= limit {acct.max_daily_loss_pct}%"
-                    )
+                    errors.append(f"Daily drawdown {daily_dd_pct:.1f}% >= limit {acct.max_daily_loss_pct}%")
                 weekly_dd_pct = abs(acct.weekly_pnl) / acct.balance * 100 if acct.weekly_pnl < 0 else 0
                 if weekly_dd_pct >= acct.max_weekly_loss_pct:
-                    errors.append(
-                        f"Weekly drawdown {weekly_dd_pct:.1f}% >= limit {acct.max_weekly_loss_pct}%"
-                    )
+                    errors.append(f"Weekly drawdown {weekly_dd_pct:.1f}% >= limit {acct.max_weekly_loss_pct}%")
 
             # RR ratio
             targets = data.get("targets") or []
@@ -284,7 +279,9 @@ class TradingService:
         self.db.commit()
         return {"success": True, "state": trade.state}
 
-    def close_trade(self, trade_id: int, exit_price: float, commission: float | None = None, notes: str | None = None) -> dict:
+    def close_trade(
+        self, trade_id: int, exit_price: float, commission: float | None = None, notes: str | None = None
+    ) -> dict:
         trade = self.repo.get_trade(trade_id)
         if not trade:
             return {"error": "Trade not found"}
@@ -355,6 +352,7 @@ class TradingService:
         # Compute postmortem (synchronous, non-critical)
         try:
             from .postmortem_service import PostmortemService
+
             PostmortemService(self.db).compute_trade(trade)
         except Exception as e:
             logger.warning(f"Postmortem compute failed for trade {trade_id}: {e}")
@@ -576,9 +574,18 @@ class TradingService:
                 "avg_r": round(d["total_r"] / d["r_count"], 2) if d["r_count"] else 0,
                 "expectancy": round(
                     (d["wins"] / d["count"]) * (d["total_pnl"] / d["wins"] if d["wins"] else 0)
-                    - ((d["count"] - d["wins"]) / d["count"]) * (abs(d["total_pnl"] - sum(
-                        t.realized_pnl or 0 for t in trades if t.setup_type == s and (t.realized_pnl or 0) > 0
-                    )) / (d["count"] - d["wins"]) if (d["count"] - d["wins"]) else 0),
+                    - ((d["count"] - d["wins"]) / d["count"])
+                    * (
+                        abs(
+                            d["total_pnl"]
+                            - sum(
+                                t.realized_pnl or 0 for t in trades if t.setup_type == s and (t.realized_pnl or 0) > 0
+                            )
+                        )
+                        / (d["count"] - d["wins"])
+                        if (d["count"] - d["wins"])
+                        else 0
+                    ),
                     2,
                 ),
             }
@@ -624,12 +631,14 @@ class TradingService:
         cum_pnl = 0
         for t in sorted(trades, key=lambda x: x.closed_at or x.created_at):
             cum_pnl += t.realized_pnl or 0
-            equity_curve.append({
-                "trade_id": t.id,
-                "closed_at": (t.closed_at or t.created_at).isoformat() if (t.closed_at or t.created_at) else None,
-                "pnl": round(t.realized_pnl or 0, 2),
-                "cumulative_pnl": round(cum_pnl, 2),
-            })
+            equity_curve.append(
+                {
+                    "trade_id": t.id,
+                    "closed_at": (t.closed_at or t.created_at).isoformat() if (t.closed_at or t.created_at) else None,
+                    "pnl": round(t.realized_pnl or 0, 2),
+                    "cumulative_pnl": round(cum_pnl, 2),
+                }
+            )
 
         # Review stats
         reviewed = [t for t in trades if t.review]
@@ -683,43 +692,62 @@ class TradingService:
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow([
-            "id", "account", "instrument", "direction", "setup_type",
-            "entry_price", "stop_price", "exit_price", "contracts",
-            "risk_amount", "rr_ratio", "r_multiple", "realized_pnl",
-            "commission", "state", "notes",
-            "created_at", "opened_at", "closed_at",
-            "review_grade", "review_followed_rules",
-        ])
+        writer.writerow(
+            [
+                "id",
+                "account",
+                "instrument",
+                "direction",
+                "setup_type",
+                "entry_price",
+                "stop_price",
+                "exit_price",
+                "contracts",
+                "risk_amount",
+                "rr_ratio",
+                "r_multiple",
+                "realized_pnl",
+                "commission",
+                "state",
+                "notes",
+                "created_at",
+                "opened_at",
+                "closed_at",
+                "review_grade",
+                "review_followed_rules",
+            ]
+        )
         for t in sorted(trades, key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc)):
             # Extract exit price from close event
             exit_price = None
-            for ev in (t.events or []):
+            for ev in t.events or []:
                 if ev.event_type == "transition" and ev.to_state == "closed" and ev.details:
                     exit_price = ev.details.get("exit_price")
-            writer.writerow([
-                t.id,
-                t.account.name if t.account else t.account_id,
-                t.instrument,
-                t.direction,
-                t.setup_type,
-                t.entry_price,
-                t.stop_price,
-                exit_price,
-                t.contracts,
-                t.risk_amount,
-                t.rr_ratio,
-                t.r_multiple,
-                t.realized_pnl,
-                t.commission,
-                t.state,
-                t.notes or "",
-                (t.created_at.isoformat() if t.created_at else ""),
-                (t.opened_at.isoformat() if t.opened_at else ""),
-                (t.closed_at.isoformat() if t.closed_at else ""),
-                t.review.grade if t.review else "",
-                t.review.followed_rules if t.review else "",
-            ])
+            writer.writerow(
+                [
+                    t.id,
+                    t.account.name if t.account else t.account_id,
+                    t.instrument,
+                    t.direction,
+                    t.setup_type,
+                    t.entry_price,
+                    t.stop_price,
+                    exit_price,
+                    t.contracts,
+                    t.risk_amount,
+                    t.rr_ratio,
+                    t.r_multiple,
+                    t.realized_pnl,
+                    t.commission,
+                    t.state,
+                    t.notes or "",
+                    (t.created_at.isoformat() if t.created_at else ""),
+                    (t.opened_at.isoformat() if t.opened_at else ""),
+                    (t.closed_at.isoformat() if t.closed_at else ""),
+                    t.review.grade if t.review else "",
+                    t.review.followed_rules if t.review else "",
+                ]
+            )
         return output.getvalue()
 
     # ---- Serializers ----
@@ -811,5 +839,7 @@ class TradingService:
                 "followed_rules": t.review.followed_rules,
                 "what_to_improve": t.review.what_to_improve,
                 "grade": t.review.grade,
-            } if t.review else None,
+            }
+            if t.review
+            else None,
         }

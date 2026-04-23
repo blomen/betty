@@ -3,6 +3,7 @@
 Handles auth token management, order placement, position queries.
 All methods are async. Token auto-refreshes before expiry.
 """
+
 from __future__ import annotations
 
 import logging
@@ -124,8 +125,9 @@ class TradovateClient:
             "isAutomated": True,
         }
         result = await self._post("/order/placeorder", payload)
-        log.info("Market order placed: %s %d %s → orderId=%s",
-                 action, quantity, self._config.symbol, result.get("orderId"))
+        log.info(
+            "Market order placed: %s %d %s → orderId=%s", action, quantity, self._config.symbol, result.get("orderId")
+        )
         return result
 
     async def place_stop_order(self, action: str, quantity: int, stop_price: float) -> dict:
@@ -141,8 +143,7 @@ class TradovateClient:
             "isAutomated": True,
         }
         result = await self._post("/order/placeorder", payload)
-        log.info("Stop order placed: %s %d @ %.2f → orderId=%s",
-                 action, quantity, stop_price, result.get("orderId"))
+        log.info("Stop order placed: %s %d @ %.2f → orderId=%s", action, quantity, stop_price, result.get("orderId"))
         return result
 
     async def modify_order(self, order_id: int, new_stop_price: float) -> dict:

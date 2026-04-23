@@ -27,6 +27,7 @@ _SYMBOL = "NQ.v.0"  # continuous front-month (volume roll — matches TradingVie
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def fetch_ticks(
     start: datetime,
     end: datetime,
@@ -139,7 +140,9 @@ def fetch_ticks(
         if tick_rule_count:
             logger.info(
                 "%s: inferred side via tick rule for %d/%d ticks (%.0f%%)",
-                month_label, tick_rule_count, len(rows),
+                month_label,
+                tick_rule_count,
+                len(rows),
                 tick_rule_count / max(len(rows), 1) * 100,
             )
 
@@ -152,9 +155,7 @@ def fetch_ticks(
         df.reset_index(drop=True, inplace=True)
         df.to_parquet(out_path, index=False)
 
-        logger.info(
-            "Wrote %d ticks to %s", len(df), out_path.name
-        )
+        logger.info("Wrote %d ticks to %s", len(df), out_path.name)
         written.append(out_path)
 
     return written
@@ -174,10 +175,7 @@ def fetch_macro_history(
     try:
         import yfinance as yf
     except ImportError:
-        logger.warning(
-            "yfinance not installed — macro data unavailable.  "
-            "pip install yfinance to enable."
-        )
+        logger.warning("yfinance not installed — macro data unavailable.  pip install yfinance to enable.")
         return None
 
     try:
@@ -282,10 +280,7 @@ def fetch_cot_history(
     records = []
     for row in rows:
         date_str = row.get("report_date_as_yyyy_mm_dd", "")[:10]
-        net_nc = (
-            int(row.get("noncomm_positions_long_all", 0))
-            - int(row.get("noncomm_positions_short_all", 0))
-        )
+        net_nc = int(row.get("noncomm_positions_long_all", 0)) - int(row.get("noncomm_positions_short_all", 0))
         oi = int(row.get("open_interest_all", 0))
         records.append({"date": date_str, "cot_net_position": net_nc, "cot_open_interest": oi})
 
@@ -435,9 +430,7 @@ def load_ticks(
         month_label = f"{parts[0]}-{parts[1]}"
         filter_date = date_or_month
     else:
-        raise ValueError(
-            f"date_or_month must be 'YYYY-MM' or 'YYYY-MM-DD', got {date_or_month!r}"
-        )
+        raise ValueError(f"date_or_month must be 'YYYY-MM' or 'YYYY-MM-DD', got {date_or_month!r}")
 
     file_path = src_dir / f"NQ_{month_label}.parquet"
     if not file_path.exists():
@@ -463,6 +456,7 @@ def load_ticks(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _to_utc(dt: datetime) -> datetime:
     """Ensure a datetime is timezone-aware (UTC)."""
     if dt.tzinfo is None:
@@ -470,15 +464,13 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _month_ranges(
-    start: datetime, end: datetime
-) -> list[tuple[datetime, datetime]]:
+def _month_ranges(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
     """Return a list of (month_start, month_end) pairs covering [start, end).
 
     Each pair is clamped to the actual start/end boundaries.
     """
-    from datetime import timedelta
     import calendar
+    from datetime import timedelta
 
     ranges: list[tuple[datetime, datetime]] = []
 

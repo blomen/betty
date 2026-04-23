@@ -1,4 +1,5 @@
 """Double Distribution Reversal: 2 VP peaks, secondary weaker, rotation back to primary."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -25,9 +26,9 @@ def detect_double_distribution(ctx: DetectorContext) -> list[SetupCandidate]:
     for sec in secondary_peaks:
         if sec.price > poc and sec.volume < poc_vol:
             # Price near secondary peak → expect rotation down to POC
-            if abs(ctx.last_price - sec.price) < (sec.price - poc) * 0.2:
-                if ctx.macro_bias != "bull":
-                    candidates.append(SetupCandidate(
+            if abs(ctx.last_price - sec.price) < (sec.price - poc) * 0.2 and ctx.macro_bias != "bull":
+                candidates.append(
+                    SetupCandidate(
                         setup_type="double_distribution",
                         setup_name="Double Distribution Short (rotate to POC)",
                         direction="short",
@@ -37,12 +38,13 @@ def detect_double_distribution(ctx: DetectorContext) -> list[SetupCandidate]:
                         target_1=poc,
                         target_2=ctx.vp.val,
                         base_score=68.0,
-                    ))
+                    )
+                )
 
         elif sec.price < poc and sec.volume < poc_vol:
-            if abs(ctx.last_price - sec.price) < (poc - sec.price) * 0.2:
-                if ctx.macro_bias != "bear":
-                    candidates.append(SetupCandidate(
+            if abs(ctx.last_price - sec.price) < (poc - sec.price) * 0.2 and ctx.macro_bias != "bear":
+                candidates.append(
+                    SetupCandidate(
                         setup_type="double_distribution",
                         setup_name="Double Distribution Long (rotate to POC)",
                         direction="long",
@@ -52,6 +54,7 @@ def detect_double_distribution(ctx: DetectorContext) -> list[SetupCandidate]:
                         target_1=poc,
                         target_2=ctx.vp.vah,
                         base_score=68.0,
-                    ))
+                    )
+                )
 
     return candidates

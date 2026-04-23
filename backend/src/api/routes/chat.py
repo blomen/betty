@@ -1,6 +1,7 @@
 """Chat API routes (Claude integration)."""
 
 import os
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
@@ -11,13 +12,14 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 async def stream_anthropic_response(system: str, messages: list[dict]):
     """Stream responses from Anthropic API."""
-    import httpx
     import json
+
+    import httpx
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         yield 'data: {"content": "Error: ANTHROPIC_API_KEY not set"}\n\n'
-        yield 'data: [DONE]\n\n'
+        yield "data: [DONE]\n\n"
         return
 
     async with httpx.AsyncClient() as client:
@@ -41,7 +43,7 @@ async def stream_anthropic_response(system: str, messages: list[dict]):
 
             if response.status_code != 200:
                 yield f'data: {{"content": "API error: {response.status_code}"}}\n\n'
-                yield 'data: [DONE]\n\n'
+                yield "data: [DONE]\n\n"
                 return
 
             async for line in response.aiter_lines():
@@ -59,11 +61,11 @@ async def stream_anthropic_response(system: str, messages: list[dict]):
                     except:
                         pass
 
-            yield 'data: [DONE]\n\n'
+            yield "data: [DONE]\n\n"
 
         except Exception as e:
             yield f'data: {{"content": "Error: {str(e)}"}}\n\n'
-            yield 'data: [DONE]\n\n'
+            yield "data: [DONE]\n\n"
 
 
 @router.post("")
@@ -79,7 +81,7 @@ async def chat(request: ChatRequest):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-            }
+            },
         )
     else:
         # Non-streaming response (simplified)

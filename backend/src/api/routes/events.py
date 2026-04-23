@@ -1,8 +1,8 @@
 """Events API routes."""
 
 import json
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ...db.models import Event
@@ -12,11 +12,7 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 
 @router.get("")
-def list_events(
-    sport: Optional[str] = None,
-    limit: int = 50,
-    db: Session = Depends(get_db)
-):
+def list_events(sport: str | None = None, limit: int = 50, db: Session = Depends(get_db)):
     """Get extracted events with odds."""
     query = db.query(Event)
     if sport:
@@ -46,12 +42,7 @@ def list_events(
 @router.get("/live")
 def get_live_events(db: Session = Depends(get_db)):
     """Get events currently live with scores from Pinnacle."""
-    events = (
-        db.query(Event)
-        .filter(Event.match_status.in_(["live", "finished"]))
-        .order_by(Event.start_time)
-        .all()
-    )
+    events = db.query(Event).filter(Event.match_status.in_(["live", "finished"])).order_by(Event.start_time).all()
 
     return {
         "events": [
@@ -89,11 +80,13 @@ def get_event(event_id: str, db: Session = Depends(get_db)):
     for o in event.odds:
         if o.market not in odds_by_market:
             odds_by_market[o.market] = []
-        odds_by_market[o.market].append({
-            "provider": o.provider_id,
-            "outcome": o.outcome,
-            "odds": o.odds,
-        })
+        odds_by_market[o.market].append(
+            {
+                "provider": o.provider_id,
+                "outcome": o.outcome,
+                "odds": o.odds,
+            }
+        )
 
     return {
         "id": event.id,

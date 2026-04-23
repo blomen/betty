@@ -11,6 +11,7 @@ browser concurrency managed by pool manager semaphores, not scheduler-level lock
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -383,10 +384,8 @@ class ExtractionScheduler:
             try:
                 return loop.run_until_complete(pipeline.run(providers=providers, tier_name=schedule.category))
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     pipeline.session.close()
-                except Exception:
-                    pass
                 loop.close()
 
         return await asyncio.to_thread(_run_in_thread)
@@ -627,9 +626,8 @@ class ExtractionScheduler:
                     )
 
             # ── EXISTING: Check if a schedule that should be running hasn't started yet ──
-            if schedule.running and schedule.run_count == 0:
-                if schedule.last_completed is None:
-                    pass  # Handled by stale check above once interval elapses
+            if schedule.running and schedule.run_count == 0 and schedule.last_completed is None:
+                pass  # Handled by stale check above once interval elapses
 
     # Python's memory allocator doesn't return pages to the OS after large
     # allocations (arena fragmentation). Over hours of extraction runs, each
@@ -805,15 +803,11 @@ class ExtractionScheduler:
                 logger.info("[Scheduler:boosts] No boosts scraped, purged expired from DB")
         except Exception as e:
             logger.error(f"[Scheduler:boosts] DB storage failed: {e}", exc_info=True)
-            try:
+            with contextlib.suppress(Exception):
                 session.rollback()
-            except Exception:
-                pass
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
 
         # Persist extraction log to DB
         self._persist_boost_log(run_log)
@@ -882,15 +876,11 @@ class ExtractionScheduler:
             )
         except Exception as e:
             logger.error(f"[Scheduler:boosts] Failed to persist log: {e}")
-            try:
+            with contextlib.suppress(Exception):
                 session.rollback()
-            except Exception:
-                pass
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
 
     # ── Trading daily/weekly reset ──────────────────────────────────
 
@@ -1036,7 +1026,7 @@ class ExtractionScheduler:
                 now = datetime.now(timezone.utc)
 
                 # 1. Delete inactive opportunities
-                stats["inactive"] = session.query(Opportunity).filter(Opportunity.is_active == False).delete()
+                stats["inactive"] = session.query(Opportunity).filter(not Opportunity.is_active).delete()
 
                 # 2. Delete orphaned opportunities (event doesn't exist)
                 valid_event_subq = session.query(Event.id).subquery()

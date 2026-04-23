@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from .edge_sampler import EdgeSampler
 
-
 # ── Constants ──
 
 MIN_EDGE_PCT = 0.02  # 2% minimum edge
@@ -41,13 +40,14 @@ STATUS_MAP: dict[str, str] = {
 # ── Limitation Curves ──
 
 LIMITATION_CURVES: dict[str, dict[str, float]] = {
-    "aggressive": {"midpoint": 30, "steepness": 0.15},   # Limits at ~30 bets
-    "moderate": {"midpoint": 100, "steepness": 0.08},     # Limits at ~100 bets
-    "lenient": {"midpoint": 300, "steepness": 0.03},      # Limits at ~300 bets
+    "aggressive": {"midpoint": 30, "steepness": 0.15},  # Limits at ~30 bets
+    "moderate": {"midpoint": 100, "steepness": 0.08},  # Limits at ~100 bets
+    "lenient": {"midpoint": 300, "steepness": 0.03},  # Limits at ~300 bets
 }
 
 
 # ── Data Classes ──
+
 
 @dataclass
 class ProviderSimState:
@@ -85,6 +85,7 @@ class SimState:
 
 # ── Limitation Probability ──
 
+
 def _logistic(bets: int, midpoint: float, steepness: float) -> float:
     """Logistic CDF: cumulative probability of being limited at `bets` count."""
     return 1.0 / (1.0 + math.exp(-steepness * (bets - midpoint)))
@@ -108,6 +109,7 @@ def sim_limitation_prob(bets_placed: int, provider_type: str) -> float:
 
 
 # ── Simplified Kelly for Simulation ──
+
 
 def sim_kelly_stake(edge: float, odds: float, deployable_capital: float) -> float:
     """
@@ -156,6 +158,7 @@ def sim_kelly_stake(edge: float, odds: float, deployable_capital: float) -> floa
 
 # ── Action Handling ──
 
+
 def apply_action(state: SimState, action) -> None:
     """
     Apply a planning action to the simulation state.
@@ -168,10 +171,14 @@ def apply_action(state: SimState, action) -> None:
     # Normalize: accept both Action objects and dicts
     if hasattr(action, "type"):
         action_type = action.type
-        _get = lambda key, default=None: getattr(action, key, default)
+
+        def _get(key, default=None):
+            return getattr(action, key, default)
     else:
         action_type = action.get("type", "WAIT")
-        _get = lambda key, default=None: action.get(key, default)
+
+        def _get(key, default=None):
+            return action.get(key, default)
 
     if action_type == "DEPOSIT":
         provider_id = _get("provider_id")
@@ -196,8 +203,7 @@ def apply_action(state: SimState, action) -> None:
 
         # Update deployable capital
         state.deployable_capital = state.undeployed_capital + sum(
-            p.balance for p in state.providers.values()
-            if p.bonus_status not in ("limited", "expired")
+            p.balance for p in state.providers.values() if p.bonus_status not in ("limited", "expired")
         )
 
     elif action_type == "WITHDRAW":
@@ -214,14 +220,14 @@ def apply_action(state: SimState, action) -> None:
 
             # Update deployable capital
             state.deployable_capital = state.undeployed_capital + sum(
-                p.balance for p in state.providers.values()
-                if p.bonus_status not in ("limited", "expired")
+                p.balance for p in state.providers.values() if p.bonus_status not in ("limited", "expired")
             )
 
     # WAIT is a no-op
 
 
 # ── Day Simulation ──
+
 
 def simulate_day(
     state: SimState,
@@ -348,8 +354,7 @@ def simulate_day(
     # Step 3: Update aggregate numbers
     total_in_providers = sum(p.balance for p in state.providers.values())
     state.deployable_capital = state.undeployed_capital + sum(
-        p.balance for p in state.providers.values()
-        if p.bonus_status not in ("limited", "expired")
+        p.balance for p in state.providers.values() if p.bonus_status not in ("limited", "expired")
     )
     state.total_wealth = total_in_providers + state.undeployed_capital + state.withdrawn
     state.day += 1
@@ -358,6 +363,7 @@ def simulate_day(
 
 
 # ── Snapshot from Database ──
+
 
 def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
     """
@@ -381,14 +387,22 @@ def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
         raise ValueError(f"Profile {profile_id} not found")
 
     # Load provider balances
-    balances = db_session.query(ProfileProviderBalance).filter_by(
-        profile_id=profile_id,
-    ).all()
+    balances = (
+        db_session.query(ProfileProviderBalance)
+        .filter_by(
+            profile_id=profile_id,
+        )
+        .all()
+    )
 
     # Load bonus statuses
-    bonuses = db_session.query(ProfileProviderBonus).filter_by(
-        profile_id=profile_id,
-    ).all()
+    bonuses = (
+        db_session.query(ProfileProviderBonus)
+        .filter_by(
+            profile_id=profile_id,
+        )
+        .all()
+    )
     bonus_map: dict[str, ProfileProviderBonus] = {b.provider_id: b for b in bonuses}
 
     # Load risk profiles
@@ -400,9 +414,12 @@ def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
         db_session.query(
             Bet.provider_id,
             func.count(Bet.id),
-        ).filter(
+        )
+        .filter(
             Bet.profile_id == profile_id,
-        ).group_by(Bet.provider_id).all()
+        )
+        .group_by(Bet.provider_id)
+        .all()
     )
 
     # Build provider sim states
@@ -487,10 +504,7 @@ def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
     undeployed = max(0.0, bankroll - total_in_providers)
 
     # Deployable = everything not withdrawn
-    deployable = undeployed + sum(
-        p.balance for p in providers.values()
-        if p.bonus_status not in ("limited", "expired")
-    )
+    deployable = undeployed + sum(p.balance for p in providers.values() if p.bonus_status not in ("limited", "expired"))
 
     return SimState(
         day=0,

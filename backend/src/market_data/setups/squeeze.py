@@ -11,6 +11,7 @@ A squeeze is characterized by:
 This is distinct from break_from_balance — that detects the actual breakout.
 Squeeze detects the PRE-breakout compression phase.
 """
+
 from __future__ import annotations
 
 from .detector import DetectorContext, SetupCandidate
@@ -60,15 +61,17 @@ def detect_squeeze(ctx: DetectorContext) -> list[SetupCandidate]:
 
     # Squeeze confirmed — direction neutral, trade the breakout
     confidence = min(1.0, (1.0 - range_ratio) + (1.0 - vol_ratio))
-    return [SetupCandidate(
-        setup_type="squeeze",
-        setup_name="Pre-Breakout Squeeze",
-        direction="neutral",
-        level_touched="compression_zone",
-        entry_price=ctx.last_price,
-        stop_price=ctx.last_price,  # placeholder — breakout direction unknown
-        target_1=ctx.vp.vah if ctx.vp else ctx.last_price,
-        target_2=ctx.vp.val if ctx.vp else ctx.last_price,
-        target_3=None,
-        base_score=confidence * 100,
-    )]
+    return [
+        SetupCandidate(
+            setup_type="squeeze",
+            setup_name="Pre-Breakout Squeeze",
+            direction="neutral",
+            level_touched="compression_zone",
+            entry_price=ctx.last_price,
+            stop_price=ctx.last_price,  # placeholder — breakout direction unknown
+            target_1=ctx.vp.vah if ctx.vp else ctx.last_price,
+            target_2=ctx.vp.val if ctx.vp else ctx.last_price,
+            target_3=None,
+            base_score=confidence * 100,
+        )
+    ]

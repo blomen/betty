@@ -1,12 +1,13 @@
 """Broker adapter — translates signals to orders with risk enforcement."""
+
 from __future__ import annotations
 
 import logging
 import time
 
 from .config import BrokerConfig
-from .tradovate_client import TradovateClient, ACTION_BUY, ACTION_SELL
 from .position_tracker import PositionTracker
+from .tradovate_client import ACTION_BUY, ACTION_SELL, TradovateClient
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class BrokerAdapter:
     async def on_signal(self, signal: dict) -> dict | None:
         """Process a session manager signal. Returns fill info or None if rejected."""
         action = signal.get("action", "")
-        price = signal.get("price", 0.0)
+        signal.get("price", 0.0)
 
         # Ignore non-trade actions
         if action in ("skip", "hold", "move_to_breakeven"):
@@ -82,7 +83,7 @@ class BrokerAdapter:
         # Min trade interval (applies when we recently had a trade, regardless of current position)
         elapsed = time.time() - self.tracker.last_trade_ts
         if self.tracker.last_trade_ts > 0 and elapsed < self.config.min_trade_interval_s:
-            return "too soon (%.0fs < %.0fs)" % (elapsed, self.config.min_trade_interval_s)
+            return f"too soon ({elapsed:.0f}s < {self.config.min_trade_interval_s:.0f}s)"
 
         return None
 
@@ -121,7 +122,9 @@ class BrokerAdapter:
         # Update tracker
         self.tracker.on_fill(
             side="long" if is_long else "short",
-            price=price, size=size, stop_price=stop_price,
+            price=price,
+            size=size,
+            stop_price=stop_price,
             signal_price=price,
         )
         self.tracker.stop_order_id = stop_order_id

@@ -57,8 +57,8 @@ async def scan_settlements() -> list[dict]:
 
 async def _scan_polymarket(bets: list) -> list[dict]:
     """Check Polymarket resolution for pending bets."""
-    from ..providers.polymarket import PolymarketProvider
     from ..core.transport import Transport
+    from ..providers.polymarket import PolymarketProvider
 
     # Build slug → bet mapping
     slug_bets: dict[str, list] = {}
@@ -98,7 +98,11 @@ async def _scan_polymarket(bets: list) -> list[dict]:
 
         for bet in bet_list:
             result = _determine_bet_result(
-                bet, winner_team, resolved_markets, home_team, away_team,
+                bet,
+                winner_team,
+                resolved_markets,
+                home_team,
+                away_team,
             )
             if result is None:
                 continue
@@ -110,31 +114,33 @@ async def _scan_polymarket(bets: list) -> list[dict]:
             else:
                 payout = 0.0
 
-            proposals.append({
-                "bet_id": bet.id,
-                "provider_id": bet.provider_id,
-                "event_id": bet.event_id,
-                "market": bet.market,
-                "outcome": bet.outcome,
-                "point": bet.point,
-                "odds": bet.odds,
-                "stake": bet.stake,
-                "currency": bet.currency or "USDC",
-                "proposed_result": result,
-                "proposed_payout": payout,
-                "home_team": home_team,
-                "away_team": away_team,
-                "winner": winner_team,
-                "score": f"{res.get('home_score', '?')}-{res.get('away_score', '?')}",
-            })
+            proposals.append(
+                {
+                    "bet_id": bet.id,
+                    "provider_id": bet.provider_id,
+                    "event_id": bet.event_id,
+                    "market": bet.market,
+                    "outcome": bet.outcome,
+                    "point": bet.point,
+                    "odds": bet.odds,
+                    "stake": bet.stake,
+                    "currency": bet.currency or "USDC",
+                    "proposed_result": result,
+                    "proposed_payout": payout,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "winner": winner_team,
+                    "score": f"{res.get('home_score', '?')}-{res.get('away_score', '?')}",
+                }
+            )
 
     return proposals
 
 
 def confirm_settlement(bet_id: int, result: str) -> dict:
     """Settle a single bet after user confirmation."""
-    from .bet_service import BetService
     from ..repositories.profile_repo import ProfileRepo
+    from .bet_service import BetService
 
     db = get_session()
     try:
@@ -174,8 +180,11 @@ def confirm_settlement(bet_id: int, result: str) -> dict:
 
 
 def _determine_bet_result(
-    bet, winner_team: str | None, resolved_markets: dict,
-    home_team: str, away_team: str,
+    bet,
+    winner_team: str | None,
+    resolved_markets: dict,
+    home_team: str,
+    away_team: str,
 ) -> str | None:
     """Determine if a bet won, lost, or voided based on resolution data.
 
@@ -190,6 +199,7 @@ def _determine_bet_result(
             return None
         # Match winner_team to home/away
         from ..matching import normalize_outcome
+
         winner_side = normalize_outcome(winner_team, home_team, away_team)
         if winner_side == outcome:
             return "won"

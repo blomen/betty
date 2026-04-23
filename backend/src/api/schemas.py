@@ -1,31 +1,32 @@
 """Pydantic schemas for API requests and responses."""
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 
-
 # ============ Provider Schemas ============
+
 
 class ProviderCreate(BaseModel):
     id: str
     name: str
-    url: Optional[str] = None
+    url: str | None = None
     balance: float = 0.0
 
 
 class ProviderUpdate(BaseModel):
-    name: Optional[str] = None
-    url: Optional[str] = None
-    is_enabled: Optional[bool] = None
-    balance: Optional[float] = None
+    name: str | None = None
+    url: str | None = None
+    is_enabled: bool | None = None
+    balance: float | None = None
 
 
 # ============ Bankroll Schemas ============
 
+
 class BulkBalanceUpdate(BaseModel):
     balance: float
-    provider_ids: Optional[list[str]] = None  # If None, updates all enabled providers
+    provider_ids: list[str] | None = None  # If None, updates all enabled providers
 
 
 class BalanceSet(BaseModel):
@@ -46,14 +47,16 @@ class BonusTransitionRequest(BaseModel):
 
 class StakePreviewRequest(BaseModel):
     """Request to preview stake for an opportunity."""
+
     edge_pct: float  # Edge percentage (e.g., 5.0 for 5%)
     odds: float  # Decimal odds
-    event_id: Optional[str] = None  # For exposure tracking
-    provider_id: Optional[str] = None  # For bonus status checking
+    event_id: str | None = None  # For exposure tracking
+    provider_id: str | None = None  # For bonus status checking
 
 
 class RecordBetRequest(BaseModel):
     """Request to record a bet for exposure tracking."""
+
     event_id: str
     provider_id: str
     stake: float
@@ -62,45 +65,48 @@ class RecordBetRequest(BaseModel):
 
 # ============ Bet Schemas ============
 
+
 class BetCreate(BaseModel):
-    event_id: Optional[str] = None
+    event_id: str | None = None
     provider_id: str
-    market: Optional[str] = None
-    outcome: Optional[str] = None
+    market: str | None = None
+    outcome: str | None = None
     odds: float
-    point: Optional[float] = None  # Spread/total line value
+    point: float | None = None  # Spread/total line value
     stake: float
     is_bonus: bool = False
-    bonus_type: Optional[str] = None
+    bonus_type: str | None = None
     # Risk management (optional, populated by auto-stake flow)
-    utility_score: Optional[float] = None
-    selection_probability: Optional[float] = None
-    stake_noise_applied: Optional[float] = None
-    fair_odds_at_placement: Optional[float] = None  # For boosts: pass LLM fair odds directly
-    boost_event: Optional[str] = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
-    boost_title: Optional[str] = None  # For boosts: LLM-simplified title at placement
-    bet_type: Optional[str] = None  # "value", "arb", "reverse", "polymarket", "boost"
-    start_time: Optional[str] = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
+    utility_score: float | None = None
+    selection_probability: float | None = None
+    stake_noise_applied: float | None = None
+    fair_odds_at_placement: float | None = None  # For boosts: pass LLM fair odds directly
+    boost_event: str | None = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
+    boost_title: str | None = None  # For boosts: LLM-simplified title at placement
+    bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
+    start_time: str | None = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
 
 
 class BatchBetLeg(BaseModel):
     """Single leg in a batch (arb) bet placement."""
-    event_id: Optional[str] = None
+
+    event_id: str | None = None
     provider_id: str
-    market: Optional[str] = None
-    outcome: Optional[str] = None
+    market: str | None = None
+    outcome: str | None = None
     odds: float
-    point: Optional[float] = None
+    point: float | None = None
     stake: float
     is_bonus: bool = False
-    bonus_type: Optional[str] = None
-    utility_score: Optional[float] = None
-    selection_probability: Optional[float] = None
-    bet_type: Optional[str] = None  # "value", "arb", "reverse", "polymarket", "boost"
+    bonus_type: str | None = None
+    utility_score: float | None = None
+    selection_probability: float | None = None
+    bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
 
 
 class BatchBetCreate(BaseModel):
     """Place multiple legs at once (arb bet)."""
+
     legs: list[BatchBetLeg]
 
 
@@ -111,48 +117,50 @@ class BetUpdate(BaseModel):
 
 class BetEdit(BaseModel):
     """Edit a bet's stake, odds, or result (for correcting auto-stake errors)."""
-    stake: Optional[float] = None
-    odds: Optional[float] = None
-    result: Optional[str] = None  # "won", "lost", "void", "pending"
-    payout: Optional[float] = None  # Override payout (e.g. cashout amount)
 
+    stake: float | None = None
+    odds: float | None = None
+    result: str | None = None  # "won", "lost", "void", "pending"
+    payout: float | None = None  # Override payout (e.g. cashout amount)
 
 
 # ============ Profile Schemas ============
 
+
 class ProfileCreate(BaseModel):
     name: str
-    bankroll: Optional[float] = 1000.0
-    currency: Optional[str] = "USD"
-    kelly_fraction: Optional[float] = 0.25
-    min_edge_pct: Optional[float] = 2.0
-    min_arb_pct: Optional[float] = 0.5
-    max_stake_pct: Optional[float] = 5.0
-    min_retention_pct: Optional[float] = 80.0
-    preferred_counterparts: Optional[list[str]] = None
-    bonus_enabled: Optional[bool] = True
-    bonus_deposit: Optional[float] = 0.0
-    color: Optional[str] = None
+    bankroll: float | None = 1000.0
+    currency: str | None = "USD"
+    kelly_fraction: float | None = 0.25
+    min_edge_pct: float | None = 2.0
+    min_arb_pct: float | None = 0.5
+    max_stake_pct: float | None = 5.0
+    min_retention_pct: float | None = 80.0
+    preferred_counterparts: list[str] | None = None
+    bonus_enabled: bool | None = True
+    bonus_deposit: float | None = 0.0
+    color: str | None = None
 
 
 class ProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    bankroll: Optional[float] = None
-    currency: Optional[str] = None
-    kelly_fraction: Optional[float] = None
-    min_edge_pct: Optional[float] = None
-    min_arb_pct: Optional[float] = None
-    max_stake_pct: Optional[float] = None
-    min_retention_pct: Optional[float] = None
-    preferred_counterparts: Optional[list[str]] = None
-    bonus_enabled: Optional[bool] = None
-    bonus_deposit: Optional[float] = None
-    total_deposited: Optional[float] = None
-    total_withdrawn: Optional[float] = None
-    color: Optional[str] = None
+    name: str | None = None
+    bankroll: float | None = None
+    currency: str | None = None
+    kelly_fraction: float | None = None
+    min_edge_pct: float | None = None
+    min_arb_pct: float | None = None
+    max_stake_pct: float | None = None
+    min_retention_pct: float | None = None
+    preferred_counterparts: list[str] | None = None
+    bonus_enabled: bool | None = None
+    bonus_deposit: float | None = None
+    total_deposited: float | None = None
+    total_withdrawn: float | None = None
+    color: str | None = None
 
 
 # ============ Opportunity Schemas ============
+
 
 class BonusMatchRequest(BaseModel):
     event_id: str
@@ -162,10 +170,11 @@ class BonusMatchRequest(BaseModel):
     anchor_odds: float
     anchor_stake: float
     is_free_bet: bool = False
-    counterpart_providers: Optional[list[str]] = None
+    counterpart_providers: list[str] | None = None
 
 
 # ============ Chat Schemas ============
+
 
 class ChatMessage(BaseModel):
     role: str
@@ -173,20 +182,21 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    system: Optional[str] = None
+    system: str | None = None
     messages: list[ChatMessage]
     stream: bool = True
 
 
 # ============ Trading Schemas ============
 
+
 class TradingAccountUpdate(BaseModel):
-    name: Optional[str] = None
-    risk_per_trade_pct: Optional[float] = None
-    max_daily_loss_pct: Optional[float] = None
-    max_weekly_loss_pct: Optional[float] = None
-    max_trades_per_day: Optional[int] = None
-    stop_after_consecutive_losses: Optional[int] = None
+    name: str | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    max_weekly_loss_pct: float | None = None
+    max_trades_per_day: int | None = None
+    stop_after_consecutive_losses: int | None = None
 
 
 class TradingBalanceAdjust(BaseModel):
@@ -194,20 +204,20 @@ class TradingBalanceAdjust(BaseModel):
 
 
 class RoutineUpdate(BaseModel):
-    macro_notes: Optional[dict] = None
-    overnight_high: Optional[float] = None
-    overnight_low: Optional[float] = None
-    key_levels: Optional[list] = None
-    prev_value_area: Optional[dict] = None
-    bias_text: Optional[str] = None
-    bias_direction: Optional[str] = None
-    bias_confidence: Optional[int] = None
-    sleep_score: Optional[int] = None
-    focus_score: Optional[int] = None
-    emotional_score: Optional[int] = None
-    psych_override: Optional[str] = None
-    checklist_completion: Optional[dict] = None
-    is_complete: Optional[bool] = None
+    macro_notes: dict | None = None
+    overnight_high: float | None = None
+    overnight_low: float | None = None
+    key_levels: list | None = None
+    prev_value_area: dict | None = None
+    bias_text: str | None = None
+    bias_direction: str | None = None
+    bias_confidence: int | None = None
+    sleep_score: int | None = None
+    focus_score: int | None = None
+    emotional_score: int | None = None
+    psych_override: str | None = None
+    checklist_completion: dict | None = None
+    is_complete: bool | None = None
 
 
 class TradeCreate(BaseModel):
@@ -215,70 +225,71 @@ class TradeCreate(BaseModel):
     instrument: str
     direction: str  # "long" or "short"
     setup_type: str
-    entry_price: Optional[float] = None
-    stop_price: Optional[float] = None
-    targets: Optional[list] = None
+    entry_price: float | None = None
+    stop_price: float | None = None
+    targets: list | None = None
     contracts: int = 1
-    confirmations: Optional[dict] = None
-    notes: Optional[str] = None
+    confirmations: dict | None = None
+    notes: str | None = None
     dry_run: bool = False  # Validate only, don't persist
 
 
 class TradeTransition(BaseModel):
     to_state: str
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class PartialExitRequest(BaseModel):
     contracts: int
     exit_price: float
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class CloseTradeRequest(BaseModel):
     exit_price: float
     commission: float = 0.0
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class TrailStopRequest(BaseModel):
     new_stop: float
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class AddPositionRequest(BaseModel):
     contracts: int
     entry_price: float
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class TradeReviewCreate(BaseModel):
-    thesis_recap: Optional[str] = None
-    followed_rules: Optional[bool] = None
-    what_to_improve: Optional[str] = None
-    grade: Optional[int] = None
+    thesis_recap: str | None = None
+    followed_rules: bool | None = None
+    what_to_improve: str | None = None
+    grade: int | None = None
 
 
 # ============ Limit Schemas ============
+
 
 class LimitCreate(BaseModel):
     provider_id: str
     limit_type: Literal["stake_limited", "market_restricted", "odds_restricted", "fully_banned"]
     limit_level: int  # 1-5
-    detected_at: Optional[str] = None  # ISO datetime string, defaults to now
-    notes: Optional[str] = None
+    detected_at: str | None = None  # ISO datetime string, defaults to now
+    notes: str | None = None
 
 
 class LimitUpdate(BaseModel):
-    limit_level: Optional[int] = None
-    notes: Optional[str] = None
+    limit_level: int | None = None
+    notes: str | None = None
 
 
 class BanProviderRequest(BaseModel):
     provider_id: str
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class LimitRiskUpdate(BaseModel):
     limit_risk: Literal["low", "medium", "high", "instant"]
-    limit_notes: Optional[str] = None
+    limit_notes: str | None = None

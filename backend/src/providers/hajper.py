@@ -17,10 +17,11 @@ only delivers data to the page that initiated it. Date-based extraction on
 the main page is the correct approach.
 """
 
-from typing import Dict, Any, List, Optional
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
+from typing import Any
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -40,101 +41,102 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
     # Sport URL mapping: canonical sport key -> URL path (no /sv/ prefix)
     # Same sport IDs as ComeOn (shared ComeOn Group platform)
     SPORT_URL_MAP = {
-        'football': '/sportsbook/sport/1-fotboll',
-        'basketball': '/sportsbook/sport/2-basket',
-        'american_football': '/sportsbook/sport/3-amerikansk-fotboll',
-        'ice_hockey': '/sportsbook/sport/4-ishockey',
-        'tennis': '/sportsbook/sport/6-tennis',
-        'mma': '/sportsbook/sport/7-mma',
-        'esports': '/sportsbook/sport/130-esport',
-        'baseball': '/sportsbook/sport/12-baseboll',
-        'handball': '/sportsbook/sport/10-handboll',
-        'table_tennis': '/sportsbook/sport/26-bordtennis',
+        "football": "/sportsbook/sport/1-fotboll",
+        "basketball": "/sportsbook/sport/2-basket",
+        "american_football": "/sportsbook/sport/3-amerikansk-fotboll",
+        "ice_hockey": "/sportsbook/sport/4-ishockey",
+        "tennis": "/sportsbook/sport/6-tennis",
+        "mma": "/sportsbook/sport/7-mma",
+        "esports": "/sportsbook/sport/130-esport",
+        "baseball": "/sportsbook/sport/12-baseboll",
+        "handball": "/sportsbook/sport/10-handboll",
+        "table_tennis": "/sportsbook/sport/26-bordtennis",
     }
 
     # Market type mapping: marketType.id -> standard type
     # Aligned with Snabbare's complete map (same SBTech/GAN platform)
     MARKET_TYPE_MAP = {
         # 1x2 (3-way)
-        1: '1x2',
+        1: "1x2",
         # Moneyline (2-way)
-        175: 'moneyline',   # Winner
-        206: 'moneyline',   # Winner (incl. overtime)
-        376: 'moneyline',   # Winner (incl. overtime and penalties) — MMA, handball
+        175: "moneyline",  # Winner
+        206: "moneyline",  # Winner (incl. overtime)
+        376: "moneyline",  # Winner (incl. overtime and penalties) — MMA, handball
         # Total (over/under)
-        18: 'total',         # Over/Under (generic — football, handball)
-        202: 'total',        # Total goals
-        212: 'total',        # Total (incl. overtime) — basketball
-        225: 'total',        # Total Points O/U — basketball
-        1621: 'total',       # Total Goals O/U (Regular Time) — ice hockey
-        1622: 'total',       # Total Goals O/U — ice hockey
+        18: "total",  # Over/Under (generic — football, handball)
+        202: "total",  # Total goals
+        212: "total",  # Total (incl. overtime) — basketball
+        225: "total",  # Total Points O/U — basketball
+        1621: "total",  # Total Goals O/U (Regular Time) — ice hockey
+        1622: "total",  # Total Goals O/U — ice hockey
         # Spread (handicap)
-        16: 'spread',        # Asian Handicap (generic — football)
-        187: 'spread',       # Handicap — basketball
-        203: 'spread',       # Handicap
-        213: 'spread',       # Handicap (incl. overtime)
-        1619: 'spread',      # Puck Line (Regular Time) — ice hockey
-        1625: 'spread',      # Puck Line — ice hockey
+        16: "spread",  # Asian Handicap (generic — football)
+        187: "spread",  # Handicap — basketball
+        203: "spread",  # Handicap
+        213: "spread",  # Handicap (incl. overtime)
+        1619: "spread",  # Puck Line (Regular Time) — ice hockey
+        1625: "spread",  # Puck Line — ice hockey
     }
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
 
     def _normalize_market_type(self, market_type_id: int) -> str:
         """Map marketTypeId to standard market type."""
-        return self.MARKET_TYPE_MAP.get(market_type_id, 'other')
+        return self.MARKET_TYPE_MAP.get(market_type_id, "other")
 
-    def _build_outcome(self, selection: dict, market_type: str,
-                       home_team: str = '', away_team: str = '') -> Optional[dict]:
+    def _build_outcome(
+        self, selection: dict, market_type: str, home_team: str = "", away_team: str = ""
+    ) -> dict | None:
         """Build normalized outcome dict from a selection.
 
         Args:
             home_team/away_team: Optional normalized team names for matching
                 when outcomeType is empty (common on event detail pages).
         """
-        odds = selection.get('trueOdds', 0.0)
+        odds = selection.get("trueOdds", 0.0)
         if not odds or odds <= 1.0:
             return None
 
-        outcome_type = (selection.get('outcomeType') or '').lower()
-        name = (selection.get('name') or '').lower()
+        outcome_type = (selection.get("outcomeType") or "").lower()
+        name = (selection.get("name") or "").lower()
 
-        if market_type in ('1x2', 'moneyline'):
-            if outcome_type == 'home':
-                return {'name': 'home', 'odds': float(odds)}
-            if outcome_type == 'away':
-                return {'name': 'away', 'odds': float(odds)}
-            if outcome_type in ('tie', 'draw'):
-                return {'name': 'draw', 'odds': float(odds)}
+        if market_type in ("1x2", "moneyline"):
+            if outcome_type == "home":
+                return {"name": "home", "odds": float(odds)}
+            if outcome_type == "away":
+                return {"name": "away", "odds": float(odds)}
+            if outcome_type in ("tie", "draw"):
+                return {"name": "draw", "odds": float(odds)}
 
-        elif market_type == 'total':
-            points = selection.get('points')
+        elif market_type == "total":
+            points = selection.get("points")
             if points is None or points == 0.0:
                 return None
-            if outcome_type == 'over' or 'över' in name or 'over' in name:
-                return {'name': 'over', 'odds': float(odds), 'point': float(points)}
-            if outcome_type == 'under' or 'under' in name:
-                return {'name': 'under', 'odds': float(odds), 'point': float(points)}
+            if outcome_type == "over" or "över" in name or "over" in name:
+                return {"name": "over", "odds": float(odds), "point": float(points)}
+            if outcome_type == "under" or "under" in name:
+                return {"name": "under", "odds": float(odds), "point": float(points)}
 
-        elif market_type == 'spread':
-            points = selection.get('points')
+        elif market_type == "spread":
+            points = selection.get("points")
             if points is None:
                 return None
-            if outcome_type == 'home':
-                return {'name': 'home', 'odds': float(odds), 'point': float(points)}
-            if outcome_type == 'away':
-                return {'name': 'away', 'odds': float(odds), 'point': float(points)}
+            if outcome_type == "home":
+                return {"name": "home", "odds": float(odds), "point": float(points)}
+            if outcome_type == "away":
+                return {"name": "away", "odds": float(odds), "point": float(points)}
             # Fallback: match selection name against team names (detail pages have empty outcomeType)
             if home_team and home_team in name:
-                return {'name': 'home', 'odds': float(odds), 'point': float(points)}
+                return {"name": "home", "odds": float(odds), "point": float(points)}
             if away_team and away_team in name:
-                return {'name': 'away', 'odds': float(odds), 'point': float(points)}
+                return {"name": "away", "odds": float(odds), "point": float(points)}
 
         return None
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         raise NotImplementedError("HajperRetriever uses extract() directly")
 
     async def _dismiss_cookie_overlay(self, page) -> None:
@@ -145,37 +147,35 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         """
         # Try OneTrust (used by some ComeOn Group sites)
         try:
-            btn = await page.query_selector('#onetrust-accept-btn-handler')
+            btn = await page.query_selector("#onetrust-accept-btn-handler")
             if btn:
                 await btn.click()
-                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
                 await page.wait_for_timeout(1000)
                 return
         except Exception:
             pass
 
         # Try generic accept buttons (Hajper/Lyllo may use different consent)
-        for btn_text in ['Acceptera', 'Accept', 'Godkänn']:
+        for btn_text in ["Acceptera", "Accept", "Godkänn"]:
             try:
                 await page.click(f'button:has-text("{btn_text}")', timeout=1500)
-                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
                 await page.wait_for_timeout(1000)
                 return
             except Exception:
                 pass
 
         # Force-remove overlay elements that intercept clicks
-        try:
-            await page.evaluate('''() => {
+        with contextlib.suppress(Exception):
+            await page.evaluate("""() => {
                 const filter = document.querySelector('.onetrust-pc-dark-filter');
                 if (filter) filter.remove();
                 const sdk = document.querySelector('#onetrust-consent-sdk');
                 if (sdk) sdk.remove();
-            }''')
-        except Exception:
-            pass
+            }""")
 
-    async def extract(self, sport: str, limit: Optional[int] = None, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int | None = None, **kwargs) -> list[StandardEvent]:
         """Extract events via date-button navigation on the sport page."""
         sport_path = self.SPORT_URL_MAP.get(sport)
         if not sport_path:
@@ -198,13 +198,15 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                         decoded = self._decode_rsocket_frame(payload)
                         if decoded:
                             ws_messages.append(decoded)
+
                 ws.on("framereceived", on_frame_received)
+
             page.on("websocket", on_websocket)
 
             # Load sport page
             sport_url = f"{self.site_url}/sv{sport_path}"
             logger.debug(f"[{self.provider_id}] Loading {sport_url}")
-            await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
+            await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(1500)
 
             # Dismiss cookie overlay — may trigger SPA navigation
@@ -214,7 +216,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             current_url = page.url
             if sport_path not in current_url:
                 logger.debug(f"[{self.provider_id}] Cookie redirect detected, navigating back to {sport_url}")
-                await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
+                await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(1000)
 
             # Wait for WS data to arrive (5s to ensure INITIAL_STATE is delivered)
@@ -227,7 +229,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             # Step 2: Scroll date container to reveal all dates, then click through them
             # The date strip is horizontally scrollable — only ~7-10 buttons visible initially.
             # Scrolling right reveals 14+ additional dates (up to ~21 total).
-            await page.evaluate(r'''() => {
+            await page.evaluate(r"""() => {
                 // Find the scrollable container holding date buttons
                 // Strategy: find a date button, walk up to find its scrollable parent
                 const allBtns = document.querySelectorAll('button');
@@ -259,14 +261,14 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 if (dateBtn.parentElement) {
                     dateBtn.parentElement.scrollLeft = dateBtn.parentElement.scrollWidth;
                 }
-            }''')
+            }""")
             # Wait for any lazy-loaded date buttons to render after scroll
             await page.wait_for_timeout(500)
 
             # Now discover ALL date buttons (including newly revealed ones)
             # Collect button text labels instead of indices — indices shift when
             # clicking dates renders new event buttons in the DOM.
-            date_labels = await page.evaluate(r'''() => {
+            date_labels = await page.evaluate(r"""() => {
                 const labels = [];
                 document.querySelectorAll('button').forEach(btn => {
                     const text = btn.textContent.trim();
@@ -277,7 +279,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     }
                 });
                 return labels;
-            }''')
+            }""")
 
             # Skip date scanning only if no events AND no date buttons
             if not all_events_data and not date_labels:
@@ -290,7 +292,8 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     try:
                         ws_before = len(ws_messages)
                         # Find and click button by its exact text content (DOM-safe)
-                        clicked = await page.evaluate('''(targetLabel) => {
+                        clicked = await page.evaluate(
+                            """(targetLabel) => {
                             const btns = document.querySelectorAll('button');
                             for (const btn of btns) {
                                 if (btn.textContent.trim() === targetLabel) {
@@ -299,7 +302,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                                 }
                             }
                             return false;
-                        }''', label)
+                        }""",
+                            label,
+                        )
 
                         if clicked:
                             # Adaptive wait: min 0.5s, poll for WS data, max 4.0s
@@ -324,39 +329,40 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 for msg in msg_data:
                     if not isinstance(msg, dict):
                         continue
-                    payload = msg.get('payload', {})
+                    payload = msg.get("payload", {})
 
-                    for market in payload.get('markets', []):
-                        mid = market.get('id')
+                    for market in payload.get("markets", []):
+                        mid = market.get("id")
                         if mid:
                             all_markets[mid] = market
 
-                    for sel in payload.get('selections', []):
-                        sid = sel.get('id')
+                    for sel in payload.get("selections", []):
+                        sid = sel.get("id")
                         if sid:
                             all_selections[sid] = sel
 
-            logger.debug(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
-                         f"{len(all_markets)} markets, {len(all_selections)} selections")
+            logger.debug(
+                f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
+                f"{len(all_markets)} markets, {len(all_selections)} selections"
+            )
 
             # Build event->markets and market->selections mappings
-            event_markets_map: Dict[int, List[int]] = {}
+            event_markets_map: dict[int, list[int]] = {}
             for mid, mkt in all_markets.items():
-                eid = mkt.get('eventId')
+                eid = mkt.get("eventId")
                 if eid:
                     event_markets_map.setdefault(eid, []).append(mid)
 
-            market_selections_map: Dict[int, List[dict]] = {}
+            market_selections_map: dict[int, list[dict]] = {}
             for sid, sel in all_selections.items():
-                mid = sel.get('marketId')
+                mid = sel.get("marketId")
                 if mid:
                     market_selections_map.setdefault(mid, []).append(sel)
 
             # Parse events
             events = []
             for eid, event_data in all_events_data.items():
-                event = self._parse_event(event_data, sport,
-                                          event_markets_map, all_markets, market_selections_map)
+                event = self._parse_event(event_data, sport, event_markets_map, all_markets, market_selections_map)
                 if event:
                     events.append(event)
 
@@ -367,7 +373,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 event_urls = await page.evaluate(self.JS_DISCOVER_EVENT_URLS)
                 if event_urls:
                     enriched_count = await self._enrich_with_detail_markets(page, events, event_urls)
-                    logger.debug(f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs")
+                    logger.debug(
+                        f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs"
+                    )
                 else:
                     logger.debug(f"[{self.provider_id}] No event URLs found in DOM for enrichment")
 
@@ -391,9 +399,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         return links;
     }"""
 
-    async def _enrich_with_detail_markets(
-        self, page, events: List[StandardEvent], event_urls: Dict[str, str]
-    ) -> int:
+    async def _enrich_with_detail_markets(self, page, events: list[StandardEvent], event_urls: dict[str, str]) -> int:
         """Navigate to event detail pages to extract spread and total markets.
 
         Uses the main page sequentially — ComeOn Group SPA only establishes WS
@@ -404,8 +410,8 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
         todo = []
         for eid_str, ev in event_by_id.items():
-            existing_types = {m['type'] for m in ev.markets}
-            if 'spread' not in existing_types or 'total' not in existing_types:
+            existing_types = {m["type"] for m in ev.markets}
+            if "spread" not in existing_types or "total" not in existing_types:
                 url = event_urls.get(eid_str)
                 if url:
                     todo.append((ev, url))
@@ -416,10 +422,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
         if len(todo) > self.MAX_DETAIL_EVENTS:
             logger.info(
-                f"[{self.provider_id}] Capping detail enrichment from "
-                f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
+                f"[{self.provider_id}] Capping detail enrichment from {len(todo)} to {self.MAX_DETAIL_EVENTS} events"
             )
-            todo = todo[:self.MAX_DETAIL_EVENTS]
+            todo = todo[: self.MAX_DETAIL_EVENTS]
 
         logger.info(f"[{self.provider_id}] Enriching {len(todo)} events with spread/total from detail pages")
 
@@ -429,11 +434,13 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
         for event, href in todo:
             if consecutive_errors > 10:
-                logger.warning(f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors")
+                logger.warning(
+                    f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors"
+                )
                 break
 
             try:
-                detail_ws_messages: List[list] = []
+                detail_ws_messages: list[list] = []
 
                 def on_ws(ws, msgs=detail_ws_messages):
                     def on_frame(payload, m=msgs):
@@ -441,12 +448,14 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                             decoded = self._decode_rsocket_frame(payload)
                             if decoded:
                                 m.append(decoded)
+
                     ws.on("framereceived", on_frame)
+
                 page.on("websocket", on_ws)
 
-                url = f"{self.site_url}{href}" if href.startswith('/') else href
+                url = f"{self.site_url}{href}" if href.startswith("/") else href
                 try:
-                    await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=10000)
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Detail {event.id}: navigation failed: {e}")
                     page.remove_listener("websocket", on_ws)
@@ -483,62 +492,63 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     for msg in msg_data:
                         if not isinstance(msg, dict):
                             continue
-                        payload = msg.get('payload', {})
-                        for mkt in payload.get('markets', []):
-                            mid = mkt.get('id')
+                        payload = msg.get("payload", {})
+                        for mkt in payload.get("markets", []):
+                            mid = mkt.get("id")
                             if mid:
                                 detail_markets[mid] = mkt
-                        for sel in payload.get('selections', []):
-                            sid = sel.get('id')
+                        for sel in payload.get("selections", []):
+                            sid = sel.get("id")
                             if sid:
                                 detail_selections[sid] = sel
 
-                mkt_sel_map: Dict[int, List[dict]] = {}
+                mkt_sel_map: dict[int, list[dict]] = {}
                 for sid, sel in detail_selections.items():
-                    mid = sel.get('marketId')
+                    mid = sel.get("marketId")
                     if mid:
                         mkt_sel_map.setdefault(mid, []).append(sel)
 
                 added = []
                 for mid, mkt in detail_markets.items():
-                    mt = mkt.get('marketType', {})
-                    mt_id = mt.get('id', 0)
+                    mt = mkt.get("marketType", {})
+                    mt_id = mt.get("id", 0)
                     market_type = self._normalize_market_type(mt_id)
 
-                    if market_type not in ('spread', 'total'):
+                    if market_type not in ("spread", "total"):
                         continue
-                    if mkt.get('isSuspended'):
+                    if mkt.get("isSuspended"):
                         continue
 
                     sels = mkt_sel_map.get(mid, [])
                     outcomes = []
                     for sel in sels:
-                        if sel.get('status') != 'Active':
+                        if sel.get("status") != "Active":
                             continue
                         outcome = self._build_outcome(
-                            sel, market_type,
-                            home_team=event.home_team.lower() if event.home_team else '',
-                            away_team=event.away_team.lower() if event.away_team else ''
+                            sel,
+                            market_type,
+                            home_team=event.home_team.lower() if event.home_team else "",
+                            away_team=event.away_team.lower() if event.away_team else "",
                         )
                         if outcome:
                             outcomes.append(outcome)
 
                     if outcomes:
-                        added.append({'type': market_type, 'outcomes': outcomes})
+                        added.append({"type": market_type, "outcomes": outcomes})
 
                 if added:
                     existing = set()
                     for m in event.markets:
-                        key = m['type']
-                        for o in m.get('outcomes', []):
-                            if 'point' in o:
+                        key = m["type"]
+                        for o in m.get("outcomes", []):
+                            if "point" in o:
                                 key = f"{m['type']}_{o['point']}"
                         existing.add(key)
 
                     for m in added:
-                        key = m['type']
-                        for o in m.get('outcomes', []):
-                            if 'point' in o:
+                        key = m["type"]
+                        for o in m.get("outcomes", []):
+                            if "point" in o:
                                 key = f"{m['type']}_{o['point']}"
                         if key not in existing:
                             event.markets.append(m)
@@ -562,19 +572,23 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             for msg in msg_data:
                 if not isinstance(msg, dict):
                     continue
-                payload = msg.get('payload', {})
-                for event in payload.get('events', []):
-                    eid = event.get('id')
+                payload = msg.get("payload", {})
+                for event in payload.get("events", []):
+                    eid = event.get("id")
                     if eid and eid not in all_events_data:
                         all_events_data[eid] = event
 
-    def _parse_event(self, event_data: dict, sport: str,
-                     event_markets_map: Dict[int, List[int]],
-                     all_markets: Dict[int, dict],
-                     market_selections_map: Dict[int, List[dict]]) -> Optional[StandardEvent]:
+    def _parse_event(
+        self,
+        event_data: dict,
+        sport: str,
+        event_markets_map: dict[int, list[int]],
+        all_markets: dict[int, dict],
+        market_selections_map: dict[int, list[dict]],
+    ) -> StandardEvent | None:
         """Parse a single event from WS data."""
         try:
-            eid = event_data.get('id')
+            eid = event_data.get("id")
             if not eid:
                 return None
 
@@ -582,20 +596,20 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             home_team = None
             away_team = None
 
-            primary = event_data.get('primaryParticipants', {})
+            primary = event_data.get("primaryParticipants", {})
             if isinstance(primary, dict):
-                for pid, p in primary.items():
-                    role = p.get('venueRole', '')
-                    if role == 'Home':
-                        home_team = p.get('name')
-                    elif role == 'Away':
-                        away_team = p.get('name')
+                for _pid, p in primary.items():
+                    role = p.get("venueRole", "")
+                    if role == "Home":
+                        home_team = p.get("name")
+                    elif role == "Away":
+                        away_team = p.get("name")
 
             # Fallback: parse from eventName
             if not home_team or not away_team:
-                event_name = event_data.get('eventName', '')
-                if ' - ' in event_name:
-                    parts = event_name.split(' - ', 1)
+                event_name = event_data.get("eventName", "")
+                if " - " in event_name:
+                    parts = event_name.split(" - ", 1)
                     home_team = home_team or parts[0].strip()
                     away_team = away_team or parts[1].strip()
 
@@ -606,15 +620,13 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             away_team = normalize_team_name(away_team)
 
             # Start time
-            start_time_str = event_data.get('startingOn') or event_data.get('startTime')
+            start_time_str = event_data.get("startingOn") or event_data.get("startTime")
             start_time = None
             if start_time_str:
-                try:
-                    start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
-                except ValueError:
-                    pass
+                with contextlib.suppress(ValueError):
+                    start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
 
-            league = event_data.get('leagueName', 'Unknown')
+            league = event_data.get("leagueName", "Unknown")
 
             # Build markets
             markets = []
@@ -625,34 +637,29 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 if not mkt:
                     continue
 
-                mt = mkt.get('marketType', {})
-                mt_id = mt.get('id', 0)
+                mt = mkt.get("marketType", {})
+                mt_id = mt.get("id", 0)
                 market_type = self._normalize_market_type(mt_id)
 
-                if market_type == 'other':
-                    mt_name = mt.get('originalName', mt.get('name', ''))
-                    logger.debug(
-                        f"[{self.provider_id}] Unknown market typeId={mt_id} "
-                        f"name='{mt_name}'")
+                if market_type == "other":
+                    mt_name = mt.get("originalName", mt.get("name", ""))
+                    logger.debug(f"[{self.provider_id}] Unknown market typeId={mt_id} name='{mt_name}'")
                     continue
 
-                if mkt.get('isSuspended'):
+                if mkt.get("isSuspended"):
                     continue
 
                 selections = market_selections_map.get(mid, [])
                 outcomes = []
                 for sel in selections:
-                    if sel.get('status') != 'Active':
+                    if sel.get("status") != "Active":
                         continue
                     outcome = self._build_outcome(sel, market_type)
                     if outcome:
                         outcomes.append(outcome)
 
                 if outcomes:
-                    markets.append({
-                        'type': market_type,
-                        'outcomes': outcomes
-                    })
+                    markets.append({"type": market_type, "outcomes": outcomes})
 
             return StandardEvent(
                 id=str(eid),
@@ -663,7 +670,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time,
-                markets=markets
+                markets=markets,
             )
 
         except Exception as e:

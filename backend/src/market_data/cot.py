@@ -1,4 +1,5 @@
 """CFTC Commitment of Traders report fetcher."""
+
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -36,13 +37,18 @@ async def fetch_cot(cftc_code: str = NQ_CFTC_CODE, limit: int = 4) -> list[COTRe
 
         reports = []
         for row in rows:
-            reports.append(COTReport(
-                report_date=date.fromisoformat(row.get("report_date_as_yyyy_mm_dd", "")[:10]),
-                net_commercial=int(row.get("comm_positions_long_all", 0)) - int(row.get("comm_positions_short_all", 0)),
-                net_non_commercial=int(row.get("noncomm_positions_long_all", 0)) - int(row.get("noncomm_positions_short_all", 0)),
-                net_non_reportable=int(row.get("nonrept_positions_long_all", 0)) - int(row.get("nonrept_positions_short_all", 0)),
-                open_interest=int(row.get("open_interest_all", 0)),
-            ))
+            reports.append(
+                COTReport(
+                    report_date=date.fromisoformat(row.get("report_date_as_yyyy_mm_dd", "")[:10]),
+                    net_commercial=int(row.get("comm_positions_long_all", 0))
+                    - int(row.get("comm_positions_short_all", 0)),
+                    net_non_commercial=int(row.get("noncomm_positions_long_all", 0))
+                    - int(row.get("noncomm_positions_short_all", 0)),
+                    net_non_reportable=int(row.get("nonrept_positions_long_all", 0))
+                    - int(row.get("nonrept_positions_short_all", 0)),
+                    open_interest=int(row.get("open_interest_all", 0)),
+                )
+            )
         return reports
     except Exception as e:
         logger.error("COT fetch failed: %s", e)
@@ -69,18 +75,21 @@ def store_cot_data(
     inserted = 0
     for report in reports:
         report_date_str = report.report_date.isoformat()
-        existing = session.query(CotData).filter_by(
-            report_date=report_date_str, symbol=symbol
-        ).first()
+        existing = session.query(CotData).filter_by(report_date=report_date_str, symbol=symbol).first()
         if existing is not None:
             logger.debug("COT row already exists for %s %s, skipping", symbol, report_date_str)
             continue
 
         # Compute net_change from previous report if available
-        prev = session.query(CotData).filter(
-            CotData.symbol == symbol,
-            CotData.report_date < report_date_str,
-        ).order_by(CotData.report_date.desc()).first()
+        prev = (
+            session.query(CotData)
+            .filter(
+                CotData.symbol == symbol,
+                CotData.report_date < report_date_str,
+            )
+            .order_by(CotData.report_date.desc())
+            .first()
+        )
         net_change = None
         if prev and prev.net_position is not None:
             net_change = report.net_non_commercial - prev.net_position

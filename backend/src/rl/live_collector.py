@@ -330,10 +330,7 @@ class LiveEpisodeCollector:
         mae = long_mae if best_action_dir == 1 else short_mae
 
         # Structural stop: nearest level behind + 2 tick buffer
-        if best_action_dir == 1:
-            behind = ep.levels_below
-        else:
-            behind = ep.levels_above
+        behind = ep.levels_below if best_action_dir == 1 else ep.levels_above
         if behind:
             struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0
             stop_ticks = float(max(6.0, min(40.0, struct_dist)))

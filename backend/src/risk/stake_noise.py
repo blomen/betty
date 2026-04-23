@@ -10,14 +10,13 @@ Key principles:
 4. Maintain stake within reasonable bounds
 """
 
-from dataclasses import dataclass
-from typing import Optional
-import random
 import logging
+import random
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from ..db.models import RiskConfig, Profile
+from ..db.models import Profile, RiskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +27,24 @@ NATURAL_ENDINGS = [1, 2, 3, 4, 6, 7, 8, 9]  # More natural endings
 
 # Exact amounts that are clearly calculated
 ROUND_NUMBERS = {
-    10, 20, 25, 50, 75, 100, 150, 200, 250,
-    300, 400, 500, 750, 1000, 1500, 2000, 2500, 5000,
+    10,
+    20,
+    25,
+    50,
+    75,
+    100,
+    150,
+    200,
+    250,
+    300,
+    400,
+    500,
+    750,
+    1000,
+    1500,
+    2000,
+    2500,
+    5000,
 }
 
 
@@ -73,23 +88,19 @@ class StakeNoiseInjector:
 
     def __init__(self, db: Session):
         self.db = db
-        self._config: Optional[RiskConfig] = None
+        self._config: RiskConfig | None = None
 
     def _get_config(self) -> RiskConfig:
         """Get risk configuration for active profile."""
         if self._config is not None:
             return self._config
 
-        active_profile = self.db.query(Profile).filter(Profile.is_active == True).first()
+        active_profile = self.db.query(Profile).filter(Profile.is_active).first()
         if not active_profile:
             active_profile = self.db.query(Profile).first()
 
         if active_profile:
-            config = (
-                self.db.query(RiskConfig)
-                .filter(RiskConfig.profile_id == active_profile.id)
-                .first()
-            )
+            config = self.db.query(RiskConfig).filter(RiskConfig.profile_id == active_profile.id).first()
             if config:
                 self._config = config
                 return config
@@ -102,7 +113,7 @@ class StakeNoiseInjector:
         self,
         stake: float,
         risk_score: float = 0.0,
-        max_stake: Optional[float] = None,
+        max_stake: float | None = None,
         min_stake: float = 1.0,
     ) -> NoisyStake:
         """
@@ -209,9 +220,27 @@ class StakeNoiseInjector:
         if stake <= 500:
             # Medium stakes: pick closest natural amount
             natural_stakes = [
-                100, 110, 120, 125, 130, 140, 150,
-                160, 170, 175, 180, 190, 200, 225,
-                250, 275, 300, 350, 400, 450, 500
+                100,
+                110,
+                120,
+                125,
+                130,
+                140,
+                150,
+                160,
+                170,
+                175,
+                180,
+                190,
+                200,
+                225,
+                250,
+                275,
+                300,
+                350,
+                400,
+                450,
+                500,
             ]
             return min(natural_stakes, key=lambda x: abs(x - stake))
 
@@ -246,7 +275,7 @@ class StakeNoiseInjector:
         self,
         stakes: list[tuple[str, float]],  # [(provider_id, stake), ...]
         risk_scores: dict[str, float],  # {provider_id: risk_score}
-        max_stake: Optional[float] = None,
+        max_stake: float | None = None,
     ) -> dict[str, NoisyStake]:
         """
         Inject noise into multiple stakes.

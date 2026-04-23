@@ -6,8 +6,12 @@ Produces signals with composite quality scores (0-100).
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .amt import SessionAnalysis
+
+if TYPE_CHECKING:
+    from .orderflow import OrderflowSignals
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ScoredCondition:
     """A single scored condition within a setup."""
+
     name: str
     score: float  # 0.0 - 1.0
     weight: float  # relative importance
@@ -25,6 +30,7 @@ class ScoredCondition:
 @dataclass
 class SetupSignal:
     """A scored setup signal."""
+
     setup_type: str
     setup_name: str
     category: str
@@ -44,8 +50,9 @@ class MarketScanner:
         self.threshold = threshold
         self.db_session = db_session
 
-    def scan(self, session: SessionAnalysis, candles: list | None = None,
-             orderflow: "OrderflowSignals | None" = None) -> list[SetupSignal]:
+    def scan(
+        self, session: SessionAnalysis, candles: list | None = None, orderflow: "OrderflowSignals | None" = None
+    ) -> list[SetupSignal]:
         """Score all setups, return those meeting threshold.
 
         Macro regime acts as a multiplier on directional setups:
@@ -81,16 +88,17 @@ class MarketScanner:
                 ml_features = None
                 try:
                     from src.ml.features.trading_features import extract_trading_features
+
                     of = orderflow or session.delta
                     ml_features = extract_trading_features(
                         setup_type=setup_type,
                         direction=direction,
                         base_score=int(round(composite)),
-                        delta=getattr(of, 'delta', None) if of else None,
-                        cvd=getattr(of, 'cvd', None) if of else None,
-                        passive_active_ratio=getattr(of, 'passive_active_ratio', None) if of else None,
-                        big_trades_count=getattr(of, 'big_trades_count', None) if of else None,
-                        big_trades_net_delta=getattr(of, 'big_trades_net_delta', None) if of else None,
+                        delta=getattr(of, "delta", None) if of else None,
+                        cvd=getattr(of, "cvd", None) if of else None,
+                        passive_active_ratio=getattr(of, "passive_active_ratio", None) if of else None,
+                        big_trades_count=getattr(of, "big_trades_count", None) if of else None,
+                        big_trades_net_delta=getattr(of, "big_trades_net_delta", None) if of else None,
                         market_type=session.market_type,
                         poor_high=session.poor_high,
                         poor_low=session.poor_low,
@@ -101,6 +109,7 @@ class MarketScanner:
                 # M5: ML-predicted score overrides composite (best-effort)
                 try:
                     from src.ml.serving.predictor import get_predictor
+
                     predictor = get_predictor()
                     if predictor.is_loaded("setup_scorer") and ml_features:
                         ml_pred = predictor.predict("setup_scorer", ml_features)
@@ -115,9 +124,11 @@ class MarketScanner:
                 # M6: Temporal pattern overlay -- boosts/penalizes based on candle pattern
                 try:
                     from src.ml.serving.predictor import get_predictor
+
                     predictor = get_predictor()
                     if predictor.is_loaded("temporal_pattern") and candles:
                         from src.ml.features.candle_features import snapshot_candles as _snap
+
                         candle_dicts = _snap(
                             candles,
                             vwap=session.vwap_bands.vwap if session.vwap_bands else None,
@@ -130,9 +141,12 @@ class MarketScanner:
                                 pattern_class = pattern_pred.get("class", 4)
                                 probs = pattern_pred.get("probabilities", [])
                                 if probs:
-                                    if direction == "long" and pattern_class in (0, 2):
-                                        composite = min(100, composite + max(probs) * 10)
-                                    elif direction == "short" and pattern_class in (1, 3):
+                                    if (
+                                        direction == "long"
+                                        and pattern_class in (0, 2)
+                                        or direction == "short"
+                                        and pattern_class in (1, 3)
+                                    ):
                                         composite = min(100, composite + max(probs) * 10)
                                     elif pattern_class == 4:
                                         composite = max(0, composite - 5)
@@ -142,8 +156,10 @@ class MarketScanner:
                 # M9: Add news event proximity to features
                 try:
                     if self.db_session is not None and ml_features is not None:
-                        from src.data.economic_calendar import get_upcoming_events, get_recent_events
                         from datetime import datetime, timezone
+
+                        from src.data.economic_calendar import get_recent_events, get_upcoming_events
+
                         upcoming = get_upcoming_events(self.db_session, minutes_ahead=30)
                         if upcoming:
                             nearest = upcoming[0]
@@ -162,9 +178,7 @@ class MarketScanner:
                     logger.debug(f"M9 news context skipped: {e}")
 
                 if composite >= self.threshold:
-                    entry, stop, target = self._suggest_levels(
-                        setup_type, session, direction
-                    )
+                    entry, stop, target = self._suggest_levels(setup_type, session, direction)
                     signal = SetupSignal(
                         setup_type=setup_type,
                         setup_name=setup_cfg.get("name", setup_type),
@@ -181,7 +195,8 @@ class MarketScanner:
                     # Log ML features (best-effort, never blocks scanning)
                     try:
                         if self.db_session is not None and ml_features is not None:
-                            from src.ml.feature_store import log_features, log_candle_snapshot
+                            from src.ml.feature_store import log_candle_snapshot, log_features
+
                             source_id = f"{setup_type}_{direction}_{id(signal)}"
                             feat_row = log_features(
                                 session=self.db_session,
@@ -192,6 +207,7 @@ class MarketScanner:
                             )
                             if candles and feat_row:
                                 from src.ml.features.candle_features import snapshot_candles as _snap_log
+
                                 candle_dicts = _snap_log(
                                     candles,
                                     vwap=session.vwap_bands.vwap if session.vwap_bands else None,
@@ -235,8 +251,7 @@ class MarketScanner:
 
         # Fallback: score generic confirmations at 0.5 (manual)
         return [
-            ScoredCondition(name=c, score=0.5, weight=1.0, is_auto=False)
-            for c in setup_cfg.get("confirmations", [])
+            ScoredCondition(name=c, score=0.5, weight=1.0, is_auto=False) for c in setup_cfg.get("confirmations", [])
         ]
 
     def _enrich_with_orderflow(
@@ -250,32 +265,54 @@ class MarketScanner:
         for i, c in enumerate(conditions):
             if not c.is_auto and "absorption" in c.name.lower():
                 conditions[i] = ScoredCondition(
-                    c.name, 0.9 if of.vsa_absorption else 0.2, c.weight, True,
+                    c.name,
+                    0.9 if of.vsa_absorption else 0.2,
+                    c.weight,
+                    True,
                     f"VSA absorption={'YES' if of.vsa_absorption else 'no'}, PA ratio={of.passive_active_ratio:.1f}",
                 )
             elif not c.is_auto and "delta" in c.name.lower() and "confirm" in c.name.lower():
                 conditions[i] = ScoredCondition(
-                    c.name, 0.9 if of.delta_aligned else 0.2, c.weight, True,
+                    c.name,
+                    0.9 if of.delta_aligned else 0.2,
+                    c.weight,
+                    True,
                     f"Delta={'aligned' if of.delta_aligned else 'opposed'}, net={of.delta:+d}",
                 )
             elif not c.is_auto and "trapped" in c.name.lower():
                 conditions[i] = ScoredCondition(
-                    c.name, 0.9 if of.trapped_traders else 0.2, c.weight, True,
+                    c.name,
+                    0.9 if of.trapped_traders else 0.2,
+                    c.weight,
+                    True,
                     f"Trapped={'YES' if of.trapped_traders else 'no'}",
                 )
-            elif not c.is_auto and "volume" in c.name.lower() and ("spike" in c.name.lower() or "increase" in c.name.lower() or "expansion" in c.name.lower()):
+            elif (
+                not c.is_auto
+                and "volume" in c.name.lower()
+                and ("spike" in c.name.lower() or "increase" in c.name.lower() or "expansion" in c.name.lower())
+            ):
                 conditions[i] = ScoredCondition(
-                    c.name, 0.85 if of.tick_vol_accelerating else 0.3, c.weight, True,
+                    c.name,
+                    0.85 if of.tick_vol_accelerating else 0.3,
+                    c.weight,
+                    True,
                     f"Tick vol accel={'YES' if of.tick_vol_accelerating else 'no'}, big trades={of.big_trades_count}",
                 )
             elif not c.is_auto and "unwind" in c.name.lower():
                 conditions[i] = ScoredCondition(
-                    c.name, 0.9 if of.delta_unwind else 0.2, c.weight, True,
+                    c.name,
+                    0.9 if of.delta_unwind else 0.2,
+                    c.weight,
+                    True,
                     f"Delta unwind={'YES' if of.delta_unwind else 'no'}",
                 )
             elif not c.is_auto and "reversal" in c.name.lower() and "quick" in c.name.lower():
                 conditions[i] = ScoredCondition(
-                    c.name, 0.9 if of.stop_run_detected else 0.3, c.weight, True,
+                    c.name,
+                    0.9 if of.stop_run_detected else 0.3,
+                    c.weight,
+                    True,
                     f"Stop run={'YES' if of.stop_run_detected else 'no'}",
                 )
 
@@ -284,14 +321,24 @@ class MarketScanner:
             net = of.big_trades_net_delta
             aligned = (direction == "long" and net > 0) or (direction == "short" and net < 0)
             if aligned:
-                conditions.append(ScoredCondition(
-                    "Institutional big trades aligned", 0.9, 0.8, True,
-                    f"{of.big_trades_count} big trades, net delta={net:+d}",
-                ))
+                conditions.append(
+                    ScoredCondition(
+                        "Institutional big trades aligned",
+                        0.9,
+                        0.8,
+                        True,
+                        f"{of.big_trades_count} big trades, net delta={net:+d}",
+                    )
+                )
         if of.stop_run_detected:
-            conditions.append(ScoredCondition(
-                "Stop run / liquidity sweep", 0.85, 0.7, True,
-            ))
+            conditions.append(
+                ScoredCondition(
+                    "Stop run / liquidity sweep",
+                    0.85,
+                    0.7,
+                    True,
+                )
+            )
 
         return conditions
 
@@ -329,12 +376,28 @@ class MarketScanner:
             dist = abs(s.last_price - vwap.lower_2sd)
             band_width = abs(vwap.upper_2sd - vwap.lower_2sd) or 1
             proximity = max(0, 1.0 - dist / (band_width * 0.1))
-            conditions.append(ScoredCondition("Price at VWAP 2SD band", proximity, 2.0, True, f"Price {s.last_price:.2f} vs 2SD lower {vwap.lower_2sd:.2f}"))
+            conditions.append(
+                ScoredCondition(
+                    "Price at VWAP 2SD band",
+                    proximity,
+                    2.0,
+                    True,
+                    f"Price {s.last_price:.2f} vs 2SD lower {vwap.lower_2sd:.2f}",
+                )
+            )
         elif direction == "short" and s.price_vs_vwap in ("above_2sd", "above_3sd"):
             dist = abs(s.last_price - vwap.upper_2sd)
             band_width = abs(vwap.upper_2sd - vwap.lower_2sd) or 1
             proximity = max(0, 1.0 - dist / (band_width * 0.1))
-            conditions.append(ScoredCondition("Price at VWAP 2SD band", proximity, 2.0, True, f"Price {s.last_price:.2f} vs 2SD upper {vwap.upper_2sd:.2f}"))
+            conditions.append(
+                ScoredCondition(
+                    "Price at VWAP 2SD band",
+                    proximity,
+                    2.0,
+                    True,
+                    f"Price {s.last_price:.2f} vs 2SD upper {vwap.upper_2sd:.2f}",
+                )
+            )
         else:
             return []  # Not applicable for this direction
 
@@ -356,12 +419,14 @@ class MarketScanner:
             return []
 
         conditions = []
-        vwap = s.vwap_bands
 
         # Must be at 3SD
-        if direction == "long" and s.price_vs_vwap == "below_3sd":
-            conditions.append(ScoredCondition("Price at VWAP 3SD band", 0.95, 2.5, True))
-        elif direction == "short" and s.price_vs_vwap == "above_3sd":
+        if (
+            direction == "long"
+            and s.price_vs_vwap == "below_3sd"
+            or direction == "short"
+            and s.price_vs_vwap == "above_3sd"
+        ):
             conditions.append(ScoredCondition("Price at VWAP 3SD band", 0.95, 2.5, True))
         else:
             return []
@@ -384,9 +449,12 @@ class MarketScanner:
         conditions = []
 
         # Market type alignment
-        if direction == "long" and s.market_type == "trending_up":
-            conditions.append(ScoredCondition("Clear trend direction on higher TF", 0.85, 2.0, True))
-        elif direction == "short" and s.market_type == "trending_down":
+        if (
+            direction == "long"
+            and s.market_type == "trending_up"
+            or direction == "short"
+            and s.market_type == "trending_down"
+        ):
             conditions.append(ScoredCondition("Clear trend direction on higher TF", 0.85, 2.0, True))
         else:
             conditions.append(ScoredCondition("Clear trend direction on higher TF", 0.2, 2.0, True))
@@ -410,9 +478,7 @@ class MarketScanner:
         conditions = []
 
         # Poor high/low indicates failed breakout
-        if direction == "long" and s.poor_low:
-            conditions.append(ScoredCondition("Clear breakout attempt that fails", 0.8, 2.0, True))
-        elif direction == "short" and s.poor_high:
+        if direction == "long" and s.poor_low or direction == "short" and s.poor_high:
             conditions.append(ScoredCondition("Clear breakout attempt that fails", 0.8, 2.0, True))
         else:
             conditions.append(ScoredCondition("Clear breakout attempt that fails", 0.3, 2.0, True))
@@ -433,7 +499,15 @@ class MarketScanner:
         ib = s.initial_balance
 
         # IB range established
-        conditions.append(ScoredCondition("IB range established (first 60 min)", 0.9, 1.0, True, f"IB: {ib.ib_low:.2f} - {ib.ib_high:.2f} (range: {ib.ib_range:.2f})"))
+        conditions.append(
+            ScoredCondition(
+                "IB range established (first 60 min)",
+                0.9,
+                1.0,
+                True,
+                f"IB: {ib.ib_low:.2f} - {ib.ib_high:.2f} (range: {ib.ib_range:.2f})",
+            )
+        )
 
         # Price beyond IB
         if direction == "long" and s.price_vs_ib == "above":
@@ -456,7 +530,9 @@ class MarketScanner:
         # Open within previous value area
         if s.prev_vah and s.prev_val and s.last_price:
             in_prev_va = s.prev_val <= s.last_price <= s.prev_vah
-            conditions.append(ScoredCondition("Open within previous day value area", 0.8 if in_prev_va else 0.2, 2.0, True))
+            conditions.append(
+                ScoredCondition("Open within previous day value area", 0.8 if in_prev_va else 0.2, 2.0, True)
+            )
         else:
             conditions.append(ScoredCondition("Open within previous day value area", 0.5, 2.0, False))
 
@@ -466,10 +542,14 @@ class MarketScanner:
             if va_range > 0:
                 if direction == "long" and s.last_price:
                     coverage = (s.last_price - s.prev_val) / va_range
-                    conditions.append(ScoredCondition("80% of previous VA covered", min(coverage / 0.8, 1.0), 2.0, True))
+                    conditions.append(
+                        ScoredCondition("80% of previous VA covered", min(coverage / 0.8, 1.0), 2.0, True)
+                    )
                 elif direction == "short" and s.last_price:
                     coverage = (s.prev_vah - s.last_price) / va_range
-                    conditions.append(ScoredCondition("80% of previous VA covered", min(coverage / 0.8, 1.0), 2.0, True))
+                    conditions.append(
+                        ScoredCondition("80% of previous VA covered", min(coverage / 0.8, 1.0), 2.0, True)
+                    )
 
         # Manual
         conditions.append(ScoredCondition("Initial move toward one VA extreme", 0.5, 1.0, False))
@@ -536,9 +616,12 @@ class MarketScanner:
         conditions = []
 
         # Trending market supports structural breaks
-        if direction == "long" and s.market_type == "trending_up":
-            conditions.append(ScoredCondition("Key level identified (HH/HL or LH/LL)", 0.7, 1.5, True))
-        elif direction == "short" and s.market_type == "trending_down":
+        if (
+            direction == "long"
+            and s.market_type == "trending_up"
+            or direction == "short"
+            and s.market_type == "trending_down"
+        ):
             conditions.append(ScoredCondition("Key level identified (HH/HL or LH/LL)", 0.7, 1.5, True))
         else:
             conditions.append(ScoredCondition("Key level identified (HH/HL or LH/LL)", 0.4, 1.5, True))
@@ -578,9 +661,7 @@ class MarketScanner:
         conditions = []
 
         # IB break
-        if direction == "long" and s.price_vs_ib == "above":
-            conditions.append(ScoredCondition("IB break with strong conviction", 0.8, 2.0, True))
-        elif direction == "short" and s.price_vs_ib == "below":
+        if direction == "long" and s.price_vs_ib == "above" or direction == "short" and s.price_vs_ib == "below":
             conditions.append(ScoredCondition("IB break with strong conviction", 0.8, 2.0, True))
         else:
             return []
@@ -592,8 +673,9 @@ class MarketScanner:
         # TPO structure — auto-score if TPO data available
         if s.tpo_profile:
             # p_shape = bullish (fat top), b_shape = bearish (fat bottom)
-            if (direction == "long" and s.tpo_profile.distribution_type == "p_shape") or \
-               (direction == "short" and s.tpo_profile.distribution_type == "b_shape"):
+            if (direction == "long" and s.tpo_profile.distribution_type == "p_shape") or (
+                direction == "short" and s.tpo_profile.distribution_type == "b_shape"
+            ):
                 tpo_score = 0.85
             elif s.tpo_profile.distribution_type == "normal":
                 tpo_score = 0.5
@@ -610,9 +692,7 @@ class MarketScanner:
         conditions = []
 
         # Poor high/low = failure to accept
-        if direction == "long" and s.poor_low:
-            conditions.append(ScoredCondition("Failure to build value beyond level", 0.8, 2.0, True))
-        elif direction == "short" and s.poor_high:
+        if direction == "long" and s.poor_low or direction == "short" and s.poor_high:
             conditions.append(ScoredCondition("Failure to build value beyond level", 0.8, 2.0, True))
         else:
             conditions.append(ScoredCondition("Failure to build value beyond level", 0.3, 2.0, True))
@@ -639,38 +719,54 @@ class MarketScanner:
         # Default stop/target based on direction and key levels
         if direction == "long":
             # Stop below nearest support
-            stops = [l for l in [
-                s.volume_profile.val if s.volume_profile else None,
-                s.vwap_bands.lower_1sd if s.vwap_bands else None,
-                s.initial_balance.ib_low if s.initial_balance else None,
-                s.overnight_low,
-            ] if l is not None and l < price]
+            stops = [
+                l
+                for l in [
+                    s.volume_profile.val if s.volume_profile else None,
+                    s.vwap_bands.lower_1sd if s.vwap_bands else None,
+                    s.initial_balance.ib_low if s.initial_balance else None,
+                    s.overnight_low,
+                ]
+                if l is not None and l < price
+            ]
             stop = max(stops) if stops else price - 20  # 20 pt default stop
 
             # Target above nearest resistance
-            targets = [l for l in [
-                s.volume_profile.vah if s.volume_profile else None,
-                s.vwap_bands.upper_1sd if s.vwap_bands else None,
-                s.initial_balance.ib_high if s.initial_balance else None,
-                s.overnight_high,
-            ] if l is not None and l > price]
+            targets = [
+                l
+                for l in [
+                    s.volume_profile.vah if s.volume_profile else None,
+                    s.vwap_bands.upper_1sd if s.vwap_bands else None,
+                    s.initial_balance.ib_high if s.initial_balance else None,
+                    s.overnight_high,
+                ]
+                if l is not None and l > price
+            ]
             target = min(targets) if targets else price + 40
 
         else:  # short
-            stops = [l for l in [
-                s.volume_profile.vah if s.volume_profile else None,
-                s.vwap_bands.upper_1sd if s.vwap_bands else None,
-                s.initial_balance.ib_high if s.initial_balance else None,
-                s.overnight_high,
-            ] if l is not None and l > price]
+            stops = [
+                l
+                for l in [
+                    s.volume_profile.vah if s.volume_profile else None,
+                    s.vwap_bands.upper_1sd if s.vwap_bands else None,
+                    s.initial_balance.ib_high if s.initial_balance else None,
+                    s.overnight_high,
+                ]
+                if l is not None and l > price
+            ]
             stop = min(stops) if stops else price + 20
 
-            targets = [l for l in [
-                s.volume_profile.val if s.volume_profile else None,
-                s.vwap_bands.lower_1sd if s.vwap_bands else None,
-                s.initial_balance.ib_low if s.initial_balance else None,
-                s.overnight_low,
-            ] if l is not None and l < price]
+            targets = [
+                l
+                for l in [
+                    s.volume_profile.val if s.volume_profile else None,
+                    s.vwap_bands.lower_1sd if s.vwap_bands else None,
+                    s.initial_balance.ib_low if s.initial_balance else None,
+                    s.overnight_low,
+                ]
+                if l is not None and l < price
+            ]
             target = max(targets) if targets else price - 40
 
         return round(entry, 2), round(stop, 2), round(target, 2)

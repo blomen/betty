@@ -1,7 +1,6 @@
 """Trading configuration loader. Caches on first load."""
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -17,6 +16,7 @@ def _load() -> dict[str, Any]:
         return _trading_config
 
     from ..paths import get_config_path
+
     path = get_config_path("trading.yaml")
 
     if not path.exists():
@@ -24,7 +24,7 @@ def _load() -> dict[str, Any]:
         _trading_config = {"instruments": {}, "setups": {}, "daily_routine": {}}
         return _trading_config
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         _trading_config = yaml.safe_load(f) or {}
 
     logger.info(

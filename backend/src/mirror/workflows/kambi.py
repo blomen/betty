@@ -186,7 +186,7 @@ class KambiWorkflow(ProviderWorkflow):
                     event_name = (
                         sel.get("eventName")
                         or sel.get("event")
-                        or (f"{home} v {away}".strip(" v ") if home or away else "")
+                        or (f"{home} v {away}" if home and away else (home or away))
                     )
                     outcome_name = sel.get("outcomeName") or sel.get("outcome") or ""
                     market = sel.get("marketName") or sel.get("market") or ""
@@ -433,7 +433,7 @@ class KambiWorkflow(ProviderWorkflow):
         label (team name / Over / Under / Draw).
         """
         outcome = _g(bet, "outcome", "")
-        market = _g(bet, "market", "")
+        _g(bet, "market", "")
         home = _g(bet, "display_home", "")
         away = _g(bet, "display_away", "")
         point = _g(bet, "point", None)

@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +34,19 @@ class PolymarketParser:
                 return []
             orders = []
             for o in data:
-                orders.append({
-                    "id": o.get("id", ""),
-                    "status": o.get("status", ""),
-                    "token_id": o.get("asset_id", ""),
-                    "side": o.get("side", ""),
-                    "price": float(o.get("price", 0)),
-                    "size": float(o.get("original_size", 0)),
-                    "filled": float(o.get("size_matched", 0)),
-                    "outcome": o.get("outcome", ""),
-                    "market": o.get("market", ""),
-                })
+                orders.append(
+                    {
+                        "id": o.get("id", ""),
+                        "status": o.get("status", ""),
+                        "token_id": o.get("asset_id", ""),
+                        "side": o.get("side", ""),
+                        "price": float(o.get("price", 0)),
+                        "size": float(o.get("original_size", 0)),
+                        "filled": float(o.get("size_matched", 0)),
+                        "outcome": o.get("outcome", ""),
+                        "market": o.get("market", ""),
+                    }
+                )
             return orders
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             logger.debug(f"[polymarket] Could not parse orders: {e}")

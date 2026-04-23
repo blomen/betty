@@ -1,4 +1,5 @@
 """Session metrics: Rotation Factor, ASPR, range baselines."""
+
 from dataclasses import dataclass
 
 
@@ -51,8 +52,10 @@ def compute_aspr_percentile(current_aspr: float, historical_asprs: list[float]) 
 
 
 def detect_value_migration(
-    today_vah: float, today_val: float,
-    yesterday_vah: float, yesterday_val: float,
+    today_vah: float,
+    today_val: float,
+    yesterday_vah: float,
+    yesterday_val: float,
 ) -> str:
     """Detect value area migration: up, down, or overlapping."""
     if today_val > yesterday_val and today_vah > yesterday_vah:

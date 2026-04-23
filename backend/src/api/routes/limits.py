@@ -1,20 +1,21 @@
 """Provider limit API routes."""
 
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ...db.models import Profile, ProfileProviderLimit, ProviderExtractionSetting
 from ...services.limit_service import LimitService
 from ..deps import get_db
-from ..schemas import LimitCreate, LimitUpdate, BanProviderRequest
+from ..schemas import BanProviderRequest, LimitCreate, LimitUpdate
 
 router = APIRouter(prefix="/api/limits", tags=["limits"])
 
 
 def _get_active_profile(db: Session) -> Profile:
     """Get active profile or raise 400."""
-    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    profile = db.query(Profile).filter(Profile.is_active).first()
     if not profile:
         raise HTTPException(400, "No active profile")
     return profile
@@ -107,22 +108,30 @@ def unban_provider(provider_id: str, db: Session = Depends(get_db)):
     """Unban a provider — removes fully_banned limit and re-enables extraction."""
     profile = _get_active_profile(db)
 
-    limit = db.query(ProfileProviderLimit).filter(
-        ProfileProviderLimit.profile_id == profile.id,
-        ProfileProviderLimit.provider_id == provider_id,
-        ProfileProviderLimit.limit_type == "fully_banned",
-        ProfileProviderLimit.limit_level == 5,
-    ).first()
+    limit = (
+        db.query(ProfileProviderLimit)
+        .filter(
+            ProfileProviderLimit.profile_id == profile.id,
+            ProfileProviderLimit.provider_id == provider_id,
+            ProfileProviderLimit.limit_type == "fully_banned",
+            ProfileProviderLimit.limit_level == 5,
+        )
+        .first()
+    )
     if not limit:
         raise HTTPException(404, f"No ban found for {provider_id}")
 
     db.delete(limit)
 
     # Re-enable extraction
-    setting = db.query(ProviderExtractionSetting).filter(
-        ProviderExtractionSetting.profile_id == profile.id,
-        ProviderExtractionSetting.provider_id == provider_id,
-    ).first()
+    setting = (
+        db.query(ProviderExtractionSetting)
+        .filter(
+            ProviderExtractionSetting.profile_id == profile.id,
+            ProviderExtractionSetting.provider_id == provider_id,
+        )
+        .first()
+    )
     if setting:
         setting.enabled = True
 

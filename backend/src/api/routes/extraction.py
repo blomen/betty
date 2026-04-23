@@ -4,21 +4,21 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
+from ...db.models import Odds, get_session
 from ...pipeline.broadcast import odds_broadcaster
 from ..state import (
     extraction_state,
-    update_extraction_state,
     get_extraction_state,
     get_provider_states,
+    update_extraction_state,
 )
-from ...db.models import Event, Odds, get_session
 
 router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 logger = logging.getLogger(__name__)
-
 
 
 def _build_final_state(results: dict) -> dict:
@@ -38,7 +38,9 @@ def _build_final_state(results: dict) -> dict:
                 Odds.provider_id,
                 func.count(func.distinct(Odds.event_id)),
                 func.count(Odds.id),
-            ).group_by(Odds.provider_id).all()
+            )
+            .group_by(Odds.provider_id)
+            .all()
         }
     finally:
         db.close()
@@ -226,6 +228,7 @@ async def extraction_stream(request: Request):
 # Continuous Extraction Endpoints
 # =============================================================================
 
+
 @router.post("/continuous/start")
 async def start_continuous_extraction(
     interval_seconds: int = 300,
@@ -248,11 +251,7 @@ async def start_continuous_extraction(
     if scheduler.running:
         raise HTTPException(400, "Continuous extraction already running")
 
-    provider_list = (
-        [p.strip() for p in providers.split(",")]
-        if providers
-        else ["polymarket", "pinnacle"]
-    )
+    provider_list = [p.strip() for p in providers.split(",")] if providers else ["polymarket", "pinnacle"]
 
     # Start the scheduler in the current event loop
     # The scheduler creates its own task internally
@@ -351,14 +350,16 @@ async def run_soft_extraction(
 
     # Composite tiers
     api_providers = (
-        tier_providers["kambi"] + tier_providers["altenar"] +
-        tier_providers["gecko"] + tier_providers["vbet"]
+        tier_providers["kambi"] + tier_providers["altenar"] + tier_providers["gecko"] + tier_providers["vbet"]
     )
     browser_providers = (
-        tier_providers["spectate"] + tier_providers["comeon"] +
-        tier_providers["snabbare"] + tier_providers["10bet"] +
-        tier_providers["interwetten"] + tier_providers["coolbet"] +
-        tier_providers["tipwin"]
+        tier_providers["spectate"]
+        + tier_providers["comeon"]
+        + tier_providers["snabbare"]
+        + tier_providers["10bet"]
+        + tier_providers["interwetten"]
+        + tier_providers["coolbet"]
+        + tier_providers["tipwin"]
     )
 
     # Resolve tier to provider list
@@ -377,7 +378,7 @@ async def run_soft_extraction(
             400,
             f"Unknown tier: {tier}. Use: all, api, browser, kambi, altenar, "
             f"gecko, spectate, comeon, snabbare, vbet, 10bet, interwetten, "
-            f"coolbet, tipwin, or comma-separated providers"
+            f"coolbet, tipwin, or comma-separated providers",
         )
 
     background_tasks.add_task(run_extraction_task, provider_list)
@@ -393,6 +394,7 @@ async def run_soft_extraction(
 # Tier Control Endpoints
 # =============================================================================
 
+
 @router.post("/tier/{tier_name}/start")
 async def start_tier(tier_name: str):
     """Start a specific extraction tier/category.
@@ -400,7 +402,7 @@ async def start_tier(tier_name: str):
     Reads config from providers.yaml extraction_scheduling section.
     Valid tier names: sharp, api_soft, browser_soft, browser_antibot
     """
-    from ...pipeline.scheduler import get_scheduler, ProviderSchedule
+    from ...pipeline.scheduler import ProviderSchedule, get_scheduler
 
     scheduler = get_scheduler()
 
@@ -418,19 +420,26 @@ async def start_tier(tier_name: str):
     # Filter out providers disabled in settings for active profile
     def _get_disabled():
         from ...db.models import Profile, ProviderExtractionSetting, get_session
+
         session = get_session()
         try:
-            profile = session.query(Profile).filter(
-                Profile.is_active == True  # noqa: E712
-            ).first()
+            profile = (
+                session.query(Profile)
+                .filter(
+                    Profile.is_active == True  # noqa: E712
+                )
+                .first()
+            )
             if not profile:
                 return set()
             return {
                 s.provider_id
-                for s in session.query(ProviderExtractionSetting).filter(
+                for s in session.query(ProviderExtractionSetting)
+                .filter(
                     ProviderExtractionSetting.profile_id == profile.id,
                     ProviderExtractionSetting.enabled == False,  # noqa: E712
-                ).all()
+                )
+                .all()
             }
         finally:
             session.close()
@@ -479,8 +488,8 @@ async def get_extraction_freshness():
     """Get the most recent odds update time per extraction tier (soft/sharp/poly/boosts)."""
 
     def _query():
-        from sqlalchemy import func, case
-        from ...db.models import BoostExtractionLog
+        from sqlalchemy import case, func
+
         session = get_session()
         try:
             rows = (
@@ -512,12 +521,14 @@ async def get_extraction_freshness():
 # Analytics + Recommendations Endpoints
 # =============================================================================
 
+
 @router.get("/analytics")
 async def get_extraction_analytics():
     """Get extraction analytics: provider ROI, coverage gaps, scheduling efficiency."""
 
     def _query():
-        from src.ml.analytics.engine import compute_provider_roi, compute_coverage_gaps, compute_scheduling_efficiency
+        from src.ml.analytics.engine import compute_coverage_gaps, compute_provider_roi, compute_scheduling_efficiency
+
         session = get_session()
         try:
             return {
@@ -537,6 +548,7 @@ async def get_extraction_recommendations():
 
     def _query():
         from src.ml.analytics.recommendations import RecommendationManager
+
         session = get_session()
         try:
             mgr = RecommendationManager(session)
@@ -569,6 +581,7 @@ async def get_ml_status():
     def _query():
         from src.ml.serving.predictor import get_predictor
         from src.ml.training.train_all import TrainingOrchestrator
+
         session = get_session()
         try:
             predictor = get_predictor()
@@ -594,6 +607,7 @@ async def trigger_ml_training():
 
     def _train():
         from src.ml.training.train_all import TrainingOrchestrator
+
         session = get_session()
         try:
             orch = TrainingOrchestrator()
@@ -611,10 +625,11 @@ async def get_optimizer_status():
     """Return latest M10 optimizer analysis results."""
 
     def _query():
-        from src.ml.optimizer.schedule import ScheduleOptimizer
-        from src.ml.optimizer.provider_priority import ProviderPriorityScorer
-        from src.ml.optimizer.timeout import TimeoutTuner
         from src.ml.optimizer.coverage import CoverageOptimizer
+        from src.ml.optimizer.provider_priority import ProviderPriorityScorer
+        from src.ml.optimizer.schedule import ScheduleOptimizer
+        from src.ml.optimizer.timeout import TimeoutTuner
+
         session = get_session()
         try:
             results = {}
@@ -645,6 +660,7 @@ async def update_recommendation(rec_id: int, status: str, after_metric: float = 
 
     def _update():
         from src.ml.analytics.recommendations import RecommendationManager
+
         session = get_session()
         try:
             mgr = RecommendationManager(session)

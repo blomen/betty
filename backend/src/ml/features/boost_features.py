@@ -5,19 +5,32 @@ The LLM does all research — this model only adjusts the probability.
 """
 
 SPORT_ENCODING = {
-    "football": 0, "basketball": 1, "tennis": 2, "ice_hockey": 3,
-    "american_football": 4, "baseball": 5, "mma": 6, "esports": 7,
-    "handball": 8, "volleyball": 9,
+    "football": 0,
+    "basketball": 1,
+    "tennis": 2,
+    "ice_hockey": 3,
+    "american_football": 4,
+    "baseball": 5,
+    "mma": 6,
+    "esports": 7,
+    "handball": 8,
+    "volleyball": 9,
 }
 
 
 def extract_boost_features(
-    llm_raw_probability: float, llm_confidence: int,
-    boost_type: str, sport: str, league: str,
-    num_legs: int, has_pinnacle_match: bool,
+    llm_raw_probability: float,
+    llm_confidence: int,
+    boost_type: str,
+    sport: str,
+    league: str,
+    num_legs: int,
+    has_pinnacle_match: bool,
     pinnacle_implied_prob: float | None,
-    original_odds: float, boosted_odds: float,
-    provider: str, hours_to_event: float = 0.0,
+    original_odds: float,
+    boosted_odds: float,
+    provider: str,
+    hours_to_event: float = 0.0,
     llm_reasoning_length: int = 0,
     day_of_week: int = 0,
 ) -> dict:

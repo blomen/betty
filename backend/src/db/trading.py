@@ -1,8 +1,17 @@
 """Trading, market data, and session models."""
 
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean,
-    ForeignKey, UniqueConstraint, Text, JSON, Index
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -11,6 +20,7 @@ from .base import Base, _utcnow
 
 class TradingAccount(Base):
     """Sub-account for trading (intraday, swing, hodl)."""
+
     __tablename__ = "trading_accounts"
 
     id = Column(Integer, primary_key=True)
@@ -46,6 +56,7 @@ class TradingAccount(Base):
 
 class DailyRoutine(Base):
     """One per trading day — checklist, bias, psych gate."""
+
     __tablename__ = "daily_routines"
 
     id = Column(Integer, primary_key=True)
@@ -85,6 +96,7 @@ class DailyRoutine(Base):
 
 class Trade(Base):
     """A single trade with full lifecycle tracking."""
+
     __tablename__ = "trades"
 
     id = Column(Integer, primary_key=True)
@@ -143,12 +155,15 @@ class Trade(Base):
 
 class TradeEvent(Base):
     """Timeline entry for a trade (state transitions, notes, partial exits)."""
+
     __tablename__ = "trade_events"
 
     id = Column(Integer, primary_key=True)
     trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
 
-    event_type = Column(String, nullable=False)  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
+    event_type = Column(
+        String, nullable=False
+    )  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
     from_state = Column(String, nullable=True)
     to_state = Column(String, nullable=True)
     details = Column(JSON, nullable=True)  # Flexible payload
@@ -162,6 +177,7 @@ class TradeEvent(Base):
 
 class TradeReview(Base):
     """Post-close journal review for a trade."""
+
     __tablename__ = "trade_reviews"
 
     id = Column(Integer, primary_key=True)
@@ -180,10 +196,13 @@ class TradeReview(Base):
 
 class TradePostmortem(Base):
     """Post-close classification for a trade. One row per closed trade."""
+
     __tablename__ = "trade_postmortems"
 
     trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
-    classification = Column(String, nullable=False)  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
+    classification = Column(
+        String, nullable=False
+    )  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
     r_multiple = Column(Float, nullable=True)
     setup_avg_r = Column(Float, nullable=True)
     setup_win_rate = Column(Float, nullable=True)
@@ -197,13 +216,12 @@ class TradePostmortem(Base):
 
     trade = relationship("Trade")
 
-    __table_args__ = (
-        Index("ix_trade_pm_classification_version", "classification", "version"),
-    )
+    __table_args__ = (Index("ix_trade_pm_classification_version", "classification", "version"),)
 
 
 class MarketSession(Base):
     """Computed AMT session data for a symbol/date."""
+
     __tablename__ = "market_sessions"
 
     id = Column(Integer, primary_key=True)
@@ -266,13 +284,12 @@ class MarketSession(Base):
     # Relationships
     signals = relationship("TradingSignal", back_populates="session")
 
-    __table_args__ = (
-        UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),)
 
 
 class TradingSignal(Base):
     """Scanner-generated trading signal with quality score."""
+
     __tablename__ = "trading_signals"
 
     id = Column(Integer, primary_key=True)
@@ -331,6 +348,7 @@ class TradingSignal(Base):
 
 class MarketTrade(Base):
     """Raw tick data from Databento live stream."""
+
     __tablename__ = "market_trades"
 
     id = Column(Integer, primary_key=True)
@@ -340,19 +358,18 @@ class MarketTrade(Base):
     size = Column(Integer, nullable=False)
     side = Column(String, nullable=False)  # "B" (bid aggressor) | "A" (ask aggressor)
 
-    __table_args__ = (
-        Index("ix_market_trades_symbol_ts", "symbol", "ts"),
-    )
+    __table_args__ = (Index("ix_market_trades_symbol_ts", "symbol", "ts"),)
 
 
 class MarketCandle(Base):
     """Persisted OHLCV candle bars — backfilled from Databento + appended live."""
+
     __tablename__ = "market_candles"
 
     id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False)
-    interval = Column(String, nullable=False)   # "1m" | "5m" | "15m"
-    ts = Column(DateTime, nullable=False)        # bucket-start UTC
+    interval = Column(String, nullable=False)  # "1m" | "5m" | "15m"
+    ts = Column(DateTime, nullable=False)  # bucket-start UTC
     o = Column(Float, nullable=False)
     h = Column(Float, nullable=False)
     l = Column(Float, nullable=False)
@@ -367,12 +384,15 @@ class MarketCandle(Base):
 
 class MarketLevel(Base):
     """Computed structural level for a session."""
+
     __tablename__ = "market_levels"
 
     id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False)
     date = Column(String, nullable=False)
-    level_type = Column(String, nullable=False)  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
+    level_type = Column(
+        String, nullable=False
+    )  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
     session = Column(String, nullable=True)  # "tokyo", "london", "ny", null
     price_low = Column(Float, nullable=False)
     price_high = Column(Float, nullable=False)  # = price_low for single-price levels
@@ -380,13 +400,12 @@ class MarketLevel(Base):
     is_filled = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),
-    )
+    __table_args__ = (Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),)
 
 
 class MarketTPOSession(Base):
     """Pre-computed TPO profile for a Globex session."""
+
     __tablename__ = "market_tpo_sessions"
 
     id = Column(Integer, primary_key=True)
@@ -416,6 +435,7 @@ class MarketTPOSession(Base):
 
 class MarketContext(Base):
     """Manual context gate persistence (Layer A gates)."""
+
     __tablename__ = "market_context"
 
     id = Column(Integer, primary_key=True)
@@ -423,12 +443,12 @@ class MarketContext(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     # Gate 1: Macro
     macro_bias = Column(String, nullable=True)  # "bull", "bear", "neutral"
-    risk_mode = Column(String, nullable=True)   # "risk_on", "risk_off", "mixed"
-    cycle_phase = Column(String, nullable=True) # "early", "mid", "late", "recession"
+    risk_mode = Column(String, nullable=True)  # "risk_on", "risk_off", "mixed"
+    cycle_phase = Column(String, nullable=True)  # "early", "mid", "late", "recession"
     # Gate 2: Structure
-    structure = Column(String, nullable=True)     # "uptrend", "downtrend", "ranging"
-    structure_hl = Column(Float, nullable=True)   # Last confirmed HL (long invalidation below)
-    structure_lh = Column(Float, nullable=True)   # Last confirmed LH (short invalidation above)
+    structure = Column(String, nullable=True)  # "uptrend", "downtrend", "ranging"
+    structure_hl = Column(Float, nullable=True)  # Last confirmed HL (long invalidation below)
+    structure_lh = Column(Float, nullable=True)  # Last confirmed LH (short invalidation above)
     # Gate 3: Day type
     day_type = Column(String, nullable=True)  # "trend", "normal", "normal_variation", "neutral", "composite"
     # VP anchors (Unix timestamps)
@@ -444,13 +464,12 @@ class MarketContext(Base):
     def vp_current_start(self, value):
         self.vp_old_macro_start = value
 
-    __table_args__ = (
-        UniqueConstraint("symbol", name="uq_market_context_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("symbol", name="uq_market_context_symbol"),)
 
 
 class SessionMetric(Base):
     """Permanent session metrics history for ASPR/RF baselines."""
+
     __tablename__ = "session_metrics"
 
     id = Column(Integer, primary_key=True)

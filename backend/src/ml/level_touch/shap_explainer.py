@@ -1,5 +1,7 @@
 """SHAP-based feature importance for level touch predictions."""
+
 import logging
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -13,6 +15,7 @@ def init_explainer(model, X_train_sample: np.ndarray):
     global _explainer, _background_data
     try:
         import shap
+
         _background_data = X_train_sample[:100]  # subsample for speed
         _explainer = shap.TreeExplainer(model, _background_data)
         logger.info("SHAP explainer initialized")
@@ -47,10 +50,7 @@ def explain_prediction(
         shap_values = _explainer.shap_values(features_encoded.reshape(1, -1))
 
         # For multiclass, shap_values is list of arrays per class
-        if isinstance(shap_values, list):
-            class_shap = shap_values[predicted_class][0]
-        else:
-            class_shap = shap_values[0]
+        class_shap = shap_values[predicted_class][0] if isinstance(shap_values, list) else shap_values[0]
 
         # Get top N by absolute SHAP value
         abs_vals = np.abs(class_shap)

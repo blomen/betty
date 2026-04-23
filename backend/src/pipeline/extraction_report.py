@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..constants import SHARP_PROVIDERS, PROVIDER_CANONICAL, PLATFORM_GROUPS
+from ..constants import PLATFORM_GROUPS, SHARP_PROVIDERS
 
 if TYPE_CHECKING:
     from .metrics import PipelineMetrics
@@ -61,7 +61,9 @@ class ExtractionReport:
         total_providers = len(providers_data)
 
         lines.append(f"Duration: {duration:.1f}s | Providers: {succeeded}/{total_providers} OK")
-        lines.append(f"Events: {total_events:,} | Odds: {total_odds:,} | Matched: {matched_events:,} ({match_pct:.1f}%)")
+        lines.append(
+            f"Events: {total_events:,} | Odds: {total_odds:,} | Matched: {matched_events:,} ({match_pct:.1f}%)"
+        )
         if value_bets > 0 or arb_bets > 0 or reverse_bets > 0:
             parts = []
             if value_bets > 0:
@@ -94,7 +96,9 @@ class ExtractionReport:
 
         lines.append("PROVIDER PERFORMANCE")
         lines.append(thin_sep)
-        lines.append(f"{'Provider':<16} {'Ev':>5} {'dEv':>4} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5} {'Match':>6} {'Time':>6} {'dT':>4}  {'Status'}")
+        lines.append(
+            f"{'Provider':<16} {'Ev':>5} {'dEv':>4} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5} {'Match':>6} {'Time':>6} {'dT':>4}  {'Status'}"
+        )
         lines.append(thin_sep)
 
         total_events_sum = 0
@@ -108,17 +112,14 @@ class ExtractionReport:
             ml_count = mc.get("1x2", 0) + mc.get("moneyline", 0)
             spr_count = mc.get("spread", 0)
             tot_count = mc.get("total", 0)
-            ml_str = f'{ml_count:>5}' if ml_count > 0 else '    -'
-            spr_str = f'{spr_count:>5}' if spr_count > 0 else '    -'
-            tot_str = f'{tot_count:>5}' if tot_count > 0 else '    -'
+            ml_str = f"{ml_count:>5}" if ml_count > 0 else "    -"
+            spr_str = f"{spr_count:>5}" if spr_count > 0 else "    -"
+            tot_str = f"{tot_count:>5}" if tot_count > 0 else "    -"
 
             # Match rate column
-            if row["match_rate"] is not None:
-                match_str = f'{row["match_rate"] * 100:>4.0f}%'
-            else:
-                match_str = '    -'
+            match_str = f"{row['match_rate'] * 100:>4.0f}%" if row["match_rate"] is not None else "    -"
 
-            time_str = f'{row["duration"]:.0f}s' if row["duration"] > 0 else "  -"
+            time_str = f"{row['duration']:.0f}s" if row["duration"] > 0 else "  -"
 
             # Delta indicators vs previous run
             pid = row["provider"]
@@ -153,7 +154,9 @@ class ExtractionReport:
             lines.append(line)
 
         lines.append(thin_sep)
-        lines.append(f"{'Totals (' + str(succeeded) + '/' + str(total_providers) + ')':<16} {total_events_sum:>5,}      {total_odds_sum:>6,}")
+        lines.append(
+            f"{'Totals (' + str(succeeded) + '/' + str(total_providers) + ')':<16} {total_events_sum:>5,}      {total_odds_sum:>6,}"
+        )
         lines.append("")
 
         # ── Timing budget ─────────────────────────────────────────
@@ -168,8 +171,7 @@ class ExtractionReport:
                 bar = "#" * bar_len
                 ev_rate = row["events"] / row["duration"] if row["duration"] > 0 else 0
                 lines.append(
-                    f"  {row['provider']:<14} {row['duration']:>5.0f}s ({pct:>4.0f}%) "
-                    f"{bar:<30} {ev_rate:>5.1f} ev/s"
+                    f"  {row['provider']:<14} {row['duration']:>5.0f}s ({pct:>4.0f}%) {bar:<30} {ev_rate:>5.1f} ev/s"
                 )
             lines.append("")
 
@@ -228,8 +230,8 @@ class ExtractionReport:
         lines.append("-" * 90)
 
         for r in roi[:15]:  # Top 15
-            win_str = f"{r['win_rate']:.0%}" if r['win_rate'] is not None else "-"
-            pnl_str = f"{r['net_pnl']:+.0f}" if r['net_pnl'] else "0"
+            win_str = f"{r['win_rate']:.0%}" if r["win_rate"] is not None else "-"
+            pnl_str = f"{r['net_pnl']:+.0f}" if r["net_pnl"] else "0"
             lines.append(
                 f"{r['provider_id']:<20s} {r['total_opportunities']:>6d} "
                 f"{r['avg_edge']:>5.1f}% {r['total_bets']:>5d} "
@@ -269,8 +271,9 @@ class ExtractionReport:
     def _build_pinnacle_delta(self, session, provider_rows: list[dict]) -> list[str]:
         """Build Pinnacle coverage delta: event and market gaps per provider."""
         try:
-            from sqlalchemy import func, distinct
-            from src.db.models import Odds, Event
+            from sqlalchemy import distinct, func
+
+            from src.db.models import Event, Odds
         except Exception:
             return []
 
@@ -310,8 +313,7 @@ class ExtractionReport:
                 pin_sport_data[sport][mtype] = cnt
 
         pin_event_ids = set(
-            r[0] for r in session.query(distinct(Odds.event_id))
-            .filter(Odds.provider_id == "pinnacle").all()
+            r[0] for r in session.query(distinct(Odds.event_id)).filter(Odds.provider_id == "pinnacle").all()
         )
         pin_total = len(pin_event_ids)
 
@@ -325,13 +327,16 @@ class ExtractionReport:
         lines.append(thin_sep)
         lines.append(f"Pinnacle baseline: {pin_total} events")
         lines.append("")
-        lines.append(f"{'Provider':<16} {'PinEv':>5} {'Cov%':>5} {'Miss':>5} | {'ML%':>5} {'Spr%':>5} {'Tot%':>5} | {'P_Spr':>5} {'S_Spr':>5} {'P_Tot':>5} {'S_Tot':>5}")
+        lines.append(
+            f"{'Provider':<16} {'PinEv':>5} {'Cov%':>5} {'Miss':>5} | {'ML%':>5} {'Spr%':>5} {'Tot%':>5} | {'P_Spr':>5} {'S_Spr':>5} {'P_Tot':>5} {'S_Tot':>5}"
+        )
         lines.append(thin_sep)
 
         for pid in soft_providers:
             # Events this provider has that overlap with Pinnacle
             prov_pin_events = set(
-                r[0] for r in session.query(distinct(Odds.event_id))
+                r[0]
+                for r in session.query(distinct(Odds.event_id))
                 .filter(Odds.provider_id == pid, Odds.event_id.in_(pin_event_ids))
                 .all()
             )
@@ -340,38 +345,54 @@ class ExtractionReport:
             cov_pct = 100 * overlap / pin_total
 
             if overlap == 0:
-                lines.append(f"  {pid:<14} {overlap:>5} {cov_pct:>4.0f}% {missing:>5} |     -     -     - |     -     -     -     -")
+                lines.append(
+                    f"  {pid:<14} {overlap:>5} {cov_pct:>4.0f}% {missing:>5} |     -     -     - |     -     -     -     -"
+                )
                 continue
 
             shared_ids = list(prov_pin_events)
 
             # Pinnacle market counts on shared events
-            pin_ml = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == "pinnacle", Odds.market.in_(["1x2", "moneyline"]),
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
-            pin_spr = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == "pinnacle", Odds.market == "spread",
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
-            pin_tot = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == "pinnacle", Odds.market == "total",
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
+            pin_ml = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(
+                    Odds.provider_id == "pinnacle", Odds.market.in_(["1x2", "moneyline"]), Odds.event_id.in_(shared_ids)
+                )
+                .scalar()
+                or 0
+            )
+            pin_spr = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(Odds.provider_id == "pinnacle", Odds.market == "spread", Odds.event_id.in_(shared_ids))
+                .scalar()
+                or 0
+            )
+            pin_tot = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(Odds.provider_id == "pinnacle", Odds.market == "total", Odds.event_id.in_(shared_ids))
+                .scalar()
+                or 0
+            )
 
             # Provider market counts on shared events
-            s_ml = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == pid, Odds.market.in_(["1x2", "moneyline"]),
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
-            s_spr = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == pid, Odds.market == "spread",
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
-            s_tot = session.query(func.count(distinct(Odds.event_id))).filter(
-                Odds.provider_id == pid, Odds.market == "total",
-                Odds.event_id.in_(shared_ids)
-            ).scalar() or 0
+            s_ml = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(Odds.provider_id == pid, Odds.market.in_(["1x2", "moneyline"]), Odds.event_id.in_(shared_ids))
+                .scalar()
+                or 0
+            )
+            s_spr = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(Odds.provider_id == pid, Odds.market == "spread", Odds.event_id.in_(shared_ids))
+                .scalar()
+                or 0
+            )
+            s_tot = (
+                session.query(func.count(distinct(Odds.event_id)))
+                .filter(Odds.provider_id == pid, Odds.market == "total", Odds.event_id.in_(shared_ids))
+                .scalar()
+                or 0
+            )
 
             ml_pct = 100 * s_ml / pin_ml if pin_ml > 0 else 0
             spr_pct = 100 * s_spr / pin_spr if pin_spr > 0 else 0
@@ -408,13 +429,19 @@ class ExtractionReport:
                 line = f"{sport:<14} {pin_cnt:>4}"
 
                 for label, pid in platform_reps:
-                    cnt = session.query(func.count(distinct(Odds.event_id))).filter(
-                        Odds.provider_id == pid,
-                        Odds.event_id.in_(
-                            session.query(Odds.event_id).join(Event, Odds.event_id == Event.id)
-                            .filter(Odds.provider_id == "pinnacle", Event.sport == sport)
+                    cnt = (
+                        session.query(func.count(distinct(Odds.event_id)))
+                        .filter(
+                            Odds.provider_id == pid,
+                            Odds.event_id.in_(
+                                session.query(Odds.event_id)
+                                .join(Event, Odds.event_id == Event.id)
+                                .filter(Odds.provider_id == "pinnacle", Event.sport == sport)
+                            ),
                         )
-                    ).scalar() or 0
+                        .scalar()
+                        or 0
+                    )
                     pct = 100 * cnt / pin_cnt if pin_cnt > 0 else 0
                     if cnt == 0:
                         line += f" {'   -':>8}"
@@ -478,11 +505,7 @@ class ExtractionReport:
         thin_sep = "-" * 90
 
         # Get latest run's rows (all share same run_id)
-        latest = (
-            session.query(BoostExtractionLog)
-            .order_by(BoostExtractionLog.scraped_at.desc())
-            .first()
-        )
+        latest = session.query(BoostExtractionLog).order_by(BoostExtractionLog.scraped_at.desc()).first()
         if not latest:
             return []
 
@@ -498,7 +521,7 @@ class ExtractionReport:
 
         # Get current specials stats from DB
         specials_count = session.query(SpecialOdds).count()
-        ev_count = session.query(SpecialOdds).filter(SpecialOdds.is_positive_ev == True).count()
+        ev_count = session.query(SpecialOdds).filter(SpecialOdds.is_positive_ev).count()
 
         lines.append("BOOST SCRAPER HEALTH")
         lines.append(thin_sep)
@@ -542,9 +565,7 @@ class ExtractionReport:
             else:
                 status_str = "OK" if status == "SUCCESS" else status[:8]
 
-            lines.append(
-                f"{pid:<20} {stype:<10} {status_str:<8} {boosts:>6} {dur:>5.0f}s  {err}"
-            )
+            lines.append(f"{pid:<20} {stype:<10} {status_str:<8} {boosts:>6} {dur:>5.0f}s  {err}")
 
         lines.append(thin_sep)
         lines.append(f"Total: {total_boosts} boosts from {len(rows)} providers")
@@ -610,46 +631,50 @@ class ExtractionReport:
             else:
                 status = "OK"
 
-            rows.append({
-                "provider": pid,
-                "is_sharp": is_sharp,
-                "events": events,
-                "odds": odds,
-                "ratio": ratio,
-                "match_rate": match_rate,
-                "duration": duration,
-                "status": status,
-                "error": error,
-                "sport_errors": sport_errors,
-                "rate_limit_hits": rate_limit_hits,
-                "retries": retries,
-                "market_counts": market_counts,
-            })
+            rows.append(
+                {
+                    "provider": pid,
+                    "is_sharp": is_sharp,
+                    "events": events,
+                    "odds": odds,
+                    "ratio": ratio,
+                    "match_rate": match_rate,
+                    "duration": duration,
+                    "status": status,
+                    "error": error,
+                    "sport_errors": sport_errors,
+                    "rate_limit_hits": rate_limit_hits,
+                    "retries": retries,
+                    "market_counts": market_counts,
+                }
+            )
 
         # Add rows for consolidated (skipped) providers
         for pid, canonical in consolidated_providers.items():
-            rows.append({
-                "provider": pid,
-                "is_sharp": False,
-                "events": 0,
-                "odds": 0,
-                "ratio": 0,
-                "match_rate": None,
-                "duration": 0,
-                "status": f"= {canonical}",
-                "error": None,
-                "sport_errors": [],
-                "rate_limit_hits": 0,
-                "retries": 0,
-                "market_counts": {},
-            })
+            rows.append(
+                {
+                    "provider": pid,
+                    "is_sharp": False,
+                    "events": 0,
+                    "odds": 0,
+                    "ratio": 0,
+                    "match_rate": None,
+                    "duration": 0,
+                    "status": f"= {canonical}",
+                    "error": None,
+                    "sport_errors": [],
+                    "rate_limit_hits": 0,
+                    "retries": 0,
+                    "market_counts": {},
+                }
+            )
 
         return rows
 
     # ── Issues ──────────────────────────────────────────────────────
 
     SLOW_PROVIDER_THRESHOLD = 300  # > 5 min is suspicious
-    LOW_EVENT_THRESHOLD = 10       # < 10 events probably broken
+    LOW_EVENT_THRESHOLD = 10  # < 10 events probably broken
 
     EVENT_DROP_THRESHOLD = 0.30  # Flag if events drop to <30% of recent average
 
@@ -713,13 +738,19 @@ class ExtractionReport:
                 if tot == 0:
                     missing.append("total")
                 if missing:
-                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — missing {', '.join(missing)} markets (1x2={ml}, spr={spr}, tot={tot})")
+                    issues.append(
+                        f"~ {pid}: ratio {row['ratio']:.2f} — missing {', '.join(missing)} markets (1x2={ml}, spr={spr}, tot={tot})"
+                    )
                 else:
-                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — low odds count (1x2={ml}, spr={spr}, tot={tot})")
+                    issues.append(
+                        f"~ {pid}: ratio {row['ratio']:.2f} — low odds count (1x2={ml}, spr={spr}, tot={tot})"
+                    )
 
             # Slow extraction (> 5 min)
             if row["duration"] > self.SLOW_PROVIDER_THRESHOLD and not row["is_sharp"]:
-                issues.append(f"~ {pid}: {row['duration']:.0f}s extraction (>{self.SLOW_PROVIDER_THRESHOLD}s threshold)")
+                issues.append(
+                    f"~ {pid}: {row['duration']:.0f}s extraction (>{self.SLOW_PROVIDER_THRESHOLD}s threshold)"
+                )
 
             # Rate limit hits
             if row["rate_limit_hits"] > 0:
@@ -735,8 +766,9 @@ class ExtractionReport:
     def _get_previous_event_averages(self, session, results: dict) -> dict[str, float]:
         """Get average event counts per provider from recent runs of the same trigger."""
         try:
-            from ..db.models import ExtractionRun, ProviderRunMetrics
             from sqlalchemy import func
+
+            from ..db.models import ExtractionRun, ProviderRunMetrics
         except Exception:
             return {}
 
@@ -781,8 +813,7 @@ class ExtractionReport:
     def _build_run_trend(self, session, results: dict) -> list[str]:
         """Build a compact table showing the last 5 runs of this trigger type for trend analysis."""
         try:
-            from ..db.models import ExtractionRun, ProviderRunMetrics
-            from sqlalchemy import func
+            from ..db.models import ExtractionRun
         except Exception:
             return []
 
@@ -810,7 +841,9 @@ class ExtractionReport:
 
         lines.append("RUN HISTORY (last 5)")
         lines.append(thin_sep)
-        lines.append(f"{'Time':>16} {'Dur':>6} {'Events':>7} {'Odds':>8} {'Match':>6} {'OK/F':>5} {'Value':>6} {'Arb':>6}")
+        lines.append(
+            f"{'Time':>16} {'Dur':>6} {'Events':>7} {'Odds':>8} {'Match':>6} {'OK/F':>5} {'Value':>6} {'Arb':>6}"
+        )
         lines.append(thin_sep)
 
         for r in runs:
@@ -825,20 +858,23 @@ class ExtractionReport:
             opp_arb = "     -"
             if r.report:
                 import re
-                m = re.search(r'Matched:\s*[\d,]+\s*\((\d+\.\d+)%\)', r.report)
+
+                m = re.search(r"Matched:\s*[\d,]+\s*\((\d+\.\d+)%\)", r.report)
                 if m:
                     match_str = f"{float(m.group(1)):>4.0f}%"
-                m = re.search(r'(\d+)\s*value', r.report)
+                m = re.search(r"(\d+)\s*value", r.report)
                 if m:
                     opp_value = f"{int(m.group(1)):>6}"
-                m = re.search(r'(\d+)\s*arb', r.report)
+                m = re.search(r"(\d+)\s*arb", r.report)
                 if m:
                     opp_arb = f"{int(m.group(1)):>6}"
 
             ok = r.providers_succeeded or 0
             fail = r.providers_failed or 0
 
-            lines.append(f"{time_str:>16} {dur:>5.0f}s {evts:>7,} {odds:>8,} {match_str} {ok:>2}/{fail:<2} {opp_value} {opp_arb}")
+            lines.append(
+                f"{time_str:>16} {dur:>5.0f}s {evts:>7,} {odds:>8,} {match_str} {ok:>2}/{fail:<2} {opp_value} {opp_arb}"
+            )
 
         # Trend summary
         first, last = runs[-1], runs[0]
@@ -854,8 +890,7 @@ class ExtractionReport:
             dur_arrow = "+" if dur_change > 0 else ""
             lines.append(thin_sep)
             lines.append(
-                f"Trend (oldest->newest): events {ev_arrow}{ev_change:.0f}%, "
-                f"duration {dur_arrow}{dur_change:.0f}s"
+                f"Trend (oldest->newest): events {ev_arrow}{ev_change:.0f}%, duration {dur_arrow}{dur_change:.0f}s"
             )
 
         lines.append("")
@@ -886,11 +921,7 @@ class ExtractionReport:
             return {}
 
         prev_run_id = run_ids[0]
-        rows = (
-            session.query(ProviderRunMetrics)
-            .filter(ProviderRunMetrics.run_id == prev_run_id)
-            .all()
-        )
+        rows = session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == prev_run_id).all()
         return {
             r.provider_id: {
                 "events": r.events_processed or 0,
@@ -904,4 +935,4 @@ class ExtractionReport:
     def _truncate(s: str, max_len: int) -> str:
         if len(s) <= max_len:
             return s
-        return s[:max_len - 3] + "..."
+        return s[: max_len - 3] + "..."

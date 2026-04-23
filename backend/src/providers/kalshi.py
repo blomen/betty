@@ -4,6 +4,7 @@ Pulls binary YES/NO contracts from Kalshi's public REST API and converts
 them to StandardEvent moneyline / 1x2 markets. Extraction is
 unauthenticated — only placement (in the mirror workflow) needs API keys.
 """
+
 from __future__ import annotations
 
 import logging
@@ -95,9 +96,7 @@ def _market_volume_usd(m: dict) -> float:
         return 0.0
 
 
-_TITLE_PREFIX_RE = re.compile(
-    r"^(game|match|leg|set)\s*\d+\s*:\s*", flags=re.IGNORECASE
-)
+_TITLE_PREFIX_RE = re.compile(r"^(game|match|leg|set)\s*\d+\s*:\s*", flags=re.IGNORECASE)
 
 
 def _strip_title_prefix(s: str) -> str:
@@ -199,10 +198,7 @@ def parse_event(
         return None
 
     raw_markets = [
-        m
-        for m in raw.get("markets", [])
-        if m.get("status") == "active"
-        and _market_volume_usd(m) >= min_volume_usd
+        m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
     ]
     if not raw_markets:
         return None
@@ -236,15 +232,11 @@ def parse_event(
         sides = [_match_market_to_side(m, home, away) for m in sorted_mkts]
         if set(sides) != {"home", "away"}:
             logger.info(
-                "[kalshi] unresolved moneyline sides: ticker=%s home=%r away=%r "
-                "contracts=%s",
+                "[kalshi] unresolved moneyline sides: ticker=%s home=%r away=%r contracts=%s",
                 event_ticker,
                 home,
                 away,
-                [
-                    (m.get("ticker"), m.get("yes_sub_title"))
-                    for m in sorted_mkts
-                ],
+                [(m.get("ticker"), m.get("yes_sub_title")) for m in sorted_mkts],
             )
             return None
         outcomes = [
@@ -253,7 +245,7 @@ def parse_event(
                 "odds": _price_to_odds(_market_price_dollars(m), fee_rate),
                 "provider_meta": _meta(m),
             }
-            for side, m in zip(sides, sorted_mkts)
+            for side, m in zip(sides, sorted_mkts, strict=False)
         ]
         market = {"type": "moneyline", "outcomes": outcomes}
     elif not is_no_draw and len(raw_markets) >= 3:
@@ -271,15 +263,11 @@ def parse_event(
         sides = [_match_market_to_side(m, home, away) for m in top_two]
         if set(sides) != {"home", "away"}:
             logger.info(
-                "[kalshi] unresolved 1x2 sides: ticker=%s home=%r away=%r "
-                "contracts=%s",
+                "[kalshi] unresolved 1x2 sides: ticker=%s home=%r away=%r contracts=%s",
                 event_ticker,
                 home,
                 away,
-                [
-                    (m.get("ticker"), m.get("yes_sub_title"))
-                    for m in top_two
-                ],
+                [(m.get("ticker"), m.get("yes_sub_title")) for m in top_two],
             )
             return None
         # Build ordered list: home, draw, away
@@ -327,26 +315,17 @@ class KalshiRetriever(Retriever):
     def __init__(self, config: dict, circuit_breaker=None, rate_limit_config=None):
         super().__init__(config)
         self.base_url = config.get("base_url", self.DEFAULT_BASE_URL)
-        self.min_volume_usd = float(
-            config.get("params", {}).get("min_volume_usd", 100)
-        )
+        self.min_volume_usd = float(config.get("params", {}).get("min_volume_usd", 100))
         from ..constants import KALSHI_FEE_RATE
 
-        self.fee_rate = float(
-            config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE)
-        )
+        self.fee_rate = float(config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE))
         self._circuit_breaker = circuit_breaker
 
     def _get_sport_url(self, sport: str) -> str:
         # Kalshi's /events endpoint is sport-agnostic; we filter in parse().
-        return (
-            f"{self.base_url}/events?status=open&with_nested_markets=true"
-            f"&limit={self.DEFAULT_PAGE_LIMIT}"
-        )
+        return f"{self.base_url}/events?status=open&with_nested_markets=true&limit={self.DEFAULT_PAGE_LIMIT}"
 
-    async def extract(
-        self, sport: str, limit: int = 500, **kwargs
-    ) -> list[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """Fetch all open Kalshi events with pagination, filter to sport in parse()."""
         all_events: list[dict] = []
         cursor: str | None = None
@@ -356,9 +335,7 @@ class KalshiRetriever(Retriever):
             for _ in range(50):  # hard cap at 50 pages × 200 = 10k events
                 page_url = url + (f"&cursor={cursor}" if cursor else "")
                 try:
-                    async with session.get(
-                        page_url, timeout=aiohttp.ClientTimeout(total=15)
-                    ) as resp:
+                    async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                         resp.raise_for_status()
                         body = await resp.json()
                 except Exception as e:

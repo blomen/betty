@@ -29,7 +29,7 @@ class BankrollService:
     def get_bankroll(self) -> dict:
         """Get provider balances and total bankroll for active profile."""
         profile = self.profile_repo.get_active()
-        providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
+        providers = self.db.query(Provider).filter(Provider.is_enabled).all()
 
         provider_data = []
         total_sek = 0.0
@@ -113,7 +113,7 @@ class BankrollService:
     def get_exposure(self) -> dict:
         """Get bankroll with exposure breakdown per provider."""
         profile = self.profile_repo.get_active()
-        providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
+        providers = self.db.query(Provider).filter(Provider.is_enabled).all()
 
         # Load active bonus statuses for all providers
         active_bonuses = (

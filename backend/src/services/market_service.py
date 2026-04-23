@@ -122,10 +122,7 @@ class MarketService:
 
         et = zoneinfo.ZoneInfo("America/New_York")
         now = dt or datetime.now(et)
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=et)
-        else:
-            now = now.astimezone(et)
+        now = now.replace(tzinfo=et) if now.tzinfo is None else now.astimezone(et)
         wd = now.weekday()  # Mon=0 … Sun=6
         hour = now.hour
         # Saturday: always closed
@@ -135,9 +132,7 @@ class MarketService:
         if wd == 4 and hour >= 17:
             return True
         # Sunday before 18:00: closed
-        if wd == 6 and hour < 18:
-            return True
-        return False
+        return bool(wd == 6 and hour < 18)
 
     @staticmethod
     def _filter_halt(rows: list) -> list:
@@ -331,19 +326,18 @@ class MarketService:
         target_date = target_date or date.today().isoformat()
 
         # Skip Databento fetch during weekend close — serve cached session
-        if not target_date or target_date == date.today().isoformat():
-            if self._is_globex_closed():
-                logger.info("Globex closed (weekend) — serving cached session for %s", symbol)
-                cached = self.repo.get_previous_session(symbol)
-                if cached and cached.session_json:
-                    sj = cached.session_json
-                    return sj if isinstance(sj, dict) else json.loads(sj) if isinstance(sj, str) else {}
-                return {}
+        if (not target_date or target_date == date.today().isoformat()) and self._is_globex_closed():
+            logger.info("Globex closed (weekend) — serving cached session for %s", symbol)
+            cached = self.repo.get_previous_session(symbol)
+            if cached and cached.session_json:
+                sj = cached.session_json
+                return sj if isinstance(sj, dict) else json.loads(sj) if isinstance(sj, str) else {}
+            return {}
 
         sessions_cfg = config.get("sessions", {})
         rth_open = sessions_cfg.get("rth_open", "09:30")
 
-        provider = _get_provider()
+        _get_provider()
 
         # Parse target date and build datetime range
         dt = datetime.strptime(target_date, "%Y-%m-%d")
@@ -2064,9 +2058,7 @@ class MarketService:
         if wd == 6 and hour < 18:
             return False
         # Daily halt: 17:00-18:00 ET (Mon-Thu)
-        if hour == 17:
-            return False
-        return True
+        return hour != 17
 
     @staticmethod
     def _resample_candles(rows: list, minutes: int) -> list[dict]:

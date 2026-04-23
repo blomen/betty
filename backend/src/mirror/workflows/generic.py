@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
 
 def _default_intel_dir() -> Path:
     from ...paths import get_data_dir
+
     d = get_data_dir() / "mirror_intel"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -75,13 +80,14 @@ class GenericWorkflow(ProviderWorkflow):
         super().__init__(provider_id, domain, mode)
         self.intel = load_intel(provider_id, intel_dir)
         from .strategies import load_strategy
+
         self.strategy = load_strategy(provider_id)
 
     # ------------------------------------------------------------------
     # Login
     # ------------------------------------------------------------------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         if self.strategy and self.strategy.check_login:
             return await self.strategy.check_login(page, self.intel)
 
@@ -106,7 +112,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Balance
     # ------------------------------------------------------------------
 
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         if self.strategy and self.strategy.sync_balance:
             return await self.strategy.sync_balance(page, self.intel)
 
@@ -151,7 +157,7 @@ class GenericWorkflow(ProviderWorkflow):
     # History
     # ------------------------------------------------------------------
 
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         if self.strategy and self.strategy.sync_history:
             return await self.strategy.sync_history(page, self.intel)
 
@@ -166,9 +172,12 @@ class GenericWorkflow(ProviderWorkflow):
             try:
                 current = page.url or ""
                 if history_path not in current:
-                    full_url = history_path if history_path.startswith("http") else f"https://{self.domain}{history_path}"
+                    full_url = (
+                        history_path if history_path.startswith("http") else f"https://{self.domain}{history_path}"
+                    )
                     await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
                     import asyncio
+
                     await asyncio.sleep(2)
             except Exception as e:
                 logger.warning(f"[{self.provider_id}] Failed to navigate to history: {e}")
@@ -182,7 +191,7 @@ class GenericWorkflow(ProviderWorkflow):
 
         return []
 
-    async def _sync_history_api(self, page: "Page", api_cfg: dict) -> list[HistoryEntry]:
+    async def _sync_history_api(self, page: Page, api_cfg: dict) -> list[HistoryEntry]:
         endpoint = api_cfg.get("endpoint", "")
         data = await self._evaluate_api(page, endpoint)
         if not data or "__error" in (data or {}):
@@ -207,21 +216,23 @@ class GenericWorkflow(ProviderWorkflow):
                 raw_status = str(_extract_path(bet, mapping.get("status", "status")) or "")
                 status = status_map.get(raw_status, raw_status)
                 payout_val = _extract_path(bet, mapping.get("payout", "payout"))
-                entries.append(HistoryEntry(
-                    provider_bet_id=str(_extract_path(bet, mapping.get("bet_id", "id")) or ""),
-                    event_name=str(_extract_path(bet, mapping.get("event_name", "event")) or ""),
-                    market="",
-                    outcome="",
-                    odds=float(_extract_path(bet, mapping.get("odds", "odds")) or 0),
-                    stake=float(_extract_path(bet, mapping.get("stake", "stake")) or 0),
-                    status=status,
-                    payout=float(payout_val) if payout_val else None,
-                ))
+                entries.append(
+                    HistoryEntry(
+                        provider_bet_id=str(_extract_path(bet, mapping.get("bet_id", "id")) or ""),
+                        event_name=str(_extract_path(bet, mapping.get("event_name", "event")) or ""),
+                        market="",
+                        outcome="",
+                        odds=float(_extract_path(bet, mapping.get("odds", "odds")) or 0),
+                        stake=float(_extract_path(bet, mapping.get("stake", "stake")) or 0),
+                        status=status,
+                        payout=float(payout_val) if payout_val else None,
+                    )
+                )
             except (TypeError, ValueError, KeyError) as e:
                 logger.debug(f"[{self.provider_id}] Skip unparseable history entry: {e}")
         return entries
 
-    async def _sync_history_dom(self, page: "Page", dom_cfg: dict) -> list[HistoryEntry]:
+    async def _sync_history_dom(self, page: Page, dom_cfg: dict) -> list[HistoryEntry]:
         container_sel = dom_cfg.get("container", "body")
         row_sel = dom_cfg.get("row_selector", "")
         fields = dom_cfg.get("fields", {})
@@ -274,7 +285,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Navigation
     # ------------------------------------------------------------------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         if self.strategy and self.strategy.navigate_to_event:
             return await self.strategy.navigate_to_event(page, bet, self.intel)
 
@@ -305,7 +316,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Placement — always guided
     # ------------------------------------------------------------------
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         if self.strategy and self.strategy.place_bet:
             return await self.strategy.place_bet(page, bet, stake, self.intel)
 
@@ -327,7 +338,7 @@ class GenericWorkflow(ProviderWorkflow):
 
         confirm_sel = bs.get("confirm_button", "")
         if confirm_sel:
-            try:
+            with contextlib.suppress(Exception):
                 await page.evaluate(f"""
                     () => {{
                         const btn = document.querySelector('{confirm_sel}');
@@ -337,8 +348,6 @@ class GenericWorkflow(ProviderWorkflow):
                         }}
                     }}
                 """)
-            except Exception:
-                pass
 
         return PlacementResult(
             status="manual",
@@ -351,7 +360,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Live price (optional)
     # ------------------------------------------------------------------
 
-    async def check_live_price(self, page: "Page", bet) -> float | None:
+    async def check_live_price(self, page: Page, bet) -> float | None:
         if self.strategy and self.strategy.check_live_price:
             return await self.strategy.check_live_price(page, bet, self.intel)
         return None
@@ -360,7 +369,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Scan — read-only account state preview
     # ------------------------------------------------------------------
 
-    async def scan(self, page: "Page") -> dict:
+    async def scan(self, page: Page) -> dict:
         """Read-only preview: balance, pending bets, settled bets, DB diff."""
         if self.strategy and self.strategy.scan:
             return await self.strategy.scan(page, self.intel)
@@ -370,7 +379,7 @@ class GenericWorkflow(ProviderWorkflow):
     # Settle all — scrape pending + auto-settle + sync balance
     # ------------------------------------------------------------------
 
-    async def settle_all(self, page: "Page") -> dict:
+    async def settle_all(self, page: Page) -> dict:
         """Full settlement: record missing bets, auto-settle, sync balance."""
         if self.strategy and self.strategy.settle_all:
             return await self.strategy.settle_all(page, self.intel)
@@ -381,6 +390,7 @@ class GenericWorkflow(ProviderWorkflow):
             return {"settled": 0, "note": "no history entries found"}
 
         from ...services.fire_window import _settle_from_history
+
         count = _settle_from_history(self.provider_id, history)
         balance = await self.sync_balance(page)
         return {"settled": count, "new_balance": balance}
@@ -389,12 +399,13 @@ class GenericWorkflow(ProviderWorkflow):
     # Auto-discovery
     # ------------------------------------------------------------------
 
-    async def auto_discover(self, page: "Page") -> bool:
+    async def auto_discover(self, page: Page) -> bool:
         """Run discovery if no intel exists. Called on first provider detection."""
         if self.intel is not None:
             return True
 
         from .discovery import discover
+
         try:
             self.intel = await discover(page, self.provider_id)
             logger.info(f"[{self.provider_id}] Auto-discovery complete: {self.intel.get('capabilities', {})}")

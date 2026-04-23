@@ -24,11 +24,11 @@ DEFAULT_DAILY_CAP = 0  # 0 = no cap
 @dataclass
 class AllocationResult:
     provider_id: str
-    score: float           # 0-100 (higher = bet here), -1 if capped
-    reason: str            # Human-readable recommendation
+    score: float  # 0-100 (higher = bet here), -1 if capped
+    reason: str  # Human-readable recommendation
     daily_bets_group: int  # Bets placed today across platform group
-    daily_cap: int         # Max bets per day per platform group
-    is_capped: bool        # True if at/over daily cap
+    daily_cap: int  # Max bets per day per platform group
+    is_capped: bool  # True if at/over daily cap
     wagering_remaining: float  # Wagering requirement remaining (0 if cleared)
     edge_routing: str | None = None  # "high_edge_unlimited", "grind_ok", or None
 
@@ -39,16 +39,14 @@ class ProviderAllocator:
     def __init__(self, db: Session, profile_id: int):
         self.db = db
         self.profile_id = profile_id
-        self._daily_bets: dict[str, int] = {}   # provider_id -> bets today
-        self._wagering: dict[str, dict] = {}     # provider_id -> bonus info
-        self._balances: dict[str, float] = {}    # provider_id -> balance
-        self._limits: dict[str, int] = {}        # provider_id -> limit_level
+        self._daily_bets: dict[str, int] = {}  # provider_id -> bets today
+        self._wagering: dict[str, dict] = {}  # provider_id -> bonus info
+        self._balances: dict[str, float] = {}  # provider_id -> balance
+        self._limits: dict[str, int] = {}  # provider_id -> limit_level
         self._daily_cap = self._load_daily_cap()
 
     def _load_daily_cap(self) -> int:
-        cfg = self.db.query(RiskConfig).filter(
-            RiskConfig.profile_id == self.profile_id
-        ).first()
+        cfg = self.db.query(RiskConfig).filter(RiskConfig.profile_id == self.profile_id).first()
         if cfg and hasattr(cfg, "daily_bet_cap") and cfg.daily_bet_cap is not None:
             return cfg.daily_bet_cap
         return DEFAULT_DAILY_CAP
@@ -73,9 +71,7 @@ class ProviderAllocator:
 
     def preload_daily_bets(self) -> None:
         """Single query: count today's bets per provider."""
-        today_start = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         rows = (
             self.db.query(Bet.provider_id, func.count(Bet.id))
             .filter(
@@ -93,9 +89,7 @@ class ProviderAllocator:
             self.db.query(ProfileProviderBonus)
             .filter(
                 ProfileProviderBonus.profile_id == self.profile_id,
-                ProfileProviderBonus.bonus_status.in_(
-                    ["in_progress", "trigger_needed", "freebet_available"]
-                ),
+                ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed", "freebet_available"]),
             )
             .all()
         )
@@ -111,21 +105,13 @@ class ProviderAllocator:
 
     def preload_balances(self) -> None:
         """Single query: get all provider balances."""
-        rows = (
-            self.db.query(ProfileProviderBalance)
-            .filter(ProfileProviderBalance.profile_id == self.profile_id)
-            .all()
-        )
+        rows = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == self.profile_id).all()
         for row in rows:
             self._balances[row.provider_id] = row.balance or 0.0
 
     def preload_limits(self) -> None:
         """Single query: get all provider limits (highest level per provider)."""
-        rows = (
-            self.db.query(ProfileProviderLimit)
-            .filter(ProfileProviderLimit.profile_id == self.profile_id)
-            .all()
-        )
+        rows = self.db.query(ProfileProviderLimit).filter(ProfileProviderLimit.profile_id == self.profile_id).all()
         for row in rows:
             existing = self._limits.get(row.provider_id, 0)
             self._limits[row.provider_id] = max(existing, row.limit_level)
@@ -215,9 +201,7 @@ class ProviderAllocator:
                 edge_routing = "grind_ok"
 
         # Build reason string
-        reason = self._build_reason(
-            remaining, status, group_bets, cap, balance, limit_level, edge_routing
-        )
+        reason = self._build_reason(remaining, status, group_bets, cap, balance, limit_level, edge_routing)
 
         if is_capped:
             total = -1

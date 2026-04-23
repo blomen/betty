@@ -20,8 +20,10 @@ SDK reality check (vs. original plan):
     - Responses are pydantic v2 models, accessed via attributes (not `.get()`).
     - There is no `now_ts()` helper — use `int(time.time())`.
 """
+
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
@@ -90,10 +92,8 @@ def _kalshi_key_path(pem_body: str):
         key_path.write_text(pem_body, encoding="utf-8")
     # Restrict permissions to owner read/write (best-effort; on Windows
     # chmod is a no-op but the call is harmless).
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(key_path, 0o600)
-    except OSError:
-        pass
     return key_path
 
 
@@ -145,11 +145,11 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Login / balance ----------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         # API auth is independent of web session; presence of a client is enough.
         return self.has_api
 
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         if not self.has_api:
             return 0.0
         try:
@@ -162,7 +162,7 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- History sync (for settlement reconciliation) ----------
 
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         if not self.has_api:
             return []
         try:
@@ -199,7 +199,7 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Navigation (visual context only) ----------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         ticker = getattr(bet, "provider_event_id", "") or ""
         ticker = ticker.replace("kalshi_", "")
         if not ticker:
@@ -214,11 +214,9 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Placement ----------
 
-    async def prep_betslip(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
         # No DOM interaction; stash the order params for place_bet().
-        self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(
-            bet, "provider_event_id", None
-        )
+        self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(bet, "provider_event_id", None)
         if not self._pending_ticker:
             return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_ticker")
         yes_price_dollars = self._infer_yes_price(bet)
@@ -237,7 +235,7 @@ class KalshiWorkflow(ProviderWorkflow):
         odds = float(getattr(bet, "odds", 2.0))
         return max(0.01, min(0.99, round(1.0 / odds, 4)))
 
-    async def check_live_price(self, page: "Page", bet) -> tuple[float | None, float | None]:
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
         if not self.has_api or not self._pending_ticker:
             return None, None
         try:
@@ -252,7 +250,7 @@ class KalshiWorkflow(ProviderWorkflow):
             logger.warning(f"[kalshi] check_live_price failed: {e}")
             return None, None
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         if not self.has_api or not self._pending_ticker:
             return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_client")
         try:

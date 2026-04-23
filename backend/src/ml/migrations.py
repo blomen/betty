@@ -4,13 +4,12 @@ Idempotent SQLite migration script for ML tables and columns.
 Run via: run_migrations(conn) where conn is a sqlite3.Connection.
 Safe to call multiple times — each step checks existence first.
 """
+
 import sqlite3
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    cursor = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    )
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
     return cursor.fetchone() is not None
 
 
@@ -37,9 +36,7 @@ def _create_ml_features(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_features_domain ON ml_features (domain)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_ml_features_source ON ml_features (source_type, source_id)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_features_source ON ml_features (source_type, source_id)")
 
 
 def _create_candle_snapshots(conn: sqlite3.Connection) -> None:
@@ -72,9 +69,7 @@ def _create_economic_events(conn: sqlite3.Connection) -> None:
             created_at TEXT
         )
     """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_econ_events_datetime ON economic_events (event_datetime)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_econ_events_datetime ON economic_events (event_datetime)")
 
 
 def _create_news_impact(conn: sqlite3.Connection) -> None:
@@ -129,9 +124,7 @@ def _create_options_flow(conn: sqlite3.Connection) -> None:
             UNIQUE (date, symbol)
         )
     """)
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_options_flow_date ON options_flow (date, symbol)"
-    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_options_flow_date ON options_flow (date, symbol)")
 
 
 def _create_cot_data(conn: sqlite3.Connection) -> None:
@@ -152,9 +145,7 @@ def _create_cot_data(conn: sqlite3.Connection) -> None:
             UNIQUE (report_date, symbol)
         )
     """)
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_cot_date ON cot_data (report_date, symbol)"
-    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cot_date ON cot_data (report_date, symbol)")
 
 
 def _create_ml_model_registry(conn: sqlite3.Connection) -> None:
@@ -193,9 +184,7 @@ def _add_opportunity_columns(conn: sqlite3.Connection) -> None:
     ]
     for col_name, col_type in new_columns:
         if not _column_exists(conn, "opportunities", col_name):
-            conn.execute(
-                f"ALTER TABLE opportunities ADD COLUMN {col_name} {col_type}"
-            )
+            conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col_name} {col_type}")
 
 
 def _create_extraction_features(conn: sqlite3.Connection) -> None:

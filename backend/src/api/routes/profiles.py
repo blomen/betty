@@ -1,18 +1,18 @@
 """Profiles API routes."""
 
+import contextlib
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ...db.models import Profile, Provider, ProfileProviderBalance
-from ...repositories import ProfileRepo
 from ...bankroll import calculate_stake as calc_stake
 from ...bankroll.stake_calculator import dynamic_min_stake
+from ...db.models import Profile, ProfileProviderBalance, Provider
+from ...repositories import ProfileRepo
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
 
@@ -43,7 +43,9 @@ def _next_profile_color(db) -> str:
 
 class AccountDateUpdate(BaseModel):
     """Request body for setting account opened date."""
+
     opened_at: str  # ISO date string e.g. "2025-06-15"
+
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -52,10 +54,8 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
     """Convert profile to dict response."""
     preferred_counterparts = []
     if profile.preferred_counterparts:
-        try:
+        with contextlib.suppress(BaseException):
             preferred_counterparts = json.loads(profile.preferred_counterparts)
-        except:
-            pass
 
     real_bankroll = profile_repo.get_total_bankroll(profile.id)
 
@@ -102,7 +102,7 @@ def list_profiles(db: Session = Depends(get_db)):
 def get_active_profile(db: Session = Depends(get_db)):
     """Get currently active profile."""
     profile_repo = ProfileRepo(db)
-    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    profile = db.query(Profile).filter(Profile.is_active).first()
 
     if not profile:
         profile = Profile(name="default", is_active=True)
@@ -285,20 +285,18 @@ def set_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == provider_id
-    ).first()
+    balance = (
+        db.query(ProfileProviderBalance)
+        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
+        .first()
+    )
 
     if balance:
         balance.account_opened_at = opened_at
         balance.updated_at = datetime.now(timezone.utc)
     else:
         balance = ProfileProviderBalance(
-            profile_id=profile.id,
-            provider_id=provider_id,
-            balance=0.0,
-            account_opened_at=opened_at
+            profile_id=profile.id, provider_id=provider_id, balance=0.0, account_opened_at=opened_at
         )
         db.add(balance)
 
@@ -311,7 +309,7 @@ def set_account_opened_date(
         "provider_id": provider_id,
         "account_opened_at": opened_at.isoformat(),
         "account_age_days": age_days,
-        "message": f"Account opened date set to {data.opened_at} ({age_days} days ago)"
+        "message": f"Account opened date set to {data.opened_at} ({age_days} days ago)",
     }
 
 
@@ -324,18 +322,14 @@ def get_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == provider_id
-    ).first()
+    balance = (
+        db.query(ProfileProviderBalance)
+        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
+        .first()
+    )
 
     if not balance or not balance.account_opened_at:
-        return {
-            "provider_id": provider_id,
-            "account_opened_at": None,
-            "account_age_days": None,
-            "source": "none"
-        }
+        return {"provider_id": provider_id, "account_opened_at": None, "account_age_days": None, "source": "none"}
 
     age_days = (datetime.now(timezone.utc) - balance.account_opened_at).days
 
@@ -343,7 +337,7 @@ def get_account_opened_date(
         "provider_id": provider_id,
         "account_opened_at": balance.account_opened_at.isoformat(),
         "account_age_days": age_days,
-        "source": "manual"
+        "source": "manual",
     }
 
 
@@ -356,10 +350,11 @@ def clear_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == provider_id
-    ).first()
+    balance = (
+        db.query(ProfileProviderBalance)
+        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
+        .first()
+    )
 
     if not balance:
         raise HTTPException(404, f"No balance record for {provider_id}")
@@ -371,5 +366,5 @@ def clear_account_opened_date(
     return {
         "success": True,
         "provider_id": provider_id,
-        "message": "Account opened date cleared. Will use first bet date for age calculation."
+        "message": "Account opened date cleared. Will use first bet date for age calculation.",
     }

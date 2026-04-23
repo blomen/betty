@@ -121,10 +121,7 @@ def compute_narrative_bias(
     risk_mod = compute_risk_modulation(narrative)
 
     # Agreement: -1 (bias against trade) to +1 (bias with trade), 0 if skip
-    if trade_direction == 0:
-        agreement = 0.0
-    else:
-        agreement = float(np.clip(bias * trade_direction, -1.0, 1.0))
+    agreement = 0.0 if trade_direction == 0 else float(np.clip(bias * trade_direction, -1.0, 1.0))
 
     components = {
         "regime_score": float(narrative[_NARR_REGIME_SCORE]) if narrative is not None and len(narrative) >= 1 else 0.0,

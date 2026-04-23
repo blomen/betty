@@ -1,9 +1,6 @@
 """ML feature store, analytics, and level touch models."""
 
-from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean,
-    ForeignKey, UniqueConstraint, Text, JSON, Index
-)
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from .base import Base, _utcnow
@@ -16,6 +13,7 @@ class MlFeature(Base):
     Stores feature vectors keyed by domain + source, with optional outcome
     labels populated after the fact for supervised learning.
     """
+
     __tablename__ = "ml_features"
     __table_args__ = (
         Index("idx_ml_features_domain", "domain"),
@@ -23,12 +21,12 @@ class MlFeature(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    domain = Column(String, nullable=False)          # e.g. "betting", "trading"
-    source_id = Column(String, nullable=False)       # FK-like ref to source row
-    source_type = Column(String, nullable=False)     # e.g. "opportunity", "signal"
-    features = Column(JSON, nullable=False)          # serialised feature dict
+    domain = Column(String, nullable=False)  # e.g. "betting", "trading"
+    source_id = Column(String, nullable=False)  # FK-like ref to source row
+    source_type = Column(String, nullable=False)  # e.g. "opportunity", "signal"
+    features = Column(JSON, nullable=False)  # serialised feature dict
     feature_version = Column(Integer, default=1)
-    outcome = Column(Float, nullable=True)           # continuous label (e.g. CLV)
+    outcome = Column(Float, nullable=True)  # continuous label (e.g. CLV)
     outcome_binary = Column(Integer, nullable=True)  # 0/1 classification label
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
@@ -38,11 +36,12 @@ class CandleSnapshot(Base):
     """
     Stores OHLCV candle arrays associated with a trading signal for ML use.
     """
+
     __tablename__ = "candle_snapshots"
 
     id = Column(Integer, primary_key=True)
     signal_id = Column(Integer, ForeignKey("trading_signals.id"), nullable=True)
-    candles = Column(JSON, nullable=False)           # list of candle dicts
+    candles = Column(JSON, nullable=False)  # list of candle dicts
     timeframe = Column(String, default="1m")
     created_at = Column(DateTime, default=_utcnow)
 
@@ -53,19 +52,18 @@ class EconomicEvent(Base):
     """
     Scheduled macro economic events (e.g. CPI, NFP, FOMC) with consensus data.
     """
+
     __tablename__ = "economic_events"
-    __table_args__ = (
-        Index("idx_econ_events_datetime", "event_datetime"),
-    )
+    __table_args__ = (Index("idx_econ_events_datetime", "event_datetime"),)
 
     id = Column(Integer, primary_key=True)
     event_name = Column(String, nullable=False)
     event_datetime = Column(DateTime, nullable=False)
-    importance = Column(Integer, nullable=True)      # 1=low, 2=medium, 3=high
+    importance = Column(Integer, nullable=True)  # 1=low, 2=medium, 3=high
     forecast = Column(Float, nullable=True)
     actual = Column(Float, nullable=True)
     previous = Column(Float, nullable=True)
-    surprise = Column(Float, nullable=True)          # actual - forecast
+    surprise = Column(Float, nullable=True)  # actual - forecast
     created_at = Column(DateTime, default=_utcnow)
 
     impacts = relationship("NewsImpact", back_populates="economic_event")
@@ -75,6 +73,7 @@ class NewsImpact(Base):
     """
     Price-impact measurements for economic events, used as ML training labels.
     """
+
     __tablename__ = "news_impact"
 
     id = Column(Integer, primary_key=True)
@@ -101,10 +100,9 @@ class OptionsFlow(Base):
     """
     Daily options market microstructure data (GEX, put/call, VIX, DXY, yields).
     """
+
     __tablename__ = "options_flow"
-    __table_args__ = (
-        UniqueConstraint("date", "symbol", name="idx_options_flow_date"),
-    )
+    __table_args__ = (UniqueConstraint("date", "symbol", name="idx_options_flow_date"),)
 
     id = Column(Integer, primary_key=True)
     date = Column(String, nullable=False)
@@ -131,10 +129,9 @@ class CotData(Base):
     """
     CFTC Commitment of Traders report data for futures positioning analysis.
     """
+
     __tablename__ = "cot_data"
-    __table_args__ = (
-        UniqueConstraint("report_date", "symbol", name="idx_cot_date"),
-    )
+    __table_args__ = (UniqueConstraint("report_date", "symbol", name="idx_cot_date"),)
 
     id = Column(Integer, primary_key=True)
     report_date = Column(String, nullable=False)
@@ -152,6 +149,7 @@ class MlModelRegistry(Base):
     """
     Registry of trained ML model artifacts with versioning and performance metrics.
     """
+
     __tablename__ = "ml_model_registry"
 
     id = Column(Integer, primary_key=True)
@@ -167,6 +165,7 @@ class MlModelRegistry(Base):
 
 class ExtractionFeature(Base):
     """Per-extraction-run feature snapshot for M10 optimization."""
+
     __tablename__ = "extraction_features"
 
     id = Column(Integer, primary_key=True)
@@ -194,13 +193,12 @@ class ExtractionFeature(Base):
     avg_clv_from_run = Column(Float, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("idx_extraction_features_run", "run_id"),
-    )
+    __table_args__ = (Index("idx_extraction_features_run", "run_id"),)
 
 
 class ProviderValueLog(Base):
     """Per-provider-per-run attribution — connects extraction to value outcomes."""
+
     __tablename__ = "provider_value_log"
 
     id = Column(Integer, primary_key=True)
@@ -218,13 +216,12 @@ class ProviderValueLog(Base):
     clv_avg_from_provider = Column(Float, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
 
-    __table_args__ = (
-        Index("idx_provider_value_run", "run_id", "provider_id"),
-    )
+    __table_args__ = (Index("idx_provider_value_run", "run_id", "provider_id"),)
 
 
 class PinnacleCoverageLog(Base):
     """Per-provider per-sport Pinnacle coverage delta."""
+
     __tablename__ = "pinnacle_coverage_log"
 
     id = Column(Integer, primary_key=True)
@@ -256,12 +253,13 @@ class PinnacleCoverageLog(Base):
 
 class ProviderRecommendation(Base):
     """Diagnostic recommendation for a provider with lifecycle tracking."""
+
     __tablename__ = "provider_recommendations"
 
     id = Column(Integer, primary_key=True)
     provider_id = Column(String, nullable=False)
-    category = Column(String, nullable=False)      # match_rate, coverage, timing, roi, market_gap
-    severity = Column(String, nullable=False)       # critical, warning, info
+    category = Column(String, nullable=False)  # match_rate, coverage, timing, roi, market_gap
+    severity = Column(String, nullable=False)  # critical, warning, info
     message = Column(String, nullable=False)
     diagnostic_data = Column(JSON, nullable=True)
     status = Column(String, nullable=False, default="open")  # open, acted_on, resolved, wont_fix
@@ -269,7 +267,7 @@ class ProviderRecommendation(Base):
     resolved_at = Column(DateTime, nullable=True)
     before_metric = Column(Float, nullable=True)
     after_metric = Column(Float, nullable=True)
-    source = Column(String, default="rules")        # rules or ml
+    source = Column(String, default="rules")  # rules or ml
     created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (

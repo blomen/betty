@@ -1,16 +1,14 @@
 """Extraction pipeline, specials, and boost models."""
 
-from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean,
-    ForeignKey, UniqueConstraint, Text, JSON, Index
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
 
-from .base import Base, _utcnow
+from .base import Base
 
 
 class ExtractionRun(Base):
     """Historical extraction run tracking."""
+
     __tablename__ = "extraction_runs"
 
     id = Column(String, primary_key=True)  # UUID
@@ -39,6 +37,7 @@ class ExtractionRun(Base):
 
 class ProviderRunMetrics(Base):
     """Per-provider metrics for each extraction run."""
+
     __tablename__ = "provider_run_metrics"
 
     id = Column(Integer, primary_key=True)
@@ -63,9 +62,9 @@ class ProviderRunMetrics(Base):
     events_unmatched = Column(Integer, default=0)
 
     # Market breakdown (actionable: shows spread/total gaps)
-    ml_count = Column(Integer, default=0)      # 1x2 + moneyline odds
-    spread_count = Column(Integer, default=0)   # spread/handicap odds
-    total_count = Column(Integer, default=0)    # over/under odds
+    ml_count = Column(Integer, default=0)  # 1x2 + moneyline odds
+    spread_count = Column(Integer, default=0)  # spread/handicap odds
+    total_count = Column(Integer, default=0)  # over/under odds
 
     # Performance
     retries = Column(Integer, default=0)
@@ -85,6 +84,7 @@ class ProviderRunMetrics(Base):
 
 class SportRunMetrics(Base):
     """Per-sport metrics for troubleshooting."""
+
     __tablename__ = "sport_run_metrics"
 
     id = Column(Integer, primary_key=True)
@@ -121,14 +121,15 @@ class SportRunMetrics(Base):
 
 class BoostExtractionLog(Base):
     """Per-provider metrics for each oddsboost scrape run."""
+
     __tablename__ = "boost_extraction_logs"
 
     id = Column(Integer, primary_key=True)
-    run_id = Column(String, nullable=False)        # Groups providers from same run
+    run_id = Column(String, nullable=False)  # Groups providers from same run
     scraped_at = Column(DateTime, nullable=False)
     provider_id = Column(String, nullable=False)
-    scraper_type = Column(String)                   # kambi, altenar, gecko_v2, etc.
-    status = Column(String, nullable=False)         # success, failed, skipped
+    scraper_type = Column(String)  # kambi, altenar, gecko_v2, etc.
+    status = Column(String, nullable=False)  # success, failed, skipped
     duration_seconds = Column(Float, default=0.0)
     boosts_found = Column(Integer, default=0)
     error_message = Column(Text)
@@ -140,26 +141,27 @@ class BoostExtractionLog(Base):
 
 class SpecialOdds(Base):
     """Odds boosts / specials stored from provider scrapes with pre-computed EV."""
+
     __tablename__ = "specials"
 
     id = Column(Integer, primary_key=True)
 
     # Core boost data (from Special dataclass in scrape_specials.py)
     provider = Column(String, nullable=False)
-    title = Column(String, nullable=False)        # "market_label: selection_label"
+    title = Column(String, nullable=False)  # "market_label: selection_label"
     description = Column(Text, default="")
-    original_odds = Column(Float, nullable=True)   # Pre-boost odds (if available)
+    original_odds = Column(Float, nullable=True)  # Pre-boost odds (if available)
     boosted_odds = Column(Float, nullable=True)
-    boost_pct = Column(Float, nullable=True)       # ((boosted / original) - 1) * 100
+    boost_pct = Column(Float, nullable=True)  # ((boosted / original) - 1) * 100
     max_stake = Column(Float, nullable=True)
-    category = Column(String, default="boost")     # "boost" or "superboost"
+    category = Column(String, default="boost")  # "boost" or "superboost"
 
     # Event context
     sport = Column(String, default="unknown")
     league = Column(String, default="")
-    event = Column(String, default="")              # "Arsenal vs Sunderland"
-    event_time = Column(String, nullable=True)      # ISO datetime string
-    expires_at = Column(String, nullable=True)      # ISO datetime string
+    event = Column(String, default="")  # "Arsenal vs Sunderland"
+    event_time = Column(String, nullable=True)  # ISO datetime string
+    expires_at = Column(String, nullable=True)  # ISO datetime string
 
     # Source metadata
     url = Column(String, default="")
@@ -168,7 +170,7 @@ class SpecialOdds(Base):
     shared_providers = Column(JSON, nullable=True)  # list of provider IDs
 
     # Scrape tracking
-    scraped_at = Column(String, nullable=False)     # ISO datetime string
+    scraped_at = Column(String, nullable=False)  # ISO datetime string
 
     # Boost edge (simple: boosted_odds / original_odds - 1)
     edge_pct = Column(Float, nullable=True)
@@ -183,12 +185,12 @@ class SpecialOdds(Base):
     enrichment_method = Column(String, nullable=True)
 
     # LLM enrichment (AI-estimated probability from Claude Haiku + Brave Search)
-    llm_title = Column(String, nullable=True)         # Simplified English title
-    llm_probability = Column(Float, nullable=True)    # 0.01-0.99
-    llm_fair_odds = Column(Float, nullable=True)      # 1 / llm_probability
-    llm_edge_pct = Column(Float, nullable=True)       # (boosted / llm_fair - 1) * 100
-    llm_reasoning = Column(Text, nullable=True)       # AI reasoning text
-    llm_confidence = Column(String, nullable=True)    # "low", "medium", "high"
+    llm_title = Column(String, nullable=True)  # Simplified English title
+    llm_probability = Column(Float, nullable=True)  # 0.01-0.99
+    llm_fair_odds = Column(Float, nullable=True)  # 1 / llm_probability
+    llm_edge_pct = Column(Float, nullable=True)  # (boosted / llm_fair - 1) * 100
+    llm_reasoning = Column(Text, nullable=True)  # AI reasoning text
+    llm_confidence = Column(String, nullable=True)  # "low", "medium", "high"
 
     __table_args__ = (
         Index("ix_specials_provider", "provider"),
@@ -205,9 +207,10 @@ class LlmBoostCache(Base):
     Survives backend restarts and specials table purges.
     Once a boost is researched, it's never re-researched (until expired).
     """
+
     __tablename__ = "llm_boost_cache"
 
-    cache_key = Column(String, primary_key=True)    # md5 hash
+    cache_key = Column(String, primary_key=True)  # md5 hash
 
     # Original boost identity (for debugging / human lookup)
     title = Column(String, nullable=False)
@@ -219,8 +222,8 @@ class LlmBoostCache(Base):
     llm_fair_odds = Column(Float, nullable=True)
     llm_confidence = Column(String, default="low")
     llm_reasoning = Column(Text, nullable=True)
-    llm_event_time = Column(String, nullable=True)     # ISO datetime — event start time from LLM
+    llm_event_time = Column(String, nullable=True)  # ISO datetime — event start time from LLM
 
     # Metadata
-    created_at = Column(String, nullable=False)       # ISO datetime
-    last_used_at = Column(String, nullable=False)      # ISO datetime — updated on carry-forward
+    created_at = Column(String, nullable=False)  # ISO datetime
+    last_used_at = Column(String, nullable=False)  # ISO datetime — updated on carry-forward

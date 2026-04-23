@@ -121,7 +121,7 @@ def _measure_movement(
 def _score_velocity(profiles: list[MovementProfile]) -> float:
     """Score immediate velocity (base reward component)."""
     score = 0.0
-    for prof, weight in zip(profiles, _WINDOW_WEIGHTS):
+    for prof, weight in zip(profiles, _WINDOW_WEIGHTS, strict=False):
         vel_score = max(-3.0, min(3.0, prof.velocity))
         clean_mult = 0.5 + prof.cleanliness
         score += weight * vel_score * clean_mult
@@ -148,7 +148,6 @@ def _measure_mae(
     max_favorable = 0.0
     max_adverse_before_mfe = 0.0
     current_adverse = 0.0
-    mfe_price = touch_price
 
     timeout = touch_ts + timedelta(seconds=300)  # 5 min window
     scan_end = min(end, start + 60_000)  # ~10 seconds of NQ
@@ -165,7 +164,6 @@ def _measure_mae(
             # New MFE — record the MAE we saw getting here
             max_favorable = move_ticks
             max_adverse_before_mfe = max(max_adverse_before_mfe, current_adverse)
-            mfe_price = price
             current_adverse = 0.0
         elif move_ticks < 0:
             current_adverse = max(current_adverse, abs(move_ticks))
@@ -373,10 +371,7 @@ def label_outcome_from_array(
         else:
             behind = (levels_above or []) if approach_direction == "up" else (levels_below or [])
 
-        if behind:
-            struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0
-        else:
-            struct_dist = float(_STOP_TICKS_TRAIL)
+        struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0 if behind else float(_STOP_TICKS_TRAIL)
 
         # Blend structural distance + MAE + ATR-volatility. Framework (Fabio):
         # stop = structural invalidation widened by current volatility. ATR

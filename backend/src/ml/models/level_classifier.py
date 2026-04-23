@@ -6,10 +6,12 @@ Classifies the outcome of a level touch as one of:
 Falls back to 3 classes (reversal / chop / continuation) when individual class
 counts are below MIN_SAMPLES_PER_CLASS.
 """
+
 import json
 import logging
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ MIN_SAMPLES_PER_CLASS = 50
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
 
 # 5-class labels (canonical order from outcomes.py)
-from src.ml.level_touch.outcomes import OUTCOMES, OUTCOME_TO_INDEX  # noqa: E402
+from src.ml.level_touch.outcomes import OUTCOME_TO_INDEX, OUTCOMES  # noqa: E402
 
 # 3-class fallback: collapse strong/weak into single direction class
 FALLBACK_CLASSES = ["reversal", "chop", "continuation"]
@@ -32,9 +34,9 @@ FALLBACK_MAP: dict[str, str] = {
 _FALLBACK_TO_INDEX = {c: i for i, c in enumerate(FALLBACK_CLASSES)}
 
 from src.ml.features.level_touch_features import (  # noqa: E402
-    FEATURE_NAMES,
-    CATEGORICAL_MAPS,
     BOOLEAN_FEATURES,
+    CATEGORICAL_MAPS,
+    FEATURE_NAMES,
 )
 
 
@@ -102,28 +104,21 @@ class LevelClassifierModel:
             if features_raw is None or outcome is None:
                 continue
 
-            features = (
-                json.loads(features_raw)
-                if isinstance(features_raw, str)
-                else features_raw
-            )
+            features = json.loads(features_raw) if isinstance(features_raw, str) else features_raw
 
             vec = _encode_features(features)
             X_list.append(vec)
             y_raw.append(outcome)
 
         if len(X_list) < MIN_SAMPLES:
-            logger.info(
-                "LevelClassifier: insufficient data (%d < %d)", len(X_list), MIN_SAMPLES
-            )
+            logger.info("LevelClassifier: insufficient data (%d < %d)", len(X_list), MIN_SAMPLES)
             return None
 
         # Determine whether we can use 5 classes or must fall back to 3
         from collections import Counter
+
         class_counts = Counter(y_raw)
-        use_fallback = any(
-            class_counts.get(cls, 0) < MIN_SAMPLES_PER_CLASS for cls in OUTCOMES
-        )
+        use_fallback = any(class_counts.get(cls, 0) < MIN_SAMPLES_PER_CLASS for cls in OUTCOMES)
 
         if use_fallback:
             logger.info(
@@ -140,7 +135,7 @@ class LevelClassifierModel:
 
         # Encode labels to int indices, dropping rows with unknown outcomes
         X_final, y_final = [], []
-        for vec, label in zip(X_list, y_mapped):
+        for vec, label in zip(X_list, y_mapped, strict=False):
             idx = label_to_idx.get(label)
             if idx is None:
                 continue
@@ -150,7 +145,8 @@ class LevelClassifierModel:
         if len(X_final) < MIN_SAMPLES:
             logger.info(
                 "LevelClassifier: after label filtering insufficient data (%d < %d)",
-                len(X_final), MIN_SAMPLES,
+                len(X_final),
+                MIN_SAMPLES,
             )
             return None
 
@@ -159,8 +155,10 @@ class LevelClassifierModel:
         num_class = len(classes)
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(
-            X, y,
+            X,
+            y,
             task="multiclass",
             min_samples=MIN_SAMPLES,
             feature_names=FEATURE_NAMES,
@@ -170,6 +168,7 @@ class LevelClassifierModel:
             return None
 
         import joblib
+
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         path = MODELS_DIR / "level_classifier_latest.joblib"
         joblib.dump(

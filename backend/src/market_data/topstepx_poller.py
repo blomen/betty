@@ -37,7 +37,7 @@ def _is_globex_open(now_et: datetime) -> bool:
     if wd == 4:
         return hour < 17
     # Mon-Thu: closed during 17:00-18:00 daily halt
-    return not (hour == 17)
+    return hour != 17
 
 
 class TopstepXPoller:

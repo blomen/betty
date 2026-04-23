@@ -31,9 +31,7 @@ class DabentoProvider(MarketDataProvider):
         else:
             self.symbol = raw_symbol
 
-    async def get_bars(
-        self, symbol: str, interval: str, start: datetime, end: datetime
-    ) -> list[BarData]:
+    async def get_bars(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[BarData]:
         """Fetch OHLCV bars from Databento. Uses ohlcv-1m schema."""
         schema_map = {
             "1m": "ohlcv-1m",
@@ -58,15 +56,17 @@ class DabentoProvider(MarketDataProvider):
         for rec in data:
             ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
             ts = datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc)
-            bars.append(BarData(
-                timestamp=ts,
-                open=rec.open / 1e9,  # Databento fixed-point prices
-                high=rec.high / 1e9,
-                low=rec.low / 1e9,
-                close=rec.close / 1e9,
-                volume=rec.volume,
-                delta=0,  # Delta computed separately from ticks
-            ))
+            bars.append(
+                BarData(
+                    timestamp=ts,
+                    open=rec.open / 1e9,  # Databento fixed-point prices
+                    high=rec.high / 1e9,
+                    low=rec.low / 1e9,
+                    close=rec.close / 1e9,
+                    volume=rec.volume,
+                    delta=0,  # Delta computed separately from ticks
+                )
+            )
 
         # Resample if needed
         if interval in ("5m", "15m") and bars:
@@ -75,9 +75,7 @@ class DabentoProvider(MarketDataProvider):
         logger.info("Fetched %d %s bars for %s (%s to %s)", len(bars), interval, symbol, start, end)
         return bars
 
-    async def get_ticks(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> list[TickData]:
+    async def get_ticks(self, symbol: str, start: datetime, end: datetime) -> list[TickData]:
         """Fetch tick trades with aggressor side from Databento TBBO/trades schema."""
         data = await asyncio.to_thread(
             self.client.timeseries.get_range,
@@ -96,12 +94,14 @@ class DabentoProvider(MarketDataProvider):
             side = "buy" if side_char == "A" else "sell" if side_char == "B" else "unknown"
 
             ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
-            ticks.append(TickData(
-                timestamp=datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc),
-                price=rec.price / 1e9,
-                size=rec.size,
-                side=side,
-            ))
+            ticks.append(
+                TickData(
+                    timestamp=datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc),
+                    price=rec.price / 1e9,
+                    size=rec.size,
+                    side=side,
+                )
+            )
 
         logger.info("Fetched %d ticks for %s (%s to %s)", len(ticks), symbol, start, end)
         return ticks
@@ -128,26 +128,37 @@ class DabentoProvider(MarketDataProvider):
         """Resample 1-min bars to larger intervals."""
         import pandas as pd
 
-        df = pd.DataFrame([{
-            "timestamp": b.timestamp,
-            "open": b.open,
-            "high": b.high,
-            "low": b.low,
-            "close": b.close,
-            "volume": b.volume,
-            "delta": b.delta,
-        } for b in bars])
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": b.timestamp,
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "volume": b.volume,
+                    "delta": b.delta,
+                }
+                for b in bars
+            ]
+        )
         df.set_index("timestamp", inplace=True)
 
         freq = "5min" if interval == "5m" else "15min"
-        resampled = df.resample(freq).agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-            "delta": "sum",
-        }).dropna()
+        resampled = (
+            df.resample(freq)
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                    "delta": "sum",
+                }
+            )
+            .dropna()
+        )
 
         return [
             BarData(

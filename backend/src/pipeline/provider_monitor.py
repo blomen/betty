@@ -9,52 +9,55 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class HealthScore(Enum):
     """Provider health score categories."""
-    EXCELLENT = "excellent"      # 90-100%
-    GOOD = "good"                # 70-89%
-    FAIR = "fair"                # 50-69%
-    POOR = "poor"                # 30-49%
-    CRITICAL = "critical"        # 0-29%
+
+    EXCELLENT = "excellent"  # 90-100%
+    GOOD = "good"  # 70-89%
+    FAIR = "fair"  # 50-69%
+    POOR = "poor"  # 30-49%
+    CRITICAL = "critical"  # 0-29%
 
 
 class IssueType(Enum):
     """Types of provider issues."""
-    NO_DATA = "no_data"                      # Returns 0 events
-    LOW_DATA = "low_data"                    # Significantly fewer events than baseline
-    NO_ODDS = "no_odds"                      # Events but no odds
-    SPARSE_ODDS = "sparse_odds"              # Very few odds per event
-    SLOW_RESPONSE = "slow_response"          # Response time above threshold
-    HIGH_FAILURE = "high_failure"            # Failure rate above threshold
-    CIRCUIT_OPEN = "circuit_open"            # Circuit breaker open
-    UNHEALTHY = "unhealthy"                  # Failed health checks
-    TIMEOUT_PRONE = "timeout_prone"          # Frequent timeouts
-    DEGRADING = "degrading"                  # Trend shows degradation
+
+    NO_DATA = "no_data"  # Returns 0 events
+    LOW_DATA = "low_data"  # Significantly fewer events than baseline
+    NO_ODDS = "no_odds"  # Events but no odds
+    SPARSE_ODDS = "sparse_odds"  # Very few odds per event
+    SLOW_RESPONSE = "slow_response"  # Response time above threshold
+    HIGH_FAILURE = "high_failure"  # Failure rate above threshold
+    CIRCUIT_OPEN = "circuit_open"  # Circuit breaker open
+    UNHEALTHY = "unhealthy"  # Failed health checks
+    TIMEOUT_PRONE = "timeout_prone"  # Frequent timeouts
+    DEGRADING = "degrading"  # Trend shows degradation
 
 
 @dataclass
 class ProviderIssue:
     """Detected provider issue."""
+
     issue_type: IssueType
     severity: str  # "critical", "warning", "info"
     message: str
     detected_at: float = field(default_factory=time.time)
-    metric_value: Optional[float] = None
-    threshold_value: Optional[float] = None
+    metric_value: float | None = None
+    threshold_value: float | None = None
 
 
 @dataclass
 class ProviderHealth:
     """Provider health assessment."""
+
     provider_id: str
     health_score: HealthScore
     score_value: float  # 0-100
-    issues: List[ProviderIssue] = field(default_factory=list)
+    issues: list[ProviderIssue] = field(default_factory=list)
 
     # Metrics summary
     avg_events_per_run: float = 0.0
@@ -124,9 +127,9 @@ class ProviderMonitor:
     def assess_provider(
         self,
         provider_id: str,
-        metrics_history: List,
-        circuit_breaker_status: Optional[Dict] = None,
-        health_check_status: Optional[Dict] = None
+        metrics_history: list,
+        circuit_breaker_status: dict | None = None,
+        health_check_status: dict | None = None,
     ) -> ProviderHealth:
         """
         Assess provider health based on historical metrics.
@@ -149,11 +152,9 @@ class ProviderMonitor:
                 provider_runs.append(run.providers[provider_id])
 
         if not provider_runs:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.NO_DATA,
-                severity="critical",
-                message="No historical data available"
-            ))
+            health.issues.append(
+                ProviderIssue(issue_type=IssueType.NO_DATA, severity="critical", message="No historical data available")
+            )
             health.health_score = HealthScore.CRITICAL
             health.score_value = 0.0
             return health
@@ -168,8 +169,12 @@ class ProviderMonitor:
         # Average events per run (only successful runs)
         successful_provider_runs = [p for p in provider_runs if p.success]
         if successful_provider_runs:
-            health.avg_events_per_run = sum(p.total_events for p in successful_provider_runs) / len(successful_provider_runs)
-            health.avg_response_time_ms = sum(p.duration_seconds * 1000 for p in successful_provider_runs) / len(successful_provider_runs)
+            health.avg_events_per_run = sum(p.total_events for p in successful_provider_runs) / len(
+                successful_provider_runs
+            )
+            health.avg_response_time_ms = sum(p.duration_seconds * 1000 for p in successful_provider_runs) / len(
+                successful_provider_runs
+            )
 
             # Calculate odds per event
             total_events = sum(p.total_events for p in successful_provider_runs)
@@ -196,110 +201,132 @@ class ProviderMonitor:
 
         return health
 
-    def _detect_data_issues(self, health: ProviderHealth, provider_runs: List):
+    def _detect_data_issues(self, health: ProviderHealth, provider_runs: list):
         """Detect data delivery issues."""
         recent_runs = provider_runs[-5:] if len(provider_runs) >= 5 else provider_runs
 
         # Check for no data
         zero_event_runs = sum(1 for p in recent_runs if p.total_events == 0)
         if zero_event_runs >= len(recent_runs) * 0.8:  # 80%+ runs have no data
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.NO_DATA,
-                severity="critical",
-                message=f"Provider returned 0 events in {zero_event_runs}/{len(recent_runs)} recent runs",
-                metric_value=zero_event_runs,
-                threshold_value=len(recent_runs) * 0.8
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.NO_DATA,
+                    severity="critical",
+                    message=f"Provider returned 0 events in {zero_event_runs}/{len(recent_runs)} recent runs",
+                    metric_value=zero_event_runs,
+                    threshold_value=len(recent_runs) * 0.8,
+                )
+            )
 
         # Check for low data compared to baseline
         if health.avg_events_per_run < self.min_events_threshold:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.LOW_DATA,
-                severity="warning",
-                message=f"Average events ({health.avg_events_per_run:.1f}) below threshold ({self.min_events_threshold})",
-                metric_value=health.avg_events_per_run,
-                threshold_value=self.min_events_threshold
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.LOW_DATA,
+                    severity="warning",
+                    message=f"Average events ({health.avg_events_per_run:.1f}) below threshold ({self.min_events_threshold})",
+                    metric_value=health.avg_events_per_run,
+                    threshold_value=self.min_events_threshold,
+                )
+            )
 
         # Check for no odds (events but no odds)
         successful_with_events = [p for p in recent_runs if p.success and p.total_events > 0]
         if successful_with_events:
             no_odds_runs = sum(1 for p in successful_with_events if p.total_odds == 0)
             if no_odds_runs > 0:
-                health.issues.append(ProviderIssue(
-                    issue_type=IssueType.NO_ODDS,
-                    severity="critical",
-                    message=f"Provider returned events but no odds in {no_odds_runs} run(s)",
-                    metric_value=no_odds_runs
-                ))
+                health.issues.append(
+                    ProviderIssue(
+                        issue_type=IssueType.NO_ODDS,
+                        severity="critical",
+                        message=f"Provider returned events but no odds in {no_odds_runs} run(s)",
+                        metric_value=no_odds_runs,
+                    )
+                )
 
         # Check for sparse odds
         if health.avg_odds_per_event > 0 and health.avg_odds_per_event < self.min_odds_per_event:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.SPARSE_ODDS,
-                severity="warning",
-                message=f"Average odds per event ({health.avg_odds_per_event:.1f}) below expected ({self.min_odds_per_event})",
-                metric_value=health.avg_odds_per_event,
-                threshold_value=self.min_odds_per_event
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.SPARSE_ODDS,
+                    severity="warning",
+                    message=f"Average odds per event ({health.avg_odds_per_event:.1f}) below expected ({self.min_odds_per_event})",
+                    metric_value=health.avg_odds_per_event,
+                    threshold_value=self.min_odds_per_event,
+                )
+            )
 
-    def _detect_performance_issues(self, health: ProviderHealth, provider_runs: List):
+    def _detect_performance_issues(self, health: ProviderHealth, provider_runs: list):
         """Detect performance issues."""
         # Check response time
         if health.avg_response_time_ms > self.max_response_time_ms:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.SLOW_RESPONSE,
-                severity="warning",
-                message=f"Average response time ({health.avg_response_time_ms:.0f}ms) exceeds threshold ({self.max_response_time_ms:.0f}ms)",
-                metric_value=health.avg_response_time_ms,
-                threshold_value=self.max_response_time_ms
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.SLOW_RESPONSE,
+                    severity="warning",
+                    message=f"Average response time ({health.avg_response_time_ms:.0f}ms) exceeds threshold ({self.max_response_time_ms:.0f}ms)",
+                    metric_value=health.avg_response_time_ms,
+                    threshold_value=self.max_response_time_ms,
+                )
+            )
 
         # Check for timeout patterns
         recent_runs = provider_runs[-10:] if len(provider_runs) >= 10 else provider_runs
-        timeout_count = sum(1 for p in recent_runs if not p.success and "timeout" in str(getattr(p, 'error', '')).lower())
+        timeout_count = sum(
+            1 for p in recent_runs if not p.success and "timeout" in str(getattr(p, "error", "")).lower()
+        )
         if timeout_count >= len(recent_runs) * 0.3:  # 30%+ timeouts
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.TIMEOUT_PRONE,
-                severity="warning",
-                message=f"Frequent timeouts: {timeout_count}/{len(recent_runs)} recent runs",
-                metric_value=timeout_count,
-                threshold_value=len(recent_runs) * 0.3
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.TIMEOUT_PRONE,
+                    severity="warning",
+                    message=f"Frequent timeouts: {timeout_count}/{len(recent_runs)} recent runs",
+                    metric_value=timeout_count,
+                    threshold_value=len(recent_runs) * 0.3,
+                )
+            )
 
-    def _detect_reliability_issues(self, health: ProviderHealth, provider_runs: List):
+    def _detect_reliability_issues(self, health: ProviderHealth, provider_runs: list):
         """Detect reliability issues."""
         # Check success rate
         if health.success_rate < self.min_success_rate:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.HIGH_FAILURE,
-                severity="critical" if health.success_rate < 0.5 else "warning",
-                message=f"Success rate ({health.success_rate*100:.1f}%) below threshold ({self.min_success_rate*100:.1f}%)",
-                metric_value=health.success_rate,
-                threshold_value=self.min_success_rate
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.HIGH_FAILURE,
+                    severity="critical" if health.success_rate < 0.5 else "warning",
+                    message=f"Success rate ({health.success_rate * 100:.1f}%) below threshold ({self.min_success_rate * 100:.1f}%)",
+                    metric_value=health.success_rate,
+                    threshold_value=self.min_success_rate,
+                )
+            )
 
         # Check uptime
         if health.uptime_pct < self.min_uptime_pct:
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.HIGH_FAILURE,
-                severity="warning",
-                message=f"Uptime ({health.uptime_pct*100:.1f}%) below threshold ({self.min_uptime_pct*100:.1f}%)",
-                metric_value=health.uptime_pct,
-                threshold_value=self.min_uptime_pct
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.HIGH_FAILURE,
+                    severity="warning",
+                    message=f"Uptime ({health.uptime_pct * 100:.1f}%) below threshold ({self.min_uptime_pct * 100:.1f}%)",
+                    metric_value=health.uptime_pct,
+                    threshold_value=self.min_uptime_pct,
+                )
+            )
 
-    def _detect_trend_issues(self, health: ProviderHealth, provider_runs: List):
+    def _detect_trend_issues(self, health: ProviderHealth, provider_runs: list):
         """Detect degradation trends."""
         if len(provider_runs) < 5:
             return  # Need more data for trend analysis
 
         # Compare recent average to baseline average
-        baseline_runs = provider_runs[:len(provider_runs)//2]  # First half
-        recent_runs = provider_runs[len(provider_runs)//2:]    # Second half
+        baseline_runs = provider_runs[: len(provider_runs) // 2]  # First half
+        recent_runs = provider_runs[len(provider_runs) // 2 :]  # Second half
 
-        baseline_avg = sum(p.total_events for p in baseline_runs if p.success) / max(sum(1 for p in baseline_runs if p.success), 1)
-        recent_avg = sum(p.total_events for p in recent_runs if p.success) / max(sum(1 for p in recent_runs if p.success), 1)
+        baseline_avg = sum(p.total_events for p in baseline_runs if p.success) / max(
+            sum(1 for p in baseline_runs if p.success), 1
+        )
+        recent_avg = sum(p.total_events for p in recent_runs if p.success) / max(
+            sum(1 for p in recent_runs if p.success), 1
+        )
 
         if baseline_avg > 0:
             drop_pct = (baseline_avg - recent_avg) / baseline_avg
@@ -307,34 +334,40 @@ class ProviderMonitor:
             if drop_pct > self.degradation_threshold:
                 health.is_degrading = True
                 health.trend_direction = "degrading"
-                health.issues.append(ProviderIssue(
-                    issue_type=IssueType.DEGRADING,
-                    severity="warning",
-                    message=f"Event count dropped {drop_pct*100:.1f}% from baseline (was {baseline_avg:.0f}, now {recent_avg:.0f})",
-                    metric_value=recent_avg,
-                    threshold_value=baseline_avg * (1 - self.degradation_threshold)
-                ))
+                health.issues.append(
+                    ProviderIssue(
+                        issue_type=IssueType.DEGRADING,
+                        severity="warning",
+                        message=f"Event count dropped {drop_pct * 100:.1f}% from baseline (was {baseline_avg:.0f}, now {recent_avg:.0f})",
+                        metric_value=recent_avg,
+                        threshold_value=baseline_avg * (1 - self.degradation_threshold),
+                    )
+                )
             elif recent_avg > baseline_avg * 1.1:  # 10% improvement
                 health.trend_direction = "improving"
 
-    def _check_circuit_breaker(self, health: ProviderHealth, status: Dict):
+    def _check_circuit_breaker(self, health: ProviderHealth, status: dict):
         """Check circuit breaker status."""
         if status.get("state") == "open":
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.CIRCUIT_OPEN,
-                severity="critical",
-                message=f"Circuit breaker is OPEN (failures: {status.get('failure_count', 0)})",
-                metric_value=status.get("failure_count", 0)
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.CIRCUIT_OPEN,
+                    severity="critical",
+                    message=f"Circuit breaker is OPEN (failures: {status.get('failure_count', 0)})",
+                    metric_value=status.get("failure_count", 0),
+                )
+            )
 
-    def _check_health_status(self, health: ProviderHealth, status: Dict):
+    def _check_health_status(self, health: ProviderHealth, status: dict):
         """Check health check status."""
         if not status.get("healthy", True):
-            health.issues.append(ProviderIssue(
-                issue_type=IssueType.UNHEALTHY,
-                severity="critical",
-                message=f"Health check failed: {status.get('error', 'Unknown error')}",
-            ))
+            health.issues.append(
+                ProviderIssue(
+                    issue_type=IssueType.UNHEALTHY,
+                    severity="critical",
+                    message=f"Health check failed: {status.get('error', 'Unknown error')}",
+                )
+            )
 
     def _calculate_score(self, health: ProviderHealth) -> float:
         """
@@ -373,10 +406,10 @@ class ProviderMonitor:
 
     def assess_all_providers(
         self,
-        metrics_history: List,
-        circuit_breaker_statuses: Optional[Dict] = None,
-        health_check_statuses: Optional[Dict] = None
-    ) -> Dict[str, ProviderHealth]:
+        metrics_history: list,
+        circuit_breaker_statuses: dict | None = None,
+        health_check_statuses: dict | None = None,
+    ) -> dict[str, ProviderHealth]:
         """
         Assess all providers that appear in metrics history.
 
@@ -399,16 +432,11 @@ class ProviderMonitor:
             cb_status = circuit_breaker_statuses.get(provider_id) if circuit_breaker_statuses else None
             hc_status = health_check_statuses.get(provider_id) if health_check_statuses else None
 
-            results[provider_id] = self.assess_provider(
-                provider_id,
-                metrics_history,
-                cb_status,
-                hc_status
-            )
+            results[provider_id] = self.assess_provider(provider_id, metrics_history, cb_status, hc_status)
 
         return results
 
-    def get_unhealthy_providers(self, assessments: Dict[str, ProviderHealth]) -> List[str]:
+    def get_unhealthy_providers(self, assessments: dict[str, ProviderHealth]) -> list[str]:
         """
         Get list of unhealthy provider IDs.
 
@@ -418,12 +446,9 @@ class ProviderMonitor:
         Returns:
             List of provider IDs that are not healthy
         """
-        return [
-            pid for pid, health in assessments.items()
-            if not health.is_healthy
-        ]
+        return [pid for pid, health in assessments.items() if not health.is_healthy]
 
-    def get_critical_providers(self, assessments: Dict[str, ProviderHealth]) -> List[str]:
+    def get_critical_providers(self, assessments: dict[str, ProviderHealth]) -> list[str]:
         """
         Get list of providers with critical issues.
 
@@ -433,7 +458,4 @@ class ProviderMonitor:
         Returns:
             List of provider IDs with critical issues
         """
-        return [
-            pid for pid, health in assessments.items()
-            if health.has_critical_issues
-        ]
+        return [pid for pid, health in assessments.items() if health.has_critical_issues]

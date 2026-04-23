@@ -16,6 +16,7 @@ Providers using Altenar:
 """
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -347,10 +348,8 @@ class AltenarRetriever(Retriever):
                 if market_type in ("spread", "total"):
                     sv = market.get("sv")
                     if sv:
-                        try:
+                        with contextlib.suppress(ValueError, TypeError):
                             market_point = float(sv)
-                        except (ValueError, TypeError):
-                            pass
 
                 # Get odds for this market
                 odd_ids = market.get("oddIds", [])
@@ -631,10 +630,8 @@ class AltenarRetriever(Retriever):
             if market_type in ("spread", "total"):
                 sv = market.get("sv")
                 if sv:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         market_point = float(sv)
-                    except (ValueError, TypeError):
-                        pass
 
             # Check for duplicate
             dup_key = market_type

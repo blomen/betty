@@ -11,6 +11,7 @@ Listeners run simultaneously:
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -282,9 +283,8 @@ class BetInterceptor:
         """Check if this request is a bet placement across any platform."""
         url_lower = url.lower()
         for pattern, required_method in self._BET_PLACEMENT_PATTERNS:
-            if pattern.lower() in url_lower:
-                if required_method is None or method == required_method:
-                    return True
+            if pattern.lower() in url_lower and (required_method is None or method == required_method):
+                return True
         return False
 
     def _is_notification_settings(self, url: str, method: str) -> bool:
@@ -369,10 +369,8 @@ class BetInterceptor:
                         raw = await response.body()
                         body_text = raw.decode("utf-8", errors="replace")
                     req_body = None
-                    try:
+                    with contextlib.suppress(Exception):
                         req_body = response.request.post_data
-                    except Exception:
-                        pass
                     await self.on_bet_history(url, body_text, req_body)
                 except Exception as e:
                     logger.debug(f"[mirror] Could not read bet history response: {e}")
@@ -424,10 +422,8 @@ class BetInterceptor:
                 return
 
             request_body = None
-            try:
+            with contextlib.suppress(Exception):
                 request_body = response.request.post_data
-            except Exception:
-                pass
 
             # Capture the page URL the user is viewing
             page_url = None
@@ -571,17 +567,13 @@ class BetInterceptor:
         self.recorder.stop()
 
         if self.context:
-            try:
+            with contextlib.suppress(Exception):
                 await self.context.close()
-            except Exception:
-                pass
             self.context = None
 
         if self._playwright:
-            try:
+            with contextlib.suppress(Exception):
                 await self._playwright.stop()
-            except Exception:
-                pass
             self._playwright = None
 
         logger.info("[mirror] Stopped")

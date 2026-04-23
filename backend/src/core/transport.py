@@ -1,9 +1,11 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
 import asyncio
-import random
-import aiohttp
 import logging
+import random
+from abc import ABC, abstractmethod
+from typing import Any
+
+import aiohttp
+
 try:
     from patchright.async_api import async_playwright
 except ImportError:
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 def get_proxy_url() -> str | None:
     """Get PROXY_URL from environment. Returns plain URL string for aiohttp."""
     import os
+
     return os.environ.get("PROXY_URL")
 
 
@@ -39,6 +42,7 @@ def get_proxy_dict(residential: bool = False, **kwargs) -> dict | None:
     """
     import os
     from urllib.parse import urlparse
+
     proxy_url = None
     if residential:
         proxy_url = os.environ.get("RESIDENTIAL_PROXY_URL")
@@ -56,25 +60,31 @@ def get_proxy_dict(residential: bool = False, **kwargs) -> dict | None:
 
 
 # Modern Chrome UA — updated periodically
-_CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 
 class Transport(ABC):
     """
     Abstract Interface for Data Transport.
     Responsible for fetching raw data locally or remotely.
     """
-    
+
     @abstractmethod
-    async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> Any:
         pass
 
     @abstractmethod
-    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def post(
+        self, url: str, data: dict | None = None, json: dict | None = None, headers: dict | None = None
+    ) -> Any:
         pass
-        
+
     @abstractmethod
     async def close(self):
         pass
+
 
 class HttpTransport(Transport):
     """
@@ -85,7 +95,14 @@ class HttpTransport(Transport):
         async with HttpTransport() as transport:
             data = await transport.get(url)
     """
-    def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None, proxy: Optional[str] = None):
+
+    def __init__(
+        self,
+        headers: dict | None = None,
+        circuit_breaker: Any = None,
+        rate_limit_config: Any = None,
+        proxy: str | None = None,
+    ):
         self.session = None
         self._session_lock = asyncio.Lock()
         self._owns_session = True  # Track if we created the session
@@ -96,7 +113,7 @@ class HttpTransport(Transport):
         # SOCKS proxies are handled via ProxyConnector, not the proxy= kwarg
         self._proxy_via_connector = bool(proxy and proxy.startswith("socks"))
         # Track consecutive 429s per provider for circuit breaker notification
-        self._consecutive_429s: Dict[str, int] = {}
+        self._consecutive_429s: dict[str, int] = {}
 
     async def __aenter__(self):
         """Async context manager entry - ensures session is created."""
@@ -116,6 +133,7 @@ class HttpTransport(Transport):
                     if self.proxy and self.proxy.startswith("socks"):
                         try:
                             from aiohttp_socks import ProxyConnector
+
                             connector = ProxyConnector.from_url(self.proxy)
                         except ImportError:
                             logger.warning("aiohttp-socks not installed, SOCKS proxy will not work for HTTP requests")
@@ -124,11 +142,11 @@ class HttpTransport(Transport):
     async def get(
         self,
         url: str,
-        params: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        cache: Optional[Any] = None,
-        provider_id: Optional[str] = None,
-        max_retries: int = None
+        params: dict | None = None,
+        headers: dict | None = None,
+        cache: Any | None = None,
+        provider_id: str | None = None,
+        max_retries: int = None,
     ) -> Any:
         """
         GET request with optional caching and 429 rate limit handling.
@@ -170,17 +188,23 @@ class HttpTransport(Transport):
 
         # Retry loop for 429 handling
         for attempt in range(max_retries + 1):
-            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout, proxy=None if self._proxy_via_connector else self.proxy) as response:
+            async with self.session.get(
+                url,
+                params=params,
+                headers=req_headers,
+                timeout=req_timeout,
+                proxy=None if self._proxy_via_connector else self.proxy,
+            ) as response:
                 # Handle 429 rate limit with exponential backoff
                 if response.status == 429:
-                    retry_after = response.headers.get('Retry-After', str(default_wait))
+                    retry_after = response.headers.get("Retry-After", str(default_wait))
                     try:
                         wait_seconds = int(retry_after)
                     except ValueError:
                         wait_seconds = default_wait
 
                     # Cap wait time and apply exponential backoff
-                    wait_seconds = min(wait_seconds * (2 ** attempt), max_wait)
+                    wait_seconds = min(wait_seconds * (2**attempt), max_wait)
 
                     provider_str = f"[{provider_id}] " if provider_id else ""
                     logger.warning(
@@ -234,10 +258,10 @@ class HttpTransport(Transport):
     async def post(
         self,
         url: str,
-        data: Optional[Dict] = None,
-        json: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        max_retries: int = None
+        data: dict | None = None,
+        json: dict | None = None,
+        headers: dict | None = None,
+        max_retries: int = None,
     ) -> Any:
         if max_retries is None:
             max_retries = self.rate_limit_config.max_retries if self.rate_limit_config else 2
@@ -252,14 +276,21 @@ class HttpTransport(Transport):
         req_timeout = aiohttp.ClientTimeout(total=90)
 
         for attempt in range(max_retries + 1):
-            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout, proxy=None if self._proxy_via_connector else self.proxy) as response:
+            async with self.session.post(
+                url,
+                data=data,
+                json=json,
+                headers=req_headers,
+                timeout=req_timeout,
+                proxy=None if self._proxy_via_connector else self.proxy,
+            ) as response:
                 if response.status == 429:
-                    retry_after = response.headers.get('Retry-After', str(default_wait))
+                    retry_after = response.headers.get("Retry-After", str(default_wait))
                     try:
                         wait_seconds = int(retry_after)
                     except ValueError:
                         wait_seconds = default_wait
-                    wait_seconds = min(wait_seconds * (2 ** attempt), max_wait)
+                    wait_seconds = min(wait_seconds * (2**attempt), max_wait)
                     logger.warning(f"429 Rate Limited on POST {url} (attempt {attempt + 1}/{max_retries + 1})")
                     if attempt < max_retries:
                         await asyncio.sleep(wait_seconds)
@@ -281,6 +312,7 @@ class HttpTransport(Transport):
             await self.session.close()
             self.session = None
 
+
 class BrowserTransport(Transport):
     """
     Heavy transport using Playwright.
@@ -297,11 +329,18 @@ class BrowserTransport(Transport):
                  Chrome must be running with --remote-debugging-port=9222.
                  This bypasses all bot detection since it attaches to a real human-controlled browser.
     """
-    def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
-                 channel: Optional[str] = None, cdp_url: Optional[str] = None,
-                 circuit_breaker: Any = None, use_proxy: bool = False,
-                 use_residential_proxy: bool = False,
-                 disable_resource_blocking: bool = False):
+
+    def __init__(
+        self,
+        headless: bool = True,
+        user_data_dir: str | None = None,
+        channel: str | None = None,
+        cdp_url: str | None = None,
+        circuit_breaker: Any = None,
+        use_proxy: bool = False,
+        use_residential_proxy: bool = False,
+        disable_resource_blocking: bool = False,
+    ):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
@@ -328,12 +367,19 @@ class BrowserTransport(Transport):
 
         # Tracking/analytics domains to block
         self._BLOCKED_URL_PATTERNS = [
-            "google-analytics.com", "googletagmanager.com",
-            "googlesyndication.com", "doubleclick.net",
-            "bat.bing.com", "bat.bing.net",
-            "facebook.net", "facebook.com/tr",
-            "truendo.com", "braze.eu", "braze.com",
-            "hotjar.com", "clarity.ms",
+            "google-analytics.com",
+            "googletagmanager.com",
+            "googlesyndication.com",
+            "doubleclick.net",
+            "bat.bing.com",
+            "bat.bing.net",
+            "facebook.net",
+            "facebook.com/tr",
+            "truendo.com",
+            "braze.eu",
+            "braze.com",
+            "hotjar.com",
+            "clarity.ms",
             "sportradar.com/widgets",
         ]
 
@@ -351,7 +397,7 @@ class BrowserTransport(Transport):
                 # Let API requests fall through to page-level route handlers
                 # (gecko_v2 uses page.route('**/api/sb/**'), tipwin uses '**/offer/data*')
                 url = route.request.url.lower()
-                if '/api/sb/' in url or 'offer/data' in url or '/api/' in url and route.request.resource_type == "xhr":
+                if "/api/sb/" in url or "offer/data" in url or "/api/" in url and route.request.resource_type == "xhr":
                     await route.fallback()
                     return
                 if route.request.resource_type in blocked_types:
@@ -369,18 +415,18 @@ class BrowserTransport(Transport):
         logger.debug("Resource blocking enabled for browser context (block_css=%s)", self._BLOCK_STYLESHEETS)
 
     async def _ensure_browser(self):
-        if self.page: return
+        if self.page:
+            return
 
         if async_playwright is None:
-            raise ImportError("Browser transport requires patchright or playwright. Install with: pip install patchright")
+            raise ImportError(
+                "Browser transport requires patchright or playwright. Install with: pip install patchright"
+            )
 
         try:
             self.playwright = await async_playwright().start()
         except Exception as e:
-            logger.error(
-                f"[BrowserTransport] async_playwright().start() FAILED: "
-                f"{type(e).__name__}: {e!r}"
-            )
+            logger.error(f"[BrowserTransport] async_playwright().start() FAILED: {type(e).__name__}: {e!r}")
             raise
 
         # CDP mode: attach to an already-running Chrome browser
@@ -399,26 +445,27 @@ class BrowserTransport(Transport):
 
         context_opts = dict(
             user_agent=_CHROME_UA,
-            locale='sv-SE',
+            locale="sv-SE",
             geolocation={
-                'latitude': 59.3293 + (random.random() - 0.5) * 0.01,
-                'longitude': 18.0686 + (random.random() - 0.5) * 0.01,
+                "latitude": 59.3293 + (random.random() - 0.5) * 0.01,
+                "longitude": 18.0686 + (random.random() - 0.5) * 0.01,
             },  # Stockholm ±500m jitter
         )
         if self._proxy_dict:
-            context_opts['proxy'] = self._proxy_dict
+            context_opts["proxy"] = self._proxy_dict
         launch_args = [
-            '--disable-blink-features=AutomationControlled',
-            '--window-position=-2400,-2400',
+            "--disable-blink-features=AutomationControlled",
+            "--window-position=-2400,-2400",
         ]
 
         launch_kwargs = {}
         if self.channel:
-            launch_kwargs['channel'] = self.channel
+            launch_kwargs["channel"] = self.channel
 
         if self.user_data_dir:
             # Persistent context — cookies/local storage survive between runs
             import os
+
             os.makedirs(self.user_data_dir, exist_ok=True)
             self.context = await self.playwright.chromium.launch_persistent_context(
                 self.user_data_dir,
@@ -448,9 +495,9 @@ class BrowserTransport(Transport):
         proxy_msg = " + residential proxy" if self._proxy_dict else ""
         logger.info(f"Browser initialized with patchright stealth{proxy_msg}")
 
-    async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> Any:
         await self._ensure_browser()
-        
+
         # Mode 1: Hybrid - Use Fetch API from context (faster, no page load if not needed)
         try:
             response = await self.context.request.get(url, params=params, headers=headers)
@@ -460,8 +507,8 @@ class BrowserTransport(Transport):
                 except Exception:
                     return await response.text()
             else:
-                 # Fallback to page navigation if API fails (maybe protected?)
-                 pass
+                # Fallback to page navigation if API fails (maybe protected?)
+                pass
         except Exception:
             pass
 
@@ -473,34 +520,36 @@ class BrowserTransport(Transport):
             logger.error(f"Browser GET failed: {e}")
             return None
 
-    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def post(
+        self, url: str, data: dict | None = None, json: dict | None = None, headers: dict | None = None
+    ) -> Any:
         await self._ensure_browser()
-        
+
         # Mode 1: Hybrid context request
         try:
             # Playwright request.post supports 'data' (form) or 'data' (json if object? no `multipart` usually explicitly)
             # request.post(url, data=..., form=..., multipart=...)
             # We map generic 'data' to 'form' if dict and not json
-            
+
             kwargs = {"headers": headers}
             if json:
-                kwargs["data"] = json # Playwright treats dict in data as JSON automatically? No, requests does. 
+                kwargs["data"] = json  # Playwright treats dict in data as JSON automatically? No, requests does.
                 # Playwright: data (str|bytes|Serializable), form (Dict), multipart (Dict)
                 # If we pass json dict to 'data', it serializes?
                 # Best to use 'data' for json if content-type header is set, otherwise...
                 pass
-            
+
             # Simplified mapping:
             # If json arg is present -> assume JSON body
             # If data arg is present -> assume Form/Multipart
-            
+
             if json:
                 response = await self.context.request.post(url, data=json, headers=headers)
             elif isinstance(data, dict):
-                 response = await self.context.request.post(url, form=data, headers=headers)
+                response = await self.context.request.post(url, form=data, headers=headers)
             elif data:
-                 # Pass raw string/bytes to 'data'
-                 response = await self.context.request.post(url, data=data, headers=headers)
+                # Pass raw string/bytes to 'data'
+                response = await self.context.request.post(url, data=data, headers=headers)
             else:
                 response = await self.context.request.post(url, headers=headers)
 
@@ -512,7 +561,7 @@ class BrowserTransport(Transport):
             else:
                 logger.warning(f"Browser POST {url} returned {response.status} {response.status_text}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Browser POST failed: {e}")
             return None
@@ -522,7 +571,7 @@ class BrowserTransport(Transport):
         await self._ensure_browser()
         return await self.context.new_page()
 
-    async def smart_scroll(self, timeout: int = 10000, button_selector: Optional[str] = None, page: Any = None):
+    async def smart_scroll(self, timeout: int = 10000, button_selector: str | None = None, page: Any = None):
         """
         Robust smart scrolling mechanism adapted from modern scraping libraries.
         - Scrolls to bottom
@@ -533,8 +582,8 @@ class BrowserTransport(Transport):
         await self._ensure_browser()
         target_page = page or self.page
         if not target_page:
-             raise ValueError("No page available for scrolling")
-        
+            raise ValueError("No page available for scrolling")
+
         js_script = """
         async (args) => {
             const { timeout, buttonSelector } = args;
@@ -600,7 +649,7 @@ class BrowserTransport(Transport):
             }
         }
         """
-        
+
         try:
             await target_page.evaluate(js_script, {"timeout": timeout, "buttonSelector": button_selector})
             logger.info("Smart scroll completed.")

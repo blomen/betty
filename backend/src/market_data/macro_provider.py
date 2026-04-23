@@ -52,7 +52,7 @@ def _fetch_macro_sync() -> MacroSnapshot:
             """Extract scalar from yfinance DataFrame (handles MultiIndex columns)."""
             val = df[col].iloc[idx]
             # yf.download with single ticker may return MultiIndex columns
-            if hasattr(val, 'item'):
+            if hasattr(val, "item"):
                 return val.item()
             return float(val)
 

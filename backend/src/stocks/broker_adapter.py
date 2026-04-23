@@ -338,7 +338,7 @@ class TopstepXBrokerAdapter:
                     side=side,
                     size=self._pending_trade["size"],
                     entry_price=entry_px,
-                    stop_price=stop_dist,
+                    stop_price=stop_price,
                     tp_price=self._pending_trade.get("tp_price"),
                     exit_price=price,
                     pnl_dollars=round(pnl_dollars, 2),

@@ -62,15 +62,15 @@ def classify_bet(bet, profile_bankroll=None) -> dict:
         try:
             from ..bankroll.stake_calculator import calculate_stake
 
-            edge_decimal = (bet.odds / bet.fair_odds_at_placement - 1)
+            edge_decimal = bet.odds / bet.fair_odds_at_placement - 1
             if edge_decimal > 0:
                 result = calculate_stake(
                     bankroll_total=profile_bankroll,
                     edge_raw=edge_decimal,
                     odds=bet.odds,
-                    min_edge=0.0,       # Don't filter — we want optimal stake
-                    min_odds=0.0,       # No restriction
-                    min_stake=0.0,      # No minimum
+                    min_edge=0.0,  # Don't filter — we want optimal stake
+                    min_odds=0.0,  # No restriction
+                    min_stake=0.0,  # No minimum
                     min_expected_profit=0.0,
                 )
                 if result.stake > 0:
@@ -83,10 +83,7 @@ def classify_bet(bet, profile_bankroll=None) -> dict:
     # Variance score
     variance_score = None
     if expected_win_pct is not None:
-        if bet.result == "won":
-            variance_score = 1.0 - expected_win_pct
-        else:
-            variance_score = expected_win_pct
+        variance_score = 1.0 - expected_win_pct if bet.result == "won" else expected_win_pct
 
     # Classification
     clv_available = clv_pct is not None
@@ -108,10 +105,7 @@ def classify_bet(bet, profile_bankroll=None) -> dict:
         else:
             classification = "expected_loss"
     else:  # won
-        if clv_positive:
-            classification = "expected_win"
-        else:
-            classification = "bonus_win"
+        classification = "expected_win" if clv_positive else "bonus_win"
 
     return {
         "classification": classification,
@@ -144,10 +138,9 @@ def classify_trade(trade, all_trades_for_setup, streak_position, routine=None, t
 
     # Setup stats from peers (excluding current trade)
     closed_peers = [
-        t for t in (all_trades_for_setup or [])
-        if t.id != trade.id
-        and t.state in ("closed", "reviewed")
-        and t.r_multiple is not None
+        t
+        for t in (all_trades_for_setup or [])
+        if t.id != trade.id and t.state in ("closed", "reviewed") and t.r_multiple is not None
     ]
 
     setup_avg_r = None
@@ -199,10 +192,7 @@ def classify_trade(trade, all_trades_for_setup, streak_position, routine=None, t
         else:
             classification = "expected_loss"
     else:
-        if r_multiple >= 2.0:
-            classification = "runner"
-        else:
-            classification = "expected_win"
+        classification = "runner" if r_multiple >= 2.0 else "expected_win"
 
     return {
         "classification": classification,

@@ -576,6 +576,7 @@ class LiveInferenceV5:
         # confidence and prepare a size scalar for the SizeModel output below.
         from .narrative_bias import (
             apply_bias_to_confidence,
+            apply_risk_modulation_to_size,
             compute_narrative_bias,
         )
 

@@ -78,7 +78,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
 
     if provider is None:
         if provider_id in _PLATFORM_MAP:
-            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(provider_id, "")
+            domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(
+                provider_id, ""
+            )
             instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
@@ -98,7 +100,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     domain = provider.domain or ""
     # Fallback domains for providers without explicit domain in config
     if not domain:
-        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(provider_id, "")
+        domain = {"polymarket": "polymarket.com", "pinnacle": "pinnacle.se", "kalshi": "kalshi.com"}.get(
+            provider_id, ""
+        )
     instance = cls(provider_id=provider_id, domain=domain)
     _WORKFLOW_CACHE[provider_id] = instance
     return instance

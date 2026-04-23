@@ -1,9 +1,9 @@
 """Level touch outcome classifier and async outcome tracker."""
 
-import json
-import time
-import logging
 import asyncio
+import json
+import logging
+import time
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -13,8 +13,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TICK_SIZE = 0.25
-STRONG_THRESHOLD = 20   # ticks
-WEAK_THRESHOLD = 8      # ticks
+STRONG_THRESHOLD = 20  # ticks
+WEAK_THRESHOLD = 8  # ticks
 OBSERVATION_WINDOW_SEC = 30 * 60  # 30 minutes
 
 OUTCOMES = ["strong_reversal", "weak_reversal", "chop", "weak_continuation", "strong_continuation"]
@@ -27,6 +27,7 @@ _RTH_END_SEC = 15 * 3600 + 30 * 60
 # ---------------------------------------------------------------------------
 # Task 4: Pure outcome classifier
 # ---------------------------------------------------------------------------
+
 
 def classify_outcome(
     level_price: float,
@@ -98,6 +99,7 @@ def classify_outcome(
 # Task 5: Async outcome tracker
 # ---------------------------------------------------------------------------
 
+
 class OutcomeTracker:
     """Tracks level touches and schedules delayed outcome measurement.
 
@@ -151,14 +153,14 @@ class OutcomeTracker:
                 # We import zoneinfo lazily to avoid hard dependency in tests.
                 try:
                     from zoneinfo import ZoneInfo
+
                     et_dt = touch_dt.astimezone(ZoneInfo("America/New_York"))
-                    seconds_since_midnight = (
-                        et_dt.hour * 3600 + et_dt.minute * 60 + et_dt.second
-                    )
+                    seconds_since_midnight = et_dt.hour * 3600 + et_dt.minute * 60 + et_dt.second
                     if seconds_since_midnight > _RTH_END_SEC:
                         log.debug(
                             "Skipping touch for %s %s: after RTH end (15:30 ET)",
-                            symbol, level_name,
+                            symbol,
+                            level_name,
                         )
                         return
                 except Exception:
@@ -168,13 +170,14 @@ class OutcomeTracker:
 
         # Dedup: same level within OBSERVATION_WINDOW_SEC
         key = level_name
-        if key in self._pending:
-            if touch_ts - self._pending[key]["touch_ts"] < OBSERVATION_WINDOW_SEC:
-                log.debug(
-                    "Deduping touch for %s %s (%.0f s since last)",
-                    symbol, level_name, touch_ts - self._pending[key]["touch_ts"],
-                )
-                return
+        if key in self._pending and touch_ts - self._pending[key]["touch_ts"] < OBSERVATION_WINDOW_SEC:
+            log.debug(
+                "Deduping touch for %s %s (%.0f s since last)",
+                symbol,
+                level_name,
+                touch_ts - self._pending[key]["touch_ts"],
+            )
+            return
 
         touch_data = {
             "symbol": symbol,
@@ -193,7 +196,10 @@ class OutcomeTracker:
 
         log.info(
             "Registered touch: %s %s @ %.2f (%s)",
-            symbol, level_name, level_price, approach_direction,
+            symbol,
+            level_name,
+            level_price,
+            approach_direction,
         )
 
         # Write initial DB row (no outcome yet) if session factory available
@@ -204,9 +210,7 @@ class OutcomeTracker:
         if self._loop is not None:
             self._loop.call_later(
                 OBSERVATION_WINDOW_SEC,
-                lambda td=touch_data: asyncio.run_coroutine_threadsafe(
-                    self._measure_outcome(td), self._loop
-                ),
+                lambda td=touch_data: asyncio.run_coroutine_threadsafe(self._measure_outcome(td), self._loop),
             )
 
     # ------------------------------------------------------------------
@@ -215,7 +219,7 @@ class OutcomeTracker:
 
     def _write_touch_to_db(self, touch_data: dict) -> None:
         """Write LevelTouchOutcome (without outcome yet) and LevelTouchFeature rows."""
-        from ..db.models import LevelTouchOutcome, LevelTouchFeature
+        from ..db.models import LevelTouchFeature, LevelTouchOutcome
 
         try:
             with self._db_session_factory() as session:
@@ -251,12 +255,15 @@ class OutcomeTracker:
                 touch_data["db_id"] = outcome_row.id
                 log.debug(
                     "Wrote LevelTouchOutcome id=%d for %s %s",
-                    outcome_row.id, touch_data["symbol"], touch_data["level_name"],
+                    outcome_row.id,
+                    touch_data["symbol"],
+                    touch_data["level_name"],
                 )
         except Exception:
             log.exception(
                 "Failed to write touch to DB for %s %s",
-                touch_data["symbol"], touch_data["level_name"],
+                touch_data["symbol"],
+                touch_data["level_name"],
             )
 
     async def _measure_outcome(self, touch_data: dict) -> None:
@@ -271,7 +278,9 @@ class OutcomeTracker:
 
         log.info(
             "Measuring outcome for %s %s (touch_ts=%.0f)",
-            symbol, level_name, touch_ts,
+            symbol,
+            level_name,
+            touch_ts,
         )
 
         # Remove from pending regardless of success
@@ -284,9 +293,7 @@ class OutcomeTracker:
             from ..repositories.market_repo import MarketRepo
 
             start_dt = datetime.fromtimestamp(touch_ts, tz=timezone.utc)
-            end_dt = datetime.fromtimestamp(
-                touch_ts + OBSERVATION_WINDOW_SEC, tz=timezone.utc
-            )
+            end_dt = datetime.fromtimestamp(touch_ts + OBSERVATION_WINDOW_SEC, tz=timezone.utc)
 
             with self._db_session_factory() as session:
                 repo = MarketRepo(session)
@@ -305,7 +312,8 @@ class OutcomeTracker:
             if touch_data.get("db_id") is None:
                 log.warning(
                     "No db_id for %s %s — cannot update outcome row",
-                    symbol, level_name,
+                    symbol,
+                    level_name,
                 )
                 return
 
@@ -328,12 +336,12 @@ class OutcomeTracker:
 
                 log.info(
                     "Outcome updated: %s %s → %s (cont=%.1f rev=%.1f)",
-                    symbol, level_name, result["outcome"],
+                    symbol,
+                    level_name,
+                    result["outcome"],
                     result["max_continuation_ticks"],
                     result["max_reversal_ticks"],
                 )
 
         except Exception:
-            log.exception(
-                "Failed to measure outcome for %s %s", symbol, level_name
-            )
+            log.exception("Failed to measure outcome for %s %s", symbol, level_name)

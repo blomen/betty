@@ -8,9 +8,10 @@ Extraction flow:
   1. GET /sports/{sport_key} → list of competition keys
   2. For each competition: GET /competitions/{comp_key}?markets=... → events with odds
 """
-from typing import List, Optional, Any
+
 import logging
 import re
+from typing import Any
 
 from ..core.retriever import Retriever, StandardEvent
 from ..core.transport import HttpTransport
@@ -71,7 +72,7 @@ _HANDICAP_RE = re.compile(r"handicap=(-?\d+(?:\.\d+)?)")
 _TOTAL_RE = re.compile(r"total=(-?\d+(?:\.\d+)?)")
 
 
-def _resolve_market_type(market_key: str) -> Optional[str]:
+def _resolve_market_type(market_key: str) -> str | None:
     """Resolve a Cloudbet market key like 'soccer.asian_handicap' to a normalized type."""
     suffix = market_key.split(".")[-1]
     return _MARKET_TYPE_MAP.get(suffix)
@@ -80,7 +81,7 @@ def _resolve_market_type(market_key: str) -> Optional[str]:
 def parse_selections_to_market(
     selections: list,
     market_key: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Parse Cloudbet selections into a normalized market dict.
 
     Returns None if:
@@ -107,7 +108,7 @@ def parse_selections_to_market(
         return _parse_winner(selections, market_type)
 
 
-def _parse_winner(selections: list, market_type: str) -> Optional[dict]:
+def _parse_winner(selections: list, market_type: str) -> dict | None:
     """Parse match winner / 1x2 / moneyline selections."""
     outcomes = []
     for sel in selections:
@@ -122,7 +123,7 @@ def _parse_winner(selections: list, market_type: str) -> Optional[dict]:
     return {"type": market_type, "outcomes": outcomes}
 
 
-def _parse_handicap(selections: list) -> Optional[dict]:
+def _parse_handicap(selections: list) -> dict | None:
     """Parse Asian handicap selections, taking the main line (smallest absolute handicap)."""
     # Group by handicap value
     lines: dict[float, dict] = {}
@@ -157,7 +158,7 @@ def _parse_handicap(selections: list) -> Optional[dict]:
     return {"type": "spread", "outcomes": outcomes}
 
 
-def _parse_totals(selections: list) -> Optional[dict]:
+def _parse_totals(selections: list) -> dict | None:
     """Parse totals selections, taking the main line (smallest total value)."""
     # Group by total value
     lines: dict[float, dict] = {}
@@ -194,7 +195,7 @@ def parse_event(
     event: dict,
     sport: str,
     provider_id: str,
-) -> Optional[StandardEvent]:
+) -> StandardEvent | None:
     """Parse a single Cloudbet event dict into a StandardEvent.
 
     Returns None for live/resulted/cancelled/suspended events, events
@@ -255,6 +256,7 @@ class CloudbetRetriever(Retriever):
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
             import os
+
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
@@ -267,14 +269,14 @@ class CloudbetRetriever(Retriever):
         """Not used — extraction uses a two-step fetch inside extract()."""
         return ""
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used — parsing is done inside extract()."""
         return []
 
     def _headers(self) -> dict:
         return {"X-API-Key": self._api_key}
 
-    async def extract(self, sport: str, limit: int = 0, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 0, **kwargs) -> list[StandardEvent]:
         """Extract pre-match events for a sport from Cloudbet REST API.
 
         Two-step process:
@@ -305,7 +307,7 @@ class CloudbetRetriever(Retriever):
         logger.info(f"[{self.provider_id}] {sport}: {len(competitions)} active competitions")
 
         market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
-        events: List[StandardEvent] = []
+        events: list[StandardEvent] = []
 
         # Step 2: fetch each competition
         for comp in competitions:

@@ -7,10 +7,12 @@ Components:
 
 This model enhances the existing rule-based classify_regime() in macro_provider.py.
 """
+
 import json
 import logging
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +20,29 @@ MIN_SAMPLES = 50
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
 
 NEWS_IMPACT_FEATURES = [
-    "event_type_encoded", "importance", "surprise",
-    "vix_at_event", "delta_1m_after", "volume_1m_after",
+    "event_type_encoded",
+    "importance",
+    "surprise",
+    "vix_at_event",
+    "delta_1m_after",
+    "volume_1m_after",
 ]
 
 MACRO_REGIME_FEATURES = [
-    "vix_level", "vix_change_1d", "vix_term_structure_encoded",
-    "dxy_level", "dxy_change_1d", "us10y_level", "us10y_change_1d",
-    "yield_curve_spread", "gex", "net_options_delta", "put_call_ratio",
-    "es_nq_ratio_change", "cot_net_position", "cot_change_1w",
+    "vix_level",
+    "vix_change_1d",
+    "vix_term_structure_encoded",
+    "dxy_level",
+    "dxy_change_1d",
+    "us10y_level",
+    "us10y_change_1d",
+    "yield_curve_spread",
+    "gex",
+    "net_options_delta",
+    "put_call_ratio",
+    "es_nq_ratio_change",
+    "cot_net_position",
+    "cot_change_1w",
 ]
 
 
@@ -54,18 +70,23 @@ class MacroEngineModel:
             return None
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES, feature_names=NEWS_IMPACT_FEATURES)
         if result is None:
             return None
 
         import joblib
+
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         path = MODELS_DIR / "macro_engine_latest.joblib"
-        joblib.dump({
-            "model": result["model"],
-            "feature_names": NEWS_IMPACT_FEATURES,
-            "task": "regression",
-        }, path)
+        joblib.dump(
+            {
+                "model": result["model"],
+                "feature_names": NEWS_IMPACT_FEATURES,
+                "task": "regression",
+            },
+            path,
+        )
 
         return {
             "file_path": str(path),
@@ -88,8 +109,9 @@ async def store_daily_options_flow(session, macro_snapshot) -> None:
 
     Called once per day after macro fetch.
     """
-    from src.db.models import OptionsFlow
     from datetime import date
+
+    from src.db.models import OptionsFlow
 
     today = date.today().isoformat()
     existing = session.query(OptionsFlow).filter_by(date=today, symbol="NQ").first()

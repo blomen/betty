@@ -4,6 +4,7 @@ Logs per-run context (timing, health, volume) and per-provider attribution
 (events, odds, value bet yield). Connects extraction decisions to downstream
 value outcomes.
 """
+
 import logging
 from datetime import datetime, timezone
 
@@ -88,6 +89,7 @@ def extract_provider_value(
 
 def log_extraction_run(session, features: dict) -> None:
     from src.db.models import ExtractionFeature
+
     row = ExtractionFeature(**features)
     session.add(row)
     session.flush()
@@ -96,6 +98,7 @@ def log_extraction_run(session, features: dict) -> None:
 
 def log_provider_value(session, features: dict) -> None:
     from src.db.models import ProviderValueLog
+
     row = ProviderValueLog(**features)
     session.add(row)
     session.flush()
@@ -110,6 +113,7 @@ def update_extraction_outcomes(
     reverse_opportunities_found: int = 0,
 ) -> None:
     from src.db.models import ExtractionFeature
+
     row = session.query(ExtractionFeature).filter_by(run_id=run_id).first()
     if row:
         row.value_bets_found = value_bets_found

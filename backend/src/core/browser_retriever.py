@@ -6,7 +6,7 @@ Provides common initialization and session management.
 """
 
 import logging
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from .retriever import Retriever
 from .transport import BrowserTransport
@@ -24,7 +24,7 @@ class BrowserRetriever(Retriever):
     - Common browser utilities
     """
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+    def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         """
         Initialize browser retriever.
 
@@ -37,7 +37,7 @@ class BrowserRetriever(Retriever):
         super().__init__(config, transport)
 
         # Track initialization state
-        self._initialized_pages: Set[str] = set()
+        self._initialized_pages: set[str] = set()
         self._session_ready = False
 
     async def _ensure_init(self, url: str = None, page_key: str = None) -> None:

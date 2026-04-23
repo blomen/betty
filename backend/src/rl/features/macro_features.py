@@ -1,4 +1,5 @@
 """Macro regime feature extraction."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -45,18 +46,21 @@ def extract_macro_features(macro: dict | None) -> np.ndarray:
     news_prox = float(macro.get("news_proximity", 0.0))
     news_imp = float(macro.get("news_importance", 0.0))
 
-    feats = np.array([
-        np.clip(vix / 50.0, 0.0, 1.0),
-        np.clip(vix_change / 10.0, -1.0, 1.0),
-        np.clip(regime_score, 0.0, 1.0),
-        np.clip(dxy_change, -3.0, 3.0),
-        np.clip(us10y_change / 10.0, -1.0, 1.0),
-        np.clip(us2y_change / 10.0, -1.0, 1.0),
-        np.clip(yield_curve / 2.0, -1.0, 1.0),
-        np.clip(cot_net / 200_000.0, -1.0, 1.0),
-        np.clip(cot_change / 50_000.0, -1.0, 1.0),
-        np.clip(news_prox, 0.0, 1.0),
-        np.clip(news_imp / 3.0, 0.0, 1.0),
-    ], dtype=np.float32)
+    feats = np.array(
+        [
+            np.clip(vix / 50.0, 0.0, 1.0),
+            np.clip(vix_change / 10.0, -1.0, 1.0),
+            np.clip(regime_score, 0.0, 1.0),
+            np.clip(dxy_change, -3.0, 3.0),
+            np.clip(us10y_change / 10.0, -1.0, 1.0),
+            np.clip(us2y_change / 10.0, -1.0, 1.0),
+            np.clip(yield_curve / 2.0, -1.0, 1.0),
+            np.clip(cot_net / 200_000.0, -1.0, 1.0),
+            np.clip(cot_change / 50_000.0, -1.0, 1.0),
+            np.clip(news_prox, 0.0, 1.0),
+            np.clip(news_imp / 3.0, 0.0, 1.0),
+        ],
+        dtype=np.float32,
+    )
 
     return feats

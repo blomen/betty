@@ -2,29 +2,27 @@
 
 from datetime import datetime, timezone
 from functools import lru_cache
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-import yaml
 
-from ...db.models import Provider, Profile, ProfileProviderBonus
+import yaml
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from ...db.models import Profile, ProfileProviderBonus, Provider
 from ...repositories import ProfileRepo
 from ..deps import get_db
-from ..schemas import ProviderCreate, ProviderUpdate, LimitRiskUpdate
+from ..schemas import LimitRiskUpdate, ProviderCreate, ProviderUpdate
 
 
 @lru_cache(maxsize=1)
 def load_provider_bonuses() -> dict[str, dict]:
     """Load bonus info from providers.yaml config (cached — config doesn't change at runtime)."""
     from ...paths import get_config_path
+
     config_path = get_config_path("providers.yaml")
     try:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        return {
-            pid: p['bonus']
-            for pid, p in config.get('providers', {}).items()
-            if 'bonus' in p
-        }
+        return {pid: p["bonus"] for pid, p in config.get("providers", {}).items() if "bonus" in p}
     except Exception:
         return {}
 
@@ -36,15 +34,16 @@ def load_provider_site_urls() -> dict[str, str]:
     Falls back to https://www.{domain} for providers with a domain but no site_url.
     """
     from ...paths import get_config_path
+
     config_path = get_config_path("providers.yaml")
     urls: dict[str, str] = {}
     try:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        for pid, p in config.get('providers', {}).items():
-            if 'site_url' in p:
-                urls[pid] = p['site_url']
-            elif 'domain' in p:
+        for pid, p in config.get("providers", {}).items():
+            if "site_url" in p:
+                urls[pid] = p["site_url"]
+            elif "domain" in p:
                 urls[pid] = f"https://www.{p['domain']}"
     except Exception:
         pass
@@ -53,14 +52,15 @@ def load_provider_site_urls() -> dict[str, str]:
 
 def get_profile_bonus_status(db: Session, provider_id: str) -> str | None:
     """Get bonus status for provider from active profile."""
-    active_profile = db.query(Profile).filter(Profile.is_active == True).first()
+    active_profile = db.query(Profile).filter(Profile.is_active).first()
     if not active_profile:
         return None
 
-    bonus_record = db.query(ProfileProviderBonus).filter(
-        ProfileProviderBonus.profile_id == active_profile.id,
-        ProfileProviderBonus.provider_id == provider_id
-    ).first()
+    bonus_record = (
+        db.query(ProfileProviderBonus)
+        .filter(ProfileProviderBonus.profile_id == active_profile.id, ProfileProviderBonus.provider_id == provider_id)
+        .first()
+    )
 
     # If no record exists, bonus is available (not yet used by this profile)
     return bonus_record.bonus_status if bonus_record else None
@@ -81,18 +81,20 @@ def list_providers(db: Session = Depends(get_db)):
     provider_list = []
     for p in providers:
         balance = profile_repo.get_balance(profile.id, p.id) if p.is_enabled else 0.0
-        provider_list.append({
-            "id": p.id,
-            "name": p.name,
-            "url": p.url,
-            "site_url": site_urls.get(p.id),
-            "is_enabled": p.is_enabled,
-            "balance": balance,
-            "bonus": bonus_info.get(p.id),
-            "bonus_status": get_profile_bonus_status(db, p.id),
-            "limit_risk": p.limit_risk or "low",
-            "limit_notes": p.limit_notes,
-        })
+        provider_list.append(
+            {
+                "id": p.id,
+                "name": p.name,
+                "url": p.url,
+                "site_url": site_urls.get(p.id),
+                "is_enabled": p.is_enabled,
+                "balance": balance,
+                "bonus": bonus_info.get(p.id),
+                "bonus_status": get_profile_bonus_status(db, p.id),
+                "limit_risk": p.limit_risk or "low",
+                "limit_notes": p.limit_notes,
+            }
+        )
 
     total_balance = profile_repo.get_total_bankroll(profile.id)
 
@@ -123,11 +125,7 @@ def create_provider(provider: ProviderCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{provider_id}")
-def update_provider(
-    provider_id: str,
-    data: ProviderUpdate,
-    db: Session = Depends(get_db)
-):
+def update_provider(provider_id: str, data: ProviderUpdate, db: Session = Depends(get_db)):
     """Update provider (balance, enabled, etc.)."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
@@ -156,11 +154,7 @@ def update_provider(
 
 
 @router.patch("/{provider_id}/bonus-status")
-def update_bonus_status(
-    provider_id: str,
-    status: str,
-    db: Session = Depends(get_db)
-):
+def update_bonus_status(provider_id: str, status: str, db: Session = Depends(get_db)):
     """
     Update bonus extraction status for a provider (per active profile).
 
@@ -175,19 +169,22 @@ def update_bonus_status(
     if not provider:
         raise HTTPException(404, f"Provider {provider_id} not found")
 
-    if status not in ('available', 'in_progress', 'completed', 'claimed'):
-        raise HTTPException(400, f"Invalid status: {status}. Must be 'available', 'in_progress', 'completed', or 'claimed'")
+    if status not in ("available", "in_progress", "completed", "claimed"):
+        raise HTTPException(
+            400, f"Invalid status: {status}. Must be 'available', 'in_progress', 'completed', or 'claimed'"
+        )
 
     # Get active profile
-    active_profile = db.query(Profile).filter(Profile.is_active == True).first()
+    active_profile = db.query(Profile).filter(Profile.is_active).first()
     if not active_profile:
         raise HTTPException(400, "No active profile. Create and activate a profile first.")
 
     # Find or create profile-provider bonus record
-    bonus_record = db.query(ProfileProviderBonus).filter(
-        ProfileProviderBonus.profile_id == active_profile.id,
-        ProfileProviderBonus.provider_id == provider_id
-    ).first()
+    bonus_record = (
+        db.query(ProfileProviderBonus)
+        .filter(ProfileProviderBonus.profile_id == active_profile.id, ProfileProviderBonus.provider_id == provider_id)
+        .first()
+    )
 
     old_status = bonus_record.bonus_status if bonus_record else None
 
@@ -195,11 +192,7 @@ def update_bonus_status(
         bonus_record.bonus_status = status
         bonus_record.updated_at = datetime.now(timezone.utc)
     else:
-        bonus_record = ProfileProviderBonus(
-            profile_id=active_profile.id,
-            provider_id=provider_id,
-            bonus_status=status
-        )
+        bonus_record = ProfileProviderBonus(profile_id=active_profile.id, provider_id=provider_id, bonus_status=status)
         db.add(bonus_record)
 
     db.commit()

@@ -1,4 +1,5 @@
 """Rithmic connection configuration from environment variables."""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 @dataclass
 class RithmicConfig:
     """Rithmic connection settings for Apex/prop firm accounts."""
+
     user: str = ""
     password: str = ""
     system_name: str = "Rithmic Paper Trading"

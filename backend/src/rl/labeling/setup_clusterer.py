@@ -75,7 +75,7 @@ def _classify_cluster(
     avg_pvv = np.abs(price_vs_value).mean()
     rev_better = (rewards_rev > rewards_cont).mean()
 
-    avg_balance = balance_widths.mean()
+    balance_widths.mean()
     cont_better = (rewards_cont > rewards_rev).mean()
 
     # Thresholds tuned 2026-04-18: lowered balance_break avg_balance from 0.4

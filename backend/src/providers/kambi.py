@@ -203,7 +203,7 @@ class KambiRetriever(Retriever):
             "oldest_age_seconds": 0,
         }
 
-        for url, entry in cls._SHARED_GROUP_CACHE.items():
+        for _url, entry in cls._SHARED_GROUP_CACHE.items():
             age = now - entry.created_at
             if entry.is_expired():
                 stats["expired_entries"] += 1
@@ -275,12 +275,12 @@ class KambiRetriever(Retriever):
         pagination = data.get("pagination", {})
         total = pagination.get("total") or data.get("total") or data.get("totalCount")
         limit = pagination.get("limit") or data.get("limit")
-        offset = pagination.get("offset") or data.get("offset", 0)
+        pagination.get("offset") or data.get("offset", 0)
 
         events = data.get("events", [])
         betoffers = data.get("betOffers", [])
         event_count = len(events)
-        betoffer_count = len(betoffers)
+        len(betoffers)
 
         # Check if total indicates more data exists
         if total and event_count < total:
@@ -424,9 +424,8 @@ class KambiRetriever(Retriever):
             # Kambi tags main lines with 'MAIN_LINE'; without this filter,
             # basketball events can have 30+ alternate spread/total lines each
             tags = betoffer.get("tags", [])
-            if bet_offer_type_id in (1, 6, 7):
-                if "MAIN_LINE" not in tags:
-                    return None
+            if bet_offer_type_id in (1, 6, 7) and "MAIN_LINE" not in tags:
+                return None
 
             # Filter by criterion label
             criterion = betoffer.get("criterion", {})
@@ -635,7 +634,4 @@ class KambiRetriever(Retriever):
         if name in target_leagues:
             return True
         # Substring match: "Premier League" matches "england - premier league"
-        for league in target_leagues:
-            if name in league or league in name:
-                return True
-        return False
+        return any(name in league or league in name for league in target_leagues)

@@ -13,6 +13,7 @@ Architecture:
     Advantage: 64 → 32 → NUM_ACTIONS
     Q = V + (A - mean(A))
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -97,7 +98,7 @@ class DQNetwork(nn.Module):
 
         # Step through encoder layers manually
         h = x
-        layer1 = self.encoder[2](self.encoder[1](self.encoder[0](h)))   # 256
+        layer1 = self.encoder[2](self.encoder[1](self.encoder[0](h)))  # 256
         layer2 = self.encoder[5](self.encoder[4](self.encoder[3](layer1)))  # 256
         layer3 = self.encoder[8](self.encoder[7](self.encoder[6](layer2)))  # 128
         features = self.encoder[10](self.encoder[9](layer3))  # 64
@@ -119,7 +120,9 @@ class DQNetwork(nn.Module):
 
     @torch.no_grad()
     def extract_top_connections(
-        self, activations: dict[str, Tensor], top_n: int = 100,
+        self,
+        activations: dict[str, Tensor],
+        top_n: int = 100,
     ) -> dict[str, list[dict]]:
         """Extract strongest connections per layer for visualization."""
         transitions = [
@@ -137,15 +140,17 @@ class DQNetwork(nn.Module):
             k = min(top_n, flat.numel())
             top_vals, top_idxs = flat.topk(k)
             conns = []
-            for val, idx in zip(top_vals.tolist(), top_idxs.tolist()):
+            for val, idx in zip(top_vals.tolist(), top_idxs.tolist(), strict=False):
                 j = idx // w.shape[1]
                 i = idx % w.shape[1]
-                conns.append({
-                    "from_idx": i,
-                    "to_idx": j,
-                    "strength": round(val, 4),
-                    "sign": 1 if w[j, i].item() >= 0 else -1,
-                })
+                conns.append(
+                    {
+                        "from_idx": i,
+                        "to_idx": j,
+                        "strength": round(val, 4),
+                        "sign": 1 if w[j, i].item() >= 0 else -1,
+                    }
+                )
             result[name] = conns
 
         # Dueling heads: advantage stream connections (features → Q-value discrimination)
@@ -160,15 +165,17 @@ class DQNetwork(nn.Module):
         k = min(top_n, flat.numel())
         top_vals, top_idxs = flat.topk(k)
         conns = []
-        for val, idx in zip(top_vals.tolist(), top_idxs.tolist()):
+        for val, idx in zip(top_vals.tolist(), top_idxs.tolist(), strict=False):
             j = idx // w_eff.shape[1]  # output action idx (0-2)
-            i = idx % w_eff.shape[1]   # feature idx (0-63)
-            conns.append({
-                "from_idx": i,
-                "to_idx": j,
-                "strength": round(val, 4),
-                "sign": 1 if w_eff[j, i].item() >= 0 else -1,
-            })
+            i = idx % w_eff.shape[1]  # feature idx (0-63)
+            conns.append(
+                {
+                    "from_idx": i,
+                    "to_idx": j,
+                    "strength": round(val, 4),
+                    "sign": 1 if w_eff[j, i].item() >= 0 else -1,
+                }
+            )
         result["l4_output"] = conns
 
         return result

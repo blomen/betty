@@ -6,24 +6,46 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _BALANCE_PATTERNS = (
-    "/account/balance", "/mainbalance", "/wallets", "/wallet/balance",
-    "/api/sb/v2/balance", "/cashier/balance",
+    "/account/balance",
+    "/mainbalance",
+    "/wallets",
+    "/wallet/balance",
+    "/api/sb/v2/balance",
+    "/cashier/balance",
 )
 _HISTORY_PATTERNS = (
-    "/widgetBetHistory", "/bethistory", "/betHistory", "/bets?status=",
-    "/bet-history", "/myBets", "/portfolio?tab=history",
+    "/widgetBetHistory",
+    "/bethistory",
+    "/betHistory",
+    "/bets?status=",
+    "/bet-history",
+    "/myBets",
+    "/portfolio?tab=history",
 )
 _BET_PLACEMENT_PATTERNS = (
-    "/placeWidget", "/placeBet", "/coupons", "/bets/straight",
-    "/bets/parlay", "/bets/place", "clob.polymarket.com/order",
+    "/placeWidget",
+    "/placeBet",
+    "/coupons",
+    "/bets/straight",
+    "/bets/parlay",
+    "/bets/place",
+    "clob.polymarket.com/order",
 )
 _ODDS_PATTERNS = (
-    "/GetEventDetails", "/events-table", "/event/", "/odds/",
-    "/offering/v2018/", "/market/",
+    "/GetEventDetails",
+    "/events-table",
+    "/event/",
+    "/odds/",
+    "/offering/v2018/",
+    "/market/",
 )
 _NOTIFICATION_PATTERNS = (
-    "/notification", "/preferences", "/communication", "/consent",
-    "/marketing", "/subscription",
+    "/notification",
+    "/preferences",
+    "/communication",
+    "/consent",
+    "/marketing",
+    "/subscription",
 )
 
 
@@ -128,6 +150,7 @@ class EventRouter:
         if self._session_factory is not None:
             try:
                 from ..db.models import BalanceLog
+
                 with self._session_factory() as session:
                     log = BalanceLog(
                         provider_id=provider_id,
@@ -155,7 +178,7 @@ class EventRouter:
 
     async def _broadcast(self, channel: str, event_type: str, data: dict) -> None:
         """Route to the correct SSE channel."""
-        from .channels import sync_channel, price_channel, action_channel
+        from .channels import action_channel, price_channel, sync_channel
 
         broadcaster = {
             "sync": sync_channel,

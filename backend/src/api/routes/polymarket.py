@@ -1,23 +1,24 @@
 """Polymarket API routes: matched events, value bets, stats, mybets, rewards."""
 
+import contextlib
 import json
 import logging
 import re
 import time
-from typing import Optional
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func
 
-from ...db.models import Event, Odds, Bet
-from ...repositories import ProfileRepo, BetRepo
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from ...analysis.devig import devig_multiplicative
 from ...analysis.value import polymarket_effective_odds
-from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
-from ...matching.normalizer import normalize_team_name, generate_canonical_id
-from ...matching.matcher import get_team_match_score
-from ...constants import SHARP_PROVIDERS
+from ...bankroll.stake_calculator import BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP, StakeCalculator
 from ...config import get_exchange_rate
+from ...constants import SHARP_PROVIDERS
+from ...db.models import Bet, Event, Odds
+from ...matching.matcher import get_team_match_score
+from ...matching.normalizer import generate_canonical_id, normalize_team_name
+from ...repositories import ProfileRepo
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -27,22 +28,21 @@ router = APIRouter(prefix="/api/polymarket", tags=["polymarket"])
 
 @router.get("/value")
 def get_polymarket_value(
-    min_edge: Optional[float] = Query(None, description="Minimum edge percentage (defaults to profile min_edge_pct)"),
-    sport: Optional[str] = None,
+    min_edge: float | None = Query(None, description="Minimum edge percentage (defaults to profile min_edge_pct)"),
+    sport: str | None = None,
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """Get Polymarket value bets from pre-computed opportunities table."""
     from ...repositories import OpportunityRepo
+
     opp_repo = OpportunityRepo(db)
 
     # Use profile min_edge if not specified
     profile_repo = ProfileRepo(db)
     profile = None
-    try:
+    with contextlib.suppress(Exception):
         profile = profile_repo.get_active()
-    except Exception:
-        pass
     effective_min_edge = min_edge if min_edge is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
 
     # Read pre-computed opportunities (fast indexed query, no scanning)
@@ -79,11 +79,7 @@ def get_polymarket_value(
     odds_updated_map: dict[tuple, str] = {}
     poly_names_map: dict[str, tuple[str | None, str | None]] = {}
     if event_ids:
-        poly_odds = (
-            db.query(Odds)
-            .filter(Odds.event_id.in_(event_ids), Odds.provider_id == "polymarket")
-            .all()
-        )
+        poly_odds = db.query(Odds).filter(Odds.event_id.in_(event_ids), Odds.provider_id == "polymarket").all()
         for o in poly_odds:
             key = (o.event_id, o.market, o.outcome)
             meta = o.provider_meta if isinstance(o.provider_meta, dict) else {}
@@ -98,6 +94,7 @@ def get_polymarket_value(
 
     # Provider-level extraction recency
     from ...services.opportunity_service import get_provider_last_checked
+
     last_checked_map = get_provider_last_checked(db, ["polymarket"])
     poly_last_checked = last_checked_map.get("polymarket")
 
@@ -147,7 +144,11 @@ def get_polymarket_value(
             try:
                 effective = polymarket_effective_odds(poly_odds_val)
                 edge_raw = (effective / fair_odds_val - 1) if fair_odds_val > 1 else 0
-                min_odds = 0.0 if (not bonus_status or bonus_status.get("is_cleared", True)) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
+                min_odds = (
+                    0.0
+                    if (not bonus_status or bonus_status.get("is_cleared", True))
+                    else bonus_status.get("min_odds", BONUS_MIN_ODDS)
+                )
 
                 stake_rec = stake_calculator.calculate(
                     edge_raw=edge_raw,
@@ -198,18 +199,9 @@ def get_polymarket_stats(
 ):
     """Get Polymarket extraction statistics and data quality metrics."""
     # Total Polymarket odds and events
-    poly_odds_count = (
-        db.query(func.count(Odds.id))
-        .filter(Odds.provider_id == "polymarket")
-        .scalar()
-    ) or 0
+    poly_odds_count = (db.query(func.count(Odds.id)).filter(Odds.provider_id == "polymarket").scalar()) or 0
 
-    poly_event_ids = (
-        db.query(Odds.event_id)
-        .filter(Odds.provider_id == "polymarket")
-        .distinct()
-        .subquery()
-    )
+    poly_event_ids = db.query(Odds.event_id).filter(Odds.provider_id == "polymarket").distinct().subquery()
     poly_event_count = db.query(func.count()).select_from(poly_event_ids).scalar() or 0
 
     # Matched events (have both Polymarket + at least one other provider)
@@ -218,11 +210,7 @@ def get_polymarket_stats(
         matched_subq = (
             db.query(Odds.event_id)
             .filter(
-                Odds.event_id.in_(
-                    db.query(Odds.event_id)
-                    .filter(Odds.provider_id == "polymarket")
-                    .distinct()
-                ),
+                Odds.event_id.in_(db.query(Odds.event_id).filter(Odds.provider_id == "polymarket").distinct()),
                 Odds.provider_id != "polymarket",
             )
             .distinct()
@@ -266,19 +254,14 @@ def get_polymarket_stats(
 
 @router.get("/matched")
 def get_polymarket_matched(
-    sport: Optional[str] = None,
+    sport: str | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
     """Get Polymarket events matched with other providers, including Pinnacle fair odds."""
 
     # Find events that have Polymarket odds
-    polymarket_events_subq = (
-        db.query(Odds.event_id)
-        .filter(Odds.provider_id == "polymarket")
-        .distinct()
-        .subquery()
-    )
+    polymarket_events_subq = db.query(Odds.event_id).filter(Odds.provider_id == "polymarket").distinct().subquery()
 
     # Find events that also have odds from other providers
     matched_events_subq = (
@@ -347,13 +330,15 @@ def get_polymarket_matched(
                 if poly_odd and poly_odd > 0:
                     edge_pct = (provider_odd / poly_odd - 1) * 100
                     if edge_pct > 0:
-                        edges.append({
-                            "outcome": outcome,
-                            "provider": provider_id,
-                            "edge_pct": round(edge_pct, 2),
-                            "provider_odds": provider_odd,
-                            "polymarket_odds": poly_odd,
-                        })
+                        edges.append(
+                            {
+                                "outcome": outcome,
+                                "provider": provider_id,
+                                "edge_pct": round(edge_pct, 2),
+                                "provider_odds": provider_odd,
+                                "polymarket_odds": poly_odd,
+                            }
+                        )
                         if edge_pct > best_edge:
                             best_edge = edge_pct
 
@@ -366,30 +351,34 @@ def get_polymarket_matched(
             if pinnacle_odd and pinnacle_odd > 0 and poly_odd > 0:
                 effective = polymarket_effective_odds(poly_odd)
                 edge_pct = (effective / pinnacle_odd - 1) * 100
-                polymarket_edges.append({
-                    "outcome": outcome,
-                    "polymarket_odds": poly_odd,
-                    "pinnacle_odds": pinnacle_odd,
-                    "edge_pct": round(edge_pct, 2),
-                })
+                polymarket_edges.append(
+                    {
+                        "outcome": outcome,
+                        "polymarket_odds": poly_odd,
+                        "pinnacle_odds": pinnacle_odd,
+                        "edge_pct": round(edge_pct, 2),
+                    }
+                )
 
         polymarket_edges.sort(key=lambda x: x["edge_pct"], reverse=True)
 
-        result.append({
-            "id": event.id,
-            "sport": event.sport,
-            "league": event.league,
-            "home_team": event.home_team,
-            "away_team": event.away_team,
-            "display_home": event.display_home,
-            "display_away": event.display_away,
-            "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
-            "polymarket_odds": polymarket_odds,
-            "other_providers": other_providers,
-            "edges": edges[:10],
-            "best_edge": round(best_edge, 2),
-            "polymarket_edges": polymarket_edges,
-        })
+        result.append(
+            {
+                "id": event.id,
+                "sport": event.sport,
+                "league": event.league,
+                "home_team": event.home_team,
+                "away_team": event.away_team,
+                "display_home": event.display_home,
+                "display_away": event.display_away,
+                "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
+                "polymarket_odds": polymarket_odds,
+                "other_providers": other_providers,
+                "edges": edges[:10],
+                "best_edge": round(best_edge, 2),
+                "polymarket_edges": polymarket_edges,
+            }
+        )
 
     # Sort by best_edge descending
     result.sort(key=lambda x: x["best_edge"], reverse=True)
@@ -422,17 +411,26 @@ def _parse_poly_teams(title: str) -> tuple[str, str]:
 
     # Strip esports/tennis/MMA prefixes
     prefixes = [
-        "Counter-Strike: ", "CS2: ", "League of Legends: ", "LoL: ",
-        "Valorant: ", "Dota 2: ", "Call of Duty: ", "CoD: ",
-        "ATP: ", "WTA: ", "Men's: ", "Women's: ",
+        "Counter-Strike: ",
+        "CS2: ",
+        "League of Legends: ",
+        "LoL: ",
+        "Valorant: ",
+        "Dota 2: ",
+        "Call of Duty: ",
+        "CoD: ",
+        "ATP: ",
+        "WTA: ",
+        "Men's: ",
+        "Women's: ",
     ]
     for pfx in prefixes:
         if clean.startswith(pfx):
-            clean = clean[len(pfx):]
+            clean = clean[len(pfx) :]
             break
 
-    clean = re.sub(r'^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*', '', clean)
-    clean = re.sub(r'\s*\([^)]+\)\s*', '', clean)
+    clean = re.sub(r"^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*", "", clean)
+    clean = re.sub(r"\s*\([^)]+\)\s*", "", clean)
 
     for sep in [" vs. ", " vs ", " @ "]:
         if sep in clean:
@@ -454,8 +452,8 @@ def _get_poly_sport_league(item: dict) -> tuple[str, str]:
     league = series_list[0].get("title", "Unknown") if series_list else "Unknown"
 
     sport = SERIES_TO_SPORT.get(series_slug)
-    if not sport and '-20' in series_slug:
-        base_slug = series_slug.rsplit('-20', 1)[0]
+    if not sport and "-20" in series_slug:
+        base_slug = series_slug.rsplit("-20", 1)[0]
         sport = SERIES_TO_SPORT.get(base_slug)
     return sport or "unknown", league
 
@@ -482,15 +480,18 @@ async def _fetch_gamma_reward_events() -> list[dict]:
 
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
-            resp = await client.get(f"{base_url}/events", params={
-                "active": "true",
-                "closed": "false",
-                "tag_id": 100639,
-                "order": "startTime",
-                "ascending": "true",
-                "limit": page_limit,
-                "offset": offset,
-            })
+            resp = await client.get(
+                f"{base_url}/events",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "tag_id": 100639,
+                    "order": "startTime",
+                    "ascending": "true",
+                    "limit": page_limit,
+                    "offset": offset,
+                },
+            )
             resp.raise_for_status()
             data = resp.json()
             if not data:
@@ -520,18 +521,21 @@ async def _fetch_gamma_reward_events() -> list[dict]:
 def rewards_debug(db: Session = Depends(get_db)):
     """Debug endpoint to test DB queries."""
     pinnacle_event_ids = set(
-        row[0] for row in
-        db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
+        row[0] for row in db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
     )
     excluded = SHARP_PROVIDERS | {"polymarket"}
     soft_count = (
-        db.query(Odds)
-        .filter(
-            Odds.event_id.in_(pinnacle_event_ids),
-            ~Odds.provider_id.in_(excluded),
+        (
+            db.query(Odds)
+            .filter(
+                Odds.event_id.in_(pinnacle_event_ids),
+                ~Odds.provider_id.in_(excluded),
+            )
+            .count()
         )
-        .count()
-    ) if pinnacle_event_ids else 0
+        if pinnacle_event_ids
+        else 0
+    )
     ducks_soft = (
         db.query(Odds)
         .filter(
@@ -544,14 +548,16 @@ def rewards_debug(db: Session = Depends(get_db)):
     return {
         "pinnacle_events": len(pinnacle_event_ids),
         "soft_odds_count": soft_count,
-        "ducks_soft": [{"provider": o.provider_id, "market": o.market, "outcome": o.outcome, "odds": o.odds} for o in ducks_soft],
+        "ducks_soft": [
+            {"provider": o.provider_id, "market": o.market, "outcome": o.outcome, "odds": o.odds} for o in ducks_soft
+        ],
     }
 
 
 @router.get("/rewards")
 async def get_polymarket_rewards(
     min_daily_rate: float = Query(0.0, description="Min total daily reward rate (USDC)"),
-    sport: Optional[str] = None,
+    sport: str | None = None,
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
@@ -564,28 +570,31 @@ async def get_polymarket_rewards(
         events_by_id = {e.id: e for e in db_events}
 
         pinnacle_event_ids = set(
-            row[0] for row in
-            db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
+            row[0] for row in db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
         )
 
         pinnacle_odds_rows = (
-            db.query(Odds)
-            .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
-            .all()
-        ) if pinnacle_event_ids else []
+            (db.query(Odds).filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids)).all())
+            if pinnacle_event_ids
+            else []
+        )
         pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
         for o in pinnacle_odds_rows:
             pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
 
         excluded = SHARP_PROVIDERS | {"polymarket"}
         soft_odds_rows = (
-            db.query(Odds)
-            .filter(
-                Odds.event_id.in_(pinnacle_event_ids),
-                ~Odds.provider_id.in_(excluded),
+            (
+                db.query(Odds)
+                .filter(
+                    Odds.event_id.in_(pinnacle_event_ids),
+                    ~Odds.provider_id.in_(excluded),
+                )
+                .all()
             )
-            .all()
-        ) if pinnacle_event_ids else []
+            if pinnacle_event_ids
+            else []
+        )
         best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
         for o in soft_odds_rows:
             by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
@@ -620,6 +629,7 @@ async def get_polymarket_rewards(
         start_time_raw = ev.get("startTime")
         if isinstance(start_time_raw, (int, float)):
             from datetime import datetime, timezone
+
             ts = start_time_raw / 1000 if start_time_raw > 1e10 else start_time_raw
             start_time_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
         else:
@@ -629,6 +639,7 @@ async def get_polymarket_rewards(
         if start_time_str:
             try:
                 from datetime import datetime, timezone
+
                 st = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
                 if st <= datetime.now(timezone.utc):
                     continue
@@ -640,7 +651,7 @@ async def get_polymarket_rewards(
         away_norm = normalize_team_name(away)
 
         # Try canonical ID match first (exact)
-        matched_event: Optional[Event] = None
+        matched_event: Event | None = None
         if start_time_str:
             canonical_id = generate_canonical_id(ev_sport, home, away, start_time_str)
             if canonical_id in events_by_id:
@@ -727,7 +738,7 @@ async def get_polymarket_rewards(
             odds_list = [pinn_raw[o] for o in outcomes]
             if all(o > 1 for o in odds_list):
                 fair_list = devig_multiplicative(odds_list)
-                for o, f in zip(outcomes, fair_list):
+                for o, f in zip(outcomes, fair_list, strict=False):
                     pinnacle_fair[o] = round(f, 3)
 
         # Get best hedge odds (merge 1x2 + moneyline, pick best per outcome)
@@ -742,27 +753,31 @@ async def get_polymarket_rewards(
 
         event_slug = ev.get("slug", "")
 
-        results.append({
-            "event_id": matched_event.id,
-            "home_team": matched_event.home_team,
-            "away_team": matched_event.away_team,
-            "display_home": matched_event.display_home,
-            "display_away": matched_event.display_away,
-            "poly_home": home,
-            "poly_away": away,
-            "sport": matched_event.sport,
-            "league": matched_event.league or league,
-            "start_time": (matched_event.start_time.isoformat() + "Z") if matched_event.start_time else start_time_str,
-            "rewards_daily_rate": 0.0,  # Not available from Gamma API
-            "rewards_max_spread": round(max_spread, 1),
-            "rewards_min_size": round(min_size, 0),
-            "competitive": round(competitive_val, 4),
-            "poly_prices": {k: round(v, 4) for k, v in poly_prices.items()},
-            "pinnacle_fair_odds": pinnacle_fair,
-            "best_hedge_odds": hedge_odds,
-            "event_slug": event_slug,
-            "polymarket_url": f"https://polymarket.com/event/{event_slug}" if event_slug else None,
-        })
+        results.append(
+            {
+                "event_id": matched_event.id,
+                "home_team": matched_event.home_team,
+                "away_team": matched_event.away_team,
+                "display_home": matched_event.display_home,
+                "display_away": matched_event.display_away,
+                "poly_home": home,
+                "poly_away": away,
+                "sport": matched_event.sport,
+                "league": matched_event.league or league,
+                "start_time": (matched_event.start_time.isoformat() + "Z")
+                if matched_event.start_time
+                else start_time_str,
+                "rewards_daily_rate": 0.0,  # Not available from Gamma API
+                "rewards_max_spread": round(max_spread, 1),
+                "rewards_min_size": round(min_size, 0),
+                "competitive": round(competitive_val, 4),
+                "poly_prices": {k: round(v, 4) for k, v in poly_prices.items()},
+                "pinnacle_fair_odds": pinnacle_fair,
+                "best_hedge_odds": hedge_odds,
+                "event_slug": event_slug,
+                "polymarket_url": f"https://polymarket.com/event/{event_slug}" if event_slug else None,
+            }
+        )
 
     # Sort by competition (lower = less competition = more rewarding)
     results.sort(key=lambda x: x["competitive"])
@@ -779,7 +794,7 @@ async def get_polymarket_rewards(
 
 @router.get("/mybets")
 def get_mybets(
-    status: Optional[str] = None,
+    status: str | None = None,
     exclude_bonus: bool = False,
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -796,7 +811,7 @@ def get_mybets(
     if status:
         query = query.filter(Bet.result == status)
     if exclude_bonus:
-        query = query.filter(Bet.is_bonus != True)
+        query = query.filter(not Bet.is_bonus)
 
     bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
@@ -820,34 +835,36 @@ def get_mybets(
             effective = polymarket_effective_odds(b.odds)
             edge_pct = round((effective / b.fair_odds_at_placement - 1) * 100, 2)
 
-        bet_items.append({
-            "id": b.id,
-            "event_id": b.event_id,
-            "market": b.market,
-            "outcome": b.outcome,
-            "odds": b.odds,
-            "stake_sek": b.stake,
-            "stake_usdc": stake_usdc,
-            "result": b.result,
-            "payout_sek": b.payout,
-            "payout_usdc": payout_usdc,
-            "profit_sek": b.profit,
-            "profit_usdc": profit_usdc,
-            "placed_at": b.placed_at.isoformat() + "Z" if b.placed_at else None,
-            "edge_pct": edge_pct,
-            "fair_odds": b.fair_odds_at_placement,
-            "clv_pct": b.clv_pct,
-            "closing_odds": b.closing_odds,
-            "provider_closing_odds": b.provider_closing_odds,
-            "provider_clv_pct": b.provider_clv_pct,
-            "settlement_source": b.settlement_source,
-            "home_team": event.home_team if event else None,
-            "away_team": event.away_team if event else None,
-            "display_home": event.display_home if event else None,
-            "display_away": event.display_away if event else None,
-            "sport": event.sport if event else None,
-            "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
-        })
+        bet_items.append(
+            {
+                "id": b.id,
+                "event_id": b.event_id,
+                "market": b.market,
+                "outcome": b.outcome,
+                "odds": b.odds,
+                "stake_sek": b.stake,
+                "stake_usdc": stake_usdc,
+                "result": b.result,
+                "payout_sek": b.payout,
+                "payout_usdc": payout_usdc,
+                "profit_sek": b.profit,
+                "profit_usdc": profit_usdc,
+                "placed_at": b.placed_at.isoformat() + "Z" if b.placed_at else None,
+                "edge_pct": edge_pct,
+                "fair_odds": b.fair_odds_at_placement,
+                "clv_pct": b.clv_pct,
+                "closing_odds": b.closing_odds,
+                "provider_closing_odds": b.provider_closing_odds,
+                "provider_clv_pct": b.provider_clv_pct,
+                "settlement_source": b.settlement_source,
+                "home_team": event.home_team if event else None,
+                "away_team": event.away_team if event else None,
+                "display_home": event.display_home if event else None,
+                "display_away": event.display_away if event else None,
+                "sport": event.sport if event else None,
+                "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
+            }
+        )
 
     # Aggregate stats (same bonus filter as the list)
     stats_query = db.query(Bet).filter(
@@ -855,7 +872,7 @@ def get_mybets(
         Bet.provider_id == "polymarket",
     )
     if exclude_bonus:
-        stats_query = stats_query.filter(Bet.is_bonus != True)
+        stats_query = stats_query.filter(not Bet.is_bonus)
     all_bets = stats_query.all()
 
     settled = [b for b in all_bets if b.result in ("won", "lost", "void")]

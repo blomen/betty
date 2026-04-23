@@ -158,7 +158,7 @@ def compute_approach_volume_features(candles, lookback: int = 10) -> dict:
 
     # Buy percentage trend — is buy share of volume growing?
     buy_pcts = []
-    for bv, sv in zip(buy_vols, sell_vols):
+    for bv, sv in zip(buy_vols, sell_vols, strict=False):
         total = bv + sv
         buy_pcts.append(bv / total if total > 0 else 0.5)
     bp_arr = np.array(buy_pcts, dtype=float)
@@ -168,7 +168,7 @@ def compute_approach_volume_features(candles, lookback: int = 10) -> dict:
     # Compare vol RoC of last 3 vs prior 3
     if n >= 6:
         roc_recent = float(np.mean(volumes[-3:])) / max(float(np.mean(volumes[-6:-3])), 1)
-        roc_prior = float(np.mean(volumes[-6:-3])) / max(float(np.mean(volumes[:max(1, n - 6)])), 1)
+        roc_prior = float(np.mean(volumes[-6:-3])) / max(float(np.mean(volumes[: max(1, n - 6)])), 1)
         approach_vol_accel = roc_recent - roc_prior
     else:
         approach_vol_accel = None
@@ -211,9 +211,7 @@ def compute_candle_pattern_features(candles) -> dict:
 
     # --- last_3_candles_direction: count up candles (close > open) in last 3 ---
     last3 = window[-3:]
-    last_3_candles_direction = sum(
-        1 for c in last3 if (_get(c, "close", 0) or 0) > (_get(c, "open", 0) or 0)
-    )
+    last_3_candles_direction = sum(1 for c in last3 if (_get(c, "close", 0) or 0) > (_get(c, "open", 0) or 0))
 
     # --- last_candle_is_doji: body_ratio < 0.1 ---
     last = window[-1]
@@ -238,7 +236,7 @@ def compute_candle_pattern_features(candles) -> dict:
     # --- highest_volume_candle_position: index (0=oldest) of peak volume in last 10 ---
     vol_window = window[-10:]
     volumes = [_get(c, "volume", 0) or 0 for c in vol_window]
-    offset = len(window) - len(vol_window)  # offset so index is relative to full window start
+    len(window) - len(vol_window)  # offset so index is relative to full window start
     if volumes:
         local_idx = int(np.argmax(volumes))
         # Express as position in the last-10 sub-window (0 = oldest in that slice)
@@ -251,10 +249,7 @@ def compute_candle_pattern_features(candles) -> dict:
     spreads = [_get(c, "spread", 0) or 0 for c in spread_window]
     last_spread = _get(last, "spread", None)
     avg_spread = float(np.mean(spreads)) if spreads else 0.0
-    if last_spread is not None and avg_spread != 0:
-        range_expansion = float(last_spread) / avg_spread
-    else:
-        range_expansion = None
+    range_expansion = float(last_spread) / avg_spread if last_spread is not None and avg_spread != 0 else None
 
     return {
         "last_3_candles_direction": last_3_candles_direction,

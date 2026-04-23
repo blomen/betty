@@ -9,22 +9,21 @@ Endpoints for:
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
 from ...db.models import (
-    ProviderRiskProfile,
-    RiskConfig,
     Profile,
     Provider,
+    ProviderRiskProfile,
+    RiskConfig,
 )
 from ...risk.calculator import RiskCalculator
 from ...risk.selector import StochasticSelector
 from ...risk.stake_noise import StakeNoiseInjector
+from ..deps import get_db
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
 
@@ -58,9 +57,9 @@ class ProviderRiskResponse(BaseModel):
     features: RiskFeaturesResponse
     recommendations: list[str]
     is_on_cooldown: bool
-    cooldown_until: Optional[str]
-    cooldown_reason: Optional[str]
-    brier_score: Optional[float]
+    cooldown_until: str | None
+    cooldown_reason: str | None
+    brier_score: float | None
 
 
 class RiskSummary(BaseModel):
@@ -106,22 +105,22 @@ class RiskConfigResponse(BaseModel):
 class RiskConfigUpdate(BaseModel):
     """Update risk configuration."""
 
-    lambda_coefficient: Optional[float] = Field(None, ge=0, le=1)
-    stake_noise_pct: Optional[float] = Field(None, ge=0, le=20)
-    softmax_temperature: Optional[float] = Field(None, ge=0.01, le=10)
-    weight_stake_entropy: Optional[float] = Field(None, ge=0, le=1)
-    weight_market_diversity: Optional[float] = Field(None, ge=0, le=1)
-    weight_timing_regularity: Optional[float] = Field(None, ge=0, le=1)
-    weight_outcome_correlation: Optional[float] = Field(None, ge=0, le=1)
-    weight_bonus_usage: Optional[float] = Field(None, ge=0, le=1)
-    weight_clv: Optional[float] = Field(None, ge=0, le=1)
-    weight_win_rate: Optional[float] = Field(None, ge=0, le=1)
-    threshold_low: Optional[float] = Field(None, ge=0, le=1)
-    threshold_medium: Optional[float] = Field(None, ge=0, le=1)
-    threshold_high: Optional[float] = Field(None, ge=0, le=1)
-    rolling_window_days: Optional[int] = Field(None, ge=7, le=365)
-    cooldown_trigger_score: Optional[float] = Field(None, ge=0, le=1)
-    cooldown_duration_hours: Optional[int] = Field(None, ge=1, le=720)
+    lambda_coefficient: float | None = Field(None, ge=0, le=1)
+    stake_noise_pct: float | None = Field(None, ge=0, le=20)
+    softmax_temperature: float | None = Field(None, ge=0.01, le=10)
+    weight_stake_entropy: float | None = Field(None, ge=0, le=1)
+    weight_market_diversity: float | None = Field(None, ge=0, le=1)
+    weight_timing_regularity: float | None = Field(None, ge=0, le=1)
+    weight_outcome_correlation: float | None = Field(None, ge=0, le=1)
+    weight_bonus_usage: float | None = Field(None, ge=0, le=1)
+    weight_clv: float | None = Field(None, ge=0, le=1)
+    weight_win_rate: float | None = Field(None, ge=0, le=1)
+    threshold_low: float | None = Field(None, ge=0, le=1)
+    threshold_medium: float | None = Field(None, ge=0, le=1)
+    threshold_high: float | None = Field(None, ge=0, le=1)
+    rolling_window_days: int | None = Field(None, ge=7, le=365)
+    cooldown_trigger_score: float | None = Field(None, ge=0, le=1)
+    cooldown_duration_hours: int | None = Field(None, ge=1, le=720)
 
 
 class OpportunityInput(BaseModel):
@@ -139,7 +138,7 @@ class SelectRequest(BaseModel):
 
     opportunities: list[OpportunityInput]
     stake: float = Field(..., gt=0)
-    temperature: Optional[float] = Field(None, ge=0.01, le=10)
+    temperature: float | None = Field(None, ge=0.01, le=10)
     deterministic: bool = False
 
 
@@ -166,7 +165,7 @@ class RankedOpportunityResponse(BaseModel):
 class SelectResponse(BaseModel):
     """Response from opportunity selection."""
 
-    selected: Optional[RankedOpportunityResponse]
+    selected: RankedOpportunityResponse | None
     all_ranked: list[RankedOpportunityResponse]
     selection_entropy: float
 
@@ -175,7 +174,7 @@ class CooldownRequest(BaseModel):
     """Request to set provider cooldown."""
 
     duration_hours: int = Field(24, ge=1, le=720)
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class StakeNoiseRequest(BaseModel):
@@ -277,7 +276,7 @@ def get_all_risk(db: Session = Depends(get_db)):
 def get_risk_config(db: Session = Depends(get_db)):
     """Get current risk configuration."""
     # Get active profile
-    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    profile = db.query(Profile).filter(Profile.is_active).first()
     if not profile:
         profile = db.query(Profile).first()
         if not profile:
@@ -319,7 +318,7 @@ def update_risk_config(
 ):
     """Update risk configuration."""
     # Get active profile
-    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    profile = db.query(Profile).filter(Profile.is_active).first()
     if not profile:
         raise HTTPException(status_code=404, detail="No active profile")
 
@@ -461,9 +460,7 @@ def set_provider_cooldown(
         raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
 
     # Get or create risk profile
-    profile = db.query(ProviderRiskProfile).filter(
-        ProviderRiskProfile.provider_id == provider_id
-    ).first()
+    profile = db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
 
     if not profile:
         profile = ProviderRiskProfile(provider_id=provider_id)
@@ -490,9 +487,7 @@ def clear_provider_cooldown(
     db: Session = Depends(get_db),
 ):
     """Clear a provider's cooldown."""
-    profile = db.query(ProviderRiskProfile).filter(
-        ProviderRiskProfile.provider_id == provider_id
-    ).first()
+    profile = db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
 
     if not profile:
         raise HTTPException(status_code=404, detail=f"No risk profile for {provider_id}")
@@ -533,5 +528,3 @@ def calculate_stake_noise(
         was_rounded=noisy.was_rounded,
         reason=noisy.reason,
     )
-
-

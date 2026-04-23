@@ -9,6 +9,7 @@ Price reading: cached from GetEventDetails intercepted responses
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -373,10 +374,8 @@ class AltenarWorkflow(ProviderWorkflow):
             if val is None and isinstance(body.get("data"), dict):
                 val = body["data"].get(key)
             if val is not None:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     result["max_stake"] = float(val)
-                except (TypeError, ValueError):
-                    pass
 
         # Check status fields
         status = body.get("status") or body.get("code")

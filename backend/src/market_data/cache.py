@@ -1,7 +1,7 @@
 """Caching wrapper for market data providers. Stores completed days as parquet."""
 
 import logging
-from datetime import datetime, date, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -30,9 +30,7 @@ class CachedMarketDataProvider(MarketDataProvider):
         """A day is complete (cacheable) if it's before today."""
         return dt < date.today()
 
-    async def get_bars(
-        self, symbol: str, interval: str, start: datetime, end: datetime
-    ) -> list[BarData]:
+    async def get_bars(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[BarData]:
         cache_key = self._cache_path(symbol, f"bars_{interval}", start.date())
 
         if self._is_complete_day(start.date()) and cache_key.exists():
@@ -47,9 +45,7 @@ class CachedMarketDataProvider(MarketDataProvider):
 
         return bars
 
-    async def get_ticks(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> list[TickData]:
+    async def get_ticks(self, symbol: str, start: datetime, end: datetime) -> list[TickData]:
         cache_key = self._cache_path(symbol, "ticks", start.date())
 
         if self._is_complete_day(start.date()) and cache_key.exists():
@@ -70,15 +66,20 @@ class CachedMarketDataProvider(MarketDataProvider):
     # ---- Parquet serialization ----
 
     def _write_bars_cache(self, path: Path, bars: list[BarData]) -> None:
-        df = pd.DataFrame([{
-            "timestamp": b.timestamp,
-            "open": b.open,
-            "high": b.high,
-            "low": b.low,
-            "close": b.close,
-            "volume": b.volume,
-            "delta": b.delta,
-        } for b in bars])
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": b.timestamp,
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "volume": b.volume,
+                    "delta": b.delta,
+                }
+                for b in bars
+            ]
+        )
         df.to_parquet(path, index=False)
 
     @staticmethod
@@ -110,12 +111,17 @@ class CachedMarketDataProvider(MarketDataProvider):
         ]
 
     def _write_ticks_cache(self, path: Path, ticks: list[TickData]) -> None:
-        df = pd.DataFrame([{
-            "timestamp": t.timestamp,
-            "price": t.price,
-            "size": t.size,
-            "side": t.side,
-        } for t in ticks])
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": t.timestamp,
+                    "price": t.price,
+                    "size": t.size,
+                    "side": t.side,
+                }
+                for t in ticks
+            ]
+        )
         df.to_parquet(path, index=False)
 
     def _read_ticks_cache(self, path: Path) -> list[TickData]:

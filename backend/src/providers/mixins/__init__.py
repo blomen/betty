@@ -2,4 +2,4 @@
 
 from .rsocket import RSocketMixin
 
-__all__ = ['RSocketMixin']
+__all__ = ["RSocketMixin"]

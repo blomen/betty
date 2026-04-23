@@ -5,12 +5,11 @@ Triggered inline after settlement or via manual recompute endpoint.
 
 import logging
 import threading
-from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..analysis.postmortem import classify_bet, classify_trade, CURRENT_ALGO_VERSION
-from ..db.models import Bet, Trade, DailyRoutine, TradeEvent
+from ..analysis.postmortem import CURRENT_ALGO_VERSION, classify_bet, classify_trade
+from ..db.models import Bet, DailyRoutine, Trade, TradeEvent
 from ..repositories.postmortem_repo import PostmortemRepo
 
 logger = logging.getLogger(__name__)
@@ -42,17 +41,24 @@ class PostmortemService:
             return None
         try:
             # Gather all trades for same setup type + account
-            setup_trades = self.db.query(Trade).filter(
-                Trade.setup_type == trade.setup_type,
-                Trade.account_id == trade.account_id
-            ).all()
+            setup_trades = (
+                self.db.query(Trade)
+                .filter(Trade.setup_type == trade.setup_type, Trade.account_id == trade.account_id)
+                .all()
+            )
 
             # Compute streak position (count consecutive losses before this trade)
-            recent_trades = self.db.query(Trade).filter(
-                Trade.account_id == trade.account_id,
-                Trade.state.in_(["closed", "reviewed"]),
-                Trade.closed_at < trade.closed_at,
-            ).order_by(Trade.closed_at.desc()).limit(20).all()
+            recent_trades = (
+                self.db.query(Trade)
+                .filter(
+                    Trade.account_id == trade.account_id,
+                    Trade.state.in_(["closed", "reviewed"]),
+                    Trade.closed_at < trade.closed_at,
+                )
+                .order_by(Trade.closed_at.desc())
+                .limit(20)
+                .all()
+            )
 
             streak = 0
             for t in recent_trades:

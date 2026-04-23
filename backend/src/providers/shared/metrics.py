@@ -4,9 +4,8 @@ Shared Extraction Metrics
 Unified metrics tracking for all provider extractors.
 """
 
-from dataclasses import dataclass, field
-from typing import List
 import logging
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ExtractionMetrics:
     """Track extraction statistics for error visibility."""
+
     events_parsed: int = 0
     events_skipped_live: int = 0
     events_skipped_no_participants: int = 0
@@ -24,16 +24,16 @@ class ExtractionMetrics:
     groups_failed: int = 0
     leagues_fetched: int = 0
     leagues_failed: int = 0
-    pagination_warnings: List[str] = field(default_factory=list)
+    pagination_warnings: list[str] = field(default_factory=list)
 
     @property
     def total_skipped(self) -> int:
         return (
-            self.events_skipped_live +
-            self.events_skipped_no_participants +
-            self.events_skipped_no_teams +
-            self.events_skipped_no_markets +
-            self.events_skipped_error
+            self.events_skipped_live
+            + self.events_skipped_no_participants
+            + self.events_skipped_no_teams
+            + self.events_skipped_no_markets
+            + self.events_skipped_error
         )
 
     def log_summary(self, provider_id: str, sport: str, total_events: int = 0):

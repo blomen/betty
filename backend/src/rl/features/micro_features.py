@@ -85,8 +85,8 @@ def extract_micro_features(
         accel = 0.0
 
     # 2: net_delta_norm
-    buy_vol = sum(s for s, side in zip(sizes, sides) if side == "B")
-    sell_vol = sum(s for s, side in zip(sizes, sides) if side == "A")
+    buy_vol = sum(s for s, side in zip(sizes, sides, strict=False) if side == "B")
+    sell_vol = sum(s for s, side in zip(sizes, sides, strict=False) if side == "A")
     net_delta = buy_vol - sell_vol
     net_delta_norm = np.clip(net_delta / max(total_vol, 1), -1.0, 1.0)
 
@@ -173,8 +173,8 @@ def extract_micro_features(
     _price_vs_midrange = np.clip((touch_price - p_mid) / max(p_range, 0.25), -1.0, 1.0)
 
     # 18: big trade skew (are big trades biased buy or sell?)
-    big_buy = sum(s for s, side in zip(sizes, sides) if s >= big_threshold and side == "B")
-    big_sell = sum(s for s, side in zip(sizes, sides) if s >= big_threshold and side == "A")
+    big_buy = sum(s for s, side in zip(sizes, sides, strict=False) if s >= big_threshold and side == "B")
+    big_sell = sum(s for s, side in zip(sizes, sides, strict=False) if s >= big_threshold and side == "A")
     _big_trade_skew = np.clip((big_buy - big_sell) / max(big_buy + big_sell, 1), -1.0, 1.0)
 
     # 19: acceleration in last 5 ticks (are we speeding up into the touch?)

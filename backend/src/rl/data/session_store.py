@@ -12,9 +12,13 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .accumulators import IncrementalVolumeProfile
+
+if TYPE_CHECKING:
+    from src.market_data.levels import SwingStructure
 
 logger = logging.getLogger(__name__)
 
@@ -506,7 +510,6 @@ def compute_precomputed_levels(
     # Ranks how large/small today's IB is compared to recent history.
     # Requires ib_high/ib_low on SessionSummary (added 2026-04-13).
     # Falls back to 0.5 for old summaries that pre-date the field.
-    ib_range_percentile: float = 0.5
     ib_lookup_dates = prior_dates[-30:]
     prior_ib_ranges = [
         summaries[d].ib_high - summaries[d].ib_low

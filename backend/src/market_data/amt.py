@@ -23,14 +23,17 @@ def _to_et_time(ts: datetime) -> time:
         return ts.astimezone(_ET).time()
     return ts.replace(tzinfo=timezone.utc).astimezone(_ET).time()
 
+
 logger = logging.getLogger(__name__)
 
 
 # ============ Data Classes ============
 
+
 @dataclass
 class VolumeProfile:
     """Volume-at-price profile with value area."""
+
     poc: float  # Point of Control (highest volume price)
     vah: float  # Value Area High (top of 70% volume zone)
     val: float  # Value Area Low (bottom of 70% volume zone)
@@ -40,6 +43,7 @@ class VolumeProfile:
 @dataclass
 class VWAPBands:
     """VWAP with standard deviation bands."""
+
     vwap: float
     upper_1sd: float
     lower_1sd: float
@@ -52,6 +56,7 @@ class VWAPBands:
 @dataclass
 class InitialBalance:
     """Initial balance (first 60 min of RTH)."""
+
     ib_high: float
     ib_low: float
     ib_range: float
@@ -60,6 +65,7 @@ class InitialBalance:
 @dataclass
 class DeltaAnalysis:
     """Delta (buy-sell volume) analysis."""
+
     bar_deltas: list[int] = field(default_factory=list)
     cumulative_delta: list[int] = field(default_factory=list)
     total_delta: int = 0
@@ -73,6 +79,7 @@ class TPOProfile:
     Each 30-min period gets a letter (A-Z). TPO count per price level
     gives time-at-price distribution (vs volume-at-price in VolumeProfile).
     """
+
     tpo_poc: float  # Price with most TPO prints
     tpo_vah: float  # TPO-based Value Area High
     tpo_val: float  # TPO-based Value Area Low
@@ -84,6 +91,7 @@ class TPOProfile:
 @dataclass
 class MacroSnapshot:
     """Macro market data for regime classification."""
+
     vix: float | None = None
     vix_change_pct: float | None = None  # Day-over-day change
     dxy: float | None = None
@@ -104,6 +112,7 @@ class MacroSnapshot:
 @dataclass
 class SessionAnalysis:
     """Master analysis result for a trading session."""
+
     date: str
     symbol: str
 
@@ -203,6 +212,7 @@ class SessionAnalysis:
 
 # ============ Core Computations ============
 
+
 def compute_volume_profile(bars: list[BarData], tick_size: float = 0.25) -> VolumeProfile:
     """Build volume-at-price profile and compute POC/VAH/VAL.
 
@@ -228,7 +238,9 @@ def compute_volume_profile(bars: list[BarData], tick_size: float = 0.25) -> Volu
             remainder = bar.volume % len(price_levels)
             # Distribute remainder near close (matches levels.py behavior)
             close_snap = round(bar.close / tick_size) * tick_size
-            sorted_by_close = sorted(range(len(price_levels)), key=lambda i: abs(round(price_levels[i], 2) - close_snap))
+            sorted_by_close = sorted(
+                range(len(price_levels)), key=lambda i: abs(round(price_levels[i], 2) - close_snap)
+            )
             extras = set(sorted_by_close[:remainder])
             for i, price in enumerate(price_levels):
                 p = round(price, 2)
@@ -321,10 +333,7 @@ def compute_initial_balance(bars: list[BarData], rth_open: str = "09:30") -> Ini
     open_time = time(h, m)
     ib_end_time = time(h + 1, m)
 
-    ib_bars = [
-        b for b in bars
-        if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < ib_end_time
-    ]
+    ib_bars = [b for b in bars if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < ib_end_time]
 
     if not ib_bars:
         return InitialBalance(ib_high=0, ib_low=0, ib_range=0)
@@ -350,16 +359,19 @@ def compute_delta(ticks: list[TickData], bars: list[BarData]) -> DeltaAnalysis:
     # If we have ticks, compute accurate delta
     if ticks:
         # Group ticks by minute for per-bar delta
-        tick_df = pd.DataFrame([{
-            "timestamp": t.timestamp,
-            "size": t.size,
-            "side": t.side,
-        } for t in ticks])
+        tick_df = pd.DataFrame(
+            [
+                {
+                    "timestamp": t.timestamp,
+                    "size": t.size,
+                    "side": t.side,
+                }
+                for t in ticks
+            ]
+        )
 
         if not tick_df.empty:
-            tick_df["signed_vol"] = tick_df.apply(
-                lambda r: r["size"] if r["side"] == "buy" else -r["size"], axis=1
-            )
+            tick_df["signed_vol"] = tick_df.apply(lambda r: r["size"] if r["side"] == "buy" else -r["size"], axis=1)
 
             tick_df["timestamp"] = pd.to_datetime(tick_df["timestamp"], utc=True)
             tick_df.set_index("timestamp", inplace=True)
@@ -385,8 +397,9 @@ def compute_delta(ticks: list[TickData], bars: list[BarData]) -> DeltaAnalysis:
         price_change = bars[-1].close - bars[0].close
         delta_change = cum_delta[-1] - cum_delta[0]
         # Divergence if price and delta move in opposite directions significantly
-        if (price_change > 0 and delta_change < -abs(total_delta) * 0.3) or \
-           (price_change < 0 and delta_change > abs(total_delta) * 0.3):
+        if (price_change > 0 and delta_change < -abs(total_delta) * 0.3) or (
+            price_change < 0 and delta_change > abs(total_delta) * 0.3
+        ):
             divergence = True
 
     return DeltaAnalysis(
@@ -451,10 +464,7 @@ def classify_opening_type(
     open_time = time(h, m)
 
     # Get first few bars of RTH
-    rth_bars = [
-        b for b in bars
-        if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) >= open_time
-    ]
+    rth_bars = [b for b in bars if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) >= open_time]
     if len(rth_bars) < 5:
         return "unknown"
 
@@ -467,7 +477,7 @@ def classify_opening_type(
         opened_in_va = True  # Default assumption
 
     # IB direction: which side of the open did IB establish?
-    ib_mid = (ib.ib_high + ib.ib_low) / 2
+    (ib.ib_high + ib.ib_low) / 2
     open_to_ib_high = ib.ib_high - open_price
     open_to_ib_low = open_price - ib.ib_low
 
@@ -479,8 +489,8 @@ def classify_opening_type(
     elif directional_ratio > 0.65:
         # Check if early bars test one direction then reverse
         first_15 = rth_bars[:15]
-        first_half = first_15[:len(first_15)//2]
-        second_half = first_15[len(first_15)//2:]
+        first_half = first_15[: len(first_15) // 2]
+        second_half = first_15[len(first_15) // 2 :]
         if first_half and second_half:
             early_dir = first_half[-1].close - first_half[0].open
             late_dir = second_half[-1].close - second_half[0].open
@@ -495,7 +505,9 @@ def classify_opening_type(
         return "OTD"
 
 
-def detect_poor_high_low(profile: VolumeProfile, session_high: float, session_low: float, tick_size: float = 0.25) -> tuple[bool, bool]:
+def detect_poor_high_low(
+    profile: VolumeProfile, session_high: float, session_low: float, tick_size: float = 0.25
+) -> tuple[bool, bool]:
     """Detect poor highs and lows (excess at extremes).
 
     A poor high/low has volume at the extreme prices (no clean single-print
@@ -581,7 +593,7 @@ def compute_tpo_profile(bars: list[BarData], tick_size: float = 0.25, rth_open: 
         if minutes < 0:
             continue
         period_idx = minutes // 30
-        letter = chr(ord('A') + min(period_idx, 25))  # A-Z caps at Z
+        letter = chr(ord("A") + min(period_idx, 25))  # A-Z caps at Z
 
         # Mark each tick-level price in this bar's range
         low_tick = round(bar.low / tick_size) * tick_size
@@ -682,7 +694,7 @@ def _classify_distribution(tpo_count: dict[float, int], sorted_prices: list[floa
         for i in range(middle_start, middle_end):
             if counts[i] <= thin_threshold:
                 below_mode = max(counts[:i]) if i > 0 else 0
-                above_mode = max(counts[i + 1:]) if i < n - 1 else 0
+                above_mode = max(counts[i + 1 :]) if i < n - 1 else 0
                 if below_mode > avg_count * 1.2 and above_mode > avg_count * 1.2:
                     return "double"
 
@@ -700,10 +712,7 @@ def compute_overnight_range(bars: list[BarData], rth_open: str = "09:30") -> tup
     h, m = map(int, rth_open.split(":"))
     open_time = time(h, m)
 
-    overnight_bars = [
-        b for b in bars
-        if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) < open_time
-    ]
+    overnight_bars = [b for b in bars if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) < open_time]
 
     if not overnight_bars:
         return None, None
@@ -792,10 +801,7 @@ def build_session_analysis(
     open_time = time(h, m)
     close_time = time(16, 0)
 
-    rth_bars = [
-        b for b in bars
-        if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time
-    ]
+    rth_bars = [b for b in bars if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time]
 
     if bars:
         analysis.volume_profile = compute_volume_profile(bars, tick_size)
@@ -806,12 +812,13 @@ def build_session_analysis(
         # Real VWAP = sum(price * size) / sum(size), matching TradingView.
         if ticks:
             rth_ticks = [
-                t for t in ticks
-                if hasattr(t.timestamp, "astimezone")
-                and open_time <= t.timestamp.astimezone(_ET).time() < close_time
+                t
+                for t in ticks
+                if hasattr(t.timestamp, "astimezone") and open_time <= t.timestamp.astimezone(_ET).time() < close_time
             ]
             if rth_ticks:
                 import math
+
                 cum_pv = sum(t.price * t.size for t in rth_ticks)
                 cum_vol = sum(t.size for t in rth_ticks)
                 cum_pv2 = sum(t.price * t.price * t.size for t in rth_ticks)
@@ -838,7 +845,11 @@ def build_session_analysis(
         # Previous day profile
         prev_profile = None
         if prev_bars:
-            prev_rth = [b for b in prev_bars if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time]
+            prev_rth = [
+                b
+                for b in prev_bars
+                if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time
+            ]
             if prev_rth:
                 prev_profile = compute_volume_profile(prev_rth, tick_size)
                 analysis.prev_poc = prev_profile.poc
@@ -855,9 +866,7 @@ def build_session_analysis(
 
         # Classifications
         analysis.market_type = classify_market_type(analysis.volume_profile, rth_bars)
-        analysis.opening_type = classify_opening_type(
-            bars, prev_profile, analysis.initial_balance, rth_open
-        )
+        analysis.opening_type = classify_opening_type(bars, prev_profile, analysis.initial_balance, rth_open)
 
         # Poor high/low
         session_high = max(b.high for b in rth_bars)
@@ -872,15 +881,20 @@ def build_session_analysis(
     # Current price position
     analysis.last_price = bars[-1].close
     analysis.price_vs_va, analysis.price_vs_vwap, analysis.price_vs_ib = classify_price_position(
-        analysis.last_price, analysis.volume_profile, analysis.vwap_bands, analysis.initial_balance,
+        analysis.last_price,
+        analysis.volume_profile,
+        analysis.vwap_bands,
+        analysis.initial_balance,
     )
 
     # M7: ML day-type prediction (best-effort, supplements rule-based)
     try:
         from src.ml.serving.predictor import get_predictor
+
         predictor = get_predictor()
         if predictor.is_loaded("gate_classifier"):
             from src.ml.features.gate_features import extract_gate_features
+
             gate_features = extract_gate_features(
                 ib_range=analysis.initial_balance.ib_range if analysis.initial_balance else None,
                 opening_type=analysis.opening_type,
@@ -890,6 +904,7 @@ def build_session_analysis(
             ml_type = predictor.predict("gate_classifier", gate_features)
             if ml_type and isinstance(ml_type, dict):
                 from src.ml.models.gate_classifier import DAY_TYPE_LABELS
+
                 predicted_class = ml_type.get("class", -1)
                 probs = ml_type.get("probabilities", [])
                 confidence = max(probs) if probs else 0

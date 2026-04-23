@@ -1,4 +1,5 @@
 """TPO / Market Profile computation: 30-min brackets, anomalies."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,9 +14,9 @@ _CET = ZoneInfo("Europe/Stockholm")
 
 # Non-overlapping session boundaries (CET)
 _SESSION_BOUNDS = {
-    "tokyo":  (_time(0, 0), _time(8, 0)),
+    "tokyo": (_time(0, 0), _time(8, 0)),
     "london": (_time(8, 0), _time(15, 30)),
-    "ny":     (_time(15, 30), _time(22, 0)),
+    "ny": (_time(15, 30), _time(22, 0)),
 }
 
 # Minimum unique price levels in IB bars for IB to be considered valid
@@ -35,6 +36,7 @@ def _period_letter(index: int) -> str:
 @dataclass
 class TPOProfile:
     """Time Price Opportunity profile for a session."""
+
     letters: dict[float, list[str]]  # price → [A, B, C, ...]
     poc: float  # Price with most TPO letters
     vah: float
@@ -42,7 +44,7 @@ class TPOProfile:
     single_prints: list[float]  # Prices with only 1 letter
     ledges: list[float]  # Prices where profile cuts off abruptly
     poor_high: bool  # Thin tail at session high
-    poor_low: bool   # Thin tail at session low
+    poor_low: bool  # Thin tail at session low
     ib_tpo_count: int  # Letters in first 2 brackets (A+B)
     # Extended fields
     tpo_counts: dict[float, int] = field(default_factory=dict)
@@ -58,7 +60,6 @@ class TPOProfile:
     session_low: float = 0.0
 
 
-
 def compute_tpo_profile(
     bars_30m: list[dict],
     tick_size: float = 0.25,
@@ -70,8 +71,15 @@ def compute_tpo_profile(
     """
     if not bars_30m:
         return TPOProfile(
-            letters={}, poc=0, vah=0, val=0,
-            single_prints=[], ledges=[], poor_high=False, poor_low=False, ib_tpo_count=0,
+            letters={},
+            poc=0,
+            vah=0,
+            val=0,
+            single_prints=[],
+            ledges=[],
+            poor_high=False,
+            poor_low=False,
+            ib_tpo_count=0,
         )
 
     letters: dict[float, list[str]] = {}
@@ -92,8 +100,15 @@ def compute_tpo_profile(
 
     if not letters:
         return TPOProfile(
-            letters={}, poc=0, vah=0, val=0,
-            single_prints=[], ledges=[], poor_high=False, poor_low=False, ib_tpo_count=0,
+            letters={},
+            poc=0,
+            vah=0,
+            val=0,
+            single_prints=[],
+            ledges=[],
+            poor_high=False,
+            poor_low=False,
+            ib_tpo_count=0,
         )
 
     # POC = price with most letters
@@ -109,7 +124,11 @@ def compute_tpo_profile(
     hi_idx = poc_idx
 
     while va_count < va_target and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
-        up_count = len(letters.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], [])) if hi_idx < len(sorted_prices) - 1 else 0
+        up_count = (
+            len(letters.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], []))
+            if hi_idx < len(sorted_prices) - 1
+            else 0
+        )
         dn_count = len(letters.get(sorted_prices[max(lo_idx - 1, 0)], [])) if lo_idx > 0 else 0
 
         if up_count >= dn_count and hi_idx < len(sorted_prices) - 1:
@@ -130,7 +149,7 @@ def compute_tpo_profile(
     # Ledges: abrupt cutoff — price has 6+ fewer TPOs than its neighbor
     ledges = []
     for i in range(1, len(sorted_prices)):
-        diff = abs(len(letters[sorted_prices[i]]) - len(letters[sorted_prices[i-1]]))
+        diff = abs(len(letters[sorted_prices[i]]) - len(letters[sorted_prices[i - 1]]))
         if diff >= 6:
             ledges.append(sorted_prices[i])
 
@@ -178,14 +197,22 @@ def compute_tpo_profile(
             break
 
     return TPOProfile(
-        letters=letters, poc=poc, vah=vah, val=val,
-        single_prints=single_prints, ledges=ledges,
-        poor_high=poor_high, poor_low=poor_low,
+        letters=letters,
+        poc=poc,
+        vah=vah,
+        val=val,
+        single_prints=single_prints,
+        ledges=ledges,
+        poor_high=poor_high,
+        poor_low=poor_low,
         ib_tpo_count=ib_tpo_count,
         tpo_counts=tpo_counts,
-        ib_high=ib_high, ib_low=ib_low,
-        session_high=session_high, session_low=session_low,
-        upper_excess=upper_excess, lower_excess=lower_excess,
+        ib_high=ib_high,
+        ib_low=ib_low,
+        session_high=session_high,
+        session_low=session_low,
+        upper_excess=upper_excess,
+        lower_excess=lower_excess,
     )
 
 
@@ -219,7 +246,7 @@ def classify_tpo_shape(profile: TPOProfile) -> str:
         for i in range(2, n - 2):
             if counts[i] <= valley_threshold:
                 left_peak = max(counts[:i])
-                right_peak = max(counts[i + 1:])
+                right_peak = max(counts[i + 1 :])
                 if left_peak >= peak_threshold and right_peak >= peak_threshold:
                     return "B-shape"
 
@@ -236,7 +263,6 @@ def classify_tpo_shape(profile: TPOProfile) -> str:
     if n > 30:
         return "d-shape"
     return "balanced"
-
 
 
 def detect_excess(profile: TPOProfile) -> tuple[int, int]:
@@ -339,13 +365,15 @@ def aggregate_bars_30m(bars) -> list[dict]:
     for b in bars:
         chunk.append(b)
         if len(chunk) == 30:
-            result.append({
-                "high": max(c.high for c in chunk),
-                "low": min(c.low for c in chunk),
-                "open": chunk[0].open,
-                "close": chunk[-1].close,
-                "volume": sum(c.volume for c in chunk),
-            })
+            result.append(
+                {
+                    "high": max(c.high for c in chunk),
+                    "low": min(c.low for c in chunk),
+                    "open": chunk[0].open,
+                    "close": chunk[-1].close,
+                    "volume": sum(c.volume for c in chunk),
+                }
+            )
             chunk = []
     return result
 
@@ -374,14 +402,15 @@ def build_full_tpo_profile(bars_30m: list[dict], tick_size: float = 0.25) -> TPO
 @dataclass
 class SessionTPO:
     """Per-session TPO profile with full letter data for visualization."""
-    session: str       # "tokyo" | "london" | "ny"
+
+    session: str  # "tokyo" | "london" | "ny"
     poc: float
     vah: float
     val: float
-    shape: str         # "p-shape" | "b-shape" | "d-shape" | "balanced" | "B-shape"
+    shape: str  # "p-shape" | "b-shape" | "d-shape" | "balanced" | "B-shape"
     ib_high: float
     ib_low: float
-    ib_valid: bool     # False if IB bars have < MIN_IB_TPO_COUNT price levels
+    ib_valid: bool  # False if IB bars have < MIN_IB_TPO_COUNT price levels
     poor_high: bool
     poor_low: bool
     # Visualization fields:
@@ -399,11 +428,12 @@ class SessionTPO:
 @dataclass
 class SessionTPOSet:
     """Container for per-session TPO profiles + cross-session features."""
+
     tokyo: SessionTPO | None
     london: SessionTPO | None
     ny: SessionTPO | None
     poc_migration_tokyo_london: float  # (london.poc - tokyo.poc) / tick_size
-    poc_migration_london_ny: float     # (ny.poc - london.poc) / tick_size
+    poc_migration_london_ny: float  # (ny.poc - london.poc) / tick_size
 
 
 def _split_bars_by_session(
@@ -492,7 +522,9 @@ def compute_session_tpos(
     """
     if not bars_30m:
         return SessionTPOSet(
-            tokyo=None, london=None, ny=None,
+            tokyo=None,
+            london=None,
+            ny=None,
             poc_migration_tokyo_london=0.0,
             poc_migration_london_ny=0.0,
         )
@@ -512,7 +544,9 @@ def compute_session_tpos(
         migration_ln = (ny.poc - london.poc) / tick_size
 
     return SessionTPOSet(
-        tokyo=tokyo, london=london, ny=ny,
+        tokyo=tokyo,
+        london=london,
+        ny=ny,
         poc_migration_tokyo_london=migration_tl,
         poc_migration_london_ny=migration_ln,
     )

@@ -13,6 +13,7 @@ The GBT produces 8 forecast features that become DQN input dims:
   6: predicted_levels    — E[structural levels captured by best action]
   7: predicted_stop      — optimal stop distance in ticks
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,11 +25,14 @@ from sklearn.preprocessing import StandardScaler
 
 # Prefer LightGBM (10-50x faster, multi-threaded) with sklearn fallback
 try:
-    from lightgbm import LGBMClassifier as _Classifier, LGBMRegressor as _Regressor
+    from lightgbm import LGBMClassifier as _Classifier
+    from lightgbm import LGBMRegressor as _Regressor
+
     _ENGINE = "lightgbm"
 except ImportError:
     from sklearn.ensemble import _Classifier as _Classifier
     from sklearn.ensemble import _Regressor as _Regressor
+
     _ENGINE = "sklearn"
 
 log = logging.getLogger(__name__)
@@ -89,26 +93,41 @@ class GBTModel:
 
         if _ENGINE == "lightgbm":
             gbt_params = dict(
-                n_estimators=n_estimators, max_depth=max_depth,
-                learning_rate=learning_rate, subsample=subsample,
-                min_child_samples=50, colsample_bytree=0.7,
-                n_jobs=-1, verbose=-1,
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                subsample=subsample,
+                min_child_samples=50,
+                colsample_bytree=0.7,
+                n_jobs=-1,
+                verbose=-1,
             )
             reg_params = dict(
-                n_estimators=min(300, n_estimators), max_depth=min(4, max_depth),
-                learning_rate=learning_rate, subsample=subsample,
-                min_child_samples=50, n_jobs=-1, verbose=-1,
+                n_estimators=min(300, n_estimators),
+                max_depth=min(4, max_depth),
+                learning_rate=learning_rate,
+                subsample=subsample,
+                min_child_samples=50,
+                n_jobs=-1,
+                verbose=-1,
             )
         else:
             gbt_params = dict(
-                n_estimators=n_estimators, max_depth=max_depth,
-                learning_rate=learning_rate, subsample=subsample,
-                min_samples_leaf=50, max_features="sqrt",
-                validation_fraction=0.1, n_iter_no_change=20, tol=1e-4,
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                subsample=subsample,
+                min_samples_leaf=50,
+                max_features="sqrt",
+                validation_fraction=0.1,
+                n_iter_no_change=20,
+                tol=1e-4,
             )
             reg_params = dict(
-                n_estimators=min(300, n_estimators), max_depth=min(4, max_depth),
-                learning_rate=learning_rate, subsample=subsample,
+                n_estimators=min(300, n_estimators),
+                max_depth=min(4, max_depth),
+                learning_rate=learning_rate,
+                subsample=subsample,
                 min_samples_leaf=50,
             )
 
@@ -139,7 +158,9 @@ class GBTModel:
             log.info("Training breakeven head")
             self.breakeven_model = _Classifier(**gbt_params)
             self.breakeven_model.fit(X_scaled, breakeven_reached.astype(np.int32))
-            metrics["breakeven_accuracy"] = round(self.breakeven_model.score(X_scaled, breakeven_reached.astype(np.int32)) * 100, 1)
+            metrics["breakeven_accuracy"] = round(
+                self.breakeven_model.score(X_scaled, breakeven_reached.astype(np.int32)) * 100, 1
+            )
 
         # Head 4: Predicted levels captured
         if levels_captured is not None:
@@ -204,11 +225,19 @@ class GBTModel:
         # Stop
         stop = float(np.clip(self.stop_model.predict(x)[0], 6.0, 40.0))
 
-        return np.array([
-            prob_cont, prob_rev, confidence,
-            best_r, worst_r,
-            prob_be, levels, stop,
-        ], dtype=np.float32)
+        return np.array(
+            [
+                prob_cont,
+                prob_rev,
+                confidence,
+                best_r,
+                worst_r,
+                prob_be,
+                levels,
+                stop,
+            ],
+            dtype=np.float32,
+        )
 
     # ------------------------------------------------------------------
     # Batch prediction (for replay / evaluation)
@@ -247,25 +276,26 @@ class GBTModel:
             worst_r = np.zeros(n)
 
         # Breakeven
-        if self.breakeven_model:
-            prob_be = self.breakeven_model.predict_proba(X)[:, 1]
-        else:
-            prob_be = np.full(n, 0.5)
+        prob_be = self.breakeven_model.predict_proba(X)[:, 1] if self.breakeven_model else np.full(n, 0.5)
 
         # Levels
-        if self.levels_model:
-            levels = np.clip(self.levels_model.predict(X), 0.0, 6.0)
-        else:
-            levels = np.zeros(n)
+        levels = np.clip(self.levels_model.predict(X), 0.0, 6.0) if self.levels_model else np.zeros(n)
 
         # Stop
         stop = np.clip(self.stop_model.predict(X), 6.0, 40.0)
 
-        return np.column_stack([
-            prob_cont, prob_rev, confidence,
-            best_r, worst_r,
-            prob_be, levels, stop,
-        ]).astype(np.float32)
+        return np.column_stack(
+            [
+                prob_cont,
+                prob_rev,
+                confidence,
+                best_r,
+                worst_r,
+                prob_be,
+                levels,
+                stop,
+            ]
+        ).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Feature importance
@@ -286,17 +316,20 @@ class GBTModel:
         """Save all model components."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({
-            "direction_model": self.direction_model,
-            "expected_best_r_model": self.expected_best_r_model,
-            "expected_worst_r_model": self.expected_worst_r_model,
-            "breakeven_model": self.breakeven_model,
-            "levels_model": self.levels_model,
-            "stop_model": self.stop_model,
-            "scaler": self.scaler,
-            "alive_mask": self._alive_mask,
-            "version": 2,
-        }, path)
+        joblib.dump(
+            {
+                "direction_model": self.direction_model,
+                "expected_best_r_model": self.expected_best_r_model,
+                "expected_worst_r_model": self.expected_worst_r_model,
+                "breakeven_model": self.breakeven_model,
+                "levels_model": self.levels_model,
+                "stop_model": self.stop_model,
+                "scaler": self.scaler,
+                "alive_mask": self._alive_mask,
+                "version": 2,
+            },
+            path,
+        )
         log.info("GBT model saved to %s", path)
 
     @classmethod

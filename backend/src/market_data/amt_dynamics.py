@@ -6,11 +6,11 @@ volume, VA acceptance/rejection, developing day type, and balance areas.
 Fed by LevelMonitor (live) or ReplayEngine (backtest) on every tick.
 Produces a 20-feature snapshot for the RL observation vector.
 """
+
 from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, field
 
 # Dalton day-type ordinal mapping
 _DAY_TYPE_ORDINAL: dict[str, float] = {
@@ -63,32 +63,51 @@ class AMTDynamicsTracker:
 
     __slots__ = (
         # Session reference levels
-        "ib_high", "ib_low", "ib_range",
-        "vah", "val", "poc",
+        "ib_high",
+        "ib_low",
+        "ib_range",
+        "vah",
+        "val",
+        "poc",
         "single_prints",
         # Running session extremes
-        "session_high", "session_low",
+        "session_high",
+        "session_low",
         # IB extension state
-        "_ib_ext_up_count", "_ib_ext_down_count",
-        "_ib_max_ext_up", "_ib_max_ext_down",
-        "_was_above_ib", "_was_below_ib",
+        "_ib_ext_up_count",
+        "_ib_ext_down_count",
+        "_ib_max_ext_up",
+        "_ib_max_ext_down",
+        "_was_above_ib",
+        "_was_below_ib",
         # Volume buckets
-        "_vol_responsive", "_vol_initiative",
+        "_vol_responsive",
+        "_vol_initiative",
         "_otf_delta",
         # Excess tracking (large volume at session extremes)
-        "_excess_high_vol", "_excess_low_vol", "_total_vol",
+        "_excess_high_vol",
+        "_excess_low_vol",
+        "_total_vol",
         # Period-close state
-        "_poc_history", "_va_widths",
+        "_poc_history",
+        "_va_widths",
         "_initial_va_width",
-        "_periods_above_vah", "_periods_below_val",
-        "_rejection_high_pending", "_rejection_low_pending",
-        "_rejection_high_countdown", "_rejection_low_countdown",
-        "_va_acceptance_high", "_va_rejection_high",
-        "_va_acceptance_low", "_va_rejection_low",
+        "_periods_above_vah",
+        "_periods_below_val",
+        "_rejection_high_pending",
+        "_rejection_low_pending",
+        "_rejection_high_countdown",
+        "_rejection_low_countdown",
+        "_va_acceptance_high",
+        "_va_rejection_high",
+        "_va_acceptance_low",
+        "_va_rejection_low",
         # Balance area
-        "_balance_periods", "_balance_width",
+        "_balance_periods",
+        "_balance_width",
         # Developing VA (updated on period close)
-        "_dev_vah", "_dev_val",
+        "_dev_vah",
+        "_dev_val",
         # Initialized flag
         "_initialized",
     )
@@ -327,7 +346,10 @@ class AMTDynamicsTracker:
         # Day type classification
         daily_range = self.session_high - self.session_low
         day_type_name, day_type_confidence = self._classify_day_type(
-            ib_range, daily_range, self._ib_max_ext_up, self._ib_max_ext_down,
+            ib_range,
+            daily_range,
+            self._ib_max_ext_up,
+            self._ib_max_ext_down,
         )
 
         # IB extension net direction: positive = more up extensions
@@ -345,10 +367,7 @@ class AMTDynamicsTracker:
         # POC migration speed: average absolute move per period
         poc_migration = 0.0
         if len(self._poc_history) >= 2:
-            moves = [
-                abs(self._poc_history[i] - self._poc_history[i - 1])
-                for i in range(1, len(self._poc_history))
-            ]
+            moves = [abs(self._poc_history[i] - self._poc_history[i - 1]) for i in range(1, len(self._poc_history))]
             poc_migration = (sum(moves) / len(moves)) / ib_range
 
         # VA width expansion rate
@@ -366,8 +385,7 @@ class AMTDynamicsTracker:
         if self.single_prints:
             session_mid = (self.session_high + self.session_low) / 2.0
             min_dist = min(
-                abs(session_mid - (sp[0] if isinstance(sp, (list, tuple)) else sp))
-                for sp in self.single_prints
+                abs(session_mid - (sp[0] if isinstance(sp, (list, tuple)) else sp)) for sp in self.single_prints
             )
             single_print_prox = max(0.0, 1.0 - min_dist / ib_range)
 

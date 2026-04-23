@@ -1,6 +1,7 @@
 """Scoring model: combines setup base score with confirmation adjustments."""
-from .setups.detector import SetupCandidate, DetectorContext
+
 from .orderflow import OrderflowSignals
+from .setups.detector import SetupCandidate
 
 
 def score_candidate(
@@ -54,15 +55,16 @@ def score_candidate(
         score += 5
     # Big trades aligned with direction = institutional participation
     if orderflow.big_trades_count >= 2:
-        if (direction_from_candidate(candidate) == "long" and orderflow.big_trades_net_delta > 0) or \
-           (direction_from_candidate(candidate) == "short" and orderflow.big_trades_net_delta < 0):
+        if (direction_from_candidate(candidate) == "long" and orderflow.big_trades_net_delta > 0) or (
+            direction_from_candidate(candidate) == "short" and orderflow.big_trades_net_delta < 0
+        ):
             score += 5
     # Stop run = liquidity sweep (strong for spring/sfp/fakeout)
     if orderflow.stop_run_detected and candidate.setup_type in ("spring", "sfp", "fakeout"):
         score += 8
     # Stacked imbalance = institutional accumulation/distribution
-    if getattr(orderflow, 'stacked_imbalance_count', 0) >= 3:
-        imb_dir = getattr(orderflow, 'stacked_imbalance_direction', 'neutral')
+    if getattr(orderflow, "stacked_imbalance_count", 0) >= 3:
+        imb_dir = getattr(orderflow, "stacked_imbalance_direction", "neutral")
         trade_dir = direction_from_candidate(candidate)
         if (trade_dir == "long" and imb_dir == "buy") or (trade_dir == "short" and imb_dir == "sell"):
             score += 8
@@ -119,25 +121,25 @@ def enrich_conditions_with_continuous(
 ) -> list[dict]:
     """Add continuous ML feature values to each condition dict."""
     continuous = {
-        "delta_magnitude": getattr(orderflow, 'delta', None),
+        "delta_magnitude": getattr(orderflow, "delta", None),
         "delta_pct_of_volume": None,
-        "cvd": getattr(orderflow, 'cvd', None),
+        "cvd": getattr(orderflow, "cvd", None),
         "cvd_slope_5bar": None,
         "cvd_slope_10bar": None,
-        "passive_active_ratio": getattr(orderflow, 'passive_active_ratio', None),
-        "delta_aligned": getattr(orderflow, 'delta_aligned', None),
-        "delta_divergence": getattr(orderflow, 'delta_divergence', None),
-        "delta_unwind": getattr(orderflow, 'delta_unwind', None),
-        "cvd_trend": getattr(orderflow, 'cvd_trend', None),
-        "vsa_absorption": getattr(orderflow, 'vsa_absorption', None),
-        "tick_vol_accelerating": getattr(orderflow, 'tick_vol_accelerating', None),
-        "trapped_traders": getattr(orderflow, 'trapped_traders', None),
-        "big_trades_count": getattr(orderflow, 'big_trades_count', 0),
-        "big_trades_net_delta": getattr(orderflow, 'big_trades_net_delta', 0),
-        "stop_run_detected": getattr(orderflow, 'stop_run_detected', False),
-        "imbalance_ratio_max": getattr(orderflow, 'imbalance_ratio_max', 0.5),
-        "stacked_imbalance_count": getattr(orderflow, 'stacked_imbalance_count', 0),
-        "stacked_imbalance_direction": getattr(orderflow, 'stacked_imbalance_direction', 'neutral'),
+        "passive_active_ratio": getattr(orderflow, "passive_active_ratio", None),
+        "delta_aligned": getattr(orderflow, "delta_aligned", None),
+        "delta_divergence": getattr(orderflow, "delta_divergence", None),
+        "delta_unwind": getattr(orderflow, "delta_unwind", None),
+        "cvd_trend": getattr(orderflow, "cvd_trend", None),
+        "vsa_absorption": getattr(orderflow, "vsa_absorption", None),
+        "tick_vol_accelerating": getattr(orderflow, "tick_vol_accelerating", None),
+        "trapped_traders": getattr(orderflow, "trapped_traders", None),
+        "big_trades_count": getattr(orderflow, "big_trades_count", 0),
+        "big_trades_net_delta": getattr(orderflow, "big_trades_net_delta", 0),
+        "stop_run_detected": getattr(orderflow, "stop_run_detected", False),
+        "imbalance_ratio_max": getattr(orderflow, "imbalance_ratio_max", 0.5),
+        "stacked_imbalance_count": getattr(orderflow, "stacked_imbalance_count", 0),
+        "stacked_imbalance_direction": getattr(orderflow, "stacked_imbalance_direction", "neutral"),
     }
     for cond in conditions:
         cond["continuous"] = continuous

@@ -220,10 +220,7 @@ def build_observation(state: dict) -> np.ndarray:
     # not a 20-candle rolling window. Normalized by session volume.
     session_cvd = float(state.get("session_cvd", 0.0))
     session_cvd_vol = float(state.get("session_cvd_total_vol", 0.0))
-    if session_cvd_vol > 0:
-        session_cvd_ratio = float(np.clip(session_cvd / session_cvd_vol, -1.0, 1.0))
-    else:
-        session_cvd_ratio = 0.0
+    session_cvd_ratio = float(np.clip(session_cvd / session_cvd_vol, -1.0, 1.0)) if session_cvd_vol > 0 else 0.0
     session_cvd_sign = 1.0 if session_cvd > 0 else (-1.0 if session_cvd < 0 else 0.0)
     seg_session_cvd = np.array([session_cvd_ratio, session_cvd_sign], dtype=np.float32)
 

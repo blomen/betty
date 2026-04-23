@@ -4,6 +4,7 @@ Fetches daily macro regime data: VIX, DXY, US Treasury yields.
 Computes derived features like yield curve spread.
 Stores results to the options_flow table via SQLAlchemy session.
 """
+
 import logging
 from datetime import date as date_type
 
@@ -66,6 +67,7 @@ async def fetch_and_store_daily(session) -> dict | None:
     """
     try:
         import yfinance as yf
+
         from src.db.models import OptionsFlow
 
         today = str(date_type.today())

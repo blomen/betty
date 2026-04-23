@@ -10,15 +10,14 @@ Risk Score Formula:
 Where features are normalized 0-1 and weights sum to 1.0.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
-import logging
 
 from sqlalchemy.orm import Session
 
-from ..db.models import ProviderRiskProfile, RiskConfig, Profile, RiskLevel
-from .features import FeatureExtractor, BehavioralFeatures
+from ..db.models import Profile, ProviderRiskProfile, RiskConfig, RiskLevel
+from .features import BehavioralFeatures, FeatureExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +32,8 @@ class RiskAssessment:
     features: BehavioralFeatures
     recommendations: list[str] = field(default_factory=list)
     is_on_cooldown: bool = False
-    cooldown_until: Optional[datetime] = None
-    cooldown_reason: Optional[str] = None
+    cooldown_until: datetime | None = None
+    cooldown_reason: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API responses."""
@@ -70,8 +69,8 @@ class RiskCalculator:
 
     def __init__(self, db: Session):
         self.db = db
-        self._feature_extractor: Optional[FeatureExtractor] = None
-        self._config: Optional[RiskConfig] = None
+        self._feature_extractor: FeatureExtractor | None = None
+        self._config: RiskConfig | None = None
 
     def _get_config(self) -> RiskConfig:
         """Get or create risk configuration for active profile."""
@@ -79,7 +78,7 @@ class RiskCalculator:
             return self._config
 
         # Get active profile
-        active_profile = self.db.query(Profile).filter(Profile.is_active == True).first()
+        active_profile = self.db.query(Profile).filter(Profile.is_active).first()
         if not active_profile:
             # Create default profile if none exists
             active_profile = self.db.query(Profile).first()
@@ -89,11 +88,7 @@ class RiskCalculator:
                 self.db.commit()
 
         # Get or create risk config
-        config = (
-            self.db.query(RiskConfig)
-            .filter(RiskConfig.profile_id == active_profile.id)
-            .first()
-        )
+        config = self.db.query(RiskConfig).filter(RiskConfig.profile_id == active_profile.id).first()
 
         if not config:
             config = RiskConfig(profile_id=active_profile.id)
@@ -107,9 +102,7 @@ class RiskCalculator:
         """Get feature extractor with configured window."""
         if self._feature_extractor is None:
             config = self._get_config()
-            self._feature_extractor = FeatureExtractor(
-                self.db, window_days=config.rolling_window_days
-            )
+            self._feature_extractor = FeatureExtractor(self.db, window_days=config.rolling_window_days)
         return self._feature_extractor
 
     def assess_provider(self, provider_id: str) -> RiskAssessment:
@@ -134,9 +127,11 @@ class RiskCalculator:
         # ML limit prediction (M2) — best-effort blend
         try:
             from src.ml.serving.predictor import get_predictor
+
             predictor = get_predictor()
             if predictor.is_loaded("limit_predictor"):
                 from src.ml.features.limit_features import extract_limit_features
+
                 limit_features = extract_limit_features(
                     stake_entropy=features.stake_entropy,
                     market_diversity=features.market_diversity,
@@ -207,11 +202,7 @@ class RiskCalculator:
 
     def _get_or_create_risk_profile(self, provider_id: str) -> ProviderRiskProfile:
         """Get or create risk profile for provider."""
-        profile = (
-            self.db.query(ProviderRiskProfile)
-            .filter(ProviderRiskProfile.provider_id == provider_id)
-            .first()
-        )
+        profile = self.db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
 
         if not profile:
             profile = ProviderRiskProfile(provider_id=provider_id)
@@ -246,15 +237,19 @@ class RiskCalculator:
         # Update first_bet_date if we have account age info and it's not set
         if features.account_age_days > 0 and profile.first_bet_date is None:
             from datetime import timedelta
+
             profile.first_bet_date = datetime.now(timezone.utc) - timedelta(days=features.account_age_days)
 
         # Auto-cooldown if score exceeds threshold
         config = self._get_config()
         if risk_score >= config.cooldown_trigger_score and not profile.is_on_cooldown:
             from datetime import timedelta
+
             profile.is_on_cooldown = True
             profile.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=config.cooldown_duration_hours)
-            profile.cooldown_reason = f"Auto-cooldown: risk score {risk_score:.2f} >= {config.cooldown_trigger_score:.2f}"
+            profile.cooldown_reason = (
+                f"Auto-cooldown: risk score {risk_score:.2f} >= {config.cooldown_trigger_score:.2f}"
+            )
             logger.warning(
                 f"Provider {provider_id} placed on auto-cooldown: "
                 f"score={risk_score:.2f}, until={profile.cooldown_until}"
@@ -272,39 +267,25 @@ class RiskCalculator:
         recommendations = []
 
         if features.stake_entropy > 0.6:
-            recommendations.append(
-                "Vary stake amounts more - avoid round numbers and consistent patterns"
-            )
+            recommendations.append("Vary stake amounts more - avoid round numbers and consistent patterns")
 
         if features.market_diversity > 0.6:
-            recommendations.append(
-                "Spread bets across more sports and leagues"
-            )
+            recommendations.append("Spread bets across more sports and leagues")
 
         if features.timing_regularity > 0.6:
-            recommendations.append(
-                "Vary betting times - avoid predictable patterns"
-            )
+            recommendations.append("Vary betting times - avoid predictable patterns")
 
         if features.outcome_correlation > 0.6:
-            recommendations.append(
-                "Reduce hedging across providers on same events"
-            )
+            recommendations.append("Reduce hedging across providers on same events")
 
         if features.bonus_usage_ratio > 0.5:
-            recommendations.append(
-                "Reduce bonus bet ratio - place more regular bets"
-            )
+            recommendations.append("Reduce bonus bet ratio - place more regular bets")
 
         if features.clv_score > 0.6:
-            recommendations.append(
-                "Consider taking slightly worse lines occasionally"
-            )
+            recommendations.append("Consider taking slightly worse lines occasionally")
 
         if features.win_rate_deviation > 0.6:
-            recommendations.append(
-                "High win rate detected - consider manual cooldown"
-            )
+            recommendations.append("High win rate detected - consider manual cooldown")
 
         if level in (RiskLevel.HIGH.value, RiskLevel.CRITICAL.value):
             recommendations.insert(
@@ -318,11 +299,7 @@ class RiskCalculator:
         from ..db.models import Bet
 
         # Get providers with recent bets
-        provider_ids = (
-            self.db.query(Bet.provider_id)
-            .distinct()
-            .all()
-        )
+        provider_ids = self.db.query(Bet.provider_id).distinct().all()
 
         assessments = {}
         for (provider_id,) in provider_ids:
@@ -333,7 +310,7 @@ class RiskCalculator:
 
         return assessments
 
-    def calculate_brier_score(self, provider_id: str) -> Optional[float]:
+    def calculate_brier_score(self, provider_id: str) -> float | None:
         """
         Calculate Brier score for calibration tracking.
 
@@ -346,12 +323,7 @@ class RiskCalculator:
         """
         from ..db.models import Bet
 
-        bets = (
-            self.db.query(Bet)
-            .filter(Bet.provider_id == provider_id)
-            .filter(Bet.result.in_(["won", "lost"]))
-            .all()
-        )
+        bets = self.db.query(Bet).filter(Bet.provider_id == provider_id).filter(Bet.result.in_(["won", "lost"])).all()
 
         if len(bets) < 10:
             return None

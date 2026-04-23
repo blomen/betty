@@ -19,6 +19,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -97,10 +98,8 @@ class TopstepXStream:
             task.cancel()
         for ws in (self._market_ws, self._user_ws):
             if ws:
-                try:
+                with contextlib.suppress(Exception):
                     await ws.close()
-                except Exception:
-                    pass
         self._tasks.clear()
         log.info("TopstepXStream stopped")
 

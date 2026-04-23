@@ -41,9 +41,7 @@ def _is_failed_auction(ep: dict) -> bool:
         return False
     if ep["reward_rev"] <= ep["reward_cont"]:
         return False
-    if ep.get("forward_reversal_speed", 0) < 5.0:
-        return False
-    return True
+    return not ep.get("forward_reversal_speed", 0) < 5.0
 
 
 def _is_look_above_below_fail(ep: dict) -> bool:
@@ -56,9 +54,7 @@ def _is_look_above_below_fail(ep: dict) -> bool:
         return False
     if ep["reward_rev"] <= ep["reward_cont"]:
         return False
-    if ep.get("forward_reversal_speed", 0) < 4.0:
-        return False
-    return True
+    return not ep.get("forward_reversal_speed", 0) < 4.0
 
 
 def _is_ib_extension(ep: dict) -> bool:
@@ -73,9 +69,7 @@ def _is_ib_extension(ep: dict) -> bool:
         return False
     if ep["reward_cont"] <= ep["reward_rev"]:
         return False
-    if abs(ep.get("delta_ratio", 0)) < 0.5:
-        return False
-    return True
+    return not abs(ep.get("delta_ratio", 0)) < 0.5
 
 
 def _is_gap_fill(ep: dict) -> bool:
@@ -83,9 +77,7 @@ def _is_gap_fill(ep: dict) -> bool:
     if not ep.get("has_gap", False):
         return False
     t = ep.get("touch_time_et")
-    if t and t.time() > _GAP_CUTOFF:
-        return False
-    return True
+    return not (t and t.time() > _GAP_CUTOFF)
 
 
 def _is_single_print_fill(ep: dict) -> bool:

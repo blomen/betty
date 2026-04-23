@@ -2,10 +2,14 @@
 
 import time
 from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.orm import Session
 
 from ..db.models import (
-    Profile, ProfileProviderBalance, ProfileProviderBonus, BONUS_MIN_ODDS,
+    BONUS_MIN_ODDS,
+    Profile,
+    ProfileProviderBalance,
+    ProfileProviderBonus,
 )
 
 BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
@@ -25,7 +29,7 @@ class ProfileRepo:
 
     def get_active(self) -> Profile:
         """Get the currently active profile, creating default if none exists."""
-        profile = self.db.query(Profile).filter(Profile.is_active == True).first()
+        profile = self.db.query(Profile).filter(Profile.is_active).first()
         if not profile:
             profile = self.db.query(Profile).first()
             if profile:
@@ -41,47 +45,42 @@ class ProfileRepo:
 
     def get_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a specific profile and provider."""
-        record = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == profile_id,
-            ProfileProviderBalance.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBalance)
+            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
+            .first()
+        )
         return record.balance if record else 0.0
 
     def set_balance(self, profile_id: int, provider_id: str, balance: float) -> None:
         """Set balance for a specific profile and provider."""
-        record = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == profile_id,
-            ProfileProviderBalance.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBalance)
+            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
+            .first()
+        )
 
         if record:
             record.balance = balance
             record.updated_at = datetime.now(timezone.utc)
         else:
-            record = ProfileProviderBalance(
-                profile_id=profile_id,
-                provider_id=provider_id,
-                balance=balance
-            )
+            record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=balance)
             self.db.add(record)
 
     def adjust_balance(self, profile_id: int, provider_id: str, amount: float) -> float:
         """Adjust balance for a specific profile and provider. Returns new balance."""
-        record = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == profile_id,
-            ProfileProviderBalance.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBalance)
+            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
+            .first()
+        )
 
         if record:
             record.balance += amount
             record.updated_at = datetime.now(timezone.utc)
             return record.balance
         else:
-            record = ProfileProviderBalance(
-                profile_id=profile_id,
-                provider_id=provider_id,
-                balance=amount
-            )
+            record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=amount)
             self.db.add(record)
             return amount
 
@@ -97,26 +96,33 @@ class ProfileRepo:
             return cached[1]
 
         from ..config import get_exchange_rate
-        records = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == profile_id
-        ).all()
+
+        records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
         total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
         _bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
         return total
 
     def get_all_balances(self, profile_id: int) -> dict[str, float]:
         """Return dict of provider_id -> balance for all providers with balance > 0."""
-        records = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == profile_id,
-            ProfileProviderBalance.balance > 0,
-        ).all()
+        records = (
+            self.db.query(ProfileProviderBalance)
+            .filter(
+                ProfileProviderBalance.profile_id == profile_id,
+                ProfileProviderBalance.balance > 0,
+            )
+            .all()
+        )
         return {r.provider_id: r.balance for r in records}
 
     def get_all_registered_providers(self, profile_id: int) -> set[str]:
         """Return set of all provider_ids registered in the profile (including balance=0)."""
-        records = self.db.query(ProfileProviderBalance.provider_id).filter(
-            ProfileProviderBalance.profile_id == profile_id,
-        ).all()
+        records = (
+            self.db.query(ProfileProviderBalance.provider_id)
+            .filter(
+                ProfileProviderBalance.profile_id == profile_id,
+            )
+            .all()
+        )
         return {r[0] for r in records}
 
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
@@ -129,6 +135,7 @@ class ProfileRepo:
         Returns {"avg_daily_wager": float, "has_history": bool, "days_with_bets": int}.
         """
         from sqlalchemy import func
+
         from ..db.models import Bet
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -157,22 +164,24 @@ class ProfileRepo:
 
     def copy_balances(self, from_profile_id: int, to_profile_id: int) -> int:
         """Copy all balances from one profile to another. Returns count copied."""
-        source_balances = self.db.query(ProfileProviderBalance).filter(
-            ProfileProviderBalance.profile_id == from_profile_id
-        ).all()
+        source_balances = (
+            self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == from_profile_id).all()
+        )
 
         count = 0
         for source in source_balances:
-            existing = self.db.query(ProfileProviderBalance).filter(
-                ProfileProviderBalance.profile_id == to_profile_id,
-                ProfileProviderBalance.provider_id == source.provider_id
-            ).first()
+            existing = (
+                self.db.query(ProfileProviderBalance)
+                .filter(
+                    ProfileProviderBalance.profile_id == to_profile_id,
+                    ProfileProviderBalance.provider_id == source.provider_id,
+                )
+                .first()
+            )
 
             if not existing:
                 new_balance = ProfileProviderBalance(
-                    profile_id=to_profile_id,
-                    provider_id=source.provider_id,
-                    balance=source.balance
+                    profile_id=to_profile_id, provider_id=source.provider_id, balance=source.balance
                 )
                 self.db.add(new_balance)
                 count += 1
@@ -183,10 +192,11 @@ class ProfileRepo:
 
     def get_bonus_status(self, profile_id: int, provider_id: str) -> dict:
         """Get bonus status and wagering progress for a provider."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         if not record:
             return {
@@ -208,14 +218,12 @@ class ProfileRepo:
         _expires = record.expires_at
         if _expires and _expires.tzinfo is None:
             _expires = _expires.replace(tzinfo=timezone.utc)
-        if (record.bonus_status in active_statuses and _expires
-                and datetime.now(timezone.utc) > _expires):
+        if record.bonus_status in active_statuses and _expires and datetime.now(timezone.utc) > _expires:
             record.bonus_status = "completed"
             record.updated_at = datetime.now(timezone.utc)
 
-        is_cleared = (
-            record.bonus_status in ("completed", "available", "claimed") or
-            (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
+        is_cleared = record.bonus_status in ("completed", "available", "claimed") or (
+            record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement
         )
 
         progress_pct = 0.0
@@ -245,17 +253,28 @@ class ProfileRepo:
 
     def get_bonus_statuses_batch(self, profile_id: int, provider_ids: list[str]) -> dict[str, dict]:
         """Batch-fetch bonus statuses for multiple providers in one query."""
-        records = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id.in_(provider_ids),
-        ).all()
+        records = (
+            self.db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == profile_id,
+                ProfileProviderBonus.provider_id.in_(provider_ids),
+            )
+            .all()
+        )
 
         record_map = {r.provider_id: r for r in records}
         default = {
-            "status": "available", "bonus_type": None, "bonus_amount": 0.0,
-            "wagering_requirement": 0.0, "wagered_amount": 0.0, "min_odds": 0.0,
-            "progress_pct": 100.0, "is_cleared": True, "claimed_at": None,
-            "expires_at": None, "days_remaining": None,
+            "status": "available",
+            "bonus_type": None,
+            "bonus_amount": 0.0,
+            "wagering_requirement": 0.0,
+            "wagered_amount": 0.0,
+            "min_odds": 0.0,
+            "progress_pct": 100.0,
+            "is_cleared": True,
+            "claimed_at": None,
+            "expires_at": None,
+            "days_remaining": None,
         }
         now = datetime.now(timezone.utc)
         active_statuses = ("in_progress", "trigger_needed")
@@ -274,9 +293,8 @@ class ProfileRepo:
                 record.bonus_status = "completed"
                 record.updated_at = now
 
-            is_cleared = (
-                record.bonus_status in ("completed", "available", "claimed") or
-                (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
+            is_cleared = record.bonus_status in ("completed", "available", "claimed") or (
+                record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement
             )
             progress_pct = 0.0
             if record.wagering_requirement > 0:
@@ -305,10 +323,11 @@ class ProfileRepo:
 
     def record_wagering(self, profile_id: int, provider_id: str, stake: float, odds: float) -> dict:
         """Record a bet toward wagering requirement."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         if not record or record.bonus_status not in ("in_progress", "trigger_needed"):
             return self.get_bonus_status(profile_id, provider_id)
@@ -369,10 +388,11 @@ class ProfileRepo:
         deadline_days: int | None = None,
     ) -> dict:
         """Start tracking bonus wagering for a provider."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         wagering_requirement = bonus_amount * wagering_multiplier
         now = datetime.now(timezone.utc)
@@ -425,10 +445,11 @@ class ProfileRepo:
         Phase 1 (trigger_needed): wager deposit×multiplier at trigger_odds to unlock bonus.
         Phase 2 (in_progress): bonus added to balance, wager (deposit+bonus)×multiplier at main_min_odds.
         """
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
         expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
@@ -438,11 +459,11 @@ class ProfileRepo:
             bonus_type="bonusdeposit",
             bonus_amount=bonus_amount,
             wagering_multiplier=main_wagering_multiplier,
-            wagering_requirement=trigger_wagering,   # Phase 1: deposit × trigger_multiplier
+            wagering_requirement=trigger_wagering,  # Phase 1: deposit × trigger_multiplier
             wagered_amount=0.0,
-            min_odds=trigger_min_odds,               # Phase 1: trigger odds
-            main_min_odds=main_min_odds,             # Saved for phase 2
-            deposit_amount=deposit_amount,           # Original deposit for phase 2 calc
+            min_odds=trigger_min_odds,  # Phase 1: trigger odds
+            main_min_odds=main_min_odds,  # Saved for phase 2
+            deposit_amount=deposit_amount,  # Original deposit for phase 2 calc
             trigger_mode=trigger_mode,
             claimed_at=now,
             expires_at=expires,
@@ -464,10 +485,11 @@ class ProfileRepo:
 
     def claim_bonus(self, profile_id: int, provider_id: str) -> dict:
         """Mark a bonus as already claimed (used on another account)."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
         if record:
@@ -488,10 +510,11 @@ class ProfileRepo:
 
     def unclaim_bonus(self, profile_id: int, provider_id: str) -> dict:
         """Reset a claimed bonus back to available."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         if record:
             record.bonus_status = "available"
@@ -516,10 +539,11 @@ class ProfileRepo:
         trigger_mode: str = "single",
     ) -> dict:
         """Start freebet tracking — user needs to wager trigger amount to unlock."""
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         wagering_req = trigger_wagering or bonus_amount
         now = datetime.now(timezone.utc)
@@ -559,10 +583,11 @@ class ProfileRepo:
             "freebet_available": "completed",
         }
 
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(ProfileProviderBonus.profile_id == profile_id, ProfileProviderBonus.provider_id == provider_id)
+            .first()
+        )
 
         if not record:
             return self.get_bonus_status(profile_id, provider_id)
@@ -581,10 +606,14 @@ class ProfileRepo:
 
         Returns both per-provider stats and total (all-provider) stats for context.
         """
-        record = self.db.query(ProfileProviderBonus).filter(
-            ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.provider_id == provider_id,
-        ).first()
+        record = (
+            self.db.query(ProfileProviderBonus)
+            .filter(
+                ProfileProviderBonus.profile_id == profile_id,
+                ProfileProviderBonus.provider_id == provider_id,
+            )
+            .first()
+        )
 
         if not record or record.bonus_status not in ("in_progress", "trigger_needed"):
             return None
@@ -594,6 +623,7 @@ class ProfileRepo:
             return None
 
         from ..db.models import Bet
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
         min_odds = record.min_odds or BONUS_MIN_ODDS
 
@@ -609,12 +639,16 @@ class ProfileRepo:
             required_weekly_wagering = remaining / weeks_remaining if weeks_remaining > 0 else remaining
 
         # --- Per-provider qualifying bets ---
-        recent_bets = self.db.query(Bet).filter(
-            Bet.profile_id == profile_id,
-            Bet.provider_id == provider_id,
-            Bet.placed_at >= cutoff,
-            Bet.odds >= min_odds,
-        ).all()
+        recent_bets = (
+            self.db.query(Bet)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.provider_id == provider_id,
+                Bet.placed_at >= cutoff,
+                Bet.odds >= min_odds,
+            )
+            .all()
+        )
 
         bets_per_week = 0.0
         avg_stake = 0.0
@@ -632,10 +666,14 @@ class ProfileRepo:
             est_weeks = remaining / weekly_wagering if weekly_wagering > 0 else None
 
         # --- Total across ALL providers (overall betting pace + bankroll context) ---
-        total_bets = self.db.query(Bet).filter(
-            Bet.profile_id == profile_id,
-            Bet.placed_at >= cutoff,
-        ).all()
+        total_bets = (
+            self.db.query(Bet)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.placed_at >= cutoff,
+            )
+            .all()
+        )
 
         total_bets_per_week = 0.0
         total_avg_stake = 0.0

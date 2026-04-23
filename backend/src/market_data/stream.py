@@ -1,12 +1,14 @@
 """Databento live stream client for Trades + MBP-1 + Statistics."""
+
 import asyncio
+import contextlib
 import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable
 
 from .level_monitor import LevelMonitor
 
@@ -36,11 +38,17 @@ class StreamState:
     """
 
     # Event types where only the latest value matters
-    SNAPSHOT_TYPES = frozenset({
-        "tick", "book", "candle",
-        "orderflow_update", "ml_features", "dqn_inference",
-        "statistics",
-    })
+    SNAPSHOT_TYPES = frozenset(
+        {
+            "tick",
+            "book",
+            "candle",
+            "orderflow_update",
+            "ml_features",
+            "dqn_inference",
+            "statistics",
+        }
+    )
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -89,6 +97,7 @@ class StreamState:
 @dataclass
 class TopOfBook:
     """Current best bid/ask from MBP-1 stream."""
+
     bid_price: float = 0.0
     bid_size: int = 0
     ask_price: float = 0.0
@@ -108,6 +117,7 @@ class TopOfBook:
 @dataclass
 class TickBuffer:
     """Circular buffer of recent ticks with running accumulators."""
+
     max_size: int = 10_000
     ticks: deque = field(default_factory=lambda: deque(maxlen=10_000))
     cvd: int = 0
@@ -148,13 +158,15 @@ class TickWriter:
         await self._flush()
 
     def add(self, ts: datetime, price: float, size: int, side: str):
-        self._batch.append({
-            "symbol": self._symbol,
-            "ts": ts,
-            "price": price,
-            "size": size,
-            "side": side,
-        })
+        self._batch.append(
+            {
+                "symbol": self._symbol,
+                "ts": ts,
+                "price": price,
+                "size": size,
+                "side": side,
+            }
+        )
         if len(self._batch) >= TICK_BATCH_SIZE:
             asyncio.create_task(self._flush())
 
@@ -174,6 +186,7 @@ class TickWriter:
                 db = self._db_session_factory()
                 try:
                     from ..repositories.market_repo import MarketRepo
+
                     repo = MarketRepo(db)
                     repo.bulk_insert_trades(batch)
                 finally:
@@ -187,8 +200,10 @@ class TickWriter:
     @staticmethod
     async def prune_old_trades(db_session_factory: Callable, symbol: str = "NQ"):
         """Delete ticks older than current session (midnight CET/CEST)."""
+
         def _prune():
             from zoneinfo import ZoneInfo
+
             _CET = ZoneInfo("Europe/Stockholm")
             today_cet = datetime.now(timezone.utc).astimezone(_CET).date()
             cutoff = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
@@ -196,6 +211,7 @@ class TickWriter:
                 db = db_session_factory()
                 try:
                     from ..repositories.market_repo import MarketRepo
+
                     repo = MarketRepo(db)
                     repo.prune_trades(symbol, cutoff)
                     logger.info("Pruned market_trades before %s for %s", cutoff, symbol)
@@ -315,6 +331,7 @@ class DatabentoLiveStream:
         """
         if DatabentoLiveStream._ET_TZ is None:
             from zoneinfo import ZoneInfo
+
             DatabentoLiveStream._ET_TZ = ZoneInfo("US/Eastern")
         dt = datetime.fromtimestamp(epoch, tz=DatabentoLiveStream._ET_TZ)
         wd = dt.weekday()
@@ -325,9 +342,7 @@ class DatabentoLiveStream:
             return False
         if wd == 6 and hour < 18:
             return False
-        if hour == 17:
-            return False
-        return True
+        return hour != 17
 
     @staticmethod
     def _seconds_until_globex_open() -> float:
@@ -337,6 +352,7 @@ class DatabentoLiveStream:
         """
         if DatabentoLiveStream._ET_TZ is None:
             from zoneinfo import ZoneInfo
+
             DatabentoLiveStream._ET_TZ = ZoneInfo("US/Eastern")
         now = datetime.now(DatabentoLiveStream._ET_TZ)
         wd = now.weekday()
@@ -376,7 +392,7 @@ class DatabentoLiveStream:
         self.symbol = symbol
         self.buffer = TickBuffer()
         self.book = TopOfBook()
-        self._candle_flow = CandleFlow()        # 5m candles (persist only)
+        self._candle_flow = CandleFlow()  # 5m candles (persist only)
         self._candle_flow_1m = CandleFlow(bucket_seconds=60, emit_interval=1.0)  # 1m (emit closed + persist)
         self._level_monitor: LevelMonitor | None = None
         self._running = False
@@ -411,11 +427,13 @@ class DatabentoLiveStream:
         # buffers synchronously on the event loop, starving HTTP handlers.
         # By running in a separate thread/loop, the main event loop stays free.
         self._main_loop = asyncio.get_running_loop()
+
         def _run_stream_thread():
             self._stream_thread_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._stream_thread_loop)
             self._stream_thread_ready.set()  # Signal that loop is available
             self._stream_thread_loop.run_until_complete(self._stream_loop())
+
         self._stream_thread = threading.Thread(target=_run_stream_thread, daemon=True, name="databento-stream")
         self._stream_thread.start()
         # Wait for stream thread loop in a non-blocking way
@@ -433,21 +451,21 @@ class DatabentoLiveStream:
         self._running = False
         # Close client to unblock `async for record in client`
         if self._live_client:
-            try:
+            with contextlib.suppress(Exception):
                 self._live_client.close()
-            except Exception:
-                pass
             self._live_client = None
-        if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+        if hasattr(self, "_stream_thread") and self._stream_thread.is_alive():
             self._stream_thread.join(timeout=5)
         self._running = True
         self._last_record_time = time.monotonic()
         import threading
+
         def _run():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._stream_thread_loop = loop
             loop.run_until_complete(self._stream_loop())
+
         self._stream_thread = threading.Thread(target=_run, daemon=True, name="databento-stream")
         self._stream_thread.start()
 
@@ -457,10 +475,8 @@ class DatabentoLiveStream:
         # Close Databento client first — unblocks `async for record in client`
         # in the stream thread so it can exit promptly
         if self._live_client:
-            try:
+            with contextlib.suppress(Exception):
                 self._live_client.close()
-            except Exception:
-                pass
             self._live_client = None
 
         # Cancel main-loop tasks
@@ -473,13 +489,11 @@ class DatabentoLiveStream:
         # Await cancelled tasks so they actually finish (prevents pending-task warnings)
         for task in tasks_to_cancel:
             if task:
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
 
         # Join the stream thread (with timeout — don't hang shutdown)
-        if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+        if hasattr(self, "_stream_thread") and self._stream_thread.is_alive():
             await asyncio.to_thread(self._stream_thread.join, 3)
 
         if self._tick_writer:
@@ -518,16 +532,22 @@ class DatabentoLiveStream:
         Runs in a thread to avoid blocking the main event loop.
         On failure (e.g. DB locked), queues the candle for retry.
         """
+
         def _write():
             db = self._db_session_factory()
             try:
                 from ..repositories.market_repo import MarketRepo
+
                 ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
                 MarketRepo(db).upsert_candle(
                     symbol=self.symbol.split(".")[0],
                     interval=interval,
                     ts=ts,
-                    o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
+                    o=candle["o"],
+                    h=candle["h"],
+                    l=candle["l"],
+                    c=candle["c"],
+                    v=candle["v"],
                 )
             finally:
                 db.close()
@@ -536,8 +556,12 @@ class DatabentoLiveStream:
             await asyncio.to_thread(_write)
         except Exception as e:
             self._candle_write_queue.append((candle, interval))
-            logger.warning("Failed to persist closed %s candle (queued, %d pending): %s",
-                           interval, len(self._candle_write_queue), e)
+            logger.warning(
+                "Failed to persist closed %s candle (queued, %d pending): %s",
+                interval,
+                len(self._candle_write_queue),
+                e,
+            )
 
     async def _candle_retry_loop(self):
         """Periodically retry persisting queued candles that failed due to DB lock.
@@ -557,13 +581,20 @@ class DatabentoLiveStream:
                     db = self._db_session_factory()
                     try:
                         from ..repositories.market_repo import MarketRepo
+
                         repo = MarketRepo(db)
                         sym = self.symbol.split(".")[0]
                         for candle, interval in batch:
                             ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
                             repo.upsert_candle(
-                                symbol=sym, interval=interval, ts=ts,
-                                o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
+                                symbol=sym,
+                                interval=interval,
+                                ts=ts,
+                                o=candle["o"],
+                                h=candle["h"],
+                                l=candle["l"],
+                                c=candle["c"],
+                                v=candle["v"],
                             )
                             written += 1
                     finally:
@@ -600,6 +631,7 @@ class DatabentoLiveStream:
             # --- Weekend / extended close: suspend stream and sleep ---
             if not in_globex and not _stream_suspended:
                 from zoneinfo import ZoneInfo
+
                 dt_et = datetime.fromtimestamp(now_epoch, tz=ZoneInfo("US/Eastern"))
                 # Only suspend for weekend close (not daily halt — that's brief)
                 is_weekend_close = (
@@ -611,7 +643,7 @@ class DatabentoLiveStream:
                     logger.info("Databento watchdog: weekend close detected — suspending stream thread")
                     # Stop stream thread to free network/CPU
                     self._running = False
-                    if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+                    if hasattr(self, "_stream_thread") and self._stream_thread.is_alive():
                         self._stream_thread.join(timeout=5)
                     _stream_suspended = True
                     self._running = True  # Keep watchdog alive
@@ -635,6 +667,7 @@ class DatabentoLiveStream:
 
             # --- Daily halt → open transition: force reconnect ---
             from zoneinfo import ZoneInfo
+
             dt_et = datetime.fromtimestamp(now_epoch, tz=ZoneInfo("US/Eastern"))
             in_halt = dt_et.hour == 17
             if was_in_halt and not in_halt and in_globex:
@@ -660,6 +693,7 @@ class DatabentoLiveStream:
     def _get_recent_candles(self):
         """Build CandleFlow candles from recent tick buffer for orderflow computation."""
         from .orderflow import build_candle_flow
+
         ticks = list(self.buffer.ticks)  # deque snapshot
         if len(ticks) < 10:
             return []
@@ -678,6 +712,7 @@ class DatabentoLiveStream:
         (Databento historical API calls can take 30-120s).
         """
         import threading
+
         while self._running:
             await asyncio.sleep(self.PERIODIC_BACKFILL_INTERVAL_S)
             if not self._running:
@@ -694,6 +729,7 @@ class DatabentoLiveStream:
                     logger.warning("Periodic gap backfill failed (non-fatal): %s", e)
                 finally:
                     loop.close()
+
             threading.Thread(target=_run, daemon=True, name="periodic-backfill").start()
 
     async def _backfill_gap(self):
@@ -705,9 +741,9 @@ class DatabentoLiveStream:
         if not self._db_session_factory:
             return
         try:
-            from ..repositories.market_repo import MarketRepo
-            from ..market_data.databento_provider import DabentoProvider
             from ..config.trading_loader import get_market_data_config
+            from ..market_data.databento_provider import DabentoProvider
+            from ..repositories.market_repo import MarketRepo
 
             db_sym = self.symbol.split(".")[0]
             now = datetime.now(timezone.utc)
@@ -739,7 +775,9 @@ class DatabentoLiveStream:
                         max_gap = bucket_s * 3  # 2 missing bars is OK
                         gaps = []
                         for i in range(1, len(rows)):
-                            ts_prev = rows[i - 1].ts if rows[i - 1].ts.tzinfo else rows[i - 1].ts.replace(tzinfo=timezone.utc)
+                            ts_prev = (
+                                rows[i - 1].ts if rows[i - 1].ts.tzinfo else rows[i - 1].ts.replace(tzinfo=timezone.utc)
+                            )
                             ts_curr = rows[i].ts if rows[i].ts.tzinfo else rows[i].ts.replace(tzinfo=timezone.utc)
                             diff = (ts_curr - ts_prev).total_seconds()
                             if diff > max_gap:
@@ -752,9 +790,13 @@ class DatabentoLiveStream:
 
                     inner = DabentoProvider(config)
                     for gap_start, gap_end in gaps:
-                        logger.info("Gap backfill %s: %s → %s (%.0f min gap)",
-                                    interval, gap_start, gap_end,
-                                    (gap_end - gap_start).total_seconds() / 60)
+                        logger.info(
+                            "Gap backfill %s: %s → %s (%.0f min gap)",
+                            interval,
+                            gap_start,
+                            gap_end,
+                            (gap_end - gap_start).total_seconds() / 60,
+                        )
 
                         bars = await asyncio.wait_for(
                             inner.get_bars(db_symbol, interval, gap_start, gap_end),
@@ -897,6 +939,7 @@ class DatabentoLiveStream:
                 elif hasattr(record, "stat_type"):
                     # Statistics record — capture all useful CME daily/intraday stats
                     from databento_dbn import StatType
+
                     _QUANTITY_STATS = {
                         StatType.OPEN_INTEREST: "open_interest",
                         StatType.CLEARED_VOLUME: "cleared_volume",
@@ -923,12 +966,14 @@ class DatabentoLiveStream:
                         name = None
 
                     if name:
-                        self._publish({
-                            "type": "statistics",
-                            "ts": ts.isoformat(),
-                            "stat": name,
-                            **{k: v["value"] for k, v in self._daily_stats.items()},
-                        })
+                        self._publish(
+                            {
+                                "type": "statistics",
+                                "ts": ts.isoformat(),
+                                "stat": name,
+                                **{k: v["value"] for k, v in self._daily_stats.items()},
+                            }
+                        )
 
                 self._last_record_time = time.monotonic()
                 record_count += 1

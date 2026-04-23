@@ -1,14 +1,15 @@
 """Postmortem API routes — thin handlers delegating to PostmortemService."""
 
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
+from ...analysis.patterns import detect_bet_patterns, detect_trade_patterns
 from ...repositories import ProfileRepo
 from ...repositories.postmortem_repo import PostmortemRepo
 from ...services.postmortem_service import PostmortemService
-from ...analysis.patterns import detect_bet_patterns, detect_trade_patterns
+from ..deps import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,18 @@ def get_bet_summary(db: Session = Depends(get_db)):
     rows = repo.get_bet_pms_for_profile(profile_id)
 
     from collections import defaultdict
-    buckets = defaultdict(lambda: {"count": 0, "total_stake": 0.0, "total_profit": 0.0, "edge_sum": 0.0, "clv_sum": 0.0, "edge_count": 0, "clv_count": 0})
+
+    buckets = defaultdict(
+        lambda: {
+            "count": 0,
+            "total_stake": 0.0,
+            "total_profit": 0.0,
+            "edge_sum": 0.0,
+            "clv_sum": 0.0,
+            "edge_count": 0,
+            "clv_count": 0,
+        }
+    )
 
     for bet, pm in rows:
         b = buckets[pm.classification]
@@ -99,14 +111,16 @@ def get_bet_summary(db: Session = Depends(get_db)):
 
     summary = []
     for cls, b in buckets.items():
-        summary.append({
-            "classification": cls,
-            "count": b["count"],
-            "avg_edge": round(b["edge_sum"] / b["edge_count"], 2) if b["edge_count"] else None,
-            "avg_clv": round(b["clv_sum"] / b["clv_count"], 2) if b["clv_count"] else None,
-            "total_profit": round(b["total_profit"], 2),
-            "roi": round(b["total_profit"] / b["total_stake"] * 100, 2) if b["total_stake"] > 0 else 0,
-        })
+        summary.append(
+            {
+                "classification": cls,
+                "count": b["count"],
+                "avg_edge": round(b["edge_sum"] / b["edge_count"], 2) if b["edge_count"] else None,
+                "avg_clv": round(b["clv_sum"] / b["clv_count"], 2) if b["clv_count"] else None,
+                "total_profit": round(b["total_profit"], 2),
+                "roi": round(b["total_profit"] / b["total_stake"] * 100, 2) if b["total_stake"] > 0 else 0,
+            }
+        )
 
     summary.sort(key=lambda s: s["count"], reverse=True)
     return {"summary": summary, "total": len(rows)}
@@ -167,6 +181,7 @@ def get_trade_summary(account_id: int, db: Session = Depends(get_db)):
     rows = repo.get_trade_pms_for_account(account_id)
 
     from collections import defaultdict
+
     buckets = defaultdict(lambda: {"count": 0, "r_sum": 0.0, "pnl_sum": 0.0})
 
     for trade, pm in rows:
@@ -177,12 +192,14 @@ def get_trade_summary(account_id: int, db: Session = Depends(get_db)):
 
     summary = []
     for cls, b in buckets.items():
-        summary.append({
-            "classification": cls,
-            "count": b["count"],
-            "avg_r": round(b["r_sum"] / b["count"], 2) if b["count"] else 0,
-            "total_pnl": round(b["pnl_sum"], 2),
-        })
+        summary.append(
+            {
+                "classification": cls,
+                "count": b["count"],
+                "avg_r": round(b["r_sum"] / b["count"], 2) if b["count"] else 0,
+                "total_pnl": round(b["pnl_sum"], 2),
+            }
+        )
 
     summary.sort(key=lambda s: s["count"], reverse=True)
     return {"summary": summary, "total": len(rows)}

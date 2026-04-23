@@ -11,12 +11,11 @@ FT detection:
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from ..db.models import Bet, Event, Odds
+from ..db.models import Event
 from .bet_service import BetService
 
 logger = logging.getLogger(__name__)
@@ -24,13 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ── Settlement determination (pure function) ──────────────────────────
 
+
 def determine_bet_result(
     home_score: int,
     away_score: int,
     market: str,
     outcome: str,
-    point: Optional[float] = None,
-) -> Optional[str]:
+    point: float | None = None,
+) -> str | None:
     """Determine bet outcome from match score.
 
     Score semantics vary by sport:
@@ -103,6 +103,7 @@ def determine_bet_result(
 
 # ── Main service ──────────────────────────────────────────────────────
 
+
 class ResultsService:
     """Settles pending bets using scores from Pinnacle and Polymarket."""
 
@@ -115,6 +116,7 @@ class ResultsService:
         """Get best-of format from stats_json, or sport default (3)."""
         if event.stats_json:
             import json as _json
+
             try:
                 stats = _json.loads(event.stats_json)
                 bo = stats.get("bo")
@@ -146,8 +148,8 @@ class ResultsService:
 
         Returns: {matched, updated, skipped}
         """
-        from ..matching.normalizer import generate_canonical_id
         from ..matching.matcher import get_team_match_score
+        from ..matching.normalizer import generate_canonical_id
 
         matched = 0
         updated = 0
@@ -187,6 +189,7 @@ class ResultsService:
 
                 # Query events on that date (within ±1 day)
                 from datetime import timedelta
+
                 try:
                     target_date = datetime.strptime(date_str, "%Y%m%d")
                 except (ValueError, TypeError):
@@ -252,6 +255,7 @@ class ResultsService:
             resolved_markets = rev.get("resolved_markets")
             if winner_team or resolved_markets:
                 import json as _json
+
                 try:
                     stats = _json.loads(db_event.stats_json) if db_event.stats_json else {}
                 except (ValueError, TypeError):
@@ -285,8 +289,7 @@ class ResultsService:
             self.db.commit()
 
         logger.info(
-            f"[ResultsService] Polymarket scores: {matched} matched, "
-            f"{updated} newly finished, {skipped} skipped"
+            f"[ResultsService] Polymarket scores: {matched} matched, {updated} newly finished, {skipped} skipped"
         )
 
         return {"matched": matched, "updated": updated, "skipped": skipped}

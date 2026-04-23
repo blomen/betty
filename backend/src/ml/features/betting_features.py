@@ -1,20 +1,30 @@
 """Extract feature vectors for sports betting opportunities (M1 Edge Quality)."""
+
 import statistics
 from datetime import datetime, timezone
-from src.constants import SHARP_PROVIDERS, PLATFORM_MAP
+
+from src.constants import PLATFORM_MAP, SHARP_PROVIDERS
 
 
 def extract_betting_features(
-    edge_pct: float, provider_odds: float, fair_odds: float, fair_probability: float,
-    provider: str, sport: str, market: str, event_id: str, prob_sum: float,
-    odds_by_outcome: dict[str, list[dict]], pinnacle_overround: float,
-    event_start_time: datetime | None, point: float | None = None,
+    edge_pct: float,
+    provider_odds: float,
+    fair_odds: float,
+    fair_probability: float,
+    provider: str,
+    sport: str,
+    market: str,
+    event_id: str,
+    prob_sum: float,
+    odds_by_outcome: dict[str, list[dict]],
+    pinnacle_overround: float,
+    event_start_time: datetime | None,
+    point: float | None = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
 
     # Find the outcome that contains this provider's odds
-    all_outcome_odds = odds_by_outcome.get(
-        _find_outcome_for_provider(odds_by_outcome, provider, provider_odds), [])
+    all_outcome_odds = odds_by_outcome.get(_find_outcome_for_provider(odds_by_outcome, provider, provider_odds), [])
     soft_odds = [p for p in all_outcome_odds if p["provider"] not in SHARP_PROVIDERS]
     soft_odds_values = [p["odds"] for p in soft_odds]
 
@@ -41,15 +51,22 @@ def extract_betting_features(
         time_to_start = (event_start_time - now).total_seconds() / 60
 
     return {
-        "edge_pct": edge_pct, "prob_sum": prob_sum,
+        "edge_pct": edge_pct,
+        "prob_sum": prob_sum,
         "odds_ratio": provider_odds / fair_odds if fair_odds > 0 else None,
-        "odds_age_minutes": odds_age_minutes, "sharp_age_minutes": sharp_age_minutes,
-        "time_to_start_minutes": time_to_start, "pinnacle_overround": pinnacle_overround,
-        "num_providers_with_odds": len(soft_odds), "provider_odds_rank": provider_odds_rank,
+        "odds_age_minutes": odds_age_minutes,
+        "sharp_age_minutes": sharp_age_minutes,
+        "time_to_start_minutes": time_to_start,
+        "pinnacle_overround": pinnacle_overround,
+        "num_providers_with_odds": len(soft_odds),
+        "provider_odds_rank": provider_odds_rank,
         "market_consensus_spread": round(consensus_spread, 4),
         "provider_platform": PLATFORM_MAP.get(provider, provider),
-        "sport": sport, "market_type": market, "point": point,
-        "hour_of_day": now.hour, "day_of_week": now.weekday(),
+        "sport": sport,
+        "market_type": market,
+        "point": point,
+        "hour_of_day": now.hour,
+        "day_of_week": now.weekday(),
     }
 
 

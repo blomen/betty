@@ -23,6 +23,7 @@ Event detail page market labels:
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -228,10 +229,8 @@ class InterwettenRetriever(BrowserRetriever):
                     event_hrefs.update(league_hrefs)
 
         for p in league_pages:
-            try:
+            with contextlib.suppress(Exception):
                 await p.close()
-            except Exception:
-                pass
 
         logger.info(
             f"[{self.provider_id}] {sport}: {len(all_events)} events from {len(leagues)} leagues ({errors} errors)"
@@ -515,10 +514,8 @@ class InterwettenRetriever(BrowserRetriever):
         await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo), return_exceptions=True)
 
         for p in extra_pages:
-            try:
+            with contextlib.suppress(Exception):
                 await p.close()
-            except Exception:
-                pass
 
         return enriched
 

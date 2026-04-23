@@ -9,11 +9,10 @@ All features are normalized to 0-1 range where:
 - 1.0 = Highly suspicious pattern (risky)
 """
 
+import logging
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
-import statistics
-import logging
 
 from sqlalchemy.orm import Session
 
@@ -48,8 +47,8 @@ class BehavioralFeatures:
     win_rate_deviation: float = 0.0  # Deviation from expected win rate
 
     # Account tracking
-    account_age_days: int = 0            # Days since first bet
-    total_bets_all_time: int = 0         # All-time bet count for this provider
+    account_age_days: int = 0  # Days since first bet
+    total_bets_all_time: int = 0  # All-time bet count for this provider
 
     # Metadata
     bets_analyzed: int = 0
@@ -107,19 +106,10 @@ class FeatureExtractor:
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.window_days)
 
         # Get bets within window
-        bets = (
-            self.db.query(Bet)
-            .filter(Bet.provider_id == provider_id)
-            .filter(Bet.placed_at >= cutoff)
-            .all()
-        )
+        bets = self.db.query(Bet).filter(Bet.provider_id == provider_id).filter(Bet.placed_at >= cutoff).all()
 
         # Get ALL bets for this provider (for account freshness calculation)
-        all_bets = (
-            self.db.query(Bet)
-            .filter(Bet.provider_id == provider_id)
-            .all()
-        )
+        all_bets = self.db.query(Bet).filter(Bet.provider_id == provider_id).all()
 
         # Calculate account age (uses all bets, not just window)
         account_age, total_bets = self._calculate_account_age(all_bets)
@@ -211,7 +201,7 @@ class FeatureExtractor:
         # Normalize: 1-2 leagues = 1.0, 10+ leagues = 0.0
         league_score = max(0, 1 - (league_count - 1) / 9)
 
-        return (sport_score * 0.5 + league_score * 0.5)
+        return sport_score * 0.5 + league_score * 0.5
 
     def _calculate_timing_regularity(self, bets: list[Bet]) -> float:
         """
@@ -276,12 +266,7 @@ class FeatureExtractor:
         """
         # Get all bets in window (not just this provider)
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.window_days)
-        all_bets = (
-            self.db.query(Bet)
-            .filter(Bet.placed_at >= cutoff)
-            .filter(Bet.event_id.isnot(None))
-            .all()
-        )
+        all_bets = self.db.query(Bet).filter(Bet.placed_at >= cutoff).filter(Bet.event_id.isnot(None)).all()
 
         # Group bets by event
         event_bets: dict[str, list[Bet]] = {}
@@ -293,7 +278,7 @@ class FeatureExtractor:
         hedge_count = 0
         total_events = 0
 
-        for event_id, event_bet_list in event_bets.items():
+        for _event_id, event_bet_list in event_bets.items():
             providers_in_event = set(b.provider_id for b in event_bet_list)
 
             if provider_id in providers_in_event:

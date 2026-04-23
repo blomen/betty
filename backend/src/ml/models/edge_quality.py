@@ -5,30 +5,47 @@ Replaces hardcoded MIN_VALID_PROB_SUM, MAX_ODDS_RATIO, MAX_EDGE_PCT thresholds.
 
 Min training data: 200 bets with CLV tracking.
 """
-import logging
+
 import json
+import logging
 import warnings
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 # Phase 1 features (available immediately from scanner data)
 FEATURE_NAMES_PHASE1 = [
-    "edge_pct", "prob_sum", "odds_ratio",
-    "odds_age_minutes", "sharp_age_minutes", "time_to_start_minutes",
-    "pinnacle_overround", "num_providers_with_odds", "provider_odds_rank",
-    "market_consensus_spread", "hour_of_day", "day_of_week",
-    "sport", "market_type", "point",
+    "edge_pct",
+    "prob_sum",
+    "odds_ratio",
+    "odds_age_minutes",
+    "sharp_age_minutes",
+    "time_to_start_minutes",
+    "pinnacle_overround",
+    "num_providers_with_odds",
+    "provider_odds_rank",
+    "market_consensus_spread",
+    "hour_of_day",
+    "day_of_week",
+    "sport",
+    "market_type",
+    "point",
 ]
 
 # Phase 2 features (require historical data accumulation)
 FEATURE_NAMES_PHASE2 = FEATURE_NAMES_PHASE1 + [
-    "odds_movement_direction", "odds_movement_magnitude",
-    "sharp_line_stability", "provider_platform",
-    "is_platform_outlier", "provider_historical_clv_avg",
-    "provider_update_frequency", "provider_match_rate",
-    "league_liquidity_proxy", "home_team_popularity_proxy",
+    "odds_movement_direction",
+    "odds_movement_magnitude",
+    "sharp_line_stability",
+    "provider_platform",
+    "is_platform_outlier",
+    "provider_historical_clv_avg",
+    "provider_update_frequency",
+    "provider_match_rate",
+    "league_liquidity_proxy",
+    "home_team_popularity_proxy",
     "minutes_since_extraction",
 ]
 
@@ -56,6 +73,7 @@ class EdgeQualityModel:
             return None
 
         from src.ml.optimizer.trainer import train_model
+
         result = train_model(X, y, task="classification", min_samples=MIN_SAMPLES, feature_names=self.feature_names)
         if result is None:
             return None
@@ -64,11 +82,15 @@ class EdgeQualityModel:
         file_path = str(MODELS_DIR / "edge_quality_latest.joblib")
         try:
             import joblib
-            joblib.dump({
-                "model": result["model"],
-                "feature_names": self.feature_names,
-                "task": "classification",
-            }, file_path)
+
+            joblib.dump(
+                {
+                    "model": result["model"],
+                    "feature_names": self.feature_names,
+                    "task": "classification",
+                },
+                file_path,
+            )
         except ImportError:
             logger.warning("joblib not installed — cannot save model")
             return None

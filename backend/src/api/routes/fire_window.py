@@ -1,6 +1,7 @@
 """Fire Window API routes — provider-by-provider batch execution."""
 
 import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -112,14 +113,17 @@ async def get_next_bet():
             nav_pid = result.get("provider_id") or window.current_provider
             try:
                 from ...mirror.workflows import get_workflow
+
                 workflow = get_workflow(nav_pid)
-                context = getattr(mirror, 'interceptor', None)
-                context = getattr(context, 'context', None) if context else None
+                context = getattr(mirror, "interceptor", None)
+                context = getattr(context, "context", None) if context else None
                 if context:
                     page = await workflow.find_tab(context)
                     if page:
+
                         class BetNav:
                             pass
+
                         bet = BetNav()
                         bet.bet_id = result["bet_id"]
                         bet.market_slug = result.get("market_slug")
@@ -226,12 +230,13 @@ async def pinnacle_scan():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows import get_workflow
+
     workflow = get_workflow("pinnacle")
     page = await workflow.find_tab(context)
     if not page:
@@ -246,12 +251,13 @@ async def pinnacle_settle_all():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows import get_workflow
+
     workflow = get_workflow("pinnacle")
     page = await workflow.find_tab(context)
     if not page:
@@ -266,12 +272,13 @@ async def polymarket_portfolio():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows.polymarket import PolymarketWorkflow
+
     workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
     page = await workflow.find_tab(context)
     if not page:
@@ -290,16 +297,21 @@ async def polymarket_portfolio():
     try:
         from ...db.models import Bet, get_session
         from ...repositories.profile_repo import ProfileRepo
+
         db = get_session()
         try:
             repo = ProfileRepo(db)
             profile = repo.get_active()
             if profile:
-                pending = db.query(Bet).filter(
-                    Bet.profile_id == profile.id,
-                    Bet.provider_id == "polymarket",
-                    Bet.result == "pending",
-                ).all()
+                pending = (
+                    db.query(Bet)
+                    .filter(
+                        Bet.profile_id == profile.id,
+                        Bet.provider_id == "polymarket",
+                        Bet.result == "pending",
+                    )
+                    .all()
+                )
                 pending_count = len(pending)
                 pending_stake = round(sum(b.stake for b in pending), 2)
         finally:
@@ -321,12 +333,13 @@ async def polymarket_redeem():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows.polymarket import PolymarketWorkflow
+
     workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
     page = await workflow.find_tab(context)
     if not page:
@@ -345,12 +358,13 @@ async def polymarket_scan():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows.polymarket import PolymarketWorkflow
+
     workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
 
     page = await workflow.find_tab(context)
@@ -358,7 +372,8 @@ async def polymarket_scan():
         page = await context.new_page()
         await page.goto(
             "https://polymarket.com/portfolio?tab=positions",
-            wait_until="domcontentloaded", timeout=15000,
+            wait_until="domcontentloaded",
+            timeout=15000,
         )
 
     return await workflow.scan_portfolio_settlements(page)
@@ -373,12 +388,13 @@ async def polymarket_settle_all():
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
-    context = getattr(mirror, 'interceptor', None)
-    context = getattr(context, 'context', None) if context else None
+    context = getattr(mirror, "interceptor", None)
+    context = getattr(context, "context", None) if context else None
     if not context:
         raise HTTPException(400, "No browser context")
 
     from ...mirror.workflows.polymarket import PolymarketWorkflow
+
     workflow = PolymarketWorkflow(provider_id="polymarket", domain="polymarket.com")
 
     page = await workflow.find_tab(context)
@@ -386,7 +402,8 @@ async def polymarket_settle_all():
         page = await context.new_page()
         await page.goto(
             "https://polymarket.com/portfolio?tab=positions",
-            wait_until="domcontentloaded", timeout=15000,
+            wait_until="domcontentloaded",
+            timeout=15000,
         )
 
     return await workflow.settle_all(page)

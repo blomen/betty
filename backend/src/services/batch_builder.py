@@ -710,7 +710,6 @@ class BatchBuilder:
 
             # Soft: fill-then-spill — first sibling up to cap, then next
             sibs = siblings.get(cluster, [bet.provider_id])
-            assigned = False
             for pid in sibs:
                 if bets_assigned.get(pid, 0) >= cap:
                     continue
@@ -735,7 +734,6 @@ class BatchBuilder:
 
                 bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
                 batch.append(placed)
-                assigned = True
                 break
 
             # All siblings at cap — bet dropped
@@ -768,7 +766,7 @@ class BatchBuilder:
         soft_bets = [b for b in batch if b.tier == "soft"]
 
         # Priority tier breakdown for soft bets (funded only)
-        funded_soft = [b for b in soft_bets if b.funded]
+        [b for b in soft_bets if b.funded]
 
         poly_ev_usdc = round(sum(b.expected_profit for b in polymarket_bets), 2)
         pinnacle_ev = round(sum(b.expected_profit for b in pinnacle_bets), 2)

@@ -10,8 +10,9 @@ import logging
 import os
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -92,14 +93,12 @@ async def lifespan(app: FastAPI):
     # Kill orphaned browser processes from previous mirror session
     import subprocess
 
-    try:
+    with suppress(Exception):
         subprocess.run(
             ["taskkill", "/F", "/IM", "firefox.exe", "/T"],
             capture_output=True,
             timeout=5,
         )
-    except Exception:
-        pass
 
     # Add extraction-specific log file (INFO level) alongside root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
@@ -972,10 +971,8 @@ async def lifespan(app: FastAPI):
     # Graceful shutdown — flush live episodes before stopping
     if _live_collector_task and not _live_collector_task.done():
         _live_collector_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await _live_collector_task
-        except asyncio.CancelledError:
-            pass
     try:
         from ..rl.live_collector import get_live_collector
 
@@ -991,10 +988,8 @@ async def lifespan(app: FastAPI):
     # Cancel the trading gate sleep loop (can block for hours when market closed)
     if "_trading_gate_task" in dir() and not _trading_gate_task.done():
         _trading_gate_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await _trading_gate_task
-        except asyncio.CancelledError:
-            pass
 
     # Stop all mirrors
     for pid in list(_mirrors.keys()):

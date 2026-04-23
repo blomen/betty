@@ -14,13 +14,12 @@ Where:
 This creates a trade-off between maximizing EV and staying below detection.
 """
 
-from dataclasses import dataclass
-from typing import Optional
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from ..db.models import RiskConfig, Profile
+from ..db.models import Profile, RiskConfig
 from .calculator import RiskCalculator
 
 logger = logging.getLogger(__name__)
@@ -89,23 +88,19 @@ class UtilityRegularizer:
     def __init__(self, db: Session):
         self.db = db
         self._risk_calculator = RiskCalculator(db)
-        self._config: Optional[RiskConfig] = None
+        self._config: RiskConfig | None = None
 
     def _get_config(self) -> RiskConfig:
         """Get risk configuration for active profile."""
         if self._config is not None:
             return self._config
 
-        active_profile = self.db.query(Profile).filter(Profile.is_active == True).first()
+        active_profile = self.db.query(Profile).filter(Profile.is_active).first()
         if not active_profile:
             active_profile = self.db.query(Profile).first()
 
         if active_profile:
-            config = (
-                self.db.query(RiskConfig)
-                .filter(RiskConfig.profile_id == active_profile.id)
-                .first()
-            )
+            config = self.db.query(RiskConfig).filter(RiskConfig.profile_id == active_profile.id).first()
             if config:
                 self._config = config
                 return config
@@ -153,14 +148,9 @@ class UtilityRegularizer:
         # Calculate risk penalty
         # penalty_multiplier increases exponentially near threshold
         excess = max(0, risk_score - config.threshold_high)
-        penalty_multiplier = 1 + (excess ** 2) * 10
+        penalty_multiplier = 1 + (excess**2) * 10
 
-        risk_penalty = (
-            config.lambda_coefficient
-            * base_stake
-            * risk_score
-            * penalty_multiplier
-        )
+        risk_penalty = config.lambda_coefficient * base_stake * risk_score * penalty_multiplier
 
         # Utility = EV - risk penalty
         utility = expected_value - risk_penalty
@@ -229,7 +219,7 @@ class UtilityRegularizer:
 
         return regularized
 
-    def should_skip_provider(self, provider_id: str) -> tuple[bool, Optional[str]]:
+    def should_skip_provider(self, provider_id: str) -> tuple[bool, str | None]:
         """
         Check if provider should be skipped due to high risk or cooldown.
 

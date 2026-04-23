@@ -17,7 +17,6 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 from sqlalchemy.orm import Session
@@ -36,14 +35,14 @@ CACHE_TTL_HOURS = 48
 # ── LLM health status (surfaced to frontend) ─────────────────────────
 
 _llm_health: dict = {
-    "status": "unknown",          # ok | error | skipped
-    "anthropic_status": None,     # ok | usage_limit | auth_error | rate_limited | missing_key | error
-    "last_error": None,           # human-readable error message
-    "last_success_at": None,      # ISO timestamp of last successful enrichment
-    "last_run_at": None,          # ISO timestamp of last run attempt
-    "enriched_count": 0,          # boosts enriched in last run
-    "carried_count": 0,           # boosts carried from cache in last run
-    "candidate_count": 0,         # boosts that needed enrichment in last run
+    "status": "unknown",  # ok | error | skipped
+    "anthropic_status": None,  # ok | usage_limit | auth_error | rate_limited | missing_key | error
+    "last_error": None,  # human-readable error message
+    "last_success_at": None,  # ISO timestamp of last successful enrichment
+    "last_run_at": None,  # ISO timestamp of last run attempt
+    "enriched_count": 0,  # boosts enriched in last run
+    "carried_count": 0,  # boosts carried from cache in last run
+    "candidate_count": 0,  # boosts that needed enrichment in last run
 }
 
 
@@ -64,9 +63,11 @@ def _cache_key(title: str, boosted_odds: float, event: str = "") -> str:
 
 # ── Persistent DB cache ──────────────────────────────────────────────
 
+
 def _load_cache_from_db(db: Session) -> dict[str, dict]:
     """Load ALL LLM results from the persistent llm_boost_cache table."""
     from src.db.models import LlmBoostCache
+
     rows = db.query(LlmBoostCache).all()
     cache = {}
     for r in rows:
@@ -86,6 +87,7 @@ def _load_cache_from_db(db: Session) -> dict[str, dict]:
 def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float, result: dict) -> None:
     """Save a single LLM result to the persistent cache table (upsert)."""
     from src.db.models import LlmBoostCache
+
     now = datetime.now(timezone.utc).isoformat()
     existing = db.query(LlmBoostCache).filter_by(cache_key=key).first()
     if existing:
@@ -97,19 +99,21 @@ def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float
         existing.llm_event_time = result.get("event_time")
         existing.last_used_at = now
     else:
-        db.add(LlmBoostCache(
-            cache_key=key,
-            title=title,
-            boosted_odds=boosted_odds,
-            llm_title=result.get("title") or "",
-            llm_probability=result["probability"],
-            llm_fair_odds=round(1 / result["probability"], 3) if result["probability"] > 0 else None,
-            llm_confidence=result.get("confidence", "low"),
-            llm_reasoning=result.get("reasoning", ""),
-            llm_event_time=result.get("event_time"),
-            created_at=now,
-            last_used_at=now,
-        ))
+        db.add(
+            LlmBoostCache(
+                cache_key=key,
+                title=title,
+                boosted_odds=boosted_odds,
+                llm_title=result.get("title") or "",
+                llm_probability=result["probability"],
+                llm_fair_odds=round(1 / result["probability"], 3) if result["probability"] > 0 else None,
+                llm_confidence=result.get("confidence", "low"),
+                llm_reasoning=result.get("reasoning", ""),
+                llm_event_time=result.get("event_time"),
+                created_at=now,
+                last_used_at=now,
+            )
+        )
     try:
         db.commit()
     except Exception:
@@ -121,6 +125,7 @@ def _touch_cache_entries(db: Session, keys: list[str]) -> None:
     if not keys:
         return
     from src.db.models import LlmBoostCache
+
     now = datetime.now(timezone.utc).isoformat()
     try:
         db.query(LlmBoostCache).filter(LlmBoostCache.cache_key.in_(keys)).update(
@@ -176,6 +181,7 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
 
 
 # ── Candidate filtering ────────────────────────────────────────────────
+
 
 def _is_llm_candidate(special: dict) -> bool:
     """Check if a boost should be sent to LLM for probability research.
@@ -274,7 +280,7 @@ def _build_user_prompt(special: dict) -> str:
         parts.append(f"EVENT TIME (from scraper): {event_time}")
     parts.append(f"BOOSTED ODDS: {boosted_odds}")
     if original_odds:
-        parts.append(f"ORIGINAL ODDS: {original_odds} (bookmaker implied: {100/original_odds:.0f}%)")
+        parts.append(f"ORIGINAL ODDS: {original_odds} (bookmaker implied: {100 / original_odds:.0f}%)")
     if boost_pct:
         parts.append(f"BOOST PERCENTAGE: +{boost_pct:.0f}%")
 
@@ -284,18 +290,18 @@ def _build_user_prompt(special: dict) -> str:
 
 # ── Response parsing ───────────────────────────────────────────────────
 
-_TITLE_RE = re.compile(r'TITLE:\s*(.+)', re.IGNORECASE)
-_EVENT_TIME_RE = re.compile(r'EVENT_TIME:\s*(\S+)', re.IGNORECASE)
-_LEGS_RE = re.compile(r'LEGS:\s*(\d+)', re.IGNORECASE)
-_PROB_RE = re.compile(r'PROBABILITY:\s*(0\.\d+)', re.IGNORECASE)
-_CONF_RE = re.compile(r'CONFIDENCE:\s*(low|medium|high)', re.IGNORECASE)
-_LEG_PROB_RE = re.compile(r'Leg\s*\d+:.*?p\s*=\s*(0\.\d+)', re.IGNORECASE)
+_TITLE_RE = re.compile(r"TITLE:\s*(.+)", re.IGNORECASE)
+_EVENT_TIME_RE = re.compile(r"EVENT_TIME:\s*(\S+)", re.IGNORECASE)
+_LEGS_RE = re.compile(r"LEGS:\s*(\d+)", re.IGNORECASE)
+_PROB_RE = re.compile(r"PROBABILITY:\s*(0\.\d+)", re.IGNORECASE)
+_CONF_RE = re.compile(r"CONFIDENCE:\s*(low|medium|high)", re.IGNORECASE)
+_LEG_PROB_RE = re.compile(r"Leg\s*\d+:.*?p\s*=\s*(0\.\d+)", re.IGNORECASE)
 # Fallback: catch free-form multiplication patterns like "~0.65 × 0.70" or "0.55 * 0.48"
-_MULT_PROB_RE = re.compile(r'~?(0\.\d+)\s*[×x\*]\s*~?(0\.\d+)', re.IGNORECASE)
-_REASONING_RE = re.compile(r'REASONING:\s*(.+)', re.IGNORECASE | re.DOTALL)
+_MULT_PROB_RE = re.compile(r"~?(0\.\d+)\s*[×x\*]\s*~?(0\.\d+)", re.IGNORECASE)
+_REASONING_RE = re.compile(r"REASONING:\s*(.+)", re.IGNORECASE | re.DOTALL)
 
 
-def _parse_event_time(raw: str) -> Optional[str]:
+def _parse_event_time(raw: str) -> str | None:
     """Parse and validate an ISO 8601 datetime from LLM output."""
     if not raw or raw.upper() == "UNKNOWN":
         return None
@@ -452,22 +458,18 @@ def _detect_legs_from_title(title: str) -> int:
         return 2
 
     # "1x2: Team, Totalt antal mål: Under X" / "1x2: Team, Båda lagen gör mål: Ja"
-    if re.search(r'1x2:.*,\s*(totalt|båda)', title_lower):
+    if re.search(r"1x2:.*,\s*(totalt|båda)", title_lower):
         return 2
 
     # Explicit conjunctions: " & ", " och ", " and "
-    conjunction_count = (
-        title_lower.count(" & ")
-        + title_lower.count(" och ")
-        + title_lower.count(" and ")
-    )
+    conjunction_count = title_lower.count(" & ") + title_lower.count(" och ") + title_lower.count(" and ")
     if conjunction_count > 0:
         return conjunction_count + 1
 
     return 1
 
 
-def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
+def _parse_llm_response(text: str, boost_title: str = "") -> dict | None:
     prob_match = _PROB_RE.search(text)
     if not prob_match:
         return None
@@ -480,7 +482,7 @@ def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
     # Clean: stop at next field marker if present
     for marker in ("EVENT_TIME:", "LEGS:", "PROBABILITY:", "CONFIDENCE:", "REASONING:"):
         if marker in title:
-            title = title[:title.index(marker)].strip()
+            title = title[: title.index(marker)].strip()
 
     event_time_match = _EVENT_TIME_RE.search(text)
     event_time = _parse_event_time(event_time_match.group(1)) if event_time_match else None
@@ -517,14 +519,14 @@ def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
 # ── Single-boost research ─────────────────────────────────────────────
 
 _anthropic_dead = False  # short-circuit when Anthropic API is confirmed dead
-_anthropic_error_msg: Optional[str] = None  # error message from API
+_anthropic_error_msg: str | None = None  # error message from API
 
 
 async def _research_single_boost(
     special: dict,
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
-) -> Optional[dict]:
+) -> dict | None:
     global _anthropic_dead, _anthropic_error_msg
     async with semaphore:
         if _anthropic_dead:
@@ -534,8 +536,7 @@ async def _research_single_boost(
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 _anthropic_dead = True
-                _update_health(anthropic_status="missing_key",
-                               last_error="ANTHROPIC_API_KEY not set")
+                _update_health(anthropic_status="missing_key", last_error="ANTHROPIC_API_KEY not set")
                 return None
 
             response = await client.post(
@@ -603,6 +604,7 @@ async def _research_single_boost(
 
 # ── Cache invalidation for bad combo probabilities ────────────────────
 
+
 def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db: Session) -> None:
     """Delete cached LLM results for combo boosts where probability is too high,
     or where the LLM probability deviates too far from bookmaker implied odds.
@@ -612,6 +614,7 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
     so they get re-researched with the improved prompt.
     """
     from src.db.models import LlmBoostCache
+
     keys_to_delete = []
     for s in specials:
         key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0), s.get("event", ""))
@@ -627,8 +630,7 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
             max_reasonable = {2: 0.35, 3: 0.15}.get(legs, 0.12)
             if prob > max_reasonable:
                 logger.info(
-                    f"Invalidating cached combo: '{title[:50]}' p={prob:.2f} "
-                    f"(>{max_reasonable} for {legs}-leg combo)"
+                    f"Invalidating cached combo: '{title[:50]}' p={prob:.2f} (>{max_reasonable} for {legs}-leg combo)"
                 )
                 keys_to_delete.append(key)
                 if key in cache:
@@ -653,9 +655,9 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
 
     if keys_to_delete:
         try:
-            db.query(LlmBoostCache).filter(
-                LlmBoostCache.cache_key.in_(keys_to_delete)
-            ).delete(synchronize_session=False)
+            db.query(LlmBoostCache).filter(LlmBoostCache.cache_key.in_(keys_to_delete)).delete(
+                synchronize_session=False
+            )
             db.commit()
             logger.info(f"Invalidated {len(keys_to_delete)} bad cache entries (combo + anchor)")
         except Exception:
@@ -664,7 +666,8 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
 
 # ── Main entry point ───────────────────────────────────────────────────
 
-async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] = None) -> list[dict]:
+
+async def enrich_specials_with_llm(specials: list[dict], db: Session | None = None) -> list[dict]:
     """LLM-based probability estimation and event time extraction for boosts.
 
     Runs AFTER enrich_specials_with_ev() (which sets edge_pct = boost_pct).
@@ -688,8 +691,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.info("LLM enrichment skipped: ANTHROPIC_API_KEY not set")
-        _update_health(status="skipped", anthropic_status="missing_key",
-                       last_error="ANTHROPIC_API_KEY not set")
+        _update_health(status="skipped", anthropic_status="missing_key", last_error="ANTHROPIC_API_KEY not set")
         return specials
 
     # Carry forward existing LLM results from persistent cache
@@ -706,8 +708,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     candidates = [s for s in specials if _is_llm_candidate(s) and s.get("llm_probability") is None]
     if not candidates:
         logger.info(f"LLM enrichment: 0 new candidates ({carried} carried from cache)")
-        _update_health(status="ok", carried_count=carried, enriched_count=0,
-                       candidate_count=0)
+        _update_health(status="ok", carried_count=carried, enriched_count=0, candidate_count=0)
         if carried > 0:
             _update_health(last_success_at=now_iso)
         return specials
@@ -719,22 +720,16 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     )
     candidates = candidates[:MAX_BOOSTS_PER_RUN]
 
-    logger.info(
-        f"LLM enrichment: researching {len(candidates)} new boosts, "
-        f"{carried} carried from cache"
-    )
+    logger.info(f"LLM enrichment: researching {len(candidates)} new boosts, {carried} carried from cache")
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
     enriched_count = 0
 
     async with httpx.AsyncClient() as client:
-        tasks = [
-            _research_single_boost(s, client, semaphore)
-            for s in candidates
-        ]
+        tasks = [_research_single_boost(s, client, semaphore) for s in candidates]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for special, result in zip(candidates, results):
+        for special, result in zip(candidates, results, strict=False):
             if isinstance(result, Exception) or result is None:
                 continue
 
@@ -745,9 +740,11 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
             # ML boost calibration (M4) — best-effort
             try:
                 from src.ml.serving.predictor import get_predictor
+
                 predictor = get_predictor()
                 if predictor.is_loaded("boost_calibrator"):
                     from src.ml.features.boost_features import extract_boost_features
+
                     num_legs = _detect_legs_from_title(special.get("title", ""))
                     cal_features = extract_boost_features(
                         llm_raw_probability=probability,
@@ -774,6 +771,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
             try:
                 from src.ml.feature_store import log_features as _log_ml_features
                 from src.ml.features.boost_features import extract_boost_features as _extract_bf
+
                 _num_legs = _detect_legs_from_title(special.get("title", ""))
                 _cal_features = _extract_bf(
                     llm_raw_probability=result["probability"],

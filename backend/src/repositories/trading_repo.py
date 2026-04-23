@@ -1,11 +1,8 @@
 """Trading repository - data access for trading models."""
 
-from datetime import date
-from typing import Optional
-
 from sqlalchemy.orm import Session, joinedload
 
-from ..db.models import TradingAccount, DailyRoutine, Trade, TradeEvent, TradeReview
+from ..db.models import DailyRoutine, Trade, TradeEvent, TradeReview, TradingAccount
 
 
 class TradingRepo:

@@ -119,7 +119,7 @@ def parse_market_prices(raw: dict) -> dict[str, float]:
     quotes_by_id = raw.get("quotes") or {}
 
     # Union of ids seen — a contract may appear in quotes but not in trades.
-    all_ids = set(last_by_id.keys()) | {str(k) for k in quotes_by_id.keys()}
+    all_ids = set(last_by_id.keys()) | {str(k) for k in quotes_by_id}
 
     for cid in all_ids:
         last = last_by_id.get(cid)

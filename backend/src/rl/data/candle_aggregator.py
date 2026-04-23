@@ -7,7 +7,7 @@ Side "A" = ask (buy aggressor), "B" = bid (sell aggressor).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 

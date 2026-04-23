@@ -7,31 +7,32 @@ Prevents cascading failures by temporarily disabling degraded providers.
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class CircuitState(Enum):
     """Circuit breaker states."""
-    CLOSED = "closed"      # Normal operation, requests allowed
-    OPEN = "open"          # Provider degraded, requests blocked
+
+    CLOSED = "closed"  # Normal operation, requests allowed
+    OPEN = "open"  # Provider degraded, requests blocked
     HALF_OPEN = "half_open"  # Testing recovery, limited requests
 
 
 @dataclass
 class CircuitStatus:
     """Circuit breaker status for a provider."""
+
     provider_id: str
     state: CircuitState = CircuitState.CLOSED
     failure_count: int = 0
     success_count: int = 0
-    last_failure_time: Optional[float] = None
-    last_success_time: Optional[float] = None
-    opened_at: Optional[float] = None
+    last_failure_time: float | None = None
+    last_success_time: float | None = None
+    opened_at: float | None = None
     half_open_attempts: int = 0
 
     @property
@@ -71,10 +72,7 @@ class CircuitBreaker:
     """
 
     def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout_seconds: int = 300,
-        half_open_max_attempts: int = 3
+        self, failure_threshold: int = 5, recovery_timeout_seconds: int = 300, half_open_max_attempts: int = 3
     ):
         """
         Initialize circuit breaker.
@@ -89,7 +87,7 @@ class CircuitBreaker:
         self.half_open_max_attempts = half_open_max_attempts
 
         self._lock = Lock()
-        self._circuits: Dict[str, CircuitStatus] = {}
+        self._circuits: dict[str, CircuitStatus] = {}
 
     def _get_or_create_circuit(self, provider_id: str) -> CircuitStatus:
         """Get or create circuit status for provider."""
@@ -126,8 +124,7 @@ class CircuitBreaker:
                     circuit.state = CircuitState.HALF_OPEN
                     circuit.half_open_attempts = 1
                     logger.info(
-                        f"[CircuitBreaker] {provider_id}: OPEN -> HALF_OPEN "
-                        f"(recovery timeout elapsed: {elapsed:.1f}s)"
+                        f"[CircuitBreaker] {provider_id}: OPEN -> HALF_OPEN (recovery timeout elapsed: {elapsed:.1f}s)"
                     )
                     return True
                 else:
@@ -222,10 +219,7 @@ class CircuitBreaker:
 
             # Already OPEN: Just increment counter
             elif circuit.is_open:
-                logger.debug(
-                    f"[CircuitBreaker] {provider_id}: Failure while OPEN "
-                    f"(count: {circuit.failure_count})"
-                )
+                logger.debug(f"[CircuitBreaker] {provider_id}: Failure while OPEN (count: {circuit.failure_count})")
 
     def reset(self, provider_id: str):
         """
@@ -244,9 +238,7 @@ class CircuitBreaker:
             circuit.half_open_attempts = 0
             circuit.opened_at = None
 
-            logger.info(
-                f"[CircuitBreaker] {provider_id}: {old_state.value} -> CLOSED (manual reset)"
-            )
+            logger.info(f"[CircuitBreaker] {provider_id}: {old_state.value} -> CLOSED (manual reset)")
 
     def get_status(self, provider_id: str) -> CircuitStatus:
         """
@@ -261,7 +253,7 @@ class CircuitBreaker:
         with self._lock:
             return self._get_or_create_circuit(provider_id)
 
-    def get_all_statuses(self) -> Dict[str, CircuitStatus]:
+    def get_all_statuses(self) -> dict[str, CircuitStatus]:
         """
         Get all circuit statuses.
 

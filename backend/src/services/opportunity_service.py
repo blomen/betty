@@ -1,5 +1,6 @@
 """Opportunity service - value bet listing, hedging, and bonus scanning."""
 
+import contextlib
 import logging
 
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from ..bankroll.stake_calculator import (
     OPTIMAL_SINGLE_BET_CAP,
     StakeCalculator,
     calculate_stake,
+    dynamic_min_expected_profit,
     dynamic_min_stake,
 )
 from ..constants import MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP, PROVIDER_CANONICAL
@@ -90,10 +92,8 @@ class OpportunityService:
 
         # Use profile min_edge if not specified
         profile = None
-        try:
+        with contextlib.suppress(Exception):
             profile = self.profile_repo.get_active()
-        except Exception:
-            pass
         effective_min_edge = min_value if min_value is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
 
         rows = self.opp_repo.find_active(
@@ -334,7 +334,7 @@ class OpportunityService:
         # Get bankroll and profile settings for Kelly calculation
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_total_bankroll(profile.id)
-        providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
+        providers = self.db.query(Provider).filter(Provider.is_enabled).all()
         anchor_balance = next(
             (self.profile_repo.get_balance(profile.id, p.id) for p in providers if p.id == anchor_provider), 0
         )
@@ -984,7 +984,7 @@ class OpportunityService:
         for group_info in PLATFORM_GROUPS.values():
             grouped_providers.update(group_info["members"])
 
-        for pid, platform in PLATFORM_MAP.items():
+        for pid, _platform in PLATFORM_MAP.items():
             if pid not in grouped_providers and pid not in ("pinnacle", "polymarket"):
                 bal = balance_map.get(pid, 0.0)
                 clusters.append(

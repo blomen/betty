@@ -4,6 +4,7 @@ Checks for recently-passed economic events and snapshots NQ price at
 the event time, then at +1m, +5m, +15m, +30m, +60m intervals.
 Writes results to the news_impact table for M9 training data.
 """
+
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
@@ -33,8 +34,9 @@ def _get_nq_price(stream) -> float | None:
 def _get_vix_level() -> float | None:
     """Get current VIX level from yfinance (cached-friendly)."""
     try:
-        import yfinance as yf
         from datetime import date
+
+        import yfinance as yf
 
         end = date.today()
         start = end - timedelta(days=5)
@@ -75,11 +77,15 @@ async def record_news_impacts(db_factory, stream) -> int:
         window_end = now - timedelta(minutes=1)
 
         # Compare as strings for SQLite compatibility (DateTime stored as ISO text)
-        events = db.query(EconomicEvent).filter(
-            EconomicEvent.event_datetime >= window_start.strftime("%Y-%m-%d %H:%M:%S"),
-            EconomicEvent.event_datetime <= window_end.strftime("%Y-%m-%d %H:%M:%S"),
-            EconomicEvent.importance >= 2,  # Medium+ importance only
-        ).all()
+        events = (
+            db.query(EconomicEvent)
+            .filter(
+                EconomicEvent.event_datetime >= window_start.strftime("%Y-%m-%d %H:%M:%S"),
+                EconomicEvent.event_datetime <= window_end.strftime("%Y-%m-%d %H:%M:%S"),
+                EconomicEvent.importance >= 2,  # Medium+ importance only
+            )
+            .all()
+        )
 
         if not events:
             return 0
@@ -133,14 +139,13 @@ async def record_news_impacts(db_factory, stream) -> int:
                     impact.sustained_impact_pct = round(
                         (impact.price_30m - impact.price_before) / impact.price_before * 100, 4
                     )
-                    impact.reversal_pct = round(
-                        (impact.price_1m - impact.price_30m) / impact.price_before * 100, 4
-                    )
+                    impact.reversal_pct = round((impact.price_1m - impact.price_30m) / impact.price_before * 100, 4)
 
             if updated:
                 logger.info(
                     "Updated news impact for '%s': elapsed=%.0fm, cols filled=%d",
-                    event.event_name, elapsed_minutes,
+                    event.event_name,
+                    elapsed_minutes,
                     sum(1 for m in IMPACT_INTERVALS if getattr(impact, _PRICE_COL[m]) is not None),
                 )
 

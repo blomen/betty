@@ -2,7 +2,7 @@
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..paths import get_data_dir

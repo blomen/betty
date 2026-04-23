@@ -3,6 +3,7 @@
 Converts an AMTDynamicsTracker snapshot dict into a normalized float32 array
 suitable for concatenation into the observation vector.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -35,26 +36,26 @@ _KEYS = (
 
 # Per-index: (divisor, clip_lo, clip_hi)
 _NORM: tuple[tuple[float, float, float], ...] = (
-    (5.0,   0.0, 1.0),   # 0  ib_ext_up_count
-    (5.0,   0.0, 1.0),   # 1  ib_ext_down_count
-    (300.0, 0.0, 1.0),   # 2  ib_max_extension
-    (1.0,  -1.0, 1.0),   # 3  ib_ext_net_direction
-    (1.0,   0.0, 1.0),   # 4  developing_day_type
-    (1.0,   0.0, 1.0),   # 5  day_type_confidence
-    (1.0,   0.0, 1.0),   # 6  responsive_ratio
-    (1.0,   0.0, 1.0),   # 7  initiative_ratio
-    (6.0,   0.0, 1.0),   # 8  va_acceptance_high
-    (1.0,   0.0, 1.0),   # 9  va_rejection_high
-    (6.0,   0.0, 1.0),   # 10 va_acceptance_low
-    (1.0,   0.0, 1.0),   # 11 va_rejection_low
-    (1.0,   0.0, 1.0),   # 12 poc_migration_speed
-    (1.0,  -1.0, 1.0),   # 13 va_width_expansion_rate
-    (12.0,  0.0, 1.0),   # 14 balance_duration
-    (200.0, 0.0, 1.0),   # 15 balance_width
-    (200.0,-1.0, 1.0),   # 16 single_print_proximity
-    (10.0,  0.0, 1.0),   # 17 excess_high
-    (10.0,  0.0, 1.0),   # 18 excess_low
-    (1.0,   0.0, 1.0),   # 19 otf_activity
+    (5.0, 0.0, 1.0),  # 0  ib_ext_up_count
+    (5.0, 0.0, 1.0),  # 1  ib_ext_down_count
+    (300.0, 0.0, 1.0),  # 2  ib_max_extension
+    (1.0, -1.0, 1.0),  # 3  ib_ext_net_direction
+    (1.0, 0.0, 1.0),  # 4  developing_day_type
+    (1.0, 0.0, 1.0),  # 5  day_type_confidence
+    (1.0, 0.0, 1.0),  # 6  responsive_ratio
+    (1.0, 0.0, 1.0),  # 7  initiative_ratio
+    (6.0, 0.0, 1.0),  # 8  va_acceptance_high
+    (1.0, 0.0, 1.0),  # 9  va_rejection_high
+    (6.0, 0.0, 1.0),  # 10 va_acceptance_low
+    (1.0, 0.0, 1.0),  # 11 va_rejection_low
+    (1.0, 0.0, 1.0),  # 12 poc_migration_speed
+    (1.0, -1.0, 1.0),  # 13 va_width_expansion_rate
+    (12.0, 0.0, 1.0),  # 14 balance_duration
+    (200.0, 0.0, 1.0),  # 15 balance_width
+    (200.0, -1.0, 1.0),  # 16 single_print_proximity
+    (10.0, 0.0, 1.0),  # 17 excess_high
+    (10.0, 0.0, 1.0),  # 18 excess_low
+    (1.0, 0.0, 1.0),  # 19 otf_activity
 )
 
 

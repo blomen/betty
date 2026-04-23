@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ class Strategy:
 
     Each field is an async callable(page, intel) -> result, or None to use generic.
     """
+
     check_login: Callable | None = None
     sync_balance: Callable | None = None
     sync_history: Callable | None = None

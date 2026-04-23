@@ -3,17 +3,17 @@
 Same interface as TradovateClient so BrokerAdapter doesn't change.
 Uses async-rithmic's OrderPlant for order management.
 """
+
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
 
 from async_rithmic import (
-    RithmicClient,
-    OrderType,
-    TransactionType,
     ExchangeOrderNotificationType,
+    OrderType,
+    RithmicClient,
+    TransactionType,
 )
 
 from .config import RithmicConfig
@@ -38,7 +38,7 @@ class RithmicBrokerClient:
         try:
             accounts = self._client.accounts
             if accounts:
-                self._account_id = accounts[0].account_id if hasattr(accounts[0], 'account_id') else str(accounts[0])
+                self._account_id = accounts[0].account_id if hasattr(accounts[0], "account_id") else str(accounts[0])
                 log.info("Rithmic broker: account=%s", self._account_id)
                 return True
             # Try listing accounts
@@ -125,15 +125,15 @@ class RithmicBrokerClient:
 
     def _on_order_notification(self, notification) -> None:
         """Handle exchange order notifications (fills, rejects, etc)."""
-        notify_type = getattr(notification, 'notify_type', None)
+        notify_type = getattr(notification, "notify_type", None)
         if notify_type == ExchangeOrderNotificationType.FILL:
             fill = {
-                "order_id": getattr(notification, 'order_id', ''),
-                "price": float(getattr(notification, 'fill_price', 0)),
-                "size": int(getattr(notification, 'fill_size', 0)),
-                "side": getattr(notification, 'transaction_type', ''),
+                "order_id": getattr(notification, "order_id", ""),
+                "price": float(getattr(notification, "fill_price", 0)),
+                "size": int(getattr(notification, "fill_size", 0)),
+                "side": getattr(notification, "transaction_type", ""),
             }
             self._fills.append(fill)
             log.info("Fill: %s %d @ %.2f", fill["side"], fill["size"], fill["price"])
         elif notify_type == ExchangeOrderNotificationType.REJECT:
-            log.warning("Order rejected: %s", getattr(notification, 'text', 'unknown'))
+            log.warning("Order rejected: %s", getattr(notification, "text", "unknown"))

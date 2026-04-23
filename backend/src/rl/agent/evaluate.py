@@ -85,10 +85,7 @@ def compute_metrics(episodes: list[dict]) -> dict:
     # Profit factor
     gross_wins = sum(r for r in trades if r > 0)
     gross_losses = abs(sum(r for r in trades if r < 0))
-    if gross_losses == 0:
-        profit_factor = float("inf")
-    else:
-        profit_factor = gross_wins / gross_losses
+    profit_factor = float("inf") if gross_losses == 0 else gross_wins / gross_losses
 
     # Max drawdown on the equity curve
     max_drawdown_r = _max_drawdown(equity_curve)
@@ -102,11 +99,7 @@ def compute_metrics(episodes: list[dict]) -> dict:
         lt_trades_taken = len(lt_trades)
 
         lt_skip_rate = lt_skips / lt_total if lt_total > 0 else 0.0
-        lt_win_rate = (
-            sum(1 for r in lt_trades if r > 0) / lt_trades_taken
-            if lt_trades_taken > 0
-            else 0.0
-        )
+        lt_win_rate = sum(1 for r in lt_trades if r > 0) / lt_trades_taken if lt_trades_taken > 0 else 0.0
         lt_avg_r = sum(lt_trades) / lt_trades_taken if lt_trades_taken > 0 else 0.0
 
         level_breakdown[lt] = {

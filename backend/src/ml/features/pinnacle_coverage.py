@@ -3,8 +3,10 @@
 Reuses the same queries as extraction_report._build_pinnacle_delta()
 but persists results to pinnacle_coverage_log for ML analysis.
 """
+
 import logging
-from sqlalchemy import func, distinct
+
+from sqlalchemy import distinct, func
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ def compute_coverage_delta(
 
 
 def log_coverage(session, run_id: str) -> int:
-    from src.db.models import Odds, Event, PinnacleCoverageLog
+    from src.db.models import Event, Odds, PinnacleCoverageLog
 
     pin_sport_events = {}
     pin_rows = (
@@ -65,7 +67,8 @@ def log_coverage(session, run_id: str) -> int:
     pin_event_ids_by_sport = {}
     for sport in pin_sport_events:
         ids = set(
-            r[0] for r in session.query(distinct(Odds.event_id))
+            r[0]
+            for r in session.query(distinct(Odds.event_id))
             .join(Event, Odds.event_id == Event.id)
             .filter(Odds.provider_id == "pinnacle", Event.sport == sport)
             .all()
@@ -73,7 +76,8 @@ def log_coverage(session, run_id: str) -> int:
         pin_event_ids_by_sport[sport] = ids
 
     soft_providers = [
-        r[0] for r in session.query(distinct(Odds.provider_id))
+        r[0]
+        for r in session.query(distinct(Odds.provider_id))
         .filter(Odds.provider_id.notin_(["pinnacle", "polymarket"]))
         .all()
     ]
@@ -86,7 +90,8 @@ def log_coverage(session, run_id: str) -> int:
                 continue
 
             matched_ids = set(
-                r[0] for r in session.query(distinct(Odds.event_id))
+                r[0]
+                for r in session.query(distinct(Odds.event_id))
                 .filter(
                     Odds.provider_id == provider_id,
                     Odds.event_id.in_(pin_ids),
@@ -121,11 +126,16 @@ def log_coverage(session, run_id: str) -> int:
             pin_markets = pin_sport_markets.get(sport, {"ml": 0, "spread": 0, "total": 0})
 
             def _count_market(pid, market_filter, event_ids):
-                return session.query(func.count(distinct(Odds.event_id))).filter(
-                    Odds.provider_id == pid,
-                    market_filter,
-                    Odds.event_id.in_(event_ids),
-                ).scalar() or 0
+                return (
+                    session.query(func.count(distinct(Odds.event_id)))
+                    .filter(
+                        Odds.provider_id == pid,
+                        market_filter,
+                        Odds.event_id.in_(event_ids),
+                    )
+                    .scalar()
+                    or 0
+                )
 
             p_ml = _count_market(provider_id, Odds.market.in_(["1x2", "moneyline"]), shared_ids)
             p_spr = _count_market(provider_id, Odds.market == "spread", shared_ids)

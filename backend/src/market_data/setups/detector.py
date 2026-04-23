@@ -1,19 +1,21 @@
 """Setup detector orchestrator: runs all individual detectors and returns scored results."""
+
 from dataclasses import dataclass
 from datetime import datetime
 
-from ..levels import VolumeProfile, VWAPBands, SessionLevels
-from ..tpo import TPOProfile
+from ..levels import SessionLevels, VolumeProfile, VWAPBands
 from ..orderflow import OrderflowSignals
+from ..tpo import TPOProfile
 
 
 @dataclass
 class SetupCandidate:
     """A detected setup opportunity."""
-    setup_type: str        # "spring", "sfp", "poor_extreme", etc.
-    setup_name: str        # Human readable: "Poor High Reversal"
-    direction: str         # "long" or "short"
-    level_touched: str     # Which level triggered: "vah", "pdh", "ib_high", etc.
+
+    setup_type: str  # "spring", "sfp", "poor_extreme", etc.
+    setup_name: str  # Human readable: "Poor High Reversal"
+    direction: str  # "long" or "short"
+    level_touched: str  # Which level triggered: "vah", "pdh", "ib_high", etc.
     entry_price: float
     stop_price: float
     target_1: float
@@ -46,6 +48,7 @@ class SetupCandidate:
 @dataclass
 class DetectorContext:
     """All data a setup detector needs."""
+
     vp: VolumeProfile
     vwap: VWAPBands | None
     session_levels: SessionLevels
@@ -54,28 +57,28 @@ class DetectorContext:
     last_price: float
     # Context gates
     macro_bias: str | None  # "bull", "bear", "neutral"
-    structure: str | None   # "uptrend", "downtrend", "ranging"
-    day_type: str | None    # "trend", "normal", etc.
+    structure: str | None  # "uptrend", "downtrend", "ranging"
+    day_type: str | None  # "trend", "normal", etc.
     # Optional: candle data for squeeze/compression detectors
     candles: list | None = None
 
 
 def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:
     """Run all setup detectors and return candidates."""
-    from .poor_extreme import detect_poor_extreme
-    from .ib_break import detect_ib_break
-    from .spring import detect_spring
-    from .sfp import detect_sfp
-    from .rule_80 import detect_rule_80
-    from .fakeout import detect_fakeout
+    from .absorption import detect_absorption
     from .break_from_balance import detect_break_from_balance
     from .double_distribution import detect_double_distribution
-    from .news_directional import detect_news_directional
-    from .absorption import detect_absorption
-    from .vwap_sd2_reversal import detect_vwap_sd2_reversal
+    from .fakeout import detect_fakeout
     from .gap_logic import detect_gap_logic
+    from .ib_break import detect_ib_break
+    from .news_directional import detect_news_directional
     from .pbd import detect_pbd
+    from .poor_extreme import detect_poor_extreme
+    from .rule_80 import detect_rule_80
+    from .sfp import detect_sfp
+    from .spring import detect_spring
     from .squeeze import detect_squeeze
+    from .vwap_sd2_reversal import detect_vwap_sd2_reversal
 
     detectors = [
         detect_poor_extreme,

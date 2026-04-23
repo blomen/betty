@@ -1,16 +1,16 @@
 """MirrorService — orchestrates bet interception, parsing, storage, and notification."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
-from urllib.parse import urlparse, unquote
-
 from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
 
-from ..db.models import get_session, BetTrace, Bet
+from ..db.models import Bet, BetTrace, get_session
 from ..services.bet_service import BetService
 from .event_router import EventRouter
 from .interceptor import BetInterceptor
@@ -65,10 +65,19 @@ class MirrorService:
     # Verified SSR bet history — need DOM scraping, not API interception
     # Only unibet confirmed; other Kambi operators may have XHR — verify before adding
     # Kambi providers — bet history is SSR (DOM scrape, not API interception)
-    _SSR_PROVIDERS = frozenset({
-        "unibet", "leovegas", "expekt", "888sport", "speedybet",
-        "x3000", "goldenbull", "1x2", "betmgm",
-    })
+    _SSR_PROVIDERS = frozenset(
+        {
+            "unibet",
+            "leovegas",
+            "expekt",
+            "888sport",
+            "speedybet",
+            "x3000",
+            "goldenbull",
+            "1x2",
+            "betmgm",
+        }
+    )
 
     async def _handle_provider_detected(self, provider_id: str):
         """Fires when user navigates to a known provider site.
@@ -99,6 +108,7 @@ class MirrorService:
         # Auto-discover for generic (unwired) providers with no intel
         from .workflows import get_workflow
         from .workflows.generic import GenericWorkflow
+
         wf = get_workflow(provider_id)
         if isinstance(wf, GenericWorkflow) and wf.intel is None:
             context = self.interceptor.context
@@ -112,10 +122,13 @@ class MirrorService:
         await asyncio.sleep(3)  # Wait for page to settle
         success = await wf.auto_discover(page)
         if success:
-            self._notify("discovery_complete", {
-                "provider": provider_id,
-                "capabilities": wf.intel.get("capabilities", {}),
-            })
+            self._notify(
+                "discovery_complete",
+                {
+                    "provider": provider_id,
+                    "capabilities": wf.intel.get("capabilities", {}),
+                },
+            )
 
     async def _scrape_polymarket_balance(self):
         """Scrape USDC cash balance from Polymarket DOM.
@@ -132,13 +145,13 @@ class MirrorService:
         # Find the Polymarket page by URL — no fallback to other pages
         page = None
         for p in context.pages:
-            if 'polymarket.com' in (p.url or ''):
+            if "polymarket.com" in (p.url or ""):
                 page = p
                 break
         if page is None:
             return  # No Polymarket tab open
         # Verify we're actually on Polymarket (page may have been reused)
-        if 'polymarket.com' not in (page.url or ''):
+        if "polymarket.com" not in (page.url or ""):
             return
         try:
             balance_text = await page.evaluate(
@@ -159,15 +172,20 @@ class MirrorService:
                 await asyncio.to_thread(self._sync_balance, "polymarket", balance)
                 # Check for pending bets to populate the banner count
                 info = await asyncio.to_thread(self._get_provider_sync_info, "polymarket")
-                self._notify("sync_available", {
-                    "provider": "polymarket",
-                    "balance": balance,
-                    "pending_bets": info["pending_bets"],
-                    "pending_stake": info["pending_stake"],
-                })
+                self._notify(
+                    "sync_available",
+                    {
+                        "provider": "polymarket",
+                        "balance": balance,
+                        "pending_bets": info["pending_bets"],
+                        "pending_stake": info["pending_stake"],
+                    },
+                )
                 # Start periodic settle loop if pending bets exist
-                if info["pending_bets"] > 0 and not getattr(self, '_poly_settle_task', None):
-                    logger.info(f"[mirror] Polymarket has {info['pending_bets']} pending — starting periodic settle loop")
+                if info["pending_bets"] > 0 and not getattr(self, "_poly_settle_task", None):
+                    logger.info(
+                        f"[mirror] Polymarket has {info['pending_bets']} pending — starting periodic settle loop"
+                    )
                     self._poly_settle_task = asyncio.ensure_future(self._poly_settle_loop())
             else:
                 logger.info("[mirror] Polymarket detected but not logged in (no cash balance in DOM)")
@@ -183,6 +201,7 @@ class MirrorService:
         matched bets in the database.
         """
         from datetime import datetime, timezone
+
         from .workflows.polymarket import PolymarketWorkflow
 
         await asyncio.sleep(10)  # Initial delay — let page fully load
@@ -225,7 +244,7 @@ class MirrorService:
 
                 page = None
                 for p in context.pages:
-                    if 'polymarket.com' in (p.url or ''):
+                    if "polymarket.com" in (p.url or ""):
                         page = p
                         break
 
@@ -248,10 +267,7 @@ class MirrorService:
                     try:
                         history_entries = await workflow.sync_history(page)
                         if history_entries:
-                            logger.info(
-                                f"[mirror:poly-settle] History sync settled "
-                                f"{len(history_entries)} bets"
-                            )
+                            logger.info(f"[mirror:poly-settle] History sync settled {len(history_entries)} bets")
                     except Exception as he:
                         logger.debug(f"[mirror:poly-settle] History sync: {he}")
                     await asyncio.sleep(interval)
@@ -259,25 +275,27 @@ class MirrorService:
 
                 summary = scan.get("summary", {})
                 logger.info(
-                    f"[mirror:poly-settle] Found: {len(matches)} matches, "
-                    f"claim={has_claim}, redeemable={redeem_count}"
+                    f"[mirror:poly-settle] Found: {len(matches)} matches, claim={has_claim}, redeemable={redeem_count}"
                 )
 
                 # Send as settlements_pending with source field so frontend
                 # shows the confirm/reject banner and routes confirm to settle-all
-                self._notify("settlements_pending", {
-                    "source": "polymarket_portfolio",
-                    "provider": "polymarket",
-                    "count": len(matches),
-                    "wins": summary.get("wins", 0),
-                    "losses": summary.get("losses", 0),
-                    "total_staked": summary.get("total_staked", 0),
-                    "total_payout": summary.get("total_payout", 0),
-                    "net": summary.get("net_pl", 0),
-                    "has_claim": has_claim,
-                    "redeem_count": redeem_count,
-                    "settlements": matches,
-                })
+                self._notify(
+                    "settlements_pending",
+                    {
+                        "source": "polymarket_portfolio",
+                        "provider": "polymarket",
+                        "count": len(matches),
+                        "wins": summary.get("wins", 0),
+                        "losses": summary.get("losses", 0),
+                        "total_staked": summary.get("total_staked", 0),
+                        "total_payout": summary.get("total_payout", 0),
+                        "net": summary.get("net_pl", 0),
+                        "has_claim": has_claim,
+                        "redeem_count": redeem_count,
+                        "settlements": matches,
+                    },
+                )
 
                 if "error" in scan:
                     logger.warning(f"[mirror:poly-settle] Scan error: {scan['error']}")
@@ -302,7 +320,7 @@ class MirrorService:
         The interceptor catches bet history API responses (widgetBetHistory,
         coupon-history, etc.) and stages settlements automatically.
         """
-        if not hasattr(self, '_settle_checked'):
+        if not hasattr(self, "_settle_checked"):
             self._settle_checked = set()
 
         await asyncio.sleep(4)  # Wait for page to fully load
@@ -313,6 +331,7 @@ class MirrorService:
 
         try:
             from .workflows import get_workflow
+
             workflow = get_workflow(provider_id)
             page = await workflow.find_tab(context)
             if not page:
@@ -338,14 +357,17 @@ class MirrorService:
         if provider_id == "polymarket" and "/portfolio" in url:
             info = await asyncio.to_thread(self._get_provider_sync_info, "polymarket")
             if info["pending_bets"] > 0:
-                logger.info(f"[mirror] Polymarket portfolio detected — running settle_all for {info['pending_bets']} pending bets")
+                logger.info(
+                    f"[mirror] Polymarket portfolio detected — running settle_all for {info['pending_bets']} pending bets"
+                )
                 await asyncio.sleep(4)  # Wait for DOM render
                 try:
                     from .workflows.polymarket import PolymarketWorkflow
+
                     context = self.interceptor.context
                     page = None
                     for p in context.pages:
-                        if 'polymarket.com' in (p.url or ''):
+                        if "polymarket.com" in (p.url or ""):
                             page = p
                             break
                     if page:
@@ -360,7 +382,9 @@ class MirrorService:
         if provider_id == "pinnacle" and ("bets/history" in url or "spelhistorik" in url):
             info = await asyncio.to_thread(self._get_provider_sync_info, "pinnacle")
             if info["pending_bets"] > 0:
-                logger.info(f"[mirror] Pinnacle history page detected — syncing {info['pending_bets']} pending bets via API")
+                logger.info(
+                    f"[mirror] Pinnacle history page detected — syncing {info['pending_bets']} pending bets via API"
+                )
                 await asyncio.sleep(2)
                 try:
                     await self._settle_via_workflow("pinnacle")
@@ -379,13 +403,16 @@ class MirrorService:
                     context = self.interceptor.context
                     if context:
                         for page in context.pages:
-                            if provider_id in (page.url or '').lower() or any(p in (page.url or '') for p in bet_history_paths):
+                            if provider_id in (page.url or "").lower() or any(
+                                p in (page.url or "") for p in bet_history_paths
+                            ):
                                 await self._scrape_ssr_bet_history(provider_id, page)
                                 return
 
     async def _auto_settle_pinnacle(self):
         """Auto-settle Pinnacle: navigate to history page, scrape DOM, settle matched bets."""
         import asyncio
+
         await asyncio.sleep(5)  # Wait for page to fully load
 
         context = self.interceptor.context
@@ -393,6 +420,7 @@ class MirrorService:
             return
 
         from .workflows import get_workflow
+
         workflow = get_workflow("pinnacle")
         page = await workflow.find_tab(context)
         if not page:
@@ -424,6 +452,7 @@ class MirrorService:
         if not page:
             # Fallback: search by known domains from interceptor
             from .interceptor import BetInterceptor
+
             for p in context.pages:
                 url = (p.url or "").lower()
                 if provider_id in url:
@@ -472,15 +501,17 @@ class MirrorService:
 
                 payout = entry.payout if entry.payout is not None else 0.0
 
-                staged.append({
-                    "bet_id": pb["id"],
-                    "provider": provider_id,
-                    "event": entry.event_name or "Unknown",
-                    "odds": pb["odds"],
-                    "stake": pb["stake"],
-                    "result": entry.status,
-                    "payout": round(payout, 2),
-                })
+                staged.append(
+                    {
+                        "bet_id": pb["id"],
+                        "provider": provider_id,
+                        "event": entry.event_name or "Unknown",
+                        "odds": pb["odds"],
+                        "stake": pb["stake"],
+                        "result": entry.status,
+                        "payout": round(payout, 2),
+                    }
+                )
                 matched_db_ids.add(pb["id"])
                 pending.remove(pb)
                 break
@@ -488,16 +519,18 @@ class MirrorService:
         # Any remaining pending DB bets that DON'T appear in provider history = ghost bets
         # Only check bets where start_time has passed (future bets may not show in history yet)
         from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc)
         for pb in pending:
             # Skip future bets — they won't be in history yet
             start = pb.get("start_time")
             if start:
-                if hasattr(start, 'tzinfo') and start.tzinfo is None:
+                if hasattr(start, "tzinfo") and start.tzinfo is None:
                     start = start.replace(tzinfo=timezone.utc)
                 if isinstance(start, str):
                     try:
                         from datetime import datetime as dt
+
                         start = dt.fromisoformat(start.replace("Z", "+00:00"))
                     except Exception:
                         continue
@@ -512,15 +545,17 @@ class MirrorService:
                     found_on_provider = True
                     break
             if not found_on_provider:
-                staged.append({
-                    "bet_id": pb["id"],
-                    "provider": provider_id,
-                    "event": f"[NOT FOUND ON {provider_id.upper()}]",
-                    "odds": pb["odds"],
-                    "stake": pb["stake"],
-                    "result": "void",
-                    "payout": 0.0,
-                })
+                staged.append(
+                    {
+                        "bet_id": pb["id"],
+                        "provider": provider_id,
+                        "event": f"[NOT FOUND ON {provider_id.upper()}]",
+                        "odds": pb["odds"],
+                        "stake": pb["stake"],
+                        "result": "void",
+                        "payout": 0.0,
+                    }
+                )
 
         if staged:
             self._pending_settlements = staged
@@ -533,16 +568,19 @@ class MirrorService:
                 f"[mirror] {provider_id}: {len(staged)} settlement(s) — "
                 f"{len(wins)}W {len(losses)}L {len(voids)}V, net={total_payout - total_staked:+.0f}"
             )
-            self._notify("settlements_pending", {
-                "provider": provider_id,
-                "count": len(staged),
-                "wins": len(wins),
-                "losses": len(losses),
-                "total_staked": total_staked,
-                "total_payout": total_payout,
-                "net": total_payout - total_staked,
-                "settlements": staged,
-            })
+            self._notify(
+                "settlements_pending",
+                {
+                    "provider": provider_id,
+                    "count": len(staged),
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "total_staked": total_staked,
+                    "total_payout": total_payout,
+                    "net": total_payout - total_staked,
+                    "settlements": staged,
+                },
+            )
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""
@@ -575,6 +613,7 @@ class MirrorService:
             # Navigate to bet history
             try:
                 from urllib.parse import urlparse
+
                 origin = urlparse(current_url)
                 hist_url = f"{origin.scheme}://{origin.netloc}{hist_path}"
                 logger.info(f"[mirror] Auto-navigating to bet history: {hist_url}")
@@ -599,14 +638,14 @@ class MirrorService:
 
         # Parse Kambi bet history format (Swedish)
         bet_pattern = re.compile(
-            r'Singel\s*@\s*([\d.]+)\s+'
-            r'(Vinst|F.rlust|Oavgjord|Cashout)\s+'
-            r'(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+'
-            r'Kupong-Id:\s*(\d+)\s+'
-            r'(.*?)'
-            r'Insats:\s*([\d.,]+)\s*kr'
-            r'(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?',
-            re.DOTALL
+            r"Singel\s*@\s*([\d.]+)\s+"
+            r"(Vinst|F.rlust|Oavgjord|Cashout)\s+"
+            r"(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+"
+            r"Kupong-Id:\s*(\d+)\s+"
+            r"(.*?)"
+            r"Insats:\s*([\d.,]+)\s*kr"
+            r"(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?",
+            re.DOTALL,
         )
 
         scraped = []
@@ -625,13 +664,15 @@ class MirrorService:
                 result = "void"
             else:
                 result = "cashout"
-            scraped.append({
-                "odds": float(m.group(1)),
-                "result": result,
-                "stake": float(m.group(7).replace(",", ".")),
-                "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
-                "event": m.group(6).strip().replace("\n", " ")[:80],
-            })
+            scraped.append(
+                {
+                    "odds": float(m.group(1)),
+                    "result": result,
+                    "stake": float(m.group(7).replace(",", ".")),
+                    "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
+                    "event": m.group(6).strip().replace("\n", " ")[:80],
+                }
+            )
 
         if not scraped:
             logger.info(f"[mirror] SSR scrape found 0 bets for {provider_id}")
@@ -645,15 +686,17 @@ class MirrorService:
         for pb in pending:
             for sb in scraped:
                 if abs(sb["odds"] - pb["odds"]) < 0.02 and abs(sb["stake"] - pb["stake"]) < 0.02:
-                    staged.append({
-                        "bet_id": pb["id"],
-                        "provider": provider_id,
-                        "event": sb["event"],
-                        "odds": sb["odds"],
-                        "stake": sb["stake"],
-                        "result": sb["result"],
-                        "payout": sb["payout"],
-                    })
+                    staged.append(
+                        {
+                            "bet_id": pb["id"],
+                            "provider": provider_id,
+                            "event": sb["event"],
+                            "odds": sb["odds"],
+                            "stake": sb["stake"],
+                            "result": sb["result"],
+                            "payout": sb["payout"],
+                        }
+                    )
                     break
 
         if staged:
@@ -661,31 +704,38 @@ class MirrorService:
             wins = [s for s in staged if s["result"] == "won"]
             losses = [s for s in staged if s["result"] == "lost"]
             logger.info(
-                f"[mirror] Staged {len(staged)} SSR settlement(s) from {provider_id}: "
-                f"{len(wins)}W {len(losses)}L"
+                f"[mirror] Staged {len(staged)} SSR settlement(s) from {provider_id}: {len(wins)}W {len(losses)}L"
             )
-            self._notify("settlements_pending", {
-                "provider": provider_id,
-                "count": len(staged),
-                "wins": len(wins),
-                "losses": len(losses),
-                "total_staked": sum(s["stake"] for s in staged),
-                "total_payout": sum(s["payout"] for s in staged),
-                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
-                "settlements": staged,
-            })
+            self._notify(
+                "settlements_pending",
+                {
+                    "provider": provider_id,
+                    "count": len(staged),
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "total_staked": sum(s["stake"] for s in staged),
+                    "total_payout": sum(s["payout"] for s in staged),
+                    "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                    "settlements": staged,
+                },
+            )
 
     def _get_pending_bets_sync(self, provider_id: str) -> list[dict]:
         """Get pending bets for a provider."""
         from ..repositories.profile_repo import ProfileRepo
+
         db = get_session()
         try:
             profile = ProfileRepo(db).get_active()
-            pending = db.query(Bet).filter(
-                Bet.profile_id == profile.id,
-                Bet.provider_id == provider_id,
-                Bet.result == "pending",
-            ).all()
+            pending = (
+                db.query(Bet)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == provider_id,
+                    Bet.result == "pending",
+                )
+                .all()
+            )
             return [{"id": b.id, "odds": b.odds, "stake": b.stake, "start_time": b.start_time} for b in pending]
         finally:
             db.close()
@@ -693,15 +743,20 @@ class MirrorService:
     def _get_provider_sync_info(self, provider_id: str) -> dict:
         """Get current balance + pending bet count for a provider."""
         from ..repositories.profile_repo import ProfileRepo
+
         db = get_session()
         try:
             repo = ProfileRepo(db)
             profile = repo.get_active()
             balance = repo.get_balance(profile.id, provider_id)
-            pending = db.query(Bet).filter(
-                Bet.provider_id == provider_id,
-                Bet.result == "pending",
-            ).all()
+            pending = (
+                db.query(Bet)
+                .filter(
+                    Bet.provider_id == provider_id,
+                    Bet.result == "pending",
+                )
+                .all()
+            )
             return {
                 "balance": balance or 0,
                 "pending_bets": len(pending),
@@ -728,6 +783,7 @@ class MirrorService:
                 eid = str(data.get("id", ""))
                 if eid:
                     from .workflows.strategies.altenar import cache_event_details
+
                     cache_event_details(eid, data)
                     logger.debug(f"[mirror] Cached GetEventDetails for event {eid}")
             except (json.JSONDecodeError, Exception) as e:
@@ -743,6 +799,7 @@ class MirrorService:
                 if len(participants) >= 2:
                     participants.sort(key=lambda p: p.get("side", 0))
                     from ..matching.normalizer import normalize_team_name
+
                     home_label = participants[0].get("label", "")
                     away_label = participants[1].get("label", "")
                     self._event_cache[event_id] = {
@@ -774,9 +831,7 @@ class MirrorService:
             coupons = data.get("data", {}).get("coupons", [])
             # Always store trace for debugging
             provider_id = self._detect_provider(url)
-            await asyncio.to_thread(
-                self._store_trace_sync, provider_id, url, request_body, response_body, "history"
-            )
+            await asyncio.to_thread(self._store_trace_sync, provider_id, url, request_body, response_body, "history")
             if not coupons:
                 return
             # Gecko V2 coupon-history: betsStatus dict has {"won": N} or {"lost": N} etc.
@@ -797,13 +852,15 @@ class MirrorService:
                 event_name = event_names[0] if event_names else ""
                 # Normalize "Home - Away" to "Home vs Away"
                 event_name = event_name.replace(" - ", " vs ")
-                bets.append({
-                    "status": status_code,
-                    "totalStake": c.get("stake", 0),
-                    "totalOdds": c.get("totalOdds", 0),
-                    "totalWin": c.get("totalPayout", 0),
-                    "eventName": event_name,
-                })
+                bets.append(
+                    {
+                        "status": status_code,
+                        "totalStake": c.get("stake", 0),
+                        "totalOdds": c.get("totalOdds", 0),
+                        "totalWin": c.get("totalPayout", 0),
+                        "eventName": event_name,
+                    }
+                )
         # Pinnacle: GET /0.1/bets → array of bet objects
         elif "arcadia.pinnacle" in url and isinstance(data, list):
             provider_id = "pinnacle"
@@ -825,14 +882,16 @@ class MirrorService:
                 event_name = ""
                 if sels:
                     event_name = sels[0].get("matchup_id", "")
-                bets.append({
-                    "status": status_code,
-                    "totalStake": risk_amount,
-                    "totalOdds": float(b.get("price", 0)),
-                    "totalWin": win_amount,
-                    "eventName": str(event_name),
-                    "confirmation_id": str(b.get("id", "")),
-                })
+                bets.append(
+                    {
+                        "status": status_code,
+                        "totalStake": risk_amount,
+                        "totalOdds": float(b.get("price", 0)),
+                        "totalWin": win_amount,
+                        "eventName": str(event_name),
+                        "confirmation_id": str(b.get("id", "")),
+                    }
+                )
         else:
             bets = data.get("bets", [])
 
@@ -876,15 +935,13 @@ class MirrorService:
                 logger.info(f"[mirror] Recorded {recorded} untracked open bet(s) from {provider_id} history")
 
         # Also store trace for audit
-        await asyncio.to_thread(
-            self._store_trace_sync, provider_id, url, request_body, response_body, "history"
-        )
+        await asyncio.to_thread(self._store_trace_sync, provider_id, url, request_body, response_body, "history")
 
     def _record_open_bets_sync(self, open_bets: list[dict], provider_id: str) -> int:
         """Record untracked open bets from history as pending in DB."""
         from ..db.models import Odds
-        from ..services.bet_service import BetService
         from ..repositories.profile_repo import ProfileRepo
+        from ..services.bet_service import BetService
 
         db = get_session()
         recorded = 0
@@ -899,18 +956,27 @@ class MirrorService:
 
                 # Skip if already tracked (by confirmation_id OR by provider+odds+stake)
                 if confirmation_id:
-                    existing = db.query(Bet).filter(
-                        Bet.confirmation_id == confirmation_id,
-                        Bet.provider_id == provider_id,
-                    ).first()
+                    existing = (
+                        db.query(Bet)
+                        .filter(
+                            Bet.confirmation_id == confirmation_id,
+                            Bet.provider_id == provider_id,
+                        )
+                        .first()
+                    )
                     if existing:
                         continue
                 from sqlalchemy import func as sa_func
-                existing = db.query(Bet).filter(
-                    Bet.provider_id == provider_id,
-                    sa_func.abs(Bet.odds - odds) < 0.02,
-                    sa_func.abs(Bet.stake - stake) < 0.02,
-                ).first()
+
+                existing = (
+                    db.query(Bet)
+                    .filter(
+                        Bet.provider_id == provider_id,
+                        sa_func.abs(Bet.odds - odds) < 0.02,
+                        sa_func.abs(Bet.stake - stake) < 0.02,
+                    )
+                    .first()
+                )
                 if existing:
                     # Update confirmation_id if missing
                     if confirmation_id and not existing.confirmation_id:
@@ -922,19 +988,24 @@ class MirrorService:
                     continue
 
                 # Match by odds + future event + name similarity
-                from ..db.models import Event
-                from sqlalchemy import func
                 from datetime import datetime, timedelta
+
+                from sqlalchemy import func
+
+                from ..db.models import Event
 
                 now = datetime.utcnow()
                 # Find odds matching this provider + odds value + future events only
-                candidates = db.query(Odds, Event).join(
-                    Event, Odds.event_id == Event.id
-                ).filter(
-                    Odds.provider_id == provider_id,
-                    func.abs(Odds.odds - odds) < 0.02,
-                    Event.start_time > now - timedelta(hours=6),
-                ).all()
+                candidates = (
+                    db.query(Odds, Event)
+                    .join(Event, Odds.event_id == Event.id)
+                    .filter(
+                        Odds.provider_id == provider_id,
+                        func.abs(Odds.odds - odds) < 0.02,
+                        Event.start_time > now - timedelta(hours=6),
+                    )
+                    .all()
+                )
 
                 if not candidates:
                     logger.warning(f"[mirror] Could not match open bet to odds: {provider_id} {event_name} @ {odds}")
@@ -944,6 +1015,7 @@ class MirrorService:
                 best_row = None
                 if event_name and len(candidates) > 1:
                     from rapidfuzz import fuzz
+
                     best_score = 0
                     for odds_row, ev in candidates:
                         db_name = f"{ev.home_team} vs {ev.away_team}"
@@ -1017,10 +1089,14 @@ class MirrorService:
         db = get_session()
         staged: list[dict] = []
         try:
-            pending = db.query(Bet).filter(
-                Bet.result == "pending",
-                Bet.provider_id == provider_id,
-            ).all()
+            pending = (
+                db.query(Bet)
+                .filter(
+                    Bet.result == "pending",
+                    Bet.provider_id == provider_id,
+                )
+                .all()
+            )
             if not pending:
                 return []
 
@@ -1037,11 +1113,15 @@ class MirrorService:
 
                 # Skip if this history bet's id matches an already-settled bet
                 if history_id:
-                    already_settled = db.query(Bet).filter(
-                        Bet.confirmation_id == history_id,
-                        Bet.provider_id == provider_id,
-                        Bet.result != "pending",
-                    ).first()
+                    already_settled = (
+                        db.query(Bet)
+                        .filter(
+                            Bet.confirmation_id == history_id,
+                            Bet.provider_id == provider_id,
+                            Bet.result != "pending",
+                        )
+                        .first()
+                    )
                     if already_settled:
                         continue
 
@@ -1076,17 +1156,19 @@ class MirrorService:
                 fair = matched_bet.fair_odds_at_placement
                 edge = round((odds / fair - 1) * 100, 1) if fair and fair > 0 else None
                 pl = (payout - stake) if result == "won" else (-stake if result == "lost" else 0)
-                staged.append({
-                    "bet_id": matched_bet.id,
-                    "provider": provider_id,
-                    "event": event_name,
-                    "odds": odds,
-                    "stake": stake,
-                    "result": result,
-                    "payout": payout,
-                    "edge": edge,
-                    "pl": round(pl, 2),
-                })
+                staged.append(
+                    {
+                        "bet_id": matched_bet.id,
+                        "provider": provider_id,
+                        "event": event_name,
+                        "odds": odds,
+                        "stake": stake,
+                        "result": result,
+                        "payout": payout,
+                        "edge": edge,
+                        "pl": round(pl, 2),
+                    }
+                )
 
         except Exception as e:
             logger.error(f"[mirror] Error matching bets: {e}", exc_info=True)
@@ -1108,8 +1190,7 @@ class MirrorService:
                 bet_service.settle_bet(s["bet_id"], s["result"], s["payout"])
                 settled += 1
                 logger.info(
-                    f"[mirror] Confirmed: bet #{s['bet_id']} {s['event']} "
-                    f"→ {s['result']} (payout={s['payout']})"
+                    f"[mirror] Confirmed: bet #{s['bet_id']} {s['event']} → {s['result']} (payout={s['payout']})"
                 )
             db.commit()
         except Exception as e:
@@ -1136,7 +1217,7 @@ class MirrorService:
         # Reset provider detection so balance re-syncs on next page visit
         self.interceptor.reset_detected_providers()
         # Allow poly settle loop to re-trigger on next provider detection
-        task = getattr(self, '_poly_settle_task', None)
+        task = getattr(self, "_poly_settle_task", None)
         if task and not task.done():
             task.cancel()
         self._poly_settle_task = None
@@ -1159,7 +1240,6 @@ class MirrorService:
 
         Matching: by market name fuzzy match + stake/shares alignment.
         """
-        from .workflows.polymarket import PolymarketWorkflow
         from rapidfuzz import fuzz
 
         context = self.interceptor.context
@@ -1172,9 +1252,9 @@ class MirrorService:
         fallback = None
         for p in context.pages:
             url = p.url or ""
-            if 'polymarket.com' not in url:
+            if "polymarket.com" not in url:
                 continue
-            if '/portfolio' in url:
+            if "/portfolio" in url:
                 page = p
                 break
             if not fallback:
@@ -1187,7 +1267,7 @@ class MirrorService:
         logger.info(f"[mirror] Poly scrape using page: {page.url[:80]}")
 
         # Navigate to portfolio if not there
-        if '/portfolio' not in (page.url or ''):
+        if "/portfolio" not in (page.url or ""):
             try:
                 await page.goto("https://polymarket.com/portfolio", wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(3)
@@ -1197,7 +1277,7 @@ class MirrorService:
                 return []
 
         # Ensure we're on the History tab — click it if needed
-        if '/portfolio' in (page.url or ''):
+        if "/portfolio" in (page.url or ""):
             try:
                 # Check if History tab content is visible
                 has_history = await page.evaluate("""() => {
@@ -1234,14 +1314,15 @@ class MirrorService:
         # Extract Lost/Claimed entries from flat text
         # Format: "Claimed\nMarket Name\n+$15.01\n2h ago" or "Lost\nMarket Name\nYes 16¢ 55.7 shares\n-\n6h ago"
         import re
+
         settle_entries = []
-        lines = raw.split('\n')
+        lines = raw.split("\n")
         for i, line in enumerate(lines):
             activity = line.strip()
-            if activity not in ('Lost', 'Claimed'):
+            if activity not in ("Lost", "Claimed"):
                 continue
             # Next non-empty line(s) are the market name
-            market = ''
+            market = ""
             value = 0.0
             shares = 0.0
             for j in range(i + 1, min(i + 6, len(lines))):
@@ -1249,37 +1330,39 @@ class MirrorService:
                 if not l:
                     continue
                 # Dollar value: "+$15.01" or "-$9.00" or "-"
-                val_match = re.match(r'^[+-]?\$([\d,.]+)$', l)
+                val_match = re.match(r"^[+-]?\$([\d,.]+)$", l)
                 if val_match:
-                    value = float(val_match.group(1).replace(',', ''))
-                    if l.startswith('-'):
+                    value = float(val_match.group(1).replace(",", ""))
+                    if l.startswith("-"):
                         value = -value
                     continue
                 # Shares: "55.7 shares"
-                shares_match = re.search(r'([\d.]+)\s*shares', l)
+                shares_match = re.search(r"([\d.]+)\s*shares", l)
                 if shares_match:
                     shares = float(shares_match.group(1))
                     continue
                 # Time: "2h ago", "19h ago"
-                if re.match(r'\d+[hmd]\s*ago', l):
+                if re.match(r"\d+[hmd]\s*ago", l):
                     break
                 # Skip dash placeholder
-                if l == '-':
+                if l == "-":
                     continue
                 # Skip tags like "Yes 16¢" or "Team Solid 26¢" (outcome badge + price)
-                if re.search(r'\d+\s*[¢c\xc2]', l) and len(l) < 40:
+                if re.search(r"\d+\s*[¢c\xc2]", l) and len(l) < 40:
                     continue
                 # Market name — first substantial text
                 if not market and len(l) > 10:
                     market = l
 
             if market:
-                settle_entries.append({
-                    'activity': activity,
-                    'market': market[:120],
-                    'value': abs(value),
-                    'shares': shares,
-                })
+                settle_entries.append(
+                    {
+                        "activity": activity,
+                        "market": market[:120],
+                        "value": abs(value),
+                        "shares": shares,
+                    }
+                )
 
         if not settle_entries:
             logger.info("[mirror] No Lost/Claimed entries in Polymarket history")
@@ -1295,7 +1378,9 @@ class MirrorService:
             return []
 
         for pb in pending:
-            logger.info(f"[mirror] Poly pending DB: id={pb['id']} | {pb['event_name'][:60]} | odds={pb['odds']} stake={pb['stake']}")
+            logger.info(
+                f"[mirror] Poly pending DB: id={pb['id']} | {pb['event_name'][:60]} | odds={pb['odds']} stake={pb['stake']}"
+            )
 
         staged = []
         for entry in settle_entries:
@@ -1348,15 +1433,17 @@ class MirrorService:
                     result = "void"
                     payout = best_match["stake"]
 
-            staged.append({
-                "bet_id": best_match["id"],
-                "provider": "polymarket",
-                "event": market[:80] or "Polymarket",
-                "odds": best_match["odds"],
-                "stake": best_match["stake"],
-                "result": result,
-                "payout": round(payout, 2),
-            })
+            staged.append(
+                {
+                    "bet_id": best_match["id"],
+                    "provider": "polymarket",
+                    "event": market[:80] or "Polymarket",
+                    "odds": best_match["odds"],
+                    "stake": best_match["stake"],
+                    "result": result,
+                    "payout": round(payout, 2),
+                }
+            )
             pending.remove(best_match)
 
         if staged:
@@ -1370,16 +1457,19 @@ class MirrorService:
                 f"[mirror] Polymarket history: {len(staged)} settlement(s) — "
                 f"{len(wins)}W {len(losses)}L {len(voids)}V, net={total_payout - total_staked:+.2f} USDC"
             )
-            self._notify("settlements_pending", {
-                "provider": "polymarket",
-                "count": len(staged),
-                "wins": len(wins),
-                "losses": len(losses),
-                "total_staked": total_staked,
-                "total_payout": total_payout,
-                "net": total_payout - total_staked,
-                "settlements": staged,
-            })
+            self._notify(
+                "settlements_pending",
+                {
+                    "provider": "polymarket",
+                    "count": len(staged),
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "total_staked": total_staked,
+                    "total_payout": total_payout,
+                    "net": total_payout - total_staked,
+                    "settlements": staged,
+                },
+            )
 
         return staged
 
@@ -1408,16 +1498,18 @@ class MirrorService:
                     h = event.display_home or event.home_team or ""
                     a = event.display_away or event.away_team or ""
                     event_name = f"{h} vs {a}" if h and a else h or a
-                result.append({
-                    "id": bet.id,
-                    "odds": bet.odds,
-                    "stake": bet.stake,
-                    "event_name": event_name,
-                    "event_id": bet.event_id,
-                    "outcome": bet.outcome,
-                    "market": bet.market,
-                    "start_time": bet.start_time,
-                })
+                result.append(
+                    {
+                        "id": bet.id,
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "event_name": event_name,
+                        "event_id": bet.event_id,
+                        "outcome": bet.outcome,
+                        "market": bet.market,
+                        "start_time": bet.start_time,
+                    }
+                )
             return result
         finally:
             db.close()
@@ -1428,18 +1520,22 @@ class MirrorService:
         Uses the Gamma API (via PolymarketRetriever.fetch_resolved) to find finished events,
         then matches against pending Polymarket bets.
         """
-        from ..db.models import get_session, Bet, Odds, Event
+        from ..db.models import Bet, Event, Odds, get_session
         from ..repositories.profile_repo import ProfileRepo
 
         db = get_session()
         staged = []
         try:
             profile = ProfileRepo(db).get_active()
-            pending = db.query(Bet).filter(
-                Bet.profile_id == profile.id,
-                Bet.provider_id == "polymarket",
-                Bet.result == "pending",
-            ).all()
+            pending = (
+                db.query(Bet)
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "polymarket",
+                    Bet.result == "pending",
+                )
+                .all()
+            )
 
             if not pending:
                 return []
@@ -1455,12 +1551,16 @@ class MirrorService:
                     continue
 
                 # Look at resolved odds for this bet's market/outcome
-                odds = db.query(Odds).filter(
-                    Odds.event_id == bet.event_id,
-                    Odds.provider == "polymarket",
-                    Odds.market == bet.market,
-                    Odds.outcome == bet.outcome,
-                ).first()
+                odds = (
+                    db.query(Odds)
+                    .filter(
+                        Odds.event_id == bet.event_id,
+                        Odds.provider == "polymarket",
+                        Odds.market == bet.market,
+                        Odds.outcome == bet.outcome,
+                    )
+                    .first()
+                )
 
                 if not odds or not odds.provider_meta:
                     continue
@@ -1480,15 +1580,19 @@ class MirrorService:
                     payout = 0
 
                 if result != "pending":
-                    staged.append({
-                        "bet_id": bet.id,
-                        "provider": "polymarket",
-                        "event": (event.home_team or "") + " vs " + (event.away_team or "") if event.home_team else "Unknown",
-                        "odds": bet.odds,
-                        "stake": bet.stake,
-                        "result": result,
-                        "payout": payout,
-                    })
+                    staged.append(
+                        {
+                            "bet_id": bet.id,
+                            "provider": "polymarket",
+                            "event": (event.home_team or "") + " vs " + (event.away_team or "")
+                            if event.home_team
+                            else "Unknown",
+                            "odds": bet.odds,
+                            "stake": bet.stake,
+                            "result": result,
+                            "payout": payout,
+                        }
+                    )
 
         except Exception as e:
             logger.error(f"[mirror] Polymarket settlement check failed: {e}", exc_info=True)
@@ -1497,16 +1601,19 @@ class MirrorService:
 
         if staged:
             self._pending_settlements.extend(staged)
-            self._notify("settlements_pending", {
-                "provider": "polymarket",
-                "count": len(staged),
-                "wins": len([s for s in staged if s["result"] == "won"]),
-                "losses": len([s for s in staged if s["result"] == "lost"]),
-                "total_staked": sum(s["stake"] for s in staged),
-                "total_payout": sum(s["payout"] for s in staged),
-                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
-                "settlements": staged,
-            })
+            self._notify(
+                "settlements_pending",
+                {
+                    "provider": "polymarket",
+                    "count": len(staged),
+                    "wins": len([s for s in staged if s["result"] == "won"]),
+                    "losses": len([s for s in staged if s["result"] == "lost"]),
+                    "total_staked": sum(s["stake"] for s in staged),
+                    "total_payout": sum(s["payout"] for s in staged),
+                    "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                    "settlements": staged,
+                },
+            )
 
         return staged
 
@@ -1534,19 +1641,21 @@ class MirrorService:
             else:
                 await asyncio.to_thread(self._sync_balance, provider_id, balance)
                 # Login confirmed — fire sync_available (green)
-                first_login = provider_id not in self._logged_in_providers
                 self._logged_in_providers.add(provider_id)
                 info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
                 logger.info(f"[mirror] {provider_id} logged in — balance: {balance}, pending: {info['pending_bets']}")
-                self._notify("sync_available", {
-                    "provider": provider_id,
-                    "balance": balance,
-                    "pending_bets": info["pending_bets"],
-                    "pending_stake": info["pending_stake"],
-                })
+                self._notify(
+                    "sync_available",
+                    {
+                        "provider": provider_id,
+                        "balance": balance,
+                        "pending_bets": info["pending_bets"],
+                        "pending_stake": info["pending_stake"],
+                    },
+                )
                 # Auto-navigate to bet history on first login if pending bets exist
                 # Always sync bet history on first login (catch unknown bets + settle)
-                if not hasattr(self, '_settle_checked'):
+                if not hasattr(self, "_settle_checked"):
                     self._settle_checked = set()
                 if provider_id not in self._settle_checked:
                     asyncio.ensure_future(self._auto_settle_via_history(provider_id))
@@ -1556,27 +1665,31 @@ class MirrorService:
             deposit = self.polymarket_parser.parse_deposit(url, response_body)
             if deposit:
                 logger.info(f"[mirror] Polymarket deposit initiated: ${deposit['amount']} {deposit['currency']}")
-                self._notify("deposit_initiated", {
-                    "provider": "polymarket",
-                    "amount": deposit["amount"],
-                    "currency": deposit["currency"],
-                    "order_id": deposit["order_id"],
-                })
+                self._notify(
+                    "deposit_initiated",
+                    {
+                        "provider": "polymarket",
+                        "amount": deposit["amount"],
+                        "currency": deposit["currency"],
+                        "order_id": deposit["order_id"],
+                    },
+                )
 
         # Polymarket: parse and broadcast open orders
         if "clob.polymarket.com/data/orders" in url:
             orders = self.polymarket_parser.parse_orders(response_body)
             if orders:
-                self._notify("polymarket_orders", {
-                    "orders": orders,
-                    "count": len(orders),
-                    "open": len([o for o in orders if o["status"] == "live"]),
-                })
+                self._notify(
+                    "polymarket_orders",
+                    {
+                        "orders": orders,
+                        "count": len(orders),
+                        "open": len([o for o in orders if o["status"] == "live"]),
+                    },
+                )
 
         # Store trace for audit
-        await asyncio.to_thread(
-            self._store_trace_sync, provider_id, url, None, response_body, "balance"
-        )
+        await asyncio.to_thread(self._store_trace_sync, provider_id, url, None, response_body, "balance")
 
     def _extract_balance(self, provider_id: str, data: dict) -> float | None:
         """Extract total balance (cash + bonus) from provider-specific response format."""
@@ -1617,7 +1730,7 @@ class MirrorService:
             # Gecko V2 / Spelklubben:
             # {"Balances": {"SEK": {"Real": {"Balance": 907}, "Bonus": {"Balance": 500}}}}
             balances = data.get("Balances", {})
-            for currency, parts in balances.items():
+            for _currency, parts in balances.items():
                 if isinstance(parts, dict):
                     real = parts.get("Real", parts.get("Total", {}))
                     if isinstance(real, dict) and "Balance" in real:
@@ -1654,10 +1767,7 @@ class MirrorService:
             repo.set_balance(profile.id, provider_id, balance)
             db.commit()
             if abs((old_balance or 0) - balance) > 0.01:
-                logger.info(
-                    f"[mirror] Balance synced: {provider_id} "
-                    f"{old_balance:.2f} → {balance:.2f} SEK"
-                )
+                logger.info(f"[mirror] Balance synced: {provider_id} {old_balance:.2f} → {balance:.2f} SEK")
                 delta = balance - (old_balance or 0)
                 event_data = {
                     "provider": provider_id,
@@ -1667,9 +1777,7 @@ class MirrorService:
                 }
                 self._notify("balance_synced", event_data)
                 asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda d=event_data: asyncio.ensure_future(
-                        self.event_router.broadcast_sync("balance_update", d)
-                    )
+                    lambda d=event_data: asyncio.ensure_future(self.event_router.broadcast_sync("balance_update", d))
                 )
                 # Positive delta = deposit detected
                 if delta > 0.01:
@@ -1684,10 +1792,7 @@ class MirrorService:
         self, url: str, request_body: str | None, response_body: str, page_url: str | None = None
     ):
         """Process an intercepted bet placement response — any platform."""
-        provider_id = (
-            self._detect_provider_from_request(request_body)
-            or self._detect_provider(url)
-        )
+        provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
 
         try:
             body = json.loads(response_body)
@@ -1700,9 +1805,7 @@ class MirrorService:
         bet_info = self._extract_bet_info(url, body, request_body)
 
         # Store the raw trace
-        await asyncio.to_thread(
-            self._store_trace_sync, provider_id, url, request_body, response_body, "bet_placed"
-        )
+        await asyncio.to_thread(self._store_trace_sync, provider_id, url, request_body, response_body, "bet_placed")
 
         # Pass page URL for event matching (Polymarket uses URL slug)
         bet_info["page_url"] = page_url or ""
@@ -1750,10 +1853,8 @@ class MirrorService:
         info: dict[str, Any] = {}
         req: dict = {}
         if request_body:
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 req = json.loads(request_body) if isinstance(request_body, str) else request_body
-            except (json.JSONDecodeError, TypeError):
-                pass
 
         url_lower = url.lower()
 
@@ -1780,19 +1881,38 @@ class MirrorService:
                     # Map Altenar marketTypeId to canonical market
                     mt = s.get("marketTypeId", 0)
                     _ALTENAR_MARKET_MAP = {
-                        1: "1x2", 186: "moneyline", 219: "moneyline", 251: "moneyline",
-                        406: "moneyline", 30001: "moneyline",
-                        18: "total", 189: "total", 225: "total", 238: "total",
-                        258: "total", 412: "total",
-                        16: "spread", 187: "spread", 223: "spread", 237: "spread",
-                        256: "spread", 410: "spread",
+                        1: "1x2",
+                        186: "moneyline",
+                        219: "moneyline",
+                        251: "moneyline",
+                        406: "moneyline",
+                        30001: "moneyline",
+                        18: "total",
+                        189: "total",
+                        225: "total",
+                        238: "total",
+                        258: "total",
+                        412: "total",
+                        16: "spread",
+                        187: "spread",
+                        223: "spread",
+                        237: "spread",
+                        256: "spread",
+                        410: "spread",
                     }
                     if mt in _ALTENAR_MARKET_MAP:
                         info["market"] = _ALTENAR_MARKET_MAP[mt]
                     # Map outcome via selectionTypeId: 1=home, 2=draw, 3=away, 12=over, 13=under
                     st = s.get("selectionTypeId", 0)
-                    _ALTENAR_OUTCOME_MAP = {1: "home", 2: "draw", 3: "away", 12: "over", 13: "under",
-                                            1714: "home", 1715: "away"}
+                    _ALTENAR_OUTCOME_MAP = {
+                        1: "home",
+                        2: "draw",
+                        3: "away",
+                        12: "over",
+                        13: "under",
+                        1714: "home",
+                        1715: "away",
+                    }
                     if st in _ALTENAR_OUTCOME_MAP:
                         info["designation"] = _ALTENAR_OUTCOME_MAP[st]
             # Request has richer data
@@ -1917,9 +2037,10 @@ class MirrorService:
         try:
             path = unquote(urlparse(page_url).path)
             # Match "team1-vs-team2" or "team1-v-team2" patterns in the URL
-            match = re.search(r'/([^/]+?)(?:-vs?-|%20vs?%20)([^/]+?)(?:-[a-zA-Z0-9_]{10,})?/?$', path, re.IGNORECASE)
+            match = re.search(r"/([^/]+?)(?:-vs?-|%20vs?%20)([^/]+?)(?:-[a-zA-Z0-9_]{10,})?/?$", path, re.IGNORECASE)
             if match:
                 from ..matching.normalizer import normalize_team_name
+
                 home = match.group(1).replace("-", " ").strip()
                 away = match.group(2).replace("-", " ").strip()
                 if len(home) > 2 and len(away) > 2:
@@ -1949,9 +2070,10 @@ class MirrorService:
                     parts = title.split(sep, 1)
                     home = parts[0].strip()
                     # Strip trailing site name after | or –
-                    away = re.split(r'\s*[|–—]\s*', parts[1])[0].strip()
+                    away = re.split(r"\s*[|–—]\s*", parts[1])[0].strip()
                     if len(home) > 2 and len(away) > 2:
                         from ..matching.normalizer import normalize_team_name
+
                         parsed["home_team"] = normalize_team_name(home)
                         parsed["away_team"] = normalize_team_name(away)
                         parsed["event_name"] = f"{home} vs {away}"
@@ -2007,6 +2129,7 @@ class MirrorService:
 
             participants.sort(key=lambda p: p.get("side", 0))
             from ..matching.normalizer import normalize_team_name
+
             parsed["home_team"] = normalize_team_name(participants[0].get("label", ""))
             parsed["away_team"] = normalize_team_name(participants[1].get("label", ""))
             parsed["event_name"] = f"{participants[0].get('label', '')} vs {participants[1].get('label', '')}"
@@ -2177,9 +2300,14 @@ class MirrorService:
                 parse_status = "failed"
 
             self._store_trace(
-                db=db, provider_id=provider_id, url=url,
-                request_body=request_body, response_body=response_body,
-                parse_status=parse_status, provider_bet_id=confirmation_id, bet_id=bet_id,
+                db=db,
+                provider_id=provider_id,
+                url=url,
+                request_body=request_body,
+                response_body=response_body,
+                parse_status=parse_status,
+                provider_bet_id=confirmation_id,
+                bet_id=bet_id,
             )
             db.commit()
 
@@ -2208,8 +2336,8 @@ class MirrorService:
         Matches the bet to our event DB using matchup_id (Pinnacle) or event name.
         Returns True if recorded successfully.
         """
-        from ..services.bet_service import BetService
         from ..repositories.profile_repo import ProfileRepo
+        from ..services.bet_service import BetService
 
         odds = bet_info.get("odds")
         stake = bet_info.get("stake")
@@ -2243,10 +2371,14 @@ class MirrorService:
         try:
             if matchup_id:
                 from sqlalchemy import text
-                row = db.execute(text(
-                    "SELECT event_id FROM odds WHERE provider_id = :pid "
-                    "AND provider_meta->>'matchup_id' = :mid LIMIT 1"
-                ), {"pid": provider_id, "mid": str(matchup_id)}).first()
+
+                row = db.execute(
+                    text(
+                        "SELECT event_id FROM odds WHERE provider_id = :pid "
+                        "AND provider_meta->>'matchup_id' = :mid LIMIT 1"
+                    ),
+                    {"pid": provider_id, "mid": str(matchup_id)},
+                ).first()
                 if row:
                     event_id = row[0]
 
@@ -2254,27 +2386,36 @@ class MirrorService:
             altenar_eid = bet_info.get("altenar_event_id")
             if not event_id and altenar_eid:
                 from sqlalchemy import text
-                row = db.execute(text(
-                    "SELECT event_id FROM odds WHERE provider_id = :pid "
-                    "AND provider_meta->>'event_id' = :eid LIMIT 1"
-                ), {"pid": provider_id, "eid": str(altenar_eid)}).first()
+
+                row = db.execute(
+                    text(
+                        "SELECT event_id FROM odds WHERE provider_id = :pid "
+                        "AND provider_meta->>'event_id' = :eid LIMIT 1"
+                    ),
+                    {"pid": provider_id, "eid": str(altenar_eid)},
+                ).first()
                 if row:
                     event_id = row[0]
                     logger.info(f"[mirror] Altenar event matched by event_id: {altenar_eid} → {event_id}")
 
             # Polymarket: match by event_slug from page URL
             if not event_id and provider_id == "polymarket" and page_url:
-                from sqlalchemy import text
                 # Extract slug from URL: polymarket.com/event/{slug} or /sports/.../slug
                 import re
+
+                from sqlalchemy import text
+
                 # Extract slug = last path segment with date pattern (e.g. lol-ff1-big1-2026-04-07)
-                slug_match = re.search(r'polymarket\.com/.+/([a-z0-9][\w-]+-\d{4}-\d{2}-\d{2})', page_url.lower())
+                slug_match = re.search(r"polymarket\.com/.+/([a-z0-9][\w-]+-\d{4}-\d{2}-\d{2})", page_url.lower())
                 if slug_match:
                     slug = slug_match.group(1)
-                    row = db.execute(text(
-                        "SELECT event_id FROM odds WHERE provider_id = 'polymarket' "
-                        "AND provider_meta->>'event_slug' = :slug LIMIT 1"
-                    ), {"slug": slug}).first()
+                    row = db.execute(
+                        text(
+                            "SELECT event_id FROM odds WHERE provider_id = 'polymarket' "
+                            "AND provider_meta->>'event_slug' = :slug LIMIT 1"
+                        ),
+                        {"slug": slug},
+                    ).first()
                     if row:
                         event_id = row[0]
                         logger.info(f"[mirror] Polymarket event matched by slug: {slug} → {event_id}")
@@ -2282,24 +2423,33 @@ class MirrorService:
             # Fallback: match by event name (home vs away) against events table
             event_name = bet_info.get("event_name", "")
             if not event_id and event_name:
-                from ..matching.normalizer import normalize_team_name
                 import re
+
+                from ..matching.normalizer import normalize_team_name
+
                 # Split "Home vs. Away" or "Home vs Away"
-                parts = re.split(r'\s+vs\.?\s+', event_name, maxsplit=1)
+                parts = re.split(r"\s+vs\.?\s+", event_name, maxsplit=1)
                 if len(parts) == 2:
                     home_norm = normalize_team_name(parts[0].strip())
                     away_norm = normalize_team_name(parts[1].strip())
-                    from ..db.models import Event
                     from datetime import datetime, timedelta
+
+                    from ..db.models import Event
+
                     cutoff = datetime.utcnow() - timedelta(days=3)
-                    candidates = db.query(Event).filter(
-                        Event.start_time >= cutoff,
-                    ).all()
+                    candidates = (
+                        db.query(Event)
+                        .filter(
+                            Event.start_time >= cutoff,
+                        )
+                        .all()
+                    )
                     for ev in candidates:
                         ev_home = normalize_team_name(ev.home_team)
                         ev_away = normalize_team_name(ev.away_team)
-                        if (ev_home == home_norm and ev_away == away_norm) or \
-                           (ev_home == away_norm and ev_away == home_norm):
+                        if (ev_home == home_norm and ev_away == away_norm) or (
+                            ev_home == away_norm and ev_away == home_norm
+                        ):
                             event_id = ev.id
                             logger.info(f"[mirror] Event matched by name: '{event_name}' → {event_id}")
                             break
@@ -2311,10 +2461,15 @@ class MirrorService:
 
             # Check for duplicate
             from ..db.models import Bet
-            existing = db.query(Bet).filter(
-                Bet.confirmation_id == str(confirmation_id),
-                Bet.provider_id == provider_id,
-            ).first()
+
+            existing = (
+                db.query(Bet)
+                .filter(
+                    Bet.confirmation_id == str(confirmation_id),
+                    Bet.provider_id == provider_id,
+                )
+                .first()
+            )
             if existing:
                 logger.info(f"[mirror] Bet already recorded: {confirmation_id}")
                 db.close()
@@ -2377,8 +2532,15 @@ class MirrorService:
             db.close()
 
     def _store_trace(
-        self, db, provider_id: str, url: str, request_body: str | None, response_body: str,
-        parse_status: str, provider_bet_id: str | None = None, bet_id: int | None = None,
+        self,
+        db,
+        provider_id: str,
+        url: str,
+        request_body: str | None,
+        response_body: str,
+        parse_status: str,
+        provider_bet_id: str | None = None,
+        bet_id: int | None = None,
     ) -> BetTrace:
         """Insert a BetTrace record."""
         trace = BetTrace(
@@ -2396,24 +2558,30 @@ class MirrorService:
 
     def _match_event(self, db, parsed: dict) -> str | None:
         """Try to match intercepted bet to an internal Event."""
-        from ..db.models import Event
-        from rapidfuzz import fuzz
         from datetime import timedelta
+
+        from rapidfuzz import fuzz
+
+        from ..db.models import Event
 
         home = parsed.get("home_team")
         away = parsed.get("away_team")
         if not home or not away:
-            logger.warning(f"[mirror] Cannot match — no team names resolved")
+            logger.warning("[mirror] Cannot match — no team names resolved")
             return None
 
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(days=7)
-        events = db.query(Event).filter(
-            Event.home_team.isnot(None),
-            Event.away_team.isnot(None),
-            Event.start_time >= now - timedelta(hours=3),
-            Event.start_time <= cutoff,
-        ).all()
+        events = (
+            db.query(Event)
+            .filter(
+                Event.home_team.isnot(None),
+                Event.away_team.isnot(None),
+                Event.start_time >= now - timedelta(hours=3),
+                Event.start_time <= cutoff,
+            )
+            .all()
+        )
 
         best_match = None
         best_score = 0.0
@@ -2445,8 +2613,12 @@ class MirrorService:
         save_recipes(self._recipes, self._recipes_dir)
 
     async def _handle_notification_settings(
-        self, url: str, method: str, request_body: str | None,
-        response_body: str, content_type: str,
+        self,
+        url: str,
+        method: str,
+        request_body: str | None,
+        response_body: str,
+        content_type: str,
     ):
         """Capture a notification settings API call as a recipe."""
         provider_id = self._detect_provider(url)
@@ -2470,11 +2642,14 @@ class MirrorService:
         self._save_notification_recipes()
 
         logger.info(f"[mirror] Captured notification mute recipe for {provider_id}: {method} {url}")
-        self._notify("notification_recipe_captured", {
-            "provider": provider_id,
-            "method": method,
-            "url": url,
-        })
+        self._notify(
+            "notification_recipe_captured",
+            {
+                "provider": provider_id,
+                "method": method,
+                "url": url,
+            },
+        )
 
     async def _replay_notification_mute(self, provider_id: str):
         """Replay a stored notification mute recipe for a provider."""
@@ -2508,7 +2683,9 @@ class MirrorService:
             else:
                 recipe.status = "stale"
                 self._save_notification_recipes()
-                logger.warning(f"[mirror] Mute replay failed for {provider_id} (HTTP {resp.status}) — recipe marked stale")
+                logger.warning(
+                    f"[mirror] Mute replay failed for {provider_id} (HTTP {resp.status}) — recipe marked stale"
+                )
                 self._notify("notifications_mute_failed", {"provider": provider_id, "status": resp.status})
 
         except Exception as e:
@@ -2533,9 +2710,10 @@ class MirrorService:
 
         Returns: {event_id: {outcome: fair_odds}} where fair_odds are devigged.
         """
-        from ..db.models import get_session, Odds
-        from ..analysis.devig import get_fair_odds_for_outcome
         from collections import defaultdict
+
+        from ..analysis.devig import get_fair_odds_for_outcome
+        from ..db.models import Odds, get_session
 
         db = get_session()
         try:
@@ -2556,7 +2734,7 @@ class MirrorService:
 
             # Devig each market, build result
             result: dict[str, dict[str, float]] = defaultdict(dict)
-            for (event_id, market, point), market_odds in markets.items():
+            for (event_id, _market, _point), market_odds in markets.items():
                 if len(market_odds) >= 2:
                     for outcome in market_odds:
                         fair = get_fair_odds_for_outcome(outcome, market_odds, method="multiplicative")
@@ -2641,8 +2819,12 @@ class MirrorService:
         }""")
 
     def _find_btn_for_market(
-        self, buttons: list[dict], original_outcome: str, market_type: str,
-        home_name: str = "", away_name: str = "",
+        self,
+        buttons: list[dict],
+        original_outcome: str,
+        market_type: str,
+        home_name: str = "",
+        away_name: str = "",
     ) -> dict | None:
         """Find the correct button for a bet's market type and outcome.
 
@@ -2667,10 +2849,7 @@ class MirrorService:
                 break
 
         if matched_section is None:
-            if len(sections) <= 1:
-                matched_section = buttons
-            else:
-                matched_section = list(sections.values())[0] if sections else buttons
+            matched_section = buttons if len(sections) <= 1 else list(sections.values())[0] if sections else buttons
 
         if not matched_section:
             return None
@@ -2681,11 +2860,11 @@ class MirrorService:
         if original_outcome == "home" and home_name:
             name = home_name.lower()
             parts = name.split()
-            target_names.append(name)                    # "indiana pacers"
+            target_names.append(name)  # "indiana pacers"
             if len(parts) > 1:
-                target_names.append(parts[-1])           # "pacers"
-                target_names.append(parts[0])            # "indiana"
-            target_names.append(name[:3])                # "ind"
+                target_names.append(parts[-1])  # "pacers"
+                target_names.append(parts[0])  # "indiana"
+            target_names.append(name[:3])  # "ind"
         elif original_outcome == "away" and away_name:
             name = away_name.lower()
             parts = name.split()
@@ -2730,7 +2909,10 @@ class MirrorService:
                 b_text = (btn_b.get("text") or "").lower()
                 # Check if away name appears in either button
                 if away_name:
-                    away_parts = [away_name.lower()[:3], away_name.lower().split()[-1] if ' ' in away_name else away_name.lower()]
+                    away_parts = [
+                        away_name.lower()[:3],
+                        away_name.lower().split()[-1] if " " in away_name else away_name.lower(),
+                    ]
                     a_is_away = any(p in a_text for p in away_parts)
                     b_is_away = any(p in b_text for p in away_parts)
                     if original_outcome == "home":
@@ -2782,7 +2964,7 @@ class MirrorService:
             try:
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_selector('button.trading-button', timeout=15000)
+                await page.wait_for_selector("button.trading-button", timeout=15000)
                 self._poly_tabs[slug] = page
             except Exception as e:
                 logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
@@ -2807,6 +2989,7 @@ class MirrorService:
         Returns: {bets: [{bet_id, outcome, event_id, live_odds, fair_odds, edge_pct, stake, status}]}
         """
         import asyncio
+
         from ..analysis.value import compute_edge
 
         context = self.interceptor.context
@@ -2836,12 +3019,19 @@ class MirrorService:
 
             page = self._poly_tabs.get(slug)
             if page is None:
-                results.append({
-                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
-                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
-                    "edge_pct": None, "stake": amount,
-                    "status": "error", "reason": "Page load failed",
-                })
+                results.append(
+                    {
+                        "bet_id": bet_id,
+                        "outcome": outcome,
+                        "event_id": event_id,
+                        "live_odds": None,
+                        "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": None,
+                        "stake": amount,
+                        "status": "error",
+                        "reason": "Page load failed",
+                    }
+                )
                 continue
 
             try:
@@ -2853,29 +3043,51 @@ class MirrorService:
                     live_odds = round(1 / live_price, 2) if 0 < live_price < 1 else 999
                     edge_pct = compute_edge("polymarket", live_odds, fair) if fair else None
 
-                    status = "value" if edge_pct is not None and edge_pct > 0 else (
-                        "negative" if edge_pct is not None else "no-sharp"
+                    status = (
+                        "value"
+                        if edge_pct is not None and edge_pct > 0
+                        else ("negative" if edge_pct is not None else "no-sharp")
                     )
-                    results.append({
-                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
-                        "live_odds": live_odds, "fair_odds": round(fair, 2) if fair else None,
-                        "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
-                        "stake": amount, "status": status,
-                    })
+                    results.append(
+                        {
+                            "bet_id": bet_id,
+                            "outcome": outcome,
+                            "event_id": event_id,
+                            "live_odds": live_odds,
+                            "fair_odds": round(fair, 2) if fair else None,
+                            "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                            "stake": amount,
+                            "status": status,
+                        }
+                    )
                 else:
-                    results.append({
-                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
-                        "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
-                        "edge_pct": None, "stake": amount,
-                        "status": "error", "reason": f"No price at button index {btn_index}",
-                    })
+                    results.append(
+                        {
+                            "bet_id": bet_id,
+                            "outcome": outcome,
+                            "event_id": event_id,
+                            "live_odds": None,
+                            "fair_odds": round(fair, 2) if fair else None,
+                            "edge_pct": None,
+                            "stake": amount,
+                            "status": "error",
+                            "reason": f"No price for outcome {original_outcome!r}",
+                        }
+                    )
             except Exception as e:
-                results.append({
-                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
-                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
-                    "edge_pct": None, "stake": amount,
-                    "status": "error", "reason": str(e),
-                })
+                results.append(
+                    {
+                        "bet_id": bet_id,
+                        "outcome": outcome,
+                        "event_id": event_id,
+                        "live_odds": None,
+                        "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": None,
+                        "stake": amount,
+                        "status": "error",
+                        "reason": str(e),
+                    }
+                )
 
         self._notify("live_edge_complete", {"bets": results})
         return {"bets": results}
@@ -2889,6 +3101,7 @@ class MirrorService:
         Returns: {placed: [...], skipped: [...], negative: [...], errors: [], total: N}
         """
         import asyncio
+
         from ..analysis.value import compute_edge
 
         context = self.interceptor.context
@@ -2938,7 +3151,9 @@ class MirrorService:
 
             matched = self._find_btn_for_market(btn_data, original_outcome, market_type)
             if not matched or matched.get("price") is None:
-                errors.append({"bet_id": bet_id, "reason": f"No price for {market_type}/{original_outcome}", "status": "error"})
+                errors.append(
+                    {"bet_id": bet_id, "reason": f"No price for {market_type}/{original_outcome}", "status": "error"}
+                )
                 continue
 
             live_price = matched["price"]
@@ -2946,29 +3161,48 @@ class MirrorService:
             edge_pct = compute_edge("polymarket", live_odds, fair)
 
             if edge_pct is None or edge_pct <= 0:
-                negative.append({
-                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
-                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
-                    "status": "negative",
-                })
-                self._notify("live_edge_skip", {
-                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
-                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
-                })
+                negative.append(
+                    {
+                        "bet_id": bet_id,
+                        "live_odds": live_odds,
+                        "fair_odds": round(fair, 2),
+                        "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                        "status": "negative",
+                    }
+                )
+                self._notify(
+                    "live_edge_skip",
+                    {
+                        "bet_id": bet_id,
+                        "live_odds": live_odds,
+                        "fair_odds": round(fair, 2),
+                        "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                    },
+                )
                 continue
 
             # Edge is positive — place the bet on its tab
             logger.info(
-                f"[mirror] Firing bet {bet_id}: live_odds={live_odds}, "
-                f"fair_odds={fair:.2f}, edge={edge_pct:.1f}%"
+                f"[mirror] Firing bet {bet_id}: live_odds={live_odds}, fair_odds={fair:.2f}, edge={edge_pct:.1f}%"
             )
-            self._notify("live_edge_firing", {
-                "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
-                "edge_pct": round(edge_pct, 1),
-            })
+            self._notify(
+                "live_edge_firing",
+                {
+                    "bet_id": bet_id,
+                    "live_odds": live_odds,
+                    "fair_odds": round(fair, 2),
+                    "edge_pct": round(edge_pct, 1),
+                },
+            )
 
             result = await self._place_single_polymarket_bet(
-                page, bet_id, slug, outcome, amount, expected_price, max_slippage,
+                page,
+                bet_id,
+                slug,
+                outcome,
+                amount,
+                expected_price,
+                max_slippage,
                 original_outcome=bet.get("_original_outcome", outcome),
                 market_type=market_type,
             )
@@ -2990,7 +3224,10 @@ class MirrorService:
         await self.close_poly_tabs()
 
         summary = {
-            "placed": placed, "skipped": skipped, "negative": negative, "errors": errors,
+            "placed": placed,
+            "skipped": skipped,
+            "negative": negative,
+            "errors": errors,
             "total": len(bets),
         }
         self._notify("fire_live_complete", summary)
@@ -3019,17 +3256,29 @@ class MirrorService:
             expected_price = bet["expected_price"]
             max_slippage = bet.get("max_slippage_pct", 2.0)
 
-            self._notify("polymarket_bet_placing", {
-                "bet_id": bet_id, "market_slug": slug,
-                "outcome": outcome, "amount": amount,
-            })
+            self._notify(
+                "polymarket_bet_placing",
+                {
+                    "bet_id": bet_id,
+                    "market_slug": slug,
+                    "outcome": outcome,
+                    "amount": amount,
+                },
+            )
 
             try:
                 original_outcome = bet.get("_original_outcome", outcome)
                 market_type = bet.get("_market_type", "")
                 result = await self._place_single_polymarket_bet(
-                    page, bet_id, slug, outcome, amount, expected_price, max_slippage,
-                    original_outcome=original_outcome, market_type=market_type,
+                    page,
+                    bet_id,
+                    slug,
+                    outcome,
+                    amount,
+                    expected_price,
+                    max_slippage,
+                    original_outcome=original_outcome,
+                    market_type=market_type,
                 )
                 if result["status"] == "placed":
                     placed.append(result)
@@ -3044,17 +3293,30 @@ class MirrorService:
                 self._notify("polymarket_bet_failed", result)
 
         summary = {"placed": placed, "skipped": skipped, "failed": failed, "total": len(bets)}
-        self._notify("polymarket_batch_complete", {
-            "placed": len(placed), "skipped": len(skipped),
-            "failed": len(failed), "total": len(bets),
-        })
+        self._notify(
+            "polymarket_batch_complete",
+            {
+                "placed": len(placed),
+                "skipped": len(skipped),
+                "failed": len(failed),
+                "total": len(bets),
+            },
+        )
         return summary
 
     async def _prepare_polymarket_bet(
-        self, page, bet_id: int, slug: str, outcome: str,
-        amount: float, expected_price: float, max_slippage: float,
-        original_outcome: str = "", market_type: str = "",
-        home_name: str = "", away_name: str = "",
+        self,
+        page,
+        bet_id: int,
+        slug: str,
+        outcome: str,
+        amount: float,
+        expected_price: float,
+        max_slippage: float,
+        original_outcome: str = "",
+        market_type: str = "",
+        home_name: str = "",
+        away_name: str = "",
     ) -> dict:
         """Phase 1: Navigate, click outcome, check slippage, fill amount. Does NOT click Buy.
 
@@ -3064,14 +3326,14 @@ class MirrorService:
         import asyncio
 
         # 1. Navigate to market page
-        slug_parts = slug.split("-")
+        slug.split("-")
         market_url = f"https://polymarket.com/event/{slug}"
         logger.info(f"[mirror] Preparing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
         await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
 
         # Wait for trading buttons
         try:
-            await page.wait_for_selector('button.trading-button', timeout=15000)
+            await page.wait_for_selector("button.trading-button", timeout=15000)
         except Exception:
             await asyncio.sleep(5)
 
@@ -3108,7 +3370,11 @@ class MirrorService:
                 target,
             )
             if not clicked:
-                return {"bet_id": bet_id, "status": "failed", "reason": f"No button matching '{target}' for '{outcome}'"}
+                return {
+                    "bet_id": bet_id,
+                    "status": "failed",
+                    "reason": f"No button matching '{target}' for '{outcome}'",
+                }
             logger.info(f"[mirror] Clicked outcome button: '{clicked}' (target='{target}') for bet {bet_id}")
             await asyncio.sleep(1)
         except Exception as e:
@@ -3136,8 +3402,11 @@ class MirrorService:
                 slippage_pct = abs(live_price - expected_price) / expected_price * 100
                 if not self.polymarket_parser.check_slippage(expected_price, live_price, max_slippage):
                     return {
-                        "bet_id": bet_id, "status": "skipped", "reason": "slippage",
-                        "expected_price": expected_price, "actual_price": live_price,
+                        "bet_id": bet_id,
+                        "status": "skipped",
+                        "reason": "slippage",
+                        "expected_price": expected_price,
+                        "actual_price": live_price,
                         "slippage_pct": round(slippage_pct, 2),
                     }
         except Exception as e:
@@ -3178,8 +3447,10 @@ class MirrorService:
         # Ready — betslip is filled, waiting for user to verify and confirm
         logger.info(f"[mirror] Polymarket bet {bet_id} READY: {outcome} ${amount} @ {live_price or '?'}")
         return {
-            "bet_id": bet_id, "status": "ready",
-            "outcome": outcome, "amount": amount,
+            "bet_id": bet_id,
+            "status": "ready",
+            "outcome": outcome,
+            "amount": amount,
             "live_price": live_price,
             "live_odds": round(1.0 / live_price, 3) if live_price and live_price > 0 else None,
         }
@@ -3220,10 +3491,18 @@ class MirrorService:
         return result
 
     async def _place_single_polymarket_bet(
-        self, page, bet_id: int, slug: str, outcome: str,
-        amount: float, expected_price: float, max_slippage: float,
-        original_outcome: str = "", market_type: str = "",
-        home_name: str = "", away_name: str = "",
+        self,
+        page,
+        bet_id: int,
+        slug: str,
+        outcome: str,
+        amount: float,
+        expected_price: float,
+        max_slippage: float,
+        original_outcome: str = "",
+        market_type: str = "",
+        home_name: str = "",
+        away_name: str = "",
     ) -> dict:
         """Place a single bet on Polymarket via browser automation.
 
@@ -3240,14 +3519,14 @@ class MirrorService:
         # 1. Navigate to market page
         # Polymarket sports URLs: /sports/{league}/{slug} or just /{slug}
         # Extract league prefix from slug (e.g. "bra2" from "bra2-juv-nov-2026-03-31")
-        slug_parts = slug.split("-")
+        slug.split("-")
         market_url = f"https://polymarket.com/event/{slug}"
         logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
         await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
 
         # Wait for trading buttons to appear (React hydration)
         try:
-            await page.wait_for_selector('button.trading-button', timeout=15000)
+            await page.wait_for_selector("button.trading-button", timeout=15000)
         except Exception:
             await asyncio.sleep(5)  # Fallback wait
 
@@ -3287,7 +3566,11 @@ class MirrorService:
                 target,
             )
             if not clicked:
-                return {"bet_id": bet_id, "status": "failed", "reason": f"No button matching '{target}' for '{outcome}'"}
+                return {
+                    "bet_id": bet_id,
+                    "status": "failed",
+                    "reason": f"No button matching '{target}' for '{outcome}'",
+                }
             logger.info(f"[mirror] Clicked outcome button: '{clicked}' (target='{target}') for bet {bet_id}")
             await asyncio.sleep(1)
         except Exception as e:
@@ -3316,10 +3599,15 @@ class MirrorService:
                 slippage_ok = self.polymarket_parser.check_slippage(expected_price, current_price, max_slippage)
                 slippage_pct = abs(current_price - expected_price) / expected_price * 100
 
-                self._notify("polymarket_bet_price_check", {
-                    "bet_id": bet_id, "expected": expected_price,
-                    "actual": current_price, "slippage_pct": round(slippage_pct, 2),
-                })
+                self._notify(
+                    "polymarket_bet_price_check",
+                    {
+                        "bet_id": bet_id,
+                        "expected": expected_price,
+                        "actual": current_price,
+                        "slippage_pct": round(slippage_pct, 2),
+                    },
+                )
 
                 if not slippage_ok:
                     logger.warning(
@@ -3327,8 +3615,11 @@ class MirrorService:
                         f"exceeds {max_slippage}% (expected={expected_price}, actual={current_price})"
                     )
                     return {
-                        "bet_id": bet_id, "status": "skipped", "reason": "slippage",
-                        "expected_price": expected_price, "actual_price": current_price,
+                        "bet_id": bet_id,
+                        "status": "skipped",
+                        "reason": "slippage",
+                        "expected_price": expected_price,
+                        "actual_price": current_price,
                         "slippage_pct": round(slippage_pct, 2),
                     }
         except Exception as e:
@@ -3373,8 +3664,10 @@ class MirrorService:
             if success:
                 logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
                 result = {
-                    "bet_id": bet_id, "status": "placed",
-                    "amount_usdc": amount, "outcome": outcome,
+                    "bet_id": bet_id,
+                    "status": "placed",
+                    "amount_usdc": amount,
+                    "outcome": outcome,
                 }
                 self._notify("polymarket_bet_placed", result)
                 return result
@@ -3384,8 +3677,10 @@ class MirrorService:
         # Uncertain — report as placed but flag for manual verification
         logger.warning(f"[mirror] Polymarket bet {bet_id}: placement uncertain")
         result = {
-            "bet_id": bet_id, "status": "placed",
-            "amount_usdc": amount, "outcome": outcome,
+            "bet_id": bet_id,
+            "status": "placed",
+            "amount_usdc": amount,
+            "outcome": outcome,
             "note": "confirmation_uncertain",
         }
         self._notify("polymarket_bet_placed", result)

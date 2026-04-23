@@ -1,5 +1,4 @@
 """Extract macro/news features for M9 Macro & News Context Engine."""
-from datetime import datetime, timezone
 
 
 def extract_macro_features(
@@ -57,9 +56,16 @@ def extract_news_impact_features(
     """Extract features from a recent economic event for scoring adjustment."""
     # Event name as simple hash for model (LightGBM handles this as categorical)
     event_map = {
-        "FOMC Rate Decision": 0, "Non-Farm Payrolls": 1, "CPI": 2,
-        "Core CPI": 3, "PPI": 4, "Jobless Claims": 5, "GDP": 6,
-        "Retail Sales": 7, "ISM Manufacturing PMI": 8, "ISM Services PMI": 9,
+        "FOMC Rate Decision": 0,
+        "Non-Farm Payrolls": 1,
+        "CPI": 2,
+        "Core CPI": 3,
+        "PPI": 4,
+        "Jobless Claims": 5,
+        "GDP": 6,
+        "Retail Sales": 7,
+        "ISM Manufacturing PMI": 8,
+        "ISM Services PMI": 9,
     }
     return {
         "event_type_encoded": event_map.get(event_name, -1),

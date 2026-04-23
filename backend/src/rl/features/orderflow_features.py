@@ -1,4 +1,5 @@
 """Orderflow feature extraction from CandleFlow bars and OrderflowSignals."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -98,9 +99,7 @@ def extract_orderflow_features(
             _n_diags = len(getattr(_last_cf, "diagonal_imbalances", []))
             imbalance_max = min(_n_diags / max(_n_levels - 1, 1), 1.0)
         stacked_count = min(signals.stacked_imbalance_count, 10.0) / 10.0
-        stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(
-            signals.stacked_imbalance_direction, 0.0
-        )
+        stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(signals.stacked_imbalance_direction, 0.0)
         big_count = min(signals.big_trades_count, 10.0) / 10.0
         big_net = signals.big_trades_net_delta / max(avg_vol, 1.0)
         vsa_abs = 1.0 if signals.vsa_absorption else 0.0
@@ -184,29 +183,32 @@ def extract_orderflow_features(
     else:
         flow_shift = 0.0
 
-    feats = np.array([
-        delta_pct,
-        delta_norm,
-        cvd_norm,
-        cvd_trend_val,
-        volume_ratio,
-        body_ratio,
-        spread_ticks,
-        passive_active,
-        imbalance_max,
-        stacked_count,
-        stacked_dir,
-        big_count,
-        big_net,
-        vsa_abs,
-        stop_run,
-        float(delta_accel),
-        float(absorption_str),
-        float(init_momentum),
-        float(vol_climax),
-        float(delta_div),
-        float(flow_shift),
-    ], dtype=np.float32)
+    feats = np.array(
+        [
+            delta_pct,
+            delta_norm,
+            cvd_norm,
+            cvd_trend_val,
+            volume_ratio,
+            body_ratio,
+            spread_ticks,
+            passive_active,
+            imbalance_max,
+            stacked_count,
+            stacked_dir,
+            big_count,
+            big_net,
+            vsa_abs,
+            stop_run,
+            float(delta_accel),
+            float(absorption_str),
+            float(init_momentum),
+            float(vol_climax),
+            float(delta_div),
+            float(flow_shift),
+        ],
+        dtype=np.float32,
+    )
 
     # Clip to avoid extreme outliers
     feats = np.clip(feats, -5.0, 5.0)

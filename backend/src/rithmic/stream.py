@@ -9,18 +9,18 @@ Uses async-rithmic's event callbacks:
   client.on_time_bar → upsert_candle() to DB
   client.on_exchange_order_notification → fill tracking
 """
+
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from datetime import datetime, timezone
 
 from async_rithmic import (
-    RithmicClient,
     DataType,
-    TimeBarType,
     OrderPlacement,
+    RithmicClient,
+    TimeBarType,
 )
 
 from .config import RithmicConfig
@@ -118,7 +118,7 @@ class RithmicStream:
             try:
                 price = float(tick.trade_price)
                 size = int(tick.trade_size)
-                ts_epoch = tick.ssboe + tick.usecs / 1e6 if hasattr(tick, 'ssboe') else time.time()
+                ts_epoch = tick.ssboe + tick.usecs / 1e6 if hasattr(tick, "ssboe") else time.time()
                 self._level_monitor.on_tick(price, size, ts_epoch)
             except Exception:
                 log.debug("Tick processing error", exc_info=True)
@@ -132,14 +132,11 @@ class RithmicStream:
             from ..repositories.market_repo import MarketRepo
 
             # Determine interval from bar period
-            period = getattr(bar, 'type_specifier', 1)
-            if period == 5:
-                interval = "5m"
-            else:
-                interval = "1m"
+            period = getattr(bar, "type_specifier", 1)
+            interval = "5m" if period == 5 else "1m"
 
             ts = datetime.fromtimestamp(
-                bar.ssboe if hasattr(bar, 'ssboe') else time.time(),
+                bar.ssboe if hasattr(bar, "ssboe") else time.time(),
                 tz=timezone.utc,
             )
 

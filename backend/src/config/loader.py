@@ -7,7 +7,7 @@ Loads providers.yaml and sports.json with schema validation.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -17,78 +17,83 @@ logger = logging.getLogger(__name__)
 
 # ============ Pydantic Models for Validation ============
 
+
 class SportConfig(BaseModel):
     """Configuration for a sport."""
+
     key: str  # Canonical sport identifier (e.g., 'football', 'basketball')
     name: str  # Display name
     kambi_sport: str  # Kambi API sport identifier
-    pinnacle_sport_id: Optional[int] = None  # Pinnacle API sport ID
+    pinnacle_sport_id: int | None = None  # Pinnacle API sport ID
 
 
 class ProviderConfig(BaseModel):
     """Configuration for a betting provider."""
+
     id: str
-    name: Optional[str] = None
+    name: str | None = None
     retriever_type: str
-    domain: Optional[str] = None
-    api_base: Optional[str] = None
-    base_url: Optional[str] = None
-    brand: Optional[str] = None
-    params: Dict = Field(default_factory=dict)
-    max_leagues: Optional[int] = None  # For multi-league providers like ComeOn
-    concurrent_leagues: Optional[int] = 3  # Number of parallel league extractions (default 3)
+    domain: str | None = None
+    api_base: str | None = None
+    base_url: str | None = None
+    brand: str | None = None
+    params: dict = Field(default_factory=dict)
+    max_leagues: int | None = None  # For multi-league providers like ComeOn
+    concurrent_leagues: int | None = 3  # Number of parallel league extractions (default 3)
 
     # Fields used by various providers (must be declared to avoid Pydantic dropping them)
-    integration: Optional[str] = None        # Altenar skin ID
-    supported_sports: Optional[List[str]] = None
-    bonus: Optional[Dict] = None
-    sharp: Optional[bool] = False
-    site_url: Optional[str] = None
+    integration: str | None = None  # Altenar skin ID
+    supported_sports: list[str] | None = None
+    bonus: dict | None = None
+    sharp: bool | None = False
+    site_url: str | None = None
 
     # Currency (default SEK for Swedish sportsbooks, USDC for Polymarket)
-    currency: Optional[str] = "SEK"
-    exchange_rate_sek: Optional[float] = 1.0  # 1 unit of currency = X SEK
+    currency: str | None = "SEK"
+    exchange_rate_sek: float | None = 1.0  # 1 unit of currency = X SEK
 
     # Secondary URL (e.g., Polymarket CLOB API)
-    clob_url: Optional[str] = None
+    clob_url: str | None = None
 
     # Gecko V2 session init path (default /sv/odds, bethard needs /sv/sports)
-    init_path: Optional[str] = None
+    init_path: str | None = None
 
     # Per-provider timeout override (seconds). None = use global provider_timeout.
-    provider_timeout: Optional[int] = None
+    provider_timeout: int | None = None
 
     # Per-provider sport timeout override (seconds). None = use global sport_timeout.
-    sport_timeout: Optional[int] = None
+    sport_timeout: int | None = None
 
     # API key for providers that need auth (e.g., Cloudbet affiliate key)
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
     # ComeOn-specific depth extraction configuration
-    extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
-    concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads
-    detail_extraction_filter: Optional[str] = "all"  # "all", "popular", or "none"
-    sports_to_extract: Optional[str | List[str]] = None  # Sports to extract ("all" or list)
+    extract_full_markets: bool | None = False  # Enable event detail page extraction
+    concurrent_event_details: int | None = 10  # Parallel event detail page loads
+    detail_extraction_filter: str | None = "all"  # "all", "popular", or "none"
+    sports_to_extract: str | list[str] | None = None  # Sports to extract ("all" or list)
 
 
 class AppConfig(BaseModel):
     """Root application configuration."""
-    sports: List[SportConfig]
-    providers: Dict[str, ProviderConfig]
-    active_providers: List[str] = Field(default_factory=list)
 
-    @field_validator('providers', mode='before')
+    sports: list[SportConfig]
+    providers: dict[str, ProviderConfig]
+    active_providers: list[str] = Field(default_factory=list)
+
+    @field_validator("providers", mode="before")
     def add_provider_ids(cls, v):
         """Ensure provider IDs are set."""
         if isinstance(v, dict):
             for pid, config in v.items():
                 if isinstance(config, dict):
-                    config['id'] = pid
+                    config["id"] = pid
         return v
 
 
 class RetryConfig(BaseModel):
     """Retry logic configuration."""
+
     enabled: bool = True
     max_retries: int = 3
     initial_backoff_seconds: float = 2.0
@@ -99,6 +104,7 @@ class RetryConfig(BaseModel):
 
 class CircuitBreakerConfig(BaseModel):
     """Circuit breaker configuration."""
+
     enabled: bool = True
     failure_threshold: int = 5
     recovery_timeout_seconds: int = 300
@@ -107,6 +113,7 @@ class CircuitBreakerConfig(BaseModel):
 
 class CacheConfig(BaseModel):
     """Response caching configuration."""
+
     enabled: bool = True
     ttl_seconds: int = 300
     max_entries: int = 1000
@@ -116,6 +123,7 @@ class CacheConfig(BaseModel):
 
 class HealthCheckConfig(BaseModel):
     """Provider health check configuration."""
+
     enabled: bool = True
     strategy: str = "on_demand"
     timeout_seconds: float = 10.0
@@ -124,6 +132,7 @@ class HealthCheckConfig(BaseModel):
 
 class MetricsConfig(BaseModel):
     """Performance metrics configuration."""
+
     enabled: bool = True
     track_timing: bool = True
     track_success_rate: bool = True
@@ -134,6 +143,7 @@ class MetricsConfig(BaseModel):
 
 class ProgressConfig(BaseModel):
     """Progress reporting configuration."""
+
     enabled: bool = True
     transport: str = "callback"  # "callback" or "websocket"
     websocket_path: str = "/ws/extraction"
@@ -141,6 +151,7 @@ class ProgressConfig(BaseModel):
 
 class GracefulShutdownConfig(BaseModel):
     """Graceful shutdown configuration."""
+
     enabled: bool = True
     shutdown_timeout_seconds: int = 30
     cancel_pending_tasks: bool = True
@@ -148,6 +159,7 @@ class GracefulShutdownConfig(BaseModel):
 
 class FuzzyMatchConfig(BaseModel):
     """Fuzzy matching configuration."""
+
     threshold: int = 85  # Minimum average match score (0-100)
     min_individual_score: int = 75  # Minimum score for EACH team (0-100)
     max_asymmetry_diff: int = 25  # Max allowed difference between team scores
@@ -157,6 +169,7 @@ class FuzzyMatchConfig(BaseModel):
 
 class RateLimitConfig(BaseModel):
     """Transport-level rate limit handling."""
+
     max_retries: int = 2  # Max retries on 429
     default_wait_seconds: int = 5  # Default wait if no Retry-After header
     max_wait_seconds: int = 60  # Cap on wait time
@@ -165,16 +178,18 @@ class RateLimitConfig(BaseModel):
 
 class ProviderGroupConfig(BaseModel):
     """Provider group with shared resource constraints."""
+
     name: str
-    retriever_types: List[str]       # ["kambi"] or ["gecko_v2", "spectate"]
+    retriever_types: list[str]  # ["kambi"] or ["gecko_v2", "spectate"]
     max_concurrent: int = 3
-    shared_resource: str = "none"    # "api", "browser", "none"
-    health_check_delay_ms: int = 0   # Delay between health checks in group
+    shared_resource: str = "none"  # "api", "browser", "none"
+    health_check_delay_ms: int = 0  # Delay between health checks in group
     post_extraction_delay_ms: int = 0  # Delay after each provider extraction (rate limit recovery)
 
 
 class OrchestratorConfig(BaseModel):
     """Global orchestrator configuration."""
+
     max_concurrent_providers: int = 5
     max_concurrent_sports_per_provider: int = 3
     max_browser_instances: int = 4  # Global browser limit for pool manager
@@ -183,7 +198,7 @@ class OrchestratorConfig(BaseModel):
     batch_commit_size: int = 100
 
     # Provider group configurations for type-aware scheduling
-    provider_groups: List[ProviderGroupConfig] = Field(default_factory=list)
+    provider_groups: list[ProviderGroupConfig] = Field(default_factory=list)
 
     # Enhancement configurations
     retry: RetryConfig = Field(default_factory=RetryConfig)
@@ -199,6 +214,7 @@ class OrchestratorConfig(BaseModel):
 
 # ============ Config Loader (Singleton) ============
 
+
 class ConfigLoader:
     """
     Singleton configuration loader.
@@ -206,25 +222,26 @@ class ConfigLoader:
     Loads and validates configuration files on first access.
     Provides centralized access to sports and provider config.
     """
-    _instance: Optional['ConfigLoader'] = None
+
+    _instance: Optional["ConfigLoader"] = None
 
     def __init__(self):
-        self._sports: List[SportConfig] = []
-        self._providers: Dict[str, ProviderConfig] = {}
-        self._sports_map: Dict[str, SportConfig] = {}
-        self._sport_aliases: Dict[str, List[str]] = {}  # Sport key -> list of aliases
+        self._sports: list[SportConfig] = []
+        self._providers: dict[str, ProviderConfig] = {}
+        self._sports_map: dict[str, SportConfig] = {}
+        self._sport_aliases: dict[str, list[str]] = {}  # Sport key -> list of aliases
         self._loaded = False
-        self.orchestrator_config: Optional[OrchestratorConfig] = None
+        self.orchestrator_config: OrchestratorConfig | None = None
 
     @classmethod
-    def get_instance(cls) -> 'ConfigLoader':
+    def get_instance(cls) -> "ConfigLoader":
         """Get or create singleton instance."""
         if cls._instance is None:
             cls._instance = cls()
             cls._instance.load()
         return cls._instance
 
-    def load(self, config_dir: Optional[Path] = None):
+    def load(self, config_dir: Path | None = None):
         """
         Load configuration from YAML/JSON files.
 
@@ -236,6 +253,7 @@ class ConfigLoader:
 
         if config_dir is None:
             from ..paths import get_config_dir
+
             config_dir = get_config_dir()
 
         try:
@@ -260,24 +278,24 @@ class ConfigLoader:
             logger.warning(f"Sports config not found: {sports_path}")
             return
 
-        with open(sports_path, "r", encoding="utf-8") as f:
+        with open(sports_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         sports_data = config.get("sports", {})
 
         for sport_key, sport_config in sports_data.items():
             # Extract aliases
-            self._sport_aliases[sport_key] = [
-                a.lower() for a in sport_config.get("aliases", [])
-            ]
+            self._sport_aliases[sport_key] = [a.lower() for a in sport_config.get("aliases", [])]
 
             # Create SportConfig
-            self._sports.append(SportConfig(
-                key=sport_key,
-                name=sport_config.get("name", sport_key),
-                kambi_sport=sport_config.get("kambi_sport", sport_key),
-                pinnacle_sport_id=sport_config.get("pinnacle_id"),
-            ))
+            self._sports.append(
+                SportConfig(
+                    key=sport_key,
+                    name=sport_config.get("name", sport_key),
+                    kambi_sport=sport_config.get("kambi_sport", sport_key),
+                    pinnacle_sport_id=sport_config.get("pinnacle_id"),
+                )
+            )
 
         # Build lookup map by key
         self._sports_map = {s.key: s for s in self._sports}
@@ -290,14 +308,16 @@ class ConfigLoader:
             logger.warning(f"Providers config not found: {providers_path}")
             return
 
-        with open(providers_path, "r", encoding="utf-8") as f:
+        with open(providers_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         # Load orchestrator config
         if "orchestrator" in config:
             try:
                 self.orchestrator_config = OrchestratorConfig(**config["orchestrator"])
-                logger.info(f"Loaded orchestrator config: max_concurrent_providers={self.orchestrator_config.max_concurrent_providers}")
+                logger.info(
+                    f"Loaded orchestrator config: max_concurrent_providers={self.orchestrator_config.max_concurrent_providers}"
+                )
             except Exception as e:
                 logger.error(f"Invalid orchestrator config: {e}")
                 self.orchestrator_config = OrchestratorConfig()  # Use defaults
@@ -323,24 +343,24 @@ class ConfigLoader:
         logger.info(f"Loaded {len(self._providers)} active providers from {providers_path}")
 
     @property
-    def sports(self) -> List[SportConfig]:
+    def sports(self) -> list[SportConfig]:
         """Get all sports configurations."""
         return self._sports
 
     @property
-    def providers(self) -> Dict[str, ProviderConfig]:
+    def providers(self) -> dict[str, ProviderConfig]:
         """Get all provider configurations."""
         return self._providers
 
-    def get_sport(self, key: str) -> Optional[SportConfig]:
+    def get_sport(self, key: str) -> SportConfig | None:
         """Get sport config by key."""
         return self._sports_map.get(key)
 
-    def get_provider(self, provider_id: str) -> Optional[ProviderConfig]:
+    def get_provider(self, provider_id: str) -> ProviderConfig | None:
         """Get provider config by ID."""
         return self._providers.get(provider_id)
 
-    def get_enabled_providers(self) -> List[str]:
+    def get_enabled_providers(self) -> list[str]:
         """Get list of enabled provider IDs."""
         return list(self._providers.keys())
 
@@ -350,12 +370,13 @@ class ConfigLoader:
             raise ValueError("Configuration not loaded")
         return self.orchestrator_config
 
-    def get_sport_aliases(self, sport_key: str) -> List[str]:
+    def get_sport_aliases(self, sport_key: str) -> list[str]:
         """Get aliases for a sport (e.g., football -> ['soccer', 'fotboll'])."""
         return self._sport_aliases.get(sport_key.lower(), [])
 
 
 # ============ Convenience Functions ============
+
 
 def load_config() -> ConfigLoader:
     """Load and return configuration singleton."""

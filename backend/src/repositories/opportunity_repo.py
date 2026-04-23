@@ -1,12 +1,12 @@
 """Opportunity repository - opportunity data access."""
 
 from datetime import datetime, timezone
-from typing import Optional
+
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from ..db.models import Event, Odds, Opportunity, Bet
+from ..db.models import Bet, Event, Odds, Opportunity
 
 
 class OpportunityRepo:
@@ -33,21 +33,15 @@ class OpportunityRepo:
         Returns list of (Opportunity, Event) tuples.
         Filters out events that have already started.
         """
-        query = self.db.query(Opportunity, Event).join(
-            Event, Event.id == Opportunity.event_id
-        )
+        query = self.db.query(Opportunity, Event).join(Event, Event.id == Opportunity.event_id)
 
         # Base filters
-        query = query.filter(Opportunity.is_active == True)
+        query = query.filter(Opportunity.is_active)
 
         now = datetime.now(timezone.utc)
-        query = query.filter(
-            (Event.start_time.is_(None)) | (Event.start_time > now)
-        )
+        query = query.filter((Event.start_time.is_(None)) | (Event.start_time > now))
         # Exclude live/finished events even if start_time check is borderline
-        query = query.filter(
-            (Event.match_status.is_(None)) | (Event.match_status == "prematch")
-        )
+        query = query.filter((Event.match_status.is_(None)) | (Event.match_status == "prematch"))
 
         # Optional filters
         if type:
@@ -60,8 +54,7 @@ class OpportunityRepo:
             query = query.filter(Opportunity.provider1_id != exclude_provider1)
         if provider_ids:
             query = query.filter(
-                (Opportunity.provider1_id.in_(provider_ids)) |
-                (Opportunity.provider2_id.in_(provider_ids))
+                (Opportunity.provider1_id.in_(provider_ids)) | (Opportunity.provider2_id.in_(provider_ids))
             )
         if market:
             query = query.filter(Opportunity.market == market)
@@ -71,12 +64,7 @@ class OpportunityRepo:
             query = query.filter(Opportunity.edge_pct >= min_edge)
 
         # Sort and limit
-        return (
-            query
-            .order_by(Opportunity.edge_pct.desc().nullslast())
-            .limit(limit)
-            .all()
-        )
+        return query.order_by(Opportunity.edge_pct.desc().nullslast()).limit(limit).all()
 
     def upsert_value(
         self,
@@ -91,13 +79,17 @@ class OpportunityRepo:
         point: float | None = None,
     ) -> tuple[bool, "Opportunity"]:
         """Upsert a value opportunity. Returns (is_new, opportunity)."""
-        existing = self.db.query(Opportunity).filter(
-            Opportunity.event_id == event_id,
-            Opportunity.market == market,
-            Opportunity.type == "value",
-            Opportunity.outcome1 == outcome,
-            Opportunity.provider1_id == provider_id
-        ).first()
+        existing = (
+            self.db.query(Opportunity)
+            .filter(
+                Opportunity.event_id == event_id,
+                Opportunity.market == market,
+                Opportunity.type == "value",
+                Opportunity.outcome1 == outcome,
+                Opportunity.provider1_id == provider_id,
+            )
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
 
@@ -149,11 +141,15 @@ class OpportunityRepo:
         primary = sorted_legs[0]
         secondary = sorted_legs[1] if len(sorted_legs) > 1 else sorted_legs[0]
 
-        existing = self.db.query(Opportunity).filter(
-            Opportunity.event_id == event_id,
-            Opportunity.market == market,
-            Opportunity.type == "arb",
-        ).first()
+        existing = (
+            self.db.query(Opportunity)
+            .filter(
+                Opportunity.event_id == event_id,
+                Opportunity.market == market,
+                Opportunity.type == "arb",
+            )
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
 
@@ -225,11 +221,15 @@ class OpportunityRepo:
         primary = sorted_legs[0]
         secondary = sorted_legs[1] if len(sorted_legs) > 1 else sorted_legs[0]
 
-        existing = self.db.query(Opportunity).filter(
-            Opportunity.event_id == event_id,
-            Opportunity.market == market,
-            Opportunity.type == "reverse",
-        ).first()
+        existing = (
+            self.db.query(Opportunity)
+            .filter(
+                Opportunity.event_id == event_id,
+                Opportunity.market == market,
+                Opportunity.type == "reverse",
+            )
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
 
@@ -294,12 +294,16 @@ class OpportunityRepo:
         point: float | None = None,
     ) -> tuple[bool, "Opportunity"]:
         """Upsert a reverse value opportunity (Pinnacle vs consensus). Returns (is_new, opportunity)."""
-        existing = self.db.query(Opportunity).filter(
-            Opportunity.event_id == event_id,
-            Opportunity.market == market,
-            Opportunity.type == "reverse_value",
-            Opportunity.outcome1 == outcome,
-        ).first()
+        existing = (
+            self.db.query(Opportunity)
+            .filter(
+                Opportunity.event_id == event_id,
+                Opportunity.market == market,
+                Opportunity.type == "reverse_value",
+                Opportunity.outcome1 == outcome,
+            )
+            .first()
+        )
 
         now = datetime.now(timezone.utc)
 
@@ -345,35 +349,37 @@ class OpportunityRepo:
 
         Returns cleanup stats dict.
         """
-        stats = {"inactive": 0, "orphaned": 0, "past_events": 0,
-                 "past_events_deleted": 0, "deactivated": 0}
+        stats = {"inactive": 0, "orphaned": 0, "past_events": 0, "past_events_deleted": 0, "deactivated": 0}
         now = datetime.now(timezone.utc)
 
         # 1. Delete inactive opportunities
-        stats["inactive"] = self.db.query(Opportunity).filter(
-            Opportunity.is_active == False
-        ).delete()
+        stats["inactive"] = self.db.query(Opportunity).filter(not Opportunity.is_active).delete()
 
         # 2. Delete orphaned opportunities (event doesn't exist)
         valid_event_subq = self.db.query(Event.id).subquery()
-        stats["orphaned"] = self.db.query(Opportunity).filter(
-            ~Opportunity.event_id.in_(self.db.query(valid_event_subq))
-        ).delete(synchronize_session=False)
+        stats["orphaned"] = (
+            self.db.query(Opportunity)
+            .filter(~Opportunity.event_id.in_(self.db.query(valid_event_subq)))
+            .delete(synchronize_session=False)
+        )
 
         # 3. Delete opportunities for past events (but keep live/finished for settlement)
         #    Also reuse this set for step 4 (event deletion) to avoid a duplicate query
         past_event_ids = [
-            e.id for e in self.db.query(Event.id).filter(
+            e.id
+            for e in self.db.query(Event.id)
+            .filter(
                 Event.start_time < now,
                 or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
-            ).all()
+            )
+            .all()
         ]
         if past_event_ids:
             for i in range(0, len(past_event_ids), 500):
-                batch = past_event_ids[i:i + 500]
-                stats["past_events"] += self.db.query(Opportunity).filter(
-                    Opportunity.event_id.in_(batch)
-                ).delete(synchronize_session=False)
+                batch = past_event_ids[i : i + 500]
+                stats["past_events"] += (
+                    self.db.query(Opportunity).filter(Opportunity.event_id.in_(batch)).delete(synchronize_session=False)
+                )
 
         # 4. Delete past events + their odds (cascade)
         #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
@@ -381,44 +387,35 @@ class OpportunityRepo:
             # Safety: query ALL bets (not just past_event_ids) to ensure
             # we never delete an event referenced by any bet
             event_ids_with_bets = set(
-                row[0] for row in self.db.query(Bet.event_id).filter(
-                    Bet.event_id.isnot(None)
-                ).distinct().all()
+                row[0] for row in self.db.query(Bet.event_id).filter(Bet.event_id.isnot(None)).distinct().all()
             )
-            deletable_ids = [
-                eid for eid in past_event_ids if eid not in event_ids_with_bets
-            ]
+            deletable_ids = [eid for eid in past_event_ids if eid not in event_ids_with_bets]
             if deletable_ids:
                 for i in range(0, len(deletable_ids), 500):
-                    batch = deletable_ids[i:i + 500]
+                    batch = deletable_ids[i : i + 500]
                     # Delete odds first (Postgres enforces FK constraints)
-                    self.db.query(Odds).filter(
-                        Odds.event_id.in_(batch)
-                    ).delete(synchronize_session='fetch')
-                    self.db.query(Opportunity).filter(
-                        Opportunity.event_id.in_(batch)
-                    ).delete(synchronize_session='fetch')
-                    stats["past_events_deleted"] += self.db.query(Event).filter(
-                        Event.id.in_(batch)
-                    ).delete(synchronize_session='fetch')
+                    self.db.query(Odds).filter(Odds.event_id.in_(batch)).delete(synchronize_session="fetch")
+                    self.db.query(Opportunity).filter(Opportunity.event_id.in_(batch)).delete(
+                        synchronize_session="fetch"
+                    )
+                    stats["past_events_deleted"] += (
+                        self.db.query(Event).filter(Event.id.in_(batch)).delete(synchronize_session="fetch")
+                    )
 
         # 5. Deactivation — incremental vs full
         if changed_event_ids is not None:
             # Incremental: only deactivate opportunities for changed events
-            stats["deactivated"] = self.db.query(Opportunity).filter(
-                Opportunity.event_id.in_(changed_event_ids),
-                Opportunity.is_active == True
-            ).update({"is_active": False}, synchronize_session=False)
+            stats["deactivated"] = (
+                self.db.query(Opportunity)
+                .filter(Opportunity.event_id.in_(changed_event_ids), Opportunity.is_active)
+                .update({"is_active": False}, synchronize_session=False)
+            )
         else:
             # Full: deactivate all (existing behavior)
-            stats["deactivated"] = self.db.query(Opportunity).filter(
-                Opportunity.is_active == True
-            ).update({"is_active": False})
+            stats["deactivated"] = self.db.query(Opportunity).filter(Opportunity.is_active).update({"is_active": False})
 
         return stats
 
     def deactivate_all(self) -> int:
         """Deactivate all active opportunities. Returns count."""
-        return self.db.query(Opportunity).filter(
-            Opportunity.is_active == True
-        ).update({"is_active": False})
+        return self.db.query(Opportunity).filter(Opportunity.is_active).update({"is_active": False})

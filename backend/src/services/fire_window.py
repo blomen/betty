@@ -652,7 +652,7 @@ def _settle_from_history(provider_id: str, history: list) -> int:
     settled_count = 0
     db = get_session()
     try:
-        svc = BetService(db)
+        BetService(db)
         for entry in history:
             if entry.status in ("won", "lost", "void", "cashout"):
                 # Try to find matching pending bet
@@ -934,10 +934,7 @@ def get_next_bet() -> dict:
 
     is_cluster = pid == ALTENAR_CLUSTER_ID
     # For clusters, check already-placed across all member providers
-    if is_cluster:
-        cluster_providers = list(ALTENAR_CLUSTER)
-    else:
-        cluster_providers = [pid]
+    cluster_providers = list(ALTENAR_CLUSTER) if is_cluster else [pid]
 
     try:
         already_placed = _get_already_placed(cluster_providers)
@@ -1669,9 +1666,8 @@ async def check_settlements(mirror_service) -> dict:
                 if not start:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     start = getattr(event, "start_time", None) if event else None
-                if start:
-                    if start.tzinfo is None:
-                        start = start.replace(tzinfo=timezone.utc)
+                if start and start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
                 if start and start < now:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     event_name = (

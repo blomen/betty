@@ -1,4 +1,5 @@
 """Spring / Liquidity Trap: minor penetration below support, low volume, snap-back."""
+
 from .detector import DetectorContext, SetupCandidate
 
 
@@ -24,17 +25,19 @@ def detect_spring(ctx: DetectorContext) -> list[SetupCandidate]:
                 # Confirm: delta unwind (sellers exhausted) or low volume
                 if ctx.orderflow.delta_unwind or not ctx.orderflow.tick_vol_accelerating:
                     if ctx.macro_bias != "bear":
-                        candidates.append(SetupCandidate(
-                            setup_type="spring",
-                            setup_name=f"Spring at {level_name.upper()}",
-                            direction="long",
-                            level_touched=level_name,
-                            entry_price=ctx.last_price,
-                            stop_price=level_price * 0.997,  # SL below spring low
-                            target_1=ctx.vp.poc,
-                            target_2=ctx.vp.vah,
-                            target_3=ctx.session_levels.pdh,
-                            base_score=72.0,
-                        ))
+                        candidates.append(
+                            SetupCandidate(
+                                setup_type="spring",
+                                setup_name=f"Spring at {level_name.upper()}",
+                                direction="long",
+                                level_touched=level_name,
+                                entry_price=ctx.last_price,
+                                stop_price=level_price * 0.997,  # SL below spring low
+                                target_1=ctx.vp.poc,
+                                target_2=ctx.vp.vah,
+                                target_3=ctx.session_levels.pdh,
+                                base_score=72.0,
+                            )
+                        )
 
     return candidates

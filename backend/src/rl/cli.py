@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import datetime as _dt_mod
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import torch
 import typer
+
+if TYPE_CHECKING:
+    import numpy as np
 
 _ET = ZoneInfo("US/Eastern")
 
@@ -290,7 +295,6 @@ def _simulate_session_position_states(
     # Per-session trackers
     pos_side = "flat"
     entry_ts = 0.0
-    entry_price = 0.0  # unused — unrealized_r stays 0 since we don't re-tick mid-touch
     session_pnl = 0.0
     consec_losses = 0
     trade_count = 0
@@ -307,7 +311,6 @@ def _simulate_session_position_states(
         if last_date is None or dt_et != last_date or (ts - last_ts) > session_gap_s:
             pos_side = "flat"
             entry_ts = 0.0
-            entry_price = 0.0
             session_pnl = 0.0
             consec_losses = 0
             trade_count = 0
@@ -1318,7 +1321,7 @@ def replay(
         for old in chunk_dir.glob("*.npy"):
             old.unlink()
         typer.echo("Cleaned existing chunks (--clean flag).")
-    existing_chunks = set(chunk_dir.glob("obs_*.npy"))
+    set(chunk_dir.glob("obs_*.npy"))
 
     # Build file→chunk_idx mapping and skip already-completed files
     all_files_indexed = list(enumerate(parquet_files))
@@ -1738,7 +1741,7 @@ def train(
     observations = np.load(episodes_dir / "observations.npy")
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
-    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    np.load(episodes_dir / "level_types.npy", allow_pickle=True)
     stop_path = episodes_dir / "stop_targets.npy"
     stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
 
@@ -2163,7 +2166,7 @@ def train_gbt(
     observations = np.load(episodes_dir / "observations.npy")
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
-    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    np.load(episodes_dir / "level_types.npy", allow_pickle=True)
     stop_path = episodes_dir / "stop_targets.npy"
     stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
 
@@ -2614,7 +2617,7 @@ def backtest(
                 if price <= 0:
                     continue
 
-                signal = sm.on_level_touch(state, price)
+                sm.on_level_touch(state, price)
 
                 # Check stop on each tick between episodes (simplified: use episode prices)
                 # In live trading this would be tick-by-tick
@@ -2693,7 +2696,7 @@ def label_setups() -> None:
     observations = np.load(episodes_dir / "observations.npy")
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
-    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
     # Optional per-episode metadata for setup labeler (new in post-2026-04-18 replay)
     gap_path = episodes_dir / "overnight_gap.npy"
@@ -2852,7 +2855,7 @@ def train_trigger_gbt(
 
     n = len(observations)
     # Auto-fix size mismatches from interrupted replays
-    for name, arr in [("stop_targets", stop_targets)]:
+    for _name, arr in [("stop_targets", stop_targets)]:
         if len(arr) != n:
             padded = np.full(n, 10.0, dtype=np.float32)
             padded[: len(arr)] = arr
@@ -3453,7 +3456,7 @@ def analyze_dim_correlation(
         typer.echo(f"\n  SizeModel top-{top_n} feature importances vs corr rank:")
         for rank_i, (idx_abs, imp_val) in enumerate(imps):
             corr_val = float(corr_masked[idx_abs])
-            abs_rank = int(np.argsort(-np.abs(corr_masked))[idx_abs]) if idx_abs < len(corr_masked) else -1
+            int(np.argsort(-np.abs(corr_masked))[idx_abs]) if idx_abs < len(corr_masked) else -1
             typer.echo(
                 f"    #{rank_i + 1:>2d}  imp={imp_val:>8.1f}  corr={corr_val:+.4f}  "
                 f"[{idx_abs:>3d}] {pretty_augmented(idx_abs)}"
@@ -3505,7 +3508,7 @@ def analyze_combinations(
     observations = np.load(obs_path, mmap_mode="r")
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
-    level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    np.load(episodes_dir / "level_types.npy", allow_pickle=True)
     peakc_path = episodes_dir / "peak_R_cont.npy"
     peakr_path = episodes_dir / "peak_R_rev.npy"
     peak_cont = np.load(peakc_path) if peakc_path.exists() else None
@@ -3521,7 +3524,7 @@ def analyze_combinations(
 
     n = len(comp)
     typer.echo(f"Loaded {n:,} episodes")
-    typer.echo(f"Member-count distribution: {dict(zip(*np.unique(member_count, return_counts=True)))}")
+    typer.echo(f"Member-count distribution: {dict(zip(*np.unique(member_count, return_counts=True), strict=False))}")
 
     names = level_composition_names()
     # ------------------------------------------------------------------
@@ -4195,7 +4198,7 @@ def inspect_day(
             f"  Delta align   : aligned={int(delta_aligned.sum())} ({100 * delta_aligned.mean():.1f}%)  "
             f"strongly against={int(delta_against.sum())} ({100 * delta_against.mean():.1f}%)"
         )
-        typer.echo(f"  Member counts : {dict(zip(*np.unique(member_count, return_counts=True)))}")
+        typer.echo(f"  Member counts : {dict(zip(*np.unique(member_count, return_counts=True), strict=False))}")
         typer.echo(f"  Top levels    : {top_levels}")
 
     _report(date, _day_mask(date))
@@ -4330,7 +4333,7 @@ def simulate_phase2_gate(
         ts = float(tev[i])
         if ts <= 0:
             continue
-        zone_price = float(obsv[i, 0]) if False else 4500.0  # placeholder — see below
+        float(obsv[i, 0]) if False else 4500.0  # placeholder — see below
         # We don't have the zone price from obs (level_composition is multi-hot).
         # Use the touch_epoch-derived approximation: cluster trades by minute-bucket
         # within the same hour, since trades close in time at a "zone" tend to be

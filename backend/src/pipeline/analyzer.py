@@ -20,7 +20,9 @@ Architecture:
 """
 
 import logging
+import time
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..analysis.scanner import SET_SPREAD_SPORTS, OpportunityScanner
@@ -71,7 +73,7 @@ class OpportunityAnalyzer:
         # Get thresholds from active profile or use defaults
         profile = None
         try:
-            profile = session.query(Profile).filter(Profile.is_active == True).first()
+            profile = session.query(Profile).filter(Profile.is_active).first()
         except Exception as e:
             logger.debug(f"[Analyzer] Could not load profile: {e}")
 

@@ -6,6 +6,7 @@ Mechanical setup with 66-70% fill rate historically:
 3. Target: previous session close (gap fill)
 4. Stop: session high/low (the gap extreme)
 """
+
 from .detector import DetectorContext, SetupCandidate
 
 # Minimum gap size in points for NQ (20 points = 80 ticks at 0.25)
@@ -38,25 +39,27 @@ def detect_gap_logic(ctx: DetectorContext) -> list[SetupCandidate]:
                 # Estimate previous close as midpoint of PDH/PDL
                 # (precise close would need prior session data)
                 prev_close_est = (pdh + pdl) / 2.0
-                candidates.append(SetupCandidate(
-                    setup_type="gap_logic",
-                    setup_name="Gap Fill Short (Oops)",
-                    direction="short",
-                    level_touched="pdh",
-                    entry_price=price,
-                    stop_price=pdh + gap_size * 0.3,  # above the gap
-                    target_1=prev_close_est,
-                    target_2=pdl,
-                    base_score=70.0,
-                ))
+                candidates.append(
+                    SetupCandidate(
+                        setup_type="gap_logic",
+                        setup_name="Gap Fill Short (Oops)",
+                        direction="short",
+                        level_touched="pdh",
+                        entry_price=price,
+                        stop_price=pdh + gap_size * 0.3,  # above the gap
+                        target_1=prev_close_est,
+                        target_2=pdl,
+                        base_score=70.0,
+                    )
+                )
 
     # --- Gap DOWN below PDL: if price breaks back above PDL → buy ---
     if pdl and price > pdl:
         gap_size = pdh - pdl
-        if gap_size >= _MIN_GAP_POINTS:
-            if abs(price - pdl) / max(price, 1) < 0.003:
-                prev_close_est = (pdh + pdl) / 2.0
-                candidates.append(SetupCandidate(
+        if gap_size >= _MIN_GAP_POINTS and abs(price - pdl) / max(price, 1) < 0.003:
+            prev_close_est = (pdh + pdl) / 2.0
+            candidates.append(
+                SetupCandidate(
                     setup_type="gap_logic",
                     setup_name="Gap Fill Long (Oops)",
                     direction="long",
@@ -66,6 +69,7 @@ def detect_gap_logic(ctx: DetectorContext) -> list[SetupCandidate]:
                     target_1=prev_close_est,
                     target_2=pdh,
                     base_score=70.0,
-                ))
+                )
+            )
 
     return candidates

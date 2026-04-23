@@ -75,17 +75,21 @@ class EdgeSampler:
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
-        rows = db_session.query(
-            Opportunity.provider1_id,
-            Opportunity.edge_pct,
-            Opportunity.odds1,
-            Opportunity.created_at,
-        ).filter(
-            Opportunity.type == "value",
-            Opportunity.edge_pct.isnot(None),
-            Opportunity.odds1.isnot(None),
-            Opportunity.created_at >= cutoff,
-        ).all()
+        rows = (
+            db_session.query(
+                Opportunity.provider1_id,
+                Opportunity.edge_pct,
+                Opportunity.odds1,
+                Opportunity.created_at,
+            )
+            .filter(
+                Opportunity.type == "value",
+                Opportunity.edge_pct.isnot(None),
+                Opportunity.odds1.isnot(None),
+                Opportunity.created_at >= cutoff,
+            )
+            .all()
+        )
 
         provider_data: dict[str, list[SimOpportunity]] = defaultdict(list)
         provider_dates: dict[str, set] = defaultdict(set)
@@ -96,9 +100,13 @@ class EdgeSampler:
             odds = row.odds1
             fair_odds = odds / (1 + edge) if edge > -1 else odds
 
-            provider_data[provider_id].append(SimOpportunity(
-                edge=edge, odds=odds, fair_odds=fair_odds,
-            ))
+            provider_data[provider_id].append(
+                SimOpportunity(
+                    edge=edge,
+                    odds=odds,
+                    fair_odds=fair_odds,
+                )
+            )
             if row.created_at:
                 provider_dates[provider_id].add(row.created_at.date())
 

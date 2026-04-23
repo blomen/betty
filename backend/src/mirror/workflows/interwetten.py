@@ -6,6 +6,7 @@ Balance from header, history from /en/journal/bets, betslip via data-betting att
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -303,10 +304,8 @@ class InterwettenWorkflow(ProviderWorkflow):
                     odds = _parse_odds(row.get("oddsText", "0"))
                     stake_raw = row.get("stakeText", "0").replace(" ", "").replace(",", ".")
                     stake = 0.0
-                    try:
+                    with contextlib.suppress(ValueError):
                         stake = float(re.sub(r"[^\d.]", "", stake_raw))
-                    except ValueError:
-                        pass
 
                     profit_text = row.get("profitText", "").strip()
 
@@ -844,10 +843,7 @@ class InterwettenWorkflow(ProviderWorkflow):
                 return None, None
 
             fair_odds = _g(bet, "fair_odds")
-            if fair_odds and fair_odds > 0:
-                live_edge = (live_odds / fair_odds - 1) * 100
-            else:
-                live_edge = None
+            live_edge = (live_odds / fair_odds - 1) * 100 if fair_odds and fair_odds > 0 else None
 
             return live_odds, live_edge
         except Exception as e:

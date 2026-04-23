@@ -287,10 +287,7 @@ def extract_narrative_features(state: dict) -> np.ndarray:
         spp = float(amt_dyn.get("single_print_proximity", 0.0))
         # Normalised 0-1 in amt_dynamics snapshot (divisor=200 in _NORM)
         # If >1 it's raw; normalise
-        if spp > 1.0:
-            spp = float(np.clip(spp / _DIST_NORM, 0.0, 1.0))
-        else:
-            spp = float(np.clip(spp, 0.0, 1.0))
+        spp = float(np.clip(spp / _DIST_NORM, 0.0, 1.0)) if spp > 1.0 else float(np.clip(spp, 0.0, 1.0))
         out[14] = float(spp * 2.0 - 1.0)
     elif single_prints is not None and len(single_prints) > 0 and price > 0:
         min_dist_ticks = float("inf")

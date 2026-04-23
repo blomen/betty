@@ -3,8 +3,9 @@
 Fetches high/medium/low impact economic events from ForexFactory JSON feed.
 Parses forecast, actual, and previous values; computes surprise delta.
 """
+
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 

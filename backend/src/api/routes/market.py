@@ -62,7 +62,7 @@ async def get_current_session(svc: MarketService = Depends(_svc)):
 @router.get("/session/{date}")
 async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
     """Get session data for a specific date."""
-    data = svc.get_current_session()  # Will query by date
+    svc.get_current_session()  # Will query by date
     # Override: query specific date
     from ...repositories.market_repo import MarketRepo
 
@@ -750,7 +750,7 @@ async def get_ml_health():
         result["model_loaded"] = True
         model_data = predictor.models.get("level_classifier", {})
         model_obj = model_data.get("model")
-        classes = model_data.get("classes", [])
+        model_data.get("classes", [])
         feature_names = model_data.get("feature_names", [])
         result["use_fallback"] = model_data.get("use_fallback", False)
 
@@ -758,7 +758,7 @@ async def get_ml_health():
         if model_obj and hasattr(model_obj, "feature_importances_"):
             importances = model_obj.feature_importances_
             pairs = sorted(
-                zip(feature_names, importances),
+                zip(feature_names, importances, strict=False),
                 key=lambda x: x[1],
                 reverse=True,
             )

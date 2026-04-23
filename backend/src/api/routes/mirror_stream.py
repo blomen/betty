@@ -5,15 +5,15 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from starlette.requests import Request
 
-from ...mirror.channels import sync_channel, price_channel, action_channel
-from ...db.models import BalanceLog, Bet, PriceCache, SettlementQueue, get_session
-from ..deps import get_db
+from ...db.models import BalanceLog, Bet, PriceCache, SettlementQueue
+from ...mirror.channels import action_channel, price_channel, sync_channel
 from ...services import fire_window as fw
+from ..deps import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -106,14 +106,9 @@ def get_provider_state(provider_id: str, db=Depends(get_db)):
     balance = latest_balance.amount if latest_balance else None
 
     # Pending bets
-    pending_bet_rows = (
-        db.query(Bet)
-        .filter(Bet.provider_id == provider_id, Bet.result == "pending")
-        .all()
-    )
+    pending_bet_rows = db.query(Bet).filter(Bet.provider_id == provider_id, Bet.result == "pending").all()
     pending_bets = [
-        {"id": b.id, "event_id": b.event_id, "market": b.market,
-         "outcome": b.outcome, "odds": b.odds, "stake": b.stake}
+        {"id": b.id, "event_id": b.event_id, "market": b.market, "outcome": b.outcome, "odds": b.odds, "stake": b.stake}
         for b in pending_bet_rows
     ]
 
@@ -127,8 +122,13 @@ def get_provider_state(provider_id: str, db=Depends(get_db)):
         .all()
     )
     pending_settlements = [
-        {"id": s.id, "bet_id": s.bet_id, "result": s.result,
-         "payout": s.payout, "detected_at": s.detected_at.isoformat() if s.detected_at else None}
+        {
+            "id": s.id,
+            "bet_id": s.bet_id,
+            "result": s.result,
+            "payout": s.payout,
+            "detected_at": s.detected_at.isoformat() if s.detected_at else None,
+        }
         for s in settle_rows
     ]
 
@@ -144,11 +144,7 @@ def get_provider_state(provider_id: str, db=Depends(get_db)):
 @router.get("/prices/{provider_id}")
 def get_cached_prices(provider_id: str, db=Depends(get_db)):
     """Bootstrap: cached live prices from PriceCache table for a provider."""
-    rows = (
-        db.query(PriceCache)
-        .filter(PriceCache.provider_id == provider_id)
-        .all()
-    )
+    rows = db.query(PriceCache).filter(PriceCache.provider_id == provider_id).all()
     return {
         "provider_id": provider_id,
         "prices": [

@@ -1,7 +1,8 @@
-from typing import List, Dict, Optional, Any
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
+from typing import Any
 
 from ..config import ConfigLoader
 from ..core import Retriever, StandardEvent
@@ -23,7 +24,9 @@ class PinnacleRetriever(Retriever):
     def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
         if transport is None:
             import os
+
             from ..core import HttpTransport
+
             transport = HttpTransport(
                 circuit_breaker=circuit_breaker,
                 rate_limit_config=rate_limit_config,
@@ -34,21 +37,17 @@ class PinnacleRetriever(Retriever):
 
         # Build sport ID map from config
         config_loader = ConfigLoader.get_instance()
-        self._sport_map = {
-            s.key: s.pinnacle_sport_id
-            for s in config_loader.sports
-            if s.pinnacle_sport_id
-        }
+        self._sport_map = {s.key: s.pinnacle_sport_id for s in config_loader.sports if s.pinnacle_sport_id}
 
     def _get_sport_url(self, sport: str) -> str:
         """Not used - we implement custom extract logic"""
         return ""
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+    def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Not used - we override extract() completely"""
         return []
 
-    async def extract(self, sport: str, limit: int = None, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = None, **kwargs) -> list[StandardEvent]:
         """
         Extract events and odds for a sport using parallel fetching.
 
@@ -96,13 +95,12 @@ class PinnacleRetriever(Retriever):
         # Parallel fetch all leagues with semaphore to limit concurrency
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_LEAGUES)
         league_results = await asyncio.gather(
-            *[self._fetch_league(league, semaphore, metrics) for league in active_leagues],
-            return_exceptions=True
+            *[self._fetch_league(league, semaphore, metrics) for league in active_leagues], return_exceptions=True
         )
 
         # Parse all results and deduplicate
         seen_ids: set = set()
-        all_events: List[StandardEvent] = []
+        all_events: list[StandardEvent] = []
 
         for result in league_results:
             if isinstance(result, Exception):
@@ -116,8 +114,8 @@ class PinnacleRetriever(Retriever):
             league_name, matchups, markets = result
 
             # Build matchup -> markets mapping
-            markets_by_matchup: Dict[int, List[dict]] = {}
-            for market in (markets or []):
+            markets_by_matchup: dict[int, list[dict]] = {}
+            for market in markets or []:
                 matchup_id = market.get("matchupId")
                 if matchup_id:
                     markets_by_matchup.setdefault(matchup_id, []).append(market)
@@ -178,9 +176,7 @@ class PinnacleRetriever(Retriever):
                 )
 
             if has_more:
-                metrics.pagination_warnings.append(
-                    f"{endpoint}: hasMore=true indicates additional pages exist"
-                )
+                metrics.pagination_warnings.append(f"{endpoint}: hasMore=true indicates additional pages exist")
 
             if next_page:
                 metrics.pagination_warnings.append(
@@ -205,11 +201,8 @@ class PinnacleRetriever(Retriever):
                 )
 
     async def _fetch_league(
-        self,
-        league: dict,
-        semaphore: asyncio.Semaphore,
-        metrics: ExtractionMetrics
-    ) -> Optional[tuple[str, List[dict], List[dict]]]:
+        self, league: dict, semaphore: asyncio.Semaphore, metrics: ExtractionMetrics
+    ) -> tuple[str, list[dict], list[dict]] | None:
         """
         Fetch matchups and markets for a single league.
 
@@ -244,11 +237,7 @@ class PinnacleRetriever(Retriever):
                         f"League '{league_name}': expected ~{expected_matchups} matchups, got {len(matchups)}"
                     )
 
-                return (
-                    league_name,
-                    matchups,
-                    markets
-                )
+                return (league_name, matchups, markets)
 
             except Exception as e:
                 logger.debug(f"[{self.provider_id}] Error fetching league {league_name}: {e}")
@@ -259,9 +248,9 @@ class PinnacleRetriever(Retriever):
         matchup: dict,
         sport: str,
         league_name: str,
-        markets_by_matchup: Dict[int, List[dict]],
-        metrics: ExtractionMetrics
-    ) -> Optional[StandardEvent]:
+        markets_by_matchup: dict[int, list[dict]],
+        metrics: ExtractionMetrics,
+    ) -> StandardEvent | None:
         """Parse a Pinnacle matchup + markets into StandardEvent.
 
         Also captures live state (scores, minute, period) for started matchups.
@@ -303,10 +292,8 @@ class PinnacleRetriever(Retriever):
             # Parse start time (already extracted above)
             start_time = None
             if start_time_str:
-                try:
+                with contextlib.suppress(Exception):
                     start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-                except Exception:
-                    pass
 
             # ── Capture live state (scores, minute, period) ──────────
             matchup_status = matchup.get("status")  # "pending" or "started"
@@ -387,7 +374,7 @@ class PinnacleRetriever(Retriever):
     # Esports map periods: period 1 = map 1, period 2 = map 2, etc.
     _ESPORTS_MAP_PERIODS = {1, 2, 3, 4, 5}
 
-    def _parse_markets(self, raw_markets: List[dict], sport: str = "") -> List[dict]:
+    def _parse_markets(self, raw_markets: list[dict], sport: str = "") -> list[dict]:
         """
         Parse markets from Pinnacle API response.
 
@@ -404,9 +391,12 @@ class PinnacleRetriever(Retriever):
         # Used to avoid period-6 spread/total overwriting OT-included odds.
         p0_types: set = set()
         for market in raw_markets:
-            if (market.get("status") == "open" and market.get("period", 0) == 0
-                    and market.get("type") in self._CORE_TYPES
-                    and not market.get("isAlternate", False)):
+            if (
+                market.get("status") == "open"
+                and market.get("period", 0) == 0
+                and market.get("type") in self._CORE_TYPES
+                and not market.get("isAlternate", False)
+            ):
                 p0_types.add(market["type"])
 
         for market in raw_markets:
@@ -447,8 +437,7 @@ class PinnacleRetriever(Retriever):
                     if market_type and market_type not in self._logged_unknown_types:
                         self._logged_unknown_types.add(market_type)
                         logger.debug(
-                            f"[pinnacle] Unknown market type '{market_type}' "
-                            f"period={period} prices={len(prices)}"
+                            f"[pinnacle] Unknown market type '{market_type}' period={period} prices={len(prices)}"
                         )
 
             # ── Period 6 (regulation time) — ice hockey ──
@@ -475,18 +464,15 @@ class PinnacleRetriever(Retriever):
             # ── Esports map periods (1-5) — map-level value scanning ──
             elif is_esports and period in self._ESPORTS_MAP_PERIODS:
                 if market_type == "moneyline":
-                    parsed.extend(self._parse_moneyline(
-                        prices, market_meta, market_type_override=f"moneyline_m{period}"
-                    ))
+                    parsed.extend(
+                        self._parse_moneyline(prices, market_meta, market_type_override=f"moneyline_m{period}")
+                    )
                 elif market_type == "total" and not market.get("isAlternate", False):
-                    parsed.extend(self._parse_total(
-                        prices, market_meta, market_type_override=f"total_m{period}"
-                    ))
+                    parsed.extend(self._parse_total(prices, market_meta, market_type_override=f"total_m{period}"))
 
         return parsed
 
-    def _parse_moneyline(self, prices: List[dict], market_meta: dict,
-                         market_type_override: str = None) -> List[dict]:
+    def _parse_moneyline(self, prices: list[dict], market_meta: dict, market_type_override: str = None) -> list[dict]:
         """Parse moneyline (winner) market."""
         outcomes = []
 
@@ -496,11 +482,13 @@ class PinnacleRetriever(Retriever):
 
             if designation and american_odds is not None:
                 decimal_odds = self._american_to_decimal(american_odds)
-                outcomes.append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "provider_meta": {"designation": designation},
-                })
+                outcomes.append(
+                    {
+                        "name": designation,
+                        "odds": decimal_odds,
+                        "provider_meta": {"designation": designation},
+                    }
+                )
 
         if not outcomes:
             return []
@@ -512,13 +500,15 @@ class PinnacleRetriever(Retriever):
             has_draw = any(o["name"] == "draw" for o in outcomes)
             market_type = "1x2" if has_draw else "moneyline"
 
-        return [{
-            "type": market_type,
-            "outcomes": outcomes,
-            "provider_meta": market_meta,
-        }]
+        return [
+            {
+                "type": market_type,
+                "outcomes": outcomes,
+                "provider_meta": market_meta,
+            }
+        ]
 
-    def _parse_spread(self, prices: List[dict], market_meta: dict) -> List[dict]:
+    def _parse_spread(self, prices: list[dict], market_meta: dict) -> list[dict]:
         """Parse spread (handicap) market."""
         outcomes = []
 
@@ -529,20 +519,21 @@ class PinnacleRetriever(Retriever):
 
             if designation and american_odds is not None and points is not None:
                 decimal_odds = self._american_to_decimal(american_odds)
-                outcomes.append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "point": float(points),
-                    "provider_meta": {"designation": designation},
-                })
+                outcomes.append(
+                    {
+                        "name": designation,
+                        "odds": decimal_odds,
+                        "point": float(points),
+                        "provider_meta": {"designation": designation},
+                    }
+                )
 
         if not outcomes:
             return []
 
         return [{"type": "spread", "outcomes": outcomes, "provider_meta": market_meta}]
 
-    def _parse_total(self, prices: List[dict], market_meta: dict,
-                     market_type_override: str = None) -> List[dict]:
+    def _parse_total(self, prices: list[dict], market_meta: dict, market_type_override: str = None) -> list[dict]:
         """Parse total (over/under) market."""
         outcomes = []
 
@@ -553,12 +544,14 @@ class PinnacleRetriever(Retriever):
 
             if designation and american_odds is not None and points is not None:
                 decimal_odds = self._american_to_decimal(american_odds)
-                outcomes.append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "point": float(points),
-                    "provider_meta": {"designation": designation},
-                })
+                outcomes.append(
+                    {
+                        "name": designation,
+                        "odds": decimal_odds,
+                        "point": float(points),
+                        "provider_meta": {"designation": designation},
+                    }
+                )
 
         if not outcomes:
             return []

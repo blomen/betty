@@ -3,9 +3,9 @@
 Checks data thresholds, trains models that have sufficient data,
 evaluates against baseline, and registers to ml_model_registry.
 """
+
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -13,59 +13,85 @@ logger = logging.getLogger(__name__)
 
 MODEL_CONFIGS = {
     "edge_quality": {
-        "min_samples": 200, "domain": "betting",
-        "source_type": "opportunity", "task": "classification",
+        "min_samples": 200,
+        "domain": "betting",
+        "source_type": "opportunity",
+        "task": "classification",
     },
     "limit_predictor": {
-        "min_samples": 20, "domain": "betting",
-        "source_type": "limit_event", "task": "classification",
+        "min_samples": 20,
+        "domain": "betting",
+        "source_type": "limit_event",
+        "task": "classification",
     },
     "boost_calibrator": {
-        "min_samples": 100, "domain": "betting",
-        "source_type": "boost", "task": "calibration",
+        "min_samples": 100,
+        "domain": "betting",
+        "source_type": "boost",
+        "task": "calibration",
     },
     "adaptive_kelly": {
-        "min_samples": 300, "domain": "betting",
-        "source_type": "bet_outcome", "task": "regression",
+        "min_samples": 300,
+        "domain": "betting",
+        "source_type": "bet_outcome",
+        "task": "regression",
     },
     # Trading models (M5-M7, M9)
     "setup_scorer": {
-        "min_samples": 200, "domain": "trading",
-        "source_type": "trading_signal", "task": "regression",
+        "min_samples": 200,
+        "domain": "trading",
+        "source_type": "trading_signal",
+        "task": "regression",
     },
     "temporal_pattern": {
-        "min_samples": 500, "domain": "trading",
-        "source_type": "trading_signal", "task": "classification",
+        "min_samples": 500,
+        "domain": "trading",
+        "source_type": "trading_signal",
+        "task": "classification",
     },
     "gate_classifier": {
-        "min_samples": 100, "domain": "trading",
-        "source_type": "market_session", "task": "multiclass",
+        "min_samples": 100,
+        "domain": "trading",
+        "source_type": "market_session",
+        "task": "multiclass",
     },
     "macro_engine": {
-        "min_samples": 50, "domain": "trading",
-        "source_type": "news_event", "task": "regression",
+        "min_samples": 50,
+        "domain": "trading",
+        "source_type": "news_event",
+        "task": "regression",
     },
     # M10 optimizer sub-models (use check_and_train directly, not get_training_data)
     "schedule_optimizer": {
-        "min_samples": 50, "domain": "extraction",
-        "source_type": "extraction_run", "task": "regression",
+        "min_samples": 50,
+        "domain": "extraction",
+        "source_type": "extraction_run",
+        "task": "regression",
     },
     "provider_priority": {
-        "min_samples": 100, "domain": "extraction",
-        "source_type": "provider_value", "task": "ranking",
+        "min_samples": 100,
+        "domain": "extraction",
+        "source_type": "provider_value",
+        "task": "ranking",
     },
     "timeout_tuner": {
-        "min_samples": 50, "domain": "extraction",
-        "source_type": "provider_metrics", "task": "statistical",
+        "min_samples": 50,
+        "domain": "extraction",
+        "source_type": "provider_metrics",
+        "task": "statistical",
     },
     "coverage_optimizer": {
-        "min_samples": 20, "domain": "extraction",
-        "source_type": "pinnacle_coverage", "task": "analysis",
+        "min_samples": 20,
+        "domain": "extraction",
+        "source_type": "pinnacle_coverage",
+        "task": "analysis",
     },
     # M8: Level touch classifier (uses own tables, not ml_features)
     "level_classifier": {
-        "min_samples": 300, "domain": "trading",
-        "source_type": "level_touch", "task": "multiclass",
+        "min_samples": 300,
+        "domain": "trading",
+        "source_type": "level_touch",
+        "task": "multiclass",
     },
 }
 
@@ -78,6 +104,7 @@ class TrainingOrchestrator:
 
     def check_thresholds(self, session: Session) -> dict[str, bool]:
         from src.ml.feature_store import get_training_data
+
         ready = {}
         for name, config in self.model_configs.items():
             if config.get("source_type") == "level_touch":
@@ -102,6 +129,7 @@ class TrainingOrchestrator:
             # These models load their own data — skip ml_features threshold check
             return trainer_fn(None, session)
         from src.ml.feature_store import get_training_data
+
         data = get_training_data(session, config["domain"], config["source_type"])
         if len(data) < config["min_samples"]:
             return None
@@ -128,9 +156,8 @@ class TrainingOrchestrator:
 
     def _register_model(self, session: Session, model_name: str, result: dict) -> None:
         from src.db.models import MlModelRegistry
-        session.query(MlModelRegistry).filter_by(
-            model_name=model_name, is_active=1
-        ).update({"is_active": 0})
+
+        session.query(MlModelRegistry).filter_by(model_name=model_name, is_active=1).update({"is_active": 0})
         last = (
             session.query(MlModelRegistry)
             .filter_by(model_name=model_name)
@@ -139,7 +166,8 @@ class TrainingOrchestrator:
         )
         version = (last.version + 1) if last else 1
         entry = MlModelRegistry(
-            model_name=model_name, version=version,
+            model_name=model_name,
+            version=version,
             file_path=result.get("file_path", ""),
             training_data_count=result.get("training_data_count", 0),
             validation_metric=result.get("validation_score"),
@@ -171,46 +199,55 @@ def _get_trainer(model_name: str):
 
 def _train_edge_quality(data, session):
     from src.ml.models.edge_quality import EdgeQualityModel
+
     return EdgeQualityModel().train(data)
 
 
 def _train_limit_predictor(data, session):
     from src.ml.models.limit_predictor import LimitPredictorModel
+
     return LimitPredictorModel().train(data)
 
 
 def _train_boost_calibrator(data, session):
     from src.ml.models.boost_calibrator import BoostCalibratorModel
+
     return BoostCalibratorModel().train(data)
 
 
 def _train_adaptive_kelly(data, session):
     from src.ml.models.adaptive_kelly import AdaptiveKellyModel
+
     return AdaptiveKellyModel().train(data)
 
 
 def _train_setup_scorer(data, session):
     from src.ml.models.setup_scorer import SetupScorerModel
+
     return SetupScorerModel().train(data)
 
 
 def _train_temporal_pattern(data, session):
     from src.ml.models.temporal_pattern import TemporalPatternModel
+
     return TemporalPatternModel().train(data)
 
 
 def _train_gate_classifier(data, session):
     from src.ml.models.gate_classifier import GateClassifierModel
+
     return GateClassifierModel().train(data)
 
 
 def _train_macro_engine(data, session):
     from src.ml.models.macro_engine import MacroEngineModel
+
     return MacroEngineModel().train(data)
 
 
 def _train_schedule_optimizer(data, session):
     from src.ml.optimizer.schedule import ScheduleOptimizer
+
     result = ScheduleOptimizer().check_and_train(session)
     if result is None:
         return None
@@ -220,6 +257,7 @@ def _train_schedule_optimizer(data, session):
 
 def _train_provider_priority(data, session):
     from src.ml.optimizer.provider_priority import ProviderPriorityScorer
+
     result = ProviderPriorityScorer().check_and_train(session)
     if result is None:
         return None
@@ -229,6 +267,7 @@ def _train_provider_priority(data, session):
 
 def _train_timeout_tuner(data, session):
     from src.ml.optimizer.timeout import TimeoutTuner
+
     result = TimeoutTuner().check_and_train(session)
     if result is None:
         return None
@@ -238,6 +277,7 @@ def _train_timeout_tuner(data, session):
 
 def _train_coverage_optimizer(data, session):
     from src.ml.optimizer.coverage import CoverageOptimizer
+
     result = CoverageOptimizer().check_and_train(session)
     if result is None:
         return None
@@ -247,7 +287,8 @@ def _train_coverage_optimizer(data, session):
 
 def _count_level_touch_rows(session) -> int:
     """Count labeled level-touch rows available for training."""
-    from src.db.models import LevelTouchOutcome, LevelTouchFeature
+    from src.db.models import LevelTouchFeature, LevelTouchOutcome
+
     return (
         session.query(LevelTouchOutcome)
         .join(LevelTouchFeature, LevelTouchFeature.touch_outcome_id == LevelTouchOutcome.id)
@@ -259,8 +300,9 @@ def _count_level_touch_rows(session) -> int:
 def _train_level_classifier(session):
     """Train level classifier — data from level_touch tables, not ml_features."""
     import json
+
+    from src.db.models import LevelTouchFeature, LevelTouchOutcome
     from src.ml.models.level_classifier import LevelClassifierModel
-    from src.db.models import LevelTouchOutcome, LevelTouchFeature
 
     rows = (
         session.query(LevelTouchOutcome, LevelTouchFeature)
@@ -271,8 +313,10 @@ def _train_level_classifier(session):
     )
     data = []
     for outcome, feature in rows:
-        data.append({
-            "features": json.loads(feature.features) if isinstance(feature.features, str) else feature.features,
-            "outcome": outcome.outcome,
-        })
+        data.append(
+            {
+                "features": json.loads(feature.features) if isinstance(feature.features, str) else feature.features,
+                "outcome": outcome.outcome,
+            }
+        )
     return LevelClassifierModel().train(data)
