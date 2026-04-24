@@ -2337,6 +2337,37 @@ class BrokerTrade(Base):
     )
 
 
+class StockSignal(Base):
+    """Every signal the LevelMonitor emits, persisted for later correlation
+    with realized broker_trades. This is the training-feedback foundation —
+    joined against broker_trades by ts + entry_price proximity to produce
+    labelled (signal_context, realized_outcome) pairs.
+    """
+
+    __tablename__ = "stock_signals"
+
+    id = Column(Integer, primary_key=True)
+    ts = Column(DateTime, nullable=False, default=_utcnow, index=True)
+    symbol = Column(String, nullable=False, default="NQ")
+    # Signal context
+    action = Column(String, nullable=False)          # enter_long / enter_short / SKIP
+    price = Column(Float, nullable=False)            # tick price when signal fired
+    confidence = Column(Float, nullable=True)
+    cont_p = Column(Float, nullable=True)
+    rev_p = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    stop_ticks = Column(Integer, nullable=True)
+    zone_center = Column(Float, nullable=True)
+    zone_members = Column(Integer, nullable=True)
+    model_type = Column(String, nullable=True)       # "gbt+dqn", "dqn", etc.
+    # Outcome linkage (filled by the correlate step when a matching trade closes)
+    trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
+
+    __table_args__ = (
+        Index("ix_stock_signals_ts_price", "ts", "price"),
+    )
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at: {DB_PATH}")

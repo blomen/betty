@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ...db.models import BrokerTrade
+from ...db.models import BrokerTrade, StockSignal
 from ..deps import get_db
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
@@ -284,3 +284,165 @@ def session_trends(window: int = 7):
             delta[key] = round(rv - pv, 4)
 
     return {"recent": recent, "prior": prior, "delta": delta, "window_days": window}
+
+
+# ----------------------------------------------------------------------
+# Signal ↔ trade correlation (the training-feedback foundation).
+# Every signal dispatched by LevelMonitor lands in stock_signals. Each closed
+# round-trip lands in broker_trades. Joining them by ts + price proximity
+# gives us labelled (signal_context, realized_outcome) pairs — the ground
+# truth future retraining should be weighted against.
+# ----------------------------------------------------------------------
+
+
+@router.get("/signals")
+def list_signals(
+    days: int = 14,
+    only_labelled: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Recent signals. Set only_labelled=true to return only ones already
+    linked to a broker_trade (i.e. the trade closed and got correlated).
+    """
+    from datetime import timedelta as _td
+
+    cutoff = datetime.utcnow() - _td(days=days)
+    q = db.query(StockSignal).filter(StockSignal.ts >= cutoff)
+    if only_labelled:
+        q = q.filter(StockSignal.trade_id.isnot(None))
+    rows = q.order_by(StockSignal.ts.desc()).limit(2000).all()
+
+    def _row(s: StockSignal) -> dict:
+        return {
+            "id": s.id,
+            "ts": s.ts.isoformat() if s.ts else None,
+            "symbol": s.symbol,
+            "action": s.action,
+            "price": s.price,
+            "confidence": s.confidence,
+            "cont_p": s.cont_p,
+            "rev_p": s.rev_p,
+            "stop_price": s.stop_price,
+            "stop_ticks": s.stop_ticks,
+            "zone_center": s.zone_center,
+            "zone_members": s.zone_members,
+            "model_type": s.model_type,
+            "trade_id": s.trade_id,
+        }
+
+    return {"signals": [_row(s) for s in rows], "count": len(rows)}
+
+
+@router.post("/signals/correlate")
+def correlate_signals_to_trades(
+    match_window_seconds: int = 60,
+    max_price_distance: float = 5.0,
+    db: Session = Depends(get_db),
+):
+    """Join each unlinked StockSignal to the closest BrokerTrade whose entry
+    was (a) within `match_window_seconds` of the signal ts, and (b) whose
+    entry_price is within `max_price_distance` points of the signal price.
+
+    Writes trade_id back onto the signal row. Idempotent: re-running only
+    processes signals with trade_id IS NULL.
+    """
+    from datetime import timedelta as _td
+
+    from sqlalchemy import and_
+
+    unlinked = db.query(StockSignal).filter(StockSignal.trade_id.is_(None)).all()
+    linked = 0
+    ambiguous = 0
+    unmatched = 0
+
+    for sig in unlinked:
+        window_lo = sig.ts - _td(seconds=match_window_seconds)
+        window_hi = sig.ts + _td(seconds=match_window_seconds)
+
+        candidates = (
+            db.query(BrokerTrade)
+            .filter(
+                and_(
+                    BrokerTrade.ts >= window_lo,
+                    BrokerTrade.ts <= window_hi,
+                )
+            )
+            .all()
+        )
+        # Keep only those on the matching side + within price band
+        want_side = "long" if "long" in (sig.action or "").lower() else "short"
+        near = [
+            t for t in candidates
+            if t.side == want_side
+            and abs((t.entry_price or 0) - sig.price) <= max_price_distance
+        ]
+        if not near:
+            unmatched += 1
+            continue
+        if len(near) > 1:
+            # pick nearest by abs(ts delta)
+            near.sort(key=lambda t: abs((t.ts - sig.ts).total_seconds()))
+            ambiguous += 1
+        sig.trade_id = near[0].id
+        linked += 1
+
+    db.commit()
+    return {
+        "unlinked_before": len(unlinked),
+        "linked": linked,
+        "ambiguous": ambiguous,  # multiple candidates — took nearest
+        "unmatched": unmatched,
+        "still_unlinked_after": unmatched,
+        "match_window_seconds": match_window_seconds,
+        "max_price_distance": max_price_distance,
+    }
+
+
+@router.get("/signals/labelled-dataset")
+def labelled_dataset(days: int = 30, db: Session = Depends(get_db)):
+    """Return joined (signal_context + realized_outcome) pairs — the format
+    future RL retraining will consume as high-weight ground-truth examples.
+    """
+    from datetime import timedelta as _td
+
+    cutoff = datetime.utcnow() - _td(days=days)
+    rows = (
+        db.query(StockSignal, BrokerTrade)
+        .join(BrokerTrade, BrokerTrade.id == StockSignal.trade_id)
+        .filter(StockSignal.ts >= cutoff)
+        .order_by(StockSignal.ts.desc())
+        .all()
+    )
+    out = []
+    for sig, tr in rows:
+        out.append(
+            {
+                "signal": {
+                    "ts": sig.ts.isoformat() if sig.ts else None,
+                    "action": sig.action,
+                    "price": sig.price,
+                    "confidence": sig.confidence,
+                    "cont_p": sig.cont_p,
+                    "rev_p": sig.rev_p,
+                    "stop_ticks": sig.stop_ticks,
+                    "zone_center": sig.zone_center,
+                    "zone_members": sig.zone_members,
+                },
+                "outcome": {
+                    "trade_id": tr.id,
+                    "entry_price": tr.entry_price,
+                    "exit_price": tr.exit_price,
+                    "side": tr.side,
+                    "size": tr.size,
+                    "pnl_dollars": tr.pnl_dollars,
+                    "pnl_r": tr.pnl_r,
+                    "duration_sec": (
+                        (tr.closed_at - tr.ts).total_seconds()
+                        if tr.ts and tr.closed_at
+                        else None
+                    ),
+                    "closed_at": tr.closed_at.isoformat() if tr.closed_at else None,
+                },
+            }
+        )
+    return {"pairs": out, "count": len(out)}

@@ -4,8 +4,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 
 from src.rl.config import LevelType as RLLevelType
@@ -16,6 +18,63 @@ from .amt_dynamics import AMTDynamicsTracker
 logger = logging.getLogger(__name__)
 
 TICK_SIZE = 0.25  # NQ tick size
+
+
+def _persist_stock_signal_async(payload: dict) -> None:
+    """Fire-and-forget insert of a dispatched signal into stock_signals.
+
+    Threaded so it never blocks LevelMonitor.on_tick. Errors are logged but
+    never propagated — missing a persist is always preferable to blocking
+    signal dispatch.
+    """
+    def _worker(p: dict) -> None:
+        try:
+            from ..db.models import StockSignal, get_session
+
+            ts_raw = p.get("ts")
+            if isinstance(ts_raw, (int, float)):
+                ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc).replace(tzinfo=None)
+            else:
+                ts = datetime.utcnow()
+
+            db = get_session()
+            try:
+                row = StockSignal(
+                    ts=ts,
+                    symbol="NQ",
+                    action=str(p.get("action", "")),
+                    price=float(p.get("price", 0)),
+                    confidence=_maybe_float(p.get("confidence")),
+                    cont_p=_maybe_float(p.get("cont_p")),
+                    rev_p=_maybe_float(p.get("rev_p")),
+                    stop_price=_maybe_float(p.get("stop_price")),
+                    stop_ticks=_maybe_int(p.get("stop_ticks")),
+                    zone_center=_maybe_float(p.get("zone")),
+                    zone_members=_maybe_int(p.get("zone_members")),
+                    model_type=str(p.get("model_type") or "")[:32] or None,
+                )
+                db.add(row)
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("stock_signals persist failed", exc_info=True)
+
+    threading.Thread(target=_worker, args=(payload,), daemon=True, name="signal-persist").start()
+
+
+def _maybe_float(v):
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_int(v):
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 # File-based kill switch: `touch /app/data/rl/trading_paused` to raise the
 # signal dispatch threshold to 0.99 without a rebuild. Used while we're
@@ -1284,23 +1343,26 @@ class LevelMonitor:
                         stop_ticks,
                         zone.center_price,
                     )
-                    _send(
-                        {
-                            "type": "signal",
-                            "action": sig_action,
-                            "price": price,
-                            "stop_price": stop_price,
-                            "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
-                            "confidence": confidence,
-                            "cont_p": result.get("cont_p"),
-                            "rev_p": result.get("rev_p"),
-                            "stop_ticks": stop_ticks,
-                            "model_type": result.get("model_type"),
-                            "zone": zone.center_price,
-                            "zone_members": zone.member_count,
-                            "ts": time.time(),
-                        }
-                    )
+                    signal_payload = {
+                        "type": "signal",
+                        "action": sig_action,
+                        "price": price,
+                        "stop_price": stop_price,
+                        "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
+                        "confidence": confidence,
+                        "cont_p": result.get("cont_p"),
+                        "rev_p": result.get("rev_p"),
+                        "stop_ticks": stop_ticks,
+                        "model_type": result.get("model_type"),
+                        "zone": zone.center_price,
+                        "zone_members": zone.member_count,
+                        "ts": time.time(),
+                    }
+                    _send(signal_payload)
+                    # Persist to stock_signals for later correlation with
+                    # realized broker_trades. Threaded + swallowed errors so
+                    # signal dispatch is never blocked or aborted by the DB.
+                    _persist_stock_signal_async(signal_payload)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
 
