@@ -702,21 +702,44 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // --- Zones overlay (heatmap-colored areas with confluence-count dots) ---
-    // Strength = members × hierarchy_score (= sum of member level weights,
-    // since hierarchy_score is already a mean-of-weights). Clamped to
-    // [0, 1] against a "very strong zone = 8" ceiling — typical zones on
-    // NQ cluster 1–6 levels at moderate weights, so 8 leaves some headroom
-    // for exceptional pile-ups. The color ramp is a classic cool-to-hot
-    // gradient so the eye ranks zones by heat, not by decoding a legend:
-    // slate-blue (weak) → indigo → magenta → orange → red (strong). FVG
-    // confluence keeps the heatmap fill but prepends a diamond and
-    // outlines the band in bright emerald so it pops regardless of heat.
+    // --- Zones overlay — paints what the model observes ---
+    // The model decomposes each zone into separate dimensions
+    // (rl/features/level_features.py:encode_zone_features):
+    //   hierarchy_score   — mean member weight, 0-1
+    //   count_norm        — min(member_count / 10, 1)
+    //   width_norm        — min(width_ticks / 50, 1)  (already geometric)
+    //   session_relevance — max member relevance to current session context
+    // These feed the DQN as four independent features; the chart mirrors
+    // that decomposition so what the trader sees matches what the model
+    // grades the zone on:
+    //   fill hue + alpha  → hierarchy_score (primary strength signal)
+    //   border thickness  → count_norm      (confluence depth, separate axis)
+    //   dots              → raw member count (one per level, capped at 10)
+    //   emerald glow      → FVG overlap     (separate model dim)
+    // Heat ramp: slate-blue (weak) → indigo → magenta → orange → red (strong).
     const currentZones = zonesRef.current;
     const currentFvgs = fvgsRef.current;
     if (currentZones.length > 0 && !hidden?.has('zones')) {
       const chartW = rect.width - priceScaleWidth;
       const fallbackPadPts = 0.5; // NQ: 2 ticks when server hasn't sent upper/lower
+
+      // Structural levels that the server's stop-policy actually anchors to
+      // (backend/src/rl/stop_policy.py:91-144). If a zone's price range
+      // contains any of these, the stop on an entry from that zone will
+      // lock 2 ticks beyond the structural level — so the band IS the
+      // invalidation envelope for that entry. Those zones deserve a
+      // visible marker and a heat bump.
+      const structuralPrices: number[] = [];
+      const sl = [...sessionLevelsRef.current]
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .find(s => s.pdh != null || s.pdl != null);
+      if (sl) {
+        if (sl.pdh != null) structuralPrices.push(sl.pdh);
+        if (sl.pdl != null) structuralPrices.push(sl.pdl);
+      }
+      for (const p of swingPivotsRef.current) {
+        structuralPrices.push(p.price);
+      }
 
       for (const zone of currentZones) {
         const members = Math.max(1, zone.members | 0);
@@ -733,17 +756,20 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         if (bandBottom < 0 || bandTop > rect.height) continue;
 
         const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
+        const isStructural = structuralPrices.some(p => p >= lowerPrice && p <= upperPrice);
 
-        // Strength: sum of member weights (members × mean weight = sum).
-        // Default mean weight 0.5 when the server hasn't populated hierarchy
-        // so the ramp still responds to confluence count.
-        const meanWeight = zone.hierarchy ?? 0.5;
-        const strength = Math.min(1, (members * meanWeight) / 8);
+        // Model features — hierarchy is the primary strength scalar;
+        // count_norm is a separate observed dim, not folded in.
+        // Structural anchor adds +0.2 heat so zones where the stop actually
+        // locks to the band surface as hotter than pure-cluster zones.
+        const rawHierarchy = Math.max(0, Math.min(1, zone.hierarchy ?? 0));
+        const hierarchy = Math.min(1, rawHierarchy + (isStructural ? 0.2 : 0));
+        const countNorm = Math.min(1, members / 10);
 
-        const [hr, hg, hb] = heatColor(strength);
-        const fillAlpha = 0.10 + strength * 0.22;  // 0.10 → 0.32
-        const borderAlpha = 0.55 + strength * 0.40; // 0.55 → 0.95
-        const borderW = 1 + strength * 1.5;         // 1 → 2.5
+        const [hr, hg, hb] = heatColor(hierarchy);
+        const fillAlpha = 0.08 + hierarchy * 0.28;   // 0.08 → 0.36
+        const borderAlpha = 0.45 + hierarchy * 0.45; // 0.45 → 0.90
+        const borderW = 1 + countNorm * 2;           // 1 → 3 (driven by count, not hierarchy)
 
         const drawTop = Math.max(0, bandTop);
         const drawBottom = Math.min(rect.height, bandBottom);
@@ -792,11 +818,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
           ctx.setLineDash([]);
         }
 
-        // Label dots — one per member, cap 10 so a freak pile-up doesn't
-        // overflow the axis.
+        // Label: dots for member count, ◆ prefix for FVG confluence,
+        // ⚓ prefix when this zone is where the model's stop will actually
+        // anchor (contains PDH/PDL or a swing pivot).
         const dotCount = Math.min(10, members);
         const dots = '●'.repeat(dotCount);
-        const label = hasFvg ? `◆ ${dots}` : dots;
+        const prefix = (isStructural ? '⚓ ' : '') + (hasFvg ? '◆ ' : '');
+        const label = `${prefix}${dots}`;
         const labelY = Math.max(12, Math.min(rect.height - 4, yCenter - 3));
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';
