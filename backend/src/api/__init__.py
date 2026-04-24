@@ -859,6 +859,18 @@ async def lifespan(app: FastAPI):
 
         _recompute_task = asyncio.create_task(_stocks_periodic_recompute())
         _recompute_task.set_name("stocks-recompute")
+
+        # 7. Autonomous server-side TopstepX bootstrap (gated by STOCKS_AUTONOMOUS=true).
+        # Replaces the need for the local arnold app to feed ticks through /ws/signals:
+        # the server authenticates, streams, places orders, and persists trades directly.
+        try:
+            from ..stocks.server_bootstrap import bootstrap_stocks_on_server
+
+            _stocks_runtime = await bootstrap_stocks_on_server(app)
+            if _stocks_runtime:
+                app.state.stocks_runtime = _stocks_runtime
+        except Exception:
+            logger.exception("[Stocks] Autonomous bootstrap failed — trading stays dependent on local app")
         _background_tasks.add(_recompute_task)
         _recompute_task.add_done_callback(_background_tasks.discard)
 
@@ -968,6 +980,16 @@ async def lifespan(app: FastAPI):
         logger.info("[Startup] TopstepX candle poller disabled (set TOPSTEPX_POLLER_ENABLED=true)")
 
     yield  # App is running
+
+    # Graceful shutdown — flatten any open TopstepX position FIRST. Deploying
+    # while a trade is open would otherwise leave the position running naked
+    # (no server-side stop monitor) until the next restart.
+    _stocks_rt = getattr(app.state, "stocks_runtime", None)
+    if _stocks_rt is not None:
+        try:
+            await _stocks_rt.shutdown(flatten_positions=True)
+        except Exception:
+            logger.exception("ServerStocksRuntime shutdown raised")
 
     # Graceful shutdown — flush live episodes before stopping
     if _live_collector_task and not _live_collector_task.done():

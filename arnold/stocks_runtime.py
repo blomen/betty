@@ -99,11 +99,20 @@ class StocksRuntime:
 async def bootstrap_stocks() -> StocksRuntime | None:
     """Authenticate TopstepX, start stream + relay, wire dashboard callbacks.
 
-    Returns None when TopstepX is not configured (sports-only mode).
+    Returns None when TopstepX is not configured (sports-only mode) or
+    when STOCKS_AUTONOMOUS=true (server runs the broker; we'd get duplicate
+    fills + order conflicts if both sides connected simultaneously).
     """
     import os
 
     import httpx
+
+    if os.environ.get("STOCKS_AUTONOMOUS", "").lower() == "true":
+        log.info(
+            "STOCKS_AUTONOMOUS=true — server handles TopstepX. Skipping local bootstrap "
+            "(sports mirror still runs; dashboard reads via API)."
+        )
+        return None
 
     from src.broker.flatten_scheduler import FlattenScheduler
     from src.stocks import broker_adapter as _broker_adapter_mod

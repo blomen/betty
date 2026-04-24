@@ -15,7 +15,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,89 @@ from ..deps import get_db
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
 _SESSIONS_DIR = Path("/app/data/rl/sessions")
+_TRADING_PAUSED_FLAG = Path("/app/data/rl/trading_paused")
+
+
+@router.get("/runtime-status")
+def runtime_status(request: Request):
+    """Is the autonomous server-side broker alive, what's the current
+    position, and is the trading_paused kill switch active?
+    """
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    paused = _TRADING_PAUSED_FLAG.exists()
+
+    if rt is None:
+        return {
+            "running": False,
+            "paused": paused,
+            "reason": "STOCKS_AUTONOMOUS not set or bootstrap failed at startup",
+        }
+
+    adapter = rt.adapter
+    tracker = adapter.tracker
+    return {
+        "running": True,
+        "paused": paused,
+        "halted": adapter._halted,
+        "halt_reason": adapter._halt_reason,
+        "account_id": rt.client._account_id,
+        "position": {
+            "flat": tracker.is_flat,
+            "side": tracker.side,
+            "size": tracker.size,
+            "entry_price": tracker.entry_price,
+            "stop_price": tracker.stop_price,
+            "peak_R": tracker.peak_R,
+            "locked_half_R": tracker.locked_half_R,
+        },
+        "session": {
+            "pnl": tracker.session_pnl,
+            "trade_count": tracker.trade_count,
+            "consecutive_stops": tracker.consecutive_stops,
+            "trailing_dd": tracker.trailing_dd,
+        },
+    }
+
+
+@router.post("/halt")
+async def halt_trading(request: Request, flatten: bool = True):
+    """Emergency stop: writes the /app/data/rl/trading_paused flag AND
+    optionally liquidates any open position.
+
+    The paused flag raises the signal-confidence floor to 0.99, muting
+    every future signal until the flag is removed.
+    """
+    try:
+        _TRADING_PAUSED_FLAG.parent.mkdir(parents=True, exist_ok=True)
+        _TRADING_PAUSED_FLAG.touch()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"could not set pause flag: {e}") from None
+
+    flattened = False
+    flatten_err = None
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    if flatten and rt is not None and not rt.adapter.tracker.is_flat:
+        try:
+            await rt.adapter.flatten("manual_halt")
+            flattened = True
+        except Exception as e:
+            flatten_err = str(e)
+
+    return {
+        "paused": True,
+        "flattened": flattened,
+        "flatten_error": flatten_err,
+        "note": "remove /app/data/rl/trading_paused to resume",
+    }
+
+
+@router.post("/resume")
+def resume_trading():
+    """Remove the trading_paused flag so new signals fire again."""
+    if _TRADING_PAUSED_FLAG.exists():
+        _TRADING_PAUSED_FLAG.unlink()
+        return {"paused": False, "removed": True}
+    return {"paused": False, "removed": False, "note": "flag was not set"}
 
 
 def _parse_ts(v: str | float | None) -> datetime | None:
