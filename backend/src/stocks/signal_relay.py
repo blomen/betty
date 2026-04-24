@@ -2,6 +2,12 @@
 
 Connects to the server's /ws/signals endpoint, forwards ticks from TopstepX,
 and executes orders on TopstepX when the server emits a signal.
+
+Outbound messages go through a bounded outbox drained by a single sender
+coroutine: this serializes concurrent sends (the websockets library is not
+safe for parallel `send()` calls) and buffers messages across brief
+disconnects so we don't silently drop ticks and fills during the 5 s
+reconnect window.
 """
 
 from __future__ import annotations
@@ -10,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections import deque
 from collections.abc import Callable
 
 import websockets
@@ -17,6 +24,7 @@ import websockets
 log = logging.getLogger(__name__)
 
 _RECONNECT_DELAY = 5  # seconds between reconnect attempts
+_OUTBOX_MAX = 2000  # ~60 s at 30 Hz; oldest messages drop if we exceed this
 
 
 class SignalRelayClient:
@@ -28,7 +36,11 @@ class SignalRelayClient:
         self._adapter = adapter
         self._ws = None
         self._connected = False
-        self._listen_task: asyncio.Task | None = None
+        self._sender_task: asyncio.Task | None = None
+        # Outbox: serializes sends and buffers during reconnects.
+        self._outbox: deque[dict] = deque(maxlen=_OUTBOX_MAX)
+        self._outbox_event = asyncio.Event()
+        self._dropped: int = 0  # count messages shed because the outbox was full
         self.on_signal: Callable[[dict], None] | None = None  # UI callback
         self.on_dqn_inference: Callable[[dict], None] | None = None  # DQN viz callback
         self.on_zone_update: Callable[[dict], None] | None = None
@@ -47,6 +59,8 @@ class SignalRelayClient:
 
     async def connect(self) -> None:
         """Connect with retry loop (5 s between attempts). Runs forever."""
+        if self._sender_task is None or self._sender_task.done():
+            self._sender_task = asyncio.create_task(self._sender_loop(), name="relay-sender")
         while True:
             try:
                 log.info("SignalRelay: connecting to %s", self._url)
@@ -58,6 +72,12 @@ class SignalRelayClient:
                     self._ws = ws
                     self._connected = True
                     log.info("SignalRelay: connected")
+                    if self._outbox:
+                        log.info(
+                            "SignalRelay: %d messages buffered during outage — replaying",
+                            len(self._outbox),
+                        )
+                        self._outbox_event.set()  # wake sender to drain
                     await self._listen()
             except Exception as exc:
                 self._connected = False
@@ -66,40 +86,81 @@ class SignalRelayClient:
                 await asyncio.sleep(_RECONNECT_DELAY)
 
     async def disconnect(self) -> None:
-        """Close the WebSocket connection and cancel the listen task."""
+        """Close the WebSocket connection and cancel the sender task."""
         self._connected = False
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
+        if self._sender_task and not self._sender_task.done():
+            self._sender_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._listen_task
-            self._listen_task = None
+                await self._sender_task
+            self._sender_task = None
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
             self._ws = None
 
     async def forward_tick(self, price: float, size: int, ts: float, side: str = "B") -> None:
-        """Send a tick message to the server."""
-        if not self._connected or self._ws is None:
-            return
-        try:
-            await self._ws.send(json.dumps(self._tick_msg(price, size, ts, side)))
-        except Exception as exc:
-            log.warning("SignalRelay: failed to forward tick: %s", exc)
-            self._connected = False
+        """Enqueue a tick for forwarding. Buffers during disconnects."""
+        self._enqueue(self._tick_msg(price, size, ts, side))
 
     async def forward_fill(self, side: str, price: float, size: int, stop_price: float) -> None:
-        """Send a fill message to the server."""
-        if not self._connected or self._ws is None:
-            return
-        try:
-            await self._ws.send(json.dumps(self._fill_msg(side, price, size, stop_price)))
-        except Exception as exc:
-            log.warning("SignalRelay: failed to forward fill: %s", exc)
-            self._connected = False
+        """Enqueue a fill for forwarding. Buffers during disconnects."""
+        self._enqueue(self._fill_msg(side, price, size, stop_price))
 
     # ------------------------------------------------------------------
-    # Internal: message loop
+    # Internal: outbox + sender loop
+    # ------------------------------------------------------------------
+
+    def _enqueue(self, msg: dict) -> None:
+        """Append to outbox, track eviction, wake sender."""
+        if len(self._outbox) >= _OUTBOX_MAX:
+            # deque.append will evict the oldest — count it so we can log on recovery.
+            self._dropped += 1
+        self._outbox.append(msg)
+        self._outbox_event.set()
+
+    async def _sender_loop(self) -> None:
+        """Drain the outbox through the current WS whenever connected.
+
+        Serializes sends (no concurrent `ws.send()` calls) and parks when the
+        outbox is empty or the connection is down. New messages and reconnects
+        both signal via `_outbox_event`.
+        """
+        while True:
+            try:
+                # Park until there's work AND we're connected.
+                while not self._outbox or not self._connected or self._ws is None:
+                    self._outbox_event.clear()
+                    await self._outbox_event.wait()
+
+                # Drain the outbox. Keep each message at the head of the deque
+                # until the send succeeds so a mid-drain disconnect doesn't lose it.
+                while self._outbox and self._connected and self._ws is not None:
+                    msg = self._outbox[0]
+                    try:
+                        await self._ws.send(json.dumps(msg))
+                    except Exception as exc:
+                        # The WS died mid-send. Leave msg at the head; connect()
+                        # will flip _connected=False and eventually set the event
+                        # again when the new WS is up.
+                        log.warning("SignalRelay: sender send failed (%s) — will retry on reconnect", exc)
+                        self._connected = False
+                        break
+                    self._outbox.popleft()
+
+                if self._dropped and not self._outbox:
+                    log.warning(
+                        "SignalRelay: ring buffer dropped %d messages during the outage",
+                        self._dropped,
+                    )
+                    self._dropped = 0
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                log.exception("SignalRelay: sender loop iteration failed")
+                await asyncio.sleep(0.5)
+
+    # ------------------------------------------------------------------
+    # Internal: receive loop
     # ------------------------------------------------------------------
 
     async def _listen(self) -> None:
@@ -147,18 +208,8 @@ class SignalRelayClient:
                 result = await self._handle_command(msg)
                 cmd_id = msg.get("cmd_id")
                 if cmd_id:
-                    try:
-                        await self._ws.send(
-                            json.dumps(
-                                {
-                                    "type": "command_result",
-                                    "cmd_id": cmd_id,
-                                    "result": result,
-                                }
-                            )
-                        )
-                    except Exception:
-                        log.warning("SignalRelay: failed to send command result")
+                    # Route through the outbox so we don't race the sender loop.
+                    self._enqueue({"type": "command_result", "cmd_id": cmd_id, "result": result})
             elif msg_type == "pong":
                 pass  # keepalive response
             else:
