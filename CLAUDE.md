@@ -176,6 +176,11 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 9. **Deploy cooldown enforced**: 5-minute minimum between rebuilds — each rebuild kills extraction for 5-10 min. Batch changes and deploy once, don't rebuild per commit.
 10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
 11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down. Don't rely on manual monitoring.
+12. **Stocks-aware rebuild rules (when `STOCKS_AUTONOMOUS=true`)**: every rebuild severs the TopstepX SignalR session, causing ~15-60s of tick/candle data loss and a "Multiple sessions detected" reconnect race. For the trading side this matters more than for extraction. Rules:
+    - **Check the live position first**: `curl http://localhost:8000/api/stocks/runtime-status` — if `position.flat != true`, hold off unless the deploy is genuinely urgent. An open trade gets flattened by the shutdown handler; that's a real PnL event, not a rebuild artifact.
+    - **Batch frequent edits**: if you're iterating (many small commits on the same feature), accumulate locally and deploy once — not once per commit. Target ≤ 2 stocks-impacting rebuilds per hour during trading.
+    - **Stocks-hot window**: US RTH runs 14:30–21:00 UTC and that's when zone density and trade opportunities peak. Non-critical rebuilds in this window trade model-learning data for convenience. Prefer deploys outside this window when the change isn't blocking.
+    - **Startup grace**: the server waits `STOCKS_AUTH_STARTUP_DELAY_SEC` (default 30s) before auth'ing TopstepX on a fresh container, so the prior container's SignalR session can be cleaned up by TopstepX before we connect. Shorten via env if you're sure no other session exists.
 
 ### Postgres FK Enforcement
 **PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
@@ -206,6 +211,28 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 - Set in `rl_train_daemon.sh`, `rl_train_pipeline.sh`, and the auto-start in `api/__init__.py`
 - Disable daemon: `touch /app/data/rl/daemon_disabled` inside the container
 - Manual pipeline run: `taskset -c 0,1,4,5 nice -n 19 bash /app/backend/scripts/rl_train_pipeline.sh`
+
+### ArnoldStocks — Chart & Model Conventions (IMPORTANT)
+
+The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.tsx` (shared frontend, not `arnoldstocks/frontend/`). Keep the following invariants in sync between chart paint and model observation — the visual MUST reflect what the DQN sees, not a derived aesthetic.
+
+**Zone paint = model observation axes** (`rl/features/level_features.py:encode_zone_features`):
+- Fill hue + alpha ← `hierarchy_score` (mean member weight, 0-1)
+- Border thickness ← `count_norm = min(members/10, 1)`
+- Band geometry (width) ← `width_ticks` (already visible)
+- `session_relevance` is a 4th model dim, not currently painted
+- **Do not fold multiple model dims into a single composite strength** — the model sees them separately, so the chart must too.
+
+**Volume profile panel (right edge):**
+- Three VPs only: daily (today's session, purple), weekly (rolling 7 days, pink), monthly (rolling 30 days, yellow). Calendar weekly/monthly windows were replaced with rolling windows at `backend/src/services/market_service.py:_get_period_bars` — don't revert without thinking through the day-of-week/day-of-month thinness problem.
+- Historical per-day VPs are NOT stacked into the right panel (they dominated + hid weekly/monthly). Per-day structure still shows via TPO histograms inside session boxes.
+- POC/VAH/VAL are labeled INSIDE the VP panel with `d`/`w`/`m` prefix — e.g., `dPOC 27310.00`.
+- d/w/m POC/VAH/VAL are NOT drawn as chart-spanning price lines. Zones consolidate them via `compute_vp_hierarchy` at `backend/src/market_data/levels.py:908` — the zone band IS the level view.
+
+**Touch-without-trade recording (already correct — don't "fix"):**
+- `level_monitor._emit_zone_dqn_inference` calls `live_collector.on_zone_touch()` UNCONDITIONALLY after `dqn.infer()`, regardless of the decision. Every touch → `PendingEpisode`.
+- Outcomes measured over `OUTCOME_WINDOWS = [10, 30, 60, 120, 300]s` in `live_collector._compute_reward` — handles delayed market reaction. Flushed to `data/rl/live_episodes/*.npy`.
+- Skip / low-confidence touches ARE in the training set, labeled with actual post-touch reaction. Don't gate recording on inference output.
 
 ## ArnoldSports — Local Betting Client
 

@@ -217,6 +217,17 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         log.error("LevelMonitor not initialized yet — stocks bootstrap must run after market startup")
         return None
 
+    # Startup grace: on container recreate, the previous container's TopstepX
+    # SignalR session takes a few seconds to be torn down on TopstepX's side.
+    # If we auth immediately, TopstepX sees both sessions and kicks the newer
+    # one with "Multiple sessions detected". Waiting lets the old session
+    # clean up so our auth becomes the sole session. Configurable via
+    # STOCKS_AUTH_STARTUP_DELAY_SEC (default 30, set 0 to disable).
+    delay_s = int(os.environ.get("STOCKS_AUTH_STARTUP_DELAY_SEC", "30"))
+    if delay_s > 0:
+        log.info("Waiting %ds before TopstepX auth (startup grace for prior session cleanup)", delay_s)
+        await asyncio.sleep(delay_s)
+
     log.info("Authenticating with TopstepX (server-side)...")
     client = TopstepXClient(config)
     if not await client.connect():

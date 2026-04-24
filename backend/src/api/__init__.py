@@ -868,14 +868,27 @@ async def lifespan(app: FastAPI):
         # 7. Autonomous server-side TopstepX bootstrap (gated by STOCKS_AUTONOMOUS=true).
         # Replaces the need for the local arnold app to feed ticks through /ws/signals:
         # the server authenticates, streams, places orders, and persists trades directly.
+        #
+        # Runs as a background task so the startup-grace sleep inside
+        # bootstrap_stocks_on_server (meant to let a prior container's
+        # TopstepX session tear down on TopstepX's side) does not block
+        # FastAPI lifespan and stall /health.
         try:
             from ..stocks.server_bootstrap import bootstrap_stocks_on_server
 
-            _stocks_runtime = await bootstrap_stocks_on_server(app)
-            if _stocks_runtime:
-                app.state.stocks_runtime = _stocks_runtime
+            async def _stocks_bg_bootstrap():
+                try:
+                    await bootstrap_stocks_on_server(app)
+                except Exception:
+                    logger.exception("[Stocks] Background bootstrap raised — trading disabled")
+
+            _stocks_bootstrap_task = asyncio.create_task(
+                _stocks_bg_bootstrap(), name="stocks-bootstrap",
+            )
+            _background_tasks.add(_stocks_bootstrap_task)
+            _stocks_bootstrap_task.add_done_callback(_background_tasks.discard)
         except Exception:
-            logger.exception("[Stocks] Autonomous bootstrap failed — trading stays dependent on local app")
+            logger.exception("[Stocks] Autonomous bootstrap could not be scheduled")
         _background_tasks.add(_recompute_task)
         _recompute_task.add_done_callback(_background_tasks.discard)
 
