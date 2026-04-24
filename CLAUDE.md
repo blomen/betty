@@ -24,50 +24,60 @@ Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to 
 
 **Tech stack:** Python 3.10+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
-## Three Programs
+## Two Programs
 
-The repo contains three independent programs sharing one codebase:
+The previous `arnoldsports/` + `arnoldstocks/` split was collapsed into a single local client; the repo now contains two programs sharing one codebase:
 
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
-| **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
-| **ArnoldSports** | Your PC | Local betting client: Play, Bankroll, Stats + Playwright mirror | `arnoldsports/arnoldsports.bat` |
-| **ArnoldStocks** | Your PC | Local trading client: Chart, DQN, Bankroll, Stats + TopstepX | `arnoldstocks/arnoldstocks.bat` |
+| **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API, signals WS, RL training | `docker compose up -d` |
+| **Arnold (local)** | Your PC | Unified betting + trading client: Sports, Stocks (Chart), Bankroll, Stats, Playwright mirror, TopstepX stream/relay | `arnold.bat` |
 
-**Server** is a pure compute/data engine — no UI. It runs extraction, analysis, and serves the API.
+**Server** is a pure compute/data engine — no UI. Extraction, analysis, signal generation via `level_monitor`, the RL training daemon, and the `/ws/signals` WebSocket all live here.
 
-**ArnoldSports** is the local betting app. It connects to the server API via SSH tunnel, runs a Playwright browser for bet placement, and has its own React frontend. The **Play** tab is the unified betting view: arbitrage flow for soft books (via `ArbRunner`), value-bet flow for unlimited providers (pinnacle / polymarket / cloudbet) via `ProviderRunner`.
-
-**ArnoldStocks** is the local trading app (managed by a separate agent).
+**Arnold (local)** is one FastAPI process + one React SPA. Tabs: **Sports** (unified arb + value bet play), **Stocks** (live chart with zones + VWAP + VP), **Bankroll** (Sportbets + Trading sub-tabs), **Stats** (Betting + Trading sub-tabs). The launcher opens an SSH tunnel to the server API, starts the local FastAPI (which reverse-proxies `/api/*` to the tunnel, mounts `/mirror/*` for the Playwright browser control, and mounts `/stocks/*` for the TopstepX dashboard), and then opens the browser. TopstepX authentication + signal relay run as asyncio tasks inside the same process unless `STOCKS_AUTONOMOUS=true` (server-side broker mode, tested).
 
 ## Architecture
 
 ```
 Hetzner Server (24/7, headless)              Your PC
-├── backend/src/                             ├── arnoldsports/        # Local betting client
-│   ├── providers/    # 16 extractors        │   ├── server.py       # Thin FastAPI proxy + mirror
-│   ├── pipeline/     # orchestrator         │   ├── mirror/         # Playwright browser + interceptor
-│   ├── analysis/     # scanner, devig       │   │   ├── browser.py  # Browser lifecycle + network interception
-│   ├── matching/     # Fuzzy matching       │   │   ├── play_loop.py    # Automated betting loop (value + arb)
-│   ├── bankroll/     # Kelly sizing         │   │   ├── arb_runner.py   # Arbitrage play loop for soft books
-│   ├── api/          # FastAPI endpoints    │   │   ├── pending_loop.py # Settlement sync loop
-│   └── db/           # PostgreSQL ORM       │   │   └── workflows/  # Provider DOM automation
-└── docker-compose.yml                       │   └── frontend/      # React: Play, Bankroll, Stats
-                                             ├── arnoldstocks/        # Local trading client (separate agent)
-                                             │   ├── server.py
-                                             │   └── frontend/
+├── backend/src/                             ├── arnold/               # Unified local client
+│   ├── providers/    # 16 extractors        │   ├── server.py         # FastAPI: /api proxy + /mirror + /stocks + static
+│   ├── pipeline/     # orchestrator         │   ├── launch.py         # SSH tunnel + uvicorn + browser open
+│   ├── analysis/     # scanner, devig       │   ├── proxy.py          # /api/* reverse-proxy to server via tunnel
+│   ├── matching/     # Fuzzy matching       │   ├── stocks_runtime.py # TopstepX client + stream + SignalRelay
+│   ├── market_data/  # level_monitor, VWAP  │   ├── mirror/
+│   ├── rl/           # zones, DQN, training │   │   ├── browser.py    # Playwright lifecycle + interception
+│   ├── bankroll/     # Kelly sizing         │   │   ├── play_loop.py  # Automated betting state machine
+│   ├── api/          # FastAPI + /ws/signals│   │   ├── arb_runner.py │   │   ├── pending_loop.py
+│   └── db/           # PostgreSQL ORM       │   │   └── workflows/    # Provider DOM automation
+└── docker-compose.yml                       │   └── frontend/         # One React app — all tabs live here
+                                             │       └── src/pages/
+                                             │           ├── PlayPage.tsx       (Sports tab)
+                                             │           ├── BankrollPage.tsx   (Sportbets bankroll)
+                                             │           ├── StatsPage.tsx      (Betting stats)
+                                             │           └── stocks/
+                                             │               ├── ChartPage.tsx + CandleChart
+                                             │               ├── BankrollPage.tsx
+                                             │               └── StatsPage.tsx
                                              │
-                                             └── SSH tunnel → server API (port 18000)
+                                             └── arnold.bat  → SSH tunnel → server API (port 18000)
 ```
 
-### Frontends
+### Frontend
 
-| Frontend | Location | Purpose | Served by |
-|----------|----------|---------|-----------|
-| **ArnoldSports** | `arnoldsports/frontend/` | Betting: Play (unified arb + value), Bankroll, Stats + mirror control | Local FastAPI |
-| **ArnoldStocks** | `arnoldstocks/frontend/` | Trading: Chart, DQN, Bankroll, Stats | Local FastAPI |
+Single app at `arnold/frontend/`. Tabs and sub-tabs:
 
-**The server is API-only — no visual UI.** All betting/trading happens through the local clients.
+| Tab | Sub-tabs | What it shows |
+|-----|----------|---------------|
+| **Sports** | Value Bets, Arbitrage | Unified betting view — value vs. Pinnacle, arb across soft books |
+| **Stocks** | — | Live candle chart + VWAP + zone heatmap + VP histograms. No DQN viz tab (removed). |
+| **Bankroll** | Sportbets, Trading | Provider balances + Kelly sizing; TopstepX account + drawdown |
+| **Stats** | Betting, Trading | Historical bet + trade performance |
+
+Each top-level tab is wrapped in its own `ErrorBoundary` so a stocks-side crash can't bring down the sports tabs. `useDashboardWS` is mounted at the App root so ticks/zones/signals accumulate regardless of active tab.
+
+**The server is API-only — no visual UI.** All betting/trading happens through the local client.
 
 ### Server Backend
 
@@ -212,37 +222,54 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 - Disable daemon: `touch /app/data/rl/daemon_disabled` inside the container
 - Manual pipeline run: `taskset -c 0,1,4,5 nice -n 19 bash /app/backend/scripts/rl_train_pipeline.sh`
 
-### ArnoldStocks — Chart & Model Conventions (IMPORTANT)
+### Stocks — Chart & Model Conventions (IMPORTANT)
 
-The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.tsx` (shared frontend, not `arnoldstocks/frontend/`). Keep the following invariants in sync between chart paint and model observation — the visual MUST reflect what the DQN sees, not a derived aesthetic.
+The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.tsx`. Keep the following invariants in sync between chart paint and model observation — the visual MUST reflect what the DQN sees, not a derived aesthetic.
+
+**Zones are the single consolidated level view.** Individual level types (PDH/PDL, IB H/L, session H/L, TPO POC/VAH/VAL, per-TF VP POC/VAH/VAL, daily/weekly swings) and SMC signals (FVGs, order blocks) are all clustered into zones server-side. Only VWAP center + σ bands, zone bands, and VP histograms render separately on the chart — everything else rolls up into a zone's member count and strength.
+
+**Zone strength math** (`backend/src/rl/zone_builder.py:_compute_strength`, as of 2026-04-24):
+- Group members by **family** (`_LEVEL_FAMILY`) — VWAP center + σ bands share one family, daily POC/VAH/VAL share one, FVG bull/bear share one, order-block bull/bear share one, each swing timeframe is its own family, etc.
+- **Max within family** — kills redundancy (5 VWAP bands ≈ 1 VWAP contribution, not 5).
+- **Sum across families** — monotonic in confluence; adding any new-family level strictly grows raw strength.
+- **Synergy bonuses** added for meaningful co-occurrence (`_SYNERGY_BONUS`): daily_swing+daily_vp, fvg+order_block, prior_session+vwap, daily_vp+prior_session, daily_swing+fvg, daily_swing+order_block. Conservative defaults pending empirical calibration.
+- **Saturation** via `1 - exp(-raw / 1.5)` so score sits on [0, 1]. Single strong level lands near 0.5; 3-family confluence near 0.9.
+- Adding a weak level can **never lower** the score (previous mean-based math had this bug).
 
 **Zone paint = model observation axes** (`rl/features/level_features.py:encode_zone_features`):
-- Fill hue + alpha ← `hierarchy_score` (mean member weight, 0-1)
+- Fill hue + alpha ← `hierarchy_score` from `_compute_strength` (heatmap: slate-blue → indigo → magenta → orange → red)
 - Border thickness ← `count_norm = min(members/10, 1)`
-- Band geometry (width) ← `width_ticks` (already visible)
+- Band geometry (top/bottom) ← zone `upper_bound` / `lower_bound` (fallback 0.5 pt pad if server hasn't sent them yet)
+- Dot-count label ← raw `member_count` (capped at 10 rendered dots)
 - `session_relevance` is a 4th model dim, not currently painted
 - **Do not fold multiple model dims into a single composite strength** — the model sees them separately, so the chart must too.
+
+**FVGs and order blocks are first-class zone members.** Their ranges feed `level_monitor.load_levels` at the midpoint. `_LEVEL_FAMILY` puts FVG bull+bear into one family and OB bull+bear into another. Weights: FVG 0.6, OB 0.8 (`_HIERARCHY_WEIGHTS` in `zone_builder.py`). Do NOT re-introduce separate FVG overlays — the whole point of the consolidation is that SMC signals affect zone heat, not chart noise.
+
+**Model calibration shift (2026-04-24 → ~2026-05-15):** The live DQN weights were trained against the old mean-weight hierarchy (`sum/len/1.2`). The new `_compute_strength` shifts the distribution — isolated weak zones score *lower*, multi-family confluence scores *higher*. Both shifts are directionally correct (the old math could reduce strength when a weak level was added). The monotonic "higher = trust more" relationship the DQN learned keeps working, but absolute thresholds are recalibrating. Expected realignment: 2-3 weeks of live-episode accumulation at ~20-30 setups/day lets the daemon's natural retrain cycle drift the training pool toward new-math-dominant. Don't force a retrain now — the historical tick parquets are gone so a fresh replay would use a much smaller dataset (only April 2026 ticks survive).
 
 **Volume profile panel (right edge):**
 - Three VPs only: daily (today's session, purple), weekly (rolling 7 days, pink), monthly (rolling 30 days, yellow). Calendar weekly/monthly windows were replaced with rolling windows at `backend/src/services/market_service.py:_get_period_bars` — don't revert without thinking through the day-of-week/day-of-month thinness problem.
 - Historical per-day VPs are NOT stacked into the right panel (they dominated + hid weekly/monthly). Per-day structure still shows via TPO histograms inside session boxes.
 - POC/VAH/VAL are labeled INSIDE the VP panel with `d`/`w`/`m` prefix — e.g., `dPOC 27310.00`.
-- d/w/m POC/VAH/VAL are NOT drawn as chart-spanning price lines. Zones consolidate them via `compute_vp_hierarchy` at `backend/src/market_data/levels.py:908` — the zone band IS the level view.
+- d/w/m POC/VAH/VAL are NOT drawn as chart-spanning price lines — they're zone members now.
 
 **Touch-without-trade recording (already correct — don't "fix"):**
 - `level_monitor._emit_zone_dqn_inference` calls `live_collector.on_zone_touch()` UNCONDITIONALLY after `dqn.infer()`, regardless of the decision. Every touch → `PendingEpisode`.
 - Outcomes measured over `OUTCOME_WINDOWS = [10, 30, 60, 120, 300]s` in `live_collector._compute_reward` — handles delayed market reaction. Flushed to `data/rl/live_episodes/*.npy`.
 - Skip / low-confidence touches ARE in the training set, labeled with actual post-touch reaction. Don't gate recording on inference output.
 
-## ArnoldSports — Local Betting Client
+## Arnold — Local Client
 
-**Run `arnoldsports/arnoldsports.bat` to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
+**Run `arnold.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser + TopstepX relay (unless `STOCKS_AUTONOMOUS=true`).
 
 ### How It Works
 1. SSH tunnel to server API (port 18000 → Docker backend:8000)
-2. Thin local FastAPI (port 8000): proxies `/api/*` to tunnel, serves frontend, controls Playwright browser
-3. React frontend: Play, Bankroll, Stats tabs. Play is the unified view for arbitrage + value bets.
+2. Local FastAPI (port 8000): proxies `/api/*` through the tunnel, mounts `/mirror/*` for browser control, mounts `/stocks/*` for the TopstepX dashboard + `/stocks/ws/dashboard` WebSocket, and serves the React SPA at `/`
+3. React frontend: Sports, Stocks, Bankroll, Stats — all in one app with per-tab `ErrorBoundary`
 4. Playwright browser: headed Chromium for bet placement on provider sites
+5. TopstepX client + SignalR stream + `SignalRelayClient` connect as asyncio tasks (`arnold/stocks_runtime.py`); a heartbeat supervisor restarts either one if their forever-loop ever exits unexpectedly
+6. SignalRelay forwards ticks to server `/ws/signals` with `X-API-Key` auth; a bounded outbox (`_OUTBOX_MAX=2000`) buffers messages across brief disconnects so ticks/fills aren't silently dropped during the 5 s reconnect window
 
 ### Play Workflow (HIGH-LEVEL)
 1. Select a funded provider (amber highlight)
@@ -279,26 +306,29 @@ IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLA
 
 ### Key Files
 ```
-arnoldsports/
-├── arnoldsports.bat       # Windows launcher
-├── launch.py             # SSH tunnel + uvicorn + browser open
-├── server.py             # Thin FastAPI: proxy + mirror router + static
-├── proxy.py              # Reverse proxy to server tunnel
+arnold/
+├── launch.py              # SSH tunnel + uvicorn + browser open (+ zombie-tunnel watchdog)
+├── server.py              # FastAPI: /mirror router + /stocks router + /api proxy + static
+├── proxy.py               # /api/* reverse proxy through the SSH tunnel
+├── stocks_runtime.py      # TopstepX client + stream + relay + heartbeat supervisor
 ├── mirror/
-│   ├── browser.py        # Playwright lifecycle + network interception
-│   ├── play_loop.py      # Automated betting state machine (value + arb coordination)
-│   ├── arb_runner.py     # Arbitrage runner for soft books (anchor + auto-hedge)
-│   ├── pending_loop.py   # Settlement sync loop
-│   ├── router.py         # /mirror/* endpoints
-│   ├── sse.py            # Local SSE broadcaster
-│   └── workflows/        # Provider DOM automation (copied from backend)
-└── frontend/             # Dedicated React app
+│   ├── browser.py         # Playwright lifecycle + network interception
+│   ├── play_loop.py       # Automated betting state machine (value + arb coordination)
+│   ├── arb_runner.py      # Arbitrage runner for soft books (anchor + auto-hedge)
+│   ├── pending_loop.py    # Settlement sync loop (short-circuits when browser isn't up)
+│   ├── router.py          # /mirror/* endpoints
+│   ├── sse.py             # Local SSE broadcaster
+│   └── workflows/         # Provider DOM automation
+├── frontend/              # Single React app — sports + stocks in one bundle
+└── data/                  # local cache (tunnel lock file, etc.)
+
+arnold.bat                 # Windows launcher at repo root — invokes arnold/launch.py
 ```
 
-### Frontends (IMPORTANT)
-- **`arnoldsports/frontend/`** — LOCAL betting client (Play, Bankroll, Stats). Runs on your PC only. Play is the unified view for all bet types.
-- **`arnoldstocks/frontend/`** — LOCAL trading client (separate agent manages this).
-- **The server has no frontend.** It's API-only. Any betting UI work goes in `arnoldsports/frontend/`.
+### Frontend (IMPORTANT)
+- **`arnold/frontend/`** is the only frontend. Sports play/bankroll/stats live under `src/pages/`, stocks under `src/pages/stocks/`. A single `useDashboardWS` instance at the App root keeps the stocks websocket alive regardless of active tab.
+- **The server has no frontend.** It's API-only. All betting/trading UI lives in `arnold/frontend/`.
+- Any legacy `arnoldsports/` or `arnoldstocks/` path you see in docs or code is stale — the merge landed 2026-04-24 (commit `9a9dccc5`).
 
 ## WHY It's Structured This Way
 
