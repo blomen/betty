@@ -28,6 +28,48 @@ _SESSIONS_DIR = Path("/app/data/rl/sessions")
 _TRADING_PAUSED_FLAG = Path("/app/data/rl/trading_paused")
 
 
+@router.get("/runtime-diagnostic")
+def runtime_diagnostic(request: Request):
+    """Drill-down state for debugging why signals aren't firing trades.
+
+    Shows: is LevelMonitor wired to the broker? How many levels/zones does
+    it know about? Are tick callbacks attached? Is orderflow fresh enough
+    to produce a non-zero of_score?
+    """
+    app = request.app
+    rt = getattr(app.state, "stocks_runtime", None)
+    lm = getattr(app.state, "level_monitor", None)
+    tb = getattr(app.state, "stocks_tick_buffer", None)
+
+    diag = {
+        "runtime_present": rt is not None,
+        "level_monitor_present": lm is not None,
+        "broker_adapter_on_level_monitor": None,
+        "broker_adapter_same_as_runtime": None,
+        "level_count": 0,
+        "zone_count": 0,
+        "signal_callback_count": 0,
+        "tick_buffer_size": 0,
+    }
+    if lm is not None:
+        lm_adapter = getattr(lm, "_broker_adapter", None)
+        diag["broker_adapter_on_level_monitor"] = lm_adapter is not None
+        if rt is not None:
+            diag["broker_adapter_same_as_runtime"] = lm_adapter is rt.adapter
+        diag["level_count"] = len(getattr(lm, "_levels", []))
+        diag["zone_count"] = len(getattr(lm, "_zones", []))
+        diag["signal_callback_count"] = len(getattr(lm, "_signal_callbacks", set()))
+    if tb is not None:
+        try:
+            diag["tick_buffer_size"] = len(tb.ticks)
+        except Exception:
+            diag["tick_buffer_size"] = -1
+    if rt is not None:
+        diag["account_id"] = rt.client._account_id
+        diag["stream_running"] = getattr(rt.stream, "_running", None)
+    return diag
+
+
 @router.get("/runtime-status")
 def runtime_status(request: Request):
     """Is the autonomous server-side broker alive, what's the current
