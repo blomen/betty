@@ -293,7 +293,7 @@ def get_pending_bets(db: Session = Depends(get_db)):
             {
                 "id": bet.id,
                 "bet_id": bet.id,
-                "provider_bet_id": bet.provider_bet_id,
+                "provider_bet_id": bet.confirmation_id,
                 "event_id": bet.event_id,
                 "provider_id": pid,
                 "market": bet.market,
