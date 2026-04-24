@@ -38,6 +38,24 @@ def _round_tick(price: float) -> float:
     return round(price * 4) / 4
 
 
+# Optional persistence sink — set by stocks_runtime.bootstrap_stocks() to a
+# callable that ships the trade dict to the production DB. We keep this as a
+# module-level hook so _log_broker_trade stays a free function and the adapter
+# class doesn't need to know about transport.
+_persist_callback = None
+
+
+def set_persist_callback(cb) -> None:
+    """Register a callable that persists each closed round-trip somewhere durable.
+
+    The callable receives the same kwargs dict that gets logged. Called once
+    per closed trade. Exceptions are swallowed (we don't want a transient DB
+    write failure to mask the trade outcome in logs).
+    """
+    global _persist_callback
+    _persist_callback = cb
+
+
 def _log_broker_trade(**kwargs) -> None:
     """Log completed trade with full context and persist to dashboard."""
     result = "WIN" if kwargs.get("pnl_dollars", 0) > 0 else "LOSS"
@@ -73,6 +91,12 @@ def _log_broker_trade(**kwargs) -> None:
     from . import dashboard
 
     dashboard.record_trade(kwargs)
+
+    if _persist_callback is not None:
+        try:
+            _persist_callback(kwargs)
+        except Exception:
+            log.exception("BrokerTrade persist callback failed (trade still in logs)")
 
 
 class TopstepXBrokerAdapter:
