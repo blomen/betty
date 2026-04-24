@@ -11,6 +11,7 @@ Hierarchy weights come from two layers:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -24,6 +25,88 @@ from .config import (
 )
 
 log = logging.getLogger(__name__)
+
+# --- Level families ------------------------------------------------------
+# Levels inside the same family are sourced from the same signal stream
+# and clustering them is partially redundant (e.g. VWAP + its σ bands all
+# reference the same rolling volume anchor, so a zone that captures five
+# of them is not five times stronger than a zone that captures one). The
+# hierarchy_score uses the MAX weight within each family and SUMS across
+# families, so cross-family confluence is what actually grows the score.
+_LEVEL_FAMILY: dict[LevelType, str] = {
+    # Daily volume profile
+    LevelType.DAILY_POC: "daily_vp",
+    LevelType.DAILY_VAH: "daily_vp",
+    LevelType.DAILY_VAL: "daily_vp",
+    # Weekly volume profile
+    LevelType.WEEKLY_POC: "weekly_vp",
+    LevelType.WEEKLY_VAH: "weekly_vp",
+    LevelType.WEEKLY_VAL: "weekly_vp",
+    # Monthly volume profile
+    LevelType.MONTHLY_POC: "monthly_vp",
+    LevelType.MONTHLY_VAH: "monthly_vp",
+    LevelType.MONTHLY_VAL: "monthly_vp",
+    # VWAP — one anchor, multiple σ bands
+    LevelType.VWAP: "vwap",
+    LevelType.VWAP_SD1: "vwap",
+    LevelType.VWAP_SD2: "vwap",
+    LevelType.VWAP_SD3: "vwap",
+    # Prior session (PDH/PDL)
+    LevelType.PDH: "prior_session",
+    LevelType.PDL: "prior_session",
+    # Asian/European session H-L
+    LevelType.TOKYO_HIGH: "sessions",
+    LevelType.TOKYO_LOW: "sessions",
+    # NY Initial Balance
+    LevelType.NYIB_HIGH: "nyib",
+    LevelType.NYIB_LOW: "nyib",
+    # TPO profile — one builder, multiple anchors
+    LevelType.TPOC: "tpo",
+    LevelType.TVAH: "tpo",
+    LevelType.TVAL: "tpo",
+    LevelType.TIBH: "tpo",
+    LevelType.TIBL: "tpo",
+    # Swings per timeframe — each timeframe is its own structural read
+    LevelType.DAILY_SWING_HIGH: "daily_swing",
+    LevelType.DAILY_SWING_LOW: "daily_swing",
+    LevelType.WEEKLY_SWING_HIGH: "weekly_swing",
+    LevelType.WEEKLY_SWING_LOW: "weekly_swing",
+    LevelType.MONTHLY_SWING_HIGH: "monthly_swing",
+    LevelType.MONTHLY_SWING_LOW: "monthly_swing",
+    # Structure
+    LevelType.NAKED_POC: "naked_poc",
+    # ICT / SMC price-delivery signals. Bull and bear of the same type
+    # share a family — two stacked FVGs at the same price is still one
+    # signal stream. But FVG and OB are separate families because they
+    # detect different things (gap vs institutional candle).
+    LevelType.FVG_BULL: "fvg",
+    LevelType.FVG_BEAR: "fvg",
+    LevelType.ORDER_BLOCK_BULL: "order_block",
+    LevelType.ORDER_BLOCK_BEAR: "order_block",
+}
+
+# --- Synergy bonuses ----------------------------------------------------
+# Extra strength when two families co-occur in a zone. Order matters only
+# in that the key is the alphabetically-sorted pair, so we don't need to
+# list both directions. Conservative defaults — the real weights should
+# come from training outcomes once we have enough zone-annotated episodes.
+# Examples of synergies worth rewarding:
+#   daily_vp + daily_swing: volume node anchored at structural pivot
+#   fvg + order_block: institutional footprint confirmed by gap
+#   prior_session + vwap: PDH/PDL retested against developing VWAP band
+_SYNERGY_BONUS: dict[tuple[str, str], float] = {
+    ("daily_swing", "daily_vp"): 0.15,
+    ("fvg", "order_block"): 0.20,
+    ("prior_session", "vwap"): 0.10,
+    ("daily_vp", "prior_session"): 0.10,
+    ("daily_swing", "fvg"): 0.10,
+    ("daily_swing", "order_block"): 0.10,
+}
+
+# Saturation constant — raw strength 1.5 maps to ~0.63 heat, 3.0 to ~0.86,
+# 4.5 to ~0.95. Tuned so a single strong level (e.g. daily POC at 1.0)
+# sits mid-ramp and a 3-family confluence lands firmly in the hot band.
+_STRENGTH_TAU = 1.5
 
 # Hand-tuned fallback — used only for level types missing from the empirical YAML
 # or when the YAML itself can't be loaded.
@@ -151,6 +234,46 @@ def _build_composition(members: list[ZoneMember]) -> list[float]:
     return comp
 
 
+def _compute_strength(members: list[ZoneMember]) -> float:
+    """Hierarchy score: per-family max weights summed, synergy-bonused, saturated.
+
+    The math in three stages:
+      1. Group members by family (VWAP bands are one family, daily VP is
+         another, etc.). Within a family, take the single highest weight —
+         this prevents redundancy (five VWAP bands at the same anchor
+         shouldn't count five times).
+      2. Sum the per-family weights. Raw total is monotonic in confluence.
+      3. Apply pairwise synergy bonuses for co-occurring families that
+         empirically reinforce each other (POC + swing, FVG + OB, …).
+      4. Pass through 1 - exp(-x / tau) to saturate near 1. A single
+         strong level sits around 0.5, three-family confluence nears 0.9.
+
+    Monotonicity guarantee: adding a level never lowers the score, because
+    adding a member to an existing family keeps that family's max the same
+    or larger, and adding a new family strictly grows the raw sum.
+    """
+    if not members:
+        return 0.0
+
+    per_family_max: dict[str, float] = {}
+    for m in members:
+        fam = _LEVEL_FAMILY.get(m.level_type, m.level_type.value)
+        w = _weight(m.level_type)
+        if w > per_family_max.get(fam, 0.0):
+            per_family_max[fam] = w
+
+    raw = sum(per_family_max.values())
+
+    # Synergy: add bonus per co-occurring family pair. Alphabetized key so
+    # (a, b) and (b, a) hit the same entry.
+    fams = sorted(per_family_max.keys())
+    for i in range(len(fams)):
+        for j in range(i + 1, len(fams)):
+            raw += _SYNERGY_BONUS.get((fams[i], fams[j]), 0.0)
+
+    return 1.0 - math.exp(-raw / _STRENGTH_TAU)
+
+
 def _build_zone(members: list[ZoneMember], radius: float) -> Zone:
     prices = [m.price for m in members]
     center = mean(prices)
@@ -158,13 +281,7 @@ def _build_zone(members: list[ZoneMember], radius: float) -> Zone:
     upper = max(prices) + radius / 2
     width_ticks = (upper - lower) / TICK_SIZE
     composition = _build_composition(members)
-
-    # Mean weight across the members — bounded to [0, ~max_empirical_weight].
-    # Empirical weights can exceed 1.0 (the strongest level type today is
-    # weekly_swing_low ≈ 1.14) so we clip to a generous ceiling to keep the
-    # feature on roughly [0, 1] for downstream normalizers/models.
-    mean_weight = sum(_weight(m.level_type) for m in members) / len(members) if members else 0.0
-    hierarchy_score = min(max(mean_weight / 1.2, 0.0), 1.0)
+    hierarchy_score = _compute_strength(members)
 
     return Zone(
         center_price=center,
