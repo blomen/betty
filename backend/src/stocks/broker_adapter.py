@@ -424,6 +424,7 @@ class TopstepXBrokerAdapter:
                 signal_trigger=self._pending_trade.get("signal_trigger"),
                 signal_cont_p=self._pending_trade.get("signal_cont_p"),
                 signal_rev_p=self._pending_trade.get("signal_rev_p"),
+                orderflow_score=self._pending_trade.get("orderflow_score"),
                 closed_at=datetime.now(timezone.utc),
             )
             self._pending_trade = None
@@ -577,6 +578,7 @@ class TopstepXBrokerAdapter:
             "signal_trigger": str(signal.get("trigger", "")),
             "signal_cont_p": float(signal.get("cont_p", 0) or 0),
             "signal_rev_p": float(signal.get("rev_p", 0) or 0),
+            "orderflow_score": float(signal.get("orderflow_score", 0) or 0),
             "trail_count": 0,
         }
 

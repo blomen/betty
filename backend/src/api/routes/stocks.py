@@ -188,6 +188,7 @@ class BrokerTradeIn(BaseModel):
     signal_trigger: str | None = None
     signal_cont_p: float | None = None
     signal_rev_p: float | None = None
+    orderflow_score: float | None = None
     closed_at: str | float | None = None
     # Idempotency: a deterministic key the client can supply so retries don't
     # double-insert. We store it in signal_trigger for now (string column,
@@ -199,7 +200,7 @@ class BrokerTradeIn(BaseModel):
 def ingest_broker_trade(body: BrokerTradeIn, db: Session = Depends(get_db)):
     """Persist a closed round-trip from the local TopstepX adapter.
 
-    Idempotent on (session_date, symbol, side, entry_price, closed_at) — the
+    Idempotent on (closed_at, symbol, side, entry_price, size) — the
     client should send the same payload on retry; we'll skip if it already
     exists.
     """
@@ -230,7 +231,11 @@ def ingest_broker_trade(body: BrokerTradeIn, db: Session = Depends(get_db)):
         size=body.size,
         entry_price=body.entry_price,
         stop_price=body.stop_price,
+        tp_price=body.tp_price,
         exit_price=body.exit_price,
+        stop_ticks=body.stop_ticks,
+        was_stop=body.was_stop,
+        trail_count=body.trail_count,
         pnl_dollars=body.pnl_dollars,
         pnl_r=body.pnl_r,
         fill_latency_ms=body.fill_latency_ms,
@@ -238,6 +243,10 @@ def ingest_broker_trade(body: BrokerTradeIn, db: Session = Depends(get_db)):
         signal_action=body.signal_action,
         signal_confidence=body.signal_confidence,
         signal_zone=body.signal_zone,
+        signal_trigger=body.signal_trigger,
+        signal_cont_p=body.signal_cont_p,
+        signal_rev_p=body.signal_rev_p,
+        orderflow_score=getattr(body, "orderflow_score", None),
         closed_at=closed_at,
     )
     db.add(row)

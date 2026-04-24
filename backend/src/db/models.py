@@ -12,9 +12,12 @@ Database schema for:
 Supports PostgreSQL (via DATABASE_URL env var) and SQLite fallback.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow():
@@ -1619,7 +1622,9 @@ def get_engine():
                 cursor.close()
 
         Base.metadata.create_all(_engine)
-        if not _is_postgres():
+        if _is_postgres():
+            _run_pg_migrations(_engine)
+        else:
             _run_migrations(_engine)
     return _engine
 
@@ -2211,6 +2216,38 @@ class LevelTouchFeature(Base):
     created_at = Column(Float)
 
 
+def _run_pg_migrations(engine) -> None:
+    """Lightweight column-additive migrations for Postgres.
+
+    `Base.metadata.create_all` creates new tables but does not ALTER existing
+    ones to add columns. This applies any missing columns using Postgres's
+    ADD COLUMN IF NOT EXISTS, which is idempotent and safe to re-run.
+
+    Only add columns that were introduced AFTER the table first shipped —
+    brand-new tables are handled by create_all. Each entry is
+    (table, column, type_sql) with type_sql in Postgres dialect.
+    """
+    additions: list[tuple[str, str, str]] = [
+        # broker_trades: decision context added 2026-04-24
+        ("broker_trades", "tp_price", "DOUBLE PRECISION"),
+        ("broker_trades", "was_stop", "BOOLEAN"),
+        ("broker_trades", "trail_count", "INTEGER"),
+        ("broker_trades", "stop_ticks", "INTEGER"),
+        ("broker_trades", "signal_trigger", "VARCHAR"),
+        ("broker_trades", "signal_cont_p", "DOUBLE PRECISION"),
+        ("broker_trades", "signal_rev_p", "DOUBLE PRECISION"),
+        ("broker_trades", "orderflow_score", "DOUBLE PRECISION"),
+    ]
+    with engine.begin() as conn:
+        for table, col, col_type in additions:
+            try:
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                )
+            except Exception:
+                logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
+
+
 def init_db() -> None:
     """Initialize database and create tables."""
     return get_engine()
@@ -2317,7 +2354,15 @@ BONUS_MIN_ODDS = 1.80
 
 
 class BrokerTrade(Base):
-    """Automated trade execution log."""
+    """Automated trade execution log with full decision context.
+
+    Captures not just the trade mechanics (entry/exit/pnl) but also the
+    signal that produced it (confidence, probabilities, zone, orderflow)
+    and the exit trajectory (trail count, was-stop) so future retraining
+    has the full (context, action, outcome) tuple in a single row. Richer
+    observation context (zone_members, model_type, etc) is queryable via
+    stock_signals join on trade_id after the nightly correlate cron runs.
+    """
 
     __tablename__ = "broker_trades"
 
@@ -2327,16 +2372,31 @@ class BrokerTrade(Base):
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)
     size = Column(Integer, nullable=False)
+
+    # Trade mechanics
     entry_price = Column(Float, nullable=False)
     stop_price = Column(Float, nullable=True)
+    tp_price = Column(Float, nullable=True)
     exit_price = Column(Float, nullable=True)
+    stop_ticks = Column(Integer, nullable=True)
+    was_stop = Column(Boolean, nullable=True)
+    trail_count = Column(Integer, nullable=True)
+
+    # Outcome
     pnl_dollars = Column(Float, nullable=True)
     pnl_r = Column(Float, nullable=True)
     fill_latency_ms = Column(Float, nullable=True)
     slippage_ticks = Column(Float, nullable=True)
+
+    # Signal context at entry
     signal_action = Column(String, nullable=True)
     signal_confidence = Column(Float, nullable=True)
     signal_zone = Column(Float, nullable=True)
+    signal_trigger = Column(String, nullable=True)
+    signal_cont_p = Column(Float, nullable=True)
+    signal_rev_p = Column(Float, nullable=True)
+    orderflow_score = Column(Float, nullable=True)
+
     closed_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
