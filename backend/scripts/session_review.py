@@ -369,9 +369,10 @@ def auto_flags(summary: dict, rows: list[dict]) -> list[str]:
 
     o = summary["overview"]
     if o.get("avg_win") and o.get("avg_loss"):
-        ratio = o["avg_win"] / o["avg_loss"]
+        # avg_loss is stored with negative sign for display; use magnitude
+        ratio = o["avg_win"] / abs(o["avg_loss"])
         wr = o["win_rate"]
-        if wr < 0.3 and ratio < 1 / wr - 1 if wr else False:
+        if wr and wr < 0.3 and ratio < (1 / wr - 1):
             flags.append(
                 f"WR {wr * 100:.1f}% requires avg_win/avg_loss >= "
                 f"{1 / wr - 1:.1f}x; currently {ratio:.2f}x"
