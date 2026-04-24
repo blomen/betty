@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from ..db.models import Bet, Event, Odds, Opportunity
+from ..db.models import Event, Opportunity
 
 
 class OpportunityRepo:
@@ -340,12 +340,19 @@ class OpportunityRepo:
 
     def cleanup_stale(self, changed_event_ids: set[str] | None = None) -> dict:
         """
-        Clean up stale data from database.
+        Clean up stale *opportunity* rows during extraction analysis.
+
+        Past-event / odds deletion is NOT done here — it races with concurrent
+        provider extractions writing to the same odds rows, causing
+        UniqueViolation / Deadlock / StaleDataError on Pinnacle's upsert and
+        stalling the sharp source. The dedicated 6h cleanup tier
+        (`Scheduler._run_cleanup`) handles past-event + odds deletion with a
+        48h grace period instead.
 
         Args:
-            changed_event_ids: When provided, only deactivate opportunities for these events
-                               (incremental mode). Steps 1-4 always run as maintenance.
-                               When None, deactivate all active opportunities (full mode).
+            changed_event_ids: When provided, only deactivate opportunities for
+                these events (incremental mode). When None, deactivate all
+                active opportunities (full mode).
 
         Returns cleanup stats dict.
         """
@@ -363,8 +370,7 @@ class OpportunityRepo:
             .delete(synchronize_session=False)
         )
 
-        # 3. Delete opportunities for past events (but keep live/finished for settlement)
-        #    Also reuse this set for step 4 (event deletion) to avoid a duplicate query
+        # 3. Delete opportunities for past events — Opportunity table only, no odds/events.
         past_event_ids = [
             e.id
             for e in self.db.query(Event.id)
@@ -381,28 +387,7 @@ class OpportunityRepo:
                     self.db.query(Opportunity).filter(Opportunity.event_id.in_(batch)).delete(synchronize_session=False)
                 )
 
-        # 4. Delete past events + their odds (cascade)
-        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
-        if past_event_ids:
-            # Safety: query ALL bets (not just past_event_ids) to ensure
-            # we never delete an event referenced by any bet
-            event_ids_with_bets = set(
-                row[0] for row in self.db.query(Bet.event_id).filter(Bet.event_id.isnot(None)).distinct().all()
-            )
-            deletable_ids = [eid for eid in past_event_ids if eid not in event_ids_with_bets]
-            if deletable_ids:
-                for i in range(0, len(deletable_ids), 500):
-                    batch = deletable_ids[i : i + 500]
-                    # Delete odds first (Postgres enforces FK constraints)
-                    self.db.query(Odds).filter(Odds.event_id.in_(batch)).delete(synchronize_session="fetch")
-                    self.db.query(Opportunity).filter(Opportunity.event_id.in_(batch)).delete(
-                        synchronize_session="fetch"
-                    )
-                    stats["past_events_deleted"] += (
-                        self.db.query(Event).filter(Event.id.in_(batch)).delete(synchronize_session="fetch")
-                    )
-
-        # 5. Deactivation — incremental vs full
+        # 4. Deactivation — incremental vs full
         if changed_event_ids is not None:
             # Incremental: only deactivate opportunities for changed events
             stats["deactivated"] = (
