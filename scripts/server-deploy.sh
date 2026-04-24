@@ -184,10 +184,16 @@ case "$action" in
         # Wait for RL training before swapping container
         wait_for_rl_training
         docker compose up -d "$service"
-        echo ">>> Cleaning up old images and build cache..."
-        docker image prune -f
-        # Keep only recent build cache (current rebuild just populated fresh layers)
-        docker builder prune -f --filter "until=24h" 2>/dev/null || true
+        echo ">>> Pruning unused images and build cache..."
+        # -a removes ALL unused images, not just dangling. Running containers
+        # keep their images (Docker won't drop a referenced image), so this is
+        # safe — it only frees layers from previous builds. Without -a we
+        # accumulated 94GB of orphaned arnold-backend layers in 24h.
+        docker image prune -af
+        # Build cache from the current rebuild can be kept, but old caches
+        # snowball fast (62GB observed in 24h). Drop everything; the next
+        # rebuild repopulates only what it needs.
+        docker builder prune -af 2>/dev/null || true
         record_deploy_time
         if ! wait_for_health "$service"; then
             echo "DEPLOY FAILED: $service is unhealthy after rebuild"
@@ -213,11 +219,12 @@ case "$action" in
         echo "Before:"
         docker system df
         echo ""
-        # Remove dangling images (old builds)
-        docker image prune -f
-        # Remove unused build cache older than 24h
-        docker builder prune -f --filter "until=24h"
-        # Remove unused volumes (except named ones)
+        # Aggressive: remove ALL unused images and ALL build cache. Active
+        # container images stay (referenced); only orphans are dropped.
+        docker image prune -af
+        docker builder prune -af
+        # Volumes are gated separately — they hold real data (rl/ data,
+        # postgres data, chrome profile). Only prune if explicitly listed.
         docker volume prune -f
         echo ""
         echo "After:"
