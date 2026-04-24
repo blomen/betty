@@ -5,9 +5,10 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
 
 from ...services.market_service import MarketService
@@ -20,12 +21,24 @@ _session_levels_cache: dict[str, tuple[float, dict]] = {}  # key -> (expires_at,
 _session_levels_lock = threading.Lock()
 
 
+# Dedicated thread pool for market queries — prevents the default asyncio
+# executor (shared with extraction, RL training, and every other asyncio.to_thread
+# call in the process) from starving chart endpoints. Observed: after ~20 min
+# of production load, candles/vwap/session-levels would hang forever because
+# the default pool (8 threads on a 4-core box) was fully booked by other work
+# and these requests just queued behind it.
+_MARKET_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="market-")
+_OFFLOAD_TIMEOUT_S = 30.0
+
+
 async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
-    """Run a 'fake async' service method in a thread to avoid blocking the event loop.
+    """Run a 'fake async' service method in our own thread pool with a timeout.
 
     Many MarketService methods are async def but only do synchronous DB work.
     Running them on the event loop starves SSE streams and health checks.
-    This helper creates a throwaway event loop in a thread pool worker.
+    This helper creates a throwaway event loop in a worker from the dedicated
+    market pool and enforces a 30 s cap so a single wedged query can't block
+    subsequent requests indefinitely.
     """
 
     def _run():
@@ -35,7 +48,13 @@ async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
         finally:
             loop.close()
 
-    return await asyncio.to_thread(_run)
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_MARKET_POOL, _run),
+            timeout=_OFFLOAD_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="market query timed out") from exc
 
 
 def _get_live_stream(request: Request):
