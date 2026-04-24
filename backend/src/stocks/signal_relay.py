@@ -50,7 +50,11 @@ class SignalRelayClient:
         while True:
             try:
                 log.info("SignalRelay: connecting to %s", self._url)
-                async with websockets.connect(self._url, ping_interval=20) as ws:
+                # ping_timeout=60: tolerate brief server-side event-loop stalls
+                # during tick bursts so we don't churn through reconnects.
+                async with websockets.connect(
+                    self._url, ping_interval=30, ping_timeout=60
+                ) as ws:
                     self._ws = ws
                     self._connected = True
                     log.info("SignalRelay: connected")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -225,9 +226,7 @@ async def signal_relay(ws: WebSocket):
             db.close()
 
     try:
-        import asyncio as _asyncio
-
-        seed_rows = await _asyncio.to_thread(_seed_vwap_sync)
+        seed_rows = await asyncio.to_thread(_seed_vwap_sync)
         bands = None
         for row in seed_rows:
             bands = _vwap_tracker.update(row)
@@ -251,6 +250,10 @@ async def signal_relay(ws: WebSocket):
     try:
         while True:
             raw = await ws.receive_text()
+            # Yield to the event loop so uvicorn's ping/pong task can run between
+            # ticks. Without this, back-to-back ticks during market bursts starve
+            # the keepalive handler and trigger 1011 keepalive-timeout disconnects.
+            await asyncio.sleep(0)
             msg = json.loads(raw)
             msg_type = msg.get("type")
 

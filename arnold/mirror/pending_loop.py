@@ -220,6 +220,12 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _sync_all(self) -> None:
+        # Short-circuit when the browser isn't up: every provider's sync_provider
+        # would just log "browser not running" and return. No work to do here,
+        # no tunnel traffic to generate, and no log spam every minute.
+        if not (self._browser.running and self._browser.context):
+            return
+
         pending_by_provider = await self._fetch_pending()
         if not pending_by_provider:
             return
@@ -253,76 +259,71 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _sync_provider(self, pid: str, db_bets: list[dict]) -> None:
+        # _sync_all already guarantees the browser is up; no need to re-check.
         logger.info(f"[PendingLoop] syncing {pid} ({len(db_bets)} pending bets)")
         self._status.setdefault(pid, {})["pending"] = len(db_bets)
 
-        # 1. Find / open provider tab
-        page = None
-        if self._browser.running and self._browser.context:
-            from .workflows import get_workflow
+        from .workflows import get_workflow
 
-            workflow = get_workflow(pid)
-            page = await workflow.find_tab(self._browser.context)
+        workflow = get_workflow(pid)
+        page = await workflow.find_tab(self._browser.context)
 
-            if page is None:
-                logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
-                return
-
-            # Skip if the tab is on an event page — a play runner likely has the betslip
-            # prepped and waiting for confirmation. A bet history sync would clobber it.
-            # Safe pages: landing, /portfolio (history on many sites), and Kambi's
-            # /betting or /betting/sports lobbies (hash-based history nav does not leave
-            # the page, so syncing here is safe).
-            current_url = (page.url or "").lower()
-            has_event = "/event/" in current_url or "#/event/" in current_url
-            safe_to_sync = not has_event and (
-                "/portfolio" in current_url
-                or current_url.endswith(workflow.domain)
-                or current_url == f"https://{workflow.domain}/"
-                or current_url == "about:blank"
-                or current_url.rstrip("/").endswith("/betting")
-                or "/betting/sports" in current_url
-                or "/sv-se/betting" in current_url
-            )
-            if not safe_to_sync:
-                logger.debug(
-                    f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
-                    f"skipping sync to avoid clobbering an active betslip"
-                )
-                return
-
-            # 2. Check login
-            try:
-                logged_in = await workflow.check_login(page)
-                if not logged_in:
-                    logger.warning(f"[PendingLoop] not logged in on {pid}")
-                    self._broadcaster.publish("login_required", {"provider_id": pid})
-                    return
-            except Exception:
-                logger.warning(f"[PendingLoop] check_login failed for {pid}")
-                return
-
-            # 3. Sync history
-            try:
-                raw_history = await workflow.sync_history(page)
-            except Exception:
-                logger.exception(f"[PendingLoop] sync_history failed for {pid}")
-                return
-
-            history = [
-                {
-                    "odds": e.odds,
-                    "stake": e.stake,
-                    "status": e.status,
-                    "payout": e.payout,
-                    "provider_bet_id": e.provider_bet_id,
-                    "event_name": e.event_name,
-                }
-                for e in raw_history
-            ]
-        else:
-            logger.warning(f"[PendingLoop] browser not running, skipping history for {pid}")
+        if page is None:
+            logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
             return
+
+        # Skip if the tab is on an event page — a play runner likely has the betslip
+        # prepped and waiting for confirmation. A bet history sync would clobber it.
+        # Safe pages: landing, /portfolio (history on many sites), and Kambi's
+        # /betting or /betting/sports lobbies (hash-based history nav does not leave
+        # the page, so syncing here is safe).
+        current_url = (page.url or "").lower()
+        has_event = "/event/" in current_url or "#/event/" in current_url
+        safe_to_sync = not has_event and (
+            "/portfolio" in current_url
+            or current_url.endswith(workflow.domain)
+            or current_url == f"https://{workflow.domain}/"
+            or current_url == "about:blank"
+            or current_url.rstrip("/").endswith("/betting")
+            or "/betting/sports" in current_url
+            or "/sv-se/betting" in current_url
+        )
+        if not safe_to_sync:
+            logger.debug(
+                f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
+                f"skipping sync to avoid clobbering an active betslip"
+            )
+            return
+
+        # 2. Check login
+        try:
+            logged_in = await workflow.check_login(page)
+            if not logged_in:
+                logger.warning(f"[PendingLoop] not logged in on {pid}")
+                self._broadcaster.publish("login_required", {"provider_id": pid})
+                return
+        except Exception:
+            logger.warning(f"[PendingLoop] check_login failed for {pid}")
+            return
+
+        # 3. Sync history
+        try:
+            raw_history = await workflow.sync_history(page)
+        except Exception:
+            logger.exception(f"[PendingLoop] sync_history failed for {pid}")
+            return
+
+        history = [
+            {
+                "odds": e.odds,
+                "stake": e.stake,
+                "status": e.status,
+                "payout": e.payout,
+                "provider_bet_id": e.provider_bet_id,
+                "event_name": e.event_name,
+            }
+            for e in raw_history
+        ]
 
         # 4. Detect settlements
         settlements = _detect_settlements(db_bets, history)
