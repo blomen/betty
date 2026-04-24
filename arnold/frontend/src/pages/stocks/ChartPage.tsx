@@ -13,29 +13,36 @@ interface Props {
   exits: ExitEvent[]
 }
 
-// Level groups: toggling a group toggles all its children.
-// Individual levels remain here because the chart is our debugging surface —
-// hiding them would hide calculation bugs. Zones still render on top, with
-// hierarchy-based strength so the eye can rank cluster quality.
+// Every individual level key. Zones already cluster these server-side with
+// a hierarchy score, so we hide them all by default — the chart now shows
+// zones as the single consolidated view. Kept as a constant so the
+// CandleChart renderer, which still knows how to draw each key, skips them.
+const INDIVIDUAL_LEVEL_KEYS = [
+  'ibh', 'ibl',
+  'pdh', 'pdl',
+  'tokyo_h', 'tokyo_l',
+  'london_h', 'london_l',
+  'd_poc', 'd_vah', 'd_val',
+  'w_poc', 'w_vah', 'w_val',
+  'm_poc', 'm_vah', 'm_val',
+  'tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val',
+  'tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val',
+  'tpo_ny_letters', 'tpo_ny_poc', 'tpo_ny_vah', 'tpo_ny_val',
+  'daily_swing', 'weekly_swing',
+]
+
+// User-toggleable groups. The VP *histograms* (vp_session / vp_weekly /
+// vp_monthly) are distribution shapes on the right axis, not level lines,
+// so they stay. Everything else collapses into zones.
 const LEVEL_GROUPS: Record<string, string[]> = {
   vwap: ['vwap'],
-  ib: ['ibh', 'ibl'],
-  pdh_pdl: ['pdh', 'pdl'],
-  tokyo: ['tokyo_h', 'tokyo_l'],
-  london: ['london_h', 'london_l'],
-  daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
-  weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
-  monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
-  tpo_tokyo: ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val'],
-  tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val'],
-  tpo_ny: ['tpo_ny_letters', 'tpo_ny_poc', 'tpo_ny_vah', 'tpo_ny_val'],
-  daily_swing: ['daily_swing'],
-  weekly_swing: ['weekly_swing'],
   zones: ['zones'],
   fvg: ['fvg'],
+  daily_vp: ['vp_session'],
+  weekly_vp: ['vp_weekly'],
+  monthly_vp: ['vp_monthly'],
 }
 
-// Display config for sidebar
 const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label: string; color: string }> }> = [
   {
     label: 'Overlays',
@@ -53,44 +60,29 @@ const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label
       { key: 'monthly_vp', label: 'Monthly VP', color: '#F59E0B' },
     ],
   },
-  {
-    label: 'Session Levels',
-    groups: [
-      { key: 'pdh_pdl', label: 'PDH/PDL', color: '#FB923C' },
-      { key: 'ib', label: 'IB H/L', color: '#F59E0B' },
-      { key: 'tokyo', label: 'Tokyo H/L', color: '#22D3EE' },
-      { key: 'london', label: 'London H/L', color: '#34D399' },
-    ],
-  },
-  {
-    label: 'TPO',
-    groups: [
-      { key: 'tpo_tokyo', label: 'Tokyo TPO', color: '#0891B2' },
-      { key: 'tpo_london', label: 'London TPO', color: '#059669' },
-      { key: 'tpo_ny', label: 'NY TPO', color: '#DC2626' },
-    ],
-  },
-  {
-    label: 'Swing Pivots',
-    groups: [
-      { key: 'daily_swing', label: 'Daily', color: '#94A3B8' },
-      { key: 'weekly_swing', label: 'Weekly', color: '#3B82F6' },
-    ],
-  },
 ]
 
 export function ChartPage({ lastTick, session, zones, signals, fills, exits }: Props) {
   const [interval, setInterval_] = useState<'1m' | '5m' | '15m'>('5m')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [hiddenLevels, setHiddenLevels] = useState<Set<string>>(() => {
+    // Always hide individual levels — zones replace them. User-controllable
+    // toggles (VWAP, zones, FVG, VP histograms) persist via localStorage.
+    const hidden = new Set<string>(INDIVIDUAL_LEVEL_KEYS)
     try {
       const saved = localStorage.getItem('arnoldstocks-hidden-levels')
-      return saved ? new Set(JSON.parse(saved)) : new Set()
-    } catch { return new Set() }
+      if (saved) {
+        for (const k of JSON.parse(saved) as string[]) hidden.add(k)
+      }
+    } catch { /* ignore */ }
+    return hidden
   })
 
   useEffect(() => {
-    localStorage.setItem('arnoldstocks-hidden-levels', JSON.stringify([...hiddenLevels]))
+    // Persist only the user-controlled toggles; individual-level keys are
+    // hidden by default and re-added on load.
+    const persisted = [...hiddenLevels].filter(k => !INDIVIDUAL_LEVEL_KEYS.includes(k))
+    localStorage.setItem('arnoldstocks-hidden-levels', JSON.stringify(persisted))
   }, [hiddenLevels])
 
   const toggleGroup = useCallback((group: string) => {

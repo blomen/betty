@@ -50,8 +50,8 @@ type Tab = 'play' | 'charts' | 'bankroll' | 'stats'
 type SharedSub = 'betting' | 'trading'
 
 const TABS: { name: Tab; label: string; color: string }[] = [
-  { name: 'play',     label: 'Play',     color: '#22c55e' },
-  { name: 'charts',   label: 'Charts',   color: '#f59e0b' },
+  { name: 'play',     label: 'Sports',   color: '#22c55e' },
+  { name: 'charts',   label: 'Stocks',   color: '#f59e0b' },
   { name: 'bankroll', label: 'Bankroll', color: '#ec4899' },
   { name: 'stats',    label: 'Stats',    color: '#3b82f6' },
 ]
