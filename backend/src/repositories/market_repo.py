@@ -15,6 +15,10 @@ from ..db.models import (
 )
 
 
+def _ensure_aware(ts: datetime) -> datetime:
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 class MarketRepo:
     """Data access for market session and signal tables.
 
@@ -155,9 +159,16 @@ class MarketRepo:
 
     # ---- MarketTrade ----
 
+    # Anything before this is presumed bad — TopstepX wasn't streaming to us
+    # in the 1900s, and unparseable ts values upstream resolve to epoch 0.
+    _MIN_VALID_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
     def bulk_insert_trades(self, trades: list[dict]):
         """Insert batch of ticks. trades = [{symbol, ts, price, size, side}, ...]"""
-        self.market_db.bulk_insert_mappings(MarketTrade, trades)
+        clean = [t for t in trades if t.get("ts") and _ensure_aware(t["ts"]) >= self._MIN_VALID_TS]
+        if not clean:
+            return
+        self.market_db.bulk_insert_mappings(MarketTrade, clean)
         self.market_db.commit()
 
     def prune_trades(self, symbol: str, before: datetime):
