@@ -13,7 +13,10 @@ interface Props {
   exits: ExitEvent[]
 }
 
-// Level groups: toggling a group toggles all its children
+// Level groups: toggling a group toggles all its children.
+// Individual levels remain here because the chart is our debugging surface —
+// hiding them would hide calculation bugs. Zones still render on top, with
+// hierarchy-based strength so the eye can rank cluster quality.
 const LEVEL_GROUPS: Record<string, string[]> = {
   vwap: ['vwap'],
   ib: ['ibh', 'ibl'],

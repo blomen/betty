@@ -93,7 +93,7 @@ interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
-  zones?: Array<{ price: number; members: number }>;
+  zones?: Array<{ price: number; members: number; upper?: number; lower?: number; hierarchy?: number }>;
   signals?: Signal[];
   fills?: Fill[];
   exits?: ExitEvent[];
@@ -216,7 +216,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   const [sessionTPOLoaded, setSessionTPOLoaded] = useState(false);
 
   // Zones ref
-  const zonesRef = useRef<Array<{ price: number; members: number }>>([]);
+  const zonesRef = useRef<Array<{ price: number; members: number; upper?: number; lower?: number; hierarchy?: number }>>([]);
   useEffect(() => {
     zonesRef.current = zones ?? [];
   }, [zones]);
@@ -703,37 +703,75 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // --- Zones overlay (dashed purple lines; cyan glow if FVG confluence) ---
+    // --- Zones overlay (bands with hierarchy-scaled strength) ---
+    // Each zone renders as a translucent band between upper/lower with a
+    // dashed centerline. Stronger zones (higher `hierarchy`) get more opaque
+    // fills, brighter strokes, and thicker centerlines so the eye ranks
+    // them without needing a legend. FVG confluence overrides to green.
     const currentZones = zonesRef.current;
     const currentFvgs = fvgsRef.current;
     if (currentZones.length > 0 && !hidden?.has('zones')) {
+      const chartW = rect.width - priceScaleWidth;
       for (const zone of currentZones) {
-        const y = pSeries.priceToCoordinate(zone.price);
-        if (y === null || y < 0 || y > rect.height) continue;
+        const yCenter = pSeries.priceToCoordinate(zone.price);
+        if (yCenter === null) continue;
+        const yUpper = zone.upper !== undefined ? pSeries.priceToCoordinate(zone.upper) : null;
+        const yLower = zone.lower !== undefined ? pSeries.priceToCoordinate(zone.lower) : null;
+        // If center is out of view and we have no band, skip.
+        const inView =
+          (yCenter >= 0 && yCenter <= rect.height) ||
+          (yUpper !== null && yUpper >= 0 && yUpper <= rect.height) ||
+          (yLower !== null && yLower >= 0 && yLower <= rect.height);
+        if (!inView) continue;
 
-        // Check if this zone has FVG confluence
         const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
 
+        // Hierarchy clamped to [0, 1]; members count is the fallback ramp
+        // when the backend hasn't sent a score yet (e.g. right after connect).
+        const raw = zone.hierarchy ?? Math.min(1, Math.max(0, (zone.members - 1) / 5));
+        const strength = Math.min(1, Math.max(0, raw));
+        // Opacity 0.06 at the weakest band, up to 0.22 at the strongest.
+        const bandAlpha = 0.06 + strength * 0.16;
+        // Centerline alpha 0.35–0.95; line width 0.75–2.25.
+        const lineAlpha = 0.35 + strength * 0.6;
+        const lineWidth = 0.75 + strength * 1.5;
+
+        const hue = hasFvg ? [16, 185, 129] : [168, 85, 247]; // emerald / violet
+        const [r, g, b] = hue;
+
         ctx.save();
-        if (hasFvg) {
-          // FVG confluence glow: wider band behind the zone line
-          ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
-          ctx.fillRect(0, y - 6, rect.width - priceScaleWidth, 12);
+
+        // Band fill between upper/lower when available, else a thin 12 px band.
+        if (yUpper !== null && yLower !== null) {
+          const bandTop = Math.min(yUpper, yLower);
+          const bandH = Math.max(2, Math.abs(yUpper - yLower));
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${bandAlpha})`;
+          ctx.fillRect(0, bandTop, chartW, bandH);
+        } else {
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${bandAlpha})`;
+          ctx.fillRect(0, yCenter - 6, chartW, 12);
         }
 
-        ctx.strokeStyle = hasFvg ? 'rgba(16, 185, 129, 0.8)' : 'rgba(168, 85, 247, 0.7)';
-        ctx.lineWidth = hasFvg ? 1.5 : 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(rect.width - priceScaleWidth, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'left';
-        const label = hasFvg ? `Z${zone.members} FVG` : `Z${zone.members}`;
-        ctx.fillStyle = hasFvg ? 'rgba(16, 185, 129, 0.9)' : 'rgba(168, 85, 247, 0.8)';
-        ctx.fillText(label, 3, y - 3);
+        // Centerline (dashed) at zone.price if visible.
+        if (yCenter >= 0 && yCenter <= rect.height) {
+          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${lineAlpha})`;
+          ctx.lineWidth = lineWidth;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, yCenter);
+          ctx.lineTo(chartW, yCenter);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Label: members + hierarchy pip count so strength is readable.
+          const pips = '●'.repeat(Math.min(5, Math.max(1, Math.round(strength * 5))));
+          const label = hasFvg ? `Z${zone.members} FVG ${pips}` : `Z${zone.members} ${pips}`;
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${Math.min(1, lineAlpha + 0.1)})`;
+          ctx.fillText(label, 3, yCenter - 3);
+        }
+
         ctx.restore();
       }
     }

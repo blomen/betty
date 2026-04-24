@@ -190,6 +190,12 @@ export interface DQNInferenceEvent {
 export interface Zone {
   price: number
   members: number
+  /** Upper bound of the zone band (above `price`). */
+  upper?: number
+  /** Lower bound of the zone band (below `price`). */
+  lower?: number
+  /** Zone strength score in [0, 1] — used to render hierarchy on the chart. */
+  hierarchy?: number
   name?: string
 }
 

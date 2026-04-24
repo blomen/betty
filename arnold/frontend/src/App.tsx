@@ -4,7 +4,6 @@ import PlayPage from './pages/PlayPage'
 import { BankrollPage as SportsBankrollPage } from './pages/BankrollPage'
 import { StatsPage as SportsStatsPage } from './pages/StatsPage'
 import { ChartPage } from './pages/stocks/ChartPage'
-import { DQNPage } from './pages/stocks/DQNPage'
 import { BankrollPage as StocksBankrollPage } from './pages/stocks/BankrollPage'
 import { StatsPage as StocksStatsPage } from './pages/stocks/StatsPage'
 import { ProfileSelector } from './components/ProfileSelector'
@@ -48,7 +47,6 @@ class ErrorBoundary extends Component<
 }
 
 type Tab = 'play' | 'charts' | 'bankroll' | 'stats'
-type ChartsSub = 'chart' | 'dqn'
 type SharedSub = 'betting' | 'trading'
 
 const TABS: { name: Tab; label: string; color: string }[] = [
@@ -86,7 +84,6 @@ function SubTabBar<T extends string>({
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('play')
-  const [chartsSub, setChartsSub] = useState<ChartsSub>('chart')
   const [bankrollSub, setBankrollSub] = useState<SharedSub>('betting')
   const [statsSub, setStatsSub] = useState<SharedSub>('betting')
 
@@ -139,39 +136,18 @@ export default function App() {
             </ErrorBoundary>
           </div>
 
-          {/* Charts — stocks (Chart + DQN as sub-tabs) */}
+          {/* Charts — stocks */}
           <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'charts' ? '' : 'hidden'}`}>
-            <SubTabBar
-              value={chartsSub}
-              onChange={setChartsSub}
-              options={[
-                { name: 'chart', label: 'Chart' },
-                { name: 'dqn', label: 'DQN' },
-              ]}
-            />
-            <div className={`flex flex-col flex-1 min-h-0 ${chartsSub === 'chart' ? '' : 'hidden'}`}>
-              <ErrorBoundary label="Chart">
-                <ChartPage
-                  lastTick={lastTick}
-                  session={session}
-                  zones={ws.zones}
-                  signals={ws.signals}
-                  fills={ws.fills}
-                  exits={ws.exits}
-                />
-              </ErrorBoundary>
-            </div>
-            <div className={`flex flex-col flex-1 min-h-0 ${chartsSub === 'dqn' ? '' : 'hidden'}`}>
-              <ErrorBoundary label="DQN">
-                <DQNPage
-                  signals={ws.signals}
-                  zones={ws.zones}
-                  lastPrice={ws.lastPrice}
-                  dqnInference={ws.dqnInference}
-                  dqnInferenceAt={ws.dqnInferenceAt}
-                />
-              </ErrorBoundary>
-            </div>
+            <ErrorBoundary label="Chart">
+              <ChartPage
+                lastTick={lastTick}
+                session={session}
+                zones={ws.zones}
+                signals={ws.signals}
+                fills={ws.fills}
+                exits={ws.exits}
+              />
+            </ErrorBoundary>
           </div>
 
           {/* Bankroll — shared: Betting (sportbets providers) + Trading (propfirm/hodl/crypto later) */}
