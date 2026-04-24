@@ -67,6 +67,88 @@ def fetch_rows(cur, date_filter: str | None):
     return cur.fetchall()
 
 
+def fetch_labelled_pairs(cur, date_filter: str | None) -> list[dict]:
+    """Join broker_trades ← stock_signals to get realized outcomes for each
+    dispatched signal. Only returns trades whose signal was captured (i.e.
+    trades placed after the Layer-2 signal-persist hook deployed).
+    """
+    if date_filter and date_filter != "all":
+        cur.execute(
+            "SELECT s.confidence, s.cont_p, s.rev_p, s.zone_center, s.zone_members, "
+            "       s.action, t.side, t.pnl_dollars, t.pnl_r, t.closed_at, t.ts, "
+            "       t.entry_price, t.exit_price "
+            "FROM broker_trades t "
+            "JOIN stock_signals s ON s.trade_id = t.id "
+            "WHERE t.session_date = %s ORDER BY t.closed_at ASC",
+            (date_filter,),
+        )
+    else:
+        cur.execute(
+            "SELECT s.confidence, s.cont_p, s.rev_p, s.zone_center, s.zone_members, "
+            "       s.action, t.side, t.pnl_dollars, t.pnl_r, t.closed_at, t.ts, "
+            "       t.entry_price, t.exit_price "
+            "FROM broker_trades t "
+            "JOIN stock_signals s ON s.trade_id = t.id "
+            "ORDER BY t.closed_at ASC"
+        )
+    return cur.fetchall()
+
+
+def calibration(pairs: list[dict]) -> dict:
+    """Compare predicted confidence to realized win rate. A well-calibrated
+    model has WR ≈ confidence across buckets. Systematic overconfidence or
+    underconfidence points at where reward shaping needs adjustment."""
+    if not pairs:
+        return {"labelled_pairs": 0, "note": "no signal-tagged trades yet"}
+
+    # Confidence buckets — every 0.10 from 0.30 (min gate) up to 1.0
+    buckets = [(lo / 100, (lo + 10) / 100) for lo in range(30, 100, 10)]
+    by_conf = []
+    for lo, hi in buckets:
+        sub = [p for p in pairs if p["confidence"] is not None and lo <= p["confidence"] < hi]
+        if not sub:
+            continue
+        wins = sum(1 for p in sub if (p["pnl_dollars"] or 0) > 0)
+        mid = (lo + hi) / 2
+        actual_wr = wins / len(sub)
+        by_conf.append(
+            {
+                "confidence_range": f"{lo:.2f}-{hi:.2f}",
+                "predicted_mid": round(mid, 2),
+                "trades": len(sub),
+                "wins": wins,
+                "actual_win_rate": round(actual_wr, 3),
+                "avg_realized_r": (
+                    round(sum(p["pnl_r"] for p in sub if p["pnl_r"] is not None)
+                          / max(1, sum(1 for p in sub if p["pnl_r"] is not None)), 3)
+                    if any(p["pnl_r"] is not None for p in sub) else None
+                ),
+                "avg_realized_dollars": round(
+                    sum(float(p["pnl_dollars"] or 0) for p in sub) / len(sub), 2
+                ),
+                "calibration_gap": round(actual_wr - mid, 3),
+            }
+        )
+
+    # By action
+    by_action = {}
+    for action in {p["action"] for p in pairs if p["action"]}:
+        sub = [p for p in pairs if p["action"] == action]
+        wins = sum(1 for p in sub if (p["pnl_dollars"] or 0) > 0)
+        by_action[action] = {
+            "trades": len(sub),
+            "wins": wins,
+            "win_rate": round(wins / len(sub), 3),
+            "net": round(sum(float(p["pnl_dollars"] or 0) for p in sub), 2),
+        }
+
+    return {
+        "labelled_pairs": len(pairs),
+        "by_confidence_bucket": by_conf,
+        "by_signal_action": by_action,
+    }
+
+
 def enrich(rows: list[dict]) -> list[dict]:
     for r in rows:
         open_ts = r["ts"]
@@ -316,7 +398,7 @@ def auto_flags(summary: dict, rows: list[dict]) -> list[str]:
     return flags
 
 
-def build_summary(rows: list[dict]) -> dict:
+def build_summary(rows: list[dict], pairs: list[dict] | None = None) -> dict:
     summary = {
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "trade_count": len(rows),
@@ -328,6 +410,7 @@ def build_summary(rows: list[dict]) -> dict:
         "consecutive_loss_tilt": consecutive_loss_tilt(rows),
         "flip_vs_same": flip_vs_same(rows),
         "outcomes": top_outcomes(rows),
+        "calibration": calibration(pairs or []),
     }
     summary["flags"] = auto_flags(summary, rows)
     return summary
@@ -361,6 +444,22 @@ def render_text(summary: dict, date_label: str) -> str:
     for b in summary["by_duration"]:
         p(f"    {b['bucket']:>8s}  {b['trades']:2d}  WR {b['win_rate'] * 100:5.1f}%  "
           f"avg ${b['avg_pnl']:+,.2f}  total ${b['total']:+,.2f}")
+
+    cal = summary.get("calibration", {})
+    if cal.get("labelled_pairs"):
+        p(f"\n  calibration ({cal['labelled_pairs']} signal-tagged trades):")
+        p(f"    {'conf range':>12s}  {'mid':>5s}  trades  {'WR':>6s}  "
+          f"{'gap':>7s}  {'avg $':>10s}  {'avg R':>6s}")
+        for b in cal.get("by_confidence_bucket", []):
+            gap = b["calibration_gap"]
+            gap_str = f"{gap:+.3f}"
+            avg_r = b.get("avg_realized_r")
+            avg_r_str = f"{avg_r:+.2f}" if avg_r is not None else "    -"
+            p(f"    {b['confidence_range']:>12s}  {b['predicted_mid']:>5.2f}  "
+              f"{b['trades']:>6d}  {b['actual_win_rate'] * 100:>5.1f}%  "
+              f"{gap_str:>7s}  ${b['avg_realized_dollars']:>+9.2f}  {avg_r_str:>6s}")
+    elif cal.get("note"):
+        p(f"\n  calibration: {cal['note']}")
 
     if summary["flags"]:
         p("\n  FLAGS:")
@@ -399,12 +498,13 @@ def main():
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         rows = fetch_rows(cur, target)
+        pairs = fetch_labelled_pairs(cur, target)
     finally:
         cur.close()
         conn.close()
 
     rows = enrich(rows)
-    summary = build_summary(rows)
+    summary = build_summary(rows, pairs)
     summary["date"] = target
 
     label = "ALL TIME" if target == "all" else target
