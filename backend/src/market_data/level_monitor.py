@@ -1239,6 +1239,25 @@ class LevelMonitor:
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else 0.15
+                # Log the gate decision so silent veto causes are visible in
+                # deploy logs without having to attach a debugger.
+                if action in ("SKIP", "skip"):
+                    logger.debug("broker gate: SKIP action, zone=%.2f", zone.center_price)
+                elif confidence < _broker_conf_floor:
+                    logger.info(
+                        "broker gate: conf %.3f < %.2f at zone %.2f — vetoed",
+                        confidence, _broker_conf_floor, zone.center_price,
+                    )
+                elif of_score < 0.30:
+                    logger.info(
+                        "broker gate: of_score %.3f < 0.30 at zone %.2f (conf=%.3f, %s) — vetoed",
+                        of_score, zone.center_price, confidence, action,
+                    )
+                else:
+                    logger.info(
+                        "broker gate PASSED: of=%.3f conf=%.3f action=%s zone=%.2f — dispatching",
+                        of_score, confidence, action, zone.center_price,
+                    )
                 if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= 0.30:
                     import asyncio
 
@@ -1457,6 +1476,19 @@ class LevelMonitor:
         zone_key = round(zone.center_price * 4) / 4
         self.record_zone_touch(zone_key)
 
+        # Compute orderflow signals on-demand from the live candle flow. The
+        # stocks init path doesn't populate orderflow_signals into session
+        # context, so without this the live gate `of_score >= 0.30` is
+        # unreachable (only the 0.20 delta-direction component can fire,
+        # vetoing every entry).
+        of_signals = ctx.get("orderflow_signals")
+        if of_signals is None and candles and len(candles) >= 3:
+            with contextlib.suppress(Exception):
+                from .orderflow import compute_signals
+
+                direction = "long" if approach == "up" else "short"
+                of_signals = compute_signals(candles, direction, lookback=10)
+
         return {
             "zone": zone,
             "all_zones": self._zones,
@@ -1472,7 +1504,7 @@ class LevelMonitor:
             "session_tpos": ctx.get("session_tpos"),
             "session_levels": ctx.get("session_levels"),
             "all_levels": [l.price for l in self._levels],
-            "orderflow_signals": ctx.get("orderflow_signals"),
+            "orderflow_signals": of_signals,
             "macro": ctx.get("macro"),
             "session_context": {**(ctx.get("session_context") or {}), **(ctx.get("amt_context") or {})},
             "day_type": ctx.get("day_type"),
