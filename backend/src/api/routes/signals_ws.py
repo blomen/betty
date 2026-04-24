@@ -9,6 +9,7 @@ import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -70,6 +71,15 @@ _TICK_FLUSH_SIZE = 500
 _TICK_FLUSH_INTERVAL = 5.0
 _tick_flush_thread: threading.Thread | None = None
 
+# Dedicated pool for signals_ws work that must not block the event loop.
+# Mirrors the pattern in market.py (commit efb525a): the process-wide default
+# asyncio executor (8 threads on the 4-core Hetzner box) is shared with
+# extraction and RL training, so per-connection seed/flush work routed through
+# asyncio.to_thread can queue behind long-running jobs and stall this handler's
+# event loop long enough to trip the client's 60s ping_timeout.
+_SIGNALS_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="signals-")
+_SEED_TIMEOUT_S = 30.0
+
 
 def _start_tick_flusher(app) -> None:
     """Start background thread that flushes ticks to market_trades every 5s."""
@@ -87,7 +97,13 @@ def _start_tick_flusher(app) -> None:
 
 
 def _buffer_tick(app, price: float, size: int, ts_dt, side: str) -> None:
-    """Add a tick to the batch buffer, flush if full."""
+    """Add a tick to the batch buffer, flush if full.
+
+    Size-triggered flush runs in a background thread — the caller is the async
+    WS handler and bulk_insert_trades is blocking psycopg2, so inlining it on
+    the event loop was the direct cause of 60 s keepalive ping timeouts during
+    tick bursts.
+    """
     batch = None
     with _tick_batch_lock:
         _tick_batch.append(
@@ -103,7 +119,9 @@ def _buffer_tick(app, price: float, size: int, ts_dt, side: str) -> None:
             batch = list(_tick_batch)
             _tick_batch.clear()
     if batch:
-        _do_flush(app, batch)
+        threading.Thread(
+            target=_do_flush, args=(app, batch), daemon=True, name="ws-tick-flush"
+        ).start()
 
 
 def _flush_tick_batch(app) -> None:
@@ -226,7 +244,14 @@ async def signal_relay(ws: WebSocket):
             db.close()
 
     try:
-        seed_rows = await asyncio.to_thread(_seed_vwap_sync)
+        # Use the dedicated signals pool (not asyncio.to_thread's shared default
+        # executor) so a hot default pool can't queue the seed behind extraction
+        # or RL work. Bounded wait releases the worker and the WS setup path if
+        # the DB is genuinely stuck — better an un-seeded VWAP than a hung accept.
+        seed_rows = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_SIGNALS_POOL, _seed_vwap_sync),
+            timeout=_SEED_TIMEOUT_S,
+        )
         bands = None
         for row in seed_rows:
             bands = _vwap_tracker.update(row)
