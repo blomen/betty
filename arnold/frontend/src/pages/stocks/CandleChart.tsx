@@ -10,9 +10,9 @@ import {
   type Time,
   ColorType,
 } from 'lightweight-charts';
-import { api } from '@/hooks/useApi';
+import { api } from '@/hooks/useStocksApi';
 import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels, computeAllDayTPOs } from '@/lib/indicators';
-import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent, ModelStatus } from '@/types';
+import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent, ModelStatus } from '@/types/stocks';
 
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
@@ -117,7 +117,7 @@ function epochToDateStr(epoch: number): string {
 /** Build session boxes — X from backend time boundaries, Y from chart candles within the window.
  *  Only draws boxes for the latest day with session data. */
 function buildSessionBoxes(
-  slDays: import('@/types').SessionLevelDay[],
+  slDays: import('@/types/stocks').SessionLevelDay[],
   candles: CandleData[],
 ): SessionBox[] {
   if (candles.length === 0) return [];
@@ -125,8 +125,8 @@ function buildSessionBoxes(
   const boxes: SessionBox[] = [];
   const mapping: Array<{
     name: string;
-    startField: keyof import('@/types').SessionLevelDay;
-    endField: keyof import('@/types').SessionLevelDay;
+    startField: keyof import('@/types/stocks').SessionLevelDay;
+    endField: keyof import('@/types/stocks').SessionLevelDay;
     def: typeof SESSION_DEFS[number];
   }> = [
     { name: 'Tokyo',    startField: 'tokyo_start',  endField: 'tokyo_end',  def: SESSION_DEFS[0] },
@@ -200,12 +200,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   hiddenRef.current = hiddenLevels;
 
   // Session levels overlay data (per-day IB, Tokyo, London, swing levels)
-  const sessionLevelsRef = useRef<import('@/types').SessionLevelDay[]>([]);
+  const sessionLevelsRef = useRef<import('@/types/stocks').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
   const [structLoaded, setStructLoaded] = useState(false);
 
   // Swing pivot levels from server (stored separately so client-side recompute doesn't clobber them)
-  const swingPivotsRef = useRef<import('@/types').SwingPivot[]>([]);
+  const swingPivotsRef = useRef<import('@/types/stocks').SwingPivot[]>([]);
 
   // FVGs and order blocks from /levels endpoint
   const fvgsRef = useRef<Array<{ low: number; high: number; direction: string }>>([]);
@@ -435,10 +435,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       hKey: string; lKey: string;
       hLabel: string; lLabel: string;
       color: string;
-      startField: keyof import('@/types').SessionLevelDay;
-      endField: keyof import('@/types').SessionLevelDay;
-      highField: keyof import('@/types').SessionLevelDay;
-      lowField: keyof import('@/types').SessionLevelDay;
+      startField: keyof import('@/types/stocks').SessionLevelDay;
+      endField: keyof import('@/types/stocks').SessionLevelDay;
+      highField: keyof import('@/types/stocks').SessionLevelDay;
+      lowField: keyof import('@/types/stocks').SessionLevelDay;
     }> = [
       { sessionName: 'Tokyo', hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#22D3EE', startField: 'tokyo_start', endField: 'tokyo_end', highField: 'tokyo_high', lowField: 'tokyo_low' },
       { sessionName: 'London', hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#34D399', startField: 'london_start', endField: 'london_end', highField: 'london_high', lowField: 'london_low' },

@@ -22,6 +22,35 @@ if str(_BACKEND_DIR) not in sys.path:
 log = logging.getLogger("arnold.stocks")
 
 
+def _serialize_trade_for_post(kwargs: dict) -> dict:
+    """Convert _log_broker_trade kwargs into the BrokerTradeIn schema shape.
+
+    Strips Nones, converts datetime → ISO string, and only includes fields the
+    server endpoint accepts.
+    """
+    from datetime import datetime as _dt
+
+    allowed = {
+        "ts", "session_date", "symbol", "side", "size",
+        "entry_price", "stop_price", "exit_price", "tp_price",
+        "pnl_dollars", "pnl_r", "fill_latency_ms", "slippage_ticks",
+        "was_stop", "trail_count", "stop_ticks",
+        "signal_action", "signal_confidence", "signal_zone",
+        "signal_trigger", "signal_cont_p", "signal_rev_p",
+        "closed_at",
+    }
+    out: dict = {}
+    for k, v in kwargs.items():
+        if k not in allowed or v is None:
+            continue
+        if isinstance(v, _dt):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    out.setdefault("symbol", "NQ")
+    return out
+
+
 @dataclass
 class StocksRuntime:
     client: Any
@@ -61,7 +90,12 @@ async def bootstrap_stocks() -> StocksRuntime | None:
 
     Returns None when TopstepX is not configured (sports-only mode).
     """
+    import os
+
+    import httpx
+
     from src.broker.flatten_scheduler import FlattenScheduler
+    from src.stocks import broker_adapter as _broker_adapter_mod
     from src.stocks.broker_adapter import TopstepXBrokerAdapter
     from src.stocks.config import TopstepXConfig
     from src.stocks.dashboard import (
@@ -110,6 +144,36 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     dash_state["stats"]["session_start"] = time.time()
     dash_state["topstepx_client"] = client
     dash_state["adapter"] = adapter
+
+    # --- broker_trade persistence: POST every closed round-trip to the server.
+    # The server endpoint dedupes on (closed_at, symbol, side, entry_price, size)
+    # so retries are safe. Fire-and-forget — failures only show in local logs.
+    _api_base = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get(
+        "ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000"
+    )
+    _api_key = os.environ.get("ARNOLD_API_KEY", "")
+    _persist_loop = asyncio.get_running_loop()
+
+    async def _post_trade(payload: dict) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as hc:
+                r = await hc.post(
+                    f"{_api_base}/api/stocks/broker-trades",
+                    json=payload,
+                    headers={"X-API-Key": _api_key} if _api_key else {},
+                )
+                if r.status_code >= 400:
+                    log.warning("broker-trade POST %d: %s", r.status_code, r.text[:200])
+        except Exception:
+            log.exception("broker-trade POST failed")
+
+    def _persist_trade(trade_kwargs: dict) -> None:
+        # _log_broker_trade runs on the TopstepX stream thread, so schedule
+        # the async POST onto the FastAPI loop instead of running it here.
+        payload = _serialize_trade_for_post(trade_kwargs)
+        asyncio.run_coroutine_threadsafe(_post_trade(payload), _persist_loop)
+
+    _broker_adapter_mod.set_persist_callback(_persist_trade)
 
     def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
         asyncio.create_task(relay.forward_tick(price, size, ts, side))

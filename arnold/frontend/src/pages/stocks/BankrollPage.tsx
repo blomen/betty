@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api } from '@/hooks/useApi'
-import type { Position, Account, ModelStatus, Order, Quote } from '@/types'
+import { api } from '@/hooks/useStocksApi'
+import type { Position, Account, ModelStatus, Order, Quote } from '@/types/stocks'
 
 interface Props {
   positions: Position[]

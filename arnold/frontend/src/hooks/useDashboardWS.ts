@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Signal, Zone, Fill, ExitEvent, Quote, Position, DQNInferenceEvent } from '@/types'
+import type { Signal, Zone, Fill, ExitEvent, Quote, Position, DQNInferenceEvent } from '@/types/stocks'
 
 export interface DashboardState {
   connected: boolean
@@ -51,7 +51,7 @@ export function useDashboardWS() {
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/dashboard`)
+    const ws = new WebSocket(`${protocol}//${window.location.host}/stocks/ws/dashboard`)
     wsRef.current = ws
 
     ws.onopen = () => {

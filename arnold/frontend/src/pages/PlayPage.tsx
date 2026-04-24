@@ -987,15 +987,26 @@ export default function PlayPage() {
                                       const eventLabel = opp.display_home && opp.display_away
                                         ? `${opp.display_home} v ${opp.display_away}`
                                         : opp.event_id
+                                      // Resolve a leg's outcome code ('home'/'away'/'draw'/'over'/'under') to a
+                                      // bettor-readable label using the event's team names + market point.
+                                      const resolveOutcome = (leg: any): string => {
+                                        const o = leg?.outcome
+                                        if (!o) return '—'
+                                        if (o === 'home') return opp.display_home || 'Home'
+                                        if (o === 'away') return opp.display_away || 'Away'
+                                        if (o === 'draw') return 'Draw'
+                                        if (o === 'over' && leg.point != null) return `Over ${leg.point}`
+                                        if (o === 'under' && leg.point != null) return `Under ${leg.point}`
+                                        if (leg.point != null) return `${o} ${leg.point}`
+                                        return o
+                                      }
                                       // Anchor: prefer the leg for THIS provider, fall back to any sibling
                                       const anchorLeg =
                                         (opp.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid) ??
                                         (opp.legs ?? []).find((l: any) =>
                                           clusterMemberSet.has(l.provider ?? l.provider_id ?? '')
                                         ) ?? {}
-                                      const anchorOutcome = anchorLeg.outcome
-                                        ? (anchorLeg.point != null ? `${anchorLeg.outcome} ${anchorLeg.point}` : anchorLeg.outcome)
-                                        : '—'
+                                      const anchorOutcome = resolveOutcome(anchorLeg)
                                       const counters = (counterLegs as any[]).filter((l: any) => {
                                         const lp = l.provider ?? l.provider_id ?? ''
                                         return !clusterMemberSet.has(lp)
@@ -1008,23 +1019,23 @@ export default function PlayPage() {
                                           <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
                                           <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
                                           <td className="px-2 py-1 text-[11px]">
-                                            <span className="text-amber-400">{anchorOutcome}</span>{' '}
-                                            <span className="font-mono text-zinc-200">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                            <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">bet</span>
+                                            <span className="text-green-400 font-semibold">{anchorOutcome}</span>
+                                            <span className="text-zinc-600 mx-1">on</span>
+                                            <span className="text-zinc-400 uppercase text-[10px]">{pid}</span>
+                                            <span className="font-mono text-zinc-200 ml-2">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
                                           </td>
                                           <td className="px-2 py-1 text-[11px]">
                                             <div className="flex flex-col gap-0.5">
-                                              {counters.map((leg: any, li: number) => {
-                                                const legOutcome = leg.outcome
-                                                  ? (leg.point != null ? `${leg.outcome} ${leg.point}` : leg.outcome)
-                                                  : '—'
-                                                return (
-                                                  <div key={li} className="flex items-center gap-1">
-                                                    <span className="text-amber-400/80">{legOutcome}</span>
-                                                    <span className="text-zinc-500 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
-                                                    <span className="font-mono text-zinc-300">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
-                                                  </div>
-                                                )
-                                              })}
+                                              {counters.map((leg: any, li: number) => (
+                                                <div key={li} className="flex items-center gap-1">
+                                                  <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">hedge</span>
+                                                  <span className="text-pink-400 font-semibold">{resolveOutcome(leg)}</span>
+                                                  <span className="text-zinc-600">on</span>
+                                                  <span className="text-zinc-400 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
+                                                  <span className="font-mono text-zinc-300 ml-2">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                                                </div>
+                                              ))}
                                             </div>
                                           </td>
                                         </tr>

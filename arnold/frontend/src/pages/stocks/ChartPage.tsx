@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CandleChart } from './CandleChart'
-import { api } from '@/hooks/useApi'
-import type { CandleData, ExpandedSession, Zone, Signal, Fill, ExitEvent, ModelStatus } from '@/types'
+import { api } from '@/hooks/useStocksApi'
+import type { CandleData, ExpandedSession, Zone, Signal, Fill, ExitEvent, ModelStatus } from '@/types/stocks'
 import type { TickEvent } from '@/hooks/useDashboardWS'
 
 interface Props {

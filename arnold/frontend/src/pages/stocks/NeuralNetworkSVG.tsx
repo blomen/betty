@@ -3,7 +3,7 @@
 // Hidden layers: real when DQN activations available, dim grey otherwise
 import { useMemo, useEffect, useState } from 'react'
 import { DQN_SEGMENTS, HIDDEN_LAYERS, ACTION_NAMES, ACTION_COLORS } from './dqnConfig'
-import type { DQNInferenceEvent } from '@/types'
+import type { DQNInferenceEvent } from '@/types/stocks'
 
 interface Props {
   dqnInference: DQNInferenceEvent | null

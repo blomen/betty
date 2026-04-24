@@ -1,4 +1,4 @@
-"""Local arnoldstocks dashboard — serves UI + provides live data endpoints."""
+"""Arnold stocks dashboard router — mounted under /stocks in the unified Arnold app."""
 
 from __future__ import annotations
 
@@ -7,12 +7,9 @@ import json
 import logging
 import os
 from collections import deque
-from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 log = logging.getLogger(__name__)
 
@@ -86,29 +83,20 @@ _boot_id = str(int(_time.time()))  # unique per process start — frontend reloa
 _dash_loop: asyncio.AbstractEventLoop | None = None
 
 
-def create_dashboard_app() -> FastAPI:
-    app = FastAPI(title="arnoldstocks Dashboard")
+def bind_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Set the event loop used by sync callbacks to schedule WS broadcasts.
 
-    @app.on_event("startup")
-    async def _capture_loop():
-        global _dash_loop
-        _dash_loop = asyncio.get_running_loop()
+    Called once at Arnold server startup. Required because record_tick / record_fill
+    run on the Playwright/TopstepX thread, not the FastAPI loop.
+    """
+    global _dash_loop
+    _dash_loop = loop
 
-    dist_path = Path(__file__).parent.parent.parent.parent / "arnoldstocks" / "frontend" / "dist"
-    if dist_path.exists() and (dist_path / "index.html").exists():
-        app.mount("/assets", StaticFiles(directory=dist_path / "assets"), name="assets")
 
-        @app.get("/", response_class=HTMLResponse)
-        async def index():
-            return HTMLResponse((dist_path / "index.html").read_text(encoding="utf-8"))
-    else:
+def create_dashboard_router() -> APIRouter:
+    router = APIRouter()
 
-        @app.get("/", response_class=HTMLResponse)
-        async def index():
-            html_path = Path(__file__).parent / "dashboard.html"
-            return HTMLResponse(html_path.read_text(encoding="utf-8"))
-
-    @app.get("/api/state")
+    @router.get("/api/state")
     async def get_state():
         return {
             "ticks": list(_state["ticks"])[-200:],  # last 200 for initial chart
@@ -120,7 +108,7 @@ def create_dashboard_app() -> FastAPI:
             "stats": _state["stats"],
         }
 
-    @app.get("/api/candles")
+    @router.get("/api/candles")
     async def get_candles(interval: str = "5m", days: int = 3, date: str | None = None):
         """Fetch 1m candles from server and aggregate locally (same as old DB path)."""
         params = {"symbol": "NQ", "interval": "1m", "days": str(days)}
@@ -146,15 +134,15 @@ def create_dashboard_app() -> FastAPI:
 
         return {"candles": candles}
 
-    @app.get("/api/session")
+    @router.get("/api/session")
     async def proxy_session():
         return await _proxy("/api/trading/market/session", cache_ttl=30)
 
-    @app.get("/api/session-levels")
+    @router.get("/api/session-levels")
     async def proxy_session_levels(days: int = 5):
         return await _proxy("/api/trading/market/session-levels", {"symbol": "NQ", "days": str(days)}, cache_ttl=60)
 
-    @app.get("/api/vp/{tf}")
+    @router.get("/api/vp/{tf}")
     async def proxy_vp(tf: str, date: str | None = None):
         params = {"symbol": "NQ", "timeframe": tf}
         if date:
@@ -163,7 +151,7 @@ def create_dashboard_app() -> FastAPI:
         ttl = 30 if tf == "session" and not date else 300
         return await _proxy("/api/trading/market/volume-profile", params, cache_ttl=ttl)
 
-    @app.get("/api/vwap")
+    @router.get("/api/vwap")
     async def local_vwap(days: int = 3, interval: str = "5m"):
         """Compute developing VWAP from server 1m candles, daily reset at 00:00 CET."""
         raw = await _proxy(
@@ -242,18 +230,18 @@ def create_dashboard_app() -> FastAPI:
 
         return {"vwap_days": segments, "symbol": "NQ", "count": sum(len(s) for s in segments)}
 
-    @app.get("/api/session-tpo")
+    @router.get("/api/session-tpo")
     async def proxy_session_tpo():
         return await _proxy("/api/trading/market/tpo/sessions", {"symbol": "NQ"}, cache_ttl=120)
 
-    @app.get("/api/levels")
+    @router.get("/api/levels")
     async def proxy_levels(date: str | None = None):
         params = {"symbol": "NQ"}
         if date:
             params["date"] = date
         return await _proxy("/api/trading/market/levels", params)
 
-    @app.get("/api/levels/replay")
+    @router.get("/api/levels/replay")
     async def local_levels_replay(date: str | None = None):
         """Run RL replay engine locally on tick parquet and return levels/zones."""
         import asyncio
@@ -327,7 +315,7 @@ def create_dashboard_app() -> FastAPI:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, partial(_do_replay, date))
 
-    @app.get("/api/trades")
+    @router.get("/api/trades")
     async def get_trades():
         client = _state.get("topstepx_client")
         if not client:
@@ -342,12 +330,12 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return {"trades": []}
 
-    @app.get("/api/broker-trades")
+    @router.get("/api/broker-trades")
     async def get_broker_trades(days: int = 30):
         """Return completed trades — not yet available via server API."""
         return {"trades": []}
 
-    @app.get("/api/model-status")
+    @router.get("/api/model-status")
     async def get_model_status():
         """Return live model/adapter status."""
         adapter = _state.get("adapter")
@@ -374,7 +362,7 @@ def create_dashboard_app() -> FastAPI:
             result["stop_price"] = tracker.stop_price
         return result
 
-    @app.get("/api/account-info")
+    @router.get("/api/account-info")
     async def get_account_info():
         client = _state.get("topstepx_client")
         if not client:
@@ -396,7 +384,7 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return {}
 
-    @app.get("/api/orders")
+    @router.get("/api/orders")
     async def get_orders():
         """Return open orders from TopstepX."""
         client = _state.get("topstepx_client")
@@ -409,7 +397,7 @@ def create_dashboard_app() -> FastAPI:
             log.exception("Failed to get orders")
             return {"orders": []}
 
-    @app.post("/api/flatten")
+    @router.post("/api/flatten")
     async def flatten_position():
         """Emergency flatten — cancel all orders and liquidate position."""
         adapter = _state.get("adapter")
@@ -426,7 +414,7 @@ def create_dashboard_app() -> FastAPI:
                 return {"error": "flatten failed"}
         return {"error": "no client"}
 
-    @app.post("/api/resume")
+    @router.post("/api/resume")
     async def resume_trading():
         """Clear halt so the adapter can accept signals again."""
         adapter = _state.get("adapter")
@@ -436,7 +424,7 @@ def create_dashboard_app() -> FastAPI:
         log.info("Trading resumed via /api/resume")
         return {"resumed": True}
 
-    @app.post("/api/cancel-order/{order_id}")
+    @router.post("/api/cancel-order/{order_id}")
     async def cancel_order(order_id: int):
         """Cancel a specific order."""
         client = _state.get("topstepx_client")
@@ -449,7 +437,7 @@ def create_dashboard_app() -> FastAPI:
             log.exception("Failed to cancel order %s", order_id)
             return {"error": "cancel failed"}
 
-    @app.get("/api/quote")
+    @router.get("/api/quote")
     async def get_quote():
         """Return latest quote from state."""
         quotes = _state["quotes"]
@@ -457,7 +445,7 @@ def create_dashboard_app() -> FastAPI:
             return dict(quotes[-1]) if hasattr(quotes[-1], "__getitem__") else quotes[-1]
         return {}
 
-    @app.websocket("/ws/dashboard")
+    @router.websocket("/ws/dashboard")
     async def dashboard_ws(ws: WebSocket):
         await ws.accept()
         await ws.send_json({"type": "boot", "boot_id": _boot_id})
@@ -473,7 +461,7 @@ def create_dashboard_app() -> FastAPI:
             if ws in _dashboard_clients:
                 _dashboard_clients.remove(ws)
 
-    return app
+    return router
 
 
 async def broadcast(event: dict) -> None:

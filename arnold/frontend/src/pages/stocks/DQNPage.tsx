@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback, useReducer } from 'react'
-import { api } from '@/hooks/useApi'
-import type { Signal, Zone, DQNInferenceEvent, LevelsReplayResponse } from '@/types'
+import { api } from '@/hooks/useStocksApi'
+import type { Signal, Zone, DQNInferenceEvent, LevelsReplayResponse } from '@/types/stocks'
 import { NeuralNetworkSVG } from './NeuralNetworkSVG'
 import { DQN_SEGMENTS } from './dqnConfig'
 import type { DQNSegment } from './dqnConfig'

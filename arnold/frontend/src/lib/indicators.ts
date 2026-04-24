@@ -4,7 +4,7 @@
  *
  * All times are UTC epochs. CET conversion uses Europe/Stockholm timezone.
  */
-import type { CandleData, VPData, VWAPPoint, SessionLevelDay, SessionTPOData, SessionTPOResponse } from '@/types'
+import type { CandleData, VPData, VWAPPoint, SessionLevelDay, SessionTPOData, SessionTPOResponse } from '@/types/stocks'
 
 const TICK_SIZE = 0.25
 

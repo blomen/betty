@@ -5,8 +5,8 @@ import {
   type IChartApi,
   type Time,
 } from 'lightweight-charts'
-import { api } from '@/hooks/useApi'
-import type { BrokerTrade } from '@/types'
+import { api } from '@/hooks/useStocksApi'
+import type { BrokerTrade } from '@/types/stocks'
 
 export function StatsPage() {
   const [trades, setTrades] = useState<BrokerTrade[]>([])
