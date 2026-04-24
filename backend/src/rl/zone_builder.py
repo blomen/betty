@@ -59,6 +59,15 @@ _HIERARCHY_WEIGHTS: dict[LevelType, float] = {
     LevelType.TIBL: 0.5,
     LevelType.VWAP_SD2: 0.4,
     LevelType.VWAP_SD3: 0.3,
+    # ICT / SMC signals folded into the zone surface. Order blocks are the
+    # institutional fingerprint before an impulsive move and get weighted
+    # on par with daily structure; FVGs are weaker on their own but stack
+    # nicely into confluence. These weights are intentionally conservative
+    # pending an empirical update from training outcomes.
+    LevelType.ORDER_BLOCK_BULL: 0.8,
+    LevelType.ORDER_BLOCK_BEAR: 0.8,
+    LevelType.FVG_BULL: 0.6,
+    LevelType.FVG_BEAR: 0.6,
 }
 
 _DEFAULT_WEIGHT = 0.3

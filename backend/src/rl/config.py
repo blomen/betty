@@ -45,6 +45,13 @@ class LevelType(str, Enum):
     WEEKLY_SWING_LOW = "weekly_swing_low"
     MONTHLY_SWING_HIGH = "monthly_swing_high"
     MONTHLY_SWING_LOW = "monthly_swing_low"
+    # ICT / SMC price-delivery signals. Fed into zone clustering as
+    # additional members so we have a single consolidated zone surface
+    # instead of maintaining FVG/OB as separate overlays.
+    FVG_BULL = "fvg_bull"
+    FVG_BEAR = "fvg_bear"
+    ORDER_BLOCK_BULL = "order_block_bull"
+    ORDER_BLOCK_BEAR = "order_block_bear"
 
 
 class Action(int, Enum):

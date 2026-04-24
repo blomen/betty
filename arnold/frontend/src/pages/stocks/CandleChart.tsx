@@ -715,10 +715,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
     //   fill hue + alpha  → hierarchy_score (primary strength signal)
     //   border thickness  → count_norm      (confluence depth, separate axis)
     //   dots              → raw member count (one per level, capped at 10)
-    //   emerald glow      → FVG overlap     (separate model dim)
+    // FVGs + order blocks are folded into zone clustering on the server,
+    // so their presence is reflected in member count, not a separate overlay.
     // Heat ramp: slate-blue (weak) → indigo → magenta → orange → red (strong).
     const currentZones = zonesRef.current;
-    const currentFvgs = fvgsRef.current;
     if (currentZones.length > 0 && !hidden?.has('zones')) {
       const chartW = rect.width - priceScaleWidth;
       const fallbackPadPts = 0.5; // NQ: 2 ticks when server hasn't sent upper/lower
@@ -736,8 +736,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         const bandTop = Math.min(yUpper, yLower);
         const bandBottom = Math.max(yUpper, yLower);
         if (bandBottom < 0 || bandTop > rect.height) continue;
-
-        const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
 
         // Heat = hierarchy_score straight from the server. The model will
         // learn to weight strong zones for stop placement alongside
@@ -777,32 +775,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
           ctx.stroke();
         }
 
-        // FVG emerald outline overlay — draws over the heatmap border so
-        // FVG zones visually separate from pure-cluster zones at any heat.
-        if (hasFvg) {
-          ctx.strokeStyle = 'rgba(52, 211, 153, 0.9)';
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([3, 3]);
-          if (bandTop >= 0 && bandTop <= rect.height) {
-            ctx.beginPath();
-            ctx.moveTo(0, bandTop);
-            ctx.lineTo(chartW, bandTop);
-            ctx.stroke();
-          }
-          if (bandBottom >= 0 && bandBottom <= rect.height) {
-            ctx.beginPath();
-            ctx.moveTo(0, bandBottom);
-            ctx.lineTo(chartW, bandBottom);
-            ctx.stroke();
-          }
-          ctx.setLineDash([]);
-        }
-
-        // Label: dots for member count, ◆ prefix for FVG confluence.
-        // Zone strength itself is shown via the heat color + fill opacity.
+        // Label: dots for member count. Zone strength shows via heat
+        // color + fill opacity. FVGs / order blocks are folded into the
+        // zone's member count on the backend, so more dots == more
+        // confluence including any SMC signals in the range.
         const dotCount = Math.min(10, members);
-        const dots = '●'.repeat(dotCount);
-        const label = hasFvg ? `◆ ${dots}` : dots;
+        const label = '●'.repeat(dotCount);
         const labelY = Math.max(12, Math.min(rect.height - 4, yCenter - 3));
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';

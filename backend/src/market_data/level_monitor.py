@@ -222,10 +222,19 @@ class LevelMonitor:
         levels_list = expanded_session.get("levels", [])
 
         for lv in levels_list:
-            price = lv.get("price_low") or lv.get("price")
+            name = lv.get("type", "unknown")
+            # FVGs and order blocks are price ranges — feed their midpoint
+            # as the zone-clustering anchor so a zone that happens to sit
+            # inside the range picks them up as a member. price_low alone
+            # would bias the anchor to the bottom of every range.
+            ph = lv.get("price_high")
+            pl = lv.get("price_low")
+            if name.startswith(("fvg_", "order_block_")) and ph is not None and pl is not None:
+                price = (float(ph) + float(pl)) / 2.0
+            else:
+                price = pl if pl is not None else lv.get("price")
             if price is None:
                 continue
-            name = lv.get("type", "unknown")
             category = self._categorize(name)
             self._levels.append(
                 MonitoredLevel(
@@ -382,6 +391,10 @@ class LevelMonitor:
             "weekly_swing_low": RLLevelType.WEEKLY_SWING_LOW,
             "monthly_swing_high": RLLevelType.MONTHLY_SWING_HIGH,
             "monthly_swing_low": RLLevelType.MONTHLY_SWING_LOW,
+            "fvg_bullish": RLLevelType.FVG_BULL,
+            "fvg_bearish": RLLevelType.FVG_BEAR,
+            "order_block_bullish": RLLevelType.ORDER_BLOCK_BULL,
+            "order_block_bearish": RLLevelType.ORDER_BLOCK_BEAR,
         }
         level_tuples = []
         for lv in self._levels:

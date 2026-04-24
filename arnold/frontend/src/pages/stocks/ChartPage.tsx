@@ -33,11 +33,13 @@ const INDIVIDUAL_LEVEL_KEYS = [
 
 // User-toggleable groups. The VP *histograms* (vp_session / vp_weekly /
 // vp_monthly) are distribution shapes on the right axis, not level lines,
-// so they stay. Everything else collapses into zones.
+// so they stay. FVGs and order blocks are now folded into zone
+// clustering on the backend (backend/src/market_data/level_monitor.py),
+// so we don't render them as separate overlays — their presence shows
+// up as increased zone strength + member count in the zone heatmap.
 const LEVEL_GROUPS: Record<string, string[]> = {
   vwap: ['vwap'],
   zones: ['zones'],
-  fvg: ['fvg'],
   daily_vp: ['vp_session'],
   weekly_vp: ['vp_weekly'],
   monthly_vp: ['vp_monthly'],
@@ -49,7 +51,6 @@ const TOGGLE_SECTIONS: Array<{ label: string; groups: Array<{ key: string; label
     groups: [
       { key: 'vwap', label: 'VWAP', color: '#EAB308' },
       { key: 'zones', label: 'Zones', color: '#A78BFA' },
-      { key: 'fvg', label: 'FVG Confluence', color: '#10B981' },
     ],
   },
   {
