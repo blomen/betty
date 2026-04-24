@@ -723,24 +723,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       const chartW = rect.width - priceScaleWidth;
       const fallbackPadPts = 0.5; // NQ: 2 ticks when server hasn't sent upper/lower
 
-      // Structural levels that the server's stop-policy actually anchors to
-      // (backend/src/rl/stop_policy.py:91-144). If a zone's price range
-      // contains any of these, the stop on an entry from that zone will
-      // lock 2 ticks beyond the structural level — so the band IS the
-      // invalidation envelope for that entry. Those zones deserve a
-      // visible marker and a heat bump.
-      const structuralPrices: number[] = [];
-      const sl = [...sessionLevelsRef.current]
-        .sort((a, b) => b.date.localeCompare(a.date))
-        .find(s => s.pdh != null || s.pdl != null);
-      if (sl) {
-        if (sl.pdh != null) structuralPrices.push(sl.pdh);
-        if (sl.pdl != null) structuralPrices.push(sl.pdl);
-      }
-      for (const p of swingPivotsRef.current) {
-        structuralPrices.push(p.price);
-      }
-
       for (const zone of currentZones) {
         const members = Math.max(1, zone.members | 0);
         const upperPrice = zone.upper ?? zone.price + fallbackPadPts;
@@ -756,14 +738,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         if (bandBottom < 0 || bandTop > rect.height) continue;
 
         const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
-        const isStructural = structuralPrices.some(p => p >= lowerPrice && p <= upperPrice);
 
-        // Model features — hierarchy is the primary strength scalar;
-        // count_norm is a separate observed dim, not folded in.
-        // Structural anchor adds +0.2 heat so zones where the stop actually
-        // locks to the band surface as hotter than pure-cluster zones.
-        const rawHierarchy = Math.max(0, Math.min(1, zone.hierarchy ?? 0));
-        const hierarchy = Math.min(1, rawHierarchy + (isStructural ? 0.2 : 0));
+        // Heat = hierarchy_score straight from the server. The model will
+        // learn to weight strong zones for stop placement alongside
+        // orderflow and volatility during training — we do NOT imply a
+        // hard stop-anchor relationship in the visual.
+        const hierarchy = Math.max(0, Math.min(1, zone.hierarchy ?? 0));
         const countNorm = Math.min(1, members / 10);
 
         const [hr, hg, hb] = heatColor(hierarchy);
@@ -818,13 +798,11 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
           ctx.setLineDash([]);
         }
 
-        // Label: dots for member count, ◆ prefix for FVG confluence,
-        // ⚓ prefix when this zone is where the model's stop will actually
-        // anchor (contains PDH/PDL or a swing pivot).
+        // Label: dots for member count, ◆ prefix for FVG confluence.
+        // Zone strength itself is shown via the heat color + fill opacity.
         const dotCount = Math.min(10, members);
         const dots = '●'.repeat(dotCount);
-        const prefix = (isStructural ? '⚓ ' : '') + (hasFvg ? '◆ ' : '');
-        const label = `${prefix}${dots}`;
+        const label = hasFvg ? `◆ ${dots}` : dots;
         const labelY = Math.max(12, Math.min(rect.height - 4, yCenter - 3));
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';
