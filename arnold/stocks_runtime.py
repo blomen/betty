@@ -100,7 +100,7 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     adapter = TopstepXBrokerAdapter(client, config)
     relay = SignalRelayClient(config.server_ws_url, client, adapter=adapter)
     stream = TopstepXStream(
-        token=client._token,
+        token=lambda: client._token,
         contract_id=config.contract_id,
         account_id=client._account_id,
         market_hub=config.market_hub_url,
@@ -146,6 +146,8 @@ async def bootstrap_stocks() -> StocksRuntime | None:
             try:
                 await asyncio.sleep(30)
                 update_status(relay.is_connected, stream._running)
+                # Keep client._token fresh so WS reconnects don't 401 after 24h.
+                await client._ensure_token()
             except asyncio.CancelledError:
                 break
             except Exception:

@@ -49,13 +49,17 @@ class TopstepXStream:
 
     def __init__(
         self,
-        token: str,
+        token: str | Callable[[], str],
         contract_id: str,
         account_id: int,
         market_hub: str | None = None,
         user_hub: str | None = None,
     ) -> None:
-        self._token = token
+        # Accept a callable so reconnects pick up rotated tokens; tokens
+        # expire ~24h and the WS would otherwise spin on stale-token 401s.
+        self._token_provider: Callable[[], str] = (
+            token if callable(token) else (lambda t=token: t)
+        )
         self._contract_id = contract_id
         self._account_id = account_id
         self._market_hub_url = market_hub or _MARKET_HUB
@@ -112,7 +116,7 @@ class TopstepXStream:
         attempt = 0
         while self._running:
             try:
-                url = f"{hub_url}?access_token={self._token}"
+                url = f"{hub_url}?access_token={self._token_provider()}"
                 async with websockets.connect(url, ping_interval=20) as ws:
                     # SignalR handshake
                     await ws.send(json.dumps({"protocol": "json", "version": 1}) + _SEPARATOR)
@@ -249,6 +253,11 @@ class TopstepXStream:
                 price = float(trade["price"])
                 size = int(trade.get("volume", 1))
                 ts = _parse_ts(trade.get("timestamp", ""))
+                if ts <= 0:
+                    # Drop trades with unparseable timestamps so they don't
+                    # land in market_trades with epoch-0 ts.
+                    log.debug("TopstepXStream: skip trade with bad ts: %r", trade)
+                    continue
                 # type: 0=bid hit (sell aggressor), 1=ask lift (buy aggressor)
                 side = "B" if trade.get("type") == 0 else "A"
                 self.on_tick(price, size, ts, side)
