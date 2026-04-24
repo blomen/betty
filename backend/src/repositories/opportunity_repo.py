@@ -359,8 +359,8 @@ class OpportunityRepo:
         stats = {"inactive": 0, "orphaned": 0, "past_events": 0, "past_events_deleted": 0, "deactivated": 0}
         now = datetime.now(timezone.utc)
 
-        # 1. Delete inactive opportunities
-        stats["inactive"] = self.db.query(Opportunity).filter(not Opportunity.is_active).delete()
+        # 1. Delete inactive opportunities — SA column needs ~, not Python `not`
+        stats["inactive"] = self.db.query(Opportunity).filter(~Opportunity.is_active).delete()
 
         # 2. Delete orphaned opportunities (event doesn't exist)
         valid_event_subq = self.db.query(Event.id).subquery()
