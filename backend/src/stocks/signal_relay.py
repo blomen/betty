@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections import deque
 from collections.abc import Callable
 
@@ -66,8 +67,17 @@ class SignalRelayClient:
                 log.info("SignalRelay: connecting to %s", self._url)
                 # ping_timeout=60: tolerate brief server-side event-loop stalls
                 # during tick bursts so we don't churn through reconnects.
+                # X-API-Key authenticates us to /ws/signals — the server-side
+                # loopback trust can't identify us because Docker's port
+                # forwarding rewrites our source IP to the bridge gateway,
+                # so the API key is required even over the SSH tunnel.
+                api_key = os.environ.get("ARNOLD_API_KEY", "")
+                headers = [("X-API-Key", api_key)] if api_key else []
                 async with websockets.connect(
-                    self._url, ping_interval=30, ping_timeout=60
+                    self._url,
+                    ping_interval=30,
+                    ping_timeout=60,
+                    additional_headers=headers,
                 ) as ws:
                     self._ws = ws
                     self._connected = True
