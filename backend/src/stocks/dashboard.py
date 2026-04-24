@@ -449,6 +449,16 @@ def create_dashboard_router() -> APIRouter:
     async def dashboard_ws(ws: WebSocket):
         await ws.accept()
         await ws.send_json({"type": "boot", "boot_id": _boot_id})
+        # Initial snapshot — zones only push when the relay broadcasts a
+        # fresh cluster, so a new client that connects mid-session would
+        # otherwise see nothing until the next rebuild. Backfill from the
+        # cached state so the chart has levels to draw immediately.
+        try:
+            zones = _state.get("zones") or []
+            if zones:
+                await ws.send_json({"type": "zones", "zones": zones})
+        except Exception:
+            pass
         _dashboard_clients.append(ws)
         try:
             while True:

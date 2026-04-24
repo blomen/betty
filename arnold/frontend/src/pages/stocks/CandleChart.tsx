@@ -11,7 +11,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/hooks/useStocksApi';
-import { computeVP, computeVPByDay, computeVWAP, computeSessionLevels, computeAllDayTPOs } from '@/lib/indicators';
+import { computeVP, computeVWAP, computeSessionLevels, computeAllDayTPOs } from '@/lib/indicators';
 import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData, Signal, Fill, ExitEvent, ModelStatus } from '@/types/stocks';
 
 const INITIAL_DAYS = 3;
@@ -105,6 +105,34 @@ function toCandle(c: CandleData): CandlestickData<Time> {
   return { time: toLocalEpoch(c.t) as Time, open: c.o, high: c.h, low: c.l, close: c.c };
 }
 
+// Cool-to-hot gradient for zone strength heatmap.
+// slate-blue (weak) → indigo → magenta → orange → red (strong).
+// Tuned for dark backgrounds: saturated mids, desaturated ends.
+const HEAT_STOPS: Array<[number, [number, number, number]]> = [
+  [0.00, [90, 140, 200]],    // slate-blue
+  [0.25, [150, 100, 220]],   // indigo
+  [0.50, [220, 100, 180]],   // magenta
+  [0.75, [250, 150, 70]],    // orange
+  [1.00, [255, 60, 30]],     // red
+];
+
+function heatColor(strength: number): [number, number, number] {
+  const s = Math.max(0, Math.min(1, strength));
+  for (let i = 1; i < HEAT_STOPS.length; i++) {
+    if (s <= HEAT_STOPS[i][0]) {
+      const [lo, loC] = HEAT_STOPS[i - 1];
+      const [hi, hiC] = HEAT_STOPS[i];
+      const t = hi === lo ? 0 : (s - lo) / (hi - lo);
+      return [
+        Math.round(loC[0] + (hiC[0] - loC[0]) * t),
+        Math.round(loC[1] + (hiC[1] - loC[1]) * t),
+        Math.round(loC[2] + (hiC[2] - loC[2]) * t),
+      ];
+    }
+  }
+  return HEAT_STOPS[HEAT_STOPS.length - 1][1];
+}
+
 function toVolume(c: CandleData): HistogramData<Time> {
   const color = c.c >= c.o ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)';
   return { time: toLocalEpoch(c.t) as Time, value: c.v, color };
@@ -190,11 +218,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   const fetchingRef = useRef(false);
   const exhaustedRef = useRef(false);
 
-  // VP overlay data (global: weekly/monthly, today's session)
+  // VP overlay data: daily (today's session), weekly, monthly
   const vpDataRef = useRef<Map<string, VPData>>(new Map());
-  // Historical per-day session VP keyed by date string (YYYY-MM-DD)
-  const vpHistoryRef = useRef<Map<string, VPData>>(new Map());
-  const vpHistoryFetchedRef = useRef<Set<string>>(new Set());
   const [vpLoaded, setVpLoaded] = useState(0); // trigger redraws
   const hiddenRef = useRef(hiddenLevels);
   hiddenRef.current = hiddenLevels;
@@ -293,23 +318,21 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
 
     // --- VP histograms on right edge (daily / weekly / monthly stacked) ---
     const vpMap = vpDataRef.current;
-    const vpHistory = vpHistoryRef.current;
     const priceScaleWidth = 65;
     const xRight = rect.width - priceScaleWidth;
     const maxBarWidth = 120;
 
     const hidden = hiddenRef.current;
 
-    // Helper: draw a single VP histogram with pixel-bucketing for crisp rendering
-    // showLabels: only draw POC/VAH/VAL text labels for today's daily VP (price lines handle the rest)
-    const drawVPHistogram = (vp: VPData, color: [number, number, number], isDaily: boolean, showLabels = false) => {
+    // Helper: draw a single VP histogram with pixel-bucketing for crisp rendering.
+    // prefix ('d' | 'w' | 'm') tags POC/VAH/VAL labels drawn inside the panel.
+    const drawVPHistogram = (vp: VPData, color: [number, number, number], prefix: string) => {
       const maxVol = Math.max(...vp.levels.map(l => l.volume));
       if (maxVol <= 0) return;
       const [r, g, b] = color;
 
       // Bucket levels by pixel row — prevents fuzzy overlap when zoomed out
       const pixelBuckets = new Map<number, { volume: number; isPOC: boolean; inVA: boolean }>();
-      const pocY = pSeries.priceToCoordinate(vp.poc);
 
       for (const level of vp.levels) {
         const rawY = pSeries.priceToCoordinate(level.price);
@@ -356,50 +379,49 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         ctx.fillRect(xRight - barW, py - Math.floor(barH / 2), barW, barH);
       }
 
-      // POC label — only for today's daily VP (price lines show dPOC/wPOC/mPOC for all others)
-      if (showLabels && pocY !== null && pocY >= 0 && pocY <= rect.height) {
-        const pocPx = Math.round(pocY);
-        const pocBucket = pixelBuckets.get(pocPx);
-        const pocBarW = pocBucket ? (pocBucket.volume / bucketMax) * maxBarWidth : 0;
-        ctx.font = '9px monospace';
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
-        ctx.textAlign = 'right';
-        ctx.fillText('POC', xRight - pocBarW - 3, pocPx + 3);
-      }
+      // POC/VAH/VAL tick marks + labels inside the VP panel.
+      // Chart-spanning level lines are intentionally skipped — zones already
+      // consolidate these into the band overlay.
+      const panelLeft = xRight - maxBarWidth;
+      const levelDefs = [
+        { price: vp.poc, label: `${prefix}POC`, alpha: 0.95, dash: [] as number[] },
+        { price: vp.vah, label: `${prefix}VAH`, alpha: 0.75, dash: [3, 2] },
+        { price: vp.val, label: `${prefix}VAL`, alpha: 0.75, dash: [3, 2] },
+      ];
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      for (const lv of levelDefs) {
+        const y = pSeries.priceToCoordinate(lv.price);
+        if (y === null || y < 0 || y > rect.height) continue;
 
-      // VAH/VAL dashed lines: intentionally skipped — these are
-      // individual level lines that zones already cluster into the band
-      // overlay, so drawing them here just adds chart noise.
+        ctx.save();
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${lv.alpha})`;
+        ctx.lineWidth = 1;
+        if (lv.dash.length) ctx.setLineDash(lv.dash);
+        ctx.beginPath();
+        ctx.moveTo(panelLeft, y);
+        ctx.lineTo(xRight, y);
+        ctx.stroke();
+        if (lv.dash.length) ctx.setLineDash([]);
+
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${lv.alpha})`;
+        ctx.fillText(`${lv.label} ${lv.price.toFixed(2)}`, panelLeft + 2, y - 2);
+        ctx.restore();
+      }
     };
 
-    // Draw in reverse order so daily (most important) renders on top
-    // Weekly/monthly: global VP
+    // Three VPs, drawn monthly → weekly → daily so daily sits on top.
+    // Historical per-day daily VPs are intentionally NOT stacked here anymore —
+    // they used to dominate the panel and hide the weekly/monthly profiles.
+    // Per-day structure is still visible via the TPO histograms inside each
+    // session box.
+    const VP_PREFIX: Record<string, string> = { session: 'd', weekly: 'w', monthly: 'm' };
     for (let oi = VP_OVERLAYS.length - 1; oi >= 0; oi--) {
       const overlay = VP_OVERLAYS[oi];
       if (hidden?.has(`vp_${overlay.tf}`)) continue;
-      if (overlay.tf === 'session') continue; // handled separately below
       const vp = vpMap.get(overlay.tf);
       if (!vp || !vp.levels.length) continue;
-      drawVPHistogram(vp, overlay.color as unknown as [number, number, number], false);
-    }
-
-    // Daily session VP: today's + historical per-day
-    if (!hidden?.has('vp_session')) {
-      const dailyColor: [number, number, number] = [168, 85, 247]; // purple
-
-      // Today's session VP (from global fetch) — only today gets canvas POC/VAH/VAL labels
-      const todayVP = vpMap.get('session');
-      if (todayVP && todayVP.levels.length) {
-        drawVPHistogram(todayVP, dailyColor, true, true);
-      }
-
-      // Historical per-day VPs (lower opacity, reuse pixel-bucketing via drawVPHistogram)
-      vpHistory.forEach((vp) => {
-        if (!vp.levels.length) return;
-        // Draw with dimmer opacity by using a slightly different color channel trick:
-        // We reuse drawVPHistogram but pass isDaily=false (no VAH/VAL lines for historical)
-        drawVPHistogram(vp, [148, 75, 217], false); // slightly dimmer purple
-      });
+      drawVPHistogram(vp, overlay.color as unknown as [number, number, number], VP_PREFIX[overlay.tf] ?? '');
     }
 
     // --- Session H/L levels (persist from session end to day end) ---
@@ -680,25 +702,24 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // --- Zones overlay (areas with confluence-count dots) ---
-    // Each zone renders as a translucent rectangle covering the full price
-    // range of its member levels (upper/lower from the server) with a
-    // top + bottom border. Dots next to the label represent the confluence
-    // count — one dot per level that rolled into the zone. Stronger zones
-    // (more dots + higher hierarchy) get a more opaque fill and brighter
-    // border, so the eye can rank them at a glance. FVG confluence swaps
-    // the hue to emerald.
+    // --- Zones overlay (heatmap-colored areas with confluence-count dots) ---
+    // Strength = members × hierarchy_score (= sum of member level weights,
+    // since hierarchy_score is already a mean-of-weights). Clamped to
+    // [0, 1] against a "very strong zone = 8" ceiling — typical zones on
+    // NQ cluster 1–6 levels at moderate weights, so 8 leaves some headroom
+    // for exceptional pile-ups. The color ramp is a classic cool-to-hot
+    // gradient so the eye ranks zones by heat, not by decoding a legend:
+    // slate-blue (weak) → indigo → magenta → orange → red (strong). FVG
+    // confluence keeps the heatmap fill but prepends a diamond and
+    // outlines the band in bright emerald so it pops regardless of heat.
     const currentZones = zonesRef.current;
     const currentFvgs = fvgsRef.current;
     if (currentZones.length > 0 && !hidden?.has('zones')) {
       const chartW = rect.width - priceScaleWidth;
-      // Fallback padding in price units when the server didn't send
-      // upper/lower (pre-cluster zones). 2 ticks = 0.5 points on NQ.
-      const fallbackPadPts = 0.5;
+      const fallbackPadPts = 0.5; // NQ: 2 ticks when server hasn't sent upper/lower
 
       for (const zone of currentZones) {
         const members = Math.max(1, zone.members | 0);
-        // Resolve the price range for the band. Prefer server-sent bounds.
         const upperPrice = zone.upper ?? zone.price + fallbackPadPts;
         const lowerPrice = zone.lower ?? zone.price - fallbackPadPts;
 
@@ -707,39 +728,35 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
         const yCenter = pSeries.priceToCoordinate(zone.price);
         if (yUpper === null || yLower === null || yCenter === null) continue;
 
-        // Skip zones fully off-screen.
         const bandTop = Math.min(yUpper, yLower);
         const bandBottom = Math.max(yUpper, yLower);
         if (bandBottom < 0 || bandTop > rect.height) continue;
 
         const hasFvg = !hidden?.has('fvg') && currentFvgs.some(f => f.low <= zone.price && zone.price <= f.high);
 
-        // Strength blends member count with hierarchy score. Either alone is
-        // a signal; together they tell us how much to emphasize the band.
-        const byMembers = Math.min(1, (members - 1) / 5);       // 1 → 0, 6+ → 1
-        const byHierarchy = Math.min(1, Math.max(0, zone.hierarchy ?? 0));
-        const strength = Math.max(byMembers, byHierarchy);
+        // Strength: sum of member weights (members × mean weight = sum).
+        // Default mean weight 0.5 when the server hasn't populated hierarchy
+        // so the ramp still responds to confluence count.
+        const meanWeight = zone.hierarchy ?? 0.5;
+        const strength = Math.min(1, (members * meanWeight) / 8);
 
-        const fillAlpha = 0.08 + strength * 0.18;  // 0.08 → 0.26
-        const borderAlpha = 0.45 + strength * 0.5; // 0.45 → 0.95
-        const borderW = 0.75 + strength * 1.25;    // 0.75 → 2.0
+        const [hr, hg, hb] = heatColor(strength);
+        const fillAlpha = 0.10 + strength * 0.22;  // 0.10 → 0.32
+        const borderAlpha = 0.55 + strength * 0.40; // 0.55 → 0.95
+        const borderW = 1 + strength * 1.5;         // 1 → 2.5
 
-        const hue = hasFvg ? [16, 185, 129] : [168, 85, 247]; // emerald / violet
-        const [r, g, b] = hue;
-
-        // Clip the band to the visible area so tall zones don't render off-chart.
         const drawTop = Math.max(0, bandTop);
         const drawBottom = Math.min(rect.height, bandBottom);
         const drawH = Math.max(2, drawBottom - drawTop);
 
         ctx.save();
 
-        // Fill the area.
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${fillAlpha})`;
+        // Area fill
+        ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${fillAlpha})`;
         ctx.fillRect(0, drawTop, chartW, drawH);
 
-        // Top + bottom borders (solid) so the area is clearly bounded.
-        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${borderAlpha})`;
+        // Top + bottom borders
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${borderAlpha})`;
         ctx.lineWidth = borderW;
         if (bandTop >= 0 && bandTop <= rect.height) {
           ctx.beginPath();
@@ -754,15 +771,36 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
           ctx.stroke();
         }
 
-        // Label: one dot per member (confluence count), capped at 10 so a
-        // freak 20-member zone doesn't overflow. FVG adds a leading mark.
+        // FVG emerald outline overlay — draws over the heatmap border so
+        // FVG zones visually separate from pure-cluster zones at any heat.
+        if (hasFvg) {
+          ctx.strokeStyle = 'rgba(52, 211, 153, 0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([3, 3]);
+          if (bandTop >= 0 && bandTop <= rect.height) {
+            ctx.beginPath();
+            ctx.moveTo(0, bandTop);
+            ctx.lineTo(chartW, bandTop);
+            ctx.stroke();
+          }
+          if (bandBottom >= 0 && bandBottom <= rect.height) {
+            ctx.beginPath();
+            ctx.moveTo(0, bandBottom);
+            ctx.lineTo(chartW, bandBottom);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        }
+
+        // Label dots — one per member, cap 10 so a freak pile-up doesn't
+        // overflow the axis.
         const dotCount = Math.min(10, members);
         const dots = '●'.repeat(dotCount);
         const label = hasFvg ? `◆ ${dots}` : dots;
         const labelY = Math.max(12, Math.min(rect.height - 4, yCenter - 3));
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${Math.min(1, borderAlpha + 0.1)})`;
+        ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${Math.min(1, borderAlpha + 0.1)})`;
         ctx.fillText(label, 4, labelY);
 
         ctx.restore();
@@ -1156,12 +1194,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
       }
     }
 
-    // Historical per-day VP: compute for all non-today days from loaded candles
-    const histVPs = computeVPByDay(candles.filter(c => epochToCETDate(c.t) !== today));
-    for (const [date, vp] of histVPs) {
-      vpHistoryRef.current.set(date, vp);
-    }
-
     // Session levels (PDH/PDL, IB, Tokyo/London H/L): compute from candles
     const levels = computeSessionLevels(candles);
     if (levels.length > 0) {
@@ -1453,41 +1485,21 @@ export function CandleChart({ lastCandle, session, hiddenLevels, zones, signals,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, hiddenLevels, interval]);
 
-  // Static reference lines: IB, dPOC (these are flat — correct for structural levels)
+  // d/w/m POC/VAH/VAL are NOT drawn as chart-spanning price lines: zones
+  // consolidate them into the single level view, and the VP panel labels
+  // each level inline. Swing pivots are still added as price lines in the
+  // session-levels fetch effect. TPO levels render on the canvas overlay.
   useEffect(() => {
     const series = priceSeriesRef.current;
     if (!series) return;
-
-    Object.values(priceLineRefs.current).forEach(line => {
-      try { series.removePriceLine(line); } catch {}
-    });
-    priceLineRefs.current = {};
-
-    if (!session) return;
-    const p = session.profiles;
-
-    const h = hiddenLevels;
-    const add = (key: string, price: number | undefined | null, color: string, title: string, style = LineStyle.Dashed, width: 1 | 2 = 1) => {
-      if (price == null || price === 0 || h?.has(key)) return;
-      priceLineRefs.current[key] = series.createPriceLine({ price, color, lineWidth: width, lineStyle: style, axisLabelVisible: true, title });
-    };
-
-    // Daily Volume Profile
-    add('d_poc', p?.session?.poc, '#A855F7', 'dPOC', LineStyle.Solid, 2);
-    add('d_vah', p?.session?.vah, '#A855F7', 'dVAH', LineStyle.Dashed, 1);
-    add('d_val', p?.session?.val, '#A855F7', 'dVAL', LineStyle.Dashed, 1);
-
-    // Weekly Volume Profile
-    add('w_poc', p?.weekly?.poc, '#EC4899', 'wPOC', LineStyle.Solid, 2);
-    add('w_vah', p?.weekly?.vah, '#EC4899', 'wVAH', LineStyle.Dashed, 1);
-    add('w_val', p?.weekly?.val, '#EC4899', 'wVAL', LineStyle.Dashed, 1);
-
-    // Monthly Volume Profile
-    add('m_poc', p?.monthly?.poc, '#F59E0B', 'mPOC', LineStyle.Solid, 2);
-    add('m_vah', p?.monthly?.vah, '#F59E0B', 'mVAH', LineStyle.Dashed, 1);
-    add('m_val', p?.monthly?.val, '#F59E0B', 'mVAL', LineStyle.Dashed, 1);
-
-    // TPO POC/VAH/VAL are now drawn per-session on the canvas overlay (see drawOverlays)
+    // Purge any stale VP price lines left over from previous builds (cached
+    // hot-reloads may still have them attached).
+    for (const key of Object.keys(priceLineRefs.current)) {
+      if (/^[dwm]_(poc|vah|val)$/.test(key)) {
+        try { series.removePriceLine(priceLineRefs.current[key]); } catch {}
+        delete priceLineRefs.current[key];
+      }
+    }
   }, [session, hiddenLevels]);
 
   return (

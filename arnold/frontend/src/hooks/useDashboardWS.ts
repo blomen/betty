@@ -56,6 +56,20 @@ export function useDashboardWS() {
 
     ws.onopen = () => {
       setState(s => ({ ...s, connected: true }))
+      // Seed zones from the REST state snapshot so a freshly-opened chart
+      // doesn't need to wait for the next zone_update broadcast (which
+      // only fires on the relay's 1m candle close). Best-effort — ignore
+      // failures, the WS will fill in eventually.
+      fetch('/stocks/api/state')
+        .then(r => (r.ok ? r.json() : null))
+        .then(snap => {
+          if (!snap) return
+          const zones = snap.zones
+          if (Array.isArray(zones) && zones.length > 0) {
+            setState(s => (s.zones.length === 0 ? { ...s, zones } : s))
+          }
+        })
+        .catch(() => { /* ignore */ })
     }
 
     ws.onclose = () => {
