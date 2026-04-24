@@ -12,20 +12,34 @@ import { useDashboardWS } from './hooks/useDashboardWS'
 import { api as stocksApi } from './hooks/useStocksApi'
 import type { ExpandedSession } from './types/stocks'
 
-// Catch escaping render errors — unified surface across sports + stocks pages
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+// Catch escaping render errors. Used both at root (to catch shell crashes)
+// and wrapped around each tab so one tab's crash doesn't kill the others —
+// a blown-up stocks chart shouldn't take down sports placement.
+class ErrorBoundary extends Component<
+  { children: ReactNode; label?: string },
+  { error: Error | null }
+> {
   state = { error: null as Error | null }
   static getDerivedStateFromError(error: Error) { return { error } }
+  reset = () => this.setState({ error: null })
   render() {
     if (this.state.error) {
       return (
-        <div className="flex flex-col items-center justify-center h-screen bg-zinc-950 text-red-400 p-8 font-mono text-sm">
-          <div className="text-red-500 font-bold mb-4">React crashed — error details:</div>
-          <pre className="bg-zinc-900 p-4 rounded max-w-4xl overflow-auto text-xs text-zinc-300 border border-red-800">
+        <div className="flex flex-col items-center justify-center flex-1 min-h-0 bg-zinc-950 text-red-400 p-8 font-mono text-sm">
+          <div className="text-red-500 font-bold mb-2">
+            {this.props.label ? `${this.props.label} crashed` : 'React crashed'} — error details:
+          </div>
+          <pre className="bg-zinc-900 p-4 rounded max-w-4xl overflow-auto text-xs text-zinc-300 border border-red-800 mb-3">
             {String(this.state.error)}
             {'\n\n'}
             {(this.state.error as Error).stack}
           </pre>
+          <button
+            onClick={this.reset}
+            className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded"
+          >
+            Retry
+          </button>
         </div>
       )
     }
@@ -120,7 +134,9 @@ export default function App() {
         <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden">
           {/* Play — sports */}
           <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'play' ? '' : 'hidden'}`}>
-            <PlayPage />
+            <ErrorBoundary label="Play">
+              <PlayPage />
+            </ErrorBoundary>
           </div>
 
           {/* Charts — stocks (Chart + DQN as sub-tabs) */}
@@ -134,23 +150,27 @@ export default function App() {
               ]}
             />
             <div className={`flex flex-col flex-1 min-h-0 ${chartsSub === 'chart' ? '' : 'hidden'}`}>
-              <ChartPage
-                lastTick={lastTick}
-                session={session}
-                zones={ws.zones}
-                signals={ws.signals}
-                fills={ws.fills}
-                exits={ws.exits}
-              />
+              <ErrorBoundary label="Chart">
+                <ChartPage
+                  lastTick={lastTick}
+                  session={session}
+                  zones={ws.zones}
+                  signals={ws.signals}
+                  fills={ws.fills}
+                  exits={ws.exits}
+                />
+              </ErrorBoundary>
             </div>
             <div className={`flex flex-col flex-1 min-h-0 ${chartsSub === 'dqn' ? '' : 'hidden'}`}>
-              <DQNPage
-                signals={ws.signals}
-                zones={ws.zones}
-                lastPrice={ws.lastPrice}
-                dqnInference={ws.dqnInference}
-                dqnInferenceAt={ws.dqnInferenceAt}
-              />
+              <ErrorBoundary label="DQN">
+                <DQNPage
+                  signals={ws.signals}
+                  zones={ws.zones}
+                  lastPrice={ws.lastPrice}
+                  dqnInference={ws.dqnInference}
+                  dqnInferenceAt={ws.dqnInferenceAt}
+                />
+              </ErrorBoundary>
             </div>
           </div>
 
@@ -165,14 +185,18 @@ export default function App() {
               ]}
             />
             <div className={`flex flex-col flex-1 min-h-0 ${bankrollSub === 'betting' ? '' : 'hidden'}`}>
-              <SportsBankrollPage />
+              <ErrorBoundary label="Sportbets bankroll">
+                <SportsBankrollPage />
+              </ErrorBoundary>
             </div>
             <div className={`flex flex-col flex-1 min-h-0 ${bankrollSub === 'trading' ? '' : 'hidden'}`}>
-              <StocksBankrollPage
-                positions={ws.positions}
-                lastPrice={ws.lastPrice}
-                quote={ws.quote}
-              />
+              <ErrorBoundary label="Trading bankroll">
+                <StocksBankrollPage
+                  positions={ws.positions}
+                  lastPrice={ws.lastPrice}
+                  quote={ws.quote}
+                />
+              </ErrorBoundary>
             </div>
           </div>
 
@@ -187,10 +211,14 @@ export default function App() {
               ]}
             />
             <div className={`flex flex-col flex-1 min-h-0 ${statsSub === 'betting' ? '' : 'hidden'}`}>
-              <SportsStatsPage />
+              <ErrorBoundary label="Betting stats">
+                <SportsStatsPage />
+              </ErrorBoundary>
             </div>
             <div className={`flex flex-col flex-1 min-h-0 ${statsSub === 'trading' ? '' : 'hidden'}`}>
-              <StocksStatsPage />
+              <ErrorBoundary label="Trading stats">
+                <StocksStatsPage />
+              </ErrorBoundary>
             </div>
           </div>
         </div>

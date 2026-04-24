@@ -58,16 +58,27 @@ class StocksRuntime:
     relay: Any
     stream: Any
     flatten_scheduler: Any
-    relay_task: asyncio.Task
-    heartbeat_task: asyncio.Task
+    # Mutable task registry — heartbeat's supervisor may replace the "relay"
+    # entry when it restarts a dead task, so shutdown must read through this
+    # dict to cancel the current task rather than a stale reference.
+    tasks: dict
 
     async def shutdown(self) -> None:
         log.info("Stocks runtime shutting down...")
-        for task in (self.heartbeat_task, self.relay_task):
-            task.cancel()
-        for task in (self.heartbeat_task, self.relay_task):
+        # Cancel heartbeat first so its supervisor doesn't restart the relay
+        # we're about to kill.
+        hb = self.tasks.get("heartbeat")
+        if hb is not None:
+            hb.cancel()
             try:
-                await task
+                await hb
+            except (asyncio.CancelledError, Exception):
+                pass
+        relay_task = self.tasks.get("relay")
+        if relay_task is not None:
+            relay_task.cancel()
+            try:
+                await relay_task
             except (asyncio.CancelledError, Exception):
                 pass
         try:
@@ -195,7 +206,9 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     relay.on_dqn_inference = record_dqn_inference
     relay.on_zone_update = lambda msg: update_zones(msg.get("zones", []))
 
-    relay_task = asyncio.create_task(relay.connect(), name="stocks-relay-connect")
+    tasks: dict = {
+        "relay": asyncio.create_task(relay.connect(), name="stocks-relay-connect"),
+    }
     await asyncio.sleep(2)
 
     log.info("Starting TopstepX stream...")
@@ -206,18 +219,52 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     log.info("FlattenScheduler started (flatten at %s ET)", config.flatten_et)
 
     async def _heartbeat() -> None:
+        """Periodic status update + token refresh + dead-task supervisor.
+
+        relay.connect() and stream._run_hub both have their own forever-loops
+        with broad except clauses, so transient WebSocket failures recover on
+        their own. The supervisor here catches the rare case where an
+        unexpected exception escapes those loops (asyncio.gather semantics,
+        token provider crash, etc.) and the task ends — without this, stocks
+        would go permanently dark until the user restarts Arnold.
+        """
         while True:
             try:
                 await asyncio.sleep(30)
                 update_status(relay.is_connected, stream._running)
                 # Keep client._token fresh so WS reconnects don't 401 after 24h.
                 await client._ensure_token()
+
+                if tasks["relay"].done():
+                    try:
+                        tasks["relay"].result()
+                        log.warning("stocks relay task ended cleanly — restarting")
+                    except asyncio.CancelledError:
+                        return
+                    except Exception:
+                        log.exception("stocks relay task died — restarting")
+                    tasks["relay"] = asyncio.create_task(
+                        relay.connect(), name="stocks-relay-connect"
+                    )
+
+                if stream._running and any(t.done() for t in stream._tasks):
+                    log.warning(
+                        "stocks stream hub task(s) ended while running=True — restarting stream"
+                    )
+                    try:
+                        await stream.stop()
+                    except Exception:
+                        log.exception("stream.stop during supervisor restart failed")
+                    try:
+                        await stream.start()
+                    except Exception:
+                        log.exception("stream.start during supervisor restart failed")
             except asyncio.CancelledError:
                 break
             except Exception:
                 log.exception("stocks heartbeat iteration failed")
 
-    heartbeat_task = asyncio.create_task(_heartbeat(), name="stocks-heartbeat")
+    tasks["heartbeat"] = asyncio.create_task(_heartbeat(), name="stocks-heartbeat")
 
     return StocksRuntime(
         client=client,
@@ -225,6 +272,5 @@ async def bootstrap_stocks() -> StocksRuntime | None:
         relay=relay,
         stream=stream,
         flatten_scheduler=flatten_scheduler,
-        relay_task=relay_task,
-        heartbeat_task=heartbeat_task,
+        tasks=tasks,
     )
