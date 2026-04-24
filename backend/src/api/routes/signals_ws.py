@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,12 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 _CET = ZoneInfo("Europe/Stockholm")
+
+# Loopback hosts that can connect to /ws/signals without an API key. The
+# legitimate client is the local relay reached via SSH tunnel, which arrives
+# at the backend as 127.0.0.1. Anything coming through the docker bridge or
+# nginx will have a non-loopback peer and must present X-API-Key.
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -164,7 +171,21 @@ class _RunningVWAP:
 
 @router.websocket("/ws/signals")
 async def signal_relay(ws: WebSocket):
-    """Accept ticks from local client, feed to LevelMonitor, send signals back."""
+    """Accept ticks from local client, feed to LevelMonitor, send signals back.
+
+    Auth: loopback peers (SSH tunnel) are trusted. Any other peer must present
+    a valid X-API-Key header matching ARNOLD_API_KEY. This protects the
+    fill/exit branches below from spoofed messages corrupting broker state.
+    """
+    peer_host = ws.client.host if ws.client else ""
+    if peer_host not in _LOOPBACK_HOSTS:
+        expected = os.environ.get("ARNOLD_API_KEY")
+        provided = ws.headers.get("x-api-key")
+        if not expected or provided != expected:
+            log.warning("Signal relay rejected: peer=%s reason=auth", peer_host)
+            await ws.close(code=1008, reason="unauthorized")
+            return
+
     await ws.accept()
     log.info("Signal relay connected from %s", ws.client)
 
