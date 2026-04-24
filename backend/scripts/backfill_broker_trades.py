@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -42,8 +43,15 @@ class OpenLeg:
     fees_paid: float
 
 
+_FRAC_RE = re.compile(r"\.(\d{1,5})(?=[+\-Z])")
+
+
 def _ts(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    # Python 3.10's fromisoformat requires fractional seconds to be exactly 3 or
+    # 6 digits; TopstepX returns 5. Pad to 6 before parsing.
+    s = _FRAC_RE.sub(lambda m: "." + m.group(1).ljust(6, "0"), s)
+    s = s.replace("Z", "+00:00")
+    return datetime.fromisoformat(s).astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _side(side_int: int) -> str:
