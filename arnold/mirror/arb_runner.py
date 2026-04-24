@@ -719,16 +719,14 @@ class ArbRunner:
         The server API returns stake_pct per leg (inverse-odds weighting).
         Fallback uses a conservative 25% if stake_pct is missing.
         """
+        # Scanner emits stake_pct as a percentage (0-100), convert to a fraction here.
         stake_pct = anchor_leg.get("stake_pct", 0)
-        if not stake_pct or stake_pct <= 0:
-            stake_pct = 0.25  # Conservative fallback — never risk full balance on missing data
+        fraction = stake_pct / 100.0 if stake_pct and stake_pct > 0 else 0.25
 
-        # Use provider balance as the total stake pool
         if balance and balance > 0:
-            anchor_stake = round(balance * stake_pct, 2)
-            # Hard cap: never exceed 80% of balance (leave room for rounding / fees)
+            anchor_stake = round(balance * fraction, 2)
             return min(anchor_stake, balance * 0.8)
-        return 10.0  # Minimum fallback
+        return 10.0
 
     async def _handle_anchor_placement(
         self, bet: dict, pid: str, workflow: Any, page: Any, prep_result: Any, stake: float

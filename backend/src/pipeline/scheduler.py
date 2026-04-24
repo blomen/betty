@@ -339,8 +339,17 @@ class ExtractionScheduler:
                     # Transient DB conflicts (deadlocks, autoflush unique violations)
                     # should not accumulate toward permanent failure — they resolve
                     # on the next run when concurrent transactions no longer collide.
+                    # Per-sport sessions commit independently, so most data is already
+                    # persisted when this fires. Advance last_completed so the scheduler
+                    # cools down normally instead of re-running immediately and
+                    # amplifying the race with concurrent cleanup_stale().
+                    schedule.last_completed = datetime.now(timezone.utc)
+                    schedule.last_duration = (schedule.last_completed - start).total_seconds()
+                    if schedule.category == "sharp" and not self._sharp_ready.is_set():
+                        self._sharp_ready.set()
+                        logger.info("[Scheduler] Sharp first run complete (transient DB error) — soft providers unblocked")
                     logger.warning(
-                        f"[Scheduler:{schedule.provider_id}] Transient DB error (not counting toward failure): {e}"
+                        f"[Scheduler:{schedule.provider_id}] Transient DB error (partial run treated as complete): {e}"
                     )
                 else:
                     schedule.consecutive_failures += 1

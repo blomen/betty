@@ -620,6 +620,8 @@ class Opportunity(Base):
         Index("ix_opp_type_active", "type", "is_active"),
         Index("ix_opp_provider1_type", "provider1_id", "type"),
         Index("ix_opp_active_type_edge_provider", "is_active", "type", "edge_pct", "provider1_id"),
+        # Health endpoint volume-drop query filters by detected_at
+        Index("ix_opp_detected_at", "detected_at"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -751,6 +753,12 @@ class ProviderRunMetrics(Base):
     error_message = Column(Text)
     circuit_breaker_tripped = Column(Boolean, default=False)
     health_check_passed = Column(Boolean, default=True)
+
+    __table_args__ = (
+        # Health endpoint: recent runs per provider sorted by start_time DESC
+        Index("ix_prm_provider_start", "provider_id", "start_time"),
+        Index("ix_prm_start_time", "start_time"),
+    )
 
     # Relationships
     extraction_run = relationship("ExtractionRun", back_populates="provider_metrics")
