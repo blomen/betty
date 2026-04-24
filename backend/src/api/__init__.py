@@ -10,9 +10,14 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Dedicated executor for /health probes so they don't queue behind extraction
+# threads on the default asyncio loop executor.
+_health_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="health")
 
 from dotenv import load_dotenv
 
@@ -1286,8 +1291,14 @@ async def health_extraction():
             if db:
                 db.close()
 
+    # Run on a dedicated executor so health probes don't compete with the
+    # default asyncio executor, which is heavily used by per-sport storage
+    # threads during extraction and can saturate the 8-thread default pool.
     try:
-        data = await asyncio.wait_for(asyncio.to_thread(_query), timeout=15.0)
+        data = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_health_executor, _query),
+            timeout=15.0,
+        )
     except asyncio.TimeoutError:
         return {"status": "error", "message": "Database query timed out"}
 
