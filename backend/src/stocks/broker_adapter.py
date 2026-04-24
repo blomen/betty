@@ -273,8 +273,21 @@ class TopstepXBrokerAdapter:
         }
 
     async def modify_stop(self, new_stop_price: float) -> dict | None:
-        """Move existing stop order to new price."""
+        """Move existing stop order to new price.
+
+        Defense-in-depth: a stop must never relax. Long stops only move up,
+        short stops only move down. A misordered trail call that tried to
+        widen risk would otherwise quietly increase exposure.
+        """
         new_stop_price = _round_tick(new_stop_price)
+        side = self.tracker.side
+        cur_stop = self.tracker.stop_price
+        if side == "long" and cur_stop > 0 and new_stop_price < cur_stop:
+            log.warning("Refusing to relax long stop: %.2f → %.2f", cur_stop, new_stop_price)
+            return {"action": "reject", "reason": "stop_relaxed", "stop_price": cur_stop}
+        if side == "short" and cur_stop > 0 and new_stop_price > cur_stop:
+            log.warning("Refusing to relax short stop: %.2f → %.2f", cur_stop, new_stop_price)
+            return {"action": "reject", "reason": "stop_relaxed", "stop_price": cur_stop}
         if not self.tracker.stop_order_id:
             # No existing stop — place a new one
             try:
@@ -297,64 +310,99 @@ class TopstepXBrokerAdapter:
             return None
 
     def on_stream_fill(self, fill: dict) -> None:
-        """Update tracker from real TopstepX fill (GatewayUserTrade)."""
+        """Update tracker from real TopstepX fill (GatewayUserTrade).
+
+        Correlates by orderId when present (entry_order_id vs stop_order_id) so that
+        out-of-order entry/exit fills can't get swapped. Falls back to the
+        entry_price==0.0 sentinel only when orderId is missing.
+        """
         data = fill.get("data", fill)
         price = float(data.get("price", 0))
         if price == 0:
             return
-        log.info("Fill processing: price=%.2f side=%s size=%s", price, data.get("side"), data.get("size"))
+        # TopstepX has used both camelCase and snake_case in the past — accept either.
+        order_id = data.get("orderId") or data.get("order_id") or data.get("OrderId")
+        log.info(
+            "Fill processing: price=%.2f side=%s size=%s order_id=%s",
+            price, data.get("side"), data.get("size"), order_id,
+        )
 
-        if not self.tracker.is_flat and self.tracker.entry_price == 0.0:
-            self.tracker.entry_price = price
-            if self._pending_trade:
-                self._pending_trade["entry_price"] = price
-            log.info("Stream fill (entry confirmed): %.2f", price)
+        if self.tracker.is_flat:
+            log.warning("Stream fill (%.2f, order_id=%s) arrived while flat — dropping", price, order_id)
+            return
 
-        elif not self.tracker.is_flat:
-            is_stop = abs(price - self.tracker.stop_price) < 1.0 if self.tracker.stop_price else False
-            entry_px = self.tracker.entry_price
-            self.tracker.on_exit(exit_price=price, was_stop=is_stop)
-            log.info(
-                "Stream fill (exit): %.2f stop=%s trails=%d session_pnl=$%.2f",
-                price,
-                is_stop,
-                self._trail_count,
-                self.tracker.session_pnl,
+        # Decide entry vs exit. Prefer orderId match; fall back to sentinel.
+        if order_id is not None and self.tracker.entry_order_id is not None:
+            is_entry = order_id == self.tracker.entry_order_id
+            is_stop = order_id == self.tracker.stop_order_id
+        else:
+            is_entry = self.tracker.entry_price == 0.0
+            is_stop = (
+                not is_entry
+                and self.tracker.stop_price > 0
+                and abs(price - self.tracker.stop_price) < 1.0
             )
 
-            if self._pending_trade and entry_px:
-                side = self._pending_trade["side"]
-                direction = 1.0 if side == "long" else -1.0
-                pnl_pts = direction * (price - entry_px)
-                pnl_dollars = pnl_pts * _NQ_POINT_VALUE * self._pending_trade["size"]
-                stop_price = self._pending_trade.get("stop_price", 0)
-                risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
-                pnl_r = pnl_pts / max(risk_pts, 0.25)
-                _log_broker_trade(
-                    session_pnl=round(self.tracker.session_pnl, 2),
-                    ts=self._pending_trade["ts"],
-                    session_date=self._pending_trade["session_date"],
-                    symbol=self._pending_trade["symbol"],
-                    side=side,
-                    size=self._pending_trade["size"],
-                    entry_price=entry_px,
-                    stop_price=stop_price,
-                    tp_price=self._pending_trade.get("tp_price"),
-                    exit_price=price,
-                    pnl_dollars=round(pnl_dollars, 2),
-                    pnl_r=round(pnl_r, 3),
-                    was_stop=is_stop,
-                    trail_count=self._pending_trade.get("trail_count", 0),
-                    stop_ticks=self._pending_trade.get("stop_ticks"),
-                    signal_action=self._pending_trade.get("signal_action"),
-                    signal_confidence=self._pending_trade.get("signal_confidence"),
-                    signal_zone=self._pending_trade.get("signal_zone"),
-                    signal_trigger=self._pending_trade.get("signal_trigger"),
-                    signal_cont_p=self._pending_trade.get("signal_cont_p"),
-                    signal_rev_p=self._pending_trade.get("signal_rev_p"),
-                    closed_at=datetime.now(timezone.utc),
-                )
-                self._pending_trade = None
+        if is_entry:
+            # Idempotent: a duplicate entry fill with the same orderId must not double-set.
+            if self.tracker.entry_price == 0.0:
+                self.tracker.entry_price = price
+                if self._pending_trade:
+                    self._pending_trade["entry_price"] = price
+                log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
+            else:
+                log.debug("Duplicate entry fill ignored: %.2f order_id=%s", price, order_id)
+            return
+
+        # Exit path — but if the entry fill hasn't reconciled yet, we can't compute PnL.
+        entry_px = self.tracker.entry_price
+        if entry_px == 0.0:
+            log.error(
+                "Out-of-order exit fill (%.2f, order_id=%s) before entry confirmation — "
+                "skipping; tracker left open until entry fill arrives",
+                price, order_id,
+            )
+            return
+
+        self.tracker.on_exit(exit_price=price, was_stop=is_stop)
+        log.info(
+            "Stream fill (exit): %.2f stop=%s order_id=%s trails=%d session_pnl=$%.2f",
+            price, is_stop, order_id, self._trail_count, self.tracker.session_pnl,
+        )
+
+        if self._pending_trade and entry_px:
+            side = self._pending_trade["side"]
+            direction = 1.0 if side == "long" else -1.0
+            pnl_pts = direction * (price - entry_px)
+            pnl_dollars = pnl_pts * _NQ_POINT_VALUE * self._pending_trade["size"]
+            stop_price = self._pending_trade.get("stop_price", 0)
+            risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
+            pnl_r = pnl_pts / max(risk_pts, 0.25)
+            _log_broker_trade(
+                session_pnl=round(self.tracker.session_pnl, 2),
+                ts=self._pending_trade["ts"],
+                session_date=self._pending_trade["session_date"],
+                symbol=self._pending_trade["symbol"],
+                side=side,
+                size=self._pending_trade["size"],
+                entry_price=entry_px,
+                stop_price=stop_price,
+                tp_price=self._pending_trade.get("tp_price"),
+                exit_price=price,
+                pnl_dollars=round(pnl_dollars, 2),
+                pnl_r=round(pnl_r, 3),
+                was_stop=is_stop,
+                trail_count=self._pending_trade.get("trail_count", 0),
+                stop_ticks=self._pending_trade.get("stop_ticks"),
+                signal_action=self._pending_trade.get("signal_action"),
+                signal_confidence=self._pending_trade.get("signal_confidence"),
+                signal_zone=self._pending_trade.get("signal_zone"),
+                signal_trigger=self._pending_trade.get("signal_trigger"),
+                signal_cont_p=self._pending_trade.get("signal_cont_p"),
+                signal_rev_p=self._pending_trade.get("signal_rev_p"),
+                closed_at=datetime.now(timezone.utc),
+            )
+            self._pending_trade = None
 
     def reset_session(self) -> None:
         """Daily midnight reset."""
@@ -450,18 +498,41 @@ class TopstepXBrokerAdapter:
                 self._halt(f"account permanent violation: {err}")
             return {"rejected": True, "reason": err}
 
+        entry_order_id = result.get("orderId") if isinstance(result, dict) else None
+
         stop_order_id = None
         if stop_price > 0:
-            try:
-                stop_result = await self.client.place_stop_order(stop_action, size, stop_price)
-                stop_order_id = stop_result.get("orderId") if isinstance(stop_result, dict) else None
-                if isinstance(stop_result, dict) and not stop_result.get("success", True):
-                    log.warning("Stop order failed: %s", stop_result.get("errorMessage"))
-            except Exception:
-                log.exception("Stop order failed (market order was placed)")
+            for attempt in (1, 2):
+                try:
+                    stop_result = await self.client.place_stop_order(stop_action, size, stop_price)
+                except Exception:
+                    log.exception("Stop placement raised (attempt %d/2)", attempt)
+                    stop_result = None
+                if isinstance(stop_result, dict):
+                    if stop_result.get("success", True):
+                        stop_order_id = stop_result.get("orderId")
+                        break
+                    log.warning(
+                        "Stop placement rejected (attempt %d/2): %s",
+                        attempt, stop_result.get("errorMessage"),
+                    )
+
+            if stop_order_id is None:
+                # We have a filled (or about-to-fill) market order but no stop. Sitting
+                # naked is worse than reverting — liquidate immediately to bound risk.
+                log.error(
+                    "Stop placement failed twice — flattening entry to avoid unhedged position",
+                )
+                try:
+                    await self.client.liquidate_position()
+                except Exception:
+                    log.exception("Emergency liquidate after failed stop also failed — POSITION MAY BE OPEN")
+                self._halt("stop_placement_failed")
+                return {"rejected": True, "reason": "stop_placement_failed"}
 
         side = "long" if is_long else "short"
         self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
+        self.tracker.entry_order_id = entry_order_id
         self.tracker.stop_order_id = stop_order_id
 
         now = datetime.now(timezone.utc)

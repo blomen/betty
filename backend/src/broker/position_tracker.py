@@ -36,6 +36,7 @@ class PositionTracker:
         self.entry_price: float = 0.0
         self.stop_price: float = 0.0
         self.size: int = 0
+        self.entry_order_id: int | None = None
         self.stop_order_id: int | None = None
 
         self.session_pnl: float = 0.0
@@ -96,20 +97,47 @@ class PositionTracker:
         log.info("Position opened: %s %d @ %.2f stop=%.2f", side, size, price, stop_price)
 
     def on_add(self, price: float, add_size: int) -> None:
-        """Record a pyramid add. Volume-weighted average entry price."""
+        """Record a pyramid add. Volume-weighted average entry price.
+
+        Pyramid adds change the entry basis (averaged toward `price`) which silently
+        invalidates `peak_R` — it was tracked in R units of the pre-add basis.
+        Recompute it in the new basis using the implied peak price so the
+        EarlyExit lock check stays meaningful after the add.
+        """
         if self.is_flat or add_size <= 0:
             return
+
+        # Convert peak_R from old basis to peak_price, then back to new basis.
+        old_entry = self.entry_price
+        old_risk_unit = abs(old_entry - self.stop_price) if self.stop_price > 0 else 0.0
+        peak_price: float | None = None
+        if old_risk_unit > 0 and self.peak_R > 0:
+            if self.side == "long":
+                peak_price = old_entry + self.peak_R * old_risk_unit
+            else:
+                peak_price = old_entry - self.peak_R * old_risk_unit
+
         total = self.size + add_size
-        self.entry_price = (self.entry_price * self.size + price * add_size) / total
+        self.entry_price = (old_entry * self.size + price * add_size) / total
         self.size = total
         self.last_trade_ts = time.time()
         self.fills.append(FillRecord(ts=self.last_trade_ts, side=self.side or "", price=price, size=add_size))
+
+        if peak_price is not None:
+            new_risk_unit = abs(self.entry_price - self.stop_price)
+            if new_risk_unit > 0:
+                if self.side == "long":
+                    self.peak_R = max(0.0, (peak_price - self.entry_price) / new_risk_unit)
+                else:
+                    self.peak_R = max(0.0, (self.entry_price - peak_price) / new_risk_unit)
+
         log.info(
-            "Pyramid add: +%d @ %.2f -> size=%d avg_entry=%.4f",
+            "Pyramid add: +%d @ %.2f -> size=%d avg_entry=%.4f peak_R=%.3f",
             add_size,
             price,
             self.size,
             self.entry_price,
+            self.peak_R,
         )
 
     def on_exit(self, exit_price: float, was_stop: bool = False) -> float:
@@ -137,6 +165,7 @@ class PositionTracker:
         self.entry_price = 0.0
         self.stop_price = 0.0
         self.size = 0
+        self.entry_order_id = None
         self.stop_order_id = None
         self.peak_R = 0.0
         self.locked_half_R = False

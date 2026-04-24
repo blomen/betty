@@ -161,16 +161,16 @@ class SignalRelayClient:
                 log.info("SignalRelay: unknown message type %r", msg_type)
 
     async def _execute_signal(self, signal: dict) -> None:
-        """Parse signal and execute via adapter (if set) or directly on TopstepX."""
+        """Parse signal and execute via adapter (if set) or directly on TopstepX.
+
+        When the adapter handles execution, the real fill is forwarded later by
+        the TopstepX stream callback in arnold/stocks_runtime.py — we do NOT
+        emit a placeholder fill here, since price=0.0 would corrupt any
+        downstream consumer that aggregates by price.
+        """
         if self._adapter:
             try:
-                result = await self._adapter.on_signal(signal)
-                if result and not result.get("rejected"):
-                    side = result.get("side", "long")
-                    price = 0.0  # real price comes via stream fill
-                    size = result.get("size", 1)
-                    stop_price = result.get("stop_price", 0)
-                    await self.forward_fill(side, price, size, stop_price)
+                await self._adapter.on_signal(signal)
             except Exception:
                 log.exception("SignalRelay: adapter execution failed for signal %r", signal)
             return
