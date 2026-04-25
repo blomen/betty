@@ -290,6 +290,47 @@ export default function PlayPage() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
+  // Poll login state for soft providers we know about (have balance or pending).
+  // SSE login_detected/balance_intercepted only fires when events happen; this
+  // effect recovers green-state after a page reload or when SSE missed events.
+  // No auto-activation — soft sessions need explicit user Start due to daily caps.
+  useEffect(() => {
+    const softPids = new Set<string>()
+    for (const pid of Object.keys(providerBalances)) {
+      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
+    }
+    for (const pid of Object.keys(pendingByProvider)) {
+      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
+    }
+    if (softPids.size === 0) return
+    let cancelled = false
+    const missCount: Record<string, number> = {}
+    const check = async () => {
+      for (const pid of softPids) {
+        try {
+          const r = await fetch(`/mirror/browser/provider/${pid}`)
+          const d = await r.json()
+          if (cancelled) return
+          if (d.logged_in) {
+            missCount[pid] = 0
+            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+          } else {
+            missCount[pid] = (missCount[pid] || 0) + 1
+            if (missCount[pid] >= 2) {
+              setLoggedInProviders(prev => {
+                if (!prev.has(pid)) return prev
+                const n = new Set(prev); n.delete(pid); return n
+              })
+            }
+          }
+        } catch { /* swallow */ }
+      }
+    }
+    check()
+    const id = setInterval(check, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [providerBalances, pendingByProvider])
+
   // SSE event handler
   useEffect(() => {
     if (!mirror.lastEvent) return
@@ -968,11 +1009,11 @@ export default function PlayPage() {
                                 <button
                                   onClick={() => startSkin(pid)}
                                   className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                    isSkinActive
-                                      ? (isLoggedIn
-                                          ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                          : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
-                                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                    isLoggedIn
+                                      ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                      : isSkinActive
+                                        ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
+                                        : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                                   }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
@@ -1155,11 +1196,11 @@ export default function PlayPage() {
             <div key={clusterId}>
               {/* Cluster header with skin tabs */}
               <div className={`flex items-center gap-2 px-3 py-1.5 border-b ${
-                isActive
-                  ? (isLoggedIn
-                      ? 'bg-green-900/20 border-green-700/50'
-                      : 'bg-amber-900/20 border-amber-700/50')
-                  : 'bg-zinc-900/50 border-zinc-800'
+                isLoggedIn
+                  ? 'bg-green-900/20 border-green-700/50'
+                  : isActive
+                    ? 'bg-amber-900/20 border-amber-700/50'
+                    : 'bg-zinc-900/50 border-zinc-800'
               }`}>
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 {/* Skin tabs — sorted by balance desc */}
@@ -1178,11 +1219,11 @@ export default function PlayPage() {
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
-                            : isSkinActive
-                              ? (isLoggedIn
-                                  ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                  : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
-                              : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                            : isLoggedIn
+                              ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                              : isSkinActive
+                                ? 'bg-amber-700/50 text-amber-300 border border-amber-600/50'
+                                : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
