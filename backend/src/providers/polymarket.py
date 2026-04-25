@@ -268,7 +268,13 @@ class PolymarketRetriever(Retriever):
             return
 
         unique_tokens = list(set(token_ids))
-        semaphore = asyncio.Semaphore(20)  # CLOB allows 1500/10s
+        # CLOB allows 1500 req / 10s = 150 req/s. With ~5000 tokens this used
+        # to chunk into 50-token batches, waiting for each batch to fully drain
+        # before starting the next — slow tokens stalled the whole pipeline
+        # for 1000+ seconds. Now we fire all requests concurrently and let the
+        # semaphore (50 in flight) be the only limiter; effective throughput
+        # tracks server response time instead of worst-case chunk latency.
+        semaphore = asyncio.Semaphore(50)
         fill_size = self.fill_size_usd
 
         async def fetch_book(session: aiohttp.ClientSession, token_id: str):
@@ -312,12 +318,13 @@ class PolymarketRetriever(Retriever):
                     logger.debug(f"[{self.provider_id}] CLOB /book failed for {token_id[:12]}...: {e}")
 
         try:
-            async with aiohttp.ClientSession() as session:
-                # Process in chunks to avoid overwhelming the connection pool
-                CHUNK_SIZE = 50
-                for i in range(0, len(unique_tokens), CHUNK_SIZE):
-                    chunk = unique_tokens[i : i + CHUNK_SIZE]
-                    await asyncio.gather(*[fetch_book(session, tid) for tid in chunk], return_exceptions=True)
+            # Single connection pool sized for the new concurrency cap.
+            connector = aiohttp.TCPConnector(limit=100, limit_per_host=100)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                await asyncio.gather(
+                    *(fetch_book(session, tid) for tid in unique_tokens),
+                    return_exceptions=True,
+                )
 
             thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
             logger.debug(
