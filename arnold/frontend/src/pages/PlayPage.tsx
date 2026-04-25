@@ -495,18 +495,19 @@ export default function PlayPage() {
     }
     if (type === 'bet_reconciled') {
       const id = `recon-${data.bet_id}-${Date.now()}`
-      setReconcileToasts(prev => [...prev, {
-        id,
-        provider_id: data.provider_id,
-        bet_id: data.bet_id,
-        event_name: data.event_name,
-        match_method: data.match_method,
-        confidence: data.confidence,
-        changes: data.changes,
-      }])
-      setTimeout(() => {
-        setReconcileToasts(prev => prev.filter(t => t.id !== id))
-      }, 8000)
+      setReconcileToasts(prev => {
+        // De-dupe: replace any prior toast for this bet_id (re-reconcile updates same row)
+        const filtered = prev.filter(t => t.bet_id !== data.bet_id)
+        return [...filtered, {
+          id,
+          provider_id: data.provider_id,
+          bet_id: data.bet_id,
+          event_name: data.event_name,
+          match_method: data.match_method,
+          confidence: data.confidence,
+          changes: data.changes,
+        }]
+      })
       load()  // refresh batch + pending so UI sees the updated bet
     }
     if (type === 'provider_complete') {
@@ -755,13 +756,33 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Reconcile toasts */}
+      {/* Reconcile toasts — persist until user dismisses */}
       {reconcileToasts.length > 0 && (
         <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+          {reconcileToasts.length > 1 && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => setReconcileToasts([])}
+                className="text-[10px] px-2 py-0.5 bg-zinc-800/90 border border-zinc-600 rounded text-zinc-300 hover:bg-zinc-700"
+              >
+                dismiss all ({reconcileToasts.length})
+              </button>
+            </div>
+          )}
           {reconcileToasts.map(t => (
             <div key={t.id} className="bg-blue-900/90 border border-blue-500 rounded p-2 text-xs shadow-lg">
-              <div className="text-blue-200 font-semibold uppercase">
-                {t.provider_id} · reconciled ({t.match_method} · {t.confidence != null ? Math.round(t.confidence) : '—'})
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-blue-200 font-semibold uppercase">
+                  {t.provider_id} · reconciled ({t.match_method} · {t.confidence != null ? Math.round(t.confidence) : '—'})
+                </div>
+                <button
+                  onClick={() => setReconcileToasts(prev => prev.filter(x => x.id !== t.id))}
+                  className="text-zinc-400 hover:text-zinc-100 leading-none px-1 -mt-0.5"
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                >
+                  ×
+                </button>
               </div>
               <div className="text-zinc-200 mt-1 truncate">{t.event_name ?? `Bet #${t.bet_id}`}</div>
               <div className="text-zinc-400 mt-1 space-y-0.5">
