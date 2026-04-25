@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .pending_loop import _detect_settlements
+from .slip_odds_stream import SlipOddsStream
 from .workflows import get_workflow
 from .workflows.base import PlacementResult
 
