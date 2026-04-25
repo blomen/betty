@@ -595,13 +595,26 @@ class ExtractionScheduler:
                     # Use a higher threshold before force-restarting (5x interval)
                     # to avoid killing long-but-progressing extractions
                     force_restart_threshold = schedule.interval_seconds * 5
-                    # Don't kill a run that started recently — give it at least 600s
-                    # to complete (extract + analyze). Prevents death spiral where
-                    # watchdog keeps killing Pinnacle runs before they can finish.
+                    # Don't kill a run that started recently. Floors are category-aware
+                    # because realistic completion time differs by an order of magnitude:
+                    # sharp Pinnacle naturally takes 600-800s under proxy load, signal
+                    # providers (Cloudbet, Marathon) take 1700-1900s, browser tiers
+                    # routinely take 2000-2500s. The previous flat 600s floor was killing
+                    # Pinnacle runs *just as* they published their baseline, breaking the
+                    # _sharp_ready gate and starving every soft provider.
                     run_age = (
                         (now - schedule.last_run_started).total_seconds() if schedule.last_run_started else float("inf")
                     )
-                    min_run_duration = max(600, force_restart_threshold)
+                    category_floors = {
+                        "sharp": 1500,                  # Pinnacle worst-case ≈ 5 sport_timeouts
+                        "polymarket": 1500,
+                        "kalshi": 1500,
+                        "signal_international": 2400,   # Cloudbet observed 1700-1900s
+                        "api_soft": 1200,               # Kambi/Altenar/Gecko observed 600-700s
+                        "browser_soft": 3000,           # Tipwin observed 2300s+
+                        "browser_antibot": 3600,        # Coolbet/ComeOn worst-case
+                    }
+                    min_run_duration = max(category_floors.get(schedule.category, 1200), force_restart_threshold)
                     if elapsed > force_restart_threshold and run_age > min_run_duration:
                         logger.critical(
                             f"[Watchdog] Provider '{provider_id}' is STUCK — "

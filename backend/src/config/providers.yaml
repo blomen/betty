@@ -228,7 +228,11 @@ providers:
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
     concurrent_leagues: 10               # Throttled for ISP proxy — too many parallel requests get 403
-    sport_timeout: 240                   # Football has ~200 leagues × 2 API calls each; needs headroom under load
+    # Football alone is ~246 leagues × 2 API calls / 10 concurrent ≈ 49 batches.
+    # At 5-6s per batch under proxy load that hits ~300s — 240s timed out the entire
+    # sport mid-run, leaving the scheduler with no fresh fair odds and triggering
+    # the watchdog death-spiral. 480s gives proper headroom for football/basketball.
+    sport_timeout: 480
 
   # --------------------------------------------------------------------------
   # Polymarket (prediction market — event matching only)
