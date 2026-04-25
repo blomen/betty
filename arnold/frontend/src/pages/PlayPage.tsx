@@ -82,9 +82,6 @@ export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [providerBalances, setProviderBalances] = useState<Record<string, number>>({})
-  // Per-provider bonus_amount (sourced from balance_status). Used alongside balance
-  // to detect when a provider is fully "done" (no cash AND no bonus left).
-  const [providerBonuses, setProviderBonuses] = useState<Record<string, number>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(24)
@@ -162,14 +159,6 @@ export default function PlayPage() {
       setSummary(result.summary ?? null)
       setProviderBalances(result.provider_balances ?? {})
       setPlacedToday(result.placed_today ?? {})
-      // balance_status carries per-provider bonus_amount; extract for "done" detection
-      const bonuses: Record<string, number> = {}
-      for (const entry of result.balance_status ?? []) {
-        if (entry?.provider_id && typeof entry.bonus_amount === 'number') {
-          bonuses[entry.provider_id] = entry.bonus_amount
-        }
-      }
-      setProviderBonuses(bonuses)
       const grouped: Record<string, any[]> = {}
       for (const p of pendingResult.providers ?? [])
         if (p.bets?.length) grouped[p.provider_id] = p.bets
@@ -798,7 +787,6 @@ export default function PlayPage() {
           // Add any extra provider we have data for that wasn't in the canonical lists
           const allKnownPids = new Set([
             ...Object.keys(providerBalances),
-            ...Object.keys(providerBonuses),
             ...Object.keys(pendingByProvider),
           ])
           for (const pid of allKnownPids) {
@@ -819,16 +807,12 @@ export default function PlayPage() {
           })
           const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
           // Classify a provider:
-          //   funded — has cash balance OR pending bets (worth a full card)
-          //   done   — no balance, no bonus, no pending (fully depleted — red ✕)
-          //   drained-but-live — in between (bonus-only): amber italic pill
+          //   funded   — has cash balance >= DRAIN_THRESHOLD_SEK OR pending bets
+          //   unfunded — anything else; cluster shows only if a qualifying arb
+          //              exists (deposit-hint mode) — see Task 3.
           const isFunded = (pid: string) =>
             (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
             (pendingByProvider[pid]?.length ?? 0) > 0
-          const isDone = (pid: string) =>
-            (providerBalances[pid] ?? 0) < DRAIN_THRESHOLD_SEK &&
-            (providerBonuses[pid] ?? 0) < DRAIN_THRESHOLD_SEK &&
-            (pendingByProvider[pid]?.length ?? 0) === 0
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
@@ -852,7 +836,6 @@ export default function PlayPage() {
                   {clusterOrder.map(cluster => {
                     const members = softByCluster[cluster]
                     const funded = members.filter(isFunded)
-                    const nonFunded = members.filter(pid => !isFunded(pid) && !isDone(pid))
                     const opps = oppsByCluster[cluster] ?? []
                     const clusterMemberSet = new Set(members)
 
@@ -863,15 +846,6 @@ export default function PlayPage() {
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
-                          {nonFunded.map(pid => (
-                            <span
-                              key={pid}
-                              className="px-1.5 py-0.5 text-[10px] rounded border inline-flex items-center gap-1 text-amber-500/70 bg-zinc-900/50 border-zinc-800 italic"
-                              title={`${pid} has bonus remaining`}
-                            >
-                              <span className="uppercase">{pid}</span>
-                            </span>
-                          ))}
                           <span className="text-[10px] text-zinc-600 ml-auto">
                             {funded.length > 0 ? `${opps.length} arb${opps.length === 1 ? '' : 's'} · siblings share odds` : 'no funded siblings'}
                           </span>
@@ -880,7 +854,6 @@ export default function PlayPage() {
                         {/* One card per funded sibling — same opps, different balance/active context */}
                         {funded.map(pid => {
                           const bal = providerBalances[pid] ?? 0
-                          const bonus = providerBonuses[pid] ?? 0
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
