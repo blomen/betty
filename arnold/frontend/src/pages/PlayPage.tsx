@@ -770,21 +770,17 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
-          // Group ALL known soft providers by cluster — every sibling from
-          // SOFT_CLUSTER_MEMBERS, every standalone from SOFT_STANDALONES, and any
-          // additional provider we have balance / bonus / pending data for.
-          // Even untouched providers stay visible (rendered as ✕ done) so the
-          // user can see the full universe at a glance.
+          // Build the soft-cluster universe: canonical siblings + standalones +
+          // any provider we have current balance/pending data for. Then filter
+          // to only clusters with at least one funded member, OR (drained but)
+          // at least one arb opp clearing DEPOSIT_HINT_MIN_PROFIT_PCT.
           const softByCluster: Record<string, string[]> = {}
-          // Seed with all canonical siblings
           for (const [cluster, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
             softByCluster[cluster] = [...members]
           }
-          // Seed standalones — each is its own one-provider "cluster"
           for (const pid of SOFT_STANDALONES) {
             if (!softByCluster[pid]) softByCluster[pid] = [pid]
           }
-          // Add any extra provider we have data for that wasn't in the canonical lists
           const allKnownPids = new Set([
             ...Object.keys(providerBalances),
             ...Object.keys(pendingByProvider),
@@ -795,9 +791,28 @@ export default function PlayPage() {
             if (!softByCluster[cluster]) softByCluster[cluster] = []
             if (!softByCluster[cluster].includes(pid)) softByCluster[cluster].push(pid)
           }
-          // Stable sort order — named clusters first, then standalones alphabetically
+
+          // Funded check (used by both visibility filter and per-cluster render)
+          const isFunded = (pid: string) =>
+            (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
+            (pendingByProvider[pid]?.length ?? 0) > 0
+
+          // Visibility: cluster shows if any member is funded, OR if the cluster
+          // has a qualifying arb opp (>= DEPOSIT_HINT_MIN_PROFIT_PCT). Drained
+          // clusters with no qualifying arb are hidden entirely.
+          const clusterHasFunded = (cluster: string) =>
+            (softByCluster[cluster] ?? []).some(isFunded)
+          const clusterHasQualifyingArb = (cluster: string) =>
+            (oppsByCluster[cluster] ?? []).some(
+              (o: any) => (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT,
+            )
+          const visibleClusters = Object.keys(softByCluster).filter(
+            c => clusterHasFunded(c) || clusterHasQualifyingArb(c),
+          )
+
+          // Stable sort: named clusters first, then standalones alphabetically
           const namedClusters = Object.keys(SOFT_CLUSTER_MEMBERS)
-          const clusterOrder = Object.keys(softByCluster).sort((a, b) => {
+          const clusterOrder = visibleClusters.sort((a, b) => {
             const ai = namedClusters.indexOf(a)
             const bi = namedClusters.indexOf(b)
             if (ai >= 0 && bi >= 0) return ai - bi
@@ -806,13 +821,6 @@ export default function PlayPage() {
             return a.localeCompare(b)
           })
           const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
-          // Classify a provider:
-          //   funded   — has cash balance >= DRAIN_THRESHOLD_SEK OR pending bets
-          //   unfunded — anything else; cluster shows only if a qualifying arb
-          //              exists (deposit-hint mode) — see Task 3.
-          const isFunded = (pid: string) =>
-            (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
-            (pendingByProvider[pid]?.length ?? 0) > 0
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
