@@ -271,22 +271,38 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     # serialize whatever the LevelMonitor currently has and hand it straight
     # to update_zones. Future zone_update broadcasts (next rebuild) keep it
     # in sync via the forwarder.
-    try:
-        current_zones = getattr(level_monitor, "_zones", []) or []
-        if current_zones:
-            _dashboard.update_zones([
-                {
-                    "price": round(z.center_price, 2),
-                    "members": z.member_count,
-                    "upper": round(z.upper_bound, 2),
-                    "lower": round(z.lower_bound, 2),
-                    "hierarchy": round(z.hierarchy_score, 3),
-                }
-                for z in current_zones
-            ])
-            log.info("Seeded dashboard with %d zones from LevelMonitor", len(current_zones))
-    except Exception:
-        log.exception("Initial zone seed to dashboard failed")
+    def _serialize_zones(zones) -> list[dict]:
+        return [
+            {
+                "price": round(z.center_price, 2),
+                "members": z.member_count,
+                "upper": round(z.upper_bound, 2),
+                "lower": round(z.lower_bound, 2),
+                "hierarchy": round(z.hierarchy_score, 3),
+            }
+            for z in zones
+        ]
+
+    async def _seed_dashboard_zones_when_ready():
+        # Poll _zones every 5s for up to 10 min. Init thread (runs in parallel
+        # off the FastAPI loop) populates _zones once session data + levels
+        # finish loading; that can land before or after this bootstrap. Once
+        # zones are present, snapshot them into the dashboard state so the
+        # chart renders immediately. Future rebuild_zones calls (5-min
+        # periodic recompute) keep state fresh via _dashboard_zone_forwarder.
+        for _ in range(120):
+            try:
+                zs = getattr(level_monitor, "_zones", []) or []
+                if zs:
+                    _dashboard.update_zones(_serialize_zones(zs))
+                    log.info("Seeded dashboard with %d zones from LevelMonitor", len(zs))
+                    return
+            except Exception:
+                log.exception("Zone seed attempt failed")
+            await asyncio.sleep(5)
+        log.warning("Gave up waiting for LevelMonitor zones after 10 min")
+
+    asyncio.create_task(_seed_dashboard_zones_when_ready())
 
     # Direct DB insert for closed trades (no HTTP needed — same process)
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
