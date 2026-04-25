@@ -342,6 +342,13 @@ export default function PlayPage() {
                 setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
                 try { await api.startMirror() } catch {}
                 try { await api.openTab(pid) } catch {}
+                // Arb runs need counter legs on unlimited providers — proactively
+                // open all 4 unlimited tabs so the user can log in to them.
+                // Idempotent: openTab returns "already_open" if a tab exists.
+                // Generic: applies to ANY soft anchor that auto-activates.
+                for (const upid of UNLIMITED_PROVIDERS) {
+                  try { await api.openTab(upid) } catch {}
+                }
                 setLoopRunning(true)
                 // ArbRunner fetches its own opps from /api/opportunities/arb-workflow,
                 // so an empty batch is fine (unlike value-bet runners).
@@ -1029,7 +1036,6 @@ export default function PlayPage() {
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
-                          const isTabOpen = tabOpenProviders.has(pid)
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
@@ -1037,15 +1043,12 @@ export default function PlayPage() {
                                 <button
                                   onClick={() => startSkin(pid)}
                                   className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                    isLoggedIn
-                                      ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                      : isTabOpen
-                                        ? 'bg-amber-700/40 text-amber-200 border border-amber-600/50'
-                                        : isSkinActive
-                                          ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
-                                          : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                    isSkinActive
+                                      ? (isLoggedIn
+                                          ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                          : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
+                                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                                   }`}
-                                  title={isLoggedIn ? 'Logged in' : isTabOpen ? 'Tab open — awaiting login' : isSkinActive ? 'Activating' : 'Click to start'}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
                                   <span className="ml-1 text-green-400 font-mono">{bal.toFixed(2)} kr</span>
@@ -1222,17 +1225,16 @@ export default function PlayPage() {
           const stats = clusterStats(clusterId)
           const isActive = stats.providers.some(p => activeProviders.has(p))
           const isLoggedIn = stats.providers.some(p => loggedInProviders.has(p))
-          const isTabOpen = stats.providers.some(p => tabOpenProviders.has(p))
 
           return (
             <div key={clusterId}>
               {/* Cluster header with skin tabs */}
               <div className={`flex items-center gap-2 px-3 py-1.5 border-b ${
-                isLoggedIn
-                  ? 'bg-green-900/20 border-green-700/50'
-                  : isTabOpen || isActive
-                    ? 'bg-amber-900/20 border-amber-700/50'
-                    : 'bg-zinc-900/50 border-zinc-800'
+                isActive
+                  ? (isLoggedIn
+                      ? 'bg-green-900/20 border-green-700/50'
+                      : 'bg-amber-900/20 border-amber-700/50')
+                  : 'bg-zinc-900/50 border-zinc-800'
               }`}>
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 {/* Skin tabs — sorted by balance desc */}
@@ -1242,7 +1244,6 @@ export default function PlayPage() {
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
-                    const isSkinTabOpen = tabOpenProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
                     return (
@@ -1252,13 +1253,12 @@ export default function PlayPage() {
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
-                            : isLoggedIn
-                              ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                              : isSkinTabOpen || isSkinActive
-                                ? 'bg-amber-700/50 text-amber-300 border border-amber-600/50'
-                                : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                            : isSkinActive
+                              ? (isLoggedIn
+                                  ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                  : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
+                              : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                         }`}
-                        title={isLoggedIn ? 'Logged in' : isSkinTabOpen ? 'Tab open — awaiting login' : isSkinActive ? 'Activating' : 'Click to start'}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
                         {bal > 0 && (
