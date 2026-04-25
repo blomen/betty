@@ -67,11 +67,10 @@ def runtime_diagnostic(request: Request):
     if rt is not None:
         diag["account_id"] = rt.client._account_id
         diag["stream_running"] = getattr(rt.stream, "_running", None)
-        diag["zone_seed_task_done"] = (
-            rt.tasks.get("zone_seed").done() if rt.tasks.get("zone_seed") else None
-        )
+        diag["zone_seed_task_done"] = rt.tasks.get("zone_seed").done() if rt.tasks.get("zone_seed") else None
     try:
-        from ..stocks import dashboard as _dashboard
+        from ...stocks import dashboard as _dashboard
+
         diag["dashboard_zone_count"] = len(_dashboard._state.get("zones") or [])
     except Exception as exc:
         diag["dashboard_zone_count_error"] = str(exc)
@@ -514,9 +513,7 @@ def correlate_signals_to_trades(
         # Keep only those on the matching side + within price band
         want_side = "long" if "long" in (sig.action or "").lower() else "short"
         near = [
-            t for t in candidates
-            if t.side == want_side
-            and abs((t.entry_price or 0) - sig.price) <= max_price_distance
+            t for t in candidates if t.side == want_side and abs((t.entry_price or 0) - sig.price) <= max_price_distance
         ]
         if not near:
             unmatched += 1
@@ -578,11 +575,7 @@ def labelled_dataset(days: int = 30, db: Session = Depends(get_db)):
                     "size": tr.size,
                     "pnl_dollars": tr.pnl_dollars,
                     "pnl_r": tr.pnl_r,
-                    "duration_sec": (
-                        (tr.closed_at - tr.ts).total_seconds()
-                        if tr.ts and tr.closed_at
-                        else None
-                    ),
+                    "duration_sec": ((tr.closed_at - tr.ts).total_seconds() if tr.ts and tr.closed_at else None),
                     "closed_at": tr.closed_at.isoformat() if tr.closed_at else None,
                 },
             }

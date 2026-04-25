@@ -31,12 +31,28 @@ def _serialize_trade_for_post(kwargs: dict) -> dict:
     from datetime import datetime as _dt
 
     allowed = {
-        "ts", "session_date", "symbol", "side", "size",
-        "entry_price", "stop_price", "exit_price", "tp_price",
-        "pnl_dollars", "pnl_r", "fill_latency_ms", "slippage_ticks",
-        "was_stop", "trail_count", "stop_ticks",
-        "signal_action", "signal_confidence", "signal_zone",
-        "signal_trigger", "signal_cont_p", "signal_rev_p",
+        "ts",
+        "session_date",
+        "symbol",
+        "side",
+        "size",
+        "entry_price",
+        "stop_price",
+        "exit_price",
+        "tp_price",
+        "pnl_dollars",
+        "pnl_r",
+        "fill_latency_ms",
+        "slippage_ticks",
+        "was_stop",
+        "trail_count",
+        "stop_ticks",
+        "signal_action",
+        "signal_confidence",
+        "signal_zone",
+        "signal_trigger",
+        "signal_cont_p",
+        "signal_rev_p",
         "closed_at",
     }
     out: dict = {}
@@ -96,6 +112,74 @@ class StocksRuntime:
         log.info("Stocks runtime stopped")
 
 
+async def _passive_dashboard_listener() -> None:
+    """Mirror server-side dashboard events into the local dashboard state.
+
+    Used in autonomous mode where the server owns the TopstepX session — the
+    local Arnold app's chart WS / REST endpoints still need their _state dict
+    populated. We connect to the server's /ws/signals as a passive subscriber
+    (X-API-Key auth) and forward zone_update / signal / dqn_inference / tick
+    payloads into the local dashboard module. No order execution, no tick
+    forwarding back — purely read-only.
+    """
+    import json
+    import os
+
+    import websockets
+
+    from src.stocks.dashboard import (
+        bind_loop,
+        record_dqn_inference,
+        record_signal,
+        record_tick,
+        update_zones,
+    )
+
+    bind_loop(asyncio.get_running_loop())
+
+    api_key = os.environ.get("ARNOLD_API_KEY", "")
+    api_base = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get(
+        "ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000"
+    )
+    # /api/* tunnel uses HTTP — derive the matching ws:// URL.
+    ws_url = api_base.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
+    ws_url = f"{ws_url}/ws/signals"
+    headers = [("X-API-Key", api_key)] if api_key else []
+
+    while True:
+        try:
+            log.info("Passive dashboard listener: connecting to %s", ws_url)
+            async with websockets.connect(
+                ws_url,
+                ping_interval=30,
+                ping_timeout=60,
+                additional_headers=headers,
+            ) as ws:
+                log.info("Passive dashboard listener: connected")
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    t = msg.get("type")
+                    if t == "zone_update":
+                        update_zones(msg.get("zones", []))
+                    elif t == "signal":
+                        record_signal(msg)
+                    elif t == "dqn_inference":
+                        record_dqn_inference(msg)
+                    elif t == "tick":
+                        record_tick(
+                            float(msg.get("price", 0)),
+                            int(msg.get("size", 0)),
+                            float(msg.get("ts", 0)),
+                            msg.get("side", "B"),
+                        )
+        except Exception as exc:
+            log.warning("Passive dashboard listener: connection lost (%s) — retrying in 5s", exc)
+            await asyncio.sleep(5)
+
+
 async def bootstrap_stocks() -> StocksRuntime | None:
     """Authenticate TopstepX, start stream + relay, wire dashboard callbacks.
 
@@ -109,9 +193,14 @@ async def bootstrap_stocks() -> StocksRuntime | None:
 
     if os.environ.get("STOCKS_AUTONOMOUS", "").lower() == "true":
         log.info(
-            "STOCKS_AUTONOMOUS=true — server handles TopstepX. Skipping local bootstrap "
-            "(sports mirror still runs; dashboard reads via API)."
+            "STOCKS_AUTONOMOUS=true — server handles TopstepX. Starting passive "
+            "WS listener so the local chart still receives zone/signal/dqn updates."
         )
+        # Spawn a passive listener that mirrors server-side dashboard events into
+        # the local dashboard state. The chart's WS endpoint is mounted by this
+        # Arnold app, so its _state needs to be populated even though all real
+        # TopstepX work happens server-side.
+        asyncio.create_task(_passive_dashboard_listener(), name="passive-dashboard")
         return None
 
     from src.broker.flatten_scheduler import FlattenScheduler
@@ -252,14 +341,10 @@ async def bootstrap_stocks() -> StocksRuntime | None:
                         return
                     except Exception:
                         log.exception("stocks relay task died — restarting")
-                    tasks["relay"] = asyncio.create_task(
-                        relay.connect(), name="stocks-relay-connect"
-                    )
+                    tasks["relay"] = asyncio.create_task(relay.connect(), name="stocks-relay-connect")
 
                 if stream._running and any(t.done() for t in stream._tasks):
-                    log.warning(
-                        "stocks stream hub task(s) ended while running=True — restarting stream"
-                    )
+                    log.warning("stocks stream hub task(s) ended while running=True — restarting stream")
                     try:
                         await stream.stop()
                     except Exception:
