@@ -309,6 +309,14 @@ class CloudbetRetriever(Retriever):
         market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
         events: list[StandardEvent] = []
 
+        # Health probes call extract(sport, limit=1). Walking 200+ competitions
+        # at ~1s each to find the first one with parseable events blew the
+        # orchestrator's 60s health-check budget — Cloudbet was permanently
+        # SKIPPED. Cap competitions tried for tiny limits so the probe stays
+        # fast; full extraction (limit=0) keeps walking the whole list.
+        if limit and limit <= 5 and len(competitions) > 10:
+            competitions = competitions[:10]
+
         # Step 2: fetch each competition
         for comp in competitions:
             comp_key = comp.get("key") or comp.get("id")
