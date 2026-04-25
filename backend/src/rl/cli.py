@@ -1702,6 +1702,127 @@ def merge_live() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ingest-live-trades — convert (signal, observation, realized_trade) into
+# live_episodes chunks the existing merge-live + train pipeline consumes
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("ingest-live-trades")
+def ingest_live_trades() -> None:
+    """Pull (signal + observation + realized broker_trade) tuples from the
+    DB and emit a live_episodes chunk that the standard merge-live → train
+    pipeline picks up. Realized PnL becomes ground-truth reward; the
+    captured observation becomes the state the model learns from.
+
+    Idempotent — tracks ingested trade_ids in
+    /app/data/rl/live_episodes/.ingested_trade_ids and skips duplicates.
+    """
+    import base64
+    import time
+
+    import numpy as np
+    from sqlalchemy import create_engine, text
+
+    live_dir = _DATA_DIR / "live_episodes"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    seen_path = live_dir / ".ingested_trade_ids"
+    seen: set[int] = set()
+    if seen_path.exists():
+        with seen_path.open() as f:
+            seen = {int(x) for x in f.read().split() if x.strip().isdigit()}
+
+    pw = os.environ.get("DB_PASSWORD", "")
+    db_url = f"postgresql://arnold:{pw}@postgres:5432/arnold"
+    engine = create_engine(db_url)
+
+    sql = text(
+        "SELECT s.id AS sid, s.action, s.confidence, s.observation_b64, s.observation_dim,"
+        "       s.stop_ticks, t.id AS tid, t.pnl_dollars, t.pnl_r, t.exit_price, t.entry_price,"
+        "       t.was_stop "
+        "FROM stock_signals s "
+        "JOIN broker_trades t ON t.id = s.trade_id "
+        "WHERE s.observation_b64 IS NOT NULL "
+        "  AND t.pnl_dollars IS NOT NULL"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(sql).fetchall()
+
+    new_rows = [r for r in rows if r.tid not in seen]
+    typer.echo(f"Found {len(rows)} labelled pairs total ({len(new_rows)} new since last ingest).")
+    if not new_rows:
+        return
+
+    obs_list: list[np.ndarray] = []
+    rc_list: list[float] = []
+    rr_list: list[float] = []
+    lt_list: list[int] = []
+    st_list: list[float] = []
+
+    NQ_POINT = 20.0  # $/point
+    for r in new_rows:
+        try:
+            arr = np.frombuffer(base64.b64decode(r.observation_b64), dtype=np.float32)
+            if r.observation_dim and r.observation_dim > 0 and arr.size != r.observation_dim:
+                continue
+        except Exception:
+            continue
+
+        # Action mapping: enter_long/short → continuation (0) or reversal (1).
+        # We don't know which from the action label alone — confidence/cont_p/rev_p
+        # would tell us, but for a simple first pass treat enter_* as continuation
+        # (the model fired CONT or REV; we map both to action 0 for the trainer
+        # because the trainer's reward model is direction-agnostic at the action
+        # axis — the rc/rr split carries the directional reward).
+        action_name = (r.action or "").lower()
+        is_long = "long" in action_name
+
+        # Reward: realized R-multiple if available, else derived from $ + stop_ticks.
+        if r.pnl_r is not None:
+            reward_r = float(r.pnl_r)
+        elif r.stop_ticks and r.stop_ticks > 0:
+            stop_dollars = r.stop_ticks * 5.0  # $5/tick NQ
+            reward_r = float(r.pnl_dollars) / max(stop_dollars, 1.0)
+        else:
+            reward_r = float(r.pnl_dollars) / 500.0  # rough normalization
+
+        # rc / rr: only the realized side gets the reward; the alternative is 0
+        # (no information). The trainer's loss only weights observed actions.
+        rc = reward_r if is_long else 0.0
+        rr = reward_r if not is_long else 0.0
+        # Action label: 0 (continuation) — we treat enter_* as continuation in
+        # the action axis. The directional split lives in rc vs rr.
+        action_label = 0
+        stop_target = float(r.stop_ticks or 25)
+
+        obs_list.append(arr.astype(np.float32))
+        rc_list.append(np.float32(rc))
+        rr_list.append(np.float32(rr))
+        lt_list.append(int(action_label))
+        st_list.append(np.float32(stop_target))
+
+    if not obs_list:
+        typer.echo("No usable rows after filtering.")
+        return
+
+    chunk_id = f"LT{int(time.time())}"  # LT = Live Trade
+    np.save(live_dir / f"obs_{chunk_id}.npy", np.stack(obs_list))
+    np.save(live_dir / f"rc_{chunk_id}.npy", np.array(rc_list, dtype=np.float32))
+    np.save(live_dir / f"rr_{chunk_id}.npy", np.array(rr_list, dtype=np.float32))
+    np.save(live_dir / f"lt_{chunk_id}.npy", np.array(lt_list, dtype=np.int32))
+    np.save(live_dir / f"st_{chunk_id}.npy", np.array(st_list, dtype=np.float32))
+
+    # Update seen set
+    seen.update(r.tid for r in new_rows)
+    with seen_path.open("w") as f:
+        f.write(" ".join(str(x) for x in sorted(seen)))
+
+    typer.echo(
+        f"Wrote chunk {chunk_id}: {len(obs_list)} live-trade examples "
+        f"(realized rewards). merge-live + train will pick them up."
+    )
+
+
+# ---------------------------------------------------------------------------
 # train
 # ---------------------------------------------------------------------------
 

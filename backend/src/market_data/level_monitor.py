@@ -26,6 +26,10 @@ def _persist_stock_signal_async(payload: dict) -> None:
     Threaded so it never blocks LevelMonitor.on_tick. Errors are logged but
     never propagated — missing a persist is always preferable to blocking
     signal dispatch.
+
+    payload may include `_observation` — a numpy.ndarray captured at signal
+    time. We base64-encode the float32 bytes for compact storage (~1.5 KB)
+    so it can later be loaded back into the trainer as ground-truth obs.
     """
     def _worker(p: dict) -> None:
         try:
@@ -36,6 +40,20 @@ def _persist_stock_signal_async(payload: dict) -> None:
                 ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc).replace(tzinfo=None)
             else:
                 ts = datetime.utcnow()
+
+            obs_b64 = None
+            obs_dim = None
+            obs = p.get("_observation")
+            if obs is not None:
+                try:
+                    import base64
+                    import numpy as np
+
+                    arr = np.asarray(obs, dtype=np.float32)
+                    obs_b64 = base64.b64encode(arr.tobytes()).decode("ascii")
+                    obs_dim = int(arr.size)
+                except Exception:
+                    logger.warning("stock_signals: obs encode failed", exc_info=True)
 
             db = get_session()
             try:
@@ -52,6 +70,8 @@ def _persist_stock_signal_async(payload: dict) -> None:
                     zone_center=_maybe_float(p.get("zone")),
                     zone_members=_maybe_int(p.get("zone_members")),
                     model_type=str(p.get("model_type") or "")[:32] or None,
+                    observation_b64=obs_b64,
+                    observation_dim=obs_dim,
                 )
                 db.add(row)
                 db.commit()
@@ -1120,6 +1140,17 @@ class LevelMonitor:
             if not dqn.is_loaded:
                 return
             rl_state = self._build_rl_state_zone(zone, price)
+            # Snapshot the observation vector now so we can persist it on the
+            # eventual signal row. Same builder dqn.infer uses internally —
+            # exposed here so we capture the exact 279-dim state the model
+            # saw at decision time.
+            captured_obs = None
+            try:
+                from src.rl.features.observation import build_observation
+
+                captured_obs = build_observation(rl_state)
+            except Exception:
+                logger.debug("obs capture failed", exc_info=True)
 
             # Inject live position state so infer() can evaluate pyramid /
             # reversal-exit / early-exit relative to the open trade. Without
@@ -1394,7 +1425,13 @@ class LevelMonitor:
                     # Persist to stock_signals for later correlation with
                     # realized broker_trades. Threaded + swallowed errors so
                     # signal dispatch is never blocked or aborted by the DB.
-                    _persist_stock_signal_async(signal_payload)
+                    # Pass the captured obs separately (under _ prefix so
+                    # downstream consumers don't accidentally serialize it
+                    # as JSON when broadcasting).
+                    persist_payload = dict(signal_payload)
+                    if captured_obs is not None:
+                        persist_payload["_observation"] = captured_obs
+                    _persist_stock_signal_async(persist_payload)
         except Exception:
             logger.warning("DQN zone inference failed", exc_info=True)
 

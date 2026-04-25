@@ -97,7 +97,16 @@ echo ""
 echo "[0/8] Exporting DB trades to parquet..."
 python -m src.app rl export-trades || echo "[0/8] Trade export failed (non-critical)."
 
-# Step 0b: Merge live episodes (always runs — new episodes accumulate between cycles)
+# Step 0b: Ingest realized broker_trades + captured signal observations into
+# live_episodes chunks (idempotent — skips already-ingested trade_ids).
+# This converts (signal_obs, action, realized_pnl_r) tuples into the same
+# format simulated episodes use, so the trainer learns from REAL outcomes
+# alongside simulator-generated rewards.
+echo ""
+echo "[0/8] Ingesting live trades → episodes..."
+python -m src.app rl ingest-live-trades || echo "[0/8] No live trades to ingest (non-critical)."
+
+# Step 0c: Merge live episodes (always runs — new episodes accumulate between cycles)
 echo ""
 echo "[0/8] Merging live episodes..."
 python -m src.app rl merge-live || echo "[0/8] No live episodes to merge (non-critical)."

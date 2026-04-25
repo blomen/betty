@@ -2237,6 +2237,9 @@ def _run_pg_migrations(engine) -> None:
         ("broker_trades", "signal_cont_p", "DOUBLE PRECISION"),
         ("broker_trades", "signal_rev_p", "DOUBLE PRECISION"),
         ("broker_trades", "orderflow_score", "DOUBLE PRECISION"),
+        # stock_signals: full observation snapshot for training feedback (2026-04-25)
+        ("stock_signals", "observation_b64", "TEXT"),
+        ("stock_signals", "observation_dim", "INTEGER"),
     ]
     with engine.begin() as conn:
         for table, col, col_type in additions:
@@ -2410,6 +2413,12 @@ class StockSignal(Base):
     with realized broker_trades. This is the training-feedback foundation —
     joined against broker_trades by ts + entry_price proximity to produce
     labelled (signal_context, realized_outcome) pairs.
+
+    `observation_b64` captures the 279-dim observation vector the model saw
+    at signal time, base64-encoded float32 numpy bytes. Together with the
+    eventual realized PnL on the linked trade, this gives the trainer a
+    ground-truth (obs, action, reward) tuple to learn from — not just a
+    simulator estimate.
     """
 
     __tablename__ = "stock_signals"
@@ -2428,6 +2437,10 @@ class StockSignal(Base):
     zone_center = Column(Float, nullable=True)
     zone_members = Column(Integer, nullable=True)
     model_type = Column(String, nullable=True)       # "gbt+dqn", "dqn", etc.
+    # Full observation vector — base64(np.float32[279].tobytes()).
+    # ~1.5 KB per signal, decoded back to numpy with np.frombuffer.
+    observation_b64 = Column(Text, nullable=True)
+    observation_dim = Column(Integer, nullable=True)
     # Outcome linkage (filled by the correlate step when a matching trade closes)
     trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
 
