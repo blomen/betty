@@ -310,19 +310,15 @@ class AltenarWorkflow(ProviderWorkflow):
                     if entry:
                         page_entries.append(entry)
 
-                if not page_entries:
-                    # Empty page — stop early, we've exhausted the history
+                if not bets_data:
+                    # Empty page — stop early, we've exhausted the history.
+                    # Note: Altenar may return fewer than _PAGE_LIMIT even when more
+                    # pages exist (server-side cap), so we can't use a partial-page
+                    # check as the stop signal — only an empty page means done.
                     logger.info(f"[{self.provider_id}] sync_history: page {page_num} empty, stopping")
                     break
 
                 all_entries.extend(page_entries)
-                if len(bets_data) < _PAGE_LIMIT:
-                    # Partial page — provider returned fewer than requested, no more data
-                    logger.info(
-                        f"[{self.provider_id}] sync_history: page {page_num} partial "
-                        f"({len(bets_data)}/{_PAGE_LIMIT}), stopping"
-                    )
-                    break
 
             logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} settled bets total")
             return all_entries
