@@ -39,3 +39,12 @@ def test_provider_runner_stop_stops_active_stream():
     runner._slip_stream = fake_stream
     runner.stop()
     fake_stream.stop.assert_called_once()
+
+
+def test_provider_runner_module_imports_slip_odds_stream():
+    """Regression: SlipOddsStream is referenced inside _run, so it must be
+    imported at module load. A previous commit instantiated the class without
+    importing it; tests that didn't exercise _run missed the NameError."""
+    import arnold.mirror.provider_runner as mod
+
+    assert hasattr(mod, "SlipOddsStream")
