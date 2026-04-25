@@ -282,23 +282,50 @@ class AltenarWorkflow(ProviderWorkflow):
             return None
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Fetch settled bet history via on-site v3 history API."""
+        """Fetch settled bet history via on-site v3 history API.
+
+        Walks pages until a page returns no settled entries OR the safety cap
+        is hit. Necessary because reconcile needs to match DB pending bets that
+        may be days old (past page 1).
+
+        TODO(generic-history): refactor into a shared paginate() helper on the
+        base workflow once Kambi/Gecko/Interwetten get the same treatment.
+        Tracked as Option C in the audit notes (provider history pagination).
+        """
+        _MAX_PAGES = 5
+        _PAGE_LIMIT = 100
         try:
-            logger.info(f"[{self.provider_id}] sync_history: starting")
-            result = await self._authed_fetch(page, self._history_url(page=1, limit=100))
-            if not result or "__error" in (result or {}):
-                logger.warning(f"[{self.provider_id}] sync_history API failed: {result}")
-                return []
+            logger.info(f"[{self.provider_id}] sync_history: starting (up to {_MAX_PAGES} pages)")
+            all_entries: list[HistoryEntry] = []
+            for page_num in range(1, _MAX_PAGES + 1):
+                result = await self._authed_fetch(page, self._history_url(page=page_num, limit=_PAGE_LIMIT))
+                if not result or "__error" in (result or {}):
+                    logger.warning(f"[{self.provider_id}] sync_history page {page_num} failed: {result}")
+                    break
 
-            bets_data = self._parse_bets_data(result)
-            entries = []
-            for bet in bets_data:
-                entry = self._parse_history_entry(bet)
-                if entry:
-                    entries.append(entry)
+                bets_data = self._parse_bets_data(result)
+                page_entries = []
+                for bet in bets_data:
+                    entry = self._parse_history_entry(bet)
+                    if entry:
+                        page_entries.append(entry)
 
-            logger.info(f"[{self.provider_id}] sync_history: {len(entries)} settled bets")
-            return entries
+                if not page_entries:
+                    # Empty page — stop early, we've exhausted the history
+                    logger.info(f"[{self.provider_id}] sync_history: page {page_num} empty, stopping")
+                    break
+
+                all_entries.extend(page_entries)
+                if len(bets_data) < _PAGE_LIMIT:
+                    # Partial page — provider returned fewer than requested, no more data
+                    logger.info(
+                        f"[{self.provider_id}] sync_history: page {page_num} partial "
+                        f"({len(bets_data)}/{_PAGE_LIMIT}), stopping"
+                    )
+                    break
+
+            logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} settled bets total")
+            return all_entries
         except Exception as e:
             logger.warning(f"[{self.provider_id}] sync_history failed: {e}")
             return []
