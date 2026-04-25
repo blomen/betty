@@ -67,6 +67,14 @@ def runtime_diagnostic(request: Request):
     if rt is not None:
         diag["account_id"] = rt.client._account_id
         diag["stream_running"] = getattr(rt.stream, "_running", None)
+        diag["zone_seed_task_done"] = (
+            rt.tasks.get("zone_seed").done() if rt.tasks.get("zone_seed") else None
+        )
+    try:
+        from ..stocks import dashboard as _dashboard
+        diag["dashboard_zone_count"] = len(_dashboard._state.get("zones") or [])
+    except Exception as exc:
+        diag["dashboard_zone_count_error"] = str(exc)
     return diag
 
 

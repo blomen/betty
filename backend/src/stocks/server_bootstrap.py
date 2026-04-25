@@ -290,9 +290,14 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         # zones are present, snapshot them into the dashboard state so the
         # chart renders immediately. Future rebuild_zones calls (5-min
         # periodic recompute) keep state fresh via _dashboard_zone_forwarder.
-        for _ in range(120):
+        log.info("Zone seed task started (polling every 5s for up to 10m)")
+        last_count = -1
+        for i in range(120):
             try:
                 zs = getattr(level_monitor, "_zones", []) or []
+                if len(zs) != last_count:
+                    log.info("Zone seed tick %d: _zones=%d", i, len(zs))
+                    last_count = len(zs)
                 if zs:
                     _dashboard.update_zones(_serialize_zones(zs))
                     log.info("Seeded dashboard with %d zones from LevelMonitor", len(zs))
@@ -302,7 +307,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
             await asyncio.sleep(5)
         log.warning("Gave up waiting for LevelMonitor zones after 10 min")
 
-    asyncio.create_task(_seed_dashboard_zones_when_ready())
+    _seed_task = asyncio.create_task(_seed_dashboard_zones_when_ready())
 
     # Direct DB insert for closed trades (no HTTP needed — same process)
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
@@ -331,7 +336,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         adapter=adapter,
         stream=stream,
         flatten_scheduler=flatten_scheduler,
-        tasks={},
+        tasks={"zone_seed": _seed_task},
     )
     app.state.stocks_runtime = runtime
     log.info("ServerStocksRuntime active — autonomous trading ON")

@@ -167,11 +167,7 @@ export default function App() {
             </div>
             <div className={`flex flex-col flex-1 min-h-0 ${bankrollSub === 'trading' ? '' : 'hidden'}`}>
               <ErrorBoundary label="Trading bankroll">
-                <StocksBankrollPage
-                  positions={ws.positions}
-                  lastPrice={ws.lastPrice}
-                  quote={ws.quote}
-                />
+                <StocksBankrollPage />
               </ErrorBoundary>
             </div>
           </div>
