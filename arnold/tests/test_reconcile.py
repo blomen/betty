@@ -115,3 +115,45 @@ def test_meaningful_diff_helper():
     assert _has_meaningful_diff(50.0, 50.7)  # 1.4% drift
     assert _has_meaningful_diff(None, 100.0)  # None → present
     assert not _has_meaningful_diff(None, None)
+
+
+def test_fallback_finds_bet_in_targeted_window():
+    """The fallback path receives a small targeted history list and reconciles
+    against it — same logic as main pass, just a smaller input."""
+    bet = {
+        "id": 999,
+        "stake": 6.09,
+        "odds": 4.25,
+        "home_team": "Al Bataeh",
+        "away_team": "Al Sharjah UAE",
+        "start_time": "2026-04-13T15:30:00Z",
+    }
+    targeted_history = [
+        {
+            "status": "lost",
+            "stake": 6.09,
+            "odds": 4.25,
+            "payout": 0,
+            "event_name": "Al Bataeh vs Al Sharjah UAE",
+            "provider_bet_id": "ALT-123",
+        },
+    ]
+    deltas = reconcile_from_history([bet], targeted_history)
+    assert len(deltas) == 1
+    d = deltas[0]
+    assert d.changes.get("result") == "lost"
+    assert d.changes.get("provider_bet_id") == "ALT-123"
+
+
+def test_fallback_no_match_when_window_empty():
+    bet = {
+        "id": 1000,
+        "stake": 100,
+        "odds": 2.0,
+        "home_team": "X",
+        "away_team": "Y",
+        "start_time": "2026-04-13T15:30:00Z",
+    }
+    targeted_history = []
+    deltas = reconcile_from_history([bet], targeted_history)
+    assert deltas == []

@@ -70,3 +70,28 @@ def test_base_workflow_default_update_slip_stake_returns_false():
     wf = _Stub(provider_id="x", domain="x.com")
     result = asyncio.run(wf.update_slip_stake(page=None, stake=10.0))
     assert result is False
+
+
+def test_base_workflow_default_fetch_history_for_bet_returns_none():
+    """Default returns None — workflows opt in by overriding."""
+
+    class _Stub(ProviderWorkflow):
+        platform = "stub"
+
+        async def check_login(self, page):
+            return True
+
+        async def sync_history(self, page):
+            return []
+
+        async def sync_balance(self, page):
+            return 0.0
+
+        async def navigate_to_event(self, page, bet):
+            return True
+
+        async def place_bet(self, page, bet, stake): ...
+
+    wf = _Stub(provider_id="x", domain="x.com")
+    result = asyncio.run(wf.fetch_history_for_bet(page=None, bet={"id": 1}))
+    assert result is None
