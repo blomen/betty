@@ -259,6 +259,61 @@ The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.ts
 - Outcomes measured over `OUTCOME_WINDOWS = [10, 30, 60, 120, 300]s` in `live_collector._compute_reward` — handles delayed market reaction. Flushed to `data/rl/live_episodes/*.npy`.
 - Skip / low-confidence touches ARE in the training set, labeled with actual post-touch reaction. Don't gate recording on inference output.
 
+### Live trade → training feedback loop (added 2026-04-25)
+
+End-to-end ground-truth pipeline so the model learns from its own real outcomes, not just simulator estimates:
+
+```
+LevelMonitor fires signal
+  → build_observation(rl_state) explicitly captures the 279-dim obs vector
+  → _persist_stock_signal_async writes signal + observation_b64 to stock_signals
+       ↓ (TopstepX fills, broker_adapter places + manages)
+broker_trade row created with full context (entry/exit/stop/tp/was_stop/
+  trail_count/signal_*/orderflow_score)
+       ↓ (nightly cron at 23:55 UTC)
+POST /api/stocks/signals/correlate → joins signal.trade_id = trade.id by
+  ts (±60s) + entry_price (±5pt)
+       ↓ (next pipeline cycle, step 0b)
+rl ingest-live-trades reads (obs, action, realized_pnl_r) from labelled
+  pairs, writes obs_LT*.npy / rc_/rr_/lt_/st_ to live_episodes/.
+  Idempotent — tracks ingested trade_ids in .ingested_trade_ids.
+       ↓
+merge-live folds them into the main training pool
+       ↓
+DQN training learns from BOTH simulator episodes AND realized trades
+```
+
+Schema columns supporting this:
+- `stock_signals.observation_b64` (TEXT, base64 of float32 bytes, ~1.5 KB/row)
+- `stock_signals.observation_dim` (INTEGER)
+- `stock_signals.trade_id` (FK to broker_trades, filled by correlate)
+- `broker_trades.{tp_price, was_stop, trail_count, stop_ticks, signal_trigger, signal_cont_p, signal_rev_p, orderflow_score}` (added same day)
+
+Postgres ALTER TABLE migrations live in `models._run_pg_migrations` — add new columns there, not via Alembic.
+
+**Don't break the loop**:
+- `level_monitor` MUST call `build_observation` BEFORE `dqn.infer` so the captured obs is the same one DQN saw (deterministic — both call the same builder).
+- `_persist_stock_signal_async` is fire-and-forget threaded; if it raises, the trade itself still completes.
+- The correlate cron MUST run before `ingest-live-trades` for that cycle, otherwise pairs stay unlinked. Current chain: `23:55 UTC cron → POST /correlate → session_review → next pipeline picks up`.
+- `_pending_trade` dict in broker_adapter must include `orderflow_score` — it's how `of_score` survives from signal-time into the trade row.
+
+### Stocks autonomous trading (added 2026-04-24)
+
+`STOCKS_AUTONOMOUS=true` (set in `.env.docker`) makes the server own the TopstepX session. Without it, the local arnold app authenticates and trades. With both, TopstepX kicks one with "Multiple sessions detected" — local `arnold/stocks_runtime.py` checks the env var and no-ops.
+
+Server bootstrap lives in `backend/src/stocks/server_bootstrap.py`:
+- Authenticates TopstepXClient
+- Starts TopstepXStream (ticks + fills server-side)
+- Wires BrokerAdapter to LevelMonitor via `set_broker_adapter` (same pattern as Rithmic / Tradovate paths)
+- Direct DB insert for closed trades — no HTTP POST round-trip
+- Runs as a background task in lifespan so the 30s startup grace doesn't block /health
+
+`STOCKS_AUTH_STARTUP_DELAY_SEC` (default 30) — waits before TopstepX auth on container start. Lets the previous container's SignalR session be torn down on TopstepX's side before we connect, eliminating the "Multiple sessions detected" race kick. Safe to lower to 10-15s if you control all sessions.
+
+`/api/stocks/runtime-status` reports current position, halt reason, session PnL.
+`POST /api/stocks/halt?flatten=true` panic stops + flattens.
+`POST /api/stocks/resume` clears the pause flag.
+
 ## Arnold — Local Client
 
 **Run `arnold.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser + TopstepX relay (unless `STOCKS_AUTONOMOUS=true`).
