@@ -176,6 +176,14 @@ class GeckoV2Retriever(BrowserRetriever):
         self._last_run_id: str | None = None
         # Fail-fast: if session init fails once per run, skip remaining sports
         self._session_init_failed: bool = False
+        # Serialize session init across concurrent sports. The orchestrator runs
+        # up to 3 sports in parallel per provider; without this lock all three
+        # coroutines race into page.route() + page.goto() on the same Page,
+        # which Playwright doesn't support cleanly. Under CPU load (load avg
+        # 5-7 on a 4-core box during peak extraction) the racing nav calls
+        # deadlock past the 120s outer wait_for, breaking the provider for
+        # an entire cycle.
+        self._session_init_lock = asyncio.Lock()
 
     async def _ensure_session(self) -> bool:
         """
@@ -335,40 +343,48 @@ class GeckoV2Retriever(BrowserRetriever):
                 provider_id=self.provider_id,
             )
 
-        # Retry session init up to 3 times (header capture is timing-sensitive on betsson)
-        for attempt in range(3):
-            try:
-                session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
-                if session_ok:
-                    break
-                # First attempt failed — close browser and retry with fresh page
-                logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} failed, retrying...")
-                self._api_headers = None
-                self._api_base = None
-                self._session_ready = False
-                await self.transport.close()
-                await self.transport._ensure_browser()
-            except asyncio.TimeoutError:
-                logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} timed out")
-                self._api_headers = None
-                self._api_base = None
-                self._session_ready = False
-                if attempt < 2:
-                    await self.transport.close()
-                    await self.transport._ensure_browser()
-                    continue
-                self._session_init_failed = True
-                raise RetryableError(
-                    "Session init timed out after 2 attempts",
-                    provider_id=self.provider_id,
-                )
+        # Serialize across the 3 concurrent sport coroutines so only one of
+        # them actually drives page.route + page.goto. The others wait, then
+        # see _api_headers is set and skip the init.
+        async with self._session_init_lock:
+            if self._api_headers:
+                # Another sport coroutine completed init while we waited.
+                pass
+            else:
+                # Retry session init up to 3 times (header capture is timing-sensitive on betsson)
+                for attempt in range(3):
+                    try:
+                        session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
+                        if session_ok:
+                            break
+                        # First attempt failed — close browser and retry with fresh page
+                        logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} failed, retrying...")
+                        self._api_headers = None
+                        self._api_base = None
+                        self._session_ready = False
+                        await self.transport.close()
+                        await self.transport._ensure_browser()
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} timed out")
+                        self._api_headers = None
+                        self._api_base = None
+                        self._session_ready = False
+                        if attempt < 2:
+                            await self.transport.close()
+                            await self.transport._ensure_browser()
+                            continue
+                        self._session_init_failed = True
+                        raise RetryableError(
+                            "Session init timed out after 2 attempts",
+                            provider_id=self.provider_id,
+                        )
 
-        if not self._api_headers:
-            self._session_init_failed = True
-            raise RetryableError(
-                "Session init failed — no API headers captured",
-                provider_id=self.provider_id,
-            )
+                if not self._api_headers:
+                    self._session_init_failed = True
+                    raise RetryableError(
+                        "Session init failed — no API headers captured",
+                        provider_id=self.provider_id,
+                    )
 
         # Get category ID from hardcoded map or dynamic slug lookup
         category_id = self.SPORT_CATEGORY_IDS.get(sport)
