@@ -83,6 +83,7 @@ class ProviderRunner:
         self._intercepted_request_body: dict | None = None
 
         self._task: asyncio.Task | None = None
+        self._slip_stream = None  # Set when a slip is loaded; cleared when bet ready/placed/skipped
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,6 +95,12 @@ class ProviderRunner:
         self._task = asyncio.create_task(self._run(), name=f"runner_{self.provider_id}")
 
     def stop(self) -> None:
+        if self._slip_stream is not None:
+            try:
+                self._slip_stream.stop()
+            except Exception:
+                pass
+            self._slip_stream = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -386,77 +393,80 @@ class ProviderRunner:
                     },
                 )
 
-                # Poll live price every 3s while waiting for placement/skip
-                _PRICE_POLL_INTERVAL = 3.0
+                # Stream slip odds while waiting for placement/skip. Broadcasts
+                # live_price on every meaningful change and auto-skips on
+                # negative EV or edge collapse without inline polling.
                 _last_live_odds = live_odds
-                while not self._bet_intercepted_event.is_set() and not self._skip_event.is_set():
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(
-                                asyncio.wait(
-                                    [
-                                        asyncio.ensure_future(self._bet_intercepted_event.wait()),
-                                        asyncio.ensure_future(self._skip_event.wait()),
-                                    ],
-                                    return_when=asyncio.FIRST_COMPLETED,
-                                )
-                            ),
-                            timeout=_PRICE_POLL_INTERVAL,
-                        )
-                        break  # One of the events fired
-                    except asyncio.TimeoutError:
-                        pass  # Poll live price below
+                _last_live_edge = live_edge
+                _auto_skip_reason: str | None = None
 
-                    # Poll live price
-                    if hasattr(workflow, "check_live_price"):
-                        try:
-                            lo, le = await workflow.check_live_price(page, bet_ns)
-                            if lo is not None and lo != _last_live_odds:
-                                _last_live_odds = lo
-                                live_odds = lo
-                                live_edge = le
-                                self._broadcaster.publish(
-                                    "live_price",
-                                    {
-                                        "event_id": bet.get("event_id", ""),
-                                        "market": bet.get("market", ""),
-                                        "outcome": bet.get("outcome", ""),
-                                        "provider_id": pid,
-                                        "live_odds": lo,
-                                        "live_edge": le,
-                                        "fair_odds": bet.get("fair_odds"),
-                                    },
-                                )
-                        except Exception:
-                            pass
-
-                    # Auto-skip if live edge dropped significantly
-                    if live_edge is not None:
-                        should_skip = False
-                        skip_reason = ""
-
-                        if live_edge < 0:
-                            should_skip = True
-                            skip_reason = f"negative EV ({live_odds:.2f}, edge {live_edge:.1f}%)"
-                        elif self._peek_top_edge:
+                def _on_slip_change(odds: float) -> None:
+                    nonlocal _last_live_odds, _last_live_edge, _auto_skip_reason
+                    fair = bet.get("fair_odds")
+                    edge = ((odds / fair) - 1) * 100 if fair else None
+                    _last_live_odds = odds
+                    _last_live_edge = edge
+                    self._broadcaster.publish(
+                        "live_price",
+                        {
+                            "event_id": bet.get("event_id", ""),
+                            "market": bet.get("market", ""),
+                            "outcome": bet.get("outcome", ""),
+                            "provider_id": pid,
+                            "live_odds": odds,
+                            "live_edge": edge,
+                            "fair_odds": fair,
+                        },
+                    )
+                    # Auto-skip logic
+                    if edge is not None:
+                        if edge < 0:
+                            _auto_skip_reason = f"negative EV ({odds:.2f}, edge {edge:.1f}%)"
+                            self._skip_event.set()
+                            return
+                        if self._peek_top_edge:
                             top_edge = self._peek_top_edge()
-                            if top_edge is not None and top_edge > 0 and live_edge < top_edge * 0.5:
-                                should_skip = True
-                                skip_reason = f"edge dropped ({live_edge:.1f}% < 50% of top {top_edge:.1f}%)"
+                            if top_edge is not None and top_edge > 0 and edge < top_edge * 0.5:
+                                _auto_skip_reason = f"edge dropped ({edge:.1f}% < 50% of top {top_edge:.1f}%)"
+                                self._skip_event.set()
 
-                        if should_skip:
-                            logger.info(f"[Runner:{pid}] Auto-skip: {skip_reason}")
-                            self._broadcaster.publish(
-                                "bet_skipped",
-                                {
-                                    "bet": bet,
-                                    "reason": skip_reason,
-                                    "live_odds": live_odds,
-                                    "live_edge": live_edge,
-                                },
-                            )
-                            self.stats["skipped"] += 1
-                            break
+                self._slip_stream = SlipOddsStream(
+                    provider_id=pid,
+                    workflow=workflow,
+                    page=page,
+                    on_odds_change=_on_slip_change,
+                    poll_interval_s=1.0,
+                )
+                self._slip_stream.start()
+                try:
+                    await asyncio.wait(
+                        [
+                            asyncio.ensure_future(self._bet_intercepted_event.wait()),
+                            asyncio.ensure_future(self._skip_event.wait()),
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if self._slip_stream is not None:
+                        self._slip_stream.stop()
+                        self._slip_stream = None
+                live_odds = _last_live_odds
+                live_edge = _last_live_edge
+
+                # If auto-skip fired during streaming, broadcast bet_skipped here
+                # (the wait above completed because _skip_event was set)
+                if _auto_skip_reason is not None and not self._bet_intercepted_event.is_set():
+                    logger.info(f"[Runner:{pid}] Auto-skip: {_auto_skip_reason}")
+                    self._broadcaster.publish(
+                        "bet_skipped",
+                        {
+                            "bet": bet,
+                            "reason": _auto_skip_reason,
+                            "live_odds": live_odds,
+                            "live_edge": live_edge,
+                        },
+                    )
+                    self.stats["skipped"] += 1
 
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
@@ -466,10 +476,10 @@ class ProviderRunner:
                         logger.exception(f"[Runner:{pid}] Recording failed")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})
                         self.stats["skipped"] += 1
-                elif self._skip_event.is_set():
+                elif self._skip_event.is_set() and _auto_skip_reason is None:
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "user_skip"})
                     self.stats["skipped"] += 1
-                # else: auto-skipped by better-bet logic (already broadcast + counted)
+                # else: auto-skipped by stream callback (already broadcast + counted)
 
             # Done
             self._broadcaster.publish("provider_complete", {"provider_id": pid})
