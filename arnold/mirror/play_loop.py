@@ -217,15 +217,25 @@ class PlayLoop:
 
     def on_bet_intercepted(self, provider_id: str, body: dict, request_body: dict | None = None) -> None:
         """Route intercepted bet to the correct runner, or record directly as fallback."""
+        # Anchor case: runner for this provider, in soft-anchor state
         runner = self._runners.get(provider_id)
+        if (
+            runner
+            and getattr(runner, "_anchor_event", None) is not None
+            and runner.state in ("standby", "loading_legs")
+        ):
+            runner.on_bet_intercepted(body, request_body)
+            return
+        # Counter case: another runner is awaiting hedges and this provider is one of its counters
+        for r in self._runners.values():
+            counter_events = getattr(r, "_counter_events", None) or {}
+            if provider_id in counter_events and r.state == "awaiting_hedges":
+                r.on_counter_bet_intercepted(provider_id, body, request_body)
+                return
         if runner:
             runner.on_bet_intercepted(body, request_body)
             return
-        # No runner at all — log warning (bet will be picked up by settlement sync)
-        logger.warning(
-            f"[PlayCoordinator] Bet intercepted for {provider_id} but no runner exists — "
-            f"will be picked up by next settlement sync"
-        )
+        logger.warning(f"[PlayCoordinator] Bet intercepted for {provider_id} — no runner matched")
 
     def confirm_settlements(self, confirmed: list[dict] | None = None) -> None:
         """No-op for parallel play — settlements auto-confirm in runners."""
