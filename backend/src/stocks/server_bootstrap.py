@@ -263,13 +263,30 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
             _dashboard.update_zones(msg.get("zones", []))
 
     level_monitor.add_signal_callback(_dashboard_zone_forwarder)
-    # Push current zones immediately — _broadcast_zones() only fires on
-    # rebuild_zones() (1m candle close), so without this the dashboard
-    # stays empty until the next rebuild after restart.
+    # Sync current zones into the dashboard state immediately. Going through
+    # _broadcast_zones() races against the init thread that runs
+    # set_session_context — when init finishes first, the broadcast at that
+    # time has zero callbacks (forwarder not yet registered). When init
+    # finishes last, _zones is empty when we register. Skip the dance:
+    # serialize whatever the LevelMonitor currently has and hand it straight
+    # to update_zones. Future zone_update broadcasts (next rebuild) keep it
+    # in sync via the forwarder.
     try:
-        level_monitor._broadcast_zones()
+        current_zones = getattr(level_monitor, "_zones", []) or []
+        if current_zones:
+            _dashboard.update_zones([
+                {
+                    "price": round(z.center_price, 2),
+                    "members": z.member_count,
+                    "upper": round(z.upper_bound, 2),
+                    "lower": round(z.lower_bound, 2),
+                    "hierarchy": round(z.hierarchy_score, 3),
+                }
+                for z in current_zones
+            ])
+            log.info("Seeded dashboard with %d zones from LevelMonitor", len(current_zones))
     except Exception:
-        log.exception("Initial zone broadcast to dashboard failed")
+        log.exception("Initial zone seed to dashboard failed")
 
     # Direct DB insert for closed trades (no HTTP needed — same process)
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
