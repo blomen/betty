@@ -883,7 +883,8 @@ async def lifespan(app: FastAPI):
                     logger.exception("[Stocks] Background bootstrap raised — trading disabled")
 
             _stocks_bootstrap_task = asyncio.create_task(
-                _stocks_bg_bootstrap(), name="stocks-bootstrap",
+                _stocks_bg_bootstrap(),
+                name="stocks-bootstrap",
             )
             _background_tasks.add(_stocks_bootstrap_task)
             _stocks_bootstrap_task.add_done_callback(_background_tasks.discard)
@@ -1256,7 +1257,7 @@ async def health_extraction():
 
             # ── Deep health assessment ──
             intervals = get_provider_intervals()
-            health_status, issues = assess_extraction_health(db, intervals)
+            health_status, issues, providers_health = assess_extraction_health(db, intervals)
 
             # ── Last 3 runs for the response body ──
             runs = db.query(ExtractionRun).order_by(ExtractionRun.start_time.desc()).limit(3).all()
@@ -1297,7 +1298,12 @@ async def health_extraction():
                     }
                 )
 
-            return {"status": health_status, "issues": issues, "runs": run_data}
+            return {
+                "status": health_status,
+                "issues": issues,
+                "providers": providers_health,
+                "runs": run_data,
+            }
         except Exception as e:
             return {"error": str(e)}
         finally:

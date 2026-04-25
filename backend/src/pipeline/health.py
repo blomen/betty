@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
-from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from threading import Lock
 
 import yaml
@@ -206,134 +204,95 @@ def get_provider_intervals() -> dict[str, int]:
 
 # ── Extraction Health Assessment ─────────────────────────────────────────────
 
-SHARP_STALE_MINUTES = 30  # Metrics persist after full pipeline cycle (browser cycles take 5-15min)
-CONSECUTIVE_FAILURE_CRITICAL = 3
-CONSECUTIVE_FAILURE_WARNING = 2
-STALENESS_MULTIPLIER = 3
-VOLUME_DROP_THRESHOLD = 0.50
-VOLUME_MIN_BASELINE = 50
+# Multipliers applied to each provider's expected interval (minutes) to derive
+# warning/critical thresholds. Generous because browser tiers commonly take
+# 2-5x interval to actually finish a cycle under load.
+WARN_MULTIPLIER = 3
+CRIT_MULTIPLIER = 6
+# Pinnacle is the only sharp source — without it, no fair odds, no arbs. Tighter floor.
+SHARP_WARN_MINUTES = 5
+SHARP_CRIT_MINUTES = 15
 
-INTEGRITY_PATTERNS = re.compile(r"UniqueViolation|IntegrityError|duplicate key|sequence", re.IGNORECASE)
 
+def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[str], list[dict]]:
+    """Per-provider freshness check using odds.updated_at as ground truth.
 
-def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[str]]:
-    """Run 5 deep health checks on extraction state.
+    Why odds.updated_at and not extraction_runs / provider_run_metrics:
+    those tables aggregate per-tier and lag wildly behind real writes — during
+    the 2026-04-25 incident we observed 1-2 rows for the last hour despite
+    dozens of completed runs, so the prior /health/extraction endpoint reported
+    everything-stale even when fresh odds were landing every minute. The odds
+    table cannot lie: a row's updated_at is set at insert/update time, so a
+    fresh value proves the provider is actually producing data.
 
-    Returns (status, issues) where status is "ok"/"warning"/"critical".
+    Returns (status, issues, providers) where status is "ok"/"warning"/"critical",
+    issues is the human-readable list (kept for back-compat with the existing
+    response body), and providers is the structured per-provider list the UI
+    consumes for the banner.
     """
     now = datetime.now(timezone.utc)
-    one_hour_ago = now - timedelta(hours=1)
     issues: list[str] = []
+    providers: list[dict] = []
 
-    # ── Fetch recent provider run metrics (last hour) ──
     rows = db.execute(
         text(
-            "SELECT provider_id, status, start_time, error_message "
-            "FROM provider_run_metrics "
-            "WHERE start_time > :since "
-            "ORDER BY start_time DESC"
+            "SELECT provider_id, MAX(updated_at) AS last_update "
+            "FROM odds "
+            "WHERE provider_id = ANY(:provs) "
+            "GROUP BY provider_id"
         ),
-        {"since": one_hour_ago},
+        {"provs": list(intervals.keys())},
     ).fetchall()
+    last_update_by_provider: dict[str, datetime] = {r[0]: r[1] for r in rows}
 
-    by_provider: dict[str, list[tuple]] = defaultdict(list)
-    for r in rows:
-        by_provider[r[0]].append((r[1], r[2], r[3]))
-
-    # ── Check 1: Sharp source down ──
-    if "pinnacle" in intervals:
-        pinnacle_runs = by_provider.get("pinnacle", [])
-        last_pinnacle_success = None
-        for status, start_time, _ in pinnacle_runs:
-            if status == "success":
-                last_pinnacle_success = start_time
-                break
-
-        if last_pinnacle_success is None:
-            issues.append("CRITICAL: pinnacle has not completed successfully in 60+ minutes")
-        else:
-            age_min = (now - last_pinnacle_success.replace(tzinfo=timezone.utc)).total_seconds() / 60
-            if age_min > SHARP_STALE_MINUTES:
-                issues.append(f"CRITICAL: pinnacle has not completed successfully in {int(age_min)} minutes")
-
-    # ── Check 2: Consecutive provider failures ──
-    for provider_id, runs in by_provider.items():
-        consecutive = 0
-        last_error = ""
-        for status, _, error_msg in runs:
-            if status != "success":
-                consecutive += 1
-                if not last_error and error_msg:
-                    last_error = error_msg[:100]
-            else:
-                break
-        if consecutive >= CONSECUTIVE_FAILURE_CRITICAL:
-            issues.append(
-                f"CRITICAL: {provider_id} has failed {consecutive} consecutive runs"
-                + (f" — {last_error}" if last_error else "")
-            )
-        elif consecutive >= CONSECUTIVE_FAILURE_WARNING:
-            issues.append(
-                f"WARNING: {provider_id} has failed {consecutive} consecutive runs"
-                + (f" — {last_error}" if last_error else "")
-            )
-
-    # ── Check 3: Provider staleness ──
     for provider_id, expected_interval in intervals.items():
-        if provider_id == "pinnacle":
-            continue  # covered by check 1
-        threshold_min = expected_interval * STALENESS_MULTIPLIER
-        runs = by_provider.get(provider_id, [])
-        last_success = None
-        for status, start_time, _ in runs:
-            if status == "success":
-                last_success = start_time
-                break
-        if last_success is None:
-            issues.append(
-                f"WARNING: {provider_id} has no successful run in the last hour (threshold: {threshold_min} min)"
-            )
+        is_sharp = provider_id == "pinnacle"
+        last_update = last_update_by_provider.get(provider_id)
+        if last_update is None:
+            age_min = None
         else:
-            age_min = (now - last_success.replace(tzinfo=timezone.utc)).total_seconds() / 60
-            if age_min > threshold_min:
-                issues.append(
-                    f"WARNING: {provider_id} is stale — last succeeded {int(age_min)} min ago "
-                    f"(threshold: {threshold_min} min)"
-                )
+            # odds.updated_at is timestamp-without-tz from PG; treat as UTC.
+            age_min = (now - last_update.replace(tzinfo=timezone.utc)).total_seconds() / 60
 
-    # ── Check 4: Database integrity errors ──
-    integrity_providers: set[str] = set()
-    for provider_id, runs in by_provider.items():
-        for _, _, error_msg in runs:
-            if error_msg and INTEGRITY_PATTERNS.search(error_msg):
-                integrity_providers.add(provider_id)
-                break
-    if integrity_providers:
-        issues.append("CRITICAL: database integrity errors detected in: " + ", ".join(sorted(integrity_providers)))
+        if is_sharp:
+            warn_min, crit_min = SHARP_WARN_MINUTES, SHARP_CRIT_MINUTES
+        else:
+            warn_min = expected_interval * WARN_MULTIPLIER
+            crit_min = expected_interval * CRIT_MULTIPLIER
 
-    # ── Check 5: Opportunity volume drop ──
-    result = db.execute(
-        text(
-            "SELECT "
-            "COUNT(*) FILTER (WHERE detected_at > :one_h_ago) AS opp_current, "
-            "COUNT(*) FILTER (WHERE detected_at > :two_h_ago AND detected_at <= :one_h_ago) AS opp_previous "
-            "FROM opportunities "
-            "WHERE detected_at > :two_h_ago"
-        ),
-        {"one_h_ago": one_hour_ago, "two_h_ago": now - timedelta(hours=2)},
-    ).fetchone()
-    opp_current, opp_previous = result[0], result[1]
-    if opp_previous >= VOLUME_MIN_BASELINE and opp_current < opp_previous * (1 - VOLUME_DROP_THRESHOLD):
-        drop_pct = int((1 - opp_current / opp_previous) * 100)
-        issues.append(f"WARNING: opportunity volume dropped {drop_pct}% ({opp_previous} → {opp_current}) in last hour")
+        if age_min is None:
+            provider_status = "down"
+            issues.append(f"{'CRITICAL' if is_sharp else 'WARNING'}: {provider_id} has never written odds (no rows)")
+        elif age_min > crit_min:
+            provider_status = "critical"
+            issues.append(f"CRITICAL: {provider_id} stale {int(age_min)}m (threshold: {int(crit_min)}m)")
+        elif age_min > warn_min:
+            provider_status = "warning"
+            issues.append(f"WARNING: {provider_id} stale {int(age_min)}m (threshold: {int(warn_min)}m)")
+        else:
+            provider_status = "ok"
 
-    # ── Determine overall status ──
+        providers.append(
+            {
+                "provider_id": provider_id,
+                "status": provider_status,
+                "age_minutes": round(age_min, 1) if age_min is not None else None,
+                "warn_minutes": warn_min,
+                "crit_minutes": crit_min,
+                "interval_minutes": expected_interval,
+                "is_sharp": is_sharp,
+            }
+        )
+
+    providers.sort(key=lambda p: (p["age_minutes"] is None, -(p["age_minutes"] or 0)))
+
+    # Roll up to overall status: any critical → critical, any warning → warning.
     status = "ok"
-    for issue in issues:
-        if issue.startswith("CRITICAL:"):
+    for p in providers:
+        if p["status"] in ("critical", "down"):
             status = "critical"
             break
-        if issue.startswith("WARNING:"):
+        if p["status"] == "warning":
             status = "warning"
 
-    return status, issues
+    return status, issues, providers

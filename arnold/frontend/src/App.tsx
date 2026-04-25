@@ -7,6 +7,7 @@ import { ChartPage } from './pages/stocks/ChartPage'
 import { BankrollPage as StocksBankrollPage } from './pages/stocks/BankrollPage'
 import { StatsPage as StocksStatsPage } from './pages/stocks/StatsPage'
 import { ProfileSelector } from './components/ProfileSelector'
+import { ExtractionHealth } from './components/ExtractionHealth'
 import { useDashboardWS } from './hooks/useDashboardWS'
 import { api as stocksApi } from './hooks/useStocksApi'
 import type { ExpandedSession } from './types/stocks'
@@ -125,6 +126,7 @@ export default function App() {
           <span className={`text-[11px] font-mono mr-3 ${ws.relayConnected ? 'text-emerald-400' : ws.connected ? 'text-yellow-400' : 'text-zinc-600'}`}>
             ● {ws.relayConnected ? 'Relay' : ws.connected ? 'WS' : 'Offline'}
           </span>
+          <ExtractionHealth />
           <ProfileSelector />
         </div>
 
