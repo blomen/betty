@@ -97,6 +97,10 @@ export default function PlayPage() {
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
+  const [reconcileToasts, setReconcileToasts] = useState<Array<{
+    id: string; provider_id: string; bet_id: number; event_name?: string;
+    match_method: string; confidence?: number; changes: Record<string, any>;
+  }>>([])
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
@@ -489,6 +493,22 @@ export default function PlayPage() {
       setTimeout(() => { setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}); setCurrentBetReady(null) }, 5000)
       loadArbOpps()
     }
+    if (type === 'bet_reconciled') {
+      const id = `recon-${data.bet_id}-${Date.now()}`
+      setReconcileToasts(prev => [...prev, {
+        id,
+        provider_id: data.provider_id,
+        bet_id: data.bet_id,
+        event_name: data.event_name,
+        match_method: data.match_method,
+        confidence: data.confidence,
+        changes: data.changes,
+      }])
+      setTimeout(() => {
+        setReconcileToasts(prev => prev.filter(t => t.id !== id))
+      }, 8000)
+      load()  // refresh batch + pending so UI sees the updated bet
+    }
     if (type === 'provider_complete') {
       setLoopProviderStatus(prev => {
         if (!prev) return prev
@@ -732,6 +752,27 @@ export default function PlayPage() {
           <span className="text-xs text-green-400">{placementToast.bet?.outcome}</span>
           <span className="text-xs font-mono text-zinc-300">@ {placementToast.bet?.odds?.toFixed(2)}</span>
           <span className="text-xs font-mono text-zinc-400">{Math.round(placementToast.bet?.stake ?? 0)} kr</span>
+        </div>
+      )}
+
+      {/* Reconcile toasts */}
+      {reconcileToasts.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+          {reconcileToasts.map(t => (
+            <div key={t.id} className="bg-blue-900/90 border border-blue-500 rounded p-2 text-xs shadow-lg">
+              <div className="text-blue-200 font-semibold uppercase">
+                {t.provider_id} · reconciled ({t.match_method} · {t.confidence != null ? Math.round(t.confidence) : '—'})
+              </div>
+              <div className="text-zinc-200 mt-1 truncate">{t.event_name ?? `Bet #${t.bet_id}`}</div>
+              <div className="text-zinc-400 mt-1 space-y-0.5">
+                {Object.entries(t.changes).map(([k, v]) => (
+                  <div key={k} className="font-mono">
+                    {k}: <span className="text-amber-300">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
