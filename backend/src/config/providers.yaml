@@ -942,13 +942,21 @@ extraction_scheduling:
     interval_minutes: 15
     grouped: false
 
+  cloudbet:
+    # Playable, unlimited stake — pulled into its own tier so it cycles
+    # at full 5-min cadence (matching polymarket/kalshi) instead of sharing
+    # a slot with marathon/smarkets which can starve it under load.
+    providers: [cloudbet]
+    interval_minutes: 5
+    grouped: false
+
   signal_international:
-    # International signal-only providers — read odds for consensus, no bet placement
-    # Cloudbet: REST feed, affiliate API key. Marathon: HTML scraping.
-    # Smarkets: betting exchange public JSON API (requires SOCKS5 proxy — geoblocked direct).
+    # Signal-only providers — read odds for consensus, no bet placement.
+    # Marathon: HTML scraping. Smarkets: betting exchange JSON API
+    # (requires SOCKS5 proxy — geoblocked direct).
     # Stake.com removed — Cloudflare blocks datacenter IPs, needs residential proxy.
+    # Cloudbet split out above (playable + unlimited, deserves own tier).
     providers:
-      - cloudbet
       - marathon
       - smarkets
     interval_minutes: 5
