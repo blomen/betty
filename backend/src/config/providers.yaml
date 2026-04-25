@@ -32,7 +32,11 @@ orchestrator:
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
-      max_concurrent: 2                # Reduced from 3 — each gecko browser = 1-2GB
+      max_concurrent: 1                # Reduced from 2 — concurrent gecko brands fight for
+                                       # Bahnhof proxy bandwidth (Swedish-IP-only sites),
+                                       # causing session-init timeouts. Serial run lets each
+                                       # brand finish in ~10s; saves wallclock vs 3+ failed
+                                       # 180s attempts when contended.
       shared_resource: browser
 
     - name: spectate_browser
