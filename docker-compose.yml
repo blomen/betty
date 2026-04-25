@@ -75,6 +75,12 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # Inject tini as PID 1 to reap zombie chrome processes left behind when
+    # BrowserTransport.close() force-kills hung renderers. Without this, the
+    # Python entrypoint never calls wait() on orphans and they sit as defunct
+    # entries in `ps` (no memory cost, but cosmetically alarming and could
+    # hit PID limits over weeks).
+    init: true
     # Memory cap: prevents OOM-killing the entire server.
     # Budget: 64GB total - 2GB OS - 8GB Postgres = 54GB for backend.
     # Cap at 48GB to leave headroom. Docker kills the container (not the kernel)
