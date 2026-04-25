@@ -343,6 +343,16 @@ class GeckoV2Retriever(BrowserRetriever):
                 provider_id=self.provider_id,
             )
 
+        # If the previous run's close() invalidated the browser (transport.close()
+        # sets page = None), the cached _api_headers no longer correspond to a
+        # live page. Clear them so the lock-protected init below recreates the
+        # page AND re-captures fresh headers from the new browser.
+        if self._api_headers is not None and getattr(self.transport, "page", None) is None:
+            logger.debug(f"[{self.provider_id}] transport.page gone — invalidating cached api_headers")
+            self._api_headers = None
+            self._api_base = None
+            self._session_ready = False
+
         # Serialize across the 3 concurrent sport coroutines so only one of
         # them actually drives page.route + page.goto. The others wait, then
         # see _api_headers is set and skip the init.
