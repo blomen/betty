@@ -214,15 +214,17 @@ Append:
 def should_update_stake(old: float, new: float) -> bool:
     """Whether a counter slip's stake field should be re-written.
 
-    Re-write when |new - old| ≥ max(1.0 SEK, 1% of old). Avoids spamming
-    the slip widget with sub-cent updates while still reacting to real drift.
+    Re-write when |new - old| ≥ min(1.0 SEK, 1% of old). Reacts to drift
+    that crosses *either* threshold, so small stakes still see updates on
+    proportional moves (e.g. 1.4% on 50 SEK stake) while large stakes
+    aren't spammed by sub-1-SEK drift.
     """
     if old <= 0:
         return True
     delta = abs(new - old)
     abs_threshold = 1.0
     pct_threshold = old * 0.01
-    return delta >= max(abs_threshold, pct_threshold)
+    return delta >= min(abs_threshold, pct_threshold)
 ```
 
 - [ ] **Step 10: Add tests for `is_valid_arb_shape`**
