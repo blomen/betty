@@ -25,6 +25,7 @@ export function useMirrorStream() {
       'pending_stopped', 'live_price', 'stake_limited',
       'arb_bet_ready', 'arb_hedge_placing', 'arb_hedge_placed',
       'arb_hedge_failed', 'arb_unhedged', 'arb_complete',
+      'arb_legs_loaded', 'arb_alignment', 'arb_anchor_placed', 'arb_anchor_rejected',
     ];
 
     for (const type of eventTypes) {
