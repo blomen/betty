@@ -804,6 +804,8 @@ class ProviderRunner:
                 pending_bets,
                 history,
                 self._broadcaster,
+                page=page,
+                workflow=workflow,
             )
             if n:
                 logger.info(f"[Runner:{provider_id}] reconciled {n} bets")

@@ -175,6 +175,69 @@ def _compute_delta(bet_id: int, bet: dict, entry: dict, method: str, confidence:
     )
 
 
+async def _fallback_reconcile_unmatched(
+    page,
+    workflow,
+    proxy_url: str,
+    auth_header: str,
+    auth_value: str,
+    provider_id: str,
+    db_pending_unmatched: list[dict],
+    broadcaster,
+) -> int:
+    """For each DB-pending bet not matched by paginated sync_history, attempt a
+    targeted date-range query. PATCH + broadcast bet_reconciled per match.
+    Returns the count of bets reconciled by the fallback path."""
+    import httpx
+
+    if not hasattr(workflow, "fetch_history_for_bet"):
+        return 0
+    n = 0
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for bet in db_pending_unmatched:
+            entries = await workflow.fetch_history_for_bet(page, bet)
+            if not entries:
+                continue
+            # Convert HistoryEntry dataclasses to dicts shaped like sync_history output
+            history = [
+                {
+                    "odds": e.odds,
+                    "stake": e.stake,
+                    "status": e.status,
+                    "payout": e.payout,
+                    "provider_bet_id": e.provider_bet_id,
+                    "event_name": e.event_name,
+                    "market": e.market,
+                    "outcome": e.outcome,
+                }
+                for e in entries
+            ]
+            deltas = reconcile_from_history([bet], history)
+            if not deltas:
+                continue
+            for delta in deltas:
+                url = f"{proxy_url.rstrip('/')}/api/bets/{delta.bet_id}"
+                try:
+                    resp = await client.patch(url, json=delta.changes, headers={auth_header: auth_value})
+                    resp.raise_for_status()
+                except Exception:
+                    logger.exception(f"[reconcile-fallback] PATCH bet {delta.bet_id} failed")
+                    continue
+                n += 1
+                broadcaster.publish(
+                    "bet_reconciled",
+                    {
+                        "provider_id": provider_id,
+                        "bet_id": delta.bet_id,
+                        "match_method": f"fallback_{delta.match_method}",
+                        "confidence": delta.confidence,
+                        "changes": delta.changes,
+                        "event_name": delta.history_entry.get("event_name"),
+                    },
+                )
+    return n
+
+
 async def reconcile_and_publish(
     proxy_url: str,
     auth_header: str,
@@ -183,15 +246,22 @@ async def reconcile_and_publish(
     db_pending: list[dict],
     history: list[dict],
     broadcaster,  # has .publish(event, data)
+    *,
+    page=None,
+    workflow=None,
 ) -> int:
     """Compute reconciliation deltas, PATCH each, broadcast bet_reconciled.
-    Returns the number of bets reconciled."""
+    Returns the number of bets reconciled.
+
+    Optional kwargs page + workflow enable the targeted date-range fallback:
+    any DB-pending bet not matched by the main paginated history pass is
+    re-queried via workflow.fetch_history_for_bet (if the workflow implements it).
+    """
     import httpx
 
     deltas = reconcile_from_history(db_pending, history)
-    if not deltas:
-        return 0
 
+    matched_ids: set = set()
     n = 0
     async with httpx.AsyncClient(timeout=15.0) as client:
         for delta in deltas:
@@ -203,6 +273,7 @@ async def reconcile_and_publish(
                 logger.exception(f"[reconcile] PATCH bet {delta.bet_id} failed")
                 continue
             n += 1
+            matched_ids.add(delta.bet_id)
             broadcaster.publish(
                 "bet_reconciled",
                 {
@@ -214,4 +285,21 @@ async def reconcile_and_publish(
                     "event_name": delta.history_entry.get("event_name"),
                 },
             )
+
+    # Fallback for unmatched stale bets (requires page + workflow from caller)
+    if page is not None and workflow is not None:
+        unmatched = [b for b in db_pending if (b.get("bet_id") or b.get("id")) not in matched_ids]
+        if unmatched:
+            n_fallback = await _fallback_reconcile_unmatched(
+                page,
+                workflow,
+                proxy_url,
+                auth_header,
+                auth_value,
+                provider_id,
+                unmatched,
+                broadcaster,
+            )
+            return n + n_fallback
+
     return n

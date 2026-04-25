@@ -114,6 +114,9 @@ class AltenarWorkflow(ProviderWorkflow):
     def _history_url(self, page: int = 1, limit: int = 50) -> str:
         return f"https://{self.domain}/sv/api/v3/history?page={page}&limit={limit}&type=sport"
 
+    def _history_url_dated(self, from_date: str, to_date: str, limit: int = 100) -> str:
+        return f"https://{self.domain}/sv/api/v3/history?page=1&limit={limit}&type=sport&from={from_date}&to={to_date}"
+
     async def _authed_fetch(self, page: Page, url: str) -> dict | None:
         """Fetch with Authorization header read from localStorage token."""
         try:
@@ -325,6 +328,45 @@ class AltenarWorkflow(ProviderWorkflow):
         except Exception as e:
             logger.warning(f"[{self.provider_id}] sync_history failed: {e}")
             return []
+
+    async def fetch_history_for_bet(self, page, bet: dict) -> list | None:
+        """Targeted lookup: query history for the date window around bet.start_time.
+
+        Window: start_time - 1 day → start_time + 7 days (covers settlement lag
+        for matches that play out across multiple days, e.g. tennis tournaments).
+        """
+        from datetime import datetime, timedelta
+
+        start_iso = bet.get("start_time") or bet.get("placed_at")
+        if not start_iso:
+            return None
+        try:
+            # Handle ISO with or without Z suffix
+            ts = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        from_date = (ts - timedelta(days=1)).strftime("%Y-%m-%d")
+        to_date = (ts + timedelta(days=7)).strftime("%Y-%m-%d")
+        url = self._history_url_dated(from_date, to_date, limit=100)
+        try:
+            result = await self._authed_fetch(page, url)
+            if not result or "__error" in (result or {}):
+                logger.warning(f"[{self.provider_id}] fetch_history_for_bet API failed: {result}")
+                return None
+            bets_data = self._parse_bets_data(result)
+            entries = []
+            for b in bets_data:
+                entry = self._parse_history_entry(b)
+                if entry:
+                    entries.append(entry)
+            logger.info(
+                f"[{self.provider_id}] fetch_history_for_bet bet#{bet.get('id') or bet.get('bet_id')}: "
+                f"{len(entries)} entries in {from_date}..{to_date}"
+            )
+            return entries
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] fetch_history_for_bet failed: {e}")
+            return None
 
     async def fetch_positions(self, page: Page) -> list[PositionEntry]:
         """Fetch open bets via on-site v3 history API (filter pending in code)."""

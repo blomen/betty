@@ -793,6 +793,8 @@ class ArbRunner:
                 pending_bets,
                 history,
                 self._broadcaster,
+                page=page,
+                workflow=workflow,
             )
             if n:
                 logger.info(f"[Arb:{pid}] reconciled {n} bets")
