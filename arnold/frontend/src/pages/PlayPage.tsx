@@ -298,7 +298,14 @@ export default function PlayPage() {
   // funded + logged in (parallel to the unlimited effect above). Auto-activation
   // gated on DRAIN_THRESHOLD so we don't spawn runners on drained providers.
   useEffect(() => {
+    // Universe: every soft provider we know about (so a freshly-opened tab
+    // gets polled immediately, before any balance/pending exists). Cluster
+    // siblings + standalones + anyone we have balance/pending data for.
     const softPids = new Set<string>()
+    for (const members of Object.values(SOFT_CLUSTER_MEMBERS)) {
+      for (const pid of members) softPids.add(pid)
+    }
+    for (const pid of SOFT_STANDALONES) softPids.add(pid)
     for (const pid of Object.keys(providerBalances)) {
       if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
     }
