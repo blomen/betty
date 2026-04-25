@@ -412,6 +412,25 @@ export default function PlayPage() {
       setArbHedgeStatus({})
       setLoopStatus(null)
     }
+    if (type === 'arb_legs_loaded') {
+      setArbGroupId(data.arb_group_id ?? null)
+      setArbCounterPlan(data.legs ?? null)
+      setArbHedgeStatus({})
+      setArbProfitPct(null)
+      setLoopStatus(`Arb legs loaded — streaming odds`)
+    }
+    if (type === 'arb_alignment') {
+      setArbProfitPct(data.profit_pct)
+      // Live legs update — store per-leg current odds/stake/state
+      setArbCounterPlan(data.legs ?? null)
+    }
+    if (type === 'arb_anchor_placed') {
+      setLoopStatus(`Anchor placed @ ${data.actual_stake} on ${data.provider_id} — confirm hedges in mirror`)
+    }
+    if (type === 'arb_anchor_rejected') {
+      setLoopStatus(`Anchor REJECTED on ${data.provider_id}: ${data.reason} — trying next opp`)
+      setArbHedgeStatus({})
+    }
     if (type === 'arb_hedge_placing') {
       setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
     }
@@ -681,46 +700,37 @@ export default function PlayPage() {
           <div className="flex items-center gap-2 mb-1.5">
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
             {arbProfitPct != null && (
-              <span className="text-xs font-mono font-semibold text-green-400">+{arbProfitPct.toFixed(2)}% guaranteed profit</span>
+              <span className="text-xs font-mono font-semibold text-green-400">Live profit: +{arbProfitPct.toFixed(2)}%</span>
             )}
             {arbGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{arbGroupId}</span>}
           </div>
-          <div className="flex items-center gap-2 text-xs mb-1.5">
-            <span className="text-zinc-400">Anchor:</span>
-            <span className="text-zinc-200">{currentBetReady.display_home} v {currentBetReady.display_away}</span>
-            <span className="text-amber-400 font-medium">{resolveOutcome(currentBetReady)}</span>
-            <span className="font-mono text-zinc-200">@ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}</span>
-            <span className="text-zinc-500 uppercase text-[10px]">{currentBetReady.provider_id}</span>
-          </div>
           <div className="space-y-0.5">
-            {arbCounterPlan.map((leg: any, i: number) => (
-              <div key={i}>
-                <div className="text-[10px] text-zinc-500 mb-0.5">Counter: {leg.outcome}</div>
-                {leg.providers?.map((p: any, j: number) => {
-                  const hedge = arbHedgeStatus[p.provider]
-                  return (
-                    <div key={j} className="flex items-center gap-2 pl-3 text-[10px]">
-                      <span className="text-zinc-400 uppercase w-16">{p.provider}</span>
-                      <span className="font-mono text-zinc-300">@ {p.odds?.toFixed(2)}</span>
-                      <span className="font-mono text-zinc-500">{(p.stake_pct * 100).toFixed(0)}%</span>
-                      {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
-                      {hedge?.status === 'placed' && (
-                        <span className="text-green-400 font-semibold">
-                          HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
-                        </span>
-                      )}
-                      {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
-                      {!hedge && <span className="text-zinc-600">Waiting</span>}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
+            {(arbCounterPlan as any[]).map((leg: any) => {
+              const hedge = arbHedgeStatus[leg.provider_id]
+              return (
+                <div key={leg.provider_id} className="flex items-center gap-2 text-[10px]">
+                  <span className="text-zinc-400 uppercase w-20">{leg.provider_id}</span>
+                  <span className="font-mono text-zinc-300">@ {(leg.current_odds ?? leg.planned_odds ?? leg.odds)?.toFixed?.(2) ?? '—'}</span>
+                  <span className="font-mono text-zinc-500">{(leg.current_stake ?? leg.planned_stake)?.toFixed?.(2) ?? '—'} SEK</span>
+                  <span className="text-zinc-600">{leg.slip_state ?? '—'}</span>
+                  {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
+                  {hedge?.status === 'placed' && (
+                    <span className="text-green-400 font-semibold">
+                      HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
+                    </span>
+                  )}
+                  {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
+                </div>
+              )
+            })}
             {arbHedgeStatus.__unhedged && (
               <div className="flex items-center gap-2 pl-3 text-[10px] mt-1">
                 <span className="text-red-400 font-semibold">UNHEDGED — all fallbacks exhausted</span>
               </div>
             )}
+          </div>
+          <div className="text-[10px] text-zinc-500 mt-1.5">
+            {loopStatus || 'Waiting — click Place inside each mirror tab when ready'}
           </div>
         </div>
       )}
