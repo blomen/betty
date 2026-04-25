@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 from abc import ABC, abstractmethod
 from typing import Any
@@ -15,6 +16,11 @@ except ImportError:
         async_playwright = None
 
 try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
     from playwright_stealth import stealth_async
 except ImportError:
     stealth_async = None
@@ -24,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 def get_proxy_url() -> str | None:
     """Get PROXY_URL from environment. Returns plain URL string for aiohttp."""
-    import os
 
     return os.environ.get("PROXY_URL")
 
@@ -40,7 +45,6 @@ def get_proxy_dict(residential: bool = False, **kwargs) -> dict | None:
     Handles format: socks5://host:port → {server}
                     http://user:pass@host:port → {server, username, password}
     """
-    import os
     from urllib.parse import urlparse
 
     proxy_url = None
@@ -357,6 +361,11 @@ class BrowserTransport(Transport):
         self.browser = None
         self.context = None
         self.page = None
+        # PIDs of chrome/node processes spawned by this transport. Captured at
+        # _ensure_browser() so close() can force-kill them when Playwright's
+        # graceful close hangs (a known issue under load that leaks chromes
+        # until the watchdog OOM-kills the whole container).
+        self._spawned_pids: set[int] = set()
 
         # Resource types always blocked during extraction (speeds up page loads)
         self._BLOCKED_RESOURCE_TYPES = {"image", "font", "media"}
@@ -414,6 +423,15 @@ class BrowserTransport(Transport):
         await self.context.route("**/*", _block_unnecessary)
         logger.debug("Resource blocking enabled for browser context (block_css=%s)", self._BLOCK_STYLESHEETS)
 
+    def _snapshot_descendant_pids(self) -> set[int]:
+        """Return the PID set of all descendants of this Python process."""
+        if psutil is None:
+            return set()
+        try:
+            return {p.pid for p in psutil.Process(os.getpid()).children(recursive=True)}
+        except Exception:
+            return set()
+
     async def _ensure_browser(self):
         if self.page:
             return
@@ -422,6 +440,8 @@ class BrowserTransport(Transport):
             raise ImportError(
                 "Browser transport requires patchright or playwright. Install with: pip install patchright"
             )
+
+        pids_before = self._snapshot_descendant_pids()
 
         try:
             self.playwright = await async_playwright().start()
@@ -488,12 +508,16 @@ class BrowserTransport(Transport):
 
         await self._setup_resource_blocking()
 
+        # Capture PIDs spawned by this launch so close() can kill them
+        # forcefully if Playwright's graceful close hangs.
+        self._spawned_pids = self._snapshot_descendant_pids() - pids_before
+
         # Patchright handles all stealth at CDP level (webdriver, plugins, WebGL, etc.)
         # No add_init_script() needed — it conflicts with patchright's internal patching
         # and causes net::ERR_NAME_NOT_RESOLVED on Windows
 
         proxy_msg = " + residential proxy" if self._proxy_dict else ""
-        logger.info(f"Browser initialized with patchright stealth{proxy_msg}")
+        logger.info(f"Browser initialized with patchright stealth{proxy_msg} (tracking {len(self._spawned_pids)} pids)")
 
     async def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> Any:
         await self._ensure_browser()
@@ -656,19 +680,67 @@ class BrowserTransport(Transport):
         except Exception as e:
             logger.error(f"Smart scroll failed: {e}")
 
-    async def close(self):
+    async def _graceful_close(self):
+        """Best-effort graceful close — may hang if Playwright is stuck."""
         if self.cdp_url:
-            # CDP mode — only close the page we created, leave the browser running
             if self.page:
                 await self.page.close()
         elif self.user_data_dir and self.context:
-            # Persistent context — close context directly (no separate browser)
             await self.context.close()
         elif self.browser:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
-        self.page = None
-        self.context = None
-        self.browser = None
-        self.playwright = None
+
+    def _kill_spawned_processes(self):
+        """SIGKILL any chrome/node processes Playwright spawned that are still alive.
+
+        Used as a backstop when graceful close hangs — without this, Playwright's
+        chrome processes leak indefinitely until the watchdog OOM-kills the container.
+        """
+        if psutil is None or not self._spawned_pids:
+            return
+        killed = 0
+        for pid in list(self._spawned_pids):
+            try:
+                proc = psutil.Process(pid)
+                if proc.is_running():
+                    proc.kill()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception as e:
+                logger.debug(f"[BrowserTransport] reaper kill({pid}) failed: {e}")
+        if killed:
+            logger.warning(f"[BrowserTransport] force-killed {killed}/{len(self._spawned_pids)} hung browser processes")
+        self._spawned_pids.clear()
+
+    async def close(self):
+        # CDP mode never owns the browser — just close our page and bail.
+        if self.cdp_url:
+            try:
+                if self.page:
+                    await self.page.close()
+            finally:
+                self.page = None
+            return
+
+        # Try graceful first; if it hangs, force-kill the chrome process tree
+        # we captured at launch. Without the kill fallback, Playwright leaks
+        # chrome processes that pile up until the OOM watchdog fires.
+        try:
+            await asyncio.wait_for(self._graceful_close(), timeout=8)
+        except asyncio.TimeoutError:
+            logger.warning("[BrowserTransport] graceful close timed out — force-killing browser processes")
+            self._kill_spawned_processes()
+        except Exception as e:
+            logger.warning(f"[BrowserTransport] graceful close raised {type(e).__name__}: {e} — force-killing")
+            self._kill_spawned_processes()
+        else:
+            # Graceful close succeeded; reap any stragglers (extension renderers, etc.)
+            self._kill_spawned_processes()
+        finally:
+            self.page = None
+            self.context = None
+            self.browser = None
+            self.playwright = None
