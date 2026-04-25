@@ -2253,6 +2253,29 @@ def _run_pg_migrations(engine) -> None:
             except Exception:
                 logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
 
+        # 2026-04-25 — slip_odds_ticks for slip-streaming observability
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS slip_odds_ticks (
+                  id BIGSERIAL PRIMARY KEY,
+                  ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  provider_id TEXT NOT NULL,
+                  event_id TEXT NOT NULL,
+                  market TEXT NOT NULL,
+                  outcome TEXT NOT NULL,
+                  scraped_odds REAL NOT NULL,
+                  scanner_odds REAL,
+                  drift_pct REAL
+                );
+                """
+            )
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_slip_odds_event ON slip_odds_ticks(event_id, market, outcome);")
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_slip_odds_ts ON slip_odds_ticks(ts);"))
+
 
 def init_db() -> None:
     """Initialize database and create tables."""

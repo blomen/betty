@@ -53,6 +53,7 @@ from .routes import (
     risk_router,
     settings_router,
     signals_ws_router,
+    slip_odds_router,
     specials_router,
     stocks_router,
     trading_router,
@@ -1360,6 +1361,7 @@ app.include_router(postmortem_router)
 app.include_router(mirror_router)
 app.include_router(mirror_stream_router)
 app.include_router(fire_window_router)
+app.include_router(slip_odds_router)
 app.include_router(signals_ws_router)
 app.include_router(stocks_router)
 
