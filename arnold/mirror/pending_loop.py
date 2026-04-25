@@ -336,6 +336,8 @@ class PendingLoop:
             db_bets,
             history,
             self._broadcaster,
+            page=page,
+            workflow=workflow,
         )
         self._status[pid]["last_sync"] = datetime.utcnow().isoformat()
         self._status[pid]["reconciled"] = n

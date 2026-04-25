@@ -143,6 +143,18 @@ class ProviderWorkflow(ABC):
         """
         return False
 
+    async def fetch_history_for_bet(self, page: Page, bet: dict) -> list[HistoryEntry] | None:
+        """Targeted history lookup for a specific bet that wasn't found in the
+        paginated sync_history window.
+
+        Returns a small list of history entries scoped to the bet's event
+        window (typically start_time ± a few days), or None if this workflow
+        doesn't support targeted lookup.
+
+        Override per workflow. Default returns None (caller falls back to no-op).
+        """
+        return None
+
     async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
         """Read live odds and return (live_odds, live_edge) or (None, None).
 
