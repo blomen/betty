@@ -750,8 +750,8 @@ class ArbRunner:
         return False
 
     async def _detect_pending(self, pid: str, workflow: Any, page: Any) -> None:
-        """Detect and broadcast pending settlements — same as ProviderRunner."""
-        from .pending_loop import _detect_settlements
+        """Reconcile DB against provider truth and broadcast bet_reconciled events."""
+        from .reconcile import reconcile_and_publish
 
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": pid})
@@ -785,13 +785,17 @@ class ArbRunner:
         ]
 
         if pending_bets:
-            settlements = _detect_settlements(pending_bets, history)
-            if settlements:
-                logger.info(f"[Arb:{pid}] {len(settlements)} settlements detected")
-                self._broadcaster.publish(
-                    "settlements_detected",
-                    {"provider_id": pid, "pending_bets": pending_bets, "settlements": settlements},
-                )
+            n = await reconcile_and_publish(
+                self._proxy_url,
+                _AUTH_HEADER,
+                _AUTH_VALUE,
+                pid,
+                pending_bets,
+                history,
+                self._broadcaster,
+            )
+            if n:
+                logger.info(f"[Arb:{pid}] reconciled {n} bets")
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
         url = f"{self._proxy_url}/api/opportunities/play/pending-bets"

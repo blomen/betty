@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from .pending_loop import _detect_settlements
 from .slip_odds_stream import SlipOddsStream
 from .workflows import get_workflow
 from .workflows.base import PlacementResult
@@ -793,19 +792,21 @@ class ProviderRunner:
             for e in raw_history
         ]
 
-        # Detect settlements — broadcast to UI for user review, don't auto-record
+        # Reconcile DB against provider truth (autonomous — DB self-heals)
         if pending_bets:
-            settlements = _detect_settlements(pending_bets, history)
-            if settlements:
-                logger.info(f"[Runner:{provider_id}] {len(settlements)} settlements detected — broadcasting for review")
-                self._broadcaster.publish(
-                    "settlements_detected",
-                    {
-                        "provider_id": provider_id,
-                        "pending_bets": pending_bets,
-                        "settlements": settlements,
-                    },
-                )
+            from .reconcile import reconcile_and_publish
+
+            n = await reconcile_and_publish(
+                self._proxy_url,
+                _AUTH_HEADER,
+                _AUTH_VALUE,
+                provider_id,
+                pending_bets,
+                history,
+                self._broadcaster,
+            )
+            if n:
+                logger.info(f"[Runner:{provider_id}] reconciled {n} bets")
             else:
                 logger.info(f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open")
 
