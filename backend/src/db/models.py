@@ -2240,6 +2240,11 @@ def _run_pg_migrations(engine) -> None:
         # stock_signals: full observation snapshot for training feedback (2026-04-25)
         ("stock_signals", "observation_b64", "TEXT"),
         ("stock_signals", "observation_dim", "INTEGER"),
+        # extraction_features: renamed dutch_opportunities_found → arb_opportunities_found
+        # in code; existing prod DB has only the old name. Add new column so the
+        # current code's INSERT/UPDATE doesn't error every cycle (was spamming
+        # 'column "arb_opportunities_found" does not exist' on every extraction).
+        ("extraction_features", "arb_opportunities_found", "INTEGER"),
     ]
     with engine.begin() as conn:
         for table, col, col_type in additions:
