@@ -486,8 +486,16 @@ class KalshiRetriever(Retriever):
         return f"{self.base_url}/events?status=open&with_nested_markets=true&limit={self.DEFAULT_PAGE_LIMIT}"
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
-        """Fetch all open Kalshi events with pagination, filter to sport in parse()."""
-        all_events: list[dict] = []
+        """Fetch open Kalshi events page-by-page, parsing as we go.
+
+        Kalshi's `/events` endpoint is sport-agnostic and serves ~10k events
+        across 50 pages. Pre-fix the loop fetched all pages before filtering,
+        which made the orchestrator's 60s health check (limit=1) time out.
+        We now parse each page incrementally and stop once we have enough
+        sport-relevant events to satisfy `limit`.
+        """
+        parsed: list[StandardEvent] = []
+        total_raw = 0
         cursor: str | None = None
         url = self._get_sport_url(sport)
 
@@ -502,13 +510,15 @@ class KalshiRetriever(Retriever):
                     logger.warning(f"[kalshi] fetch failed at cursor={cursor}: {e}")
                     break
                 events = body.get("events", [])
-                all_events.extend(events)
+                total_raw += len(events)
+                parsed.extend(self.parse({"events": events}, sport))
+                if limit and len(parsed) >= limit:
+                    break
                 cursor = body.get("cursor") or None
                 if not cursor or not events:
                     break
 
-        logger.info(f"[kalshi] fetched {len(all_events)} raw events across pages")
-        parsed = self.parse({"events": all_events}, sport)
+        logger.info(f"[kalshi] fetched {total_raw} raw events across pages, {len(parsed)} parsed for {sport}")
         if limit and len(parsed) > limit:
             parsed = parsed[:limit]
         return parsed
