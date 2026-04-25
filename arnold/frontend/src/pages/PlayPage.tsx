@@ -847,15 +847,101 @@ export default function PlayPage() {
                     const opps = oppsByCluster[cluster] ?? []
                     const clusterMemberSet = new Set(members)
 
+                    // Deposit-hint mode: cluster has zero funded members but a
+                    // qualifying arb survived the visibility filter. Render the
+                    // cluster header + the qualifying arb rows only (no provider
+                    // cards, no Place/Skip — user must deposit first).
+                    if (funded.length === 0) {
+                      const qualifyingOpps = opps.filter(
+                        (o: any) => (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT,
+                      ).slice(0, 10)
+                      return (
+                        <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
+                          <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900/40 border-b border-zinc-800/50 flex-wrap">
+                            <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
+                              {cluster}
+                            </span>
+                            <span className="px-1.5 py-0.5 text-[10px] rounded bg-amber-900/30 text-amber-400 border border-amber-700/40 uppercase tracking-wider">
+                              deposit to play
+                            </span>
+                            <span className="text-[10px] text-zinc-600 ml-auto">
+                              {qualifyingOpps.length} qualifying arb{qualifyingOpps.length === 1 ? '' : 's'} ≥ {DEPOSIT_HINT_MIN_PROFIT_PCT}%
+                            </span>
+                          </div>
+                          <table className="w-full text-xs">
+                            <tbody>
+                              {qualifyingOpps.map((opp: any, i: number) => {
+                                const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
+                                const profitPct = opp.guaranteed_profit_pct ?? 0
+                                const eventLabel = opp.display_home && opp.display_away
+                                  ? `${opp.display_home} v ${opp.display_away}`
+                                  : opp.event_id
+                                const resolveLegOutcome = (leg: any): string => {
+                                  const o = leg?.outcome
+                                  if (!o) return '—'
+                                  if (o === 'home') return opp.display_home || 'Home'
+                                  if (o === 'away') return opp.display_away || 'Away'
+                                  if (o === 'draw') return 'Draw'
+                                  if (o === 'over' && leg.point != null) return `Over ${leg.point}`
+                                  if (o === 'under' && leg.point != null) return `Under ${leg.point}`
+                                  if (leg.point != null) return `${o} ${leg.point}`
+                                  return o
+                                }
+                                const anchorLeg =
+                                  (opp.legs ?? []).find((l: any) =>
+                                    clusterMemberSet.has(l.provider ?? l.provider_id ?? ''),
+                                  ) ?? {}
+                                const anchorPid = anchorLeg.provider ?? anchorLeg.provider_id ?? cluster
+                                const anchorOutcome = resolveLegOutcome(anchorLeg)
+                                const counters = (counterLegs as any[]).filter((l: any) => {
+                                  const lp = l.provider ?? l.provider_id ?? ''
+                                  return !clusterMemberSet.has(lp)
+                                })
+                                return (
+                                  <tr key={`hint-${cluster}-${i}`} className="border-b border-zinc-800/20 hover:bg-zinc-800/40">
+                                    <td className="pl-9 pr-2 py-1 font-mono font-semibold text-right w-[60px] text-green-400">
+                                      +{profitPct.toFixed(2)}%
+                                    </td>
+                                    <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
+                                    <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                                    <td className="px-2 py-1 text-[11px]">
+                                      <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">bet</span>
+                                      <span className="text-green-400 font-semibold">{anchorOutcome}</span>
+                                      <span className="text-zinc-600 mx-1">on</span>
+                                      <span className="text-zinc-400 uppercase text-[10px]">{anchorPid}</span>
+                                      <span className="font-mono text-zinc-200 ml-2">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                    </td>
+                                    <td className="px-2 py-1 text-[11px]">
+                                      <div className="flex flex-col gap-0.5">
+                                        {counters.map((leg: any, li: number) => (
+                                          <div key={li} className="flex items-center gap-1">
+                                            <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">hedge</span>
+                                            <span className="text-pink-400 font-semibold">{resolveLegOutcome(leg)}</span>
+                                            <span className="text-zinc-600">on</span>
+                                            <span className="text-zinc-400 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
+                                            <span className="font-mono text-zinc-300 ml-2">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    }
+
                     return (
                       <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
-                        {/* Cluster header — label + non-funded sibling pills (bonus remaining) + opp count */}
+                        {/* Cluster header — funded mode */}
                         <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900/40 border-b border-zinc-800/50 flex-wrap">
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
                           <span className="text-[10px] text-zinc-600 ml-auto">
-                            {funded.length > 0 ? `${opps.length} arb${opps.length === 1 ? '' : 's'} · siblings share odds` : 'no funded siblings'}
+                            {opps.length} arb{opps.length === 1 ? '' : 's'} · siblings share odds
                           </span>
                         </div>
 
