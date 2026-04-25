@@ -39,7 +39,7 @@ export function ExtractionHealth() {
     let cancelled = false
     const load = async () => {
       try {
-        const r = await fetch('/api/health/extraction')
+        const r = await fetch('/health/extraction')
         if (!r.ok) return
         const d = await r.json()
         if (!cancelled) setHealth(d)

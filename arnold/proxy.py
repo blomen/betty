@@ -81,4 +81,8 @@ def create_proxy_router(tunnel_url: str) -> APIRouter:
     async def proxy_health(request: Request):
         return await _proxy(request, "health")
 
+    @router.get("/health/{path:path}")
+    async def proxy_health_subpath(request: Request, path: str):
+        return await _proxy(request, f"health/{path}")
+
     return router
