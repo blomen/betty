@@ -6,9 +6,17 @@ import { useMirrorStream } from '../hooks/useMirrorStream'
 const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
-// Keep small — we always play the remaining balance down, threshold just avoids
-// residual-micro-balance bugs (1-2 SEK stuck from rounded stakes, refunds).
-const DRAIN_THRESHOLD_SEK = 1
+// Below this, no meaningful bet can be placed after odds rounding and
+// provider-side minimum stakes (typically 5-10 kr), so the residue is
+// not actionable.
+const DRAIN_THRESHOLD_SEK = 20
+
+// Minimum guaranteed_profit_pct an arb must show for a fully-drained
+// cluster (no funded members) to be surfaced as a deposit hint. Tuned
+// to clear realistic execution costs: ~0.5-1.5% on Pinnacle-hedged
+// arbs, ~1.5-4% on Kalshi/Polymarket-hedged arbs (slippage + spread +
+// per-contract fees).
+const DEPOSIT_HINT_MIN_PROFIT_PCT = 2.5
 
 // Soft-book cluster membership (mirrors backend mirror/play_loop.py _CLUSTER_MEMBERS).
 // Cluster siblings share odds engines → arb between them has zero edge, so they
