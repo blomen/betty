@@ -340,11 +340,18 @@ class SmarketsRetriever(Retriever):
 
         async with aiohttp.ClientSession(**session_kwargs) as session:
             url = self._get_sport_url(sport)
+            in_scope: list[dict] = []
             for _ in range(self.MAX_PAGES):
                 body = await self._fetch_json(session, url)
                 if not body:
                     break
-                events_raw.extend(body.get("events", []))
+                page_events = body.get("events", [])
+                events_raw.extend(page_events)
+                in_scope.extend(self.filter_events_by_sport(page_events, sport))
+                # Stop paginating once we have enough — the health check sets
+                # limit=1 and pre-fix would walk all 20 pages before bailing.
+                if limit and len(in_scope) >= limit:
+                    break
                 nxt = (body.get("pagination") or {}).get("next_page")
                 if not nxt:
                     break
@@ -354,13 +361,18 @@ class SmarketsRetriever(Retriever):
                     else (f"{self.base_url}{nxt}" if nxt.startswith("/") else nxt)
                 )
 
-            in_scope = self.filter_events_by_sport(events_raw, sport)
             logger.info(
                 "[smarkets] %s events fetched, %s in-scope for %s",
                 len(events_raw),
                 len(in_scope),
                 sport,
             )
+
+            # Apply the caller's cap BEFORE the per-event fan-out — each event
+            # triggers up to 4 HTTP calls, so processing the entire 900+ event
+            # list would always time out.
+            if limit and len(in_scope) > limit:
+                in_scope = in_scope[:limit]
 
             sem = asyncio.Semaphore(self.CONCURRENT_MARKET_FETCHES)
 
@@ -371,8 +383,6 @@ class SmarketsRetriever(Retriever):
             results = await asyncio.gather(*(build_event(e) for e in in_scope))
             events = [r for r in results if r is not None]
 
-        if limit and len(events) > limit:
-            events = events[:limit]
         return events
 
     async def _build_event(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 
 import aiohttp
 
@@ -44,6 +45,115 @@ _NO_DRAW_SPORTS = frozenset(
         "boxing",
     }
 )
+
+# Per-series ticker-suffix → canonical alias (matches aliases.yaml).
+# Pinnacle stores team names as the canonical alias (e.g. "rockets", not "Houston").
+# Kalshi titles often use city only ("Game 5: Minnesota at Denver"), so we map the
+# ticker suffix (the unambiguous team code) to the alias the matcher expects.
+_NBA_CODES: dict[str, str] = {
+    "ATL": "hawks",
+    "BOS": "celtics",
+    "BKN": "nets",
+    "CHA": "hornets",
+    "CHI": "bulls",
+    "CLE": "cavaliers",
+    "DAL": "mavericks",
+    "DEN": "nuggets",
+    "DET": "pistons",
+    "GSW": "warriors",
+    "HOU": "rockets",
+    "IND": "pacers",
+    "LAC": "clippers",
+    "LAL": "lakers",
+    "MEM": "grizzlies",
+    "MIA": "heat",
+    "MIL": "bucks",
+    "MIN": "timberwolves",
+    "NOP": "pelicans",
+    "NYK": "knicks",
+    "OKC": "thunder",
+    "ORL": "magic",
+    "PHI": "76ers",
+    "PHX": "suns",
+    "POR": "trail blazers",
+    "SAC": "kings",
+    "SAS": "spurs",
+    "TOR": "raptors",
+    "UTA": "jazz",
+    "WAS": "wizards",
+}
+_NHL_CODES: dict[str, str] = {
+    "ANA": "ducks",
+    "ARI": "coyotes",
+    "BOS": "bruins",
+    "BUF": "sabres",
+    "CAR": "hurricanes",
+    "CBJ": "blue jackets",
+    "CGY": "flames",
+    "CHI": "blackhawks",
+    "COL": "avalanche",
+    "DAL": "stars",
+    "DET": "red wings",
+    "EDM": "oilers",
+    "FLA": "panthers",
+    "LA": "kings",
+    "MIN": "wild",
+    "MTL": "canadiens",
+    "NJ": "devils",
+    "NSH": "predators",
+    "NYI": "islanders",
+    "NYR": "rangers",
+    "OTT": "senators",
+    "PHI": "flyers",
+    "PIT": "penguins",
+    "SJ": "sharks",
+    "SEA": "kraken",
+    "STL": "blues",
+    "TB": "lightning",
+    "TOR": "maple leafs",
+    "VAN": "canucks",
+    "VGK": "golden knights",
+    "WPG": "jets",
+    "WSH": "capitals",
+}
+_MLB_CODES: dict[str, str] = {
+    "ARI": "diamondbacks",
+    "ATL": "braves",
+    "BAL": "orioles",
+    "BOS": "red sox",
+    "CHC": "cubs",
+    "CHW": "white sox",
+    "CIN": "reds",
+    "CLE": "guardians",
+    "COL": "rockies",
+    "DET": "tigers",
+    "HOU": "astros",
+    "KC": "royals",
+    "LAA": "angels",
+    "LAD": "dodgers",
+    "MIA": "marlins",
+    "MIL": "brewers",
+    "MIN": "twins",
+    "NYM": "mets",
+    "NYY": "yankees",
+    "OAK": "athletics",
+    "PHI": "phillies",
+    "PIT": "pirates",
+    "SD": "padres",
+    "SF": "giants",
+    "SEA": "mariners",
+    "STL": "cardinals",
+    "TB": "rays",
+    "TEX": "rangers",
+    "TOR": "blue jays",
+    "WSH": "nationals",
+}
+
+KALSHI_TICKER_CODES: dict[str, dict[str, str]] = {
+    "KXNBAGAME": _NBA_CODES,
+    "KXNHLGAME": _NHL_CODES,
+    "KXMLBGAME": _MLB_CODES,
+}
 
 
 def series_to_sport(ticker: str) -> str | None:
@@ -99,6 +209,22 @@ def _market_volume_usd(m: dict) -> float:
 _TITLE_PREFIX_RE = re.compile(r"^(game|match|leg|set)\s*\d+\s*:\s*", flags=re.IGNORECASE)
 
 
+def _market_event_start(m: dict) -> datetime | None:
+    """Return the underlying game start time for a Kalshi market.
+
+    `expected_expiration_time` lands shortly after the game ends and is the
+    closest stable proxy for the game date. Used for canonical-event date
+    matching against sharp sources — only date-precision is required.
+    """
+    val = m.get("expected_expiration_time") or m.get("close_time")
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _strip_title_prefix(s: str) -> str:
     """Drop leading "Game N:", "Match N:" style prefixes from a team segment."""
     # e.g. "Game 4: Los Angeles L" → "Los Angeles L"
@@ -142,6 +268,25 @@ def _ticker_suffix(ticker: str) -> str:
     if not ticker or "-" not in ticker:
         return ""
     return ticker.rsplit("-", 1)[-1].strip().upper()
+
+
+def _series_prefix(ticker: str) -> str:
+    """Return the Kalshi series prefix (chars before the first "-")."""
+    if not ticker or "-" not in ticker:
+        return ticker.upper()
+    return ticker.split("-", 1)[0].upper()
+
+
+def _resolve_canonical_team(event_ticker: str, market_ticker: str) -> str | None:
+    """Map a market's ticker suffix to the matcher's canonical team alias.
+
+    Returns ``None`` if the series has no code map or the suffix isn't recognized,
+    so callers can fall back to title-derived names.
+    """
+    code_map = KALSHI_TICKER_CODES.get(_series_prefix(event_ticker))
+    if not code_map:
+        return None
+    return code_map.get(_ticker_suffix(market_ticker).upper())
 
 
 def _match_market_to_side(m: dict, home: str, away: str) -> str | None:
@@ -239,6 +384,15 @@ def parse_event(
                 [(m.get("ticker"), m.get("yes_sub_title")) for m in sorted_mkts],
             )
             return None
+        # Override title-derived city names with canonical aliases when the
+        # series has a ticker-code map (NBA/NHL/MLB). Pinnacle stores aliases
+        # not cities, so this is required for matching.
+        home_mkt = next(m for m, s in zip(sorted_mkts, sides, strict=False) if s == "home")
+        away_mkt = next(m for m, s in zip(sorted_mkts, sides, strict=False) if s == "away")
+        canonical_home = _resolve_canonical_team(event_ticker, home_mkt.get("ticker", ""))
+        canonical_away = _resolve_canonical_team(event_ticker, away_mkt.get("ticker", ""))
+        if canonical_home and canonical_away:
+            home, away = canonical_home, canonical_away
         outcomes = [
             {
                 "name": side,
@@ -290,6 +444,11 @@ def parse_event(
     else:
         return None
 
+    start_time = next(
+        (t for t in (_market_event_start(m) for m in raw_markets) if t is not None),
+        None,
+    )
+
     return StandardEvent(
         id=f"kalshi_{event_ticker}",
         name=raw.get("title", ""),
@@ -299,6 +458,7 @@ def parse_event(
         url=f"https://kalshi.com/markets/{event_ticker}",
         home_team=home,
         away_team=away,
+        start_time=start_time,
     )
 
 
