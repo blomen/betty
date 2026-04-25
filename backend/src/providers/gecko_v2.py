@@ -351,10 +351,16 @@ class GeckoV2Retriever(BrowserRetriever):
                 # Another sport coroutine completed init while we waited.
                 pass
             else:
-                # Retry session init up to 3 times (header capture is timing-sensitive on betsson)
+                # Retry session init up to 3 times (header capture is timing-sensitive on betsson).
+                # Outer timeout is 180s — _ensure_session worst case is page.goto (60s) +
+                # header wait (30s) + sport-page fallback navigation (30s) + 30s of header
+                # wait on fallback = 150s. Under production proxy load (5+ concurrent
+                # browsers competing for Bahnhof bandwidth), 120s was tight enough that
+                # gecko brands timed out every attempt; 180s gives headroom without
+                # changing sport-level scheduling assumptions.
                 for attempt in range(3):
                     try:
-                        session_ok = await asyncio.wait_for(self._ensure_session(), timeout=120)
+                        session_ok = await asyncio.wait_for(self._ensure_session(), timeout=180)
                         if session_ok:
                             break
                         # First attempt failed — close browser and retry with fresh page
