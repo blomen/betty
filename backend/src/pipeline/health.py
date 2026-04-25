@@ -204,11 +204,15 @@ def get_provider_intervals() -> dict[str, int]:
 
 # ── Extraction Health Assessment ─────────────────────────────────────────────
 
-# Multipliers applied to each provider's expected interval (minutes) to derive
-# warning/critical thresholds. Generous because browser tiers commonly take
-# 2-5x interval to actually finish a cycle under load.
+# Thresholds applied to each provider's expected interval (minutes). Multipliers
+# alone don't work for fast tiers — api_soft providers run on a 2-min interval
+# but the actual orchestrator cycle (extract + storage + analysis) takes 5-10
+# minutes on a contended box, so 3x interval = 6m would false-warn on every
+# successful run. Floor the thresholds at a realistic minimum cycle time.
 WARN_MULTIPLIER = 3
 CRIT_MULTIPLIER = 6
+WARN_FLOOR_MINUTES = 10
+CRIT_FLOOR_MINUTES = 25
 # Pinnacle is the only sharp source — without it, no fair odds, no arbs. Tighter floor.
 SHARP_WARN_MINUTES = 5
 SHARP_CRIT_MINUTES = 15
@@ -257,8 +261,8 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
         if is_sharp:
             warn_min, crit_min = SHARP_WARN_MINUTES, SHARP_CRIT_MINUTES
         else:
-            warn_min = expected_interval * WARN_MULTIPLIER
-            crit_min = expected_interval * CRIT_MULTIPLIER
+            warn_min = max(expected_interval * WARN_MULTIPLIER, WARN_FLOOR_MINUTES)
+            crit_min = max(expected_interval * CRIT_MULTIPLIER, CRIT_FLOOR_MINUTES)
 
         if age_min is None:
             provider_status = "down"
