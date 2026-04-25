@@ -125,3 +125,46 @@ async def test_stream_current_odds_property():
     await asyncio.sleep(0.06)
     assert stream.current_odds == 2.42
     stream.stop()
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_log_when_endpoint_unset():
+    """Default constructor — no log_endpoint, no bet_context — never posts."""
+    workflow = MagicMock()
+    workflow.read_slip_odds = AsyncMock(return_value=2.10)
+    page = MagicMock()
+    callback = MagicMock()
+
+    stream = SlipOddsStream(
+        provider_id="unibet",
+        workflow=workflow,
+        page=page,
+        on_odds_change=callback,
+        poll_interval_s=0.02,
+    )
+    # Confirm new fields default correctly
+    assert stream._log_endpoint is None
+    assert stream._bet_context is None
+
+    stream.start()
+    await asyncio.sleep(0.05)
+    stream.stop()
+
+
+@pytest.mark.asyncio
+async def test_stream_accepts_log_endpoint_and_bet_context():
+    workflow = MagicMock()
+    workflow.read_slip_odds = AsyncMock(return_value=2.10)
+    page = MagicMock()
+
+    stream = SlipOddsStream(
+        provider_id="unibet",
+        workflow=workflow,
+        page=page,
+        on_odds_change=lambda o: None,
+        poll_interval_s=0.02,
+        log_endpoint="https://example.test/api/slip-odds-tick",
+        bet_context={"event_id": "e1", "market": "moneyline", "outcome": "home", "scanner_odds": 2.05},
+    )
+    assert stream._log_endpoint == "https://example.test/api/slip-odds-tick"
+    assert stream._bet_context["event_id"] == "e1"

@@ -15,6 +15,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import httpx
+
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
@@ -31,6 +33,8 @@ class SlipOddsStream:
         page: Page,
         on_odds_change: Callable[[float], None],
         poll_interval_s: float = 1.0,
+        log_endpoint: str | None = None,
+        bet_context: dict | None = None,
     ):
         self.provider_id = provider_id
         self._workflow = workflow
@@ -39,6 +43,8 @@ class SlipOddsStream:
         self._poll_interval_s = poll_interval_s
         self._task: asyncio.Task | None = None
         self._current_odds: float | None = None
+        self._log_endpoint = log_endpoint
+        self._bet_context = bet_context
 
     @property
     def running(self) -> bool:
@@ -73,7 +79,29 @@ class SlipOddsStream:
                         self._on_odds_change(odds)
                     except Exception:
                         logger.exception(f"[SlipStream:{self.provider_id}] callback raised")
+                    if self._log_endpoint and self._bet_context:
+                        asyncio.create_task(
+                            self._post_tick(odds),
+                            name=f"slip_odds_log_{self.provider_id}",
+                        )
 
                 await asyncio.sleep(self._poll_interval_s)
         except asyncio.CancelledError:
             pass
+
+    async def _post_tick(self, odds: float) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(
+                    self._log_endpoint,
+                    json={
+                        "provider_id": self.provider_id,
+                        "event_id": self._bet_context.get("event_id", ""),
+                        "market": self._bet_context.get("market", ""),
+                        "outcome": self._bet_context.get("outcome", ""),
+                        "scraped_odds": odds,
+                        "scanner_odds": self._bet_context.get("scanner_odds"),
+                    },
+                )
+        except Exception:
+            logger.debug(f"[SlipStream:{self.provider_id}] log post failed", exc_info=True)

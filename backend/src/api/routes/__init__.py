@@ -20,6 +20,7 @@ from .providers import router as providers_router
 from .risk import router as risk_router
 from .settings import router as settings_router
 from .signals_ws import router as signals_ws_router
+from .slip_odds import router as slip_odds_router
 from .specials import router as specials_router
 from .stocks import router as stocks_router
 from .trading import router as trading_router
@@ -47,5 +48,6 @@ __all__ = [
     "mirror_stream_router",
     "fire_window_router",
     "signals_ws_router",
+    "slip_odds_router",
     "stocks_router",
 ]
