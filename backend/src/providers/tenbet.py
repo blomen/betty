@@ -322,7 +322,10 @@ class TenBetRetriever(BrowserRetriever):
         page = self.transport.page
 
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            # 15s was too tight under Bahnhof proxy contention — every sport
+            # except football was hitting Page.goto timeout. 30s gives headroom
+            # while still catching genuinely dead pages.
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             # Try to wait for competition links to appear
             try:
@@ -976,7 +979,8 @@ class TenBetRetriever(BrowserRetriever):
                 async with sem:
                     url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
                     try:
-                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        # Match the 30s used in discover_competitions — same proxy/load.
+                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=30000)
                         # Wait for actual price content (not just skeleton container)
                         try:
                             await worker_page.wait_for_function(
