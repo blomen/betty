@@ -202,6 +202,66 @@ class AltenarWorkflow(ProviderWorkflow):
         return total if total > 0 else -1
 
     # ------------------------------------------------------------------
+    # Slip widget — WASM-rendered, no DOM. State lives in localStorage:
+    #   WSDK_{integration}_betSelections.state.selections[0].odd.price  (live odds)
+    #   WSDK_{integration}_betStakes.state.singleStakes[0].value        (current stake)
+    # The slip widget reads from this Zustand-style store, so updating localStorage
+    # + dispatching a storage event is enough to push a new stake into the slip.
+    # ------------------------------------------------------------------
+
+    async def read_slip_odds(self, page: Page) -> float | None:
+        try:
+            integration = self._integration
+            key = f"WSDK_{integration}_betSelections"
+            raw = await page.evaluate(f"() => localStorage.getItem({key!r})")
+            if not raw:
+                return None
+            import json as _json
+
+            data = _json.loads(raw)
+            sels = data.get("state", {}).get("selections") or []
+            if not sels:
+                return None
+            # First selection's live price (Altenar updates this in-place as odds drift).
+            price = sels[0].get("odd", {}).get("price")
+            return float(price) if price is not None else None
+        except Exception:
+            return None
+
+    async def update_slip_stake(self, page: Page, stake: float) -> bool:
+        """Update the stake of the first slip selection by patching localStorage
+        + dispatching a storage event so the WSDK Zustand store re-reads."""
+        try:
+            integration = self._integration
+            key = f"WSDK_{integration}_betStakes"
+            return bool(
+                await page.evaluate(
+                    """({key, stake}) => {
+                        const raw = localStorage.getItem(key);
+                        if (!raw) return false;
+                        let data;
+                        try { data = JSON.parse(raw); } catch { return false; }
+                        const arr = data?.state?.singleStakes;
+                        if (!Array.isArray(arr) || arr.length === 0) return false;
+                        arr[0].value = stake;
+                        arr[0].preciseValue = stake;
+                        const next = JSON.stringify(data);
+                        const prev = raw;
+                        localStorage.setItem(key, next);
+                        // Trigger Zustand persist re-read across tabs / same-tab listeners
+                        window.dispatchEvent(new StorageEvent('storage', {
+                            key, oldValue: prev, newValue: next,
+                            storageArea: localStorage,
+                        }));
+                        return true;
+                    }""",
+                    {"key": key, "stake": round(stake, 2)},
+                )
+            )
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
     # History + Positions — via account history page (NOT the sportsbook widget)
     # ------------------------------------------------------------------
     # Betinia/Altenar sites have a separate account history page with regular
