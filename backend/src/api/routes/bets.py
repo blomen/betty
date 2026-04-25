@@ -518,6 +518,7 @@ def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_get_serv
         odds=data.odds,
         result=data.result,
         payout=data.payout,
+        provider_bet_id=data.provider_bet_id,
     )
 
     if "error" in result:
