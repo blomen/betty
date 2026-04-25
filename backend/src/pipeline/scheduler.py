@@ -347,7 +347,9 @@ class ExtractionScheduler:
                     schedule.last_duration = (schedule.last_completed - start).total_seconds()
                     if schedule.category == "sharp" and not self._sharp_ready.is_set():
                         self._sharp_ready.set()
-                        logger.info("[Scheduler] Sharp first run complete (transient DB error) — soft providers unblocked")
+                        logger.info(
+                            "[Scheduler] Sharp first run complete (transient DB error) — soft providers unblocked"
+                        )
                     logger.warning(
                         f"[Scheduler:{schedule.provider_id}] Transient DB error (partial run treated as complete): {e}"
                     )
@@ -606,13 +608,13 @@ class ExtractionScheduler:
                         (now - schedule.last_run_started).total_seconds() if schedule.last_run_started else float("inf")
                     )
                     category_floors = {
-                        "sharp": 1500,                  # Pinnacle worst-case ≈ 5 sport_timeouts
+                        "sharp": 1500,  # Pinnacle worst-case ≈ 5 sport_timeouts
                         "polymarket": 1500,
                         "kalshi": 1500,
-                        "signal_international": 2400,   # Cloudbet observed 1700-1900s
-                        "api_soft": 1200,               # Kambi/Altenar/Gecko observed 600-700s
-                        "browser_soft": 3000,           # Tipwin observed 2300s+
-                        "browser_antibot": 3600,        # Coolbet/ComeOn worst-case
+                        "signal_international": 2400,  # Cloudbet observed 1700-1900s
+                        "api_soft": 1200,  # Kambi/Altenar/Gecko observed 600-700s
+                        "browser_soft": 3000,  # Tipwin observed 2300s+
+                        "browser_antibot": 3600,  # Coolbet/ComeOn worst-case
                     }
                     min_run_duration = max(category_floors.get(schedule.category, 1200), force_restart_threshold)
                     if elapsed > force_restart_threshold and run_age > min_run_duration:
@@ -656,7 +658,7 @@ class ExtractionScheduler:
     # creating ExtractionPipeline + ORM objects + browser contexts in threads,
     # RSS grows monotonically. The only reliable fix is process restart.
     # Docker restart: unless-stopped brings us back in seconds.
-    MEMORY_LIMIT_GB = 32  # Exit when RSS exceeds this (well under 48GB Docker cap)
+    MEMORY_LIMIT_GB = 40  # Exit when RSS exceeds this (Docker cap is 48GB; 8GB margin under kernel OOM)
 
     def _check_memory(self):
         """Check if process RSS exceeds limit and exit if so."""
