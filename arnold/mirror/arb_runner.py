@@ -1,8 +1,11 @@
-"""ArbRunner — arbitrage play loop for soft books.
+"""ArbRunner v2 — semi-auto arb workflow.
 
-Places the anchor (+EV) leg on the soft book, then auto-hedges on the best
-available counter (another soft book from a different cluster, or unlimited
-provider like Pinnacle/Polymarket) for guaranteed profit.
+Per opp: load all legs in parallel → start SlipOddsStream per leg →
+broadcast arb_alignment on every meaningful odds change → wait for the
+user to click Place inside the soft mirror tab → on accepted, recompute
+counter stakes from actual placed anchor stake/odds → update each
+counter slip → wait for the user to click Place inside each counter
+mirror tab → record the arb_group → iterate.
 """
 
 from __future__ import annotations
@@ -14,6 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from .arb_math import (
+    is_valid_arb_shape,
+    recalc_counter_stakes,
+    recalc_profit_pct,
+    should_update_stake,
+)
 from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
@@ -23,15 +32,13 @@ from .play_loop import (
     LOGIN_TIMEOUT,
     STATE_IDLE,
     STATE_LOGIN_WAITING,
-    STATE_NAVIGATING,
-    STATE_PLACING,
     STATE_PROVIDER_OPENING,
-    STATE_READY,
     STATE_SETTLING,
     UNCAPPED_PROVIDERS,
     UNLIMITED_PROVIDERS,
     _bet_ns,
 )
+from .slip_odds_stream import SlipOddsStream
 from .workflows import get_workflow
 from .workflows.base import PlacementResult
 
@@ -43,15 +50,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Cooldown between arb opp fetch cycles to avoid hammering the API
+STATE_LOADING_LEGS = "loading_legs"
+STATE_STANDBY = "standby"
+STATE_AWAITING_HEDGES = "awaiting_hedges"
+
 _OPP_FETCH_COOLDOWN = 10.0
+_ALIGNMENT_BROADCAST_THROTTLE_S = 0.5
 
 
 class ArbRunner:
-    """Runs the arbitrage play loop for a single soft book.
+    """Runs the semi-auto arbitrage play loop for a single soft book.
 
-    The counter-leg pool is dynamic: other active soft books (excluding
-    cluster siblings, which share odds engines) plus unlimited providers.
+    Loads all legs in parallel, starts a SlipOddsStream per leg, broadcasts
+    arb_alignment continuously, waits for the user to click Place in the soft
+    mirror tab, then waits for the user to click Place in each counter tab.
+    No auto-hedge — every leg requires a manual mirror click.
     """
 
     def __init__(
@@ -74,22 +87,30 @@ class ArbRunner:
         self._placed_today = placed_today
         self._active_providers = list(active_providers or [])
 
-        # Per-runner state
         self.state: str = STATE_IDLE
-        self.current_bet: dict | None = None
-        self.stats: dict = {"placed": 0, "skipped": 0, "hedged": 0, "unhedged": 0, "total": 0}
+        self.current_opp: dict | None = None
+        self.current_arb_group_id: str | None = None
+        self.stats: dict = {"placed": 0, "skipped": 0, "rejected": 0, "complete": 0, "total": 0}
 
-        # Async events
-        self._bet_intercepted_event = asyncio.Event()
-        self._skip_event = asyncio.Event()
+        # Anchor (soft) intercept
+        self._anchor_event: asyncio.Event = asyncio.Event()
         self._intercepted_body: dict | None = None
         self._intercepted_request_body: dict | None = None
 
+        # Counter intercepts
+        self._counter_events: dict[str, asyncio.Event] = {}
+        self._counter_intercepted: dict[str, dict] = {}
+
+        # Per-leg streams
+        self._streams: dict[str, SlipOddsStream] = {}
+        self._latest_counter_odds: dict[str, float] = {}
+        self._counter_legs: list[dict] = []
+        self._anchor_stake: float = 0.0
+        self._last_alignment_broadcast: float = 0.0
+
         self._task: asyncio.Task | None = None
 
-    # ------------------------------------------------------------------
-    # Public API (same interface as ProviderRunner)
-    # ------------------------------------------------------------------
+    # ----- public surface -----
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -97,102 +118,58 @@ class ArbRunner:
         self._task = asyncio.create_task(self._run(), name=f"arb_{self.provider_id}")
 
     def stop(self) -> None:
+        for s in self._streams.values():
+            s.stop()
+        self._streams.clear()
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
         self.state = STATE_IDLE
-        self.current_bet = None
-        self._bet_intercepted_event.set()
-        self._skip_event.set()
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def skip(self) -> None:
-        self._skip_event.set()
-
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
-        if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
-            logger.info(f"[Arb:{self.provider_id}] Bet intercepted (state={self.state})")
+        """Anchor (soft) leg placement intercepted."""
+        if self.state in (STATE_STANDBY, STATE_LOADING_LEGS):
+            logger.info(f"[Arb:{self.provider_id}] Anchor placement intercepted")
             self._intercepted_body = body
             self._intercepted_request_body = request_body
-            self._bet_intercepted_event.set()
+            self._anchor_event.set()
         else:
-            logger.warning(f"[Arb:{self.provider_id}] Bet intercepted in state={self.state} — ignoring")
+            logger.warning(f"[Arb:{self.provider_id}] Anchor intercept in state={self.state} — ignoring")
+
+    def on_counter_bet_intercepted(
+        self, counter_provider_id: str, body: dict, request_body: dict | None = None
+    ) -> None:
+        """Counter leg placement intercepted (called by play_loop router)."""
+        if counter_provider_id in self._counter_events:
+            logger.info(f"[Arb:{self.provider_id}] Counter {counter_provider_id} intercepted")
+            self._counter_intercepted[counter_provider_id] = {"body": body, "request_body": request_body}
+            self._counter_events[counter_provider_id].set()
+        else:
+            logger.warning(
+                f"[Arb:{self.provider_id}] Counter intercept for {counter_provider_id} but no event registered"
+            )
 
     def get_status(self) -> dict:
         return {
             "provider_id": self.provider_id,
             "state": self.state,
-            "current_bet": self.current_bet,
+            "current_opp": self.current_opp,
+            "arb_group_id": self.current_arb_group_id,
             "stats": self.stats,
             "placed_today": self._placed_today.get(self.provider_id, 0),
             "mode": "arb",
         }
 
-    # ------------------------------------------------------------------
-    # Counter-pool resolution
-    # ------------------------------------------------------------------
-
-    def _counter_pool(self) -> list[str]:
-        """Return active providers eligible as counter-legs.
-
-        Excludes self and cluster siblings (they share odds engines — zero edge).
-        Includes unlimited providers even if not in active list, since they always
-        have viable tabs managed by their ProviderRunner.
-        """
-        own_cluster = _PROVIDER_TO_CLUSTER.get(self.provider_id)
-        pool: list[str] = []
-        seen: set[str] = set()
-        for pid in self._active_providers + list(UNLIMITED_PROVIDERS):
-            if pid == self.provider_id or pid in seen:
-                continue
-            other_cluster = _PROVIDER_TO_CLUSTER.get(pid)
-            if own_cluster and other_cluster and own_cluster == other_cluster:
-                continue  # Sibling — identical odds, no edge
-            pool.append(pid)
-            seen.add(pid)
-        return pool
-
-    # ------------------------------------------------------------------
-    # Fetch arb opportunities from server API
-    # ------------------------------------------------------------------
-
-    async def _fetch_arb_opps(self) -> list[dict]:
-        """Fetch arbitrage opportunities anchored on this provider.
-
-        Counter pool is the dynamic set of active non-sibling providers plus
-        unlimited providers. When empty, the scanner treats it as "any provider".
-        """
-        pool = self._counter_pool()
-        params = f"providers={self.provider_id}"
-        if pool:
-            params += f"&counterpart_providers={','.join(pool)}"
-        url = f"{self._proxy_url}/api/opportunities/arb-workflow?{params}"
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
-            opps = data.get("opportunities", [])
-            # Filter to positive guaranteed profit only
-            opps = [o for o in opps if o.get("guaranteed_profit_pct", 0) > 0]
-            # Sort by guaranteed profit descending
-            opps.sort(key=lambda o: o.get("guaranteed_profit_pct", 0), reverse=True)
-            return opps
-        except Exception:
-            logger.exception(f"[Arb:{self.provider_id}] Failed to fetch arb opps")
-            return []
-
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
+    # ----- main loop -----
 
     async def _run(self) -> None:
         self.state = STATE_PROVIDER_OPENING
         pid = self.provider_id
-        logger.info(f"[Arb:{pid}] Starting arb runner")
+        logger.info(f"[Arb:{pid}] Starting arb runner v2")
 
         try:
             workflow = get_workflow(pid)
@@ -242,7 +219,7 @@ class ArbRunner:
                     return
 
             # 5. Arb bet loop
-            logger.info(f"[Arb:{pid}] Entering arb bet loop")
+            logger.info(f"[Arb:{pid}] Entering arb bet loop (v2)")
             while True:
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
@@ -264,164 +241,79 @@ class ArbRunner:
                     if self._is_blocked(opp):
                         continue
 
-                    # Prefer arb_legs (pure soft-vs-soft) over mixed legs (soft + Pinnacle
-                    # fallback). arb_legs is only populated when a pure-soft arb is
-                    # executable — when present, it yields higher-edge placements.
-                    legs = opp.get("arb_legs") or opp.get("legs", [])
-
-                    # Find the anchor leg (this provider) and counter-legs
-                    anchor_leg = None
-                    counter_legs = []
-                    for leg in legs:
-                        if leg.get("provider") == pid:
-                            anchor_leg = leg
-                        else:
-                            counter_legs.append(leg)
-
-                    if not anchor_leg or not counter_legs:
+                    # Load all legs in parallel
+                    self.state = STATE_LOADING_LEGS
+                    loaded = await self._load_all_legs(opp)
+                    if not loaded:
                         continue
 
-                    # Phase 1: Pre-validate counter-leg odds
-                    counter_plan = self._build_counter_plan(opp, counter_legs)
-                    if not counter_plan:
-                        logger.info(
-                            f"[Arb:{pid}] No viable counter-legs for "
-                            f"{opp.get('home_team')} v {opp.get('away_team')} — skipping"
-                        )
-                        continue
-
-                    # Build anchor bet dict (compatible with ProviderRunner bet format)
-                    anchor_bet = self._opp_to_bet(opp, anchor_leg)
                     self.stats["total"] += 1
-                    self.current_bet = anchor_bet
 
-                    # Phase 2: Navigate and prep anchor leg
-                    self.state = STATE_NAVIGATING
-                    workflow = get_workflow(pid)
-                    page = await workflow.find_tab(self._browser.context) if self._browser.context else None
-                    if page is None:
-                        logger.warning(f"[Arb:{pid}] Lost tab — skipping")
-                        self.stats["skipped"] += 1
+                    # Stream and await anchor click
+                    self.state = STATE_STANDBY
+                    anchor_result = await self._stream_and_await_anchor()
+
+                    if anchor_result is None:
+                        # Anchor rejected or runner stopped
+                        self.stats["rejected"] += 1
+                        for s in self._streams.values():
+                            s.stop()
+                        self._streams.clear()
+                        self._counter_events.clear()
+                        self._counter_intercepted.clear()
                         continue
 
-                    bet_ns = _bet_ns(anchor_bet)
-                    nav_ok = await workflow.navigate_to_event(page, bet_ns)
-                    if not nav_ok:
-                        logger.warning(f"[Arb:{pid}] Navigation failed — skipping")
-                        self._broadcaster.publish("bet_skipped", {"bet": anchor_bet, "reason": "navigation_failed"})
-                        self.stats["skipped"] += 1
-                        continue
-
-                    # Prep betslip
-                    balance = self._browser.provider_data.get(pid, {}).get("balance")
-                    stake = self._calc_anchor_stake(opp, anchor_leg, balance)
-                    anchor_bet["stake"] = stake
-                    bet_ns.stake = stake
-                    prep_result = await workflow.prep_betslip(page, bet_ns, stake)
-
-                    # Check live price and re-validate arb profitability
-                    live_odds = prep_result.actual_odds
-                    if hasattr(workflow, "check_live_price"):
-                        try:
-                            lo, _le = await workflow.check_live_price(page, bet_ns)
-                            if lo is not None:
-                                live_odds = lo
-                        except Exception:
-                            pass
-
-                    # Re-validate arb: if live anchor odds dropped, guaranteed profit may be gone
-                    if live_odds and live_odds > 0:
-                        live_profit = self._recalc_profit(live_odds, counter_plan)
-                        if live_profit is not None and live_profit <= 0:
-                            logger.info(
-                                f"[Arb:{pid}] Arb margin gone at live odds {live_odds:.2f} "
-                                f"(profit={live_profit:.2f}%) — skipping"
-                            )
-                            self._broadcaster.publish(
-                                "bet_skipped",
-                                {"bet": anchor_bet, "reason": f"arb margin gone ({live_profit:.1f}%)"},
-                            )
-                            self.stats["skipped"] += 1
-                            continue
-
-                    # Broadcast arb_bet_ready with full opp context
-                    self.state = STATE_READY
-                    self._bet_intercepted_event.clear()
-                    self._skip_event.clear()
-                    self._intercepted_body = None
-                    self._intercepted_request_body = None
-
-                    arb_group_id = uuid.uuid4().hex[:12]
-                    self._broadcaster.publish(
-                        "arb_bet_ready",
-                        {
-                            "bet": anchor_bet,
-                            "provider_id": pid,
-                            "prep_ok": prep_result.status == "prepped",
-                            "live_odds": live_odds,
-                            "counter_plan": counter_plan,
-                            "guaranteed_profit_pct": opp.get("guaranteed_profit_pct", 0),
-                            "arb_group_id": arb_group_id,
-                        },
-                    )
-
-                    # Wait for user confirm or skip
-                    while not self._bet_intercepted_event.is_set() and not self._skip_event.is_set():
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.shield(
-                                    asyncio.wait(
-                                        [
-                                            asyncio.ensure_future(self._bet_intercepted_event.wait()),
-                                            asyncio.ensure_future(self._skip_event.wait()),
-                                        ],
-                                        return_when=asyncio.FIRST_COMPLETED,
-                                    )
-                                ),
-                                timeout=3.0,
-                            )
-                            break
-                        except asyncio.TimeoutError:
-                            pass
-
-                    if self._skip_event.is_set():
-                        self._broadcaster.publish("bet_skipped", {"bet": anchor_bet, "reason": "user_skip"})
-                        self.stats["skipped"] += 1
-                        continue
-
-                    if not self._bet_intercepted_event.is_set():
-                        continue
-
-                    # Phase 2b: Record anchor placement
-                    self.state = STATE_PLACING
-                    anchor_result = await self._handle_anchor_placement(
-                        anchor_bet, pid, workflow, page, prep_result, stake
-                    )
-                    if not anchor_result:
-                        self.stats["skipped"] += 1
-                        continue
-
+                    # Anchor placed — record it
                     self.stats["placed"] += 1
                     self._placed_today[pid] = self._placed_today.get(pid, 0) + 1
+
+                    anchor_bet = self._opp_to_bet(
+                        opp, next(l for l in (opp.get("arb_legs") or opp.get("legs", [])) if l.get("provider") == pid)
+                    )
+                    anchor_bet["stake"] = anchor_result["actual_stake"]
+                    anchor_placement = PlacementResult(
+                        status="placed",
+                        bet_id=0,
+                        actual_odds=anchor_result.get("actual_odds"),
+                        actual_stake=anchor_result["actual_stake"],
+                    )
                     self._block_event_market(anchor_bet)
+                    await self._record_bet(anchor_bet, anchor_placement, self.current_arb_group_id or "")
 
-                    # Record anchor bet to DB
-                    await self._record_bet(anchor_bet, anchor_result, arb_group_id)
-
-                    # Phase 3: Auto-hedge counter-legs
-                    hedge_ok = await self._place_counter_legs(opp, counter_plan, stake, anchor_leg, arb_group_id)
-                    if hedge_ok:
-                        self.stats["hedged"] += 1
-                        self._broadcaster.publish(
-                            "arb_complete",
-                            {
-                                "arb_group_id": arb_group_id,
-                                "provider_id": pid,
-                                "guaranteed_profit_pct": opp.get("guaranteed_profit_pct", 0),
-                            },
+                    # Update counter slips and await hedge clicks
+                    self.state = STATE_AWAITING_HEDGES
+                    actual_odds = anchor_result.get("actual_odds") or (
+                        next(
+                            (
+                                l.get("odds", 0)
+                                for l in (opp.get("arb_legs") or opp.get("legs", []))
+                                if l.get("provider") == pid
+                            ),
+                            0,
                         )
-                    else:
-                        self.stats["unhedged"] += 1
+                    )
+                    await self._update_counter_slips_and_await_hedges(anchor_result["actual_stake"], actual_odds)
+
+                    # Record counter bets
+                    for leg in self._counter_legs:
+                        cpid = leg["provider"]
+                        inter = self._counter_intercepted.get(cpid, {})
+                        counter_bet = self._opp_to_bet(opp, leg)
+                        counter_bet["stake"] = leg.get("_current_stake", 0)
+                        counter_placement = PlacementResult(
+                            status="placed",
+                            bet_id=0,
+                            actual_odds=leg.get("odds"),
+                            actual_stake=leg.get("_current_stake", 0),
+                        )
+                        await self._record_bet(counter_bet, counter_placement, self.current_arb_group_id or "")
+
+                    # Clean up streams
+                    for s in self._streams.values():
+                        s.stop()
+                    self._streams.clear()
+                    self._counter_events.clear()
+                    self._counter_intercepted.clear()
 
                     placed_any = True
                     break  # Re-fetch fresh opps after each placement
@@ -430,7 +322,7 @@ class ArbRunner:
                     logger.info(f"[Arb:{pid}] No viable opps in batch — done")
                     break
 
-                # Cooldown before re-fetching to avoid hammering the API
+                # Cooldown before re-fetching
                 await asyncio.sleep(_OPP_FETCH_COOLDOWN)
 
             # Done
@@ -442,253 +334,295 @@ class ArbRunner:
         except Exception:
             logger.exception(f"[Arb:{pid}] Unhandled error")
         finally:
+            for s in self._streams.values():
+                s.stop()
+            self._streams.clear()
             self.state = STATE_IDLE
-            self.current_bet = None
+            self.current_opp = None
 
-    # ------------------------------------------------------------------
-    # Counter-leg planning and placement
-    # ------------------------------------------------------------------
+    # ----- new helpers -----
 
-    def _build_counter_plan(self, opp: dict, counter_legs: list[dict]) -> list[dict] | None:
-        """Build a counter-leg placement plan with fallback providers.
-
-        Returns a list of {outcome, providers: [{provider, odds, stake_pct}, ...]}
-        where providers are ordered best-odds-first. Returns None if any outcome
-        has no viable counter-provider.
-
-        Accepts any provider as a counter (cluster siblings were already excluded
-        when fetching opps via _counter_pool). Ranks by odds desc — highest odds
-        = best equal-payout math.
-        """
-        pool = set(self._counter_pool())
-
-        # Group counter-legs by outcome
-        by_outcome: dict[str, list[dict]] = {}
-        for leg in counter_legs:
-            outcome = leg.get("outcome", "")
-            if outcome not in by_outcome:
-                by_outcome[outcome] = []
-            by_outcome[outcome].append(leg)
-
-        plan = []
-        for outcome, legs in by_outcome.items():
-            # Sort by odds descending (best odds first = most profit)
-            legs.sort(key=lambda l: l.get("odds", 0), reverse=True)
-            # Accept any provider in the dynamic counter pool
-            viable = [l for l in legs if l.get("provider") in pool]
-            if not viable:
-                return None  # Can't cover this outcome
-            plan.append(
-                {
-                    "outcome": outcome,
-                    "providers": [
-                        {"provider": l["provider"], "odds": l["odds"], "stake_pct": l.get("stake_pct", 0)}
-                        for l in viable
-                    ],
-                }
+    async def _load_all_legs(self, opp: dict) -> bool:
+        """Navigate + prep every leg in parallel. Returns True on success."""
+        legs = opp.get("arb_legs") or opp.get("legs", [])
+        if not is_valid_arb_shape(legs, unlimited=set(UNLIMITED_PROVIDERS)):
+            self._broadcaster.publish(
+                "bet_skipped",
+                {"opp": opp, "reason": "invalid_arb_shape (need 1 soft + ≥1 unlimited)"},
             )
-        return plan
+            return False
 
-    async def _place_counter_legs(
-        self,
-        opp: dict,
-        counter_plan: list[dict],
-        total_stake: float,
-        anchor_leg: dict,
-        arb_group_id: str,
-    ) -> bool:
-        """Place counter-legs with fallback chain. Returns True if fully hedged."""
-        anchor_odds = anchor_leg.get("odds", 1.0)
-        # Total payout if anchor wins = anchor_stake * anchor_odds
-        # For equal-payout arb: each counter-leg stake = total_payout / counter_odds
-        anchor_stake = total_stake
-        total_payout = anchor_stake * anchor_odds
+        anchor_leg = next((l for l in legs if l.get("provider") == self.provider_id), None)
+        counter_legs = [l for l in legs if l.get("provider") != self.provider_id]
+        if not anchor_leg or not counter_legs:
+            return False
 
-        all_hedged = True
-        for counter in counter_plan:
-            outcome = counter["outcome"]
-            hedged = False
-            for fallback in counter["providers"]:
-                counter_pid = fallback["provider"]
-                counter_odds = fallback["odds"]
-                # Stake so this leg pays total_payout if it wins
-                counter_stake = round(total_payout / counter_odds, 2)
+        # Anchor stake = full balance (capped at site max)
+        balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
+        anchor_stake = round(min(balance, balance * 1.0), 2)  # site-max cap learned later from limit responses
+        if anchor_stake <= 0:
+            return False
 
-                logger.info(
-                    f"[Arb:{self.provider_id}] Hedging {outcome} on {counter_pid} "
-                    f"@ {counter_odds} stake={counter_stake}"
+        anchor_odds = anchor_leg.get("odds", 0)
+        counter_odds = [l.get("odds", 0) for l in counter_legs]
+        counter_stakes = recalc_counter_stakes(anchor_stake, anchor_odds, counter_odds)
+
+        self._anchor_stake = anchor_stake
+        self._counter_legs = counter_legs
+        self.current_opp = opp
+        self.current_arb_group_id = uuid.uuid4().hex[:12]
+
+        # Navigate + prep all legs in parallel
+        async def _prep_leg(leg: dict, planned_stake: float) -> tuple[str, bool]:
+            pid = leg["provider"]
+            try:
+                wf = get_workflow(pid)
+                if not self._browser.context:
+                    return pid, False
+                page = await wf.find_tab(self._browser.context)
+                if not page:
+                    return pid, False
+                bet = self._opp_to_bet(opp, leg)
+                bet["stake"] = planned_stake
+                bet_ns = _bet_ns(bet)
+                nav_ok = await wf.navigate_to_event(page, bet_ns)
+                if not nav_ok:
+                    return pid, False
+                prep = await wf.prep_betslip(page, bet_ns, planned_stake)
+                if prep.status not in ("prepped", "placed"):
+                    return pid, False
+                # Start SlipOddsStream for this leg
+                stream = SlipOddsStream(
+                    provider_id=pid,
+                    workflow=wf,
+                    page=page,
+                    on_odds_change=lambda o, p=pid: self._on_leg_odds_change(p, o),
+                    poll_interval_s=1.0,
                 )
-                self._broadcaster.publish(
-                    "arb_hedge_placing",
+                stream.start()
+                self._streams[pid] = stream
+                return pid, True
+            except Exception:
+                logger.exception(f"[Arb:{self.provider_id}] prep failed for {pid}")
+                return pid, False
+
+        prep_results = await asyncio.gather(
+            _prep_leg(anchor_leg, anchor_stake),
+            *[_prep_leg(l, s) for l, s in zip(counter_legs, counter_stakes)],
+        )
+        if any(not ok for _, ok in prep_results):
+            for s in self._streams.values():
+                s.stop()
+            self._streams.clear()
+            return False
+
+        # Register counter events
+        for leg in counter_legs:
+            self._counter_events[leg["provider"]] = asyncio.Event()
+        self._counter_intercepted = {}
+
+        self._broadcaster.publish(
+            "arb_legs_loaded",
+            {
+                "arb_group_id": self.current_arb_group_id,
+                "legs": [
                     {
-                        "arb_group_id": arb_group_id,
-                        "counter_provider": counter_pid,
-                        "outcome": outcome,
-                        "odds": counter_odds,
-                        "stake": counter_stake,
-                    },
-                )
+                        "provider_id": leg["provider"],
+                        "event_id": opp.get("event_id"),
+                        "market": opp.get("market"),
+                        "outcome": leg.get("outcome"),
+                        "planned_stake": s,
+                        "planned_odds": leg.get("odds"),
+                        "slip_state": "loaded",
+                    }
+                    for leg, s in zip([anchor_leg] + counter_legs, [anchor_stake] + counter_stakes)
+                ],
+            },
+        )
+        return True
 
-                result = await self._place_on_provider(counter_pid, opp, outcome, counter_odds, counter_stake)
-                if result and result.status == "placed":
-                    hedged = True
-                    self._broadcaster.publish(
-                        "arb_hedge_placed",
-                        {
-                            "arb_group_id": arb_group_id,
-                            "counter_provider": counter_pid,
-                            "outcome": outcome,
-                            "actual_odds": result.actual_odds,
-                            "actual_stake": result.actual_stake,
-                        },
-                    )
-                    # Record counter bet to DB
-                    counter_bet = self._opp_to_bet(
-                        opp,
-                        {
-                            "outcome": outcome,
-                            "provider": counter_pid,
-                            "odds": result.actual_odds or counter_odds,
-                            "stake_pct": fallback.get("stake_pct", 0),
-                            "fair_odds": anchor_leg.get("fair_odds"),
-                        },
-                    )
-                    counter_bet["stake"] = result.actual_stake or counter_stake
-                    counter_result = PlacementResult(
-                        status="placed",
-                        bet_id=result.bet_id,
-                        actual_odds=result.actual_odds or counter_odds,
-                        actual_stake=result.actual_stake or counter_stake,
-                    )
-                    await self._record_bet(counter_bet, counter_result, arb_group_id)
-                    break
-                else:
-                    reason = result.reason if result else "no_result"
-                    logger.warning(f"[Arb:{self.provider_id}] Hedge failed on {counter_pid}: {reason} — trying next")
-                    self._broadcaster.publish(
-                        "arb_hedge_failed",
-                        {
-                            "arb_group_id": arb_group_id,
-                            "counter_provider": counter_pid,
-                            "outcome": outcome,
-                            "reason": reason,
-                        },
-                    )
+    def _on_leg_odds_change(self, provider_id: str, odds: float) -> None:
+        """Stream callback — recompute alignment, throttle broadcast."""
+        if provider_id == self.provider_id:
+            anchor_odds = odds
+        else:
+            self._latest_counter_odds[provider_id] = odds
+            anchor_odds = self._streams[self.provider_id].current_odds or 0.0
 
-            if not hedged:
-                all_hedged = False
-                logger.error(f"[Arb:{self.provider_id}] UNHEDGED — could not place {outcome} on any counter-provider")
-                self._broadcaster.publish(
-                    "arb_unhedged",
-                    {
-                        "arb_group_id": arb_group_id,
-                        "provider_id": self.provider_id,
-                        "outcome": outcome,
-                        "event": f"{opp.get('home_team')} v {opp.get('away_team')}",
-                    },
-                )
+        counter_odds = [self._latest_counter_odds.get(l["provider"], l.get("odds", 0)) for l in self._counter_legs]
+        if anchor_odds <= 0 or any(o <= 0 for o in counter_odds):
+            return
+        profit = recalc_profit_pct(anchor_odds, counter_odds)
+        if profit is None:
+            return
 
-        return all_hedged
+        # Update counter slip stakes if drift exceeds threshold
+        new_stakes = recalc_counter_stakes(self._anchor_stake, anchor_odds, counter_odds)
+        for leg, new_stake in zip(self._counter_legs, new_stakes):
+            cur = leg.get("_current_stake", new_stake)
+            if should_update_stake(cur, new_stake):
+                leg["_current_stake"] = new_stake
+                wf = get_workflow(leg["provider"])
+                page = self._streams[leg["provider"]]._page  # noqa: SLF001 (intentional)
+                asyncio.create_task(wf.update_slip_stake(page, new_stake))
 
-    async def _place_on_provider(
-        self,
-        counter_pid: str,
-        opp: dict,
-        outcome: str,
-        odds: float,
-        stake: float,
-    ) -> PlacementResult | None:
-        """Place a single counter-leg bet.
-
-        Handles both autonomous (API/SDK) and DOM-based (Kambi/Altenar/Gecko/etc)
-        counters. DOM counters require the provider tab to already be open and
-        logged in — same precondition as the anchor leg.
-        """
-        try:
-            workflow = get_workflow(counter_pid)
-
-            if not self._browser.context:
-                return PlacementResult(status="failed", bet_id=0, reason="no_browser")
-
-            page = await workflow.find_tab(self._browser.context)
-            if not page:
-                return PlacementResult(status="failed", bet_id=0, reason="no_tab")
-
-            # Build a bet namespace for the counter-leg
-            counter_bet = self._opp_to_bet(
-                opp,
+        # Throttle broadcast
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        if now - self._last_alignment_broadcast >= _ALIGNMENT_BROADCAST_THROTTLE_S:
+            self._last_alignment_broadcast = now
+            self._broadcaster.publish(
+                "arb_alignment",
                 {
-                    "outcome": outcome,
-                    "provider": counter_pid,
-                    "odds": odds,
+                    "arb_group_id": self.current_arb_group_id,
+                    "profit_pct": round(profit, 3),
+                    "legs": [
+                        {
+                            "provider_id": self.provider_id,
+                            "current_odds": anchor_odds,
+                            "current_stake": self._anchor_stake,
+                            "slip_state": "loaded",
+                        }
+                    ]
+                    + [
+                        {
+                            "provider_id": leg["provider"],
+                            "current_odds": self._latest_counter_odds.get(leg["provider"], leg.get("odds", 0)),
+                            "current_stake": leg.get("_current_stake", 0),
+                            "slip_state": "loaded",
+                        }
+                        for leg in self._counter_legs
+                    ],
                 },
             )
-            counter_bet["stake"] = stake
-            bet_ns = _bet_ns(counter_bet)
 
-            # Navigate to event
-            nav_ok = await workflow.navigate_to_event(page, bet_ns)
-            if not nav_ok:
-                return PlacementResult(status="failed", bet_id=0, reason="navigation_failed")
+    async def _stream_and_await_anchor(self) -> dict | None:
+        """Wait for the anchor (soft) placement to be intercepted. Returns the placement details or None on reject."""
+        self._anchor_event.clear()
+        self._intercepted_body = None
+        # Block forever until the user clicks Place in mirror; cancel via stop().
+        await self._anchor_event.wait()
 
-            # Check live counter odds — recalculate stake if they moved
-            if hasattr(workflow, "check_live_price"):
-                try:
-                    live_odds, _edge = await workflow.check_live_price(page, bet_ns)
-                    if live_odds and live_odds > 0 and live_odds != odds:
-                        logger.info(
-                            f"[Arb:{self.provider_id}] Counter odds moved: {odds:.2f} → {live_odds:.2f} on {counter_pid}"
-                        )
-                        # Recalculate stake for equal payout
-                        counter_bet["odds"] = live_odds
-                        bet_ns.odds = live_odds
-                        stake = round(stake * odds / live_odds, 2)
-                        counter_bet["stake"] = stake
-                        bet_ns.stake = stake
-                except Exception:
-                    pass  # Use original odds/stake if live check fails
-
-            if getattr(workflow, "autonomous_placement", False):
-                # API/SDK call — places directly
-                return await workflow.place_bet(page, bet_ns, stake)
-
-            # DOM-based counter: prep betslip + auto-confirm
-            prep_result = await workflow.prep_betslip(page, bet_ns, stake)
-            if prep_result.status not in ("prepped", "placed"):
-                return PlacementResult(
-                    status="failed",
-                    bet_id=0,
-                    reason=f"prep_failed: {prep_result.reason or prep_result.status}",
-                )
-            # prep_betslip already returned a placed result for workflows that
-            # do one-shot placement (rare); otherwise confirm_bet finalizes it.
-            if prep_result.status == "placed":
-                return prep_result
-            return await workflow.confirm_bet(page)
-
-        except Exception:
-            logger.exception(f"[Arb:{self.provider_id}] Error placing on {counter_pid}")
-            return PlacementResult(status="failed", bet_id=0, reason="exception")
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _recalc_profit(live_anchor_odds: float, counter_plan: list[dict]) -> float | None:
-        """Recalculate guaranteed profit % using live anchor odds.
-
-        Returns profit % (positive = profitable) or None if can't calculate.
-        Formula: profit = 1 / (1/anchor + sum(1/best_counter)) - 1
-        """
-        try:
-            inv_sum = 1.0 / live_anchor_odds
-            for counter in counter_plan:
-                best_odds = counter["providers"][0]["odds"]
-                inv_sum += 1.0 / best_odds
-            return (1.0 / inv_sum - 1.0) * 100.0
-        except (ZeroDivisionError, IndexError, KeyError):
+        wf = get_workflow(self.provider_id)
+        body = self._intercepted_body or {}
+        pstatus = wf.parse_placement_status(body) if hasattr(wf, "parse_placement_status") else {"success": True}
+        if not pstatus.get("success"):
+            self._broadcaster.publish(
+                "arb_anchor_rejected",
+                {
+                    "arb_group_id": self.current_arb_group_id,
+                    "provider_id": self.provider_id,
+                    "reason": pstatus.get("error", "unknown"),
+                },
+            )
             return None
+
+        actual_stake = self._anchor_stake
+        actual_odds = None
+        if hasattr(wf, "parse_placement_details"):
+            details = wf.parse_placement_details(body) or {}
+            actual_stake = details.get("actual_stake") or actual_stake
+            actual_odds = details.get("actual_odds")
+
+        self._broadcaster.publish(
+            "arb_anchor_placed",
+            {
+                "arb_group_id": self.current_arb_group_id,
+                "provider_id": self.provider_id,
+                "actual_stake": actual_stake,
+                "actual_odds": actual_odds,
+            },
+        )
+        return {"actual_stake": actual_stake, "actual_odds": actual_odds, "body": body}
+
+    async def _update_counter_slips_and_await_hedges(
+        self, anchor_actual_stake: float, anchor_actual_odds: float
+    ) -> bool:
+        """Re-derive counter stakes from actual anchor placement; update each counter slip; await placements."""
+        # Use latest streamed counter odds (best truth available)
+        counter_odds = [self._latest_counter_odds.get(l["provider"], l.get("odds", 0)) for l in self._counter_legs]
+        new_stakes = recalc_counter_stakes(anchor_actual_stake, anchor_actual_odds, counter_odds)
+
+        # Update slips in parallel
+        async def _push_stake(leg: dict, stake: float) -> None:
+            pid = leg["provider"]
+            wf = get_workflow(pid)
+            page = self._streams[pid]._page  # noqa: SLF001
+            try:
+                await wf.update_slip_stake(page, stake)
+            except Exception:
+                logger.exception(f"[Arb:{self.provider_id}] update_slip_stake failed for {pid}")
+            leg["_current_stake"] = stake
+
+        await asyncio.gather(*[_push_stake(l, s) for l, s in zip(self._counter_legs, new_stakes)])
+
+        # Wait for every counter event
+        await asyncio.gather(*(ev.wait() for ev in self._counter_events.values()))
+
+        # Record each counter
+        for leg in self._counter_legs:
+            pid = leg["provider"]
+            self._broadcaster.publish(
+                "arb_hedge_placed",
+                {
+                    "arb_group_id": self.current_arb_group_id,
+                    "counter_provider": pid,
+                    "outcome": leg.get("outcome"),
+                    "actual_odds": leg.get("odds"),
+                    "actual_stake": leg.get("_current_stake"),
+                },
+            )
+
+        self._broadcaster.publish(
+            "arb_complete",
+            {
+                "arb_group_id": self.current_arb_group_id,
+                "guaranteed_profit_pct": self.current_opp.get("guaranteed_profit_pct") if self.current_opp else None,
+            },
+        )
+        self.stats["complete"] += 1
+        return True
+
+    # ----- reused helpers from old ArbRunner -----
+
+    def _counter_pool(self) -> list[str]:
+        """Return active providers eligible as counter-legs.
+
+        Excludes self and cluster siblings (they share odds engines — zero edge).
+        Includes unlimited providers even if not in active list.
+        """
+        own_cluster = _PROVIDER_TO_CLUSTER.get(self.provider_id)
+        pool: list[str] = []
+        seen: set[str] = set()
+        for pid in self._active_providers + list(UNLIMITED_PROVIDERS):
+            if pid == self.provider_id or pid in seen:
+                continue
+            other_cluster = _PROVIDER_TO_CLUSTER.get(pid)
+            if own_cluster and other_cluster and own_cluster == other_cluster:
+                continue  # Sibling — identical odds, no edge
+            pool.append(pid)
+            seen.add(pid)
+        return pool
+
+    async def _fetch_arb_opps(self) -> list[dict]:
+        """Fetch arbitrage opportunities anchored on this provider."""
+        pool = self._counter_pool()
+        params = f"providers={self.provider_id}"
+        if pool:
+            params += f"&counterpart_providers={','.join(pool)}"
+        url = f"{self._proxy_url}/api/opportunities/arb-workflow?{params}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
+                resp.raise_for_status()
+                data = resp.json()
+            opps = data.get("opportunities", [])
+            opps = [o for o in opps if o.get("guaranteed_profit_pct", 0) > 0]
+            opps.sort(key=lambda o: o.get("guaranteed_profit_pct", 0), reverse=True)
+            return opps
+        except Exception:
+            logger.exception(f"[Arb:{self.provider_id}] Failed to fetch arb opps")
+            return []
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
@@ -711,80 +645,6 @@ class ArbRunner:
             "is_bonus": False,
             "provider_meta": {},  # Filled by navigate_to_event
         }
-
-    @staticmethod
-    def _calc_anchor_stake(opp: dict, anchor_leg: dict, balance: float | None) -> float:
-        """Calculate anchor leg stake based on stake_pct and provider balance.
-
-        The server API returns stake_pct per leg (inverse-odds weighting).
-        Fallback uses a conservative 25% if stake_pct is missing.
-        """
-        # Scanner emits stake_pct as a percentage (0-100), convert to a fraction here.
-        stake_pct = anchor_leg.get("stake_pct", 0)
-        fraction = stake_pct / 100.0 if stake_pct and stake_pct > 0 else 0.25
-
-        if balance and balance > 0:
-            anchor_stake = round(balance * fraction, 2)
-            return min(anchor_stake, balance * 0.8)
-        return 10.0
-
-    async def _handle_anchor_placement(
-        self, bet: dict, pid: str, workflow: Any, page: Any, prep_result: Any, stake: float
-    ) -> PlacementResult | None:
-        """Handle anchor leg placement from interceptor or autonomous API."""
-        provider_bet_id = None
-        actual_odds = prep_result.actual_odds
-        actual_stake = prep_result.actual_stake
-
-        if self._intercepted_body:
-            if hasattr(workflow, "parse_placement_status"):
-                pstatus = workflow.parse_placement_status(self._intercepted_body)
-                if not pstatus["success"]:
-                    err = pstatus.get("error", "unknown error")
-                    self._broadcaster.publish("bet_failed", {"bet": bet, "reason": err})
-                    return None
-
-            provider_bet_id = workflow.parse_placement_response(self._intercepted_body)
-            if hasattr(workflow, "parse_placement_details"):
-                details = workflow.parse_placement_details(self._intercepted_body)
-                if details.get("actual_stake"):
-                    actual_stake = details["actual_stake"]
-                if details.get("actual_odds"):
-                    actual_odds = details["actual_odds"]
-            if actual_stake == stake and self._intercepted_request_body:
-                if hasattr(workflow, "parse_placement_request_stake"):
-                    req_stake = workflow.parse_placement_request_stake(self._intercepted_request_body)
-                    if req_stake:
-                        actual_stake = req_stake
-
-        elif getattr(workflow, "autonomous_placement", False):
-            bet_ns = _bet_ns(bet)
-            api_result = await workflow.place_bet(page, bet_ns, stake)
-            if api_result.status != "placed":
-                self._broadcaster.publish("bet_failed", {"bet": bet, "reason": api_result.reason})
-                return None
-            return api_result
-
-        self._broadcaster.publish(
-            "bet_placed",
-            {
-                "bet": bet,
-                "status": "placed",
-                "actual_odds": actual_odds,
-                "actual_stake": actual_stake,
-                "placed_today": self._placed_today.get(pid, 0) + 1,
-                "daily_cap": DAILY_BET_CAP,
-                "mode": "arb",
-            },
-        )
-
-        return PlacementResult(
-            status="placed",
-            bet_id=provider_bet_id or 0,
-            actual_odds=actual_odds,
-            actual_stake=actual_stake,
-            reason="intercepted" if self._intercepted_body else "manual",
-        )
 
     async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
         """Record a bet to the server DB with arb group linkage."""
@@ -818,10 +678,6 @@ class ArbRunner:
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
         logger.error(f"[Arb:{self.provider_id}] Bet lost after 3 attempts: {payload}")
-
-    # ------------------------------------------------------------------
-    # Reused helpers from ProviderRunner
-    # ------------------------------------------------------------------
 
     async def _wait_for_login(self, workflow: Any, page: Any) -> bool:
         """Wait for user login — same logic as ProviderRunner."""
