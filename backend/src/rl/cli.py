@@ -1718,6 +1718,7 @@ def ingest_live_trades() -> None:
     /app/data/rl/live_episodes/.ingested_trade_ids and skips duplicates.
     """
     import base64
+    import os
     import time
 
     import numpy as np
