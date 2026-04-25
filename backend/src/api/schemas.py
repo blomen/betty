@@ -124,6 +124,7 @@ class BetEdit(BaseModel):
     odds: float | None = None
     result: str | None = None  # "won", "lost", "void", "pending"
     payout: float | None = None  # Override payout (e.g. cashout amount)
+    provider_bet_id: str | None = None  # Backfill from history reconciliation
 
 
 # ============ Profile Schemas ============
