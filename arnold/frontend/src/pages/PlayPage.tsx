@@ -97,10 +97,6 @@ export default function PlayPage() {
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
-  const [reconcileToasts, setReconcileToasts] = useState<Array<{
-    id: string; provider_id: string; bet_id: number; event_name?: string;
-    match_method: string; confidence?: number; changes: Record<string, any>;
-  }>>([])
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
@@ -115,17 +111,6 @@ export default function PlayPage() {
   const [arbCounterPlan, setArbCounterPlan] = useState<any[] | null>(null)
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
   const [arbGroupId, setArbGroupId] = useState<string | null>(null)
-  // Reconcile toasts — each surface inline in their provider's pending list
-  // until the user dismisses them. Populated by bet_reconciled SSE events.
-  const [reconcileToasts, setReconcileToasts] = useState<Array<{
-    id: string
-    provider_id: string
-    bet_id: number
-    event_name?: string
-    match_method: string
-    confidence?: number
-    changes: Record<string, any>
-  }>>([])
   // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
   // Siblings share odds, so one fetch per cluster suffices. Each sibling renders its
   // own card using the cluster's opp list (differing only in balance / cap / active state).
@@ -306,9 +291,9 @@ export default function PlayPage() {
   }, [])
 
   // Poll login state for soft providers we know about (have balance or pending).
-  // SSE login_detected/balance_intercepted only fires when events happen; this
-  // effect recovers green-state after a page reload or when SSE missed events.
-  // No auto-activation — soft sessions need explicit user Start due to daily caps.
+  // Recovers green-state after a page reload AND auto-activates the runner once
+  // funded + logged in (parallel to the unlimited effect above). Auto-activation
+  // gated on DRAIN_THRESHOLD so we don't spawn runners on drained providers.
   useEffect(() => {
     const softPids = new Set<string>()
     for (const pid of Object.keys(providerBalances)) {
@@ -320,6 +305,7 @@ export default function PlayPage() {
     if (softPids.size === 0) return
     let cancelled = false
     const missCount: Record<string, number> = {}
+    const activated: Set<string> = new Set()
     const check = async () => {
       for (const pid of softPids) {
         try {
@@ -329,6 +315,21 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+            const bal = d.balance ?? providerBalances[pid] ?? 0
+            if (!activated.has(pid) && bal >= DRAIN_THRESHOLD_SEK) {
+              try {
+                activated.add(pid)
+                setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+                try { await api.startMirror() } catch {}
+                try { await api.openTab(pid) } catch {}
+                setLoopRunning(true)
+                // ArbRunner fetches its own opps from /api/opportunities/arb-workflow,
+                // so an empty batch is fine (unlike value-bet runners).
+                await api.startPlayLoop([], { [pid]: bal }, [pid])
+              } catch {
+                activated.delete(pid)  // retry next tick
+              }
+            }
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
             if (missCount[pid] >= 2) {
@@ -336,6 +337,7 @@ export default function PlayPage() {
                 if (!prev.has(pid)) return prev
                 const n = new Set(prev); n.delete(pid); return n
               })
+              activated.delete(pid)
             }
           }
         } catch { /* swallow */ }
@@ -468,25 +470,6 @@ export default function PlayPage() {
       setArbHedgeStatus({})
       setLoopStatus(null)
     }
-    if (type === 'arb_legs_loaded') {
-      setArbGroupId(data.arb_group_id ?? null)
-      setArbCounterPlan(data.legs ?? null)
-      setArbHedgeStatus({})
-      setArbProfitPct(null)
-      setLoopStatus(`Arb legs loaded — streaming odds`)
-    }
-    if (type === 'arb_alignment') {
-      setArbProfitPct(data.profit_pct)
-      // Live legs update — store per-leg current odds/stake/state
-      setArbCounterPlan(data.legs ?? null)
-    }
-    if (type === 'arb_anchor_placed') {
-      setLoopStatus(`Anchor placed @ ${data.actual_stake} on ${data.provider_id} — confirm hedges in mirror`)
-    }
-    if (type === 'arb_anchor_rejected') {
-      setLoopStatus(`Anchor REJECTED on ${data.provider_id}: ${data.reason} — trying next opp`)
-      setArbHedgeStatus({})
-    }
     if (type === 'arb_hedge_placing') {
       setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
     }
@@ -503,23 +486,6 @@ export default function PlayPage() {
       setArbProfitPct(data.guaranteed_profit_pct ?? arbProfitPct)
       setTimeout(() => { setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}); setCurrentBetReady(null) }, 5000)
       loadArbOpps()
-    }
-    if (type === 'bet_reconciled') {
-      const id = `recon-${data.bet_id}-${Date.now()}`
-      setReconcileToasts(prev => {
-        // De-dupe: replace any prior toast for this bet_id (re-reconcile updates same row)
-        const filtered = prev.filter(t => t.bet_id !== data.bet_id)
-        return [...filtered, {
-          id,
-          provider_id: data.provider_id,
-          bet_id: data.bet_id,
-          event_name: data.event_name,
-          match_method: data.match_method,
-          confidence: data.confidence,
-          changes: data.changes,
-        }]
-      })
-      load()  // refresh batch + pending so UI sees the updated bet
     }
     if (type === 'provider_complete') {
       setLoopProviderStatus(prev => {
@@ -767,84 +733,52 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Reconcile toasts — persist until user dismisses */}
-      {reconcileToasts.length > 0 && (
-        <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
-          {reconcileToasts.length > 1 && (
-            <div className="flex justify-end">
-              <button
-                onClick={() => setReconcileToasts([])}
-                className="text-[10px] px-2 py-0.5 bg-zinc-800/90 border border-zinc-600 rounded text-zinc-300 hover:bg-zinc-700"
-              >
-                dismiss all ({reconcileToasts.length})
-              </button>
-            </div>
-          )}
-          {reconcileToasts.map(t => (
-            <div key={t.id} className="bg-blue-900/90 border border-blue-500 rounded p-2 text-xs shadow-lg">
-              <div className="flex items-start justify-between gap-2">
-                <div className="text-blue-200 font-semibold uppercase">
-                  {t.provider_id} · reconciled ({t.match_method} · {t.confidence != null ? Math.round(t.confidence) : '—'})
-                </div>
-                <button
-                  onClick={() => setReconcileToasts(prev => prev.filter(x => x.id !== t.id))}
-                  className="text-zinc-400 hover:text-zinc-100 leading-none px-1 -mt-0.5"
-                  aria-label="Dismiss"
-                  title="Dismiss"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="text-zinc-200 mt-1 truncate">{t.event_name ?? `Bet #${t.bet_id}`}</div>
-              <div className="text-zinc-400 mt-1 space-y-0.5">
-                {Object.entries(t.changes).map(([k, v]) => (
-                  <div key={k} className="font-mono">
-                    {k}: <span className="text-amber-300">{String(v)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Arb card */}
       {currentBetReady && arbCounterPlan && (
         <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
             {arbProfitPct != null && (
-              <span className="text-xs font-mono font-semibold text-green-400">Live profit: +{arbProfitPct.toFixed(2)}%</span>
+              <span className="text-xs font-mono font-semibold text-green-400">+{arbProfitPct.toFixed(2)}% guaranteed profit</span>
             )}
             {arbGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{arbGroupId}</span>}
           </div>
+          <div className="flex items-center gap-2 text-xs mb-1.5">
+            <span className="text-zinc-400">Anchor:</span>
+            <span className="text-zinc-200">{currentBetReady.display_home} v {currentBetReady.display_away}</span>
+            <span className="text-amber-400 font-medium">{resolveOutcome(currentBetReady)}</span>
+            <span className="font-mono text-zinc-200">@ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}</span>
+            <span className="text-zinc-500 uppercase text-[10px]">{currentBetReady.provider_id}</span>
+          </div>
           <div className="space-y-0.5">
-            {(arbCounterPlan as any[]).map((leg: any) => {
-              const hedge = arbHedgeStatus[leg.provider_id]
-              return (
-                <div key={leg.provider_id} className="flex items-center gap-2 text-[10px]">
-                  <span className="text-zinc-400 uppercase w-20">{leg.provider_id}</span>
-                  <span className="font-mono text-zinc-300">@ {(leg.current_odds ?? leg.planned_odds ?? leg.odds)?.toFixed?.(2) ?? '—'}</span>
-                  <span className="font-mono text-zinc-500">{(leg.current_stake ?? leg.planned_stake)?.toFixed?.(2) ?? '—'} SEK</span>
-                  <span className="text-zinc-600">{leg.slip_state ?? '—'}</span>
-                  {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
-                  {hedge?.status === 'placed' && (
-                    <span className="text-green-400 font-semibold">
-                      HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
-                    </span>
-                  )}
-                  {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
-                </div>
-              )
-            })}
+            {arbCounterPlan.map((leg: any, i: number) => (
+              <div key={i}>
+                <div className="text-[10px] text-zinc-500 mb-0.5">Counter: {leg.outcome}</div>
+                {leg.providers?.map((p: any, j: number) => {
+                  const hedge = arbHedgeStatus[p.provider]
+                  return (
+                    <div key={j} className="flex items-center gap-2 pl-3 text-[10px]">
+                      <span className="text-zinc-400 uppercase w-16">{p.provider}</span>
+                      <span className="font-mono text-zinc-300">@ {p.odds?.toFixed(2)}</span>
+                      <span className="font-mono text-zinc-500">{(p.stake_pct * 100).toFixed(0)}%</span>
+                      {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
+                      {hedge?.status === 'placed' && (
+                        <span className="text-green-400 font-semibold">
+                          HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
+                        </span>
+                      )}
+                      {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
+                      {!hedge && <span className="text-zinc-600">Waiting</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
             {arbHedgeStatus.__unhedged && (
               <div className="flex items-center gap-2 pl-3 text-[10px] mt-1">
                 <span className="text-red-400 font-semibold">UNHEDGED — all fallbacks exhausted</span>
               </div>
             )}
-          </div>
-          <div className="text-[10px] text-zinc-500 mt-1.5">
-            {loopStatus || 'Waiting — click Place inside each mirror tab when ready'}
           </div>
         </div>
       )}
@@ -916,13 +850,10 @@ export default function PlayPage() {
             if (!softByCluster[cluster].includes(pid)) softByCluster[cluster].push(pid)
           }
 
-          // Funded check (used by both visibility filter and per-cluster render).
-          // Also keep the provider visible while it has unreviewed reconcile toasts
-          // so the user can see + dismiss the inline reconciliation rows.
+          // Funded check (used by both visibility filter and per-cluster render)
           const isFunded = (pid: string) =>
             (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
-            (pendingByProvider[pid]?.length ?? 0) > 0 ||
-            reconcileToasts.some(t => t.provider_id === pid)
+            (pendingByProvider[pid]?.length ?? 0) > 0
 
           // Visibility: cluster shows if any member is funded, OR if the cluster
           // has a qualifying arb opp (>= DEPOSIT_HINT_MIN_PROFIT_PCT). Drained
@@ -1085,11 +1016,11 @@ export default function PlayPage() {
                                 <button
                                   onClick={() => startSkin(pid)}
                                   className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                    isLoggedIn
-                                      ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                      : isSkinActive
-                                        ? 'bg-purple-700/50 text-purple-200 border border-purple-600/50'
-                                        : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                    isSkinActive
+                                      ? (isLoggedIn
+                                          ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                          : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
+                                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                                   }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
@@ -1106,8 +1037,7 @@ export default function PlayPage() {
                               {/* Per-provider pending list */}
                               {(() => {
                                 const providerPending = pendingByProvider[pid] ?? []
-                                const providerReconciled = reconcileToasts.filter(t => t.provider_id === pid)
-                                if (providerPending.length === 0 && providerReconciled.length === 0) return null
+                                if (providerPending.length === 0) return null
                                 const providerSettled = providerPending.filter((p: any) => detectedSettlements[p.bet_id ?? p.id])
                                 const providerPnl = providerSettled.reduce((s: number, p: any) => {
                                   const det = detectedSettlements[p.bet_id ?? p.id]
@@ -1161,37 +1091,6 @@ export default function PlayPage() {
                                                 className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                                             </>
                                           )}
-                                        </div>
-                                      )
-                                    })}
-                                    {providerReconciled.map(t => {
-                                      const result = t.changes?.result
-                                      const stake = t.changes?.stake
-                                      const odds = t.changes?.odds
-                                      const payout = t.changes?.payout
-                                      const profit = (payout != null && stake != null) ? (payout - stake) : null
-                                      return (
-                                        <div key={t.id} className={`flex items-center gap-2 px-6 pl-9 py-0.5 border-b border-zinc-800/20 text-xs ${
-                                          result === 'won' ? 'bg-green-900/10' : result === 'lost' ? 'bg-red-900/10' : 'bg-blue-900/10'
-                                        }`}>
-                                          <span className="text-[9px] uppercase tracking-wider text-blue-400 font-semibold">recon</span>
-                                          <span className="truncate flex-1 text-zinc-300">{t.event_name ?? `Bet #${t.bet_id}`}</span>
-                                          {odds != null && <span className="text-zinc-500 font-mono text-[10px]">@ {Number(odds).toFixed(2)}</span>}
-                                          {stake != null && <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(Number(stake))} kr</span>}
-                                          {result && (
-                                            <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
-                                              result === 'won' ? 'text-green-400 bg-green-900/30' :
-                                              result === 'lost' ? 'text-red-400 bg-red-900/30' :
-                                              'text-zinc-400 bg-zinc-800'
-                                            }`}>{result}</span>
-                                          )}
-                                          {profit != null && (
-                                            <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                              {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
-                                            </span>
-                                          )}
-                                          <button onClick={() => setReconcileToasts(prev => prev.filter(x => x.id !== t.id))}
-                                            className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                                         </div>
                                       )
                                     })}
@@ -1304,11 +1203,11 @@ export default function PlayPage() {
             <div key={clusterId}>
               {/* Cluster header with skin tabs */}
               <div className={`flex items-center gap-2 px-3 py-1.5 border-b ${
-                isLoggedIn
-                  ? 'bg-green-900/20 border-green-700/50'
-                  : isActive
-                    ? 'bg-amber-900/20 border-amber-700/50'
-                    : 'bg-zinc-900/50 border-zinc-800'
+                isActive
+                  ? (isLoggedIn
+                      ? 'bg-green-900/20 border-green-700/50'
+                      : 'bg-amber-900/20 border-amber-700/50')
+                  : 'bg-zinc-900/50 border-zinc-800'
               }`}>
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 {/* Skin tabs — sorted by balance desc */}
@@ -1327,11 +1226,11 @@ export default function PlayPage() {
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
-                            : isLoggedIn
-                              ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                              : isSkinActive
-                                ? 'bg-amber-700/50 text-amber-300 border border-amber-600/50'
-                                : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                            : isSkinActive
+                              ? (isLoggedIn
+                                  ? 'bg-green-700/50 text-green-200 border border-green-600/50'
+                                  : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
+                              : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
