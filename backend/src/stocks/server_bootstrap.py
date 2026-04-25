@@ -251,6 +251,19 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     level_monitor.set_broker_adapter(adapter)
     app.state.broker_adapter = adapter
 
+    # Wire LevelMonitor zone broadcasts into the dashboard state so the
+    # in-container Stocks chart renders zones. Without this, only the
+    # local arnoldstocks app (via the /ws/signals relay) gets zone_update
+    # payloads — the server's own dashboard.update_zones is never called
+    # and the chart shows no zone overlay.
+    from . import dashboard as _dashboard
+
+    def _dashboard_zone_forwarder(msg: dict) -> None:
+        if msg.get("type") == "zone_update":
+            _dashboard.update_zones(msg.get("zones", []))
+
+    level_monitor.add_signal_callback(_dashboard_zone_forwarder)
+
     # Direct DB insert for closed trades (no HTTP needed — same process)
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
 

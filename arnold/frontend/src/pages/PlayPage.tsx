@@ -844,34 +844,26 @@ export default function PlayPage() {
                   {clusterOrder.map(cluster => {
                     const members = softByCluster[cluster]
                     const funded = members.filter(isFunded)
-                    const nonFunded = members.filter(pid => !isFunded(pid))
+                    const nonFunded = members.filter(pid => !isFunded(pid) && !isDone(pid))
                     const opps = oppsByCluster[cluster] ?? []
                     const clusterMemberSet = new Set(members)
 
                     return (
                       <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
-                        {/* Cluster header — label + non-funded sibling pills (done/drained) + opp count */}
+                        {/* Cluster header — label + non-funded sibling pills (bonus remaining) + opp count */}
                         <div className="flex items-center gap-2 px-3 py-1 bg-zinc-900/40 border-b border-zinc-800/50 flex-wrap">
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
-                          {nonFunded.map(pid => {
-                            const done = isDone(pid)
-                            return (
-                              <span
-                                key={pid}
-                                className={`px-1.5 py-0.5 text-[10px] rounded border inline-flex items-center gap-1 ${
-                                  done
-                                    ? 'text-zinc-700 bg-zinc-950 border-zinc-900'
-                                    : 'text-amber-500/70 bg-zinc-900/50 border-zinc-800 italic'
-                                }`}
-                                title={done ? `${pid} is done — no balance, no bonus` : `${pid} has bonus remaining`}
-                              >
-                                {done && <span className="text-red-500 font-bold">✕</span>}
-                                <span className={`uppercase ${done ? 'line-through' : ''}`}>{pid}</span>
-                              </span>
-                            )
-                          })}
+                          {nonFunded.map(pid => (
+                            <span
+                              key={pid}
+                              className="px-1.5 py-0.5 text-[10px] rounded border inline-flex items-center gap-1 text-amber-500/70 bg-zinc-900/50 border-zinc-800 italic"
+                              title={`${pid} has bonus remaining`}
+                            >
+                              <span className="uppercase">{pid}</span>
+                            </span>
+                          ))}
                           <span className="text-[10px] text-zinc-600 ml-auto">
                             {funded.length > 0 ? `${opps.length} arb${opps.length === 1 ? '' : 's'} · siblings share odds` : 'no funded siblings'}
                           </span>
