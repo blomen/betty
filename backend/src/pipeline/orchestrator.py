@@ -105,12 +105,18 @@ class ExtractionPipeline:
         deferred_session.autoflush = False
 
         try:
+            # Order by most recent start_time so user-relevant upcoming events
+            # are recovered first; cap at 2000 per cycle so DB scan stays bounded.
+            # Anything left is picked up next cycle (pinnacle interval = 1 min).
             deferred = (
                 deferred_session.query(DeferredEvent)
                 .filter(
                     DeferredEvent.start_time > now,
                     DeferredEvent.sport.in_(sharp_sports),
+                    DeferredEvent.attempt_count < 20,
                 )
+                .order_by(DeferredEvent.start_time.asc())
+                .limit(2000)
                 .all()
             )
 
@@ -126,8 +132,20 @@ class ExtractionPipeline:
 
             recovered = 0
             fm = self.orchestrator_config.fuzzy_match
-
+            # Time-box the loop so Pinnacle's 1-min scheduler cadence isn't
+            # blocked by a deferred backlog. With ~7k future deferred events
+            # this loop ran for 50 minutes, leaving Pinnacle 40-50 minutes
+            # stale. Remaining entries are picked up on the next cycle.
+            DEFERRED_BUDGET_SECONDS = 60
+            budget_start = _time.monotonic()
+            processed = 0
             for de in deferred:
+                if _time.monotonic() - budget_start > DEFERRED_BUDGET_SECONDS:
+                    logger.info(
+                        f"[Deferred] Time budget reached after {processed}/{len(deferred)} entries; "
+                        f"deferring rest to next cycle"
+                    )
+                    break
                 event = de.to_standard_event()
                 is_new, odds_processed, _ = store_provider_event(
                     deferred_session,
@@ -143,6 +161,7 @@ class ExtractionPipeline:
                     min_for_asymmetry_check=fm.min_for_asymmetry_check,
                     date_index=self.event_cache_by_date,
                 )
+                processed += 1
 
                 if is_new or odds_processed > 0:
                     deferred_session.delete(de)
@@ -150,10 +169,16 @@ class ExtractionPipeline:
                 else:
                     de.attempt_count += 1
 
-            # Cleanup expired or stale (>6 hours)
+            # Cleanup: events that have started, anything >6h old, or anything
+            # that has bounced through 20+ unsuccessful match attempts (they'll
+            # never match — keeping them just clogs the budget).
             expired = (
                 deferred_session.query(DeferredEvent)
-                .filter((DeferredEvent.start_time <= now) | (DeferredEvent.created_at < now - timedelta(hours=6)))
+                .filter(
+                    (DeferredEvent.start_time <= now)
+                    | (DeferredEvent.created_at < now - timedelta(hours=6))
+                    | (DeferredEvent.attempt_count >= 20)
+                )
                 .delete()
             )
 

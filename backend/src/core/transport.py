@@ -423,14 +423,41 @@ class BrowserTransport(Transport):
         await self.context.route("**/*", _block_unnecessary)
         logger.debug("Resource blocking enabled for browser context (block_css=%s)", self._BLOCK_STYLESHEETS)
 
-    def _snapshot_descendant_pids(self) -> set[int]:
-        """Return the PID set of all descendants of this Python process."""
-        if psutil is None:
-            return set()
+    def _capture_driver_pid(self) -> int | None:
+        """Return the PID of the Playwright driver subprocess for THIS instance.
+
+        Each `async_playwright().start()` opens its own connection to a
+        per-instance driver; chrome and renderer processes descend from that
+        driver. Tracking this PID (instead of `self.children`) is the only
+        way to isolate ourselves from other concurrent BrowserTransports —
+        psutil-based descendant scans see all transports' processes mixed
+        together because Python's process tree doesn't distinguish them.
+        """
         try:
-            return {p.pid for p in psutil.Process(os.getpid()).children(recursive=True)}
-        except Exception:
+            transport = self.playwright._impl_obj._connection._transport
+            proc = getattr(transport, "_proc", None)
+            if proc is not None and getattr(proc, "pid", None):
+                return int(proc.pid)
+        except Exception as e:
+            logger.debug(f"[BrowserTransport] could not capture driver pid: {e}")
+        return None
+
+    def _resolve_owned_pids(self) -> set[int]:
+        """Expand the owned driver PID into its full descendant tree."""
+        if psutil is None or not self._spawned_pids:
             return set()
+        owned: set[int] = set()
+        for pid in list(self._spawned_pids):
+            try:
+                proc = psutil.Process(pid)
+                owned.add(pid)
+                for child in proc.children(recursive=True):
+                    owned.add(child.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception:
+                continue
+        return owned
 
     async def _ensure_browser(self):
         if self.page:
@@ -441,13 +468,19 @@ class BrowserTransport(Transport):
                 "Browser transport requires patchright or playwright. Install with: pip install patchright"
             )
 
-        pids_before = self._snapshot_descendant_pids()
-
         try:
             self.playwright = await async_playwright().start()
         except Exception as e:
             logger.error(f"[BrowserTransport] async_playwright().start() FAILED: {type(e).__name__}: {e!r}")
             raise
+
+        # Capture our private driver PID immediately. Each playwright().start()
+        # opens its own connection; the driver subprocess underneath is
+        # unique to this transport, so its descendant tree is exactly what
+        # belongs to us — no overlap with sibling transports.
+        driver_pid = self._capture_driver_pid()
+        if driver_pid is not None:
+            self._spawned_pids = {driver_pid}
 
         # CDP mode: attach to an already-running Chrome browser
         if self.cdp_url:
@@ -508,16 +541,14 @@ class BrowserTransport(Transport):
 
         await self._setup_resource_blocking()
 
-        # Capture PIDs spawned by this launch so close() can kill them
-        # forcefully if Playwright's graceful close hangs.
-        self._spawned_pids = self._snapshot_descendant_pids() - pids_before
-
         # Patchright handles all stealth at CDP level (webdriver, plugins, WebGL, etc.)
         # No add_init_script() needed — it conflicts with patchright's internal patching
         # and causes net::ERR_NAME_NOT_RESOLVED on Windows
 
         proxy_msg = " + residential proxy" if self._proxy_dict else ""
-        logger.info(f"Browser initialized with patchright stealth{proxy_msg} (tracking {len(self._spawned_pids)} pids)")
+        logger.info(
+            f"Browser initialized with patchright stealth{proxy_msg} (driver pid {next(iter(self._spawned_pids), 'unknown')})"
+        )
 
     async def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> Any:
         await self._ensure_browser()
@@ -693,15 +724,16 @@ class BrowserTransport(Transport):
             await self.playwright.stop()
 
     def _kill_spawned_processes(self):
-        """SIGKILL any chrome/node processes Playwright spawned that are still alive.
+        """SIGKILL the descendant tree of each owned direct child still alive.
 
         Used as a backstop when graceful close hangs — without this, Playwright's
         chrome processes leak indefinitely until the watchdog OOM-kills the container.
         """
         if psutil is None or not self._spawned_pids:
             return
+        targets = self._resolve_owned_pids()
         killed = 0
-        for pid in list(self._spawned_pids):
+        for pid in targets:
             try:
                 proc = psutil.Process(pid)
                 if proc.is_running():
@@ -712,7 +744,7 @@ class BrowserTransport(Transport):
             except Exception as e:
                 logger.debug(f"[BrowserTransport] reaper kill({pid}) failed: {e}")
         if killed:
-            logger.warning(f"[BrowserTransport] force-killed {killed}/{len(self._spawned_pids)} hung browser processes")
+            logger.warning(f"[BrowserTransport] force-killed {killed}/{len(targets)} hung browser processes")
         self._spawned_pids.clear()
 
     async def close(self):
