@@ -48,6 +48,30 @@ _BET_PLACEMENT_KEYWORDS = (
     "bets/place",
     "clob.polymarket.com/order",
 )
+# Third-party tracker / analytics hosts. Their URLs often embed the provider's
+# page URL (containing "bethistory" / "balance" / etc.) as a query param,
+# which used to spuriously trigger our keyword interceptors. Skip them.
+_TRACKER_HOST_SUFFIXES = (
+    "facebook.com",
+    "facebook.net",
+    "google.com",
+    "googleadservices.com",
+    "googletagmanager.com",
+    "google-analytics.com",
+    "googlesyndication.com",
+    "doubleclick.net",
+    "criteo.com",
+    "criteo.net",
+    "bing.com",
+    "branch.io",
+    "segment.com",
+    "segment.io",
+    "hotjar.com",
+    "mxpnl.com",
+    "mixpanel.com",
+    "snowplowanalytics.com",
+    "tiktok.com",
+)
 
 # WebSocket URLs to monitor for bet placement frames (Kambi uses WS, not HTTP)
 _WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
@@ -402,6 +426,18 @@ class MirrorBrowser:
         status = response.status
 
         if status < 200 or status >= 400:
+            return
+
+        # Skip third-party trackers/analytics. Their URLs frequently embed the
+        # provider's page URL as a query param (e.g. fb.com/tr?dl=...bethistory),
+        # which would otherwise spuriously match our keyword interceptors.
+        try:
+            from urllib.parse import urlparse
+
+            host = (urlparse(url).hostname or "").lower()
+        except Exception:
+            host = ""
+        if host and any(host == suffix or host.endswith("." + suffix) for suffix in _TRACKER_HOST_SUFFIXES):
             return
 
         # Detect provider from PAGE URL (which tab made the request)
