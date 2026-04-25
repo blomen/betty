@@ -54,6 +54,15 @@ STATE_LOADING_LEGS = "loading_legs"
 STATE_STANDBY = "standby"
 STATE_AWAITING_HEDGES = "awaiting_hedges"
 
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(f"slip stake update task failed: {exc!r}")
+
+
 _OPP_FETCH_COOLDOWN = 10.0
 _ALIGNMENT_BROADCAST_THROTTLE_S = 0.5
 
@@ -109,6 +118,7 @@ class ArbRunner:
         self._last_alignment_broadcast: float = 0.0
 
         self._task: asyncio.Task | None = None
+        self._update_tasks: set[asyncio.Task] = set()
 
     # ----- public surface -----
 
@@ -121,6 +131,12 @@ class ArbRunner:
         for s in self._streams.values():
             s.stop()
         self._streams.clear()
+        self._counter_events.clear()
+        self._counter_intercepted.clear()
+        for t in list(self._update_tasks):
+            if not t.done():
+                t.cancel()
+        self._update_tasks.clear()
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -297,7 +313,6 @@ class ArbRunner:
                     # Record counter bets
                     for leg in self._counter_legs:
                         cpid = leg["provider"]
-                        inter = self._counter_intercepted.get(cpid, {})
                         counter_bet = self._opp_to_bet(opp, leg)
                         counter_bet["stake"] = leg.get("_current_stake", 0)
                         counter_placement = PlacementResult(
@@ -359,7 +374,7 @@ class ArbRunner:
 
         # Anchor stake = full balance (capped at site max)
         balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
-        anchor_stake = round(min(balance, balance * 1.0), 2)  # site-max cap learned later from limit responses
+        anchor_stake = round(balance, 2)  # site-max cap learned later from limit responses
         if anchor_stake <= 0:
             return False
 
@@ -464,10 +479,13 @@ class ArbRunner:
                 leg["_current_stake"] = new_stake
                 wf = get_workflow(leg["provider"])
                 page = self._streams[leg["provider"]]._page  # noqa: SLF001 (intentional)
-                asyncio.create_task(wf.update_slip_stake(page, new_stake))
+                t = asyncio.create_task(wf.update_slip_stake(page, new_stake))
+                self._update_tasks.add(t)
+                t.add_done_callback(self._update_tasks.discard)
+                t.add_done_callback(_log_task_exception)
 
         # Throttle broadcast
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         now = loop.time()
         if now - self._last_alignment_broadcast >= _ALIGNMENT_BROADCAST_THROTTLE_S:
             self._last_alignment_broadcast = now
