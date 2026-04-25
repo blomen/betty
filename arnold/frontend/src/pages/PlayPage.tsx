@@ -115,6 +115,17 @@ export default function PlayPage() {
   const [arbCounterPlan, setArbCounterPlan] = useState<any[] | null>(null)
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
   const [arbGroupId, setArbGroupId] = useState<string | null>(null)
+  // Reconcile toasts — each surface inline in their provider's pending list
+  // until the user dismisses them. Populated by bet_reconciled SSE events.
+  const [reconcileToasts, setReconcileToasts] = useState<Array<{
+    id: string
+    provider_id: string
+    bet_id: number
+    event_name?: string
+    match_method: string
+    confidence?: number
+    changes: Record<string, any>
+  }>>([])
   // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
   // Siblings share odds, so one fetch per cluster suffices. Each sibling renders its
   // own card using the cluster's opp list (differing only in balance / cap / active state).
@@ -905,10 +916,13 @@ export default function PlayPage() {
             if (!softByCluster[cluster].includes(pid)) softByCluster[cluster].push(pid)
           }
 
-          // Funded check (used by both visibility filter and per-cluster render)
+          // Funded check (used by both visibility filter and per-cluster render).
+          // Also keep the provider visible while it has unreviewed reconcile toasts
+          // so the user can see + dismiss the inline reconciliation rows.
           const isFunded = (pid: string) =>
             (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
-            (pendingByProvider[pid]?.length ?? 0) > 0
+            (pendingByProvider[pid]?.length ?? 0) > 0 ||
+            reconcileToasts.some(t => t.provider_id === pid)
 
           // Visibility: cluster shows if any member is funded, OR if the cluster
           // has a qualifying arb opp (>= DEPOSIT_HINT_MIN_PROFIT_PCT). Drained
@@ -1092,7 +1106,8 @@ export default function PlayPage() {
                               {/* Per-provider pending list */}
                               {(() => {
                                 const providerPending = pendingByProvider[pid] ?? []
-                                if (providerPending.length === 0) return null
+                                const providerReconciled = reconcileToasts.filter(t => t.provider_id === pid)
+                                if (providerPending.length === 0 && providerReconciled.length === 0) return null
                                 const providerSettled = providerPending.filter((p: any) => detectedSettlements[p.bet_id ?? p.id])
                                 const providerPnl = providerSettled.reduce((s: number, p: any) => {
                                   const det = detectedSettlements[p.bet_id ?? p.id]
@@ -1146,6 +1161,37 @@ export default function PlayPage() {
                                                 className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                                             </>
                                           )}
+                                        </div>
+                                      )
+                                    })}
+                                    {providerReconciled.map(t => {
+                                      const result = t.changes?.result
+                                      const stake = t.changes?.stake
+                                      const odds = t.changes?.odds
+                                      const payout = t.changes?.payout
+                                      const profit = (payout != null && stake != null) ? (payout - stake) : null
+                                      return (
+                                        <div key={t.id} className={`flex items-center gap-2 px-6 pl-9 py-0.5 border-b border-zinc-800/20 text-xs ${
+                                          result === 'won' ? 'bg-green-900/10' : result === 'lost' ? 'bg-red-900/10' : 'bg-blue-900/10'
+                                        }`}>
+                                          <span className="text-[9px] uppercase tracking-wider text-blue-400 font-semibold">recon</span>
+                                          <span className="truncate flex-1 text-zinc-300">{t.event_name ?? `Bet #${t.bet_id}`}</span>
+                                          {odds != null && <span className="text-zinc-500 font-mono text-[10px]">@ {Number(odds).toFixed(2)}</span>}
+                                          {stake != null && <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(Number(stake))} kr</span>}
+                                          {result && (
+                                            <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
+                                              result === 'won' ? 'text-green-400 bg-green-900/30' :
+                                              result === 'lost' ? 'text-red-400 bg-red-900/30' :
+                                              'text-zinc-400 bg-zinc-800'
+                                            }`}>{result}</span>
+                                          )}
+                                          {profit != null && (
+                                            <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                              {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
+                                            </span>
+                                          )}
+                                          <button onClick={() => setReconcileToasts(prev => prev.filter(x => x.id !== t.id))}
+                                            className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                                         </div>
                                       )
                                     })}
