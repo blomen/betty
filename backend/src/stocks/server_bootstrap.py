@@ -263,6 +263,13 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
             _dashboard.update_zones(msg.get("zones", []))
 
     level_monitor.add_signal_callback(_dashboard_zone_forwarder)
+    # Push current zones immediately — _broadcast_zones() only fires on
+    # rebuild_zones() (1m candle close), so without this the dashboard
+    # stays empty until the next rebuild after restart.
+    try:
+        level_monitor._broadcast_zones()
+    except Exception:
+        log.exception("Initial zone broadcast to dashboard failed")
 
     # Direct DB insert for closed trades (no HTTP needed — same process)
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
