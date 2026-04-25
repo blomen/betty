@@ -144,6 +144,30 @@ class AltenarWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: Page) -> bool:
+        # Altenar's WSDK only initialises (and sets localStorage.token) when
+        # the page is on /sport. If the user browsed to /sv/ home or any other
+        # path, the token is missing and _authed_fetch returns 401 even when
+        # the user is genuinely logged in via cookies. Detect this and bounce
+        # the tab back to /sport so the WSDK re-runs and re-sets the token.
+        token_present = False
+        try:
+            token_present = bool(await page.evaluate("() => !!localStorage.getItem('token')"))
+        except Exception:
+            pass
+        if not token_present:
+            current = (page.url or "").lower()
+            if "/sport" not in current:
+                logger.info(
+                    f"[{self.provider_id}] check_login: token missing on {current[:60]}, bouncing to {self.home_url}"
+                )
+                try:
+                    await page.goto(self.home_url, wait_until="domcontentloaded", timeout=15000)
+                    # Give WSDK time to initialise + read cookies + set token
+                    await asyncio.sleep(2.5)
+                except Exception as e:
+                    logger.warning(f"[{self.provider_id}] check_login: bounce-to-/sport failed: {e}")
+                    return False
+
         result = await self._authed_fetch(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
