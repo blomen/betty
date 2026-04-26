@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +122,8 @@ class ArbRunner:
         self.current_opp_key: str | None = None
         self._dethroned_to: dict | None = None
         self._current_recomputed_profit_pct: float | None = None
+
+        self._all_green: bool = False
 
         self._task: asyncio.Task | None = None
         self._update_tasks: set[asyncio.Task] = set()
@@ -499,9 +502,22 @@ class ArbRunner:
                 t.add_done_callback(self._update_tasks.discard)
                 t.add_done_callback(_log_task_exception)
 
+        # Compute per-leg slip_state
+        anchor_state = self._compute_slip_state(self._planned_anchor_odds, anchor_odds)
+        counter_states = [
+            self._compute_slip_state(leg.get("_planned_odds", leg.get("odds", 0)), live)
+            for leg, live in zip(self._counter_legs, counter_odds)
+        ]
+        all_states = [anchor_state] + counter_states
+        all_green = all(s == "green" for s in all_states) and profit > 0
+        self._current_recomputed_profit_pct = profit
+        self._all_green = all_green
+
         # Throttle broadcast
-        loop = asyncio.get_running_loop()
-        now = loop.time()
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            now = time.monotonic()
         if now - self._last_alignment_broadcast >= _ALIGNMENT_BROADCAST_THROTTLE_S:
             self._last_alignment_broadcast = now
             self._broadcaster.publish(
@@ -509,22 +525,40 @@ class ArbRunner:
                 {
                     "arb_group_id": self.current_arb_group_id,
                     "profit_pct": round(profit, 3),
+                    "current_profit_pct": round(profit, 3),
+                    "all_green": all_green,
                     "legs": [
                         {
                             "provider_id": self.provider_id,
                             "current_odds": anchor_odds,
+                            "planned_odds": self._planned_anchor_odds,
+                            "drift_pct": round((anchor_odds / self._planned_anchor_odds - 1.0) * 100.0, 3)
+                            if self._planned_anchor_odds > 0
+                            else 0.0,
                             "current_stake": self._anchor_stake,
-                            "slip_state": "loaded",
+                            "slip_state": anchor_state,
                         }
                     ]
                     + [
                         {
                             "provider_id": leg["provider"],
                             "current_odds": self._latest_counter_odds.get(leg["provider"], leg.get("odds", 0)),
+                            "planned_odds": leg.get("_planned_odds", leg.get("odds", 0)),
+                            "drift_pct": round(
+                                (
+                                    self._latest_counter_odds.get(leg["provider"], leg.get("odds", 0))
+                                    / leg.get("_planned_odds", leg.get("odds", 1))
+                                    - 1.0
+                                )
+                                * 100.0,
+                                3,
+                            )
+                            if leg.get("_planned_odds", 0) > 0
+                            else 0.0,
                             "current_stake": leg.get("_current_stake", 0),
-                            "slip_state": "loaded",
+                            "slip_state": state,
                         }
-                        for leg in self._counter_legs
+                        for leg, state in zip(self._counter_legs, counter_states)
                     ],
                 },
             )

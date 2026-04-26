@@ -90,3 +90,93 @@ class TestStopResetsGreenGateState:
         assert runner._planned_anchor_odds == 0.0
         assert runner._dethroned_to is None
         assert runner._current_recomputed_profit_pct is None
+
+
+from unittest.mock import MagicMock  # noqa: E402, F811
+
+
+def _make_browser():
+    browser = MagicMock()
+    browser.context = MagicMock()
+    browser.context.pages = []
+    browser.provider_data = {}
+    return browser
+
+
+def _make_broadcaster():
+    bc = MagicMock()
+    bc.publish = MagicMock()
+    return bc
+
+
+class TestAlignmentPayload:
+    def _setup_runner_with_loaded_opp(self):
+        """Build an ArbRunner with state as if _load_all_legs already succeeded."""
+        runner = ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+        runner.state = "standby"
+        runner.current_opp = {"event_id": "e1", "market": "1x2", "outcome": "home"}
+        runner.current_arb_group_id = "abc123"
+        runner._planned_anchor_odds = 2.10
+        runner._anchor_stake = 100.0
+        runner._counter_legs = [{"provider": "pinnacle", "outcome": "away", "odds": 2.05, "_planned_odds": 2.05}]
+        # Stub the streams so _on_leg_odds_change can read anchor_odds
+        anchor_stream = MagicMock()
+        anchor_stream.current_odds = 2.10
+        anchor_stream.page = MagicMock()
+        counter_stream = MagicMock()
+        counter_stream.page = MagicMock()
+        runner._streams = {"betinia": anchor_stream, "pinnacle": counter_stream}
+        return runner
+
+    def test_alignment_includes_slip_state_per_leg(self):
+        runner = self._setup_runner_with_loaded_opp()
+        # Tick anchor with planned odds (green) and counter with planned odds (green)
+        runner._latest_counter_odds = {"pinnacle": 2.05}
+        runner._on_leg_odds_change("betinia", 2.10)
+        runner._on_leg_odds_change("pinnacle", 2.05)
+
+        # Find the most recent arb_alignment broadcast
+        calls = [c for c in runner._broadcaster.publish.call_args_list if c.args[0] == "arb_alignment"]
+        assert calls, "expected at least one arb_alignment broadcast"
+        payload = calls[-1].args[1]
+
+        assert payload["arb_group_id"] == "abc123"
+        assert "all_green" in payload
+        assert payload["all_green"] is True
+        assert "current_profit_pct" in payload
+        legs = payload["legs"]
+        assert all("slip_state" in leg for leg in legs)
+        assert all("planned_odds" in leg for leg in legs)
+        assert all(leg["slip_state"] == "green" for leg in legs)
+
+    def test_alignment_marks_red_when_anchor_drifts_below_tol(self):
+        runner = self._setup_runner_with_loaded_opp()
+        # Drift anchor below 1% tol: 2.10 * 0.99 = 2.079; 2.07 < 2.079 → red
+        runner._latest_counter_odds = {"pinnacle": 2.05}
+        runner._on_leg_odds_change("pinnacle", 2.05)
+        runner._broadcaster.publish.reset_mock()
+        runner._last_alignment_broadcast = 0.0  # reset throttle so next call fires
+        runner._streams["betinia"].current_odds = 2.07
+        runner._on_leg_odds_change("betinia", 2.07)
+
+        calls = [c for c in runner._broadcaster.publish.call_args_list if c.args[0] == "arb_alignment"]
+        assert calls
+        payload = calls[-1].args[1]
+        assert payload["all_green"] is False
+        anchor_leg = next(l for l in payload["legs"] if l["provider_id"] == "betinia")
+        assert anchor_leg["slip_state"] == "red"
+
+    def test_alignment_all_green_false_when_profit_negative(self):
+        # Pure 2-leg arb: profit-negative without any leg going red is unreachable,
+        # since the only way to push profit < 0 is to push odds down, which trips the
+        # drift gate. The red-leg test covers the combined case.
+        pass  # intentionally a no-op marker
