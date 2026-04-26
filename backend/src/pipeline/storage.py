@@ -790,8 +790,21 @@ def _resolve_event_id(
 
 
 def _store_deferred_event(session, event: StandardEvent, provider: str):
-    """Buffer an unmatched soft event for later Pinnacle matching."""
+    """Buffer an unmatched soft event for later Pinnacle matching.
+
+    Concurrent providers all UPSERT into deferred_events; PostgreSQL detects
+    deadlocks on the unique-index pages and aborts one of the two transactions.
+    Retrying with a tiny backoff lets the loser re-acquire the lock cleanly —
+    without retry, the entire per-sport storage transaction rolls back, and
+    every event extracted in that sport is lost (including the parent rows
+    we already flushed). This was the root cause of spelklubben writing zero
+    odds rows for 16 days while logging "success".
+    """
+    import random
+    import time as _time
+
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.exc import OperationalError
 
     from ..matching.normalizer import normalize_team_name
 
@@ -825,7 +838,24 @@ def _store_deferred_event(session, event: StandardEvent, provider: str):
             set_={"markets_json": markets_json, "attempt_count": 0},
         )
     )
-    session.execute(stmt)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        # Savepoint isolates the deferred insert from the surrounding transaction.
+        # If we plain-rollback, every parent Event + Odds flushed earlier in this
+        # sport's session is lost too — exactly the bug we're fixing.
+        sp = session.begin_nested()
+        try:
+            session.execute(stmt)
+            sp.commit()
+            return
+        except OperationalError as e:
+            sp.rollback()
+            err = str(e).lower()
+            if "deadlock detected" not in err or attempt == max_retries - 1:
+                raise
+            backoff = 0.05 * (2**attempt) + random.uniform(0, 0.05)
+            _time.sleep(backoff)
 
 
 def store_provider_event(
