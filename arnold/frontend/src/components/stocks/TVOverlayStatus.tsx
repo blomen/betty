@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { TVOverlayStatus as Status } from '@/types/stocks'
 
+const TV_NQ_URL = 'https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!'
+
 export function TVOverlayStatus() {
   const [status, setStatus] = useState<Status | null>(null)
   const [copied, setCopied] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -29,6 +33,26 @@ export function TVOverlayStatus() {
     } catch { /* ignore */ }
   }
 
+  const openInMirror = async () => {
+    setOpening(true)
+    setOpenError(null)
+    try {
+      const r = await fetch('/mirror/open-tab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: TV_NQ_URL }),
+      })
+      if (!r.ok) {
+        const txt = await r.text()
+        setOpenError(txt.slice(0, 120) || `HTTP ${r.status}`)
+      }
+    } catch (e) {
+      setOpenError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setOpening(false)
+    }
+  }
+
   if (!status) {
     return (
       <div className="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs font-mono">
@@ -46,12 +70,21 @@ export function TVOverlayStatus() {
     <div className="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs font-mono">
       <div className="flex items-center justify-between mb-2">
         <span className="text-zinc-500 uppercase tracking-wider">TV Overlay</span>
-        <button
-          onClick={copyUrl}
-          className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded"
-        >
-          {copied ? 'Copied' : 'Copy userscript URL'}
-        </button>
+        <div className="flex gap-1">
+          <button
+            onClick={openInMirror}
+            disabled={opening}
+            className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-emerald-900/60 hover:bg-emerald-800/60 disabled:opacity-50 text-emerald-300 rounded"
+          >
+            {opening ? 'Opening…' : 'Open TV in mirror'}
+          </button>
+          <button
+            onClick={copyUrl}
+            className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded"
+          >
+            {copied ? 'Copied' : 'Copy userscript URL'}
+          </button>
+        </div>
       </div>
       <div className="flex items-center gap-2 mb-1">
         <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
@@ -61,7 +94,9 @@ export function TVOverlayStatus() {
       </div>
       {!attached && (
         <div className="text-zinc-500 mt-1 leading-tight">
-          Install the userscript in Tampermonkey, then open NQ on TradingView.
+          Click "Open TV in mirror" — the mirror Chromium ships with the
+          overlay extension preloaded, so the chart will start drawing
+          zones automatically. (For Tampermonkey users: copy the URL.)
         </div>
       )}
       <div className="flex gap-3 mt-2 text-zinc-500">
@@ -69,6 +104,7 @@ export function TVOverlayStatus() {
         {ageS !== null && <span>painted {ageS}s ago</span>}
       </div>
       {status.error && <div className="text-red-400 mt-1 truncate" title={status.error}>{status.error}</div>}
+      {openError && <div className="text-red-400 mt-1 truncate" title={openError}>open failed: {openError}</div>}
     </div>
   )
 }
