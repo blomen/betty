@@ -320,3 +320,23 @@ export interface LevelsReplayResponse {
   volume_profile: { poc: number | null; vah: number | null; val: number | null } | null
   error?: string
 }
+
+export interface DepthLevel {
+  price: number
+  size: number
+}
+
+export interface DepthSnapshot {
+  bids: DepthLevel[]
+  asks: DepthLevel[]
+  ts: number
+}
+
+export interface TVOverlayStatus {
+  attached_clients: number
+  last_paint_at: number | null
+  draw_count: number
+  retries: number
+  error: string | null
+  userscript_url: string
+}
