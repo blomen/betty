@@ -3,7 +3,7 @@
 Discovery source: docs/superpowers/specs/2026-04-26-pinnacle-discovery.md
 
 Key facts:
-- Login/balance: api.arcadia.pinnacle.se/0.1/wallet/balance (credentials: include)
+- Login/balance: DOM text scrape (CSP blocks injected fetch to api.arcadia.pinnacle.se)
 - Slip state:    localStorage["Main:Betslip"] → Selections[0].price (American odds)
 - Stake input:   input[placeholder="Stake"] via React hidden-setter pattern (verified)
 - Outcome btns: button.market-btn — walk DOM up to find market label, pick by position
@@ -22,8 +22,6 @@ if TYPE_CHECKING:
     from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
-
-_BALANCE_URL = "https://api.arcadia.pinnacle.se/0.1/wallet/balance"
 
 # Market label text → canonical market type (Pinnacle site labels)
 _MARKET_LABEL_MAP = {
@@ -94,48 +92,49 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: Page) -> bool:
-        """Return True if the wallet balance endpoint responds without error.
+        """Return True when the page shows a logged-in state via DOM text signals.
 
-        Uses credentials: "include" so session cookies are sent automatically.
-        The authenticated endpoint is api.arcadia.pinnacle.se (not guest.*).
+        CSP blocks injected scripts from calling api.arcadia.pinnacle.se, so we
+        read the rendered page text instead.  A logged-in screen has DEPONERA
+        (Swedish: "DEPOSIT") button + SEK balance amount, and no LOG IN / JOIN
+        button.  Any one of these missing means not logged in.
         """
-        result = await self._evaluate_api(page, _BALANCE_URL)
-        if result is None or "__error" in (result or {}):
+        try:
+            result = await page.evaluate(
+                """() => {
+                    const text = document.body.innerText || '';
+                    const hasLogin = /\\bLOG IN\\b/i.test(text) || /\\bJOIN\\b/i.test(text);
+                    const hasBalance = /SEK\\s*[\\d,.]+/i.test(text);
+                    const hasDeposit = /\\bDEPONERA\\b/i.test(text) || /\\bDEPOSIT\\b/i.test(text);
+                    // Logged-in screen has DEPONERA button + balance, no LOG IN button
+                    return hasBalance && hasDeposit && !hasLogin;
+                }"""
+            )
+            return bool(result)
+        except Exception:
             return False
-        return True
 
     async def sync_balance(self, page: Page) -> float:
-        """Return the available balance from the wallet endpoint.
+        """Return the available balance scraped from the top-bar DOM text.
 
-        Discovery confirmed the response shape: {available: 80.0, currency: "SEK"}.
-        Falls back to any positive numeric field if "available" is absent.
-        Returns -1 on any error.
+        CSP blocks injected scripts from calling api.arcadia.pinnacle.se, so we
+        parse the rendered balance amount from document.body.innerText instead.
+        Matches patterns like "SEK 80.00" or "80,00 KR".
+        Returns -1 on any error or when the balance is not visible.
         """
-        result = await self._evaluate_api(page, _BALANCE_URL)
-        if result is None or "__error" in (result or {}):
+        try:
+            raw = await page.evaluate(
+                """() => {
+                    const text = document.body.innerText || '';
+                    const m = text.match(/(\\d+[,.]\\d+)\\s*KR/i) || text.match(/SEK\\s*([\\d,.]+)/i);
+                    return m ? m[1].replace(',', '.') : null;
+                }"""
+            )
+            if not raw:
+                return -1.0
+            return float(raw)
+        except Exception:
             return -1.0
-        if not isinstance(result, dict):
-            return -1.0
-
-        # Primary: "available" field per discovery doc
-        available = result.get("available")
-        if available is not None:
-            try:
-                return float(available)
-            except (TypeError, ValueError):
-                pass
-
-        # Fallback: first numeric field with value > 0
-        for v in result.values():
-            try:
-                fv = float(v)  # type: ignore[arg-type]
-                if fv > 0:
-                    logger.debug(f"[{self.provider_id}] sync_balance: used fallback field, value={fv}")
-                    return fv
-            except (TypeError, ValueError):
-                continue
-
-        return -1.0
 
     # ------------------------------------------------------------------
     # History

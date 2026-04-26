@@ -177,3 +177,57 @@ class TestSlugify:
         assert len(_ACCENT_SRC) == len(_ACCENT_DST), (
             "Accent translation table broken — would raise ValueError on _slugify call"
         )
+
+
+# ---- check_login ----
+
+
+@pytest.mark.asyncio
+async def test_check_login_true_when_balance_and_deponera_present():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=True)
+    assert await wf.check_login(page) is True
+
+
+@pytest.mark.asyncio
+async def test_check_login_false_when_login_button_present():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=False)
+    assert await wf.check_login(page) is False
+
+
+@pytest.mark.asyncio
+async def test_check_login_false_on_evaluator_exception():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=RuntimeError("page closed"))
+    assert await wf.check_login(page) is False
+
+
+# ---- sync_balance ----
+
+
+@pytest.mark.asyncio
+async def test_sync_balance_parses_sek_amount():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value="80.00")
+    assert await wf.sync_balance(page) == pytest.approx(80.00)
+
+
+@pytest.mark.asyncio
+async def test_sync_balance_returns_negative_one_when_missing():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=None)
+    assert await wf.sync_balance(page) == -1.0
+
+
+@pytest.mark.asyncio
+async def test_sync_balance_returns_negative_one_on_exception():
+    wf = PinnacleMirrorWorkflow()
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=RuntimeError("page closed"))
+    assert await wf.sync_balance(page) == -1.0
