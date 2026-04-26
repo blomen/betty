@@ -1,16 +1,14 @@
-import { useState, useEffect, Component } from 'react'
+import { useState, Component } from 'react'
 import type { ReactNode } from 'react'
 import PlayPage from './pages/PlayPage'
 import { BankrollPage as SportsBankrollPage } from './pages/BankrollPage'
 import { StatsPage as SportsStatsPage } from './pages/StatsPage'
-import { ChartPage } from './pages/stocks/ChartPage'
+import SignalsPage from './pages/stocks/SignalsPage'
 import { BankrollPage as StocksBankrollPage } from './pages/stocks/BankrollPage'
 import { StatsPage as StocksStatsPage } from './pages/stocks/StatsPage'
 import { ProfileSelector } from './components/ProfileSelector'
 import { ExtractionHealth } from './components/ExtractionHealth'
 import { useDashboardWS } from './hooks/useDashboardWS'
-import { api as stocksApi } from './hooks/useStocksApi'
-import type { ExpandedSession } from './types/stocks'
 
 // Catch escaping render errors. Used both at root (to catch shell crashes)
 // and wrapped around each tab so one tab's crash doesn't kill the others —
@@ -89,15 +87,7 @@ export default function App() {
   const [statsSub, setStatsSub] = useState<SharedSub>('betting')
 
   // Keep stocks WebSocket mounted globally so ticks/signals accumulate regardless of tab
-  const { state: ws, lastTick } = useDashboardWS()
-  const [session, setSession] = useState<ExpandedSession | null>(null)
-
-  useEffect(() => {
-    const poll = () => { stocksApi.getSession().then(setSession).catch(() => {}) }
-    poll()
-    const iv = setInterval(poll, 60_000)
-    return () => clearInterval(iv)
-  }, [])
+  const { state: ws } = useDashboardWS()
 
   return (
     <ErrorBoundary>
@@ -138,17 +128,10 @@ export default function App() {
             </ErrorBoundary>
           </div>
 
-          {/* Charts — stocks */}
+          {/* Stocks — TradingView is the chart, this is the signals/values console */}
           <div className={`flex flex-col flex-1 min-h-0 ${activeTab === 'charts' ? '' : 'hidden'}`}>
-            <ErrorBoundary label="Chart">
-              <ChartPage
-                lastTick={lastTick}
-                session={session}
-                zones={ws.zones}
-                signals={ws.signals}
-                fills={ws.fills}
-                exits={ws.exits}
-              />
+            <ErrorBoundary label="Stocks">
+              <SignalsPage ws={ws} />
             </ErrorBoundary>
           </div>
 
