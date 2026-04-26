@@ -21,7 +21,6 @@ from .providers.pinnacle import PinnacleRetriever
 from .providers.polymarket import PolymarketRetriever
 from .providers.smarkets import SmarketsRetriever
 from .providers.spectate import SpectateRetriever
-from .providers.stake import StakeRetriever
 from .providers.tipwin import TipwinRetriever
 from .providers.vbet import VbetRetriever
 
@@ -204,12 +203,6 @@ class ExtractorFactory:
                 headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True, disable_resource_blocking=True
             )
             retriever = TipwinRetriever(config, transport=transport)
-        elif retriever_type == "stake":
-            retriever = StakeRetriever(
-                config,
-                circuit_breaker=self._circuit_breaker,
-                rate_limit_config=rate_limit_config,
-            )
         elif retriever_type == "cloudbet":
             retriever = CloudbetRetriever(
                 config,

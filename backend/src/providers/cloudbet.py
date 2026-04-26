@@ -6,9 +6,10 @@ Authentication uses an X-API-Key header with an affiliate API key.
 
 Extraction flow:
   1. GET /sports/{sport_key} → list of competition keys
-  2. For each competition: GET /competitions/{comp_key}?markets=... → events with odds
+  2. Parallel GET /competitions/{comp_key}?markets=... → events with odds
 """
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -20,6 +21,11 @@ from ..matching.normalizer import normalize_team_name
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://sports-api.cloudbet.com/pub/v2/odds"
+
+# Bound concurrent competition fetches against the affiliate API.
+# Soccer's ~100 competitions * 300ms RTT = 30s sequential — at Sem(20) this
+# drops to 5-10s. Mirrors Pinnacle's _fetch_league(Sem(self._max_concurrent_leagues)).
+COMPETITION_CONCURRENCY = 20
 
 # Statuses to skip (live, finished, cancelled, suspended)
 _SKIP_STATUSES = {"TRADING_LIVE", "RESULTED", "CANCELLED", "SUSPENDED"}
@@ -306,8 +312,9 @@ class CloudbetRetriever(Retriever):
             return []
         logger.info(f"[{self.provider_id}] {sport}: {len(competitions)} active competitions")
 
-        market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
+        market_keys = [mk for mk in _SPORT_MARKETS.get(sport_key, "").split(",") if mk]
         events: list[StandardEvent] = []
+        market_params = "&".join(f"markets={mk}" for mk in market_keys)
 
         # Health probes call extract(sport, limit=1). Walking 200+ competitions
         # at ~1s each to find the first one with parseable events blew the
@@ -317,29 +324,38 @@ class CloudbetRetriever(Retriever):
         if limit and limit <= 5 and len(competitions) > 10:
             competitions = competitions[:10]
 
-        # Step 2: fetch each competition
-        for comp in competitions:
+        # Step 2: parallel fetch with bounded concurrency. Order is preserved
+        # via gather()'s positional results so league naming and any
+        # tie-breaking in dedupe stays deterministic across runs.
+        semaphore = asyncio.Semaphore(COMPETITION_CONCURRENCY)
+
+        async def fetch_competition(comp: dict) -> dict | None:
             comp_key = comp.get("key") or comp.get("id")
             if not comp_key:
-                continue
-
-            # Build URL with multiple markets params
-            market_params = "&".join(f"markets={mk}" for mk in market_keys if mk)
+                return None
             comp_url = f"{BASE_URL}/competitions/{comp_key}?{market_params}"
-            comp_data = await self.transport.get(comp_url, headers=self._headers())
-            if not comp_data:
-                continue
+            async with semaphore:
+                return await self.transport.get(comp_url, headers=self._headers())
 
-            comp_name = comp_data.get("name", "")
-            raw_events = comp_data.get("events") or []
-            for raw_event in raw_events:
+        results = await asyncio.gather(
+            *(fetch_competition(c) for c in competitions),
+            return_exceptions=True,
+        )
+
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug(f"[{self.provider_id}] Competition fetch error: {result}")
+                continue
+            if not result:
+                continue
+            comp_name = result.get("name", "")
+            for raw_event in result.get("events") or []:
                 event = parse_event(raw_event, sport, self.provider_id)
                 if event:
                     event.league = comp_name
                     events.append(event)
                     if limit and len(events) >= limit:
                         break
-
             if limit and len(events) >= limit:
                 break
 
