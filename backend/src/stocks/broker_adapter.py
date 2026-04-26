@@ -372,6 +372,7 @@ class TopstepXBrokerAdapter:
                 self.tracker.entry_price = price
                 if self._pending_trade:
                     self._pending_trade["entry_price"] = price
+                    self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
             else:
                 log.debug("Duplicate entry fill ignored: %.2f order_id=%s", price, order_id)
@@ -406,6 +407,21 @@ class TopstepXBrokerAdapter:
             stop_price = self._pending_trade.get("stop_price", 0)
             risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
             pnl_r = pnl_pts / max(risk_pts, 0.25)
+
+            # Slippage = adverse fill vs. intended signal price, in NQ ticks.
+            # Positive = paid worse than signal (long filled higher / short filled lower).
+            signal_price = self._pending_trade.get("signal_price")
+            slippage_ticks = None
+            if signal_price:
+                slippage_ticks = round(direction * (entry_px - signal_price) / 0.25, 2)
+
+            # Latency = signal-dispatch → entry-fill (ms). End-to-end including order ack.
+            submit_ts = self._pending_trade.get("entry_submit_ts")
+            fill_ts = self._pending_trade.get("entry_fill_ts")
+            fill_latency_ms = None
+            if submit_ts and fill_ts:
+                fill_latency_ms = round((fill_ts - submit_ts).total_seconds() * 1000.0, 1)
+
             _log_broker_trade(
                 session_pnl=round(self.tracker.session_pnl, 2),
                 ts=self._pending_trade["ts"],
@@ -419,6 +435,8 @@ class TopstepXBrokerAdapter:
                 exit_price=price,
                 pnl_dollars=round(pnl_dollars, 2),
                 pnl_r=round(pnl_r, 3),
+                fill_latency_ms=fill_latency_ms,
+                slippage_ticks=slippage_ticks,
                 was_stop=is_stop,
                 trail_count=self._pending_trade.get("trail_count", 0),
                 stop_ticks=self._pending_trade.get("stop_ticks"),
@@ -577,6 +595,9 @@ class TopstepXBrokerAdapter:
             "stop_price": stop_price,
             "tp_price": tp_price,
             "stop_ticks": stop_dist_ticks,
+            "signal_price": price,
+            "entry_submit_ts": now,
+            "entry_fill_ts": None,
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),
             "signal_zone": float(signal.get("zone", signal.get("zone_price", 0)) or 0),

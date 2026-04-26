@@ -142,6 +142,8 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                     trail_count=p.get("trail_count"),
                     pnl_dollars=p.get("pnl_dollars"),
                     pnl_r=p.get("pnl_r"),
+                    fill_latency_ms=p.get("fill_latency_ms"),
+                    slippage_ticks=p.get("slippage_ticks"),
                     signal_action=p.get("signal_action"),
                     signal_confidence=p.get("signal_confidence"),
                     signal_zone=p.get("signal_zone"),

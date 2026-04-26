@@ -1330,9 +1330,15 @@ class LevelMonitor:
                             "action": sig_action,
                             "price": price,
                             "stop_price": round(raw_stop * 4) / 4,
+                            "stop_ticks": stop_ticks,
                             "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
                             "confidence": confidence,
                             "orderflow_score": of_score,
+                            "zone": zone.center_price,
+                            "trigger": "zone_entry",
+                            "cont_p": result.get("cont_p"),
+                            "rev_p": result.get("rev_p"),
+                            "model_type": result.get("model_type"),
                         }
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:
