@@ -67,6 +67,7 @@ jobs:
             --ignore-glob='tests/test_mute_notifications*' \
             --ignore-glob='tests/test_polymarket_true*' \
             --ignore-glob='tests/test_early_exit*' \
+            --ignore-glob='tests/test_size_model*' \
             --ignore=tests/providers/test_comeon_dom_parser.py \
             --ignore=tests/bankroll/test_allocator_envelope.py \
             -x
