@@ -158,9 +158,17 @@ broken is at the seams:
 
 ## 9. Re-introduction notes
 
-> Filled in after fixes ship.
+**Shipped 2026-04-26** in commit `cf9316e6` (local only, not deployed):
+- Fix #1: CLOB book fetching routed through `HttpTransport` (no more ad-hoc `aiohttp.ClientSession` + `TCPConnector`); restores breaker / retry / shared session.
+- Fix #2: Yes/No team-name match switched to token overlap (was substring → "Real" matched both Real Madrid + Real Sociedad).
+- Fix #3: `_MAX_PAGES = 50` cap added to Phase 1 + Phase 1b loops with explicit warn-on-cap log.
+- Fix #4: `_calc_vwap_from_asks` dead-code condition simplified to clear `total_cost < fill_size_usd` (behavior identical, smoke-tested: 25 USD fill on synthetic book yields VWAP 0.4808).
+- Plus `HttpTransport.get` gained a `timeout=` kwarg so CLOB keeps its 8s deadline (vs 90s default for Gamma).
 
-- [ ] Fix bundle deployed (commit hash:)
-- [ ] CLOB 429 / 5xx counts before vs after:
-- [ ] Yes/No mismatched-team incidents (look for low-volume markets attributed to wrong team):
-- [ ] Any regression in event count:
+Pre-deploy verification: ruff clean · py_compile clean · synthetic VWAP smoke matches expected output.
+
+Post-deploy checks (TODO):
+- [ ] CLOB 429 / 5xx counts in HttpTransport metrics (was: silent failures via ad-hoc session)
+- [ ] Yes/No mismatched-team incidents — search opportunities table for low-volume polymarket bets where team strings overlap (Real, Boston, Manchester, etc.); should be zero
+- [ ] Any regression in event count (baseline ~232 events/run in 86s)
+- [ ] Phase 1 / Phase 1b "MAX_PAGES cap hit" warnings (should be zero in steady state — flags real pagination growth)

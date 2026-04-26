@@ -48,15 +48,18 @@ Every cluster doc follows the same structure:
 
 ## Index
 
-| # | Cluster | Status | Doc | Headline finding |
+| # | Cluster | Status | Doc | Shipped fixes (local on `feat/slip-odds-architecture`, not deployed) |
 |---|---|---|---|---|
-| 1 | sharp | audited 2026-04-26 | [01-sharp-pinnacle.md](01-sharp-pinnacle.md) | YAML `concurrent_leagues: 10` silently ignored — code uses `MAX_CONCURRENT_LEAGUES = 50` |
-| 2 | polymarket | audited 2026-04-26 | [02-polymarket.md](02-polymarket.md) | CLOB ad-hoc session bypasses HttpTransport (no breaker/retry/proxy); Yes/No team substring bug |
-| 3 | signal_international | audited 2026-04-26 | [03-signal-international.md](03-signal-international.md) | Cloudbet competitions serial (30s+); Marathon year-boundary bug breaks Dec→Jan; Stake is dead code |
-| 4 | kalshi + smarkets | audited 2026-04-26 | [04-kalshi-smarkets.md](04-kalshi-smarkets.md) | Both bypass HttpTransport entirely; `extractor.close()` raises AttributeError silently; Kalshi re-walks events 17×/cycle |
-| 5 | api_soft | audited 2026-04-26 | [05-api-soft.md](05-api-soft.md) | 21:53 stall is orchestrator+DB issue, not provider; Gecko 3 brands × 3 Chromiums = chrome-leak source; vbet blocks event loop |
-| 6 | browser_soft | audited 2026-04-26 | [06-browser-soft.md](06-browser-soft.md) | 10bet new_page/competition + 8s wait fallback = 2168s timeout; tipwin 120 sequential gotos; interwetten 24-tab cookie storm |
-| 7 | browser_antibot | audited 2026-04-26 | [07-browser-antibot.md](07-browser-antibot.md) | ComeOn per-sport page recycle costs 35-50s/cycle; Camoufox `__aexit__` swallow is orphan-process source |
+| 1 | sharp | **fixes shipped 2026-04-26** | [01-sharp-pinnacle.md](01-sharp-pinnacle.md) | `743fdb4e` — honor YAML `concurrent_leagues`, per-instance `_logged_unknown_types`, drop events with bad `start_time` |
+| 2 | polymarket | **fixes shipped 2026-04-26** | [02-polymarket.md](02-polymarket.md) | `cf9316e6` — CLOB via HttpTransport, token-overlap Yes/No match, MAX_PAGES guards, VWAP dead-code simplified |
+| 3 | signal_international | **fixes shipped 2026-04-26** | [03-signal-international.md](03-signal-international.md) | `8cd07e9a` — Cloudbet `Semaphore(20)` parallel competitions, Marathon year-boundary fix, Stake retired |
+| 4 | kalshi + smarkets | **fixes shipped 2026-04-26** | [04-kalshi-smarkets.md](04-kalshi-smarkets.md) | `85ea70f1` (kalshi) HttpTransport + 60s cross-sport cache + token-overlap match · `5686b264` (smarkets) HttpTransport + SOCKS5 + 50 LOC dropped |
+| (cross-cluster) | orchestrator | **shipped 2026-04-26** | (architectural — see this README's #5) | `dca7b348` — extract analyzer + ML hooks to post_extraction_worker. Eliminates the 21:53 UTC tier-stall root cause. -258 LOC from hot path |
+| 5 | api_soft | **partial fixes shipped 2026-04-26** | [05-api-soft.md](05-api-soft.md) | `7196bad2` (gecko) retry budget 540s → 180s, no `transport.close()` per retry (force-kill source) · `d98f7507` (vbet) `python_socks.async_` (no event-loop blocking). **Pending:** spelklubben odds-not-saving, altenar substring fix |
+| 6 | browser_soft | **fixes shipped 2026-04-26** | [06-browser-soft.md](06-browser-soft.md) | `99fcc9c7` (10bet) page-pool reuse + drop 8s `wait_for_timeout` fallback · `ae056ede` (tipwin) parallel pagination via `context.request.get` · `522d8e86` (interwetten) Truendo consent via `context.add_init_script` |
+| 7 | browser_antibot | not started | [07-browser-antibot.md](07-browser-antibot.md) | — (ComeOn page-recycle alternative + Camoufox subprocess kill remain) |
+
+**11 fix commits total. All local on `feat/slip-odds-architecture`. None deployed.**
 
 ## Top-of-stack findings (cluster-spanning)
 

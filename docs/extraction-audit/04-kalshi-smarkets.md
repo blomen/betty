@@ -197,10 +197,27 @@ keep patching the ad-hoc sessions.
 
 ## 9. Re-introduction notes
 
-> Filled in after fixes ship.
+**Shipped 2026-04-26** in two commits (local only, not deployed):
 
-- [ ] Kalshi via HttpTransport: 'Unclosed client session' count over 24h before vs after:
-- [ ] Kalshi total page-fetches per pipeline cycle before vs after caching:
-- [ ] Smarkets duration before vs after:
-- [ ] Smarkets 429 incidents visible in metrics:
-- [ ] Kalshi false-side attribution incidents (look for low-confidence team matches):
+`85ea70f1` — kalshi:
+- Fix #1: Migrated to `HttpTransport`. Constructor accepts/creates a transport; `extractor.close()` no longer raises `AttributeError`.
+- Fix #3: Cross-sport cache (60s TTL, per-instance). The sport-agnostic `/events` endpoint is now walked once per cycle and dispatched by sport in O(1) — was ~17× redundant.
+- Fix #4: Token-overlap fix in `_match_market_to_side` — substring matching previously collided when teams shared a token.
+- `MAX_PAGES = 50` cap with explicit warn-on-cap log.
+
+`5686b264` — smarkets:
+- Fix #2: Migrated to `HttpTransport` with `proxy=` constructor arg (HttpTransport handles SOCKS5 internally via `aiohttp_socks.ProxyConnector`). 50+ lines of session/connector wiring deleted. New `_get_json` helper replaces `_fetch_json(session, url)`.
+- `_build_event` signature simplified — dropped the unused `session` parameter.
+- Tests updated to mock `_get_json` instead of `_fetch_json`. **All 32 smarkets tests pass.**
+- `REQ_TIMEOUT_SEC = 15` class constant.
+
+Fixes #5 (NHL Utah Mammoth code map fix), #6 (smarkets retry decorator), #8 (parser unit tests for `_extract_teams_from_title` / `extract_home_away_from_event_name`), #9 (smarkets spread/total support), #10 (move constants to YAML) deferred.
+
+Pre-deploy verification: ruff clean · py_compile clean · 32/32 smarkets tests pass · constructor smoke-tests confirm transport=HttpTransport (was None pre-fix).
+
+Post-deploy checks (TODO):
+- [ ] Kalshi: 'Unclosed client session' overnight log count (was: 20+ at 00:49-02:36 UTC; expect: 0)
+- [ ] Kalshi: total page-fetches per pipeline cycle (was: ~17× duplicated; expect: 1× cycle then dispatched)
+- [ ] Smarkets: avg duration (was: 502s for 332 events; expect: similar — proxy RTT-bound, but should benefit from shared connection pool)
+- [ ] Smarkets: 429 incidents now surface via HttpTransport `_consecutive_429s`
+- [ ] Spelklubben odds-not-saving anomaly remains separate to debug
