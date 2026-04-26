@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -384,3 +385,95 @@ class TestFetchArbOppsPostFilter:
 
         result = await runner._fetch_arb_opps()
         assert result == []
+
+
+class TestHedgeFailureEmits:
+    """Per final review on 2026-04-26: counter placements that the provider rejects
+    must surface as arb_hedge_failed, not silently recorded as arb_hedge_placed."""
+
+    def _runner_with_counter_intercepted(self, body):
+        """Build a runner positioned for the counter-confirm phase with an intercepted body."""
+        runner = ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+        runner.current_opp = {
+            "event_id": "evt-X",
+            "market": "1x2",
+            "outcome": "home",
+            "display_home": "H",
+            "display_away": "A",
+            "sport": "football",
+        }
+        runner.current_arb_group_id = "test_group"
+        runner._planned_anchor_odds = 2.10
+        runner._anchor_stake = 100.0
+        runner._counter_legs = [
+            {
+                "provider": "pinnacle",
+                "outcome": "away",
+                "odds": 2.05,
+                "_planned_odds": 2.05,
+                "_current_stake": 50.0,
+            }
+        ]
+        runner._counter_events = {"pinnacle": asyncio.Event()}
+        runner._counter_events["pinnacle"].set()
+        runner._counter_intercepted = {"pinnacle": {"body": body}}
+        # Stub streams so _push_stake can resolve page without a real browser
+        pinnacle_stream = MagicMock()
+        pinnacle_stream.page = MagicMock()
+        runner._streams = {"pinnacle": pinnacle_stream}
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_emits_arb_hedge_failed_when_pinnacle_rejects(self, monkeypatch):
+        # Stub _record_bet so we can assert it was NOT called
+        recorded = []
+
+        async def fake_record_bet(self, bet, result, arb_group):
+            recorded.append((bet, result, arb_group))
+
+        monkeypatch.setattr(ArbRunner, "_record_bet", fake_record_bet)
+
+        # The body shape that pinnacle's parser sees as failure:
+        body = {"error": "STAKE_LIMIT", "maxStake": 25.0}
+        runner = self._runner_with_counter_intercepted(body)
+
+        await runner._update_counter_slips_and_await_hedges(100.0, 2.10)
+
+        # arb_hedge_failed should fire, arb_hedge_placed should NOT for this leg
+        events = [(c.args[0], c.args[1]) for c in runner._broadcaster.publish.call_args_list]
+        names = [e[0] for e in events]
+        assert "arb_hedge_failed" in names
+        assert "arb_hedge_placed" not in [n for n in names if "pinnacle" in str(events[names.index(n)][1])]
+        # _record_bet was never called for the failed leg
+        assert len(recorded) == 0
+
+    @pytest.mark.asyncio
+    async def test_emits_arb_hedge_placed_when_pinnacle_accepts(self, monkeypatch):
+        recorded = []
+
+        async def fake_record_bet(self, bet, result, arb_group):
+            recorded.append((bet, result, arb_group))
+
+        monkeypatch.setattr(ArbRunner, "_record_bet", fake_record_bet)
+
+        # Pinnacle success body has wagerNumber per its parse_placement_status
+        body = {"wagerNumber": 12345}
+        runner = self._runner_with_counter_intercepted(body)
+
+        await runner._update_counter_slips_and_await_hedges(100.0, 2.10)
+
+        names = [c.args[0] for c in runner._broadcaster.publish.call_args_list]
+        assert "arb_hedge_placed" in names
+        assert "arb_hedge_failed" not in names
+        assert len(recorded) == 1
+        # arb_complete fires after all hedges resolve
+        assert "arb_complete" in names

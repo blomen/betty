@@ -331,7 +331,9 @@ class ArbRunner:
                     self._block_event_market(anchor_bet)
                     await self._record_bet(anchor_bet, anchor_placement, self.current_arb_group_id or "")
 
-                    # Update counter slips and await hedge clicks
+                    # Update counter slips and await hedge clicks.
+                    # Counter bets are recorded inside _update_counter_slips_and_await_hedges
+                    # (only on successful placements; rejections emit arb_hedge_failed instead).
                     self.state = STATE_AWAITING_HEDGES
                     actual_odds = anchor_result.get("actual_odds") or (
                         next(
@@ -344,19 +346,6 @@ class ArbRunner:
                         )
                     )
                     await self._update_counter_slips_and_await_hedges(anchor_result["actual_stake"], actual_odds)
-
-                    # Record counter bets
-                    for leg in self._counter_legs:
-                        cpid = leg["provider"]
-                        counter_bet = self._opp_to_bet(opp, leg)
-                        counter_bet["stake"] = leg.get("_current_stake", 0)
-                        counter_placement = PlacementResult(
-                            status="placed",
-                            bet_id=0,
-                            actual_odds=leg.get("odds"),
-                            actual_stake=leg.get("_current_stake", 0),
-                        )
-                        await self._record_bet(counter_bet, counter_placement, self.current_arb_group_id or "")
 
                     # Clean up streams
                     for s in self._streams.values():
@@ -489,7 +478,7 @@ class ArbRunner:
                         "outcome": leg.get("outcome"),
                         "planned_stake": s,
                         "planned_odds": leg.get("odds"),
-                        "slip_state": "loaded",
+                        "slip_state": "loading",
                     }
                     for leg, s in zip([anchor_leg] + counter_legs, [anchor_stake] + counter_stakes)
                 ],
@@ -651,9 +640,26 @@ class ArbRunner:
         # Wait for every counter event
         await asyncio.gather(*(ev.wait() for ev in self._counter_events.values()))
 
-        # Record each counter
+        # Inspect each counter placement: emit arb_hedge_failed on rejection,
+        # arb_hedge_placed + _record_bet on success (per spec §6).
         for leg in self._counter_legs:
             pid = leg["provider"]
+            intercepted = self._counter_intercepted.get(pid, {})
+            body = intercepted.get("body", {}) if isinstance(intercepted, dict) else {}
+            wf = get_workflow(pid)
+            pstatus = wf.parse_placement_status(body) if hasattr(wf, "parse_placement_status") else {"success": True}
+            if not pstatus.get("success"):
+                self._broadcaster.publish(
+                    "arb_hedge_failed",
+                    {
+                        "arb_group_id": self.current_arb_group_id,
+                        "counter_provider": pid,
+                        "outcome": leg.get("outcome"),
+                        "reason": pstatus.get("error") or "unknown",
+                        "max_stake": pstatus.get("max_stake"),
+                    },
+                )
+                continue
             self._broadcaster.publish(
                 "arb_hedge_placed",
                 {
@@ -664,6 +670,15 @@ class ArbRunner:
                     "actual_stake": leg.get("_current_stake"),
                 },
             )
+            counter_bet = self._opp_to_bet(self.current_opp or {}, leg)
+            counter_bet["stake"] = leg.get("_current_stake", 0)
+            counter_placement = PlacementResult(
+                status="placed",
+                bet_id=0,
+                actual_odds=leg.get("odds"),
+                actual_stake=leg.get("_current_stake", 0),
+            )
+            await self._record_bet(counter_bet, counter_placement, self.current_arb_group_id or "")
 
         self._broadcaster.publish(
             "arb_complete",
