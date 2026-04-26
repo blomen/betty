@@ -697,19 +697,33 @@ class ArbRunner:
         return pool
 
     async def _fetch_arb_opps(self) -> list[dict]:
-        """Fetch arbitrage opportunities anchored on this provider."""
-        pool = self._counter_pool()
-        params = f"providers={self.provider_id}"
-        if pool:
-            params += f"&counterpart_providers={','.join(pool)}"
-        url = f"{self._proxy_url}/api/opportunities/arb-workflow?{params}"
+        """Fetch arbitrage opportunities anchored on this provider.
+
+        Backend's counterpart_providers query filter is broken (returns 0 opps for
+        valid pairs — see Hartberg/LASK regression confirmed 2026-04-26). We instead
+        drop the URL filter and post-filter in Python: every non-anchor leg must be
+        a member of self._counter_pool() (active providers + UNLIMITED, minus self
+        and same-cluster siblings).
+        """
+        pool = set(self._counter_pool())
+        pool.add(self.provider_id)  # anchor provider is always allowed
+        url = f"{self._proxy_url}/api/opportunities/arb-workflow?providers={self.provider_id}"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
                 resp.raise_for_status()
                 data = resp.json()
             opps = data.get("opportunities", [])
-            opps = [o for o in opps if o.get("guaranteed_profit_pct", 0) > 0]
+            # Post-filter: keep only opps whose legs all live in the allowed set
+            filtered = []
+            for opp in opps:
+                legs = opp.get("arb_legs") or opp.get("legs", [])
+                if not legs:
+                    continue
+                leg_providers = {leg.get("provider") for leg in legs}
+                if leg_providers.issubset(pool):
+                    filtered.append(opp)
+            opps = [o for o in filtered if o.get("guaranteed_profit_pct", 0) > 0]
             opps.sort(key=lambda o: o.get("guaranteed_profit_pct", 0), reverse=True)
             return opps
         except Exception:
