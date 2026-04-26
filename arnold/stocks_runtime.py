@@ -162,6 +162,10 @@ async def _passive_dashboard_listener() -> None:
                     except json.JSONDecodeError:
                         continue
                     t = msg.get("type")
+                    # NOTE: server /ws/signals does not broadcast L2 depth in autonomous
+                    # mode; the passive listener gets ticks/zones/signals/dqn only. Depth
+                    # only flows in active mode (where this process owns the TopstepX
+                    # session and stream.on_depth = record_depth fires locally).
                     if t == "zone_update":
                         update_zones(msg.get("zones", []))
                     elif t == "signal":
@@ -212,6 +216,7 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     )
     from src.stocks.dashboard import (
         bind_loop,
+        record_depth,
         record_dqn_inference,
         record_fill,
         record_quote,
@@ -299,6 +304,7 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     stream.on_tick = on_tick
     stream.on_fill = on_fill
     stream.on_quote = record_quote
+    stream.on_depth = record_depth
 
     relay.on_signal = record_signal
     relay.on_dqn_inference = record_dqn_inference
