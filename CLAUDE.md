@@ -31,11 +31,11 @@ The previous `arnoldsports/` + `arnoldstocks/` split was collapsed into a single
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
 | **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API, signals WS, RL training | `docker compose up -d` |
-| **Arnold (local)** | Your PC | Unified betting + trading client: Sports, Stocks (Chart), Bankroll, Stats, Playwright mirror, TopstepX stream/relay | `arnold.bat` |
+| **Arnold (local)** | Your PC | Unified betting + trading client: Sports, Stocks (signals console), Bankroll, Stats, Playwright mirror, TopstepX stream/relay | `arnold.bat` |
 
 **Server** is a pure compute/data engine — no UI. Extraction, analysis, signal generation via `level_monitor`, the RL training daemon, and the `/ws/signals` WebSocket all live here.
 
-**Arnold (local)** is one FastAPI process + one React SPA. Tabs: **Sports** (unified arb + value bet play), **Stocks** (live chart with zones + VWAP + VP), **Bankroll** (Sportbets + Trading sub-tabs), **Stats** (Betting + Trading sub-tabs). The launcher opens an SSH tunnel to the server API, starts the local FastAPI (which reverse-proxies `/api/*` to the tunnel, mounts `/mirror/*` for the Playwright browser control, and mounts `/stocks/*` for the TopstepX dashboard), and then opens the browser. TopstepX authentication + signal relay run as asyncio tasks inside the same process unless `STOCKS_AUTONOMOUS=true` (server-side broker mode, tested).
+**Arnold (local)** is one FastAPI process + one React SPA. Tabs: **Sports** (unified arb + value bet play), **Stocks** (signals console — zone cards + live signal feed; chart drawn by Tampermonkey userscript on TradingView), **Bankroll** (Sportbets + Trading sub-tabs), **Stats** (Betting + Trading sub-tabs). The launcher opens an SSH tunnel to the server API, starts the local FastAPI (which reverse-proxies `/api/*` to the tunnel, mounts `/mirror/*` for the Playwright browser control, and mounts `/stocks/*` for the TopstepX dashboard), and then opens the browser. TopstepX authentication + signal relay run as asyncio tasks inside the same process unless `STOCKS_AUTONOMOUS=true` (server-side broker mode, tested).
 
 ## Architecture
 
@@ -57,7 +57,7 @@ Hetzner Server (24/7, headless)              Your PC
                                              │           ├── BankrollPage.tsx   (Sportbets bankroll)
                                              │           ├── StatsPage.tsx      (Betting stats)
                                              │           └── stocks/
-                                             │               ├── ChartPage.tsx + CandleChart
+                                             │               ├── SignalsPage.tsx (cards-based console; chart drawn by Tampermonkey userscript on TradingView)
                                              │               ├── BankrollPage.tsx
                                              │               └── StatsPage.tsx
                                              │
@@ -71,7 +71,7 @@ Single app at `arnold/frontend/`. Tabs and sub-tabs:
 | Tab | Sub-tabs | What it shows |
 |-----|----------|---------------|
 | **Sports** | Value Bets, Arbitrage | Unified betting view — value vs. Pinnacle, arb across soft books |
-| **Stocks** | — | Live candle chart + VWAP + zone heatmap + VP histograms. No DQN viz tab (removed). |
+| **Stocks** | — | Signals console: zone cards + live signal feed. Chart rendering moved to Tampermonkey userscript on TradingView (`arnold/tv_overlay/userscript/arnold-overlay.user.js`). |
 | **Bankroll** | Sportbets, Trading | Provider balances + Kelly sizing; TopstepX account + drawdown |
 | **Stats** | Betting, Trading | Historical bet + trade performance |
 
@@ -224,9 +224,9 @@ RL training and extraction share the i7-7700 (4 cores / 8 HT threads). To preven
 
 ### Stocks — Chart & Model Conventions (IMPORTANT)
 
-The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.tsx`. Keep the following invariants in sync between chart paint and model observation — the visual MUST reflect what the DQN sees, not a derived aesthetic.
+Zones drawn on TradingView by the userscript at `arnold/tv_overlay/userscript/arnold-overlay.user.js` MUST reflect what the DQN sees, not a derived aesthetic. Keep the following invariants in sync between the userscript's rendering and the model observation.
 
-**Zones are the single consolidated level view.** Individual level types (PDH/PDL, IB H/L, session H/L, TPO POC/VAH/VAL, per-TF VP POC/VAH/VAL, daily/weekly swings) and SMC signals (FVGs, order blocks) are all clustered into zones server-side. Only VWAP center + σ bands, zone bands, and VP histograms render separately on the chart — everything else rolls up into a zone's member count and strength.
+**Zones are the single consolidated level view.** Individual level types (PDH/PDL, IB H/L, session H/L, TPO POC/VAH/VAL, per-TF VP POC/VAH/VAL, daily/weekly swings) and SMC signals (FVGs, order blocks) are all clustered into zones server-side. VWAP center + σ bands and zone bands render on the TradingView overlay — everything else rolls up into a zone's member count and strength.
 
 **Zone strength math** (`backend/src/rl/zone_builder.py:_compute_strength`, as of 2026-04-24):
 - Group members by **family** (`_LEVEL_FAMILY`) — VWAP center + σ bands share one family, daily POC/VAH/VAL share one, FVG bull/bear share one, order-block bull/bear share one, each swing timeframe is its own family, etc.
@@ -236,23 +236,22 @@ The stocks chart is rendered by `arnold/frontend/src/pages/stocks/CandleChart.ts
 - **Saturation** via `1 - exp(-raw / 1.5)` so score sits on [0, 1]. Single strong level lands near 0.5; 3-family confluence near 0.9.
 - Adding a weak level can **never lower** the score (previous mean-based math had this bug).
 
-**Zone paint = model observation axes** (`rl/features/level_features.py:encode_zone_features`):
-- Fill hue + alpha ← `hierarchy_score` from `_compute_strength` (heatmap: slate-blue → indigo → magenta → orange → red)
-- Border thickness ← `count_norm = min(members/10, 1)`
-- Band geometry (top/bottom) ← zone `upper_bound` / `lower_bound` (fallback 0.5 pt pad if server hasn't sent them yet)
-- Dot-count label ← raw `member_count` (capped at 10 rendered dots)
-- `session_relevance` is a 4th model dim, not currently painted
-- **Do not fold multiple model dims into a single composite strength** — the model sees them separately, so the chart must too.
+**Userscript paint = model observation axes** (`rl/features/level_features.py:encode_zone_features`):
+- Fill hue ← `COLOR_BY_STRENGTH(strength)` (heatmap: slate-blue → indigo → fuchsia → orange → red).
+- Fill alpha (transparency) ← scaled inversely by strength (strong zones more opaque).
+- Band geometry (top/bottom) ← zone `top` / `bottom` as emitted by `OverlayBroadcaster._zone_payload` (previously `upper_bound` / `lower_bound` — field names changed in broadcaster).
+- Member count surfaces as the rectangle label `"<kind> ×<members>"`.
+- `session_relevance` is a 4th model dim, not currently painted.
+- **Do not fold multiple model dims into a single composite strength** — even though the userscript only paints fill hue today, the broadcaster emits all four dims as separate fields so future card / overlay tweaks can use them.
 
 **FVGs and order blocks are first-class zone members.** Their ranges feed `level_monitor.load_levels` at the midpoint. `_LEVEL_FAMILY` puts FVG bull+bear into one family and OB bull+bear into another. Weights: FVG 0.6, OB 0.8 (`_HIERARCHY_WEIGHTS` in `zone_builder.py`). Do NOT re-introduce separate FVG overlays — the whole point of the consolidation is that SMC signals affect zone heat, not chart noise.
 
 **Model calibration shift (2026-04-24 → ~2026-05-15):** The live DQN weights were trained against the old mean-weight hierarchy (`sum/len/1.2`). The new `_compute_strength` shifts the distribution — isolated weak zones score *lower*, multi-family confluence scores *higher*. Both shifts are directionally correct (the old math could reduce strength when a weak level was added). The monotonic "higher = trust more" relationship the DQN learned keeps working, but absolute thresholds are recalibrating. Expected realignment: 2-3 weeks of live-episode accumulation at ~20-30 setups/day lets the daemon's natural retrain cycle drift the training pool toward new-math-dominant. Don't force a retrain now — the historical tick parquets are gone so a fresh replay would use a much smaller dataset (only April 2026 ticks survive).
 
-**Volume profile panel (right edge):**
-- Three VPs only: daily (today's session, purple), weekly (rolling 7 days, pink), monthly (rolling 30 days, yellow). Calendar weekly/monthly windows were replaced with rolling windows at `backend/src/services/market_service.py:_get_period_bars` — don't revert without thinking through the day-of-week/day-of-month thinness problem.
-- Historical per-day VPs are NOT stacked into the right panel (they dominated + hid weekly/monthly). Per-day structure still shows via TPO histograms inside session boxes.
-- POC/VAH/VAL are labeled INSIDE the VP panel with `d`/`w`/`m` prefix — e.g., `dPOC 27310.00`.
-- d/w/m POC/VAH/VAL are NOT drawn as chart-spanning price lines — they're zone members now.
+**Volume profile (server-side — rendering moved off-chart):**
+- Server still computes three VP windows: daily (today's session), weekly (rolling 7 days), monthly (rolling 30 days). Rolling windows are used instead of calendar boundaries — see `backend/src/services/market_service.py:_get_period_bars` — don't revert without thinking through the day-of-week/day-of-month thinness problem.
+- d/w/m POC/VAH/VAL are zone members, not chart-spanning price lines. They influence zone strength via `_compute_strength` and are emitted to the userscript as zone data.
+- VP histogram rendering (the right-edge panel) was part of the deleted `CandleChart.tsx` and is not present in the current frontend or userscript. Server still computes TPO and VP data — rendering is simply not wired yet.
 
 **Touch-without-trade recording (already correct — don't "fix"):**
 - `level_monitor._emit_zone_dqn_inference` calls `live_collector.on_zone_touch()` UNCONDITIONALLY after `dqn.infer()`, regardless of the decision. Every touch → `PendingEpisode`.
