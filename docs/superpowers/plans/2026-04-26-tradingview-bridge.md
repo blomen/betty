@@ -139,6 +139,19 @@ git commit -m "docs(tv-overlay): record Phase 0 in-page API surface"
 
 If the API surface is meaningfully different from what's assumed below (different method names, different argument shape), the userscript in Phase 4 must be updated to match before continuing. The rest of the plan still holds.
 
+### Phase 6 verification (recorded 2026-04-26)
+
+Ran end-to-end via Playwright on `tradingview.com/chart/?symbol=CME_MINI%3ANQ1!`:
+- Spawned a minimal FastAPI server with `create_overlay_router()` mounted under `/stocks` (no SSH tunnel / no TopstepX needed for verification).
+- Patched the userscript's `SERVER_WS` to point at the test port; injected via `page.evaluate()` (Playwright context with `bypass_csp=True` so TV's CSP doesn't block inline script + `ws://` connect-src).
+- Userscript attached to chart via `window.TradingViewApi.activeChart()` (Phase 0 path) and connected to the local WebSocket.
+- Pushed `zone_upsert` ×2 and `position_upsert` ×1 via test endpoints; status moved `attached_clients: 0 → 1` and `draw_count: 0 → 3`.
+- Screenshot confirms the position rendered with `tp 27490.00` (green), `LONG entry 27420.00` (emerald), `Stop 27380.00` (red) horizontal lines spanning the chart.
+
+**Real-world install note:** Tampermonkey itself is a privileged extension and bypasses CSP for its own injected scripts, so end users won't need `bypass_csp` — the Playwright flag was only used to simulate that privilege in headless verification.
+
+**Minor follow-up flagged, not blocking:** zone rectangles are drawn from `now - 8h` to `now`, which is invisible-tiny at daily timeframes. Intraday charts (1m/5m/15m) render them clearly. Worth widening the time window when running on ≥H4 timeframes — defer to a future iteration.
+
 ### Phase 0 verification (recorded 2026-04-26)
 
 Probed against `https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!` via Playwright (Chromium, unauthenticated). Manual visual confirmation of horizontal-line draw in user's signed-in TradingView Desktop session.
