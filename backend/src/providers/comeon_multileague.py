@@ -88,6 +88,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         self.site_url: str = raw_site_url.rstrip("/")
         self._camoufox_browser = None
         self._camoufox_page = None
+        self._camoufox_driver_pid: int | None = None
 
     # ------------------------------------------------------------------
     # Camoufox anti-detect browser (Cloudflare bypass)
@@ -136,6 +137,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 os="windows",
                 proxy=proxy,
             ).__aenter__()
+            self._camoufox_driver_pid = capture_camoufox_driver_pid(self._camoufox_browser)
 
             self._camoufox_page = await self._camoufox_browser.new_page()
             proxy_msg = " with residential proxy" if proxy else ""
@@ -143,20 +145,39 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
+            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
             self._camoufox_browser = None
             self._camoufox_page = None
+            self._camoufox_driver_pid = None
             return None
 
     async def _cleanup_camoufox(self):
-        """Close camoufox browser."""
-        if self._camoufox_browser:
-            try:
-                await self._camoufox_browser.__aexit__(None, None, None)
-            except (Exception, OSError, ValueError):
-                pass
-            finally:
-                self._camoufox_browser = None
-                self._camoufox_page = None
+        """Close camoufox; force-kill the subprocess tree if graceful close hangs.
+
+        Without the kill fallback, hung __aexit__ leaks driver + camoufox-bin
+        + tab subprocesses indefinitely until the watchdog OOM-kills the
+        container. The orchestrator's outer 10s timeout fires the asyncio
+        task but never reaps the children.
+        """
+        if not self._camoufox_browser:
+            return
+        try:
+            await asyncio.wait_for(
+                self._camoufox_browser.__aexit__(None, None, None),
+                timeout=8,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[{self.provider_id}] camoufox graceful close timed out — force-killing")
+            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
+        except (Exception, OSError, ValueError) as e:
+            logger.debug(f"[{self.provider_id}] camoufox close raised {type(e).__name__}: {e}")
+            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
+        else:
+            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
+        finally:
+            self._camoufox_browser = None
+            self._camoufox_page = None
+            self._camoufox_driver_pid = None
 
     async def _get_page(self):
         """Get a browser page — Camoufox for Cloudflare bypass, Playwright fallback."""
