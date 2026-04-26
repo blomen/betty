@@ -1,0 +1,103 @@
+# Polymarket series-slug → canonical sport mapping.
+# Maintained as YAML so adding a new league is a config change, not a code edit.
+# The provider also strips a `-YYYY` suffix at lookup time, so most year-suffix
+# variants are auto-handled (e.g. nba-2026 → nba). Only add explicit entries
+# when the base slug differs across years (mex-2025, ere-2025, etc.).
+
+football:
+  - premier-league
+  - la-liga
+  - la-liga-2
+  - bundesliga
+  - bundesliga-2
+  - serie-a
+  - serie-b
+  - ligue-1
+  - ligue-2
+  - eredivisie
+  - mls
+  - efl-championship
+  - efl-cup
+  - fa-cup
+  - dfb-pokal
+  - copa-del-rey
+  - coppa-italia
+  - coupe-de-france
+  - champions-league
+  - europa-league
+  - conference-league
+  - saudi-professional-league
+  - primera-divisin-argentina
+  - brazil-serie-a
+  - mex-2025
+  - liga-mx
+  - a-league-soccer
+  - denmark-superliga
+  - scottish-premiership
+  - copa-libertadores
+  - ere-2025  # Eredivisie 2025
+
+basketball:
+  - nba
+  - nba-2026
+  - ncaa-cbb
+  - ncaa-cbb-2026
+  - cwbb
+  - euroleague
+  - euroleague-basketball
+
+ice_hockey:
+  - nhl
+  - nhl-2026
+  - khl
+  - khl-2026
+  - shl
+  - shl-2026
+  - snhl  # Swiss National League
+  - snhl-2026
+  - ahl
+  - ahl-2026
+  - cehl  # Czech Extraliga
+  - cehl-2026
+  - del   # German DEL
+  - del-2026
+  - liiga  # Finnish Liiga
+  - liiga-2026
+
+american_football:
+  - nfl
+  - nfl-2026
+  - ncaa-football
+  - ncaa-football-2026
+
+baseball:
+  - mlb
+  - mlb-2026
+  - npb
+  - kbo
+
+tennis:
+  - atp
+  - wta
+  - australian-open
+
+mma:
+  - ufc
+
+esports:
+  - league-of-legends
+  - valorant
+  - counter-strike
+  - cs2
+  - dota-2
+
+rugby:
+  - rugby-top-14
+  - united-rugby-championship
+  - rugby-six-nations
+  - super-rugby-pacific
+
+cricket:
+  - ipl
+  - big-bash
+  - t20

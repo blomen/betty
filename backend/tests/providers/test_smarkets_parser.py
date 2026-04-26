@@ -194,12 +194,12 @@ class TestClassifyMarketType:
         assert classify_market_type("Match winner", {"name": "WINNER_2_WAY"}) == "moneyline"
         assert classify_market_type("", {"name": "MATCH_WINNER"}) == "moneyline"
 
-    def test_spread_and_total_skipped(self):
-        # Smarkets spread/total are intentionally skipped on this provider
-        # (signal-only + "first line wins" collapse is misleading).
-        assert classify_market_type("", {"name": "ASIAN_HANDICAP"}) is None
+    def test_spread_and_total_classified_per_line(self):
+        # ASIAN_HANDICAP (2-way) and OVER_UNDER (per-line) are now classified;
+        # HANDICAP_3_WAY remains skipped because of the draw outcome.
+        assert classify_market_type("", {"name": "ASIAN_HANDICAP"}) == "spread"
+        assert classify_market_type("", {"name": "OVER_UNDER"}) == "total"
         assert classify_market_type("", {"name": "HANDICAP_3_WAY"}) is None
-        assert classify_market_type("", {"name": "OVER_UNDER"}) is None
 
     def test_fallback_winner_heuristic(self):
         assert classify_market_type("Full-time result 3-way", None) == "1x2"
@@ -230,8 +230,14 @@ class TestContractSide:
     def test_falls_back_to_slug(self):
         assert _contract_side({"contract_type": None, "slug": "home"}) == "home"
 
+    def test_over_under_recognized(self):
+        # OVER/UNDER are now first-class outcome names for total markets.
+        assert _contract_side({"contract_type": {"name": "OVER"}, "slug": "over"}) == "over"
+        assert _contract_side({"contract_type": {"name": "UNDER"}, "slug": "under"}) == "under"
+
     def test_unknown_returns_none(self):
-        assert _contract_side({"contract_type": {"name": "OVER"}, "slug": "over"}) is None
+        assert _contract_side({"contract_type": {"name": "YES"}, "slug": "yes"}) is None
+        assert _contract_side({"contract_type": {"name": "ODD"}, "slug": "odd"}) is None
 
 
 class TestBuildEventLive:
