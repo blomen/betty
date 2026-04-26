@@ -1,33 +1,10 @@
-// ==UserScript==
-// @name         Arnold TradingView Overlay
-// @namespace    https://github.com/blomen/arnold
-// @version      0.2.0
-// @description  Draws Arnold zones and open positions on TradingView charts via WebSocket from local Arnold server.
-// @match        https://*.tradingview.com/*
-// @match        https://tradingview.com/*
-// @run-at       document-idle
-// @grant        unsafeWindow
-// @connect      127.0.0.1
-// @connect      localhost
-// ==/UserScript==
-
-// Why @grant unsafeWindow + @connect: TradingView's CSP blocks ws:// from
-// the page context. With any non-`none` grant, Tampermonkey runs the
-// userscript in its privileged sandbox where page CSP doesn't apply to
-// fetch / WebSocket calls initiated by this script. We then reach into the
-// page's chart object via unsafeWindow.
+// Main world — runs in page context, has access to window.TradingViewApi.
+// Receives server messages from bridge.js (isolated world) via custom events
+// and translates them to chart.createMultipointShape / removeEntity calls.
 
 (function () {
   'use strict';
 
-  // Resolve the page-side window. In sandbox mode `window` is the script's
-  // own scope; `unsafeWindow` is the actual page window with TradingViewApi.
-  // Falls back to `window` if running without a sandbox (rare).
-  const PAGE = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-
-  // --- Config ---
-  const SERVER_WS = 'ws://127.0.0.1:8000/stocks/ws/tv-overlay';
-  const RECONNECT_MS = 2000;
   const ATTACH_POLL_MS = 1000;
   const ATTACH_MAX_TRIES = 60;
 
@@ -39,24 +16,20 @@
     return '#ef4444';
   };
 
-  // --- TV chart attach ---
-  // Phase 0 confirmed PAGE.TradingViewApi.activeChart() works on
-  // tradingview.com web. tvWidget / TradingView are kept as fallbacks
-  // for future TV builds where the entry path may differ.
   function getChart() {
     try {
-      if (PAGE.TradingViewApi && typeof PAGE.TradingViewApi.activeChart === 'function') {
-        return PAGE.TradingViewApi.activeChart();
+      if (window.TradingViewApi && typeof window.TradingViewApi.activeChart === 'function') {
+        return window.TradingViewApi.activeChart();
       }
     } catch (_) {}
     try {
-      if (PAGE.tvWidget && typeof PAGE.tvWidget.activeChart === 'function') {
-        return PAGE.tvWidget.activeChart();
+      if (window.tvWidget && typeof window.tvWidget.activeChart === 'function') {
+        return window.tvWidget.activeChart();
       }
     } catch (_) {}
     try {
-      if (PAGE.TradingView && PAGE.TradingView.activeChart) {
-        return PAGE.TradingView.activeChart();
+      if (window.TradingView && window.TradingView.activeChart) {
+        return window.TradingView.activeChart();
       }
     } catch (_) {}
     return null;
@@ -75,13 +48,19 @@
     tick();
   });
 
-  // --- Drawing registry ---
-  const drawn = new Map(); // key → entityId
+  const drawn = new Map();
+
+  function up(payload) {
+    document.dispatchEvent(new CustomEvent('arnold:up', { detail: JSON.stringify(payload) }));
+  }
+
+  function sendAck(count) { up({ type: 'ack', count }); }
+  function sendError(message) { up({ type: 'error', message }); }
 
   function safeRemove(key) {
     const entityId = drawn.get(key);
     if (entityId == null || !chart) return;
-    try { chart.removeEntity(entityId); } catch (e) { /* ignore */ }
+    try { chart.removeEntity(entityId); } catch (_) {}
     drawn.delete(key);
   }
 
@@ -89,7 +68,7 @@
     if (!chart) return false;
     safeRemove(p.key);
     const now = Math.floor(Date.now() / 1000);
-    const tStart = now - 8 * 60 * 60; // 8h back
+    const tStart = now - 8 * 60 * 60;
     const tEnd = now;
     const color = COLOR_BY_STRENGTH(p.strength);
     try {
@@ -171,38 +150,22 @@
     safeRemove(key + ':tp');
   }
 
-  // --- WebSocket loop ---
-  let ws = null;
-  let reconnectTimer = null;
+  attachPromise.then((c) => {
+    if (!c) {
+      console.warn('[arnold-overlay/page] could not find TradingView chart object — overlay disabled');
+      return;
+    }
+    console.log('[arnold-overlay/page] attached to chart', c);
 
-  function sendAck(count) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { ws.send(JSON.stringify({ type: 'ack', count })); } catch (_) {}
-  }
-
-  function sendError(message) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { ws.send(JSON.stringify({ type: 'error', message })); } catch (_) {}
-  }
-
-  function connect() {
-    try { ws = new WebSocket(SERVER_WS); } catch (e) { return scheduleReconnect(); }
-
-    ws.onopen = () => {
-      console.log('[arnold-overlay] connected');
-      try { ws.send(JSON.stringify({ type: 'hello', version: '0.2.0', href: PAGE.location.href })); } catch (_) {}
-    };
-
-    ws.onmessage = (ev) => {
+    document.addEventListener('arnold:msg', (ev) => {
       let msg;
-      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      try { msg = JSON.parse(ev.detail); } catch (_) { return; }
       switch (msg.type) {
         case 'zone_upsert':     if (drawZone(msg)) sendAck(1); break;
         case 'zone_remove':     safeRemove(msg.key); sendAck(1); break;
         case 'position_upsert': if (drawPosition(msg)) sendAck(1); break;
         case 'position_remove': removePosition(msg.key); sendAck(1); break;
         case 'ping_zone': {
-          // Flash-ping a zone — bring camera to it (best effort).
           try {
             const entityId = drawn.get(msg.zone_key);
             if (entityId != null && chart && typeof chart.bringToFront === 'function') {
@@ -212,24 +175,6 @@
           break;
         }
       }
-    };
-
-    ws.onclose = () => { ws = null; scheduleReconnect(); };
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
-  }
-
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, RECONNECT_MS);
-  }
-
-  // --- Boot ---
-  attachPromise.then((c) => {
-    if (!c) {
-      console.warn('[arnold-overlay] could not find TradingView chart object — overlay disabled');
-      return;
-    }
-    console.log('[arnold-overlay] attached to chart', c);
-    connect();
+    });
   });
 })();
