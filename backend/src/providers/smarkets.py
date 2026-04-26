@@ -26,11 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
-import aiohttp
-
-from ..core import Retriever, StandardEvent
+from ..core import HttpTransport, Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
 
@@ -219,15 +218,17 @@ def _contract_side(contract: dict) -> str | None:
 class SmarketsRetriever(Retriever):
     """Smarkets signal-only retriever. Uses public JSON API, no auth.
 
+    Routes through the inherited HttpTransport so we get the shared session,
+    circuit breaker, 429 retry/backoff, and SOCKS5 proxy support — pre-fix
+    this provider built its own aiohttp.ClientSession + ProxyConnector per
+    extract() call and bypassed every resilience feature.
+
     Flow:
         1. /events/?state=upcoming&type_domain=<sport>&type=<sport>_match
            -> paginated event list (pagination.next_page).
         2. For each in-scope event, /events/{id}/markets/ -> market list.
         3. For each kept market, concurrently fetch
            /markets/{id}/last_executed_prices/ and /markets/{id}/quotes/.
-
-    Aggregates into StandardEvent. Bounded semaphore limits per-market
-    concurrency so we don't hammer the API during pagination.
     """
 
     DEFAULT_BASE_URL = "https://api.smarkets.com/v3"
@@ -236,21 +237,20 @@ class SmarketsRetriever(Retriever):
     # /markets/{id}/quotes/ call came back 429. 3 keeps us inside the
     # limit while still being ~2x faster than serial.
     CONCURRENT_MARKET_FETCHES = 3
+    # Per-request timeout for Smarkets — proxy adds latency, but a single
+    # call shouldn't take more than 15s.
+    REQ_TIMEOUT_SEC = 15
 
     def __init__(
         self,
         config: dict,
+        transport: HttpTransport | None = None,
         circuit_breaker=None,
         rate_limit_config=None,
     ):
-        super().__init__(config)
-        self.base_url = config.get("base_url", self.DEFAULT_BASE_URL).rstrip("/")
-
-        import os
-
-        # Smarkets geoblocks most IPs (Sweden, Hetzner DE) — always route through
-        # the shared Bahnhof SOCKS5 proxy, same as Pinnacle and friends.
-        # Config can still override via explicit proxy_url (e.g. for testing).
+        # Resolve proxy first so HttpTransport gets it via constructor.
+        # HttpTransport handles SOCKS5 internally via aiohttp_socks.ProxyConnector;
+        # HTTP/HTTPS proxies use the per-request `proxy=` kwarg.
         proxy = config.get("proxy_url")
         if proxy is None:
             proxy = (config.get("params") or {}).get("proxy_url")
@@ -258,8 +258,15 @@ class SmarketsRetriever(Retriever):
             proxy = os.environ.get("PROXY_URL", "")
         self.proxy_url: str | None = proxy if proxy else None
 
+        if transport is None:
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+                proxy=self.proxy_url,
+            )
+        super().__init__(config, transport)
+        self.base_url = config.get("base_url", self.DEFAULT_BASE_URL).rstrip("/")
         self.min_trades_24h = int((config.get("params") or {}).get("min_trades_24h", 1))
-        self._circuit_breaker = circuit_breaker
 
     # ------------------------------------------------------------------
     # URL / filter helpers (unit-tested)
@@ -291,25 +298,22 @@ class SmarketsRetriever(Retriever):
         return [e for e in events if e.get("type") == target_type]
 
     # ------------------------------------------------------------------
-    # HTTP helpers
+    # HTTP helper — single-request via HttpTransport
     # ------------------------------------------------------------------
 
-    async def _fetch_json(self, session: aiohttp.ClientSession, url: str) -> dict | None:
-        # SOCKS5 proxies are wired via ProxyConnector at session construction,
-        # not via the aiohttp `proxy=` kwarg (which is HTTP-only). For HTTP/
-        # HTTPS proxies we pass `proxy=` as before.
+    async def _get_json(self, url: str) -> dict | None:
+        """Fetch JSON via the shared HttpTransport. Returns None on failure
+        (HttpTransport already logs non-200 + handles 429 retry)."""
         try:
-            kwargs: dict[str, Any] = {"timeout": aiohttp.ClientTimeout(total=15)}
-            if self.proxy_url and not self.proxy_url.startswith("socks"):
-                kwargs["proxy"] = self.proxy_url
-            async with session.get(url, **kwargs) as resp:
-                if resp.status != 200:
-                    logger.warning("[smarkets] %s on %s", resp.status, url)
-                    return None
-                return await resp.json()
+            data = await self.transport.get(
+                url,
+                provider_id=self.provider_id,
+                timeout=self.REQ_TIMEOUT_SEC,
+            )
         except Exception as e:
             logger.warning("[smarkets] fetch failed %s: %s", url, e)
             return None
+        return data if isinstance(data, dict) else None
 
     # ------------------------------------------------------------------
     # Extraction
@@ -321,76 +325,52 @@ class SmarketsRetriever(Retriever):
             return []
 
         events_raw: list[dict] = []
+        in_scope: list[dict] = []
+        url = self._get_sport_url(sport)
 
-        # Build a ProxyConnector for SOCKS5 proxies (the aiohttp native `proxy=`
-        # kwarg only speaks HTTP/HTTPS; smarkets requires Bahnhof SOCKS5 or
-        # every fetch dies with "Server disconnected" on the TLS handshake).
-        connector = None
-        if self.proxy_url and self.proxy_url.startswith("socks"):
-            try:
-                from aiohttp_socks import ProxyConnector
-
-                connector = ProxyConnector.from_url(self.proxy_url)
-            except ImportError:
-                logger.warning("[smarkets] aiohttp_socks not installed; proxy will not be used")
-
-        session_kwargs: dict[str, Any] = {}
-        if connector is not None:
-            session_kwargs["connector"] = connector
-
-        async with aiohttp.ClientSession(**session_kwargs) as session:
-            url = self._get_sport_url(sport)
-            in_scope: list[dict] = []
-            for _ in range(self.MAX_PAGES):
-                body = await self._fetch_json(session, url)
-                if not body:
-                    break
-                page_events = body.get("events", [])
-                events_raw.extend(page_events)
-                in_scope.extend(self.filter_events_by_sport(page_events, sport))
-                # Stop paginating once we have enough — the health check sets
-                # limit=1 and pre-fix would walk all 20 pages before bailing.
-                if limit and len(in_scope) >= limit:
-                    break
-                nxt = (body.get("pagination") or {}).get("next_page")
-                if not nxt:
-                    break
-                url = (
-                    f"{self.base_url}/events/{nxt}"
-                    if nxt.startswith("?")
-                    else (f"{self.base_url}{nxt}" if nxt.startswith("/") else nxt)
-                )
-
-            logger.info(
-                "[smarkets] %s events fetched, %s in-scope for %s",
-                len(events_raw),
-                len(in_scope),
-                sport,
+        for _ in range(self.MAX_PAGES):
+            body = await self._get_json(url)
+            if not body:
+                break
+            page_events = body.get("events", [])
+            events_raw.extend(page_events)
+            in_scope.extend(self.filter_events_by_sport(page_events, sport))
+            # Stop paginating once we have enough — health check sets limit=1
+            # so pre-fix we'd walk all 20 pages before bailing.
+            if limit and len(in_scope) >= limit:
+                break
+            nxt = (body.get("pagination") or {}).get("next_page")
+            if not nxt:
+                break
+            url = (
+                f"{self.base_url}/events/{nxt}"
+                if nxt.startswith("?")
+                else (f"{self.base_url}{nxt}" if nxt.startswith("/") else nxt)
             )
 
-            # Apply the caller's cap BEFORE the per-event fan-out — each event
-            # triggers up to 4 HTTP calls, so processing the entire 900+ event
-            # list would always time out.
-            if limit and len(in_scope) > limit:
-                in_scope = in_scope[:limit]
+        logger.info(
+            "[smarkets] %s events fetched, %s in-scope for %s",
+            len(events_raw),
+            len(in_scope),
+            sport,
+        )
 
-            sem = asyncio.Semaphore(self.CONCURRENT_MARKET_FETCHES)
+        # Apply caller's cap BEFORE the per-event fan-out — each event triggers
+        # up to 4 HTTP calls, so processing the entire 900+ event list would
+        # always time out.
+        if limit and len(in_scope) > limit:
+            in_scope = in_scope[:limit]
 
-            async def build_event(ev_raw: dict) -> StandardEvent | None:
-                async with sem:
-                    return await self._build_event(session, ev_raw, sport)
+        sem = asyncio.Semaphore(self.CONCURRENT_MARKET_FETCHES)
 
-            results = await asyncio.gather(*(build_event(e) for e in in_scope))
-            events = [r for r in results if r is not None]
+        async def build_event(ev_raw: dict) -> StandardEvent | None:
+            async with sem:
+                return await self._build_event(ev_raw, sport)
 
-        return events
+        results = await asyncio.gather(*(build_event(e) for e in in_scope))
+        return [r for r in results if r is not None]
 
-    async def _build_event(
-        self,
-        session: aiohttp.ClientSession,
-        ev_raw: dict,
-        sport: str,
-    ) -> StandardEvent | None:
+    async def _build_event(self, ev_raw: dict, sport: str) -> StandardEvent | None:
         eid = ev_raw.get("id")
         if not eid:
             return None
@@ -408,7 +388,7 @@ class SmarketsRetriever(Retriever):
             )
             return None
 
-        mkts_body = await self._fetch_json(session, f"{self.base_url}/events/{eid}/markets/")
+        mkts_body = await self._get_json(f"{self.base_url}/events/{eid}/markets/")
         mkts = (mkts_body or {}).get("markets") or []
         if not mkts:
             return None
@@ -426,12 +406,9 @@ class SmarketsRetriever(Retriever):
             if not mid:
                 continue
             contracts_body, prices_body, quotes_body = await asyncio.gather(
-                self._fetch_json(session, f"{self.base_url}/markets/{mid}/contracts/"),
-                self._fetch_json(
-                    session,
-                    f"{self.base_url}/markets/{mid}/last_executed_prices/",
-                ),
-                self._fetch_json(session, f"{self.base_url}/markets/{mid}/quotes/"),
+                self._get_json(f"{self.base_url}/markets/{mid}/contracts/"),
+                self._get_json(f"{self.base_url}/markets/{mid}/last_executed_prices/"),
+                self._get_json(f"{self.base_url}/markets/{mid}/quotes/"),
             )
             contracts = (contracts_body or {}).get("contracts") or []
             if not contracts:
