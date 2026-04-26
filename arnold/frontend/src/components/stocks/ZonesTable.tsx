@@ -58,12 +58,12 @@ export function ZonesTable({ zones, lastPrice }: Props) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((z, i) => {
-            const id = `${z.price}:${z.members}`
+          {rows.map((z) => {
+            const id = `zone:${z.price.toFixed(2)}`
             const strength = z.hierarchy ?? 0
             const bar = Math.round(strength * 100)
             return (
-              <tr key={i} className="text-zinc-300 hover:bg-zinc-800/50">
+              <tr key={id} className="text-zinc-300 hover:bg-zinc-800/50">
                 <td className="py-0.5">{z.price.toFixed(2)}</td>
                 <td className="py-0.5 text-zinc-500">
                   {z.lower !== undefined && z.upper !== undefined
