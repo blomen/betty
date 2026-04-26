@@ -139,6 +139,21 @@ git commit -m "docs(tv-overlay): record Phase 0 in-page API surface"
 
 If the API surface is meaningfully different from what's assumed below (different method names, different argument shape), the userscript in Phase 4 must be updated to match before continuing. The rest of the plan still holds.
 
+### Phase 0 verification (recorded 2026-04-26)
+
+Probed against `https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!` via Playwright (Chromium, unauthenticated). Manual visual confirmation of horizontal-line draw in user's signed-in TradingView Desktop session.
+
+**Confirmed surface — pin these values into the userscript in Phase 4:**
+
+- **Chart path:** `window.TradingViewApi.activeChart()`. (`window.tvWidget` was undefined on a fresh, unauthenticated session. `window.TradingView` exists but is the namespace, not the chart.)
+- **Rectangle draw:** `chart.createMultipointShape([{time, price}, {time, price}], { shape: 'rectangle', text, overrides: { color, backgroundColor } })` — succeeds, returns entity id.
+- **Horizontal line draw:** `chart.createMultipointShape([{time, price}], { shape: 'horizontal_line', text, overrides: { linecolor, showLabel } })` — succeeds, returns entity id. Visually confirmed in user's TV Desktop (screenshot showed green line at 27420 labeled "entry").
+- **Removal:** `chart.removeEntity(id)` — succeeds.
+
+**Quirks noted:**
+- Returned entity IDs are objects, not primitives — `JSON.stringify` flattens them to `{}`. They remain valid references in JS scope. The userscript holds them in a `Map`, so this is fine — but **never round-trip an entity ID through the WebSocket as JSON.** Use stable string keys (`zone:27400.0`, `pos:current:entry`) for cross-process identity.
+- `window.tvWidget` only exists on certain entry paths (likely authenticated chart sessions or the embedded widget). The userscript must use `TradingViewApi` first; fall back to `tvWidget`/`TradingView` only if `TradingViewApi.activeChart()` returns nullish.
+
 ---
 
 ## Phase 1: Server-side L2 depth broadcast
