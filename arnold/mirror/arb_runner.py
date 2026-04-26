@@ -117,6 +117,10 @@ class ArbRunner:
         self._counter_legs: list[dict] = []
         self._anchor_stake: float = 0.0
         self._last_alignment_broadcast: float = 0.0
+        self._planned_anchor_odds: float = 0.0
+        self.current_opp_key: str | None = None
+        self._dethroned_to: dict | None = None
+        self._current_recomputed_profit_pct: float | None = None
 
         self._task: asyncio.Task | None = None
         self._update_tasks: set[asyncio.Task] = set()
@@ -385,6 +389,12 @@ class ArbRunner:
 
         self._anchor_stake = anchor_stake
         self._counter_legs = counter_legs
+        self._planned_anchor_odds = anchor_odds
+        for leg, planned_odds in zip(counter_legs, counter_odds):
+            leg["_planned_odds"] = planned_odds
+        self.current_opp_key = self._compute_opp_key(opp, anchor_leg)
+        self._dethroned_to = None
+        self._current_recomputed_profit_pct = None
         self.current_opp = opp
         self.current_arb_group_id = uuid.uuid4().hex[:12]
 
@@ -651,6 +661,18 @@ class ArbRunner:
         if live_odds < planned_odds * (1.0 - LEG_DRIFT_TOL_PCT):
             return "red"
         return "green"
+
+    @staticmethod
+    def _compute_opp_key(opp: dict, anchor_leg: dict) -> str:
+        """Stable key for comparing two opps for dethrone (spec §4.2)."""
+        return "|".join(
+            [
+                str(opp.get("event_id", "")),
+                str(opp.get("market", "")),
+                "" if opp.get("point") is None else str(opp.get("point")),
+                str(anchor_leg.get("outcome", "")),
+            ]
+        )
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
