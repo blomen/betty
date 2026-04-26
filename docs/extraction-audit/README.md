@@ -71,8 +71,8 @@ Every cluster doc follows the same structure:
 | Pinnacle avg duration | 57 s | **27 s** (2.1× faster) |
 | Force-kill chrome events | 30+/night | 5 in 7 min (all clustered at single 12:44:27 cold-start race) |
 | Asyncio noise (Unclosed/Task destroyed) | 20+ at 00:49-02:36 UTC overnight | 0 since deploy |
-| Tipwin events/run | ~766 | **40** (regression — fix on branch awaiting redeploy) |
-| Browser_soft mass-failure | n/a | one-off at 12:44:27 (driver bootstrap race during simultaneous post-restart launch); recovers on cycle 2 |
+| Tipwin events/run | ~766 | **40 → 944 after `0d20ff52` redeploy at 13:06 UTC** (regression fixed; 100 pages walked, 9 sports captured) |
+| Browser_soft mass-failure | n/a | one-off at 12:44:27 (driver bootstrap race during simultaneous post-restart launch); 888sport recovered cleanly post-redeploy at 13:07 UTC with 892 events / 60s |
 
 ## Top-of-stack findings (cluster-spanning)
 
