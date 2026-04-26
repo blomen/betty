@@ -151,6 +151,7 @@ class HttpTransport(Transport):
         cache: Any | None = None,
         provider_id: str | None = None,
         max_retries: int = None,
+        timeout: float | None = None,
     ) -> Any:
         """
         GET request with optional caching and 429 rate limit handling.
@@ -162,6 +163,7 @@ class HttpTransport(Transport):
             cache: Optional ResponseCache instance
             provider_id: Optional provider identifier for cache
             max_retries: Max retries on 429 rate limit (uses config default if None)
+            timeout: Per-request total timeout in seconds (default 90)
 
         Returns:
             Response data (JSON or text)
@@ -186,9 +188,10 @@ class HttpTransport(Transport):
         if headers:
             req_headers.update(headers)
 
-        # Per-request timeout — prevents hanging connections without competing with sport timeout
-        # (sport timeout handles the overall deadline; this just catches stuck TCP connections)
-        req_timeout = aiohttp.ClientTimeout(total=90)
+        # Per-request timeout — prevents hanging connections without competing with sport timeout.
+        # Caller can pass `timeout=` for fast endpoints (e.g. polymarket CLOB at 8s) so a single
+        # dead token doesn't hold a 50-wide concurrency slot for 90s.
+        req_timeout = aiohttp.ClientTimeout(total=timeout if timeout is not None else 90)
 
         # Retry loop for 429 handling
         for attempt in range(max_retries + 1):

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import json
 import logging
@@ -235,9 +236,12 @@ class PolymarketRetriever(Retriever):
             level_cost = price * size  # USD cost to fill this entire level
             total_depth_usd += level_cost
 
-            if total_shares * (total_cost / total_shares if total_shares else price) < fill_size_usd:
-                # How many more USD do we need?
-                remaining_usd = fill_size_usd - (total_cost if total_cost else 0)
+            # Walk levels until cumulative cost reaches the target fill size.
+            # Earlier code had a multiply/divide that algebraically reduced to
+            # this same `total_cost < fill_size_usd` check — kept simple now so
+            # future readers don't "fix" it back into the confusing form.
+            if total_cost < fill_size_usd:
+                remaining_usd = fill_size_usd - total_cost
                 fillable_cost = min(level_cost, remaining_usd)
                 fillable_shares = fillable_cost / price
                 total_cost += fillable_cost
@@ -254,77 +258,71 @@ class PolymarketRetriever(Retriever):
 
         Uses GET /book?token_id=XXX to get the full order book, then walks the
         ask side to calculate the volume-weighted average price for fill_size_usd.
-        This replaces the old POST /prices approach that only returned top-of-book.
+        Routed through self.transport (HttpTransport) so CLOB calls inherit the
+        provider's circuit breaker, 429 retry/backoff, and shared aiohttp
+        session — previously each pipeline cycle spun up its own ClientSession
+        + TCPConnector and bypassed every resilience feature.
 
         Stores results in:
         - self._clob_prices: token_id -> VWAP price (depth-adjusted)
         - self._clob_depth: token_id -> total ask-side depth in USD
         """
-        import asyncio
-
-        import aiohttp
-
         if not token_ids or not self.use_clob_prices:
             return
 
         unique_tokens = list(set(token_ids))
-        # CLOB allows 1500 req / 10s = 150 req/s. With ~5000 tokens this used
-        # to chunk into 50-token batches, waiting for each batch to fully drain
-        # before starting the next — slow tokens stalled the whole pipeline
-        # for 1000+ seconds. Now we fire all requests concurrently and let the
-        # semaphore (50 in flight) be the only limiter; effective throughput
-        # tracks server response time instead of worst-case chunk latency.
+        # CLOB allows 1500 req / 10s = 150 req/s. Semaphore(50) bounds in-flight
+        # depth without throttling per-second throughput; under typical RTT this
+        # lands ~100 req/s effective, comfortably under the rate limit.
         semaphore = asyncio.Semaphore(50)
         fill_size = self.fill_size_usd
+        url = f"{self.clob_url}/book"
 
-        async def fetch_book(session: aiohttp.ClientSession, token_id: str):
+        async def fetch_book(token_id: str):
             async with semaphore:
                 try:
-                    url = f"{self.clob_url}/book"
-                    params = {"token_id": token_id}
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            asks = data.get("asks", [])
-                            bids = data.get("bids", [])
-                            if asks:
-                                vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
-                                # Always store depth so _is_liquid works correctly
-                                self._clob_depth[token_id] = depth_usd
-                                # Only use CLOB VWAP when in valid range; otherwise
-                                # _get_clob_price falls back to Gamma mid-price
-                                if 0.01 < vwap < 0.99:
-                                    self._clob_prices[token_id] = vwap
-                                # Extract best ask (lowest price on ask side)
-                                try:
-                                    best_ask = min(float(a["price"]) for a in asks if float(a.get("price", 0)) > 0)
-                                    if 0.01 < best_ask < 0.99:
-                                        self._clob_asks[token_id] = best_ask
-                                except (ValueError, TypeError, KeyError):
-                                    pass
-                            # Extract best bid (highest price on bid side)
-                            if bids:
-                                try:
-                                    best_bid = max(float(b["price"]) for b in bids if float(b.get("price", 0)) > 0)
-                                    if 0.01 < best_bid < 0.99:
-                                        self._clob_bids[token_id] = best_bid
-                                except (ValueError, TypeError, KeyError):
-                                    pass
-                        elif resp.status != 404:
-                            logger.debug(
-                                f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}..."
-                            )
+                    data = await self.transport.get(
+                        url,
+                        params={"token_id": token_id},
+                        provider_id=self.provider_id,
+                        timeout=8,
+                    )
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] CLOB /book failed for {token_id[:12]}...: {e}")
+                    return
+                if not isinstance(data, dict):
+                    return
+                asks = data.get("asks", [])
+                bids = data.get("bids", [])
+                if asks:
+                    vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
+                    # Always store depth so _is_liquid works correctly
+                    self._clob_depth[token_id] = depth_usd
+                    # Only use CLOB VWAP when in valid range; otherwise
+                    # _get_clob_price falls back to Gamma mid-price
+                    if 0.01 < vwap < 0.99:
+                        self._clob_prices[token_id] = vwap
+                    # Extract best ask (lowest price on ask side)
+                    try:
+                        best_ask = min(float(a["price"]) for a in asks if float(a.get("price", 0)) > 0)
+                        if 0.01 < best_ask < 0.99:
+                            self._clob_asks[token_id] = best_ask
+                    except (ValueError, TypeError, KeyError):
+                        pass
+                # Extract best bid (highest price on bid side)
+                if bids:
+                    try:
+                        best_bid = max(float(b["price"]) for b in bids if float(b.get("price", 0)) > 0)
+                        if 0.01 < best_bid < 0.99:
+                            self._clob_bids[token_id] = best_bid
+                    except (ValueError, TypeError, KeyError):
+                        pass
 
         try:
-            # Single connection pool sized for the new concurrency cap.
-            connector = aiohttp.TCPConnector(limit=100, limit_per_host=100)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                await asyncio.gather(
-                    *(fetch_book(session, tid) for tid in unique_tokens),
-                    return_exceptions=True,
-                )
+            await asyncio.gather(
+                *(fetch_book(tid) for tid in unique_tokens),
+                return_exceptions=True,
+            )
 
             thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
             logger.debug(
@@ -337,6 +335,12 @@ class PolymarketRetriever(Retriever):
     def parse(self, data: Any, sport: str) -> list[StandardEvent]:
         """Parse API response - delegates to _parse_all."""
         return self._parse_all(data) if data else []
+
+    # Hard cap on pagination loops — protects against malformed pagination
+    # cursors / offsets that would otherwise spin until the sport timeout.
+    # 50 pages × 500 events = 25k events, comfortably above any realistic
+    # active-event count (typical: ~2k active, ~3k recent-closed).
+    _MAX_PAGES = 50
 
     async def extract_all(self, limit: int = 500) -> list[StandardEvent]:
         """
@@ -358,7 +362,7 @@ class PolymarketRetriever(Retriever):
         page = 1
         page_limit = min(limit, API_MAX_LIMIT)
 
-        while True:
+        while page <= self._MAX_PAGES:
             params = {
                 "active": "true",
                 "closed": "false",
@@ -383,6 +387,11 @@ class PolymarketRetriever(Retriever):
 
             offset += page_limit
             page += 1
+        else:
+            logger.warning(
+                f"[{self.provider_id}] Phase 1 hit MAX_PAGES={self._MAX_PAGES} cap "
+                f"({len(all_raw)} events) — pagination may be truncated"
+            )
 
         # Phase 1b: Catch-up — also fetch recently closed events (last 48h)
         # Prevents data loss when extraction gaps occur (e.g., scheduler downtime).
@@ -392,7 +401,8 @@ class PolymarketRetriever(Retriever):
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
         closed_offset = 0
         closed_count = 0
-        while True:
+        closed_pages = 0
+        while closed_pages < self._MAX_PAGES:
             closed_params = {
                 "active": "true",
                 "closed": "true",
@@ -415,6 +425,12 @@ class PolymarketRetriever(Retriever):
             if len(closed_data) < page_limit:
                 break
             closed_offset += page_limit
+            closed_pages += 1
+        else:
+            logger.warning(
+                f"[{self.provider_id}] Phase 1b catch-up hit MAX_PAGES={self._MAX_PAGES} cap "
+                f"(added {closed_count} closed events) — pagination may be truncated"
+            )
         if closed_count:
             logger.info(f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events")
 
@@ -1215,15 +1231,26 @@ class PolymarketRetriever(Retriever):
                     home_lower = home.lower()
                     away_lower = away.lower()
 
-                    # Check if team in question matches home or away
-                    # Use substring matching for flexibility (e.g., "Lakers" vs "Los Angeles Lakers")
+                    # Token-overlap match — substring matching previously
+                    # collided across teams sharing a prefix word (e.g. "Real"
+                    # matched both Real Madrid and Real Sociedad). Tokenize on
+                    # whitespace, require ≥1 shared 3+ char token AND zero ambiguity
+                    # (the other team must NOT share any of those tokens).
+                    def _tokens(name: str) -> set[str]:
+                        return {w for w in name.split() if len(w) >= 3}
+
+                    q_tokens = _tokens(team_in_question)
+                    home_tokens = _tokens(home_lower)
+                    away_tokens = _tokens(away_lower)
+                    home_overlap = q_tokens & home_tokens
+                    away_overlap = q_tokens & away_tokens
+
                     matched_team = None
                     other_team = None
-
-                    if team_in_question in home_lower or home_lower in team_in_question:
+                    if home_overlap and not away_overlap:
                         matched_team = home
                         other_team = away
-                    elif team_in_question in away_lower or away_lower in team_in_question:
+                    elif away_overlap and not home_overlap:
                         matched_team = away
                         other_team = home
 
