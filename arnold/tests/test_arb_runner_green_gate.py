@@ -49,3 +49,44 @@ class TestOppKey:
         leg = {"outcome": "draw", "provider": "betinia", "odds": 3.40}
         key = ArbRunner._compute_opp_key(opp, leg)
         assert key == "evt-456|1x2||draw"
+
+
+from unittest.mock import MagicMock  # noqa: E402
+
+
+class TestStopResetsGreenGateState:
+    """Per code review on Task 3: stop() must reset opp_key + planned + dethrone + recomputed_profit
+    so a restart doesn't see stale state."""
+
+    def _make_runner(self):
+        browser = MagicMock()
+        browser.context = MagicMock()
+        browser.context.pages = []
+        browser.provider_data = {}
+        broadcaster = MagicMock()
+        broadcaster.publish = MagicMock()
+        return ArbRunner(
+            provider_id="betinia",
+            browser=browser,
+            broadcaster=broadcaster,
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+
+    def test_stop_clears_all_green_gate_state(self):
+        runner = self._make_runner()
+        # Simulate state that _load_all_legs would have populated
+        runner.current_opp_key = "evt-A|1x2||home"
+        runner._planned_anchor_odds = 2.10
+        runner._dethroned_to = {"event_id": "evt-B"}
+        runner._current_recomputed_profit_pct = 1.5
+
+        runner.stop()
+
+        assert runner.current_opp_key is None
+        assert runner._planned_anchor_odds == 0.0
+        assert runner._dethroned_to is None
+        assert runner._current_recomputed_profit_pct is None
