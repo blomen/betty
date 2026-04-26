@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -11,8 +10,10 @@ from .shared.metrics import ExtractionMetrics
 
 logger = logging.getLogger(__name__)
 
-# Max concurrent league fetches (Pinnacle API handles high concurrency well)
-MAX_CONCURRENT_LEAGUES = 50
+# Default cap for concurrent league fetches when YAML doesn't override.
+# YAML's `concurrent_leagues` setting is honored per-instance via __init__.
+# 10 matches the proxy-throttled value documented in providers.yaml.
+DEFAULT_MAX_CONCURRENT_LEAGUES = 10
 
 
 class PinnacleRetriever(Retriever):
@@ -34,6 +35,19 @@ class PinnacleRetriever(Retriever):
             )
         super().__init__(config, transport)
         self.base_url = config.get("api_base", "https://guest.api.arcadia.pinnacle.com/0.1")
+
+        # Honor concurrent_leagues from providers.yaml. Previously the YAML
+        # setting was read by the orchestrator for sport-level concurrency
+        # only, so pinnacle's internal league concurrency was hard-coded at
+        # 50 — five times the value the YAML comment said was needed to avoid
+        # ISP-proxy 403 storms.
+        self._max_concurrent_leagues = int(config.get("concurrent_leagues", DEFAULT_MAX_CONCURRENT_LEAGUES))
+
+        # Per-instance set so "log unknown market type once" semantics are
+        # scoped to a single retriever lifetime instead of the process.
+        # The factory builds a fresh retriever each pipeline run, so this
+        # naturally bounds memory and re-logs novel types if they reappear.
+        self._logged_unknown_types: set[str] = set()
 
         # Build sport ID map from config
         config_loader = ConfigLoader.get_instance()
@@ -93,7 +107,7 @@ class PinnacleRetriever(Retriever):
         metrics.leagues_fetched = len(active_leagues)
 
         # Parallel fetch all leagues with semaphore to limit concurrency
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_LEAGUES)
+        semaphore = asyncio.Semaphore(self._max_concurrent_leagues)
         league_results = await asyncio.gather(
             *[self._fetch_league(league, semaphore, metrics) for league in active_leagues], return_exceptions=True
         )
@@ -289,11 +303,21 @@ class PinnacleRetriever(Retriever):
             home_team = normalize_team_name(home_team_raw)
             away_team = normalize_team_name(away_team_raw)
 
-            # Parse start time (already extracted above)
+            # Parse start time (already extracted above). A parse failure means
+            # the event has no usable date — drop it rather than ship an empty
+            # start_time which downstream date-matching treats as "today",
+            # producing wrong fuzzy matches against today's events on other books.
             start_time = None
             if start_time_str:
-                with contextlib.suppress(Exception):
+                try:
                     start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"[{self.provider_id}] Skipping matchup {matchup_id}: "
+                        f"unparseable start_time={start_time_str!r} ({e})"
+                    )
+                    metrics.events_skipped_error += 1
+                    return None
 
             # ── Capture live state (scores, minute, period) ──────────
             matchup_status = matchup.get("status")  # "pending" or "started"
@@ -368,8 +392,6 @@ class PinnacleRetriever(Retriever):
 
     # Core market types used by the value scanner
     _CORE_TYPES = {"moneyline", "spread", "total"}
-    # Logged once per extraction to discover new types
-    _logged_unknown_types: set = set()
 
     # Esports map periods: period 1 = map 1, period 2 = map 2, etc.
     _ESPORTS_MAP_PERIODS = {1, 2, 3, 4, 5}

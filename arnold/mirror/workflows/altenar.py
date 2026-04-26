@@ -114,6 +114,9 @@ class AltenarWorkflow(ProviderWorkflow):
     def _history_url(self, page: int = 1, limit: int = 50) -> str:
         return f"https://{self.domain}/sv/api/v3/history?page={page}&limit={limit}&type=sport"
 
+    def _history_url_dated(self, from_date: str, to_date: str, limit: int = 100) -> str:
+        return f"https://{self.domain}/sv/api/v3/history?page=1&limit={limit}&type=sport&from={from_date}&to={to_date}"
+
     async def _authed_fetch(self, page: Page, url: str) -> dict | None:
         """Fetch with Authorization header read from localStorage token."""
         try:
@@ -141,6 +144,30 @@ class AltenarWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: Page) -> bool:
+        # Altenar's WSDK only initialises (and sets localStorage.token) when
+        # the page is on /sport. If the user browsed to /sv/ home or any other
+        # path, the token is missing and _authed_fetch returns 401 even when
+        # the user is genuinely logged in via cookies. Detect this and bounce
+        # the tab back to /sport so the WSDK re-runs and re-sets the token.
+        token_present = False
+        try:
+            token_present = bool(await page.evaluate("() => !!localStorage.getItem('token')"))
+        except Exception:
+            pass
+        if not token_present:
+            current = (page.url or "").lower()
+            if "/sport" not in current:
+                logger.info(
+                    f"[{self.provider_id}] check_login: token missing on {current[:60]}, bouncing to {self.home_url}"
+                )
+                try:
+                    await page.goto(self.home_url, wait_until="domcontentloaded", timeout=15000)
+                    # Give WSDK time to initialise + read cookies + set token
+                    await asyncio.sleep(2.5)
+                except Exception as e:
+                    logger.warning(f"[{self.provider_id}] check_login: bounce-to-/sport failed: {e}")
+                    return False
+
         result = await self._authed_fetch(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
@@ -173,6 +200,66 @@ class AltenarWorkflow(ProviderWorkflow):
             except (KeyError, TypeError, ValueError):
                 continue
         return total if total > 0 else -1
+
+    # ------------------------------------------------------------------
+    # Slip widget — WASM-rendered, no DOM. State lives in localStorage:
+    #   WSDK_{integration}_betSelections.state.selections[0].odd.price  (live odds)
+    #   WSDK_{integration}_betStakes.state.singleStakes[0].value        (current stake)
+    # The slip widget reads from this Zustand-style store, so updating localStorage
+    # + dispatching a storage event is enough to push a new stake into the slip.
+    # ------------------------------------------------------------------
+
+    async def read_slip_odds(self, page: Page) -> float | None:
+        try:
+            integration = self._integration
+            key = f"WSDK_{integration}_betSelections"
+            raw = await page.evaluate(f"() => localStorage.getItem({key!r})")
+            if not raw:
+                return None
+            import json as _json
+
+            data = _json.loads(raw)
+            sels = data.get("state", {}).get("selections") or []
+            if not sels:
+                return None
+            # First selection's live price (Altenar updates this in-place as odds drift).
+            price = sels[0].get("odd", {}).get("price")
+            return float(price) if price is not None else None
+        except Exception:
+            return None
+
+    async def update_slip_stake(self, page: Page, stake: float) -> bool:
+        """Update the stake of the first slip selection by patching localStorage
+        + dispatching a storage event so the WSDK Zustand store re-reads."""
+        try:
+            integration = self._integration
+            key = f"WSDK_{integration}_betStakes"
+            return bool(
+                await page.evaluate(
+                    """({key, stake}) => {
+                        const raw = localStorage.getItem(key);
+                        if (!raw) return false;
+                        let data;
+                        try { data = JSON.parse(raw); } catch { return false; }
+                        const arr = data?.state?.singleStakes;
+                        if (!Array.isArray(arr) || arr.length === 0) return false;
+                        arr[0].value = stake;
+                        arr[0].preciseValue = stake;
+                        const next = JSON.stringify(data);
+                        const prev = raw;
+                        localStorage.setItem(key, next);
+                        // Trigger Zustand persist re-read across tabs / same-tab listeners
+                        window.dispatchEvent(new StorageEvent('storage', {
+                            key, oldValue: prev, newValue: next,
+                            storageArea: localStorage,
+                        }));
+                        return true;
+                    }""",
+                    {"key": key, "stake": round(stake, 2)},
+                )
+            )
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # History + Positions — via account history page (NOT the sportsbook widget)
@@ -282,26 +369,88 @@ class AltenarWorkflow(ProviderWorkflow):
             return None
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Fetch settled bet history via on-site v3 history API."""
+        """Fetch settled bet history via on-site v3 history API.
+
+        Walks pages until a page returns no settled entries OR the safety cap
+        is hit. Necessary because reconcile needs to match DB pending bets that
+        may be days old (past page 1).
+
+        TODO(generic-history): refactor into a shared paginate() helper on the
+        base workflow once Kambi/Gecko/Interwetten get the same treatment.
+        Tracked as Option C in the audit notes (provider history pagination).
+        """
+        _MAX_PAGES = 5
+        _PAGE_LIMIT = 100
         try:
-            logger.info(f"[{self.provider_id}] sync_history: starting")
-            result = await self._authed_fetch(page, self._history_url(page=1, limit=100))
-            if not result or "__error" in (result or {}):
-                logger.warning(f"[{self.provider_id}] sync_history API failed: {result}")
-                return []
+            logger.info(f"[{self.provider_id}] sync_history: starting (up to {_MAX_PAGES} pages)")
+            all_entries: list[HistoryEntry] = []
+            for page_num in range(1, _MAX_PAGES + 1):
+                result = await self._authed_fetch(page, self._history_url(page=page_num, limit=_PAGE_LIMIT))
+                if not result or "__error" in (result or {}):
+                    logger.warning(f"[{self.provider_id}] sync_history page {page_num} failed: {result}")
+                    break
 
-            bets_data = self._parse_bets_data(result)
-            entries = []
-            for bet in bets_data:
-                entry = self._parse_history_entry(bet)
-                if entry:
-                    entries.append(entry)
+                bets_data = self._parse_bets_data(result)
+                page_entries = []
+                for bet in bets_data:
+                    entry = self._parse_history_entry(bet)
+                    if entry:
+                        page_entries.append(entry)
 
-            logger.info(f"[{self.provider_id}] sync_history: {len(entries)} settled bets")
-            return entries
+                if not bets_data:
+                    # Empty page — stop early, we've exhausted the history.
+                    # Note: Altenar may return fewer than _PAGE_LIMIT even when more
+                    # pages exist (server-side cap), so we can't use a partial-page
+                    # check as the stop signal — only an empty page means done.
+                    logger.info(f"[{self.provider_id}] sync_history: page {page_num} empty, stopping")
+                    break
+
+                all_entries.extend(page_entries)
+
+            logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} settled bets total")
+            return all_entries
         except Exception as e:
             logger.warning(f"[{self.provider_id}] sync_history failed: {e}")
             return []
+
+    async def fetch_history_for_bet(self, page, bet: dict) -> list | None:
+        """Targeted lookup: query history for the date window around bet.start_time.
+
+        Window: start_time - 1 day → start_time + 7 days (covers settlement lag
+        for matches that play out across multiple days, e.g. tennis tournaments).
+        """
+        from datetime import datetime, timedelta
+
+        start_iso = bet.get("start_time") or bet.get("placed_at")
+        if not start_iso:
+            return None
+        try:
+            # Handle ISO with or without Z suffix
+            ts = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        from_date = (ts - timedelta(days=1)).strftime("%Y-%m-%d")
+        to_date = (ts + timedelta(days=7)).strftime("%Y-%m-%d")
+        url = self._history_url_dated(from_date, to_date, limit=100)
+        try:
+            result = await self._authed_fetch(page, url)
+            if not result or "__error" in (result or {}):
+                logger.warning(f"[{self.provider_id}] fetch_history_for_bet API failed: {result}")
+                return None
+            bets_data = self._parse_bets_data(result)
+            entries = []
+            for b in bets_data:
+                entry = self._parse_history_entry(b)
+                if entry:
+                    entries.append(entry)
+            logger.info(
+                f"[{self.provider_id}] fetch_history_for_bet bet#{bet.get('id') or bet.get('bet_id')}: "
+                f"{len(entries)} entries in {from_date}..{to_date}"
+            )
+            return entries
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] fetch_history_for_bet failed: {e}")
+            return None
 
     async def fetch_positions(self, page: Page) -> list[PositionEntry]:
         """Fetch open bets via on-site v3 history API (filter pending in code)."""

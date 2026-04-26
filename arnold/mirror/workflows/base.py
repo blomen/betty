@@ -126,6 +126,35 @@ class ProviderWorkflow(ABC):
         """
         return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
 
+    async def read_slip_odds(self, page: Page) -> float | None:
+        """Read the odds the loaded slip widget currently displays.
+
+        Idempotent, fast — called ~1Hz by SlipOddsStream while a slip is loaded.
+        Returns None if slip is empty, errored, or workflow doesn't support scrape.
+        Override per workflow.
+        """
+        return None
+
+    async def update_slip_stake(self, page: Page, stake: float) -> bool:
+        """Re-write the stake field on a loaded slip without re-navigating.
+
+        Returns True on success. Used by ArbRunner to keep counter slips in sync
+        with the actual placed anchor stake. Override per workflow.
+        """
+        return False
+
+    async def fetch_history_for_bet(self, page: Page, bet: dict) -> list[HistoryEntry] | None:
+        """Targeted history lookup for a specific bet that wasn't found in the
+        paginated sync_history window.
+
+        Returns a small list of history entries scoped to the bet's event
+        window (typically start_time ± a few days), or None if this workflow
+        doesn't support targeted lookup.
+
+        Override per workflow. Default returns None (caller falls back to no-op).
+        """
+        return None
+
     async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
         """Read live odds and return (live_odds, live_edge) or (None, None).
 

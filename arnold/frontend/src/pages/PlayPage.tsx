@@ -78,6 +78,17 @@ interface SettleToast {
   profit: number
 }
 
+type ArbLeg = {
+  provider_id: string
+  current_odds: number
+  planned_odds: number
+  drift_pct: number
+  current_stake: number
+  slip_state: 'loading' | 'green' | 'red'
+  placed?: boolean
+  failed_reason?: string
+}
+
 export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
@@ -94,23 +105,21 @@ export default function PlayPage() {
   const [settleWaiting, setSettleWaiting] = useState(false)
   const [activeProviders, setActiveProviders] = useState<Set<string>>(new Set())
   const [loggedInProviders, setLoggedInProviders] = useState<Set<string>>(new Set())
+  // Mirror has the provider's tab open but workflow.check_login hasn't passed yet —
+  // amber state ("waiting for you to log in"). Distinct from isSkinActive (runner active).
+  const [tabOpenProviders, setTabOpenProviders] = useState<Set<string>>(new Set())
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
-  const [arbHedgeStatus, setArbHedgeStatus] = useState<Record<string, {
-    status: 'placing' | 'placed' | 'failed' | 'unhedged'
-    counter_provider?: string
-    outcome?: string
-    actual_odds?: number
-    actual_stake?: number
-    reason?: string
-  }>>({})
-  const [arbCounterPlan, setArbCounterPlan] = useState<any[] | null>(null)
+  // Per-leg arb alignment from arb_legs_loaded + arb_alignment events
+  const [arbLegs, setArbLegs] = useState<ArbLeg[] | null>(null)
+  const [arbAllGreen, setArbAllGreen] = useState<boolean>(false)
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
   const [arbGroupId, setArbGroupId] = useState<string | null>(null)
+  const [arbDethroneToast, setArbDethroneToast] = useState<string | null>(null)
   // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
   // Siblings share odds, so one fetch per cluster suffices. Each sibling renders its
   // own card using the cluster's opp list (differing only in balance / cap / active state).
@@ -290,6 +299,88 @@ export default function PlayPage() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
+  // Poll login state for soft providers we know about (have balance or pending).
+  // Recovers green-state after a page reload AND auto-activates the runner once
+  // funded + logged in (parallel to the unlimited effect above). Auto-activation
+  // gated on DRAIN_THRESHOLD so we don't spawn runners on drained providers.
+  useEffect(() => {
+    // Universe: every soft provider we know about (so a freshly-opened tab
+    // gets polled immediately, before any balance/pending exists). Cluster
+    // siblings + standalones + anyone we have balance/pending data for.
+    const softPids = new Set<string>()
+    for (const members of Object.values(SOFT_CLUSTER_MEMBERS)) {
+      for (const pid of members) softPids.add(pid)
+    }
+    for (const pid of SOFT_STANDALONES) softPids.add(pid)
+    for (const pid of Object.keys(providerBalances)) {
+      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
+    }
+    for (const pid of Object.keys(pendingByProvider)) {
+      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
+    }
+    if (softPids.size === 0) return
+    let cancelled = false
+    const missCount: Record<string, number> = {}
+    const activated: Set<string> = new Set()
+    const check = async () => {
+      for (const pid of softPids) {
+        try {
+          const r = await fetch(`/mirror/browser/provider/${pid}`)
+          const d = await r.json()
+          if (cancelled) return
+          // Track tab-open separately from logged-in so the row can show
+          // amber ("tab open, awaiting login") vs green ("logged in").
+          if (d.found) {
+            setTabOpenProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+          } else {
+            setTabOpenProviders(prev => {
+              if (!prev.has(pid)) return prev
+              const n = new Set(prev); n.delete(pid); return n
+            })
+          }
+          if (d.logged_in) {
+            missCount[pid] = 0
+            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+            const bal = d.balance ?? providerBalances[pid] ?? 0
+            if (!activated.has(pid) && bal >= DRAIN_THRESHOLD_SEK) {
+              try {
+                activated.add(pid)
+                setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+                try { await api.startMirror() } catch {}
+                try { await api.openTab(pid) } catch {}
+                // Arb runs need counter legs on unlimited providers — proactively
+                // open all 4 unlimited tabs so the user can log in to them.
+                // Idempotent: openTab returns "already_open" if a tab exists.
+                // Generic: applies to ANY soft anchor that auto-activates.
+                for (const upid of UNLIMITED_PROVIDERS) {
+                  try { await api.openTab(upid) } catch {}
+                }
+                setLoopRunning(true)
+                // ArbRunner fetches its own opps from /api/opportunities/arb-workflow,
+                // so an empty batch is fine (unlike value-bet runners).
+                await api.startPlayLoop([], { [pid]: bal }, [pid])
+              } catch {
+                activated.delete(pid)  // retry next tick
+              }
+            }
+          } else {
+            missCount[pid] = (missCount[pid] || 0) + 1
+            if (missCount[pid] >= 2) {
+              setLoggedInProviders(prev => {
+                if (!prev.has(pid)) return prev
+                const n = new Set(prev); n.delete(pid); return n
+              })
+              activated.delete(pid)
+            }
+          }
+        } catch { /* swallow */ }
+      }
+    }
+    check()
+    const id = setInterval(check, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [providerBalances, pendingByProvider])
+
   // SSE event handler
   useEffect(() => {
     if (!mirror.lastEvent) return
@@ -402,31 +493,89 @@ export default function PlayPage() {
       const cap = data.cap ?? data.actual_stake
       if (pid && cap) setStakeCaps(prev => ({ ...prev, [pid]: cap }))
     }
-    if (type === 'bet_skipped' || type === 'bet_failed') { setCurrentBetReady(null); setLoopStatus(null); setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}) }
-    if (type === 'arb_bet_ready') {
-      const bet = data.bet ?? data
-      setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge })
-      setArbCounterPlan(data.counter_plan ?? null)
-      setArbProfitPct(data.guaranteed_profit_pct ?? null)
-      setArbGroupId(data.arb_group_id ?? null)
-      setArbHedgeStatus({})
+    if (type === 'bet_skipped' || type === 'bet_failed') {
+      setCurrentBetReady(null)
       setLoopStatus(null)
+      setArbLegs(null)
+      setArbAllGreen(false)
+      setArbProfitPct(null)
+      setArbGroupId(null)
     }
-    if (type === 'arb_hedge_placing') {
-      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placing', counter_provider: data.counter_provider, outcome: data.outcome } }))
+    if (type === 'arb_legs_loaded') {
+      setArbGroupId(data.arb_group_id ?? null)
+      setArbLegs(
+        (data.legs ?? []).map((l: any) => ({
+          provider_id: l.provider_id,
+          current_odds: l.planned_odds ?? 0,
+          planned_odds: l.planned_odds ?? 0,
+          drift_pct: 0,
+          current_stake: l.planned_stake ?? 0,
+          slip_state: 'loading',
+        }))
+      )
+      setArbAllGreen(false)
+      setArbProfitPct(null)
+    }
+    if (type === 'arb_alignment') {
+      setArbAllGreen(!!data.all_green)
+      setArbProfitPct(data.current_profit_pct ?? data.profit_pct ?? null)
+      setArbLegs(prev => {
+        if (!prev) return prev
+        const incoming: Record<string, any> = {}
+        for (const l of (data.legs ?? [])) incoming[l.provider_id] = l
+        return prev.map(leg => {
+          const update = incoming[leg.provider_id]
+          if (!update) return leg
+          return {
+            ...leg,
+            current_odds: update.current_odds ?? leg.current_odds,
+            planned_odds: update.planned_odds ?? leg.planned_odds,
+            drift_pct: update.drift_pct ?? leg.drift_pct,
+            current_stake: update.current_stake ?? leg.current_stake,
+            slip_state: update.slip_state ?? leg.slip_state,
+          }
+        })
+      })
+    }
+    if (type === 'arb_anchor_placed') {
+      setArbLegs(prev => prev ? prev.map(l => l.provider_id === data.provider_id ? { ...l, placed: true, current_stake: data.actual_stake ?? l.current_stake, current_odds: data.actual_odds ?? l.current_odds } : l) : prev)
+    }
+    if (type === 'arb_anchor_rejected') {
+      setArbDethroneToast(`Anchor rejected: ${data.reason ?? 'unknown'}`)
+      setTimeout(() => setArbDethroneToast(null), 4000)
+      setArbLegs(null)
+      setArbAllGreen(false)
+      setArbProfitPct(null)
+      setArbGroupId(null)
     }
     if (type === 'arb_hedge_placed') {
-      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'placed', counter_provider: data.counter_provider, outcome: data.outcome, actual_odds: data.actual_odds, actual_stake: data.actual_stake } }))
+      setArbLegs(prev => prev ? prev.map(l => l.provider_id === data.counter_provider ? { ...l, placed: true, current_stake: data.actual_stake ?? l.current_stake, current_odds: data.actual_odds ?? l.current_odds } : l) : prev)
     }
     if (type === 'arb_hedge_failed') {
-      setArbHedgeStatus(prev => ({ ...prev, [data.counter_provider]: { status: 'failed', counter_provider: data.counter_provider, outcome: data.outcome, reason: data.reason } }))
+      setArbLegs(prev => prev ? prev.map(l => l.provider_id === data.counter_provider ? { ...l, failed_reason: data.reason ?? 'failed', slip_state: 'red' } : l) : prev)
     }
-    if (type === 'arb_unhedged') {
-      setArbHedgeStatus(prev => ({ ...prev, __unhedged: { status: 'unhedged', outcome: data.outcome, reason: 'All fallbacks exhausted' } }))
+    if (type === 'arb_dethroned') {
+      const diff = data.new_profit != null && data.old_profit != null
+        ? data.new_profit - data.old_profit
+        : null
+      const delta = diff != null
+        ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}pp`
+        : ''
+      setArbDethroneToast(`Switched to higher-edge opp ${delta}`)
+      setTimeout(() => setArbDethroneToast(null), 3500)
+      setArbLegs(null)
+      setArbAllGreen(false)
+      setArbProfitPct(null)
+      setArbGroupId(null)
     }
     if (type === 'arb_complete') {
-      setArbProfitPct(data.guaranteed_profit_pct ?? arbProfitPct)
-      setTimeout(() => { setArbCounterPlan(null); setArbProfitPct(null); setArbGroupId(null); setArbHedgeStatus({}); setCurrentBetReady(null) }, 5000)
+      setTimeout(() => {
+        setArbLegs(null)
+        setArbAllGreen(false)
+        setArbProfitPct(null)
+        setArbGroupId(null)
+        setCurrentBetReady(null)
+      }, 5000)
       loadArbOpps()
     }
     if (type === 'provider_complete') {
@@ -444,10 +593,10 @@ export default function PlayPage() {
       setToasts([])
       setSettleWaiting(false)
       setLoopStatus(null)
-      setArbCounterPlan(null)
+      setArbLegs(null)
+      setArbAllGreen(false)
       setArbProfitPct(null)
       setArbGroupId(null)
-      setArbHedgeStatus({})
     }
     // Update per-provider status from individual events
     if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
@@ -675,53 +824,43 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Arb card */}
-      {currentBetReady && arbCounterPlan && (
+      {/* Arb alignment card — shows per-leg slip state during a loaded opp */}
+      {arbLegs && arbLegs.length > 0 && (
         <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
             {arbProfitPct != null && (
-              <span className="text-xs font-mono font-semibold text-green-400">+{arbProfitPct.toFixed(2)}% guaranteed profit</span>
+              <span className={`text-xs font-mono font-semibold ${arbProfitPct > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {arbProfitPct > 0 ? '+' : ''}{arbProfitPct.toFixed(2)}% profit
+              </span>
             )}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${arbAllGreen ? 'bg-green-900/50 text-green-300' : 'bg-zinc-800 text-zinc-400'}`}>
+              {arbAllGreen ? 'ALL GREEN — place anchor' : 'WAITING'}
+            </span>
             {arbGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{arbGroupId}</span>}
           </div>
-          <div className="flex items-center gap-2 text-xs mb-1.5">
-            <span className="text-zinc-400">Anchor:</span>
-            <span className="text-zinc-200">{currentBetReady.display_home} v {currentBetReady.display_away}</span>
-            <span className="text-amber-400 font-medium">{resolveOutcome(currentBetReady)}</span>
-            <span className="font-mono text-zinc-200">@ {(currentBetReady.live_odds ?? currentBetReady.odds)?.toFixed(2)}</span>
-            <span className="text-zinc-500 uppercase text-[10px]">{currentBetReady.provider_id}</span>
-          </div>
           <div className="space-y-0.5">
-            {arbCounterPlan.map((leg: any, i: number) => (
-              <div key={i}>
-                <div className="text-[10px] text-zinc-500 mb-0.5">Counter: {leg.outcome}</div>
-                {leg.providers?.map((p: any, j: number) => {
-                  const hedge = arbHedgeStatus[p.provider]
-                  return (
-                    <div key={j} className="flex items-center gap-2 pl-3 text-[10px]">
-                      <span className="text-zinc-400 uppercase w-16">{p.provider}</span>
-                      <span className="font-mono text-zinc-300">@ {p.odds?.toFixed(2)}</span>
-                      <span className="font-mono text-zinc-500">{(p.stake_pct * 100).toFixed(0)}%</span>
-                      {hedge?.status === 'placing' && <span className="text-amber-400 animate-pulse">Placing...</span>}
-                      {hedge?.status === 'placed' && (
-                        <span className="text-green-400 font-semibold">
-                          HEDGED @ {hedge.actual_odds?.toFixed(2)} · {Math.round(hedge.actual_stake ?? 0)} kr
-                        </span>
-                      )}
-                      {hedge?.status === 'failed' && <span className="text-red-400">Failed: {hedge.reason}</span>}
-                      {!hedge && <span className="text-zinc-600">Waiting</span>}
-                    </div>
-                  )
-                })}
+            {arbLegs.map(leg => (
+              <div key={leg.provider_id} className="flex items-center gap-2 pl-1 text-[10px]">
+                <span className={`inline-block w-2 h-2 rounded-full ${leg.slip_state === 'green' ? 'bg-green-400' : leg.slip_state === 'red' ? 'bg-red-400' : 'bg-zinc-600 animate-pulse'}`} />
+                <span className="text-zinc-400 uppercase w-16">{leg.provider_id}</span>
+                <span className="font-mono text-zinc-300 w-16">@ {leg.current_odds?.toFixed(2)}</span>
+                <span className="font-mono text-zinc-500 w-20">(plan {leg.planned_odds?.toFixed(2)})</span>
+                <span className={`font-mono w-12 ${Math.abs(leg.drift_pct) > 1 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                  {leg.drift_pct >= 0 ? '+' : ''}{leg.drift_pct?.toFixed(2)}%
+                </span>
+                <span className="font-mono text-zinc-300 w-16">{Math.round(leg.current_stake ?? 0)} kr</span>
+                {leg.placed && <span className="text-green-400 font-semibold">PLACED</span>}
+                {leg.failed_reason && <span className="text-red-400">FAILED: {leg.failed_reason}</span>}
               </div>
             ))}
-            {arbHedgeStatus.__unhedged && (
-              <div className="flex items-center gap-2 pl-3 text-[10px] mt-1">
-                <span className="text-red-400 font-semibold">UNHEDGED — all fallbacks exhausted</span>
-              </div>
-            )}
           </div>
+        </div>
+      )}
+
+      {arbDethroneToast && (
+        <div className="border-b border-amber-700/50 bg-amber-900/10 px-3 py-1.5 text-xs text-amber-300">
+          {arbDethroneToast}
         </div>
       )}
 

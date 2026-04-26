@@ -554,6 +554,7 @@ class BetService:
         odds: float | None = None,
         result: str | None = None,
         payout: float | None = None,
+        provider_bet_id: str | None = None,
     ) -> dict:
         """Edit a settled bet to correct stake/odds/result.
 
@@ -600,6 +601,10 @@ class BetService:
         # Recalculate CLV if closing odds exist
         if bet.closing_odds and bet.closing_odds > 1.0:
             bet.clv_pct = round((bet.odds / bet.closing_odds - 1) * 100, 2)
+
+        # Backfill provider_bet_id from history reconciliation
+        if provider_bet_id is not None and bet.provider_bet_id != provider_bet_id:
+            bet.provider_bet_id = provider_bet_id
 
         # Record wagering progress when transitioning to a settled result
         wagering_status = None

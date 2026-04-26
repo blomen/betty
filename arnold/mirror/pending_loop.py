@@ -325,26 +325,27 @@ class PendingLoop:
             for e in raw_history
         ]
 
-        # 4. Detect settlements
-        settlements = _detect_settlements(db_bets, history)
-        self._status[pid]["last_sync"] = datetime.utcnow().isoformat()
+        # 4. Reconcile DB against provider truth (autonomous — DB self-heals)
+        from .reconcile import reconcile_and_publish
 
-        if not settlements:
-            logger.info(f"[PendingLoop] no new settlements for {pid}")
-            self._status[pid]["settlements"] = []
-            return
-
-        self._status[pid]["settlements"] = settlements
-        logger.info(f"[PendingLoop] {len(settlements)} settlements detected for {pid} — broadcasting for review")
-
-        # 5. Broadcast to UI for user confirmation — don't auto-record
-        self._broadcaster.publish(
-            "settlements_detected",
-            {
-                "provider_id": pid,
-                "settlements": settlements,
-            },
+        n = await reconcile_and_publish(
+            self._proxy_url,
+            _AUTH_HEADER,
+            _AUTH_VALUE,
+            pid,
+            db_bets,
+            history,
+            self._broadcaster,
+            page=page,
+            workflow=workflow,
         )
+        self._status[pid]["last_sync"] = datetime.utcnow().isoformat()
+        self._status[pid]["reconciled"] = n
+
+        if n == 0:
+            logger.info(f"[PendingLoop] no reconciliation needed for {pid}")
+        else:
+            logger.info(f"[PendingLoop] reconciled {n} bets for {pid}")
 
     # ------------------------------------------------------------------
     # HTTP helpers

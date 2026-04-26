@@ -24,7 +24,6 @@ import asyncio
 import logging
 import os
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -90,6 +89,7 @@ def _persist_broker_trade_direct(payload: dict) -> None:
     Matches the shape of BrokerTradeIn / the existing persist-callback
     signature so broker_adapter._log_broker_trade just works.
     """
+
     def _worker(p: dict) -> None:
         try:
             from ..db.models import BrokerTrade, get_session
@@ -129,8 +129,7 @@ def _persist_broker_trade_direct(payload: dict) -> None:
 
                 row = BrokerTrade(
                     ts=ts_open,
-                    session_date=p.get("session_date")
-                    or ts_open.strftime("%Y-%m-%d"),
+                    session_date=p.get("session_date") or ts_open.strftime("%Y-%m-%d"),
                     symbol=p.get("symbol", "NQ"),
                     side=p.get("side"),
                     size=p.get("size"),
@@ -263,6 +262,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
             _dashboard.update_zones(msg.get("zones", []))
 
     level_monitor.add_signal_callback(_dashboard_zone_forwarder)
+
     # Sync current zones into the dashboard state immediately. Going through
     # _broadcast_zones() races against the init thread that runs
     # set_session_context — when init finishes first, the broadcast at that

@@ -348,7 +348,10 @@ class TopstepXBrokerAdapter:
         order_id = data.get("orderId") or data.get("order_id") or data.get("OrderId")
         log.info(
             "Fill processing: price=%.2f side=%s size=%s order_id=%s",
-            price, data.get("side"), data.get("size"), order_id,
+            price,
+            data.get("side"),
+            data.get("size"),
+            order_id,
         )
 
         if self.tracker.is_flat:
@@ -361,11 +364,7 @@ class TopstepXBrokerAdapter:
             is_stop = order_id == self.tracker.stop_order_id
         else:
             is_entry = self.tracker.entry_price == 0.0
-            is_stop = (
-                not is_entry
-                and self.tracker.stop_price > 0
-                and abs(price - self.tracker.stop_price) < 1.0
-            )
+            is_stop = not is_entry and self.tracker.stop_price > 0 and abs(price - self.tracker.stop_price) < 1.0
 
         if is_entry:
             # Idempotent: a duplicate entry fill with the same orderId must not double-set.
@@ -384,14 +383,19 @@ class TopstepXBrokerAdapter:
             log.error(
                 "Out-of-order exit fill (%.2f, order_id=%s) before entry confirmation — "
                 "skipping; tracker left open until entry fill arrives",
-                price, order_id,
+                price,
+                order_id,
             )
             return
 
         self.tracker.on_exit(exit_price=price, was_stop=is_stop)
         log.info(
             "Stream fill (exit): %.2f stop=%s order_id=%s trails=%d session_pnl=$%.2f",
-            price, is_stop, order_id, self._trail_count, self.tracker.session_pnl,
+            price,
+            is_stop,
+            order_id,
+            self._trail_count,
+            self.tracker.session_pnl,
         )
 
         if self._pending_trade and entry_px:
@@ -539,7 +543,8 @@ class TopstepXBrokerAdapter:
                         break
                     log.warning(
                         "Stop placement rejected (attempt %d/2): %s",
-                        attempt, stop_result.get("errorMessage"),
+                        attempt,
+                        stop_result.get("errorMessage"),
                     )
 
             if stop_order_id is None:

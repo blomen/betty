@@ -1,9 +1,10 @@
 """Tests for AllocationEngine envelope response (2026-04-19 redesign)."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.src.bankroll.allocator import AllocationEngine
+from src.bankroll.allocator import AllocationEngine
 
 
 class _Profile:
@@ -45,8 +46,15 @@ def test_allocate_none_budget_is_unbounded(engine):
         _stub_batch(
             bb,
             capital_actions=[
-                {"type": "deposit", "provider_id": "pinnacle", "amount": 2400,
-                 "currency": "SEK", "unlocks": 14, "expected_ev": 980, "priority": 3},
+                {
+                    "type": "deposit",
+                    "provider_id": "pinnacle",
+                    "amount": 2400,
+                    "currency": "SEK",
+                    "unlocks": 14,
+                    "expected_ev": 980,
+                    "priority": 3,
+                },
             ],
         )
         result = engine.allocate(None)
@@ -62,8 +70,15 @@ def test_allocate_withdrawals_expand_budget(engine):
             bb,
             capital_actions=[
                 {"type": "withdraw", "provider_id": "888sport", "amount": 0, "currency": "SEK"},
-                {"type": "deposit", "provider_id": "pinnacle", "amount": 600,
-                 "currency": "SEK", "unlocks": 3, "expected_ev": 90, "priority": 3},
+                {
+                    "type": "deposit",
+                    "provider_id": "pinnacle",
+                    "amount": 600,
+                    "currency": "SEK",
+                    "unlocks": 3,
+                    "expected_ev": 90,
+                    "priority": 3,
+                },
             ],
             balances={"888sport": 450, "pinnacle": 0},
         )
@@ -79,10 +94,24 @@ def test_allocate_partial_tier_3_ranks_by_ev(engine):
         _stub_batch(
             bb,
             capital_actions=[
-                {"type": "deposit", "provider_id": "polymarket", "amount": 500,
-                 "currency": "USDC", "unlocks": 4, "expected_ev": 100, "priority": 3},
-                {"type": "deposit", "provider_id": "pinnacle", "amount": 1000,
-                 "currency": "SEK", "unlocks": 8, "expected_ev": 600, "priority": 3},
+                {
+                    "type": "deposit",
+                    "provider_id": "polymarket",
+                    "amount": 500,
+                    "currency": "USDC",
+                    "unlocks": 4,
+                    "expected_ev": 100,
+                    "priority": 3,
+                },
+                {
+                    "type": "deposit",
+                    "provider_id": "pinnacle",
+                    "amount": 1000,
+                    "currency": "SEK",
+                    "unlocks": 8,
+                    "expected_ev": 600,
+                    "priority": 3,
+                },
             ],
         )
         result = engine.allocate(1000.0)
@@ -97,8 +126,15 @@ def test_allocate_surplus_becomes_keep_liquid(engine):
         _stub_batch(
             bb,
             capital_actions=[
-                {"type": "deposit", "provider_id": "pinnacle", "amount": 200,
-                 "currency": "SEK", "unlocks": 1, "expected_ev": 30, "priority": 3},
+                {
+                    "type": "deposit",
+                    "provider_id": "pinnacle",
+                    "amount": 200,
+                    "currency": "SEK",
+                    "unlocks": 1,
+                    "expected_ev": 30,
+                    "priority": 3,
+                },
             ],
         )
         result = engine.allocate(5000.0)
