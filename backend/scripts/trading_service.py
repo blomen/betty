@@ -27,8 +27,10 @@ log = logging.getLogger("trading-service")
 
 
 async def run():
+    from src.stocks import broker_adapter as _broker_adapter_mod
     from src.stocks.broker_adapter import TopstepXBrokerAdapter
     from src.stocks.config import TopstepXConfig
+    from src.stocks.server_bootstrap import _persist_broker_trade_direct
     from src.stocks.signal_relay import SignalRelayClient
     from src.stocks.topstepx_client import TopstepXClient
     from src.stocks.topstepx_stream import TopstepXStream
@@ -51,6 +53,13 @@ async def run():
         return
 
     log.info("TopstepX authenticated: account=%s", client._account_id)
+
+    # Persist closed trades directly into broker_trades. trading_service runs as a
+    # separate subprocess from the FastAPI bootstrap, so the broker_adapter module
+    # global is per-process — without this wire-up, _log_broker_trade only writes
+    # logs + dashboard and broker_trades stays frozen.
+    _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
+    log.info("broker_trades persist callback wired")
 
     # Build adapter + relay
     adapter = TopstepXBrokerAdapter(client, config)
