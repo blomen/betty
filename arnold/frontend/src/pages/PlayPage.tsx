@@ -562,6 +562,7 @@ export default function PlayPage() {
       setArbLegs(null)
       setArbAllGreen(false)
       setArbProfitPct(null)
+      setArbGroupId(null)
     }
     if (type === 'arb_complete') {
       setTimeout(() => {
