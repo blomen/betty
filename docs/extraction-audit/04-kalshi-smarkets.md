@@ -197,7 +197,7 @@ keep patching the ad-hoc sessions.
 
 ## 9. Re-introduction notes
 
-**Shipped 2026-04-26** in two commits (local only, not deployed):
+**Deployed 2026-04-26 12:41 UTC** to `feat/slip-odds-architecture` on the Hetzner server:
 
 `85ea70f1` — kalshi:
 - Fix #1: Migrated to `HttpTransport`. Constructor accepts/creates a transport; `extractor.close()` no longer raises `AttributeError`.
@@ -215,9 +215,13 @@ Fixes #5 (NHL Utah Mammoth code map fix), #6 (smarkets retry decorator), #8 (par
 
 Pre-deploy verification: ruff clean · py_compile clean · 32/32 smarkets tests pass · constructor smoke-tests confirm transport=HttpTransport (was None pre-fix).
 
-Post-deploy checks (TODO):
+**Post-deploy observations (cycle 1, 12:41–12:48 UTC):**
+- ✅ Kalshi: 1 run completed in <1s (cache hit on first sport call after warm cycle — the cross-sport cache is working). 42 events for the queried sport. 0 'Unclosed client session' lines.
+- ⚠️ Smarkets: no completed run in the 7-min window (its tier cycles every 5 min and the pre-deploy run was at 12:28 UTC — first post-deploy run still pending).
+- 0 `extractor.close()` AttributeError swallows in logs.
+
+Post-deploy checks remaining (24 h window required):
 - [ ] Kalshi: 'Unclosed client session' overnight log count (was: 20+ at 00:49-02:36 UTC; expect: 0)
-- [ ] Kalshi: total page-fetches per pipeline cycle (was: ~17× duplicated; expect: 1× cycle then dispatched)
-- [ ] Smarkets: avg duration (was: 502s for 332 events; expect: similar — proxy RTT-bound, but should benefit from shared connection pool)
+- [ ] Kalshi: total page-fetches per pipeline cycle (need at least one full cycle of all 17 sports)
+- [ ] Smarkets: avg duration (was: 502s for 332 events; expect: similar — proxy RTT-bound)
 - [ ] Smarkets: 429 incidents now surface via HttpTransport `_consecutive_429s`
-- [ ] Spelklubben odds-not-saving anomaly remains separate to debug

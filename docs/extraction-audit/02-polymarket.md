@@ -158,7 +158,7 @@ broken is at the seams:
 
 ## 9. Re-introduction notes
 
-**Shipped 2026-04-26** in commit `cf9316e6` (local only, not deployed):
+**Deployed 2026-04-26 12:41 UTC** in commit `cf9316e6` to `feat/slip-odds-architecture` on the Hetzner server:
 - Fix #1: CLOB book fetching routed through `HttpTransport` (no more ad-hoc `aiohttp.ClientSession` + `TCPConnector`); restores breaker / retry / shared session.
 - Fix #2: Yes/No team-name match switched to token overlap (was substring → "Real" matched both Real Madrid + Real Sociedad).
 - Fix #3: `_MAX_PAGES = 50` cap added to Phase 1 + Phase 1b loops with explicit warn-on-cap log.
@@ -167,8 +167,12 @@ broken is at the seams:
 
 Pre-deploy verification: ruff clean · py_compile clean · synthetic VWAP smoke matches expected output.
 
-Post-deploy checks (TODO):
-- [ ] CLOB 429 / 5xx counts in HttpTransport metrics (was: silent failures via ad-hoc session)
-- [ ] Yes/No mismatched-team incidents — search opportunities table for low-volume polymarket bets where team strings overlap (Real, Boston, Manchester, etc.); should be zero
-- [ ] Any regression in event count (baseline ~232 events/run in 86s)
-- [ ] Phase 1 / Phase 1b "MAX_PAGES cap hit" warnings (should be zero in steady state — flags real pagination growth)
+**Post-deploy observations (cycle 1, 12:41–12:48 UTC):**
+- ⚠️ Polymarket: 86s → 106s for 374 events (1 sample, slight slowdown). CLOB now via HttpTransport adds breaker/retry overhead; might also be higher-than-typical token count this cycle. Re-evaluate after 24h.
+- 0 MAX_PAGES cap warnings in logs.
+- 0 CLOB-related "Unclosed client session" warnings (was potential leak via ad-hoc session pre-fix).
+
+Post-deploy checks remaining:
+- [ ] Polymarket avg duration over 24 h (need more samples — single-run jitter)
+- [ ] CLOB 429 / 5xx counts (HttpTransport now logs these; check `_consecutive_429s["polymarket"]`)
+- [ ] Yes/No mismatched-team incidents — search `opportunities` table for low-volume polymarket bets where team strings overlap (Real, Boston, Manchester); should be zero

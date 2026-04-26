@@ -242,7 +242,7 @@ per-cycle browser-launch cost.
 
 ## 9. Re-introduction notes
 
-**Shipped 2026-04-26** (local only, not deployed):
+**Deployed 2026-04-26 12:41 UTC** to `feat/slip-odds-architecture` on the Hetzner server (post-deploy audit recorded here):
 
 `99fcc9c7` — 10bet (TenBet):
 - Fix #1: Page-pool reuse in `extract()`. Pool size = concurrency, opened once at start of extract, closed in `finally`. `_scrape_competition` gained a `page=` kwarg (default `None` for back-compat). Switched batch-then-wait to `asyncio.as_completed` for early-exit when limit hit. Removed dead `batch_size` and the captured-but-unused `sport_timeout` line.
@@ -259,9 +259,14 @@ Fixes #5 (Spectate bucket cache TTL), #6 (Spectate fixed init sleep drop), #8 (t
 
 Pre-deploy verification: ruff clean · py_compile clean · 6/6 tenbet tests pass · 15/15 interwetten tests pass.
 
-Post-deploy checks (TODO):
-- [ ] 10bet avg duration (was: 2168s timeout; target: ~600s)
-- [ ] Tipwin avg duration (was: 307s; target: ~60-80s)
-- [ ] Interwetten cookie-banner overhead (was: 12s/cycle on 24-tab redundant work; target: <1s)
-- [ ] Browser memory peak (still per-provider, no shared CDP pool)
-- [ ] Force-kill events from this tier (was: 30+ overnight; expectation depends on whether the gecko fix from cluster 5 plus the orchestrator hot-path fix cumulatively close the source)
+**Post-deploy observations (cycle 1, 12:41–12:48 UTC):**
+- ✅ post_extraction_worker started cleanly, processed 7 tier completions, analyzer running each time (345-453 value bets / 449-522 arb opps).
+- ✅ Browser_soft providers eventually completed (betsson 64s for 567 events; later cycles will compare 10bet directly).
+- ⚠️ **One-off mass failure at 12:44:27**: 888sport, interwetten, 10bet all hit "Connection closed while reading from the driver" simultaneously — Playwright/CDP startup race when 3 browser-based providers launch in parallel right after container restart. Pre-existing (not from this batch). Recovers on next cycle.
+- ⚠️ **Tipwin regression detected**: 40 events vs expected ~800 (5 % of normal). Root cause: my parallel-pagination fix (`ae056ede`) captured the homepage's small `/offer/data` URL (40 highlights) as the pagination template. Fix committed: `0d20ff52` — capture URL only from `items`-shaped responses, prefer the response with highest `totalNumberOfItems`. **Awaiting next deploy.**
+
+Post-deploy checks (will fill in after next deploy + 24 h):
+- [ ] 10bet avg duration (target: ~600s) — first post-deploy run failed in the 12:44:27 race; need cycle 2 data
+- [ ] Tipwin avg duration AFTER `0d20ff52` lands (was 14s but 40 events; target: ~60-80s with 800+ events)
+- [ ] Interwetten cookie-banner overhead (was: 12s/cycle on 24-tab redundant work; target: <1s) — first run failed in race; need cycle 2 data
+- [ ] Force-kill events from this tier (was: 30+ overnight; observed in 7m post-deploy: 5, all clustered at 12:44:27)
