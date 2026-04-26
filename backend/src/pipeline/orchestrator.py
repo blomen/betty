@@ -1146,23 +1146,42 @@ class ExtractionPipeline:
             # Run opportunity analysis — serialized to prevent deadlocks.
             # Multiple concurrent pipeline cycles all UPDATE the opportunities
             # table; without the lock they deadlock and skip analysis entirely.
+            #
+            # Bound the wait: sharp's analyzer can take 12+ minutes, and an
+            # untimed acquire would block soft-tier pipelines indefinitely —
+            # downstream metrics persistence + scheduler last_completed never
+            # advance, /health/extraction reports those providers as stale, and
+            # the watchdog force-cancels mid-flight. Skip analysis on timeout
+            # rather than starve every other tier; the next sharp run will
+            # pick up our committed odds via _changed_event_ids.
             log_progress("Running opportunity analysis...")
             from .analyzer import OpportunityAnalyzer
 
-            with _analysis_lock:
-                analyzer = OpportunityAnalyzer(self.session)
-                changed_ids = self._changed_event_ids if self._changed_event_ids else None
+            analysis_results = None  # may stay None if lock-timeout or deadlock skip-path is taken
+            ANALYSIS_LOCK_TIMEOUT = 60.0
+            acquired = _analysis_lock.acquire(timeout=ANALYSIS_LOCK_TIMEOUT)
+            if not acquired:
+                logger.warning(
+                    f"[Pipeline] Analyzer lock held >{ANALYSIS_LOCK_TIMEOUT:.0f}s — "
+                    f"skipping analysis for this run, deltas will be picked up by next sharp cycle"
+                )
+            else:
                 try:
-                    analysis_results = analyzer.run(changed_event_ids=changed_ids)
-                    results["analysis"] = analysis_results
-                    log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
-                except Exception as e:
-                    err_lower = str(e).lower()
-                    if "deadlock" in err_lower:
-                        logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
-                        self.session.rollback()
-                    else:
-                        raise
+                    analyzer = OpportunityAnalyzer(self.session)
+                    changed_ids = self._changed_event_ids if self._changed_event_ids else None
+                    try:
+                        analysis_results = analyzer.run(changed_event_ids=changed_ids)
+                        results["analysis"] = analysis_results
+                        log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
+                    except Exception as e:
+                        err_lower = str(e).lower()
+                        if "deadlock" in err_lower:
+                            logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
+                            self.session.rollback()
+                        else:
+                            raise
+                finally:
+                    _analysis_lock.release()
 
             # Broadcast opportunity deltas to SSE clients
             if odds_broadcaster.client_count > 0 and analysis_results:
