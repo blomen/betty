@@ -239,6 +239,23 @@ class HttpTransport(Transport):
                 if provider_id and provider_id in self._consecutive_429s:
                     self._consecutive_429s[provider_id] = 0
 
+                # Retry on 5xx (transient server / upstream error). Pre-fix
+                # 5xx returned None silently, dropping legitimate retries —
+                # cluster-1 audit Smell J. Bounded by max_retries (same budget
+                # as 429) with exponential backoff capped at max_wait.
+                if 500 <= response.status < 600:
+                    if attempt < max_retries:
+                        wait_seconds = min(default_wait * (2**attempt), max_wait)
+                        provider_str = f"[{provider_id}] " if provider_id else ""
+                        logger.warning(
+                            f"{provider_str}HTTP {response.status} on {url} "
+                            f"(attempt {attempt + 1}/{max_retries + 1}) — retrying in {wait_seconds}s"
+                        )
+                        await asyncio.sleep(wait_seconds)
+                        continue
+                    logger.error(f"HTTP GET {url} returned {response.status} after {max_retries + 1} attempts")
+                    return None
+
                 if response.status != 200:
                     # 401/403 are expected for restricted resources (e.g., Pinnacle leagues)
                     # Log at DEBUG to avoid noisy warnings during normal operation
