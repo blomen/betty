@@ -172,10 +172,6 @@ async def test_stream_accepts_log_endpoint_and_bet_context():
 
 def test_slip_odds_stream_exposes_page_publicly():
     """Spec §4.2: ArbRunner reads stream.page; should be a public attr."""
-    from unittest.mock import MagicMock
-
-    from arnold.mirror.slip_odds_stream import SlipOddsStream
-
     page = MagicMock(name="playwright_page")
     workflow = MagicMock()
     stream = SlipOddsStream(
