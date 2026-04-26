@@ -26,6 +26,12 @@ router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 _opp_cache: dict[tuple, tuple] = {}
 _OPP_CACHE_TTL = 120  # seconds — data only changes on extraction (every 5 min)
 
+# arb-workflow is expensive (1-3min for soft providers with thousands of events)
+# and gets hammered by ArbRunner every 10s. Cache aggressively to keep one slow
+# scan from holding a DB connection per request and exhausting the pool.
+_arb_workflow_cache: dict[tuple, tuple] = {}  # key → (response_dict, expiry_time)
+_ARB_WORKFLOW_CACHE_TTL = 60  # seconds
+
 
 def _get_service(db: Session = Depends(get_db)) -> OpportunityService:
     return OpportunityService(db)
@@ -121,19 +127,41 @@ def arb_workflow(
     limit: int = 50,
     service: OpportunityService = Depends(_get_service),
 ):
-    """Live-scan arb opportunities for specific anchor providers."""
+    """Live-scan arb opportunities for specific anchor providers.
+
+    Cached at the route level (60s TTL per param combo). The underlying
+    scan_arb_for_provider takes 30s-3min for soft providers with thousands of
+    events; the cache prevents ArbRunner's 10s polling from piling up
+    concurrent slow scans that exhaust the DB connection pool.
+    """
     provider_list = [p.strip() for p in providers.split(",") if p.strip()]
     if not provider_list:
         raise HTTPException(400, "At least one provider required")
     counterpart_list = (
         [p.strip() for p in counterpart_providers.split(",") if p.strip()] if counterpart_providers else None
     )
-    return service.scan_arb_workflow(
+
+    # Cache lookup
+    capped_limit = min(limit, 100)
+    cache_key = (
+        tuple(sorted(provider_list)),
+        major_only,
+        tuple(sorted(counterpart_list)) if counterpart_list else None,
+        capped_limit,
+    )
+    now = _time.time()
+    cached = _arb_workflow_cache.get(cache_key)
+    if cached and now < cached[1]:
+        return cached[0]
+
+    result = service.scan_arb_workflow(
         anchor_providers=provider_list,
         major_only=major_only,
         counterpart_providers=counterpart_list,
-        limit=min(limit, 100),
+        limit=capped_limit,
     )
+    _arb_workflow_cache[cache_key] = (result, now + _ARB_WORKFLOW_CACHE_TTL)
+    return result
 
 
 @router.get("/bonus/scan")
