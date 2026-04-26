@@ -221,15 +221,23 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
         raw_time = start_match.group(1)  # "14 Apr 20:00"
         try:
             from datetime import datetime as _dt
+            from datetime import timedelta as _td
+            from datetime import timezone as _tz
 
-            # Parse "14 Apr 20:00" → ISO format with current year
-            parsed = _dt.strptime(raw_time, "%d %b %H:%M")
-            now = _dt.utcnow()
-            year = now.year
-            # If month is in the past, assume next year
-            parsed = parsed.replace(year=year)
-            if parsed.month < now.month - 1:
-                parsed = parsed.replace(year=year + 1)
+            # Parse "14 Apr 20:00" with the current year. If the parsed time is
+            # significantly in the past relative to "now", roll forward to next
+            # year — Marathon only lists pre-match (future) events, so any
+            # "past" parse is the year-rollover case (Dec game scraped in Jan,
+            # or vice versa). The previous heuristic `parsed.month < now.month - 1`
+            # broke at year boundaries: in January, threshold = 0, so December
+            # events scraped in early January got year=current_year (wrong).
+            now = _dt.now(_tz.utc).replace(tzinfo=None)
+            parsed = _dt.strptime(raw_time, "%d %b %H:%M").replace(year=now.year)
+            # If the candidate is more than 30 days in the past, it's almost
+            # certainly the next-year case. 30d cushion handles both edges
+            # (Dec scraped in Jan; Jan scraped in late Dec).
+            if (now - parsed) > _td(days=30):
+                parsed = parsed.replace(year=now.year + 1)
             start_time = parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, TypeError):
             start_time = ""

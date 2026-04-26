@@ -71,7 +71,7 @@ orchestrator:
       shared_resource: browser
 
     - name: signal_api
-      retriever_types: [stake, cloudbet, marathon]
+      retriever_types: [cloudbet, marathon]
       max_concurrent: 3                # All lightweight REST/HTML APIs
       shared_resource: none
 
@@ -780,23 +780,9 @@ providers:
       trigger_mode: cumulative
 
   # --- International signal-only providers ---
-
-  stake:
-    id: stake
-    name: Stake.com
-    domain: stake.com
-    retriever_type: stake
-    api_base: https://stake.com/_api/graphql
-    supported_sports:
-      - football
-      - basketball
-      - tennis
-      - ice_hockey
-      - american_football
-      - baseball
-      - mma
-      - boxing
-      - esports
+  # NOTE: stake.com config + factory entry removed 2026-04-26 — Cloudflare blocks
+  # datacenter IPs, requires residential proxy that we don't yet wire for it.
+  # backend/src/providers/stake.py is preserved in git for future resurrection.
 
   marathon:
     id: marathon
