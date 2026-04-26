@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any
 
 from ..core import HttpTransport, Retriever, StandardEvent
@@ -144,22 +145,54 @@ def parse_market_prices(raw: dict) -> dict[str, float]:
 # Market-type name (Smarkets `market_type.name`) -> our canonical market
 # label.
 #
-# NOTE: Smarkets is signal-only (we're IP-banned from placing), and
-# spread/total markets emit one contract per line — the "keep first line
-# only" collapse produces misleading data. Until that's fixed as a
-# follow-up (review issue I3), we only surface 1x2 / moneyline from
-# Smarkets and skip handicap / over_under entirely.
+# Smarkets emits per-line markets for OVER_UNDER + ASIAN_HANDICAP — each line
+# (e.g. "Over/under 2.5", "Over/under 0.5") is its own market with 2 contracts.
+# We classify each line individually and parse the point value from the name.
+# HANDICAP_3_WAY (with draw outcome) is intentionally skipped — Pinnacle's
+# baseline is 2-way Asian handicap, mixing 3-way would inflate edges.
 _MARKET_TYPE_TO_LABEL: dict[str, str] = {
     "WINNER_3_WAY": "1x2",
     "WINNER_2_WAY": "moneyline",
     "MATCH_WINNER": "moneyline",
+    "ASIAN_HANDICAP": "spread",
+    "OVER_UNDER": "total",
 }
+
+# Smarkets handicap names look like:
+#   "Asian Handicap Nottm Forest -2.5 / Burnley +2.5"
+#   "Handicap Nottm Forest -2.0 / Burnley +2.0 (3-way)"  <- skipped via type
+# Parse the first numeric handicap (favored team's value).
+_HANDICAP_LINE_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*/", re.IGNORECASE)
+
+# Smarkets total names look like "Over/under 2.5" or "Over/under 0.5".
+# Parse the trailing decimal value.
+_TOTAL_LINE_RE = re.compile(r"over/under\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def parse_smarkets_line(label: str, market_name: str) -> float | None:
+    """Extract the numeric line value (point) from a Smarkets market name.
+
+    Returns None if the line can't be parsed — caller drops the market.
+    """
+    if not market_name:
+        return None
+    if label == "spread":
+        m = _HANDICAP_LINE_RE.search(market_name)
+    elif label == "total":
+        m = _TOTAL_LINE_RE.search(market_name)
+    else:
+        return None
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def classify_market_type(name: str, market_type: Any) -> str | None:
-    """Return the canonical market label ('1x2' / 'moneyline') for a Smarkets
-    market, or None to skip it. Spread / total markets are intentionally
-    skipped on Smarkets (see module-level note).
+    """Return the canonical market label ('1x2'/'moneyline'/'spread'/'total')
+    for a Smarkets market, or None to skip it.
 
     `market_type` may be a dict `{"name": "WINNER_3_WAY"}` (live API) or a
     bare string (defensive — older endpoints).
@@ -172,8 +205,8 @@ def classify_market_type(name: str, market_type: Any) -> str | None:
     if mt_name and mt_name in _MARKET_TYPE_TO_LABEL:
         return _MARKET_TYPE_TO_LABEL[mt_name]
 
-    # Fallback on human name heuristics — only for winner markets. We do
-    # NOT fall back to handicap / totals here (see module note).
+    # Fallback on human name heuristics — only for winner markets so we don't
+    # accidentally map a 3-way handicap (which has a draw outcome) to spread.
     n = (name or "").lower()
     if "winner" in n or "match result" in n or "full-time result" in n:
         return "1x2" if "3-way" in n or "draw" in n else "moneyline"
@@ -194,12 +227,11 @@ def extract_home_away_from_event_name(name: str) -> tuple[str, str]:
 
 
 def _contract_side(contract: dict) -> str | None:
-    """Map a Smarkets contract dict to our canonical outcome name
-    (``"home"`` / ``"draw"`` / ``"away"``), or None if not one of those.
+    """Map a Smarkets contract dict to our canonical outcome name.
 
-    Prefers ``contract_type.name`` (authoritative: HOME/DRAW/AWAY), falling
-    back to the ``slug`` field. Everything else (OVER/UNDER, YES/NO for
-    non-binary markets) returns None.
+    Returns one of "home" / "draw" / "away" / "over" / "under", or None if
+    not classifiable. Prefers ``contract_type.name`` (authoritative), falls
+    back to ``slug``. Used for both winner and per-line spread/total markets.
     """
     ct = contract.get("contract_type") or {}
     ct_name = (ct.get("name") or "").upper().strip() if isinstance(ct, dict) else ""
@@ -209,8 +241,12 @@ def _contract_side(contract: dict) -> str | None:
         return "draw"
     if ct_name == "AWAY":
         return "away"
+    if ct_name == "OVER":
+        return "over"
+    if ct_name == "UNDER":
+        return "under"
     slug = (contract.get("slug") or "").lower().strip()
-    if slug in ("home", "draw", "away"):
+    if slug in ("home", "draw", "away", "over", "under"):
         return slug
     return None
 
@@ -394,14 +430,27 @@ class SmarketsRetriever(Retriever):
             return None
 
         kept: list[dict] = []
+        # Track which winner-labels we've already kept; spread/total are
+        # per-line so we keep all unique (label, point) combos.
+        seen_singletons: set[str] = set()
+        seen_lines: set[tuple[str, float]] = set()
         for m in mkts:
-            label = classify_market_type(m.get("name", ""), m.get("market_type"))
+            mname = m.get("name", "")
+            label = classify_market_type(mname, m.get("market_type"))
             if label is None:
                 continue
-            # Keep only the first occurrence per label (most representative;
-            # Smarkets orders by display_order).
-            if any(k["type"] == label for k in kept):
-                continue
+            point: float | None = None
+            if label in ("spread", "total"):
+                point = parse_smarkets_line(label, mname)
+                if point is None:
+                    continue
+                key = (label, point)
+                if key in seen_lines:
+                    continue
+            else:
+                # 1x2 / moneyline: one canonical winner market per event.
+                if label in seen_singletons:
+                    continue
             mid = m.get("id")
             if not mid:
                 continue
@@ -414,7 +463,7 @@ class SmarketsRetriever(Retriever):
             if not contracts:
                 continue
 
-            # contract_id (str) → canonical side ("home"/"draw"/"away")
+            # contract_id (str) → canonical side ("home"/"draw"/"away"/"over"/"under")
             side_by_cid: dict[str, str] = {}
             for c in contracts:
                 cid = c.get("id")
@@ -438,9 +487,17 @@ class SmarketsRetriever(Retriever):
             for cid, odds in odds_by_cid.items():
                 side = side_by_cid.get(str(cid))
                 if side is None:
-                    # Unlabeled contract for a winner market = data issue; skip.
                     continue
-                outcomes.append({"name": side, "odds": odds})
+                outcome: dict[str, Any] = {"name": side, "odds": odds}
+                if point is not None:
+                    # Storage normalizes home/away points symmetrically; for
+                    # spread we encode the favored team's line as-is and let
+                    # storage flip via swap_home_away_outcomes if needed.
+                    if label == "spread":
+                        outcome["point"] = point if side == "home" else -point
+                    else:  # total
+                        outcome["point"] = point
+                outcomes.append(outcome)
 
             # Sanity: enforce expected arity per market label.
             sides = {o["name"] for o in outcomes}
@@ -448,8 +505,16 @@ class SmarketsRetriever(Retriever):
                 continue
             if label == "moneyline" and sides != {"home", "away"}:
                 continue
+            if label == "spread" and sides != {"home", "away"}:
+                continue
+            if label == "total" and sides != {"over", "under"}:
+                continue
 
             kept.append({"type": label, "outcomes": outcomes})
+            if label in ("spread", "total"):
+                seen_lines.add((label, point))  # type: ignore[arg-type]
+            else:
+                seen_singletons.add(label)
 
         if not kept:
             return None

@@ -6,14 +6,50 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import yaml
+
 from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
 
-# Map Polymarket series slugs to our canonical sport names
+
+def _load_series_to_sport_from_yaml() -> dict[str, str] | None:
+    """Load Polymarket league mappings from config/polymarket_leagues.yaml.
+
+    Returns None on any failure so the caller can fall back to the in-code
+    dict (intentionally hard-coded so a missing/corrupt YAML never breaks
+    extraction).
+    """
+    try:
+        from ..paths import get_config_dir
+
+        path = get_config_dir() / "polymarket_leagues.yaml"
+        if not path.exists():
+            return None
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return None
+        out: dict[str, str] = {}
+        for sport, slugs in data.items():
+            if not isinstance(slugs, list):
+                continue
+            for slug in slugs:
+                if isinstance(slug, str) and slug.strip():
+                    out[slug.strip()] = sport
+        return out or None
+    except Exception as e:
+        logger.warning(f"[polymarket] Failed to load polymarket_leagues.yaml, using in-code fallback: {e}")
+        return None
+
+
+# Map Polymarket series slugs to our canonical sport names.
+# Loaded from config/polymarket_leagues.yaml at import time so adding a new
+# league is a config change, not a code edit. The in-code dict below is the
+# fallback when the YAML is missing or unreadable.
 # Note: Many leagues use year-suffixed slugs (e.g., 'nhl-2026')
 # The _get_sport_league method handles these via prefix matching
-SERIES_TO_SPORT = {
+_SERIES_TO_SPORT_FALLBACK: dict[str, str] = {
     # Football (Soccer)
     "premier-league": "football",
     "la-liga": "football",
@@ -103,6 +139,16 @@ SERIES_TO_SPORT = {
     "big-bash": "cricket",
     "t20": "cricket",
 }
+
+
+SERIES_TO_SPORT: dict[str, str] = _load_series_to_sport_from_yaml() or _SERIES_TO_SPORT_FALLBACK
+if SERIES_TO_SPORT is _SERIES_TO_SPORT_FALLBACK:
+    logger.debug("[polymarket] Using in-code SERIES_TO_SPORT fallback (YAML not loaded)")
+else:
+    logger.debug(
+        "[polymarket] Loaded %d slug→sport mappings from polymarket_leagues.yaml",
+        len(SERIES_TO_SPORT),
+    )
 
 
 class PolymarketRetriever(Retriever):
