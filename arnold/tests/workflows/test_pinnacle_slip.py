@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from arnold.mirror.workflows.pinnacle import PinnacleMirrorWorkflow, american_to_decimal
+from arnold.mirror.workflows.pinnacle import (
+    _ACCENT_DST,
+    _ACCENT_SRC,
+    PinnacleMirrorWorkflow,
+    _slugify,
+    american_to_decimal,
+)
 
 # ---- odds conversion ----
 
@@ -127,3 +133,47 @@ def test_parse_placement_response_extracts_betId():
 
 def test_parse_placement_response_returns_none_on_missing():
     assert PinnacleMirrorWorkflow.parse_placement_response({}) is None
+
+
+# ---- parse_placement_status max_stake extraction ----
+
+
+def test_parse_placement_status_failure_extracts_max_stake():
+    body = {"error": "STAKE_LIMIT_EXCEEDED", "maxStake": 50.0}
+    result = PinnacleMirrorWorkflow.parse_placement_status(body)
+    assert result["success"] is False
+    assert result["max_stake"] == 50.0
+
+
+def test_parse_placement_status_failure_extracts_max_stake_from_limits():
+    body = {
+        "error": "STAKE_LIMIT_EXCEEDED",
+        "limits": [
+            {"amount": 3.71, "type": "minRiskStake"},
+            {"amount": 100.0, "type": "maxRiskStake"},
+        ],
+    }
+    result = PinnacleMirrorWorkflow.parse_placement_status(body)
+    assert result["success"] is False
+    assert result["max_stake"] == 100.0
+
+
+# ---- _slugify regression ----
+
+
+class TestSlugify:
+    """Regression: _slugify previously raised ValueError due to maketrans string length mismatch."""
+
+    def test_basic_lowercase(self):
+        assert _slugify("Manchester United") == "manchester-united"
+
+    def test_swedish_accents(self):
+        assert _slugify("Djurgårdens IF") == "djurgardens-if"
+
+    def test_empty(self):
+        assert _slugify("") == ""
+
+    def test_accent_map_lengths_match(self):
+        assert len(_ACCENT_SRC) == len(_ACCENT_DST), (
+            "Accent translation table broken — would raise ValueError on _slugify call"
+        )

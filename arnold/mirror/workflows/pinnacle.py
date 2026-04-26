@@ -12,8 +12,8 @@ Key facts:
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
@@ -46,6 +46,13 @@ _OUTCOME_POSITION: dict[str, dict[str, int]] = {
     "spread": {"home": 0, "away": 1},
     "total": {"over": 0, "under": 1},
 }
+
+# Accent translation table for _slugify — lifted to module scope so it's built once.
+# Lowercase variants then uppercase variants — same letters, paired.
+_ACCENT_SRC = "àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ"
+_ACCENT_DST = "aaaaaaeceeeeiiiidnoooooouuuuytyAAAAAAECEEEEIIIIDNOOOOOOUUUUYT"
+assert len(_ACCENT_SRC) == len(_ACCENT_DST), "Pinnacle accent map mismatch"
+_ACCENT_TABLE = str.maketrans(_ACCENT_SRC, _ACCENT_DST)
 
 
 def american_to_decimal(price: float) -> float:
@@ -271,7 +278,6 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
                     break
             except Exception:
                 pass
-            import asyncio
 
             await asyncio.sleep(0.25)
 
@@ -362,10 +368,6 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
                 }
 
                 if (!targetGroup) {
-                    // Fallback: use global button position if only one market on page
-                    if (allBtns.length <= 3 && pos < allBtns.length) {
-                        return allBtns.indexOf(allBtns[pos]);
-                    }
                     return -2;  // market not found
                 }
 
@@ -475,8 +477,19 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
         """
         if body.get("wagerNumber") or body.get("betId"):
             return {"success": True, "error": None, "max_stake": None}
-        error = body.get("error") or body.get("errorCode") or "unknown"
-        return {"success": False, "error": error, "max_stake": None}
+        # Failure path — try to extract a max-stake hint from any of the known keys / shapes.
+        max_stake = body.get("maxStake") or body.get("max_stake") or body.get("maximumStake")
+        if max_stake is None:
+            # /quote-style limits array: [{"amount": X, "type": "maxRiskStake"}, ...]
+            for limit in body.get("limits") or []:
+                if limit.get("type") == "maxRiskStake":
+                    max_stake = limit.get("amount")
+                    break
+        return {
+            "success": False,
+            "error": body.get("error") or body.get("errorCode") or "unknown",
+            "max_stake": max_stake,
+        }
 
     @staticmethod
     def parse_placement_response(body: dict) -> str | None:
@@ -493,18 +506,9 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
 # ------------------------------------------------------------------
 
 
-def _slugify(text: str) -> str:
-    """Convert a display string to a Pinnacle URL slug.
-
-    e.g. "Sweden Allsvenskan" → "sweden-allsvenskan"
-         "Djurgårdens IF"     → "djurgardens-if"
-    """
-    # Normalize common accented characters used in team/league names
-    _ACCENT_MAP = str.maketrans(
-        "àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞŸ",
-        "aaaaaaeceeeeiiiidnoooooouuuuytyyaaaaaaeceeeeiiiidnoooooouuuuytyyy",
-    )
-    text = text.translate(_ACCENT_MAP)
-    # Lower-case, replace non-alphanumeric runs with hyphens
-    text = re.sub(r"[^a-z0-9]+", "-", text.lower())
-    return text.strip("-")
+def _slugify(s: str) -> str:
+    """Pinnacle URL slug: lowercase, dehyphenated, accent-stripped."""
+    if not s:
+        return ""
+    out = s.translate(_ACCENT_TABLE).lower()
+    return "-".join(out.split())
