@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
-import pytest  # noqa: F401
+from unittest.mock import MagicMock
+
+import pytest
 
 from arnold.mirror.arb_runner import ArbRunner
+
+
+def _make_browser():
+    browser = MagicMock()
+    browser.context = MagicMock()
+    browser.context.pages = []
+    browser.provider_data = {}
+    return browser
+
+
+def _make_broadcaster():
+    bc = MagicMock()
+    bc.publish = MagicMock()
+    return bc
 
 
 class TestComputeSlipState:
@@ -53,24 +69,15 @@ class TestOppKey:
         assert key == "evt-456|1x2||draw"
 
 
-from unittest.mock import MagicMock  # noqa: E402
-
-
 class TestStopResetsGreenGateState:
     """Per code review on Task 3: stop() must reset opp_key + planned + dethrone + recomputed_profit
     so a restart doesn't see stale state."""
 
     def _make_runner(self):
-        browser = MagicMock()
-        browser.context = MagicMock()
-        browser.context.pages = []
-        browser.provider_data = {}
-        broadcaster = MagicMock()
-        broadcaster.publish = MagicMock()
         return ArbRunner(
             provider_id="betinia",
-            browser=browser,
-            broadcaster=broadcaster,
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
             proxy_url="https://x.test",
             block_event_market=lambda b: None,
             is_blocked=lambda b: False,
@@ -85,6 +92,7 @@ class TestStopResetsGreenGateState:
         runner._planned_anchor_odds = 2.10
         runner._dethroned_to = {"event_id": "evt-B"}
         runner._current_recomputed_profit_pct = 1.5
+        runner._all_green = True
 
         runner.stop()
 
@@ -92,23 +100,7 @@ class TestStopResetsGreenGateState:
         assert runner._planned_anchor_odds == 0.0
         assert runner._dethroned_to is None
         assert runner._current_recomputed_profit_pct is None
-
-
-from unittest.mock import MagicMock  # noqa: E402, F811
-
-
-def _make_browser():
-    browser = MagicMock()
-    browser.context = MagicMock()
-    browser.context.pages = []
-    browser.provider_data = {}
-    return browser
-
-
-def _make_broadcaster():
-    bc = MagicMock()
-    bc.publish = MagicMock()
-    return bc
+        assert runner._all_green is False
 
 
 class TestAlignmentPayload:
