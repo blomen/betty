@@ -126,18 +126,41 @@ async def startup():
 
 async def _auto_open_tradingview() -> None:
     """Wait briefly for the local server to settle, then start the mirror
-    and navigate it to the NQ chart. Failures are logged, never raised —
-    the mirror also auto-starts on first sportsbook click as before."""
-    try:
-        await asyncio.sleep(2)  # let uvicorn finish boot before spinning Chromium
-        if not browser.running:
-            logger.info("Auto-starting mirror browser for TradingView overlay")
-            await browser.start()
-        url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
-        await browser.open_tab(url)
-        logger.info("Mirror opened TradingView tab: %s", url)
-    except Exception:
-        logger.exception("Auto-open TradingView failed — manual button still works")
+    and navigate it to the NQ chart.
+
+    Uses print() with flush=True (not just logger) because arnold.bat shows
+    print output prominently in its cmd window, and uvicorn's `log_level=warning`
+    swallows logger.info messages — making auto-open silent if anything goes
+    wrong was exactly what made past failures hard to diagnose. Three retry
+    attempts with backoff to survive transient profile-lock / Chromium-startup
+    races. Failures are logged, never raised — sportsbook flows keep working
+    even if the mirror can't boot.
+    """
+    url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
+    delays = [3, 6, 12]  # seconds before each attempt
+    for attempt, delay in enumerate(delays, 1):
+        try:
+            await asyncio.sleep(delay)
+            print(f"[tv-overlay] auto-open attempt {attempt}/{len(delays)}: starting mirror...", flush=True)
+            if not browser.running:
+                await browser.start()
+                print("[tv-overlay] mirror browser started", flush=True)
+            else:
+                print("[tv-overlay] mirror already running, reusing", flush=True)
+            page = await browser.open_tab(url)
+            print(f"[tv-overlay] opened TV tab: {page.url}", flush=True)
+            return
+        except Exception as exc:
+            print(
+                f"[tv-overlay] auto-open attempt {attempt} failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            if attempt == len(delays):
+                logger.exception("Auto-open TradingView failed after %d attempts", len(delays))
+                print(
+                    "[tv-overlay] auto-open giving up. Click 'Open TV in mirror' in the SignalsPage to retry manually.",
+                    flush=True,
+                )
 
 
 @app.on_event("shutdown")
