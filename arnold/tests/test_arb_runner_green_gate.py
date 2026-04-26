@@ -176,3 +176,71 @@ class TestAlignmentPayload:
         # since the only way to push profit < 0 is to push odds down, which trips the
         # drift gate. The red-leg test covers the combined case.
         pass  # intentionally a no-op marker
+
+
+class TestDethroneHysteresis:
+    """Per spec §4.2: switch to a new opp only when its profit beats current by ≥0.5pp."""
+
+    def _make_runner(self):
+        runner = ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+        runner.current_opp_key = "evt-A|1x2||home"
+        runner._current_recomputed_profit_pct = 1.0
+        return runner
+
+    def test_no_dethrone_when_top_is_same_opp(self):
+        runner = self._make_runner()
+        top_opp = {
+            "event_id": "evt-A",
+            "market": "1x2",
+            "point": None,
+            "outcome": "home",
+            "guaranteed_profit_pct": 5.0,
+            "arb_legs": [{"provider": "betinia", "outcome": "home", "odds": 2.10}],
+        }
+        assert runner._should_dethrone(top_opp) is False
+
+    def test_no_dethrone_when_below_hysteresis(self):
+        runner = self._make_runner()
+        top_opp = {
+            "event_id": "evt-B",
+            "market": "1x2",
+            "point": None,
+            "outcome": "away",
+            "guaranteed_profit_pct": 1.4,  # +0.4pp over current 1.0 — below 0.5pp
+            "arb_legs": [{"provider": "betinia", "outcome": "away", "odds": 2.20}],
+        }
+        assert runner._should_dethrone(top_opp) is False
+
+    def test_dethrone_at_hysteresis_threshold(self):
+        runner = self._make_runner()
+        top_opp = {
+            "event_id": "evt-B",
+            "market": "1x2",
+            "point": None,
+            "outcome": "away",
+            "guaranteed_profit_pct": 1.5,  # +0.5pp over current 1.0
+            "arb_legs": [{"provider": "betinia", "outcome": "away", "odds": 2.20}],
+        }
+        assert runner._should_dethrone(top_opp) is True
+
+    def test_dethrone_with_no_recomputed_profit_yet_uses_zero_baseline(self):
+        runner = self._make_runner()
+        runner._current_recomputed_profit_pct = None
+        top_opp = {
+            "event_id": "evt-B",
+            "market": "1x2",
+            "point": None,
+            "outcome": "away",
+            "guaranteed_profit_pct": 0.6,  # +0.6pp over baseline 0
+            "arb_legs": [{"provider": "betinia", "outcome": "away", "odds": 2.20}],
+        }
+        assert runner._should_dethrone(top_opp) is True

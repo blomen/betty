@@ -66,6 +66,8 @@ def _log_task_exception(task: asyncio.Task) -> None:
 _OPP_FETCH_COOLDOWN = 10.0
 _ALIGNMENT_BROADCAST_THROTTLE_S = 0.5
 LEG_DRIFT_TOL_PCT = 0.01  # 1% drift tolerance below planned odds → red
+RERANK_INTERVAL_S = 5.0
+DETHRONE_HYSTERESIS_PCT = 0.5
 
 
 class ArbRunner:
@@ -125,6 +127,7 @@ class ArbRunner:
         self._all_green: bool = False
 
         self._task: asyncio.Task | None = None
+        self._top_opp_watcher_task: asyncio.Task | None = None
         self._update_tasks: set[asyncio.Task] = set()
 
     # ----- public surface -----
@@ -144,6 +147,9 @@ class ArbRunner:
             if not t.done():
                 t.cancel()
         self._update_tasks.clear()
+        if self._top_opp_watcher_task and not self._top_opp_watcher_task.done():
+            self._top_opp_watcher_task.cancel()
+        self._top_opp_watcher_task = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -277,18 +283,35 @@ class ArbRunner:
 
                     self.stats["total"] += 1
 
-                    # Stream and await anchor click
+                    # Stream and await anchor click (with top-opp watcher)
                     self.state = STATE_STANDBY
-                    anchor_result = await self._stream_and_await_anchor()
+                    self._top_opp_watcher_task = asyncio.create_task(self._watch_top_opp(), name=f"arb_watch_{pid}")
+                    try:
+                        anchor_result = await self._stream_and_await_anchor()
+                    finally:
+                        if self._top_opp_watcher_task and not self._top_opp_watcher_task.done():
+                            self._top_opp_watcher_task.cancel()
+                            try:
+                                await self._top_opp_watcher_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        self._top_opp_watcher_task = None
 
                     if anchor_result is None:
-                        # Anchor rejected or runner stopped
-                        self.stats["rejected"] += 1
+                        # Either rejected, stopped, or dethroned
                         for s in self._streams.values():
                             s.stop()
                         self._streams.clear()
                         self._counter_events.clear()
                         self._counter_intercepted.clear()
+                        if self._dethroned_to is not None:
+                            new_opp = self._dethroned_to
+                            self._dethroned_to = None
+                            # Swap opp inline — fall through to next iteration over a synthetic 1-element list
+                            opps = [new_opp]
+                            placed_any = True
+                            break
+                        self.stats["rejected"] += 1
                         continue
 
                     # Anchor placed — record it
@@ -709,6 +732,45 @@ class ArbRunner:
                 str(anchor_leg.get("outcome", "")),
             ]
         )
+
+    def _should_dethrone(self, top_opp: dict) -> bool:
+        """Decide whether to swap to a new top opp (spec §4.2 hysteresis)."""
+        legs = top_opp.get("arb_legs") or top_opp.get("legs", [])
+        anchor_leg = next((l for l in legs if l.get("provider") == self.provider_id), None)
+        if anchor_leg is None:
+            return False
+        new_key = self._compute_opp_key(top_opp, anchor_leg)
+        if new_key == self.current_opp_key:
+            return False
+        new_profit = top_opp.get("guaranteed_profit_pct", 0.0)
+        baseline = self._current_recomputed_profit_pct if self._current_recomputed_profit_pct is not None else 0.0
+        return (new_profit - baseline) >= DETHRONE_HYSTERESIS_PCT
+
+    async def _watch_top_opp(self) -> None:
+        """Periodic re-rank loop. Cancelled when leaving STATE_STANDBY."""
+        while True:
+            try:
+                await asyncio.sleep(RERANK_INTERVAL_S)
+                opps = await self._fetch_arb_opps()
+                if not opps:
+                    continue
+                top = opps[0]
+                if self._should_dethrone(top):
+                    self._broadcaster.publish(
+                        "arb_dethroned",
+                        {
+                            "arb_group_id": self.current_arb_group_id,
+                            "old_profit": self._current_recomputed_profit_pct,
+                            "new_profit": top.get("guaranteed_profit_pct"),
+                        },
+                    )
+                    self._dethroned_to = top
+                    self._anchor_event.set()
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(f"[Arb:{self.provider_id}] top-opp watcher error")
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
