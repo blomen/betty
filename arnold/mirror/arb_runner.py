@@ -65,6 +65,7 @@ def _log_task_exception(task: asyncio.Task) -> None:
 
 _OPP_FETCH_COOLDOWN = 10.0
 _ALIGNMENT_BROADCAST_THROTTLE_S = 0.5
+LEG_DRIFT_TOL_PCT = 0.01  # 1% drift tolerance below planned odds → red
 
 
 class ArbRunner:
@@ -641,6 +642,15 @@ class ArbRunner:
         except Exception:
             logger.exception(f"[Arb:{self.provider_id}] Failed to fetch arb opps")
             return []
+
+    @staticmethod
+    def _compute_slip_state(planned_odds: float, live_odds: float | None) -> str:
+        """Per spec §4.2: green if live within drift tolerance of planned (or higher), else red."""
+        if live_odds is None or live_odds <= 0:
+            return "red"
+        if live_odds < planned_odds * (1.0 - LEG_DRIFT_TOL_PCT):
+            return "red"
+        return "green"
 
     @staticmethod
     def _opp_to_bet(opp: dict, leg: dict) -> dict:
