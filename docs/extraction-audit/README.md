@@ -59,7 +59,20 @@ Every cluster doc follows the same structure:
 | 6 | browser_soft | **fixes shipped 2026-04-26** | [06-browser-soft.md](06-browser-soft.md) | `99fcc9c7` (10bet) page-pool reuse + drop 8s `wait_for_timeout` fallback · `ae056ede` (tipwin) parallel pagination via `context.request.get` · `522d8e86` (interwetten) Truendo consent via `context.add_init_script` |
 | 7 | browser_antibot | not started | [07-browser-antibot.md](07-browser-antibot.md) | — (ComeOn page-recycle alternative + Camoufox subprocess kill remain) |
 
-**11 fix commits total. All local on `feat/slip-odds-architecture`. None deployed.**
+**12 fix commits total** on `feat/slip-odds-architecture`. **11 of them deployed 2026-04-26 12:41 UTC** to the Hetzner server (server checked out from `main` to feature branch). One follow-up — `0d20ff52` (tipwin pagination URL-capture regression discovered post-deploy) — is committed + pushed but awaiting the next deploy batch (5-min cooldown + minimize extraction interruption).
+
+### Post-deploy headline (cycle 1, 12:41–12:48 UTC, 7 min)
+
+| Metric | Pre-deploy (3h average) | Post-deploy (7 min) |
+|---|---|---|
+| post_extraction_worker | (didn't exist) | started clean, 7 tier completions processed, 0 errors |
+| api_soft tier-wide stalls | 30+ force-cancels in 6 min at 21:53 UTC | 0 |
+| Cloudbet avg duration | 155 s | **25 s** (6.2× faster, target hit) |
+| Pinnacle avg duration | 57 s | **27 s** (2.1× faster) |
+| Force-kill chrome events | 30+/night | 5 in 7 min (all clustered at single 12:44:27 cold-start race) |
+| Asyncio noise (Unclosed/Task destroyed) | 20+ at 00:49-02:36 UTC overnight | 0 since deploy |
+| Tipwin events/run | ~766 | **40** (regression — fix on branch awaiting redeploy) |
+| Browser_soft mass-failure | n/a | one-off at 12:44:27 (driver bootstrap race during simultaneous post-restart launch); recovers on cycle 2 |
 
 ## Top-of-stack findings (cluster-spanning)
 

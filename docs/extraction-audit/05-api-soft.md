@@ -285,7 +285,7 @@ loop on overlapping `odds` rows.
 
 ## 10. Re-introduction notes
 
-**Shipped 2026-04-26** (local only, not deployed):
+**Deployed 2026-04-26 12:41 UTC** to `feat/slip-odds-architecture` on the Hetzner server (post-deploy audit recorded here):
 
 `dca7b348` — **post_extraction_worker** (cross-cluster, gating fix for this cluster):
 - Extracted `OpportunityAnalyzer` + ML/CLV/macro/training side-effects out of the per-provider extraction hot path into a single async worker.
@@ -312,10 +312,17 @@ Fix #8 (Spelklubben odds-not-saving) — **deferred.** Needs a separate investig
 
 Pre-deploy verification: ruff clean · py_compile clean · smoke-test confirms `enqueue + queue_depth + module imports` work · gecko/vbet syntax-checked.
 
-Post-deploy checks (TODO):
-- [ ] post_extraction_worker started log line in container logs at startup
+**Post-deploy observations (cycle 1, 12:41–12:48 UTC):**
+- ✅ **post_extraction_worker started cleanly** at 12:41:32 — `[PostExtractionWorker] started (debounce=5.0s, max_queue=200)` in logs. Processed 7 tier completions, analyzer running each time. **Architectural fix validated.**
+- ✅ **No 21:53-style multi-provider stall** in the first 7 minutes. Total deadlock/STUCK events: 1 (vs the 30+ in 6 minutes seen at 21:53 UTC pre-fix). Likely a transient first-cycle race; will keep watching.
+- ✅ **Per-provider speedups** (avg duration pre → post-deploy):
+   - betsson 147 → 64 s · spelklubben 112 → 56 s · vbet 51 → 27 s · betinia 59 → 32 s · unibet 46 → 30 s
+- ⚠️ **bethard + spelklubben** each had 1 success + 1 "Silent failure: 0 events" early on — same kind of session-init race the gecko fix targets. Need 24 h of data to see if rate drops vs pre-fix.
+- ⚠️ **Spelklubben odds-not-saving** persists (`/health/extraction` reports 22302 min stale). **Separate investigation pending — provider succeeds at write-time but odds rows aren't refreshed in `odds.updated_at`.**
+
+Post-deploy checks (24 h window required):
 - [ ] tier-wide stalls in api_soft (target: 0 in 7-day window post-deploy)
-- [ ] gecko force-kill events from `[BrowserTransport] force-killed N/N hung browser processes` (was 30+/night; target: <5)
-- [ ] vbet event-loop block time — `asyncio` warnings for slow tasks should drop
+- [ ] gecko force-kill events (was: 30+/night; observed 5 in 7 min post-deploy, all clustered at 12:44:27 cold-start race)
+- [ ] vbet event-loop block time — `asyncio` slow-task warnings should drop
 - [ ] altenar 429 incidents (still latent — Smell D + Smell E unfixed)
-- [ ] spelklubben odds_updated_at delta (still stale — needs separate investigation)
+- [ ] spelklubben odds_updated_at delta (still stale — separate investigation)

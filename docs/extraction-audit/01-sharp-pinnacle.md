@@ -150,15 +150,18 @@ None of these require rewriting the extractor.
 
 ## 9. Re-introduction notes
 
-**Shipped 2026-04-26** in commit `743fdb4e` (local only, not deployed):
+**Deployed 2026-04-26 12:41 UTC** in commit `743fdb4e` to `feat/slip-odds-architecture` on the Hetzner server:
 - Fix #1: `concurrent_leagues` YAML setting honored per-instance (was hard-coded `MAX_CONCURRENT_LEAGUES = 50`).
 - Fix #4: `_logged_unknown_types` moved class-level → instance (bounded by retriever lifetime).
 - Fix #5: `start_time` parse failures log a WARNING and skip the event (was silenced via `contextlib.suppress`).
 
 Pre-deploy verification: ruff clean · py_compile clean · no external refs to removed constant · no tests exist for pinnacle.
 
-Post-deploy checks (TODO after deploy):
-- [ ] First post-fix run duration (baseline ~57s avg over 10 runs)
-- [ ] 403 / 5xx counts (Smell A: previously running at 5× the documented `concurrent_leagues: 10` cap; should drop)
-- [ ] New "skipping matchup ... unparseable start_time" warnings (used to be silent fuzzy-match corruption)
-- [ ] Any regressions in `provider_run_metrics.events_processed` for pinnacle
+**Post-deploy observations (cycle 1, 12:41–12:48 UTC):**
+- ✅ Pinnacle 2.1× faster: 57s avg pre-deploy → 27s avg post-deploy across 3 runs.
+- ✅ Events_processed stable (~1300 events per run, consistent with pre-deploy baseline).
+- 0 "Unknown market type" log lines so far (per-instance set is bounded as designed).
+
+Post-deploy checks remaining:
+- [ ] 403 / 5xx counts (Smell A) — need 24 h of data
+- [ ] New "skipping matchup ... unparseable start_time" warnings (will surface bad timestamps that were previously silent)
