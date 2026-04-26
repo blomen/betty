@@ -223,35 +223,57 @@ class TenBetRetriever(BrowserRetriever):
 
         logger.info(f"[{self.provider_id}] Found {len(competitions)} competitions for {sport}")
 
-        # Scrape competitions in batches
+        # Scrape competitions with a fixed-size page pool. Pre-fix this opened
+        # a fresh page per competition (40 comps × ~300ms page-create + 50s
+        # nav/scrape = 12s pure overhead + serialization). The pool reuses the
+        # main transport.page plus N-1 extras opened once, returned via a Queue.
         all_events = []
         unique_ids = set()
         # Large sports (football 40+ comps) need fewer concurrent tabs to avoid timeouts
         # Reduced from 3→2 for large sports to prevent SPA rendering failures under memory pressure
         concurrency = 2 if len(competitions) > 20 else 4
-        sem = asyncio.Semaphore(concurrency)
-        batch_size = 15
-        self.config.get("sport_timeout", 600)
 
-        async def process_competition(comp):
-            async with sem:
-                return await self._scrape_competition(comp, sport)
-
-        for batch_start in range(0, len(competitions), batch_size):
-            if len(all_events) >= limit:
+        await self.transport._ensure_browser()
+        context = self.transport.page.context
+        page_pool: asyncio.Queue = asyncio.Queue()
+        await page_pool.put(self.transport.page)
+        extra_pages = []
+        for _ in range(concurrency - 1):
+            try:
+                p = await context.new_page()
+                extra_pages.append(p)
+                await page_pool.put(p)
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] Page pool: failed to open extra page: {e}")
                 break
 
-            batch = competitions[batch_start : batch_start + batch_size]
-            tasks = [process_competition(c) for c in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        async def process_competition(comp):
+            page = await page_pool.get()
+            try:
+                return await self._scrape_competition(comp, sport, page=page)
+            finally:
+                await page_pool.put(page)
 
-            for res in results:
+        try:
+            tasks = [process_competition(c) for c in competitions]
+            for fut in asyncio.as_completed(tasks):
+                if len(all_events) >= limit:
+                    break
+                try:
+                    res = await fut
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] competition task error: {e}")
+                    continue
                 for ev in res:
                     if len(all_events) >= limit:
                         break
                     if ev.id not in unique_ids:
                         all_events.append(ev)
                         unique_ids.add(ev.id)
+        finally:
+            for p in extra_pages:
+                with contextlib.suppress(Exception):
+                    await p.close()
 
         logger.info(
             f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s"
@@ -378,11 +400,12 @@ class TenBetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Failed to discover competitions for {sport_slug}: {e}")
             return []
 
-    async def _scrape_competition(self, comp: dict, sport: str) -> list[StandardEvent]:
+    async def _scrape_competition(self, comp: dict, sport: str, page=None) -> list[StandardEvent]:
         """Scrape all events from a single competition's matches page.
 
-        Also captures XHR/fetch API requests made by the Playtech SPA for
-        potential direct API extraction (logged at debug level for discovery).
+        `page` is an optional pre-allocated Playwright Page borrowed from the
+        caller's pool. If None, falls back to opening a fresh one (legacy
+        path, still used by tests).
         """
         comp_id = comp["id"]
         comp_name = comp.get("name", f"competition-{comp_id}")
@@ -390,25 +413,14 @@ class TenBetRetriever(BrowserRetriever):
         url = f"{self.site_url}/sports/{sport_slug}/competitions/{comp_id}/matches"
         events = []
 
-        try:
-            await self.transport._ensure_browser()
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Failed to ensure browser for {comp_name}: {e}")
-            return []
-
-        page = await self.transport.new_page()
-
-        # Capture API requests for potential direct extraction
-        api_urls_seen = set()
-
-        def _on_response(response):
-            req_url = response.url
-            if any(p in req_url for p in ("/api/", "/graphql", "/sportsbook", "/sb/", "/odds")):
-                if req_url not in api_urls_seen:
-                    api_urls_seen.add(req_url)
-                    logger.debug(f"[{self.provider_id}] API intercept: {response.status} {req_url[:150]}")
-
-        page.on("response", _on_response)
+        owns_page = page is None
+        if owns_page:
+            try:
+                await self.transport._ensure_browser()
+            except Exception as e:
+                logger.error(f"[{self.provider_id}] Failed to ensure browser for {comp_name}: {e}")
+                return []
+            page = await self.transport.new_page()
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
@@ -519,7 +531,9 @@ class TenBetRetriever(BrowserRetriever):
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error scraping {comp_name}: {e}")
         finally:
-            await page.close()
+            if owns_page:
+                with contextlib.suppress(Exception):
+                    await page.close()
 
         return events
 
@@ -977,7 +991,11 @@ class TenBetRetriever(BrowserRetriever):
                     url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
                     try:
                         await worker_page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                        # Wait for actual price content (not just skeleton container)
+                        # Wait for actual price content (not just skeleton container).
+                        # If the price selector never resolves within 12s the page
+                        # genuinely doesn't have prices ready — pre-fix we waited
+                        # another 8s as fallback (worst case: 20s/event × 200 = 4000s
+                        # of pure wait time on enrichment). Now we just skip.
                         try:
                             await worker_page.wait_for_function(
                                 """() => {
@@ -990,8 +1008,8 @@ class TenBetRetriever(BrowserRetriever):
                                 timeout=12000,
                             )
                         except Exception:
-                            # Fallback: wait even longer
-                            await worker_page.wait_for_timeout(8000)
+                            errors += 1
+                            return
                     except Exception:
                         errors += 1
                         return
