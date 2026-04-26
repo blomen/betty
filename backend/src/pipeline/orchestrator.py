@@ -17,18 +17,11 @@ from ..db.models import DeferredEvent, Event, Odds, Provider, get_session
 from ..factory import ExtractorFactory
 from .broadcast import odds_broadcaster
 from .pool_manager import ProviderPoolManager
+from .post_extraction_worker import PostExtractionWork
+from .post_extraction_worker import enqueue as enqueue_post_extraction
 from .storage import OddsBatchProcessor, store_polymarket_event, store_provider_event
 
 logger = logging.getLogger(__name__)
-
-# Serialize opportunity analysis across concurrent pipeline cycles.
-# Multiple tiers (sharp, api_soft, browser_soft) run concurrently, each
-# calling analyzer.run() which UPDATEs the opportunities table. Without
-# serialization, PostgreSQL deadlocks on overlapping rows and the analyzer
-# skips analysis entirely — causing undetected value bets.
-import threading
-
-_analysis_lock = threading.Lock()
 
 
 class ExtractionPipeline:
@@ -1118,80 +1111,10 @@ class ExtractionPipeline:
                 else:
                     raise
 
-            # Run opportunity analysis — serialized to prevent deadlocks.
-            # Multiple concurrent pipeline cycles all UPDATE the opportunities
-            # table; without the lock they deadlock and skip analysis entirely.
-            log_progress("Running opportunity analysis...")
-            from .analyzer import OpportunityAnalyzer
-
-            with _analysis_lock:
-                analyzer = OpportunityAnalyzer(self.session)
-                changed_ids = self._changed_event_ids if self._changed_event_ids else None
-                try:
-                    analysis_results = analyzer.run(changed_event_ids=changed_ids)
-                    results["analysis"] = analysis_results
-                    log_progress(f"Analysis complete: {analysis_results['value']['found']} value bets")
-                except Exception as e:
-                    err_lower = str(e).lower()
-                    if "deadlock" in err_lower:
-                        logger.warning(f"[Pipeline] Analyzer deadlock after retries, skipping analysis: {e}")
-                        self.session.rollback()
-                    else:
-                        raise
-
-            # Broadcast opportunity deltas to SSE clients
-            if odds_broadcaster.client_count > 0 and analysis_results:
-                for opp in analysis_results.get("added_opportunities", []):
-                    odds_broadcaster.publish(
-                        "opportunity_added",
-                        {
-                            "id": opp.id,
-                            "type": opp.type if hasattr(opp, "type") else "value",
-                            "edge_pct": getattr(opp, "edge_pct", None),
-                            "odds1": getattr(opp, "odds1", None),
-                            "fair_odds": getattr(opp, "fair_odds", None),
-                            "stake": getattr(opp, "stake", None),
-                            "event_id": getattr(opp, "event_id", None),
-                            "provider1": getattr(opp, "provider1_id", None),
-                            "outcome1": getattr(opp, "outcome1", None),
-                            "market": getattr(opp, "market", None),
-                        },
-                    )
-                for opp in analysis_results.get("updated_opportunities", []):
-                    odds_broadcaster.publish(
-                        "opportunity_update",
-                        {
-                            "id": opp.id,
-                            "type": opp.type if hasattr(opp, "type") else "value",
-                            "edge_pct": getattr(opp, "edge_pct", None),
-                            "odds1": getattr(opp, "odds1", None),
-                            "fair_odds": getattr(opp, "fair_odds", None),
-                            "stake": getattr(opp, "stake", None),
-                        },
-                    )
-                for item in analysis_results.get("removed_opportunities", []):
-                    if isinstance(item, tuple) and len(item) == 2:
-                        opp_id, opp_type = item
-                    else:
-                        opp_id, opp_type = item, "value"
-                    odds_broadcaster.publish(
-                        "opportunity_removed",
-                        {
-                            "id": opp_id,
-                            "type": opp_type,
-                            "reason": "edge_below_threshold",
-                        },
-                    )
-                odds_broadcaster.publish(
-                    "tier_complete",
-                    {
-                        "changed_events": len(self._changed_event_ids),
-                    },
-                )
-                # Invalidate opportunity response cache so next request gets fresh data
-                from ..api.routes.opportunities import _opp_cache
-
-                _opp_cache.clear()
+            # Opportunity analysis + ML side-effects run out-of-band in
+            # post_extraction_worker so concurrent tier loops don't contend on
+            # the analyzer lock or starve the DB pool. The work item is
+            # enqueued after metrics are persisted (see below).
 
             # Count totals
             results["total_events"] = self.session.query(Event).count()
@@ -1258,185 +1181,21 @@ class ExtractionPipeline:
                 except Exception as e:
                     logger.error(f"[Metrics] Failed to persist run: {e}")
 
-            # Log Pinnacle coverage delta (M10d — always, from Day 1)
-            if tier_name != "sharp":
-                try:
-                    from src.ml.features.pinnacle_coverage import log_coverage
-
-                    coverage_rows = log_coverage(self.session, run_id)
-                    logger.info(f"Logged {coverage_rows} Pinnacle coverage rows")
-                    self.session.commit()
-                except Exception as e:
-                    logger.debug(f"Pinnacle coverage logging skipped: {e}")
-
-            # Log ML extraction features (best-effort)
+            # Hand off to post_extraction_worker for analyzer + ML/CLV/macro/training.
+            # Worker debounces ~5s so concurrent tier completions coalesce into
+            # one analyzer pass. Worker uses its own DB session, not this one.
             try:
-                from src.ml.features.extraction_features import (
-                    extract_extraction_features,
-                    log_extraction_run,
-                    update_extraction_outcomes,
-                )
-
-                # Compute average match rate across providers
-                _avg_mr = 0.0
-                if current_run and current_run.providers:
-                    _rates = [p.match_rate for p in current_run.providers.values() if p.match_rate > 0]
-                    _avg_mr = sum(_rates) / len(_rates) if _rates else 0.0
-
-                run_features = extract_extraction_features(
-                    run_id=run_id,
-                    trigger=tier_name or "manual",
-                    providers_attempted=current_run.providers_attempted if current_run else 0,
-                    providers_succeeded=current_run.providers_succeeded if current_run else 0,
-                    providers_failed=current_run.providers_failed if current_run else 0,
-                    total_events=current_run.total_events if current_run else 0,
-                    total_odds=current_run.total_odds if current_run else 0,
-                    avg_match_rate=_avg_mr,
-                )
-                log_extraction_run(self.session, run_features)
-
-                # Backfill opportunity outcomes from analysis results
-                if analysis_results:
-                    value_found = analysis_results.get("value", {}).get("found", 0)
-                    arb_found = analysis_results.get("arb", {}).get("found", 0)
-                    reverse_found = analysis_results.get("reverse", {}).get("found", 0) + analysis_results.get(
-                        "reverse_value", {}
-                    ).get("found", 0)
-                    # Compute avg edge from opportunities table for this run's timeframe
-                    avg_edge = None
-                    try:
-                        from sqlalchemy import func
-
-                        from ..db.models import Opportunity
-
-                        row = (
-                            self.session.query(func.avg(Opportunity.edge_pct)).filter(Opportunity.edge_pct > 0).scalar()
-                        )
-                        avg_edge = float(row) if row else None
-                    except Exception:
-                        pass
-
-                    update_extraction_outcomes(
-                        self.session,
+                enqueue_post_extraction(
+                    PostExtractionWork(
                         run_id=run_id,
-                        value_bets_found=value_found,
-                        avg_edge_pct=avg_edge,
-                        arb_opportunities_found=arb_found,
-                        reverse_opportunities_found=reverse_found,
+                        tier_name=tier_name,
+                        changed_event_ids=set(self._changed_event_ids),
+                        current_run=current_run,
                     )
-
-                # Log per-provider value attribution
-                if current_run and current_run.providers:
-                    from sqlalchemy import func as sa_func
-
-                    from src.ml.features.extraction_features import (
-                        extract_provider_value,
-                        log_provider_value,
-                    )
-
-                    from ..db.models import Opportunity
-
-                    for pid, pm in current_run.providers.items():
-                        matched = sum(1 for s in pm.sports.values() if s.events_processed > 0)
-                        total_sports = len(pm.sports)
-                        mr = matched / total_sports if total_sports > 0 else 0.0
-
-                        # Count value bets attributed to this provider
-                        vb_count = 0
-                        vb_avg_edge = None
-                        try:
-                            row = (
-                                self.session.query(
-                                    sa_func.count(Opportunity.id),
-                                    sa_func.avg(Opportunity.edge_pct),
-                                )
-                                .filter(
-                                    Opportunity.provider1_id == pid,
-                                    Opportunity.edge_pct > 0,
-                                    Opportunity.type == "value",
-                                )
-                                .first()
-                            )
-                            if row:
-                                vb_count = row[0] or 0
-                                vb_avg_edge = float(row[1]) if row[1] else None
-                        except Exception:
-                            pass
-
-                        pv_features = extract_provider_value(
-                            run_id=run_id,
-                            provider_id=pid,
-                            events_extracted=pm.total_events,
-                            odds_extracted=pm.total_odds,
-                            duration_seconds=pm.duration_seconds,
-                            match_rate=mr,
-                            spread_count=sum(s.odds_processed for s in pm.sports.values()),
-                            total_count=pm.total_odds,
-                            value_bets_from_provider=vb_count,
-                            avg_edge_from_provider=vb_avg_edge,
-                        )
-                        log_provider_value(self.session, pv_features)
-
-                self.session.commit()
+                )
+                log_progress(f"Post-processing queued (changed={len(self._changed_event_ids)})")
             except Exception as e:
-                logger.debug(f"ML extraction feature logging skipped: {e}")
-
-            # Run extraction analytics (best-effort, never blocks extraction)
-            try:
-                from src.ml.analytics.engine import AnalyticsEngine
-
-                analytics = AnalyticsEngine()
-                analytics.refresh(self.session, run_id)
-                self.session.commit()
-            except Exception as e:
-                logger.debug(f"Extraction analytics skipped: {e}")
-
-            # Daily ML model training (best-effort)
-            try:
-                import time as _time
-
-                today = _time.strftime("%Y-%m-%d")
-                if getattr(self, "_ml_last_train_day", None) != today:
-                    from src.ml.training.train_all import TrainingOrchestrator
-
-                    orch = TrainingOrchestrator()
-                    train_results = orch.train_all(self.session)
-                    self._ml_last_train_day = today
-                    for model_name, status in train_results.items():
-                        if status == "trained":
-                            logger.info(f"ML model trained: {model_name}")
-            except Exception as e:
-                logger.debug(f"ML training check skipped: {e}")
-
-            # Resolve CLV outcomes for ML feature rows (best-effort)
-            try:
-                from src.ml.feature_store import resolve_clv_outcomes
-
-                resolved = resolve_clv_outcomes(self.session)
-                if resolved > 0:
-                    logger.info(f"Resolved CLV for {resolved} ML feature rows")
-            except Exception:
-                pass
-
-            # Store daily macro data to options_flow (M9)
-            try:
-                from src.market_data.macro_provider import fetch_macro_snapshot
-                from src.ml.models.macro_engine import store_daily_options_flow
-
-                macro = await fetch_macro_snapshot()
-                await store_daily_options_flow(self.session, macro)
-            except Exception as e:
-                logger.debug(f"Daily options_flow storage skipped: {e}")
-
-            # Resolve trading signal outcomes
-            try:
-                from src.ml.feature_store import resolve_trading_outcomes
-
-                resolved = resolve_trading_outcomes(self.session)
-                if resolved:
-                    logger.info(f"Resolved {resolved} trading signal outcomes")
-            except Exception as e:
-                logger.debug(f"Trading outcome resolution skipped: {e}")
+                logger.error(f"[Pipeline] failed to enqueue post-extraction work: {e}")
 
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
