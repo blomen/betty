@@ -237,20 +237,23 @@ class MirrorBrowser:
         )
 
         # Close ALL tabs from previous sessions — only open what user clicks.
-        # Keep one tab (navigated to blank) so the context stays alive.
-        pages = list(self._context.pages)
-        if pages:
-            # Navigate first tab to blank, close the rest
+        # Persistent context restores the last session's tabs. Open a fresh
+        # blank tab first so the context stays alive while we close every
+        # restored tab (including the first — earlier code only navigated it
+        # to about:blank, which silently failed leaving stale tabs visible).
+        restored_pages = list(self._context.pages)
+        keeper = await self._context.new_page()
+        try:
+            await keeper.goto("about:blank")
+        except Exception:
+            pass
+        for page in restored_pages:
             try:
-                await pages[0].goto("about:blank")
+                old_url = page.url[:60]
+                await page.close()
+                print(f"[browser] Closed restored tab: {old_url}", flush=True)
             except Exception:
                 pass
-            for page in pages[1:]:
-                try:
-                    await page.close()
-                    print(f"[browser] Closed old tab: {page.url[:60]}", flush=True)
-                except Exception:
-                    pass
 
         # Attach interception to ALL existing + future pages
         for page in self._context.pages:

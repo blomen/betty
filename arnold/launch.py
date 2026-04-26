@@ -202,6 +202,21 @@ def _start_tunnel() -> bool:
 _LOCK_FILE = os.path.join(os.path.dirname(__file__), "data", ".running")
 
 
+def _start_mirror():
+    """POST /mirror/start once the local server is up.
+
+    Eagerly opens the 4 unlimited counter tabs (pinnacle, polymarket, cloudbet,
+    kalshi) so the user can log in once and they stay available as arb counters
+    + value-bet sources. Idempotent — safe even if mirror already running.
+    """
+    try:
+        req = urllib.request.Request(f"{LOCAL_URL}/mirror/start", method="POST")
+        urllib.request.urlopen(req, timeout=120).read()
+        print("[arnold] Mirror started — unlimited tabs opening")
+    except Exception as e:
+        print(f"[arnold] Mirror start failed (will retry on first UI access): {e}")
+
+
 def _open_browser_when_ready():
     """Poll until local server is healthy, then open browser on first launch only."""
     is_restart = os.path.exists(_LOCK_FILE)
@@ -213,6 +228,8 @@ def _open_browser_when_ready():
             os.makedirs(os.path.dirname(_LOCK_FILE), exist_ok=True)
             with open(_LOCK_FILE, "w") as f:
                 f.write(str(os.getpid()))
+            # Eager-open the unlimited counter tabs once the server is up
+            _start_mirror()
             if is_restart:
                 print("[arnold] Restart detected — skipping browser open")
                 return

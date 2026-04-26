@@ -341,28 +341,10 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            const bal = d.balance ?? providerBalances[pid] ?? 0
-            if (!activated.has(pid) && bal >= DRAIN_THRESHOLD_SEK) {
-              try {
-                activated.add(pid)
-                setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-                try { await api.startMirror() } catch {}
-                try { await api.openTab(pid) } catch {}
-                // Arb runs need counter legs on unlimited providers — proactively
-                // open all 4 unlimited tabs so the user can log in to them.
-                // Idempotent: openTab returns "already_open" if a tab exists.
-                // Generic: applies to ANY soft anchor that auto-activates.
-                for (const upid of UNLIMITED_PROVIDERS) {
-                  try { await api.openTab(upid) } catch {}
-                }
-                setLoopRunning(true)
-                // ArbRunner fetches its own opps from /api/opportunities/arb-workflow,
-                // so an empty batch is fine (unlike value-bet runners).
-                await api.startPlayLoop([], { [pid]: bal }, [pid])
-              } catch {
-                activated.delete(pid)  // retry next tick
-              }
-            }
+            // Soft providers do NOT auto-activate. The user explicitly picks
+            // a soft anchor (clicks its row) when they want to play arb on it.
+            // The unlimited counter tabs are opened eagerly at mirror/start
+            // so they're ready as soon as a soft anchor activates.
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
             if (missCount[pid] >= 2) {
@@ -890,10 +872,14 @@ export default function PlayPage() {
               )}
               {status.state === 'ready' && (
                 <div className="ml-auto flex items-center gap-2">
-                  <button
-                    onClick={() => api.placeCurrent()}
-                    className="px-2.5 py-0.5 text-[10px] font-semibold rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
-                  >Place</button>
+                  {/* Pinnacle is mirror-only: user clicks Place in the Playwright tab,
+                      runner intercepts the XHR and records to DB. No Place button here. */}
+                  {pid !== 'pinnacle' && (
+                    <button
+                      onClick={() => api.placeCurrent()}
+                      className="px-2.5 py-0.5 text-[10px] font-semibold rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
+                    >Place</button>
+                  )}
                   <button
                     onClick={() => api.skipCurrent(pid)}
                     className="text-[10px] text-zinc-500 hover:text-zinc-300"
