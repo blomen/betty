@@ -145,6 +145,10 @@ class ArbRunner:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
+        self.current_opp_key = None
+        self._planned_anchor_odds = 0.0
+        self._dethroned_to = None
+        self._current_recomputed_profit_pct = None
         self.state = STATE_IDLE
 
     @property
