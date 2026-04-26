@@ -361,37 +361,47 @@ class GeckoV2Retriever(BrowserRetriever):
                 # Another sport coroutine completed init while we waited.
                 pass
             else:
-                # Retry session init up to 3 times (header capture is timing-sensitive on betsson).
-                # Outer timeout is 180s — _ensure_session worst case is page.goto (60s) +
-                # header wait (30s) + sport-page fallback navigation (30s) + 30s of header
-                # wait on fallback = 150s. Under production proxy load (5+ concurrent
-                # browsers competing for Bahnhof bandwidth), 120s was tight enough that
-                # gecko brands timed out every attempt; 180s gives headroom without
-                # changing sport-level scheduling assumptions.
-                for attempt in range(3):
+                # Retry session init up to 2 times. Pre-fix this was 3 × 180s
+                # = 540s of session-init alone, AND each attempt called
+                # transport.close() + _ensure_browser() which is the force-kill
+                # path: BrowserTransport.close() graceful-times-out at 8s and
+                # then _kill_spawned_processes runs SIGKILL on the chrome
+                # process tree. With 3 brands × 3 retries × 1 close = 9 force-
+                # kill paths per failed cycle. Now we keep the SAME browser
+                # across retries (just clear cached headers + re-navigate);
+                # close() only runs if the browser itself is dead.
+                INIT_TIMEOUT_SEC = 90
+                for attempt in range(2):
                     try:
-                        session_ok = await asyncio.wait_for(self._ensure_session(), timeout=180)
+                        session_ok = await asyncio.wait_for(self._ensure_session(), timeout=INIT_TIMEOUT_SEC)
                         if session_ok:
                             break
-                        # First attempt failed — close browser and retry with fresh page
-                        logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} failed, retrying...")
+                        logger.warning(
+                            f"[{self.provider_id}] Session init attempt {attempt + 1} failed, retrying same browser..."
+                        )
                         self._api_headers = None
                         self._api_base = None
                         self._session_ready = False
-                        await self.transport.close()
-                        await self.transport._ensure_browser()
+                        # Don't close the browser — header capture sometimes just races
+                        # the proxy. Reuse the existing context; _ensure_session will
+                        # re-navigate and re-install the route handler.
                     except asyncio.TimeoutError:
                         logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} timed out")
                         self._api_headers = None
                         self._api_base = None
                         self._session_ready = False
-                        if attempt < 2:
-                            await self.transport.close()
-                            await self.transport._ensure_browser()
+                        if attempt == 0:
+                            # Only on the first timeout do we recycle the browser, in case
+                            # the page itself is wedged. Subsequent timeouts surface as
+                            # RetryableError to let the scheduler back off.
+                            with contextlib.suppress(Exception):
+                                await self.transport.close()
+                            with contextlib.suppress(Exception):
+                                await self.transport._ensure_browser()
                             continue
                         self._session_init_failed = True
                         raise RetryableError(
-                            "Session init timed out after 2 attempts",
+                            f"Session init timed out after 2 attempts ({INIT_TIMEOUT_SEC}s each)",
                             provider_id=self.provider_id,
                         )
 
