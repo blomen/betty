@@ -468,6 +468,7 @@ class OpportunityService:
         event_ids = list({r["event_id"] for r in results[:limit]})
         events_map: dict[str, Event] = {}
         prov_names_map: dict[tuple[str, str], tuple[str | None, str | None]] = {}  # (event_id, provider_id) → names
+        provider_meta_map: dict[tuple[str, str], dict] = {}  # (event_id, provider_id) → full meta dict
         if event_ids:
             events_list = self.db.query(Event).filter(Event.id.in_(event_ids)).all()
             events_map = {e.id: e for e in events_list}
@@ -492,10 +493,15 @@ class OpportunityService:
                     .all()
                 )
                 for eid, pid, meta in odds_rows:
-                    if isinstance(meta, dict) and (meta.get("prov_home") or meta.get("prov_away")):
-                        key = (eid, pid)
-                        if key not in prov_names_map:
-                            prov_names_map[key] = (meta.get("prov_home"), meta.get("prov_away"))
+                    if not isinstance(meta, dict):
+                        continue
+                    key = (eid, pid)
+                    # Keep first-seen meta per (event, provider) — sufficient because
+                    # matchup_id / period / line_id are event-level, not market-level.
+                    if key not in provider_meta_map:
+                        provider_meta_map[key] = meta
+                    if (meta.get("prov_home") or meta.get("prov_away")) and key not in prov_names_map:
+                        prov_names_map[key] = (meta.get("prov_home"), meta.get("prov_away"))
 
         # Format for API response (ArbOpp-compatible)
         formatted = []
@@ -524,6 +530,22 @@ class OpportunityService:
                         prov_home, prov_away = names
                     break
 
+            # Attach per-leg provider_meta (matchup_id etc.) so mirror workflows
+            # can navigate without an additional lookup. ArbRunner._opp_to_bet
+            # propagates this through to the bet dict.
+            enriched_legs = []
+            for leg in r.get("legs", []):
+                canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+                meta = provider_meta_map.get((r["event_id"], canonical), {})
+                enriched_legs.append({**leg, "provider_meta": meta})
+            enriched_arb_legs = None
+            if r.get("arb_legs"):
+                enriched_arb_legs = []
+                for leg in r["arb_legs"]:
+                    canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+                    meta = provider_meta_map.get((r["event_id"], canonical), {})
+                    enriched_arb_legs.append({**leg, "provider_meta": meta})
+
             formatted.append(
                 {
                     "id": i + 1,
@@ -543,10 +565,10 @@ class OpportunityService:
                     "prov_home": prov_home,
                     "prov_away": prov_away,
                     "starts_at": r["starts_at"],
-                    "legs": r["legs"],
+                    "legs": enriched_legs,
                     "total_stake": 0,  # Frontend sets via anchor stake
                     "arb_profit_pct": r.get("arb_profit_pct"),
-                    "arb_legs": r.get("arb_legs"),
+                    "arb_legs": enriched_arb_legs,
                 }
             )
 
