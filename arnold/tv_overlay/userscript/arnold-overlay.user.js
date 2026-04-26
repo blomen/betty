@@ -73,7 +73,7 @@
   }
 
   function drawZone(p) {
-    if (!chart) return;
+    if (!chart) return false;
     safeRemove(p.key);
     const now = Math.floor(Date.now() / 1000);
     const tStart = now - 8 * 60 * 60; // 8h back
@@ -96,14 +96,19 @@
           },
         }
       );
-      if (id != null) drawn.set(p.key, id);
+      if (id != null) {
+        drawn.set(p.key, id);
+        return true;
+      }
+      return false;
     } catch (e) {
-      sendError(`drawZone failed: ${e && e.message}`);
+      sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
     }
   }
 
   function drawPosition(p) {
-    if (!chart) return;
+    if (!chart) return false;
     const baseKey = p.key;
     safeRemove(baseKey + ':entry');
     safeRemove(baseKey + ':stop');
@@ -112,13 +117,17 @@
     const sideColor = p.side === 'long' ? '#10b981' : '#ef4444';
     const now = Math.floor(Date.now() / 1000);
 
+    let entryDrawn = false;
     try {
       const entryId = chart.createMultipointShape(
         [{ time: now, price: p.entry }],
         { shape: 'horizontal_line', text: `${p.side.toUpperCase()} entry ${p.entry.toFixed(2)}`,
           overrides: { linecolor: sideColor, showLabel: true } }
       );
-      if (entryId != null) drawn.set(baseKey + ':entry', entryId);
+      if (entryId != null) {
+        drawn.set(baseKey + ':entry', entryId);
+        entryDrawn = true;
+      }
 
       if (p.stop != null) {
         const stopId = chart.createMultipointShape(
@@ -137,8 +146,10 @@
         if (tpId != null) drawn.set(baseKey + ':tp', tpId);
       }
     } catch (e) {
-      sendError(`drawPosition failed: ${e && e.message}`);
+      sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
+      return entryDrawn;
     }
+    return entryDrawn;
   }
 
   function removePosition(key) {
@@ -173,9 +184,9 @@
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
       switch (msg.type) {
-        case 'zone_upsert': drawZone(msg); sendAck(1); break;
-        case 'zone_remove': safeRemove(msg.key); sendAck(1); break;
-        case 'position_upsert': drawPosition(msg); sendAck(1); break;
+        case 'zone_upsert':     if (drawZone(msg)) sendAck(1); break;
+        case 'zone_remove':     safeRemove(msg.key); sendAck(1); break;
+        case 'position_upsert': if (drawPosition(msg)) sendAck(1); break;
         case 'position_remove': removePosition(msg.key); sendAck(1); break;
         case 'ping_zone': {
           // Flash-ping a zone — bring camera to it (best effort).
