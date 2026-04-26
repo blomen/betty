@@ -263,7 +263,7 @@ Pre-deploy verification: ruff clean · py_compile clean · 6/6 tenbet tests pass
 - ✅ post_extraction_worker started cleanly, processed 7 tier completions, analyzer running each time (345-453 value bets / 449-522 arb opps).
 - ✅ Browser_soft providers eventually completed (betsson 64s for 567 events; later cycles will compare 10bet directly).
 - ⚠️ **One-off mass failure at 12:44:27**: 888sport, interwetten, 10bet all hit "Connection closed while reading from the driver" simultaneously — Playwright/CDP startup race when 3 browser-based providers launch in parallel right after container restart. Pre-existing (not from this batch). Recovers on next cycle.
-- ⚠️ **Tipwin regression detected**: 40 events vs expected ~800 (5 % of normal). Root cause: my parallel-pagination fix (`ae056ede`) captured the homepage's small `/offer/data` URL (40 highlights) as the pagination template. Fix committed: `0d20ff52` — capture URL only from `items`-shaped responses, prefer the response with highest `totalNumberOfItems`. **Awaiting next deploy.**
+- ⚠️ **Tipwin regression detected**: 40 events vs expected ~800 (5 % of normal). Root cause: my parallel-pagination fix (`ae056ede`) captured the homepage's small `/offer/data` URL (40 highlights) as the pagination template. Fix committed: `0d20ff52` — capture URL only from `items`-shaped responses, prefer the response with highest `totalNumberOfItems`. **Redeployed 13:06 UTC; first post-fix run at 13:11 captured 74 API responses across 100 pages and returned 944 events across 9 sports — fix validated.**
 
 Post-deploy checks (will fill in after next deploy + 24 h):
 - [ ] 10bet avg duration (target: ~600s) — first post-deploy run failed in the 12:44:27 race; need cycle 2 data
