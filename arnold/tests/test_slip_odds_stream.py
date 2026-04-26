@@ -168,3 +168,20 @@ async def test_stream_accepts_log_endpoint_and_bet_context():
     )
     assert stream._log_endpoint == "https://example.test/api/slip-odds-tick"
     assert stream._bet_context["event_id"] == "e1"
+
+
+def test_slip_odds_stream_exposes_page_publicly():
+    """Spec §4.2: ArbRunner reads stream.page; should be a public attr."""
+    from unittest.mock import MagicMock
+
+    from arnold.mirror.slip_odds_stream import SlipOddsStream
+
+    page = MagicMock(name="playwright_page")
+    workflow = MagicMock()
+    stream = SlipOddsStream(
+        provider_id="pinnacle",
+        workflow=workflow,
+        page=page,
+        on_odds_change=lambda o: None,
+    )
+    assert stream.page is page

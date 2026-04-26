@@ -478,7 +478,7 @@ class ArbRunner:
             if should_update_stake(cur, new_stake):
                 leg["_current_stake"] = new_stake
                 wf = get_workflow(leg["provider"])
-                page = self._streams[leg["provider"]]._page  # noqa: SLF001 (intentional)
+                page = self._streams[leg["provider"]].page
                 t = asyncio.create_task(wf.update_slip_stake(page, new_stake))
                 self._update_tasks.add(t)
                 t.add_done_callback(self._update_tasks.discard)
@@ -565,7 +565,7 @@ class ArbRunner:
         async def _push_stake(leg: dict, stake: float) -> None:
             pid = leg["provider"]
             wf = get_workflow(pid)
-            page = self._streams[pid]._page  # noqa: SLF001
+            page = self._streams[pid].page
             try:
                 await wf.update_slip_stake(page, stake)
             except Exception:

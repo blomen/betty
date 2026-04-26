@@ -38,7 +38,7 @@ class SlipOddsStream:
     ):
         self.provider_id = provider_id
         self._workflow = workflow
-        self._page = page
+        self.page = page
         self._on_odds_change = on_odds_change
         self._poll_interval_s = poll_interval_s
         self._task: asyncio.Task | None = None
@@ -68,7 +68,7 @@ class SlipOddsStream:
         try:
             while True:
                 try:
-                    odds = await self._workflow.read_slip_odds(self._page)
+                    odds = await self._workflow.read_slip_odds(self.page)
                 except Exception:
                     logger.debug(f"[SlipStream:{self.provider_id}] read_slip_odds raised", exc_info=True)
                     odds = None
