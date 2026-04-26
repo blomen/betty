@@ -242,10 +242,26 @@ per-cycle browser-launch cost.
 
 ## 9. Re-introduction notes
 
-> Filled in after fixes ship.
+**Shipped 2026-04-26** (local only, not deployed):
 
-- [ ] 10bet duration before vs after page-pool fix (target: 2168 s → ~600 s):
-- [ ] Tipwin duration before vs after parallel pagination (target: 307 s → ~60 s):
-- [ ] Interwetten cookie-banner overhead before vs after init script (target: -12 s/cycle):
-- [ ] Browser memory peak before vs after CDP pool (target: -50 %):
-- [ ] Force-kill events from this tier (currently 30+ overnight; target: 0):
+`99fcc9c7` — 10bet (TenBet):
+- Fix #1: Page-pool reuse in `extract()`. Pool size = concurrency, opened once at start of extract, closed in `finally`. `_scrape_competition` gained a `page=` kwarg (default `None` for back-compat). Switched batch-then-wait to `asyncio.as_completed` for early-exit when limit hit. Removed dead `batch_size` and the captured-but-unused `sport_timeout` line.
+- Fix #2: Dropped the 8s `wait_for_timeout(8000)` fallback in `_enrich_events_with_details`. Worst case was 20s/event × 200 events = 4000s on the slow path; now we increment the error counter and return after the 12s `wait_for_function`.
+- Fix #7 (`wait_for_function` → `wait_for_selector`) — **not shipped.** Smaller win, deferred.
+
+`ae056ede` — tipwin:
+- Fix #3: Parallel pagination via `context.request.get`. The route handler captures the API URL + headers from page 1's nav; pages 2..N then fan out under `Semaphore(8)` instead of 120 sequential `page.goto(?page=N)`. Legacy sequential fallback kept for the path where API URL capture fails.
+
+`522d8e86` — interwetten:
+- Fix #4: Truendo consent seeded via `context.add_init_script` BEFORE any page nav. Init scripts apply to every page in the context including ones opened later, so all 24 worker tabs (16 league + 8 detail) skip `_dismiss_cookie_banner`. Idempotent via `_truendo_seed_installed` flag. Defensive `_dismiss_cookie_banner` retained as fallback.
+
+Fixes #5 (Spectate bucket cache TTL), #6 (Spectate fixed init sleep drop), #8 (tipwin observability), #9 (CDP-shared browser pool) — **deferred.** Lower-impact or architectural.
+
+Pre-deploy verification: ruff clean · py_compile clean · 6/6 tenbet tests pass · 15/15 interwetten tests pass.
+
+Post-deploy checks (TODO):
+- [ ] 10bet avg duration (was: 2168s timeout; target: ~600s)
+- [ ] Tipwin avg duration (was: 307s; target: ~60-80s)
+- [ ] Interwetten cookie-banner overhead (was: 12s/cycle on 24-tab redundant work; target: <1s)
+- [ ] Browser memory peak (still per-provider, no shared CDP pool)
+- [ ] Force-kill events from this tier (was: 30+ overnight; expectation depends on whether the gecko fix from cluster 5 plus the orchestrator hot-path fix cumulatively close the source)

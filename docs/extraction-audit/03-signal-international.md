@@ -168,9 +168,16 @@ but never instantiated because no tier references it.
 
 ## 9. Re-introduction notes
 
-> Filled in after fixes ship.
+**Shipped 2026-04-26** in commit `8cd07e9a` (local only, not deployed):
+- Fix #1: Cloudbet competitions fetched in parallel under `Semaphore(COMPETITION_CONCURRENCY=20)` (mirrors Pinnacle's `_fetch_league` pattern). Soccer's ~100 competitions × ~300 ms RTT was 30s sequential — should drop to 5-10s.
+- Fix #2: Marathon year-boundary heuristic replaced with `(now - parsed) > 30 days` rollover check. Old `if parsed.month < now.month - 1` was broken in January (threshold = 0, never fires). New check verified for Dec→Jan and Jan→Dec scrapes.
+- Fix #4: Stake retired from factory + YAML provider config + `signal_api` pool group. Source file kept for future resurrection.
+- Fix #3 ("add 5xx retry to Cloudbet") deferred — `HttpTransport.get` already retries 429; adding 5xx is a follow-up.
 
-- [ ] Cloudbet duration before vs after parallelization:
-- [ ] Marathon year-boundary regression test added:
-- [ ] Stake removed from factory:
-- [ ] Cloudbet 5xx retry counter visible in metrics:
+Pre-deploy verification: ruff clean · py_compile clean · math sanity-checked for year-rollover edge cases.
+
+Post-deploy checks (TODO):
+- [ ] Cloudbet avg duration before vs after (target: 155s → 20-30s)
+- [ ] Marathon date-mismatch incidents during late-Dec / early-Jan window (need to wait until next year boundary to verify; Smell F)
+- [ ] No `factory.ValueError("Unknown retriever type 'stake'")` in logs (would indicate stale caller)
+- [ ] Cloudbet competition fan-out: max in-flight should track Sem(20), not 1

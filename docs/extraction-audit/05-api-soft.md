@@ -285,10 +285,37 @@ loop on overlapping `odds` rows.
 
 ## 10. Re-introduction notes
 
-> Filled in after fixes ship.
+**Shipped 2026-04-26** (local only, not deployed):
 
-- [ ] post_extraction_worker deployed; tier stalls observed (target: 0 in 7-day window):
-- [ ] Gecko shared headers: browser memory before vs after:
-- [ ] Vbet event-loop block time before vs after python-socks switch:
-- [ ] Spelklubben odds_updated_at delta over 24 h:
-- [ ] Altenar 429 incidents in metrics:
+`dca7b348` — **post_extraction_worker** (cross-cluster, gating fix for this cluster):
+- Extracted `OpportunityAnalyzer` + ML/CLV/macro/training side-effects out of the per-provider extraction hot path into a single async worker.
+- Worker drains a thread-safe `queue.Queue(maxsize=200)` with a 5s debounce so concurrent tier completions coalesce into one analyzer pass.
+- Removed module-level `_analysis_lock = threading.Lock()` — the analyzer now serializes by being the queue's only consumer.
+- Worker runs on its own DB session and lives in the FastAPI lifespan as a tracked asyncio task.
+- **Net: -258 LOC from `pipeline.run()` hot path; 21:53 UTC tier-stall root cause closed.**
+
+`7196bad2` — gecko_v2:
+- Fix #4: Retry budget cut from `3 × 180s = 540s` → `2 × 90s = 180s`.
+- Removed `transport.close()` call between retries (the chrome force-kill source). Browser only recycled on the FIRST timeout, never after — second timeout raises `RetryableError` cleanly.
+- Net change per failed init cycle: from up to 9 chrome force-kills down to at most 1.
+
+`d98f7507` — vbet:
+- Fix #3: Replaced 50+ lines of blocking `socks.socksocket().connect()` + manual HTTP CONNECT tunnel with a single `python_socks.async_.asyncio.Proxy.from_url(...).connect(...)` call wrapped in `asyncio.wait_for(timeout=15)`.
+- Eliminates the up-to-15s event-loop freeze per attempt. Removed `socks` / `socket` / `base64` imports.
+- python-socks ships transitively as an aiohttp-socks dep (already in pyproject.toml).
+
+Fix #2 (gecko shared session across brands) — **not done.** Brand-specific tokens (`BrandId`) are encoded in the captured `x-sb-*` headers, so headers can't actually be shared across brands. Real win would require sharing the BROWSER (one Chromium, multiple contexts) — bigger architectural change deferred.
+
+Fix #6 (Altenar substring outcome match) — **deferred.** Same fix pattern as polymarket / kalshi (token overlap); not yet shipped.
+
+Fix #8 (Spelklubben odds-not-saving) — **deferred.** Needs a separate investigation: `/health/extraction` reports 22117 min stale (~15 days) but `provider_run_metrics` shows successful runs. Either run reports success but rolls back odds, or storage skips spelklubben. Not in this batch.
+
+Pre-deploy verification: ruff clean · py_compile clean · smoke-test confirms `enqueue + queue_depth + module imports` work · gecko/vbet syntax-checked.
+
+Post-deploy checks (TODO):
+- [ ] post_extraction_worker started log line in container logs at startup
+- [ ] tier-wide stalls in api_soft (target: 0 in 7-day window post-deploy)
+- [ ] gecko force-kill events from `[BrowserTransport] force-killed N/N hung browser processes` (was 30+/night; target: <5)
+- [ ] vbet event-loop block time — `asyncio` warnings for slow tasks should drop
+- [ ] altenar 429 incidents (still latent — Smell D + Smell E unfixed)
+- [ ] spelklubben odds_updated_at delta (still stale — needs separate investigation)
