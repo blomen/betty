@@ -22,17 +22,14 @@ Event outcome types:
 """
 
 import asyncio
-import base64
 import contextlib
 import json
 import logging
 import os
-import socket
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import socks
 import websockets
 
 from ..core import Retriever, StandardEvent
@@ -127,6 +124,33 @@ class VbetRetriever(Retriever):
         """Generate unique request ID."""
         self._rid_counter += 1
         return self._rid_counter
+
+    async def _connect_proxy_socket(self):
+        """Establish the SOCKS/HTTP-CONNECT tunnel to the WS host on the
+        asyncio loop and return a connected raw socket suitable for
+        websockets.connect(sock=...).
+
+        Pre-fix this was done with blocking ``socks.socksocket().connect()``
+        which froze the entire event loop for up to 15 s per attempt during
+        the proxy handshake. ``python_socks.async_`` performs the same
+        handshake non-blockingly via ``asyncio.open_connection``.
+        """
+        try:
+            from python_socks.async_.asyncio import Proxy
+        except ImportError as e:
+            # python_socks is a dependency of aiohttp_socks (already in
+            # pyproject.toml). If it's missing, surfacing the error is
+            # the right thing — silently falling back to direct connect
+            # would 403 from the EU datacenter IP.
+            raise RuntimeError("python-socks not installed; required for vbet proxy WebSocket") from e
+
+        parsed_ws = urlparse(self.ws_url)
+        ws_host = parsed_ws.hostname
+        ws_port = parsed_ws.port or 443
+
+        proxy = Proxy.from_url(self._proxy_url)
+        # 15 s connect timeout — same budget as the legacy implementation.
+        return await asyncio.wait_for(proxy.connect(dest_host=ws_host, dest_port=ws_port), timeout=15)
 
     def _get_sport_url(self, sport: str) -> str:
         """Not used — WebSocket-based extraction."""
@@ -353,7 +377,7 @@ class VbetRetriever(Retriever):
 
         for attempt in range(self.WS_MAX_RETRIES):
             try:
-                ws_kwargs = dict(
+                ws_kwargs: dict[str, Any] = dict(
                     additional_headers={
                         "Origin": "https://www.vbet.se",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -362,43 +386,15 @@ class VbetRetriever(Retriever):
                     close_timeout=10,
                     open_timeout=15,
                 )
-                # Route through proxy if available (Swedish residential IP)
-                if self._proxy_url:
-                    parsed_proxy = urlparse(self._proxy_url)
-                    parsed_ws = urlparse(self.ws_url)
-                    ws_host = parsed_ws.hostname
-                    ws_port = parsed_ws.port or 443
-                    scheme = parsed_proxy.scheme.lower()
-                    if scheme.startswith("socks5") or scheme.startswith("socks4"):
-                        proxy_type = socks.SOCKS5 if "5" in scheme else socks.SOCKS4
-                        sock = socks.socksocket()
-                        sock.set_proxy(
-                            proxy_type,
-                            parsed_proxy.hostname,
-                            parsed_proxy.port or 1080,
-                            username=parsed_proxy.username,
-                            password=parsed_proxy.password,
-                        )
-                        sock.settimeout(15)
-                        sock.connect((ws_host, ws_port))
-                        ws_kwargs["sock"] = sock
-                    else:
-                        # HTTP CONNECT tunnel fallback
-                        tunnel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        tunnel.settimeout(15)
-                        tunnel.connect((parsed_proxy.hostname, parsed_proxy.port or 12323))
-                        auth = base64.b64encode(f"{parsed_proxy.username}:{parsed_proxy.password}".encode()).decode()
-                        tunnel.sendall(
-                            f"CONNECT {ws_host}:{ws_port} HTTP/1.1\r\n"
-                            f"Host: {ws_host}:{ws_port}\r\n"
-                            f"Proxy-Authorization: Basic {auth}\r\n"
-                            f"\r\n".encode()
-                        )
-                        resp = tunnel.recv(4096).decode()
-                        if "200" not in resp:
-                            tunnel.close()
-                            raise ConnectionError(f"HTTP CONNECT failed: {resp.strip()}")
-                        ws_kwargs["sock"] = tunnel
+                # Route through proxy if available (Swedish residential IP).
+                # Use python_socks.async_ so the connect handshake stays on
+                # the asyncio loop — pre-fix used blocking socks.socksocket()
+                # + sock.connect() which froze the entire event loop for up to
+                # 15s per attempt. SOCKS4/5 + HTTP both supported via the
+                # same Proxy.from_url() API.
+                proxy_sock = await self._connect_proxy_socket() if self._proxy_url else None
+                if proxy_sock is not None:
+                    ws_kwargs["sock"] = proxy_sock
                 async with websockets.connect(
                     self.ws_url,
                     **ws_kwargs,
