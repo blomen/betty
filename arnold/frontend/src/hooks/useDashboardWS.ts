@@ -71,7 +71,7 @@ export function useDashboardWS() {
             if (Array.isArray(snap.zones) && snap.zones.length > 0 && s.zones.length === 0) {
               next.zones = snap.zones
             }
-            if (snap.depth && (snap.depth.bids?.length || snap.depth.asks?.length)) {
+            if (snap.depth && (snap.depth.bids?.length || snap.depth.asks?.length) && !s.depth) {
               next.depth = snap.depth
             }
             return next
