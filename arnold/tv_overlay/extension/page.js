@@ -99,55 +99,105 @@
     }
   }
 
-  function drawPosition(p) {
+  // Native trading widgets — TradingView's createPositionLine / createOrderLine
+  // / createStudy return Promises and produce the same blue-handle position
+  // body + colored stop/target lines + Anchored Volume Profile that the TV
+  // platform uses for its built-in trade panel. Way more useful than 3 raw
+  // horizontal_line shapes.
+  //
+  // The position widgets live in a separate registry from `drawn` (which holds
+  // shape entity ids) because they have a different removal API (.remove()
+  // method on the resolved object, not chart.removeEntity).
+  const drawnPositions = new Map(); // key → { posLine, stopOrder, tpOrder, avpStudyId }
+
+  async function drawPosition(p) {
     if (!chart) return false;
-    const baseKey = p.key;
-    safeRemove(baseKey + ':entry');
-    safeRemove(baseKey + ':stop');
-    safeRemove(baseKey + ':tp');
+    await removePosition(p.key);
 
     const sideColor = p.side === 'long' ? '#10b981' : '#ef4444';
-    const now = Math.floor(Date.now() / 1000);
+    const isLong = p.side === 'long';
 
-    let entryDrawn = false;
     try {
-      const entryId = chart.createMultipointShape(
-        [{ time: now, price: p.entry }],
-        { shape: 'horizontal_line', text: `${p.side.toUpperCase()} entry ${p.entry.toFixed(2)}`,
-          overrides: { linecolor: sideColor, showLabel: true } }
-      );
-      if (entryId != null) {
-        drawn.set(baseKey + ':entry', entryId);
-        entryDrawn = true;
-      }
+      // Position body (entry + qty + auto-computed P&L + R:R when TV knows
+      // the live price, which it does on this chart).
+      const posLine = await chart.createPositionLine();
+      try {
+        posLine
+          .setPrice(p.entry)
+          .setQuantity(String(p.size ?? 1))
+          .setText(`${p.side.toUpperCase()} entry ${p.entry.toFixed(2)}`)
+          .setExtendLeft(false)
+          .setLineColor(sideColor)
+          .setBodyBorderColor(sideColor)
+          .setBodyBackgroundColor(isLong ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)');
+      } catch (_) { /* tolerate missing chained methods */ }
+
+      const entry = { posLine };
 
       if (p.stop != null) {
-        const stopId = chart.createMultipointShape(
-          [{ time: now, price: p.stop }],
-          { shape: 'horizontal_line', text: `stop ${p.stop.toFixed(2)}`,
-            overrides: { linecolor: '#dc2626', showLabel: true } }
-        );
-        if (stopId != null) drawn.set(baseKey + ':stop', stopId);
+        try {
+          const stopOrder = await chart.createOrderLine();
+          try {
+            stopOrder
+              .setPrice(p.stop)
+              .setQuantity(String(p.size ?? 1))
+              .setText(`stop ${p.stop.toFixed(2)}`)
+              .setLineColor('#dc2626')
+              .setBodyBorderColor('#dc2626')
+              .setBodyBackgroundColor('rgba(220,38,38,0.15)');
+          } catch (_) {}
+          entry.stopOrder = stopOrder;
+        } catch (_) {}
       }
       if (p.tp != null) {
-        const tpId = chart.createMultipointShape(
-          [{ time: now, price: p.tp }],
-          { shape: 'horizontal_line', text: `tp ${p.tp.toFixed(2)}`,
-            overrides: { linecolor: '#22c55e', showLabel: true } }
-        );
-        if (tpId != null) drawn.set(baseKey + ':tp', tpId);
+        try {
+          const tpOrder = await chart.createOrderLine();
+          try {
+            tpOrder
+              .setPrice(p.tp)
+              .setQuantity(String(p.size ?? 1))
+              .setText(`tp ${p.tp.toFixed(2)}`)
+              .setLineColor('#22c55e')
+              .setBodyBorderColor('#22c55e')
+              .setBodyBackgroundColor('rgba(34,197,94,0.15)');
+          } catch (_) {}
+          entry.tpOrder = tpOrder;
+        } catch (_) {}
       }
+
+      // Anchored Volume Profile rooted at the entry time so volume
+      // distribution since entry is visible at a glance. Best-effort —
+      // the study id isn't always returned synchronously, so we hold the
+      // Promise and resolve the actual id when removing.
+      try {
+        const now = Math.floor(Date.now() / 1000);
+        const avpPromise = chart.createStudy('Anchored Volume Profile', false, false, [now]);
+        entry.avpStudyId = avpPromise; // may be a Promise<id> or an id
+      } catch (_) { /* AVP unsupported on this account/symbol — non-fatal */ }
+
+      drawnPositions.set(p.key, entry);
+      return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
-      return entryDrawn;
+      return false;
     }
-    return entryDrawn;
   }
 
-  function removePosition(key) {
-    safeRemove(key + ':entry');
-    safeRemove(key + ':stop');
-    safeRemove(key + ':tp');
+  async function removePosition(key) {
+    const entry = drawnPositions.get(key);
+    if (!entry) return;
+    drawnPositions.delete(key);
+    for (const widget of [entry.posLine, entry.stopOrder, entry.tpOrder]) {
+      if (widget && typeof widget.remove === 'function') {
+        try { widget.remove(); } catch (_) {}
+      }
+    }
+    try {
+      const studyId = await entry.avpStudyId;
+      if (studyId != null && chart && typeof chart.removeEntity === 'function') {
+        try { chart.removeEntity(studyId); } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   attachPromise.then((c) => {
@@ -157,14 +207,14 @@
     }
     console.log('[arnold-overlay/page] attached to chart', c);
 
-    document.addEventListener('arnold:msg', (ev) => {
+    document.addEventListener('arnold:msg', async (ev) => {
       let msg;
       try { msg = JSON.parse(ev.detail); } catch (_) { return; }
       switch (msg.type) {
         case 'zone_upsert':     if (drawZone(msg)) sendAck(1); break;
         case 'zone_remove':     safeRemove(msg.key); sendAck(1); break;
-        case 'position_upsert': if (drawPosition(msg)) sendAck(1); break;
-        case 'position_remove': removePosition(msg.key); sendAck(1); break;
+        case 'position_upsert': if (await drawPosition(msg)) sendAck(1); break;
+        case 'position_remove': await removePosition(msg.key); sendAck(1); break;
         case 'ping_zone': {
           try {
             const entityId = drawn.get(msg.zone_key);
