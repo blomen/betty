@@ -190,9 +190,19 @@ async def lifespan(app: FastAPI):
 
     # Auto-start continuous extraction (server only — skip for local mirror)
     if not _mirror_only:
+        from ..pipeline.post_extraction_worker import run_worker as _run_post_extraction_worker
         from ..pipeline.scheduler import get_scheduler
 
         scheduler = get_scheduler()
+
+        # Start the post-extraction worker BEFORE the scheduler so the queue
+        # has a consumer ready when the first tier completes. The worker runs
+        # analyzer + ML side-effects out-of-band, eliminating the cross-tier
+        # threading.Lock contention that froze api_soft on 2026-04-25.
+        _post_worker_task = asyncio.create_task(_run_post_extraction_worker())
+        _post_worker_task.set_name("post-extraction-worker")
+        _background_tasks.add(_post_worker_task)
+        _post_worker_task.add_done_callback(_background_tasks.discard)
 
         async def _start_scheduler():
             # Skip extraction when RL turbo mode is active (training needs all resources)
