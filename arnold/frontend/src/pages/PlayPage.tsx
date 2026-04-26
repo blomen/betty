@@ -78,6 +78,17 @@ interface SettleToast {
   profit: number
 }
 
+type ArbLeg = {
+  provider_id: string
+  current_odds: number
+  planned_odds: number
+  drift_pct: number
+  current_stake: number
+  slip_state: 'loading' | 'green' | 'red'
+  placed?: boolean
+  failed_reason?: string
+}
+
 export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
@@ -104,16 +115,6 @@ export default function PlayPage() {
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
   // Per-leg arb alignment from arb_legs_loaded + arb_alignment events
-  type ArbLeg = {
-    provider_id: string
-    current_odds: number
-    planned_odds: number
-    drift_pct: number
-    current_stake: number
-    slip_state: 'loading' | 'green' | 'red'
-    placed?: boolean
-    failed_reason?: string
-  }
   const [arbLegs, setArbLegs] = useState<ArbLeg[] | null>(null)
   const [arbAllGreen, setArbAllGreen] = useState<boolean>(false)
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
@@ -554,8 +555,11 @@ export default function PlayPage() {
       setArbLegs(prev => prev ? prev.map(l => l.provider_id === data.counter_provider ? { ...l, failed_reason: data.reason ?? 'failed', slip_state: 'red' } : l) : prev)
     }
     if (type === 'arb_dethroned') {
-      const delta = data.new_profit != null && data.old_profit != null
-        ? `+${(data.new_profit - data.old_profit).toFixed(2)}pp`
+      const diff = data.new_profit != null && data.old_profit != null
+        ? data.new_profit - data.old_profit
+        : null
+      const delta = diff != null
+        ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}pp`
         : ''
       setArbDethroneToast(`Switched to higher-edge opp ${delta}`)
       setTimeout(() => setArbDethroneToast(null), 3500)
