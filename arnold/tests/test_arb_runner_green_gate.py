@@ -244,3 +244,143 @@ class TestDethroneHysteresis:
             "arb_legs": [{"provider": "betinia", "outcome": "away", "odds": 2.20}],
         }
         assert runner._should_dethrone(top_opp) is True
+
+
+class TestFetchArbOppsPostFilter:
+    """Per fix landed 2026-04-26: backend counterpart_providers filter is broken;
+    runner post-filters opps so all legs must be in counter_pool ∪ {anchor}."""
+
+    def _make_runner(self, active=("betinia", "pinnacle")):
+        return ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=list(active),
+        )
+
+    @pytest.mark.asyncio
+    async def test_keeps_opp_when_all_legs_in_pool(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        runner = self._make_runner()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, headers=None):
+                assert "counterpart_providers" not in url, "URL must not include counterpart filter (backend bug)"
+
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {
+                            "opportunities": [
+                                {
+                                    "guaranteed_profit_pct": 5.0,
+                                    "arb_legs": [
+                                        {"provider": "betinia", "outcome": "home", "odds": 2.0},
+                                        {"provider": "pinnacle", "outcome": "away", "odds": 2.5},
+                                    ],
+                                }
+                            ]
+                        }
+
+                return R()
+
+        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+
+        result = await runner._fetch_arb_opps()
+        assert len(result) == 1
+        assert result[0]["guaranteed_profit_pct"] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_drops_opp_when_a_leg_is_outside_pool(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        # betsson not in active list and not UNLIMITED → should be rejected
+        runner = self._make_runner(active=["betinia", "pinnacle"])
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, headers=None):
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {
+                            "opportunities": [
+                                {
+                                    "guaranteed_profit_pct": 8.0,
+                                    "arb_legs": [
+                                        {"provider": "betinia", "outcome": "home", "odds": 2.0},
+                                        {"provider": "betsson", "outcome": "away", "odds": 2.5},
+                                    ],
+                                }
+                            ]
+                        }
+
+                return R()
+
+        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+
+        result = await runner._fetch_arb_opps()
+        assert result == []  # betsson not in active list and not in UNLIMITED, opp gets dropped
+
+    @pytest.mark.asyncio
+    async def test_drops_opp_with_no_legs(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        runner = self._make_runner()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, headers=None):
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {"opportunities": [{"guaranteed_profit_pct": 5.0, "legs": []}]}
+
+                return R()
+
+        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+
+        result = await runner._fetch_arb_opps()
+        assert result == []
