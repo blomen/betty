@@ -186,12 +186,22 @@ class TipwinRetriever(BrowserRetriever):
                 page = self.transport.page
 
             import json as _json
+            from urllib.parse import urlparse
 
             api_responses: list[dict] = []
+            # Captured by route handler during initial nav so we can fan out
+            # subsequent pages directly through context.request.get instead of
+            # sequential page.goto. Pre-fix: 120 navigations × ~2-3s each =
+            # 240-360s minimum. Now: page 1 via page.goto, pages 2..N parallel
+            # via Sem(8) — typical 60-80s total.
+            captured_api_url: dict = {"url": None, "headers": None}
 
             async def intercept_offer_api(route):
                 """Intercept offer/data API calls, capture body inline before navigation disposes it."""
                 try:
+                    if captured_api_url["url"] is None:
+                        captured_api_url["url"] = route.request.url
+                        captured_api_url["headers"] = dict(route.request.headers)
                     response = await route.fetch()
                     body = await response.text()
                     data = _json.loads(body)
@@ -249,14 +259,49 @@ class TipwinRetriever(BrowserRetriever):
                 f"[{self.provider_id}] Paginating {max_pages} pages ({best_total} total items, pageSize={best_ps})"
             )
 
-            # Paginate via ?page=N — route handler captures response inline
-            for pg in range(2, max_pages + 1):
-                try:
-                    await page.goto(f"{full_url}?page={pg}", wait_until="domcontentloaded", timeout=10000)
-                    await asyncio.sleep(0.5)  # Give route handler time to fetch+fulfill
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
-                    break
+            # Parallelize remaining pages via context.request.get if we captured
+            # the API URL pattern. Fall back to sequential page.goto if not.
+            api_url = captured_api_url["url"]
+            if api_url and max_pages > 1:
+                parsed = urlparse(api_url)
+                api_base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                # Strip the existing `page=` param from the captured URL; we set it per-call
+                from urllib.parse import parse_qsl
+
+                params_template = [(k, v) for k, v in parse_qsl(parsed.query) if k != "page"]
+                api_headers = captured_api_url["headers"] or {}
+                ctx = page.context
+                page_sem = asyncio.Semaphore(8)
+
+                async def fetch_page(pg: int):
+                    params = params_template + [("page", str(pg))]
+                    async with page_sem:
+                        try:
+                            r = await ctx.request.get(api_base, params=dict(params), headers=api_headers, timeout=15000)
+                            if r.ok:
+                                data = _json.loads(await r.text())
+                                if isinstance(data, dict):
+                                    has_items = "items" in data and isinstance(data.get("items"), list)
+                                    has_offer = (
+                                        "offer" in data
+                                        and isinstance(data.get("offer"), list)
+                                        and len(data["offer"]) > 0
+                                    )
+                                    if has_items or has_offer:
+                                        api_responses.append(data)
+                        except Exception as e:
+                            logger.debug(f"[{self.provider_id}] Page {pg} parallel fetch error: {e}")
+
+                await asyncio.gather(*(fetch_page(p) for p in range(2, max_pages + 1)))
+            else:
+                # Fallback: sequential pagination via page.goto (legacy path)
+                for pg in range(2, max_pages + 1):
+                    try:
+                        await page.goto(f"{full_url}?page={pg}", wait_until="domcontentloaded", timeout=10000)
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
+                        break
 
             await page.unroute("**/offer/data*", intercept_offer_api)
 
