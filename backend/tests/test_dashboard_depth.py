@@ -21,6 +21,9 @@ async def test_record_depth_appends_and_broadcasts():
     orig = dash.broadcast
     dash.broadcast = fake_broadcast  # type: ignore[assignment]
     try:
+        # Isolate from any prior depth state in the module-level _state dict.
+        dash._state["depth"] = {"bids": {}, "asks": {}, "ts": 0.0}
+        dash._last_depth_emit = 0.0
         dash.record_depth({"price": 27400.0, "currentVolume": 5, "type": 1})
         dash.record_depth({"price": 27400.25, "currentVolume": 7, "type": 2})
         dash.record_depth({"price": 27400.0, "currentVolume": 9, "type": 1})

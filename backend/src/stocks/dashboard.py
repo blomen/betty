@@ -99,19 +99,12 @@ def create_dashboard_router() -> APIRouter:
 
     @router.get("/api/state")
     async def get_state():
-        depth = _state["depth"]
-        bids = sorted(depth["bids"].items(), key=lambda kv: -kv[0])[:20]
-        asks = sorted(depth["asks"].items(), key=lambda kv: kv[0])[:20]
         return {
             "ticks": list(_state["ticks"])[-200:],  # last 200 for initial chart
             "signals": list(_state["signals"]),
             "quote": list(_state["quotes"])[-1] if _state["quotes"] else None,
             "zones": _state["zones"],
-            "depth": {
-                "bids": [{"price": p, "size": s} for p, s in bids],
-                "asks": [{"price": p, "size": s} for p, s in asks],
-                "ts": depth["ts"],
-            },
+            "depth": _depth_snapshot(),
             "account": _state["account"],
             "positions": _state["positions"],
             "stats": _state["stats"],
@@ -606,19 +599,43 @@ _DEPTH_THROTTLE_S = 0.2
 _last_depth_emit = 0.0
 
 
+def _depth_snapshot() -> dict:
+    """Serialize the current depth book to top-20 levels per side, sorted.
+
+    Bids descend from the highest price, asks ascend from the lowest.
+    Used by both the WebSocket broadcast and GET /api/state seed.
+    """
+    depth = _state["depth"]
+    bids = sorted(depth["bids"].items(), key=lambda kv: -kv[0])[:20]
+    asks = sorted(depth["asks"].items(), key=lambda kv: kv[0])[:20]
+    return {
+        "bids": [{"price": p, "size": s} for p, s in bids],
+        "asks": [{"price": p, "size": s} for p, s in asks],
+        "ts": depth["ts"],
+    }
+
+
 def record_depth(level: dict) -> None:
-    """Called from TopstepXStream.on_depth.
+    """Called from TopstepXStream.on_depth on the asyncio event loop.
+
+    Unlike record_tick / record_fill (Playwright + broker threads), the
+    TopstepX stream callbacks run on the same loop as the WebSocket fanout,
+    so no run_coroutine_threadsafe / locking is needed for the throttle
+    state mutations below.
 
     `level` shape (from GatewayDepth, see backend/src/stocks/topstepx_stream.py:276-289):
       {"price": float, "currentVolume": int, "type": 1|2}  (1 = bid, 2 = ask)
-    Maintains a price→size dict per side; size 0 removes the level.
+    Levels with type outside {1, 2} or price 0 are dropped. Size 0 removes
+    the level from the book.
     """
     global _last_depth_emit
     price = float(level.get("price", 0))
     if price == 0:
         return
     size = int(level.get("currentVolume", 0))
-    side = level.get("type", 0)
+    side = level.get("type")
+    if side not in (1, 2):
+        return
     book = _state["depth"]["bids"] if side == 1 else _state["depth"]["asks"]
     if size <= 0:
         book.pop(price, None)
@@ -631,14 +648,5 @@ def record_depth(level: dict) -> None:
     _last_depth_emit = now
     _state["depth"]["ts"] = now
 
-    # Snapshot the current book — only top 20 levels each side, sorted.
-    bids_sorted = sorted(_state["depth"]["bids"].items(), key=lambda kv: -kv[0])[:20]
-    asks_sorted = sorted(_state["depth"]["asks"].items(), key=lambda kv: kv[0])[:20]
-    _emit(
-        {
-            "type": "depth",
-            "bids": [{"price": p, "size": s} for p, s in bids_sorted],
-            "asks": [{"price": p, "size": s} for p, s in asks_sorted],
-            "ts": now,
-        }
-    )
+    snapshot = _depth_snapshot()
+    _emit({"type": "depth", **snapshot})
