@@ -1,4 +1,5 @@
 """Tests for Smarkets signal-only parser."""
+
 import asyncio
 import json
 from pathlib import Path
@@ -18,16 +19,19 @@ from src.providers.smarkets import (
 
 
 class TestTypeScopeToSport:
-    @pytest.mark.parametrize("scope,expected", [
-        ("football", "football"),
-        ("basketball", "basketball"),
-        ("tennis", "tennis"),
-        ("ice-hockey", "ice_hockey"),
-        ("american-football", "american_football"),
-        ("baseball", "baseball"),
-        ("mma", "mma"),
-        ("boxing", "boxing"),
-    ])
+    @pytest.mark.parametrize(
+        "scope,expected",
+        [
+            ("football", "football"),
+            ("basketball", "basketball"),
+            ("tennis", "tennis"),
+            ("ice-hockey", "ice_hockey"),
+            ("american-football", "american_football"),
+            ("baseball", "baseball"),
+            ("mma", "mma"),
+            ("boxing", "boxing"),
+        ],
+    )
     def test_known_scopes(self, scope, expected):
         assert type_scope_to_sport(scope) == expected
 
@@ -112,20 +116,12 @@ class TestParseMarketPrices:
         """Parse the real captured fixtures — must yield 3 outcomes for the
         Nottm Forest vs Burnley full-time result market."""
         lep = json.loads(
-            (
-                Path(__file__).parent
-                / "fixtures"
-                / "smarkets"
-                / "last_executed_prices_example.json"
-            ).read_text(encoding="utf-8")
+            (Path(__file__).parent / "fixtures" / "smarkets" / "last_executed_prices_example.json").read_text(
+                encoding="utf-8"
+            )
         )
         quotes = json.loads(
-            (
-                Path(__file__).parent
-                / "fixtures"
-                / "smarkets"
-                / "quotes_example.json"
-            ).read_text(encoding="utf-8")
+            (Path(__file__).parent / "fixtures" / "smarkets" / "quotes_example.json").read_text(encoding="utf-8")
         )
         raw = {
             "last_executed_prices": lep.get("last_executed_prices", {}),
@@ -143,36 +139,22 @@ class TestSmarketsRetriever:
     def test_filter_events_by_sport_matches_type_field(self):
         """In real Smarkets data `type_scope` is null and `type` carries the
         sport as `<sport>_match`. filter_events_by_sport must use `type`."""
-        fixture = (
-            Path(__file__).parent
-            / "fixtures"
-            / "smarkets"
-            / "events_upcoming.json"
-        )
+        fixture = Path(__file__).parent / "fixtures" / "smarkets" / "events_upcoming.json"
         raw = json.loads(fixture.read_text(encoding="utf-8"))
 
         config = {"id": "smarkets", "params": {"min_trades_24h": 1}}
         retriever = SmarketsRetriever(config)
 
-        footballs = retriever.filter_events_by_sport(
-            raw.get("events", []), "football"
-        )
+        footballs = retriever.filter_events_by_sport(raw.get("events", []), "football")
         assert isinstance(footballs, list)
-        assert len(footballs) > 0, (
-            "Fixture must contain football matches — got 0"
-        )
+        assert len(footballs) > 0, "Fixture must contain football matches — got 0"
         for ev in footballs:
             assert ev.get("type") == "football_match"
 
     def test_filter_events_by_sport_unknown_returns_empty(self):
         config = {"id": "smarkets"}
         retriever = SmarketsRetriever(config)
-        assert (
-            retriever.filter_events_by_sport(
-                [{"type": "football_match"}], "cricket"
-            )
-            == []
-        )
+        assert retriever.filter_events_by_sport([{"type": "football_match"}], "cricket") == []
 
     def test_get_sport_url_uses_type_filter(self):
         """URL must include both type_domain and type=<sport>_match so the
@@ -241,18 +223,9 @@ class TestExtractHomeAwayFromEventName:
 
 class TestContractSide:
     def test_contract_type_home_away_draw(self):
-        assert (
-            _contract_side({"contract_type": {"name": "HOME"}, "slug": "home"})
-            == "home"
-        )
-        assert (
-            _contract_side({"contract_type": {"name": "DRAW"}, "slug": "draw"})
-            == "draw"
-        )
-        assert (
-            _contract_side({"contract_type": {"name": "AWAY"}, "slug": "away"})
-            == "away"
-        )
+        assert _contract_side({"contract_type": {"name": "HOME"}, "slug": "home"}) == "home"
+        assert _contract_side({"contract_type": {"name": "DRAW"}, "slug": "draw"}) == "draw"
+        assert _contract_side({"contract_type": {"name": "AWAY"}, "slug": "away"}) == "away"
 
     def test_falls_back_to_slug(self):
         assert _contract_side({"contract_type": None, "slug": "home"}) == "home"
@@ -270,14 +243,7 @@ class TestBuildEventLive:
     """
 
     def _load(self, name: str) -> dict:
-        return json.loads(
-            (
-                Path(__file__).parent
-                / "fixtures"
-                / "smarkets"
-                / name
-            ).read_text(encoding="utf-8")
-        )
+        return json.loads((Path(__file__).parent / "fixtures" / "smarkets" / name).read_text(encoding="utf-8"))
 
     def test_build_event_produces_home_away_and_named_outcomes(self):
         ev_raw = {
@@ -292,7 +258,7 @@ class TestBuildEventLive:
         prices_body = self._load("last_executed_prices_example.json")
         quotes_body = self._load("quotes_example.json")
 
-        async def fake_fetch(self, session, url):  # noqa: ARG001
+        async def fake_fetch(self, url):  # noqa: ARG001
             if url.endswith(f"/events/{ev_raw['id']}/markets/"):
                 return markets_body
             if "/contracts/" in url:
@@ -307,8 +273,8 @@ class TestBuildEventLive:
         retriever = SmarketsRetriever(config)
 
         async def run():
-            with patch.object(SmarketsRetriever, "_fetch_json", new=fake_fetch):
-                return await retriever._build_event(None, ev_raw, "football")
+            with patch.object(SmarketsRetriever, "_get_json", new=fake_fetch):
+                return await retriever._build_event(ev_raw, "football")
 
         ev = asyncio.run(run())
 
@@ -317,23 +283,17 @@ class TestBuildEventLive:
         assert ev.home_team == "Nottm Forest"
         assert ev.away_team == "Burnley"
         # 1x2 produced with canonical side names, not numeric contract IDs.
-        one_x_two = next(
-            (k for k in ev.markets if k["type"] == "1x2"), None
-        )
+        one_x_two = next((k for k in ev.markets if k["type"] == "1x2"), None)
         assert one_x_two is not None, "Expected a 1x2 market from WINNER_3_WAY"
         names = {o["name"] for o in one_x_two["outcomes"]}
-        assert names == {"home", "draw", "away"}, (
-            f"Expected canonical side names, got {names}"
-        )
+        assert names == {"home", "draw", "away"}, f"Expected canonical side names, got {names}"
         for o in one_x_two["outcomes"]:
-            assert not str(o["name"]).isdigit(), (
-                f"Numeric contract ID leaked as outcome name: {o['name']!r}"
-            )
+            assert not str(o["name"]).isdigit(), f"Numeric contract ID leaked as outcome name: {o['name']!r}"
             assert o["odds"] >= 1.0
         # Spread / total must NOT appear (deferred on Smarkets).
-        assert not any(
-            k["type"] in ("spread", "total") for k in ev.markets
-        ), "Smarkets must not emit spread/total markets"
+        assert not any(k["type"] in ("spread", "total") for k in ev.markets), (
+            "Smarkets must not emit spread/total markets"
+        )
 
     def test_build_event_skips_when_name_unsplittable(self):
         """No home/away separator in event name → skip event entirely."""
@@ -343,13 +303,13 @@ class TestBuildEventLive:
             "type": "football_match",
         }
 
-        async def fake_fetch(self, session, url):  # noqa: ARG001
+        async def fake_fetch(self, url):  # noqa: ARG001
             return None  # should not be reached
 
         retriever = SmarketsRetriever({"id": "smarkets"})
 
         async def run():
-            with patch.object(SmarketsRetriever, "_fetch_json", new=fake_fetch):
-                return await retriever._build_event(None, ev_raw, "football")
+            with patch.object(SmarketsRetriever, "_get_json", new=fake_fetch):
+                return await retriever._build_event(ev_raw, "football")
 
         assert asyncio.run(run()) is None
