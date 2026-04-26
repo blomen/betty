@@ -53,6 +53,14 @@ assert len(_ACCENT_SRC) == len(_ACCENT_DST), "Pinnacle accent map mismatch"
 _ACCENT_TABLE = str.maketrans(_ACCENT_SRC, _ACCENT_DST)
 
 
+def _g(obj, k, d=None):
+    """Get attribute or dict key — handles both shapes (used for bet dicts that
+    may come in as either dataclass-like objects or plain dicts)."""
+    if isinstance(obj, dict):
+        return obj.get(k, d)
+    return getattr(obj, k, d)
+
+
 def american_to_decimal(price: float) -> float:
     """Convert American odds to decimal.
 
@@ -164,8 +172,6 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
         URL pattern (verified):
             https://www.pinnacle.se/en/{sport}/{league-slug}/{home}-vs-{away}/{matchupId}/
         """
-        _g = lambda obj, k, d=None: obj.get(k, d) if isinstance(obj, dict) else getattr(obj, k, d)
-
         current_url = page.url or ""
 
         # Step 1: already on the event page (matchupId in URL)
@@ -240,8 +246,6 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
           3. Wait up to 5s for localStorage["Main:Betslip"].Selections.length > 0
           4. Write stake via DOM input setter (verified in discovery)
         """
-        _g = lambda obj, k, d=None: obj.get(k, d) if isinstance(obj, dict) else getattr(obj, k, d)
-
         market = (_g(bet, "market") or "moneyline").lower()
         outcome = (_g(bet, "outcome") or "home").lower()
         bet_id = _g(bet, "bet_id", 0) or 0
