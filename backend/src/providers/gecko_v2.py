@@ -292,7 +292,11 @@ class GeckoV2Retriever(BrowserRetriever):
             self._api_headers = headers
             self._api_base = api_base_holder[0] if api_base_holder else self.site_url
             self._session_ready = True
-            logger.debug(
+            # Promoted from debug → info so we can see whether the captured api_base
+            # matches the brand. spelklubben's debugging revealed cases where the
+            # captured base diverges from site_url (cross-domain CDN like
+            # d-cf.<brand>playground.net) — silent until things break.
+            logger.info(
                 f"[{self.provider_id}] Session established with {len(headers)} headers, API base: {self._api_base}"
             )
             return True
@@ -467,10 +471,10 @@ class GeckoV2Retriever(BrowserRetriever):
                     timeout=30,
                 )
             except asyncio.TimeoutError:
-                logger.error(f"[{self.provider_id}] API page 1 request timed out after 30s")
+                logger.error(f"[{self.provider_id}] API page 1 request timed out after 30s — url={url_p1}")
                 return []
             except Exception as e:
-                logger.error(f"[{self.provider_id}] API request failed: {e}")
+                logger.error(f"[{self.provider_id}] API request failed: {e} — url={url_p1}")
                 return []
 
             if not resp.ok:
