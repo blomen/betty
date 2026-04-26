@@ -204,6 +204,12 @@ class GeckoV2Retriever(BrowserRetriever):
             # Capture headers and API base URL from the first API request
             captured = {}
             api_base_holder: list[str] = []
+            # Diagnostic: also record URLs we observed but did NOT match. When a
+            # provider's SPA changes its API path (e.g. spelklubben.se moved to
+            # Next.js around 2026-04-11 and stopped firing `/api/sb/*` requests
+            # entirely), the capture silently times out with no clue WHY. Capping
+            # at 20 so the log line stays readable.
+            seen_urls: list[str] = []
 
             async def capture_route(route, request):
                 url = request.url
@@ -214,7 +220,14 @@ class GeckoV2Retriever(BrowserRetriever):
                 with contextlib.suppress(Exception):
                     await route.continue_()
 
+            async def observe_request(request):
+                # Best-effort URL recorder for diagnostics. Bound to 20 entries
+                # to avoid spamming logs on a successful run.
+                if len(seen_urls) < 20 and "/api/" in request.url:
+                    seen_urls.append(request.url)
+
             await page.route("**/api/sb/**", capture_route)
+            page.on("request", observe_request)
 
             # Navigate to site
             url = f"{self.site_url}{self._init_path}"
@@ -246,9 +259,20 @@ class GeckoV2Retriever(BrowserRetriever):
                     logger.debug(f"[{self.provider_id}] Sport page fallback failed: {e}")
 
             await page.unroute("**/api/sb/**")
+            with contextlib.suppress(Exception):
+                page.remove_listener("request", observe_request)
 
             if not captured:
-                logger.error(f"[{self.provider_id}] No API headers captured after page load + fallback")
+                if seen_urls:
+                    logger.error(
+                        f"[{self.provider_id}] No /api/sb/ headers captured. "
+                        f"Observed {len(seen_urls)} other /api/ requests: {seen_urls[:10]}"
+                    )
+                else:
+                    logger.error(
+                        f"[{self.provider_id}] No /api/sb/ headers captured AND no /api/ requests fired at all — "
+                        f"SPA may have moved off the OBG platform"
+                    )
                 return False
 
             # Extract only the custom headers needed for API calls
