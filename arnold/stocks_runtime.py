@@ -162,10 +162,6 @@ async def _passive_dashboard_listener() -> None:
                     except json.JSONDecodeError:
                         continue
                     t = msg.get("type")
-                    # NOTE: server /ws/signals does not broadcast L2 depth in autonomous
-                    # mode; the passive listener gets ticks/zones/signals/dqn only. Depth
-                    # only flows in active mode (where this process owns the TopstepX
-                    # session and stream.on_depth = record_depth fires locally).
                     if t == "zone_update":
                         update_zones(msg.get("zones", []))
                     elif t == "signal":
@@ -179,6 +175,28 @@ async def _passive_dashboard_listener() -> None:
                             float(msg.get("ts", 0)),
                             msg.get("side", "B"),
                         )
+                    elif t == "depth":
+                        # Server pre-aggregates a top-20 snapshot. Mirror it
+                        # directly into _state["depth"] (skip per-level
+                        # record_depth since the dict overwrites are
+                        # already done server-side). Re-emit so local WS
+                        # clients see the same payload shape.
+                        from src.stocks.dashboard import _emit
+                        from src.stocks.dashboard import _state as _ds
+
+                        bids = msg.get("bids") or []
+                        asks = msg.get("asks") or []
+                        try:
+                            _ds["depth"]["bids"] = {
+                                float(lvl["price"]): int(lvl["size"]) for lvl in bids if isinstance(lvl, dict)
+                            }
+                            _ds["depth"]["asks"] = {
+                                float(lvl["price"]): int(lvl["size"]) for lvl in asks if isinstance(lvl, dict)
+                            }
+                            _ds["depth"]["ts"] = float(msg.get("ts") or 0.0)
+                            _emit({"type": "depth", "bids": bids, "asks": asks, "ts": msg.get("ts") or 0.0})
+                        except Exception:
+                            log.exception("passive depth handler malformed payload")
         except Exception as exc:
             log.warning("Passive dashboard listener: connection lost (%s) — retrying in 5s", exc)
             await asyncio.sleep(5)

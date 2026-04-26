@@ -40,7 +40,7 @@ export default function SignalsPage({ ws }: Props) {
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <ZonesTable zones={ws.zones} lastPrice={ws.lastPrice} />
-        <L2Ladder depth={ws.depth} lastPrice={ws.lastPrice} autonomous={ws.autonomous} />
+        <L2Ladder depth={ws.depth} lastPrice={ws.lastPrice} />
       </div>
       <EventLog signals={ws.signals} fills={ws.fills} exits={ws.exits} />
     </div>

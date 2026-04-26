@@ -3,22 +3,14 @@ import type { DepthSnapshot } from '@/types/stocks'
 interface Props {
   depth: DepthSnapshot | null
   lastPrice: number | null
-  autonomous?: boolean
 }
 
-export function L2Ladder({ depth, lastPrice, autonomous = false }: Props) {
+export function L2Ladder({ depth, lastPrice }: Props) {
   if (!depth || (!depth.bids.length && !depth.asks.length)) {
     return (
       <div className="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs font-mono">
         <div className="text-zinc-500 uppercase tracking-wider mb-1">L2 Depth</div>
-        {autonomous ? (
-          <div className="text-zinc-400 leading-tight">
-            Unavailable in autonomous mode — the server owns the TopstepX
-            session, so GatewayDepth doesn't reach this client.
-          </div>
-        ) : (
-          <div className="text-zinc-400">No depth feed</div>
-        )}
+        <div className="text-zinc-400">No depth feed</div>
       </div>
     )
   }

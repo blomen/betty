@@ -118,6 +118,27 @@ async def startup():
     _overlay_task = asyncio.create_task(broadcaster.loop(), name="tv-overlay-broadcaster")
     logger.info("TV overlay broadcaster started")
 
+    # Eagerly start the mirror Chromium and auto-open TradingView so the
+    # overlay extension attaches without the user having to click anything.
+    # Sportsbook flows continue to use the same mirror — they share tabs.
+    asyncio.create_task(_auto_open_tradingview(), name="tv-mirror-autoopen")
+
+
+async def _auto_open_tradingview() -> None:
+    """Wait briefly for the local server to settle, then start the mirror
+    and navigate it to the NQ chart. Failures are logged, never raised —
+    the mirror also auto-starts on first sportsbook click as before."""
+    try:
+        await asyncio.sleep(2)  # let uvicorn finish boot before spinning Chromium
+        if not browser.running:
+            logger.info("Auto-starting mirror browser for TradingView overlay")
+            await browser.start()
+        url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
+        await browser.open_tab(url)
+        logger.info("Mirror opened TradingView tab: %s", url)
+    except Exception:
+        logger.exception("Auto-open TradingView failed — manual button still works")
+
 
 @app.on_event("shutdown")
 async def shutdown():

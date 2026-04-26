@@ -163,6 +163,60 @@ def _persist_broker_trade_direct(payload: dict) -> None:
     threading.Thread(target=_worker, args=(payload,), daemon=True, name="broker-trade-persist").start()
 
 
+def _build_server_depth_handler(level_monitor):
+    """Build a TopstepXStream.on_depth callback that maintains a price->size
+    book and broadcasts a throttled top-20 snapshot to all attached
+    /ws/signals clients via level_monitor's signal callbacks. This is what
+    feeds the local L2Ladder card in autonomous mode (where the local app
+    can't see GatewayDepth directly because the server owns TopstepX)."""
+    import asyncio as _asyncio
+    import time as _time
+
+    state = {"bids": {}, "asks": {}, "ts": 0.0}
+    throttle_s = 0.2
+    last_emit = [0.0]
+
+    def _on_depth(level: dict) -> None:
+        try:
+            price = float(level.get("price", 0))
+            if price == 0:
+                return
+            size = int(level.get("currentVolume", 0))
+            side = level.get("type")
+            if side not in (1, 2):
+                return
+            book = state["bids"] if side == 1 else state["asks"]
+            if size <= 0:
+                book.pop(price, None)
+            else:
+                book[price] = size
+
+            now = _time.time()
+            if now - last_emit[0] < throttle_s:
+                return
+            last_emit[0] = now
+            state["ts"] = now
+
+            bids_sorted = sorted(state["bids"].items(), key=lambda kv: -kv[0])[:20]
+            asks_sorted = sorted(state["asks"].items(), key=lambda kv: kv[0])[:20]
+            msg = {
+                "type": "depth",
+                "bids": [{"price": p, "size": s} for p, s in bids_sorted],
+                "asks": [{"price": p, "size": s} for p, s in asks_sorted],
+                "ts": now,
+            }
+            callbacks = getattr(level_monitor, "_signal_callbacks", set())
+            for cb in list(callbacks):
+                try:
+                    _asyncio.create_task(cb(msg))
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("server _on_depth handler raised")
+
+    return _on_depth
+
+
 def _build_server_tick_handler(app, level_monitor):
     """Build a TopstepXStream.on_tick callback that mirrors the logic in
     signals_ws.py's tick branch — but called directly from the stream
@@ -325,6 +379,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     )
     stream.on_tick = _build_server_tick_handler(app, level_monitor)
     stream.on_fill = adapter.on_stream_fill
+    stream.on_depth = _build_server_depth_handler(level_monitor)
 
     log.info("Starting TopstepX stream (server-side)...")
     await stream.start()
