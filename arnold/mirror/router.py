@@ -307,8 +307,26 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.post("/start")
     async def start_browser():
-        """Launch the mirror browser. Idempotent — safe to call when already running."""
+        """Launch the mirror browser. Idempotent — safe to call when already running.
+
+        Eagerly opens tabs for the 4 unlimited counter providers (pinnacle, polymarket,
+        cloudbet, kalshi) so the user can log into each in one pass. They stay open for
+        the session and serve as on-demand counter legs for arb opps. Idempotent —
+        re-calling /start is safe; existing tabs are reused.
+        """
         await browser.start()
+        for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi"):
+            try:
+                workflow = get_workflow(pid)
+                if not workflow.domain:
+                    continue
+                if browser.context:
+                    already = any(workflow.domain in (p.url or "") for p in browser.context.pages)
+                    if already:
+                        continue
+                    await browser.open_tab(workflow.home_url)
+            except Exception:
+                continue
         return browser.get_status()
 
     @router.post("/stop")
@@ -384,9 +402,22 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.post("/open-tab")
     async def open_tab(req: OpenTabRequest):
-        """Open a new browser tab navigated to the given URL."""
+        """Open a new browser tab navigated to the given URL.
+
+        Auto-starts the mirror Chromium if it isn't running yet. The
+        boot-time auto-open task in server.py also tries to start it,
+        but the user may hit this button before that fires (or after a
+        Chromium crash). One source of truth: this endpoint always
+        works regardless of which path got us here.
+        """
         if not browser.running:
-            raise HTTPException(status_code=400, detail="Mirror browser is not running")
+            try:
+                await browser.start()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to start mirror browser: {exc}",
+                ) from exc
         page = await browser.open_tab(req.url)
         return {"url": page.url}
 

@@ -36,19 +36,32 @@ export function TVOverlayStatus() {
   const openInMirror = async () => {
     setOpening(true)
     setOpenError(null)
+    // 30s upper bound — Chromium cold-start with extension load takes ~10s.
+    // Without this the button could hang forever if the server stalls.
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), 30_000)
     try {
       const r = await fetch('/mirror/open-tab', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: TV_NQ_URL }),
+        signal: ac.signal,
       })
       if (!r.ok) {
-        const txt = await r.text()
-        setOpenError(txt.slice(0, 120) || `HTTP ${r.status}`)
+        let detail = ''
+        try {
+          const body = await r.json()
+          detail = body?.detail ?? ''
+        } catch {
+          detail = await r.text().catch(() => '')
+        }
+        setOpenError(detail.slice(0, 200) || `HTTP ${r.status}`)
       }
     } catch (e) {
-      setOpenError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setOpenError(msg.includes('aborted') ? 'timeout (30s) — check arnold.bat log' : msg)
     } finally {
+      clearTimeout(timer)
       setOpening(false)
     }
   }
