@@ -238,6 +238,17 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
     issues: list[str] = []
     providers: list[dict] = []
 
+    # Map each requested provider to the canonical provider whose rows actually
+    # land in `odds` — non-canonical platform members (e.g. spelklubben →
+    # betsson, expekt → unibet) have their odds stored under the canonical
+    # provider_id by storage.store_provider_event. Reading by raw provider_id
+    # would see only stale pre-consolidation rows and report 'CRITICAL stale'
+    # for providers that are actually writing fresh data.
+    from ..constants import PROVIDER_CANONICAL
+
+    canonical_for: dict[str, str] = {p: PROVIDER_CANONICAL.get(p, p) for p in intervals}
+    canonical_set = set(canonical_for.values())
+
     rows = db.execute(
         text(
             "SELECT provider_id, MAX(updated_at) AS last_update "
@@ -245,13 +256,14 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
             "WHERE provider_id = ANY(:provs) "
             "GROUP BY provider_id"
         ),
-        {"provs": list(intervals.keys())},
+        {"provs": list(canonical_set)},
     ).fetchall()
-    last_update_by_provider: dict[str, datetime] = {r[0]: r[1] for r in rows}
+    last_update_by_canonical: dict[str, datetime] = {r[0]: r[1] for r in rows}
 
     for provider_id, expected_interval in intervals.items():
         is_sharp = provider_id == "pinnacle"
-        last_update = last_update_by_provider.get(provider_id)
+        # Resolve via canonical so platform members share their canonical's freshness.
+        last_update = last_update_by_canonical.get(canonical_for[provider_id])
         if last_update is None:
             age_min = None
         else:
