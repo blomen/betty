@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest  # noqa: F401
+
 from arnold.mirror.arb_runner import ArbRunner
 
 
@@ -137,7 +139,8 @@ class TestAlignmentPayload:
         runner._streams = {"betinia": anchor_stream, "pinnacle": counter_stream}
         return runner
 
-    def test_alignment_includes_slip_state_per_leg(self):
+    @pytest.mark.asyncio
+    async def test_alignment_includes_slip_state_per_leg(self):
         runner = self._setup_runner_with_loaded_opp()
         # Tick anchor with planned odds (green) and counter with planned odds (green)
         runner._latest_counter_odds = {"pinnacle": 2.05}
@@ -158,7 +161,8 @@ class TestAlignmentPayload:
         assert all("planned_odds" in leg for leg in legs)
         assert all(leg["slip_state"] == "green" for leg in legs)
 
-    def test_alignment_marks_red_when_anchor_drifts_below_tol(self):
+    @pytest.mark.asyncio
+    async def test_alignment_marks_red_when_anchor_drifts_below_tol(self):
         runner = self._setup_runner_with_loaded_opp()
         # Drift anchor below 1% tol: 2.10 * 0.99 = 2.079; 2.07 < 2.079 → red
         runner._latest_counter_odds = {"pinnacle": 2.05}

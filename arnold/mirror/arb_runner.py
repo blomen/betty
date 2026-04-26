@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -514,10 +513,8 @@ class ArbRunner:
         self._all_green = all_green
 
         # Throttle broadcast
-        try:
-            now = asyncio.get_running_loop().time()
-        except RuntimeError:
-            now = time.monotonic()
+        loop = asyncio.get_running_loop()
+        now = loop.time()
         if now - self._last_alignment_broadcast >= _ALIGNMENT_BROADCAST_THROTTLE_S:
             self._last_alignment_broadcast = now
             self._broadcaster.publish(
