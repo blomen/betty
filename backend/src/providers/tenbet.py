@@ -321,11 +321,20 @@ class TenBetRetriever(BrowserRetriever):
         url = f"{self.site_url}/sports/{sport_slug}/competitions"
         page = self.transport.page
 
+        # 30s was the previous bump after 15s was too tight under proxy contention.
+        # Even 30s is now intermittently timing out (observed `[10bet] Failed to
+        # discover competitions for football: Page.goto: Timeout 30000ms`), and
+        # a single goto failure tanks the whole sport extraction. One retry with
+        # a 60s budget recovers the transient case without cementing a longer
+        # default for healthy runs.
         try:
-            # 15s was too tight under Bahnhof proxy contention — every sport
-            # except football was hitting Page.goto timeout. 30s gives headroom
-            # while still catching genuinely dead pages.
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as goto_err:
+                logger.warning(
+                    f"[{self.provider_id}] {sport_slug} goto failed once ({goto_err}); retrying with 60s budget"
+                )
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             # Try to wait for competition links to appear
             try:

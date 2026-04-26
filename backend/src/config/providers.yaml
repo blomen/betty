@@ -110,7 +110,7 @@ orchestrator:
   health_check:
     enabled: true
     strategy: on_demand
-    timeout_seconds: 60.0              # Increased to 60s for browser-based providers (comeon, hajper, snabbare take 30-50s)
+    timeout_seconds: 120.0             # Was 60s — kalshi's limit=1 probe pulls every Kalshi market via residential proxy and grazes 60s under contention. 120s gives slow API providers headroom without meaningfully slowing failure detection (cache TTL is 60s anyway).
     check_before_extraction: true
 
   metrics:
