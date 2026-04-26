@@ -500,14 +500,22 @@ class ExtractionScheduler:
                 )
                 await self._start_schedule(schedule)
             else:
-                # One schedule per provider (independent loops)
-                # Minimal stagger (2s) — PostgreSQL handles concurrent writes natively
+                # One schedule per provider (independent loops).
+                # Browser-tier providers need a wider stagger (15s) because
+                # Playwright/CDP driver bootstrap is racy when multiple
+                # browsers launch in the same second post-restart — observed
+                # 4 browser providers all hit "Connection closed while reading
+                # from the driver" at the exact same UTC instant during a
+                # rebuild. API tiers can stay at the original 2s since
+                # PostgreSQL handles concurrent writes natively.
+                browser_categories = {"browser_soft", "browser_antibot"}
+                stagger_step = 15 if category_name in browser_categories else 2
                 for i, provider_id in enumerate(providers):
                     schedule = ProviderSchedule(
                         provider_id=provider_id,
                         category=category_name,
                         interval_seconds=interval_seconds,
-                        stagger_delay=i * 2,
+                        stagger_delay=i * stagger_step,
                     )
                     await self._start_schedule(schedule)
 

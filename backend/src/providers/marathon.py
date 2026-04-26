@@ -44,19 +44,15 @@ _SPORT_URL_MAP = {
 
 _BASE_URL = "https://www.marathonbet.com/en/betting/"
 
-# Regex: find coupon-row divs with their full content
-_EVENT_BLOCK_RE = re.compile(
+# Single canonical pattern for splitting event blocks. Pre-fix two unused
+# variants (_EVENT_BLOCK_RE, _FULL_BLOCK_RE) lived alongside an inline copy
+# in _split_events — three patterns, only one in use. Now we define it once
+# at module level and reuse.
+_COUPON_ROW_RE = re.compile(
     r'<div[^>]+class="[^"]*coupon-row[^"]*"[^>]+'
     r'data-event-eventId="(\d+)"[^>]+'
     r'data-event-name="([^"]+)"[^>]+'
     r'data-live="(true|false)"[^>]*>',
-    re.DOTALL,
-)
-
-# Match individual event block: from opening div to the next top-level coupon-row (greedy bounded)
-_FULL_BLOCK_RE = re.compile(
-    r'(<div[^>]+class="[^"]*coupon-row[^"]*"[^>]+data-event-eventId="(\d+)"[^>]+'
-    r'data-event-name="([^"]+)"[^>]+data-live="(true|false)"[^>]*>)',
     re.DOTALL,
 )
 
@@ -88,15 +84,7 @@ def _split_events(html: str) -> list[tuple]:
     Since events are nested in a flat list, we split on the opening tag of each
     coupon-row and treat the text up to the next coupon-row as one block.
     """
-    # Find all opening tags with their positions
-    pattern = re.compile(
-        r'<div[^>]+class="[^"]*(?:coupon-row)[^"]*"[^>]+'
-        r'data-event-eventId="(\d+)"[^>]+'
-        r'data-event-name="([^"]+)"[^>]+'
-        r'data-live="(true|false)"[^>]*>',
-        re.DOTALL,
-    )
-    matches = list(pattern.finditer(html))
+    matches = list(_COUPON_ROW_RE.finditer(html))
     results = []
     for i, m in enumerate(matches):
         event_id = m.group(1)
@@ -150,11 +138,27 @@ def parse_event_html(html_block: str, sport: str, event_id: str, event_name: str
     if len(selections) < ml_count:
         return None
 
+    # Sanity check the match-winner odds before positional decoding commits
+    # us to a layout: implied probabilities must sum within a sane vig range
+    # (1.00 to 1.30 for prematch — typical bookmaker over-round is 4-12%).
+    # If the layout shifted we'd see arbitrary odds slotted into match-winner
+    # positions and the sum would be far off — bail rather than mis-attribute.
+    mw_odds = selections[:ml_count]
+    try:
+        implied_sum = sum(1.0 / o for o in mw_odds if o > 1.0)
+    except Exception:
+        implied_sum = 0.0
+    if not (0.95 < implied_sum < 1.40):
+        logger.debug(
+            f"[marathon] {event_id}: match-winner odds sum implausible "
+            f"(implied={implied_sum:.3f}, odds={mw_odds}) — skipping event"
+        )
+        return None
+
     # Build markets list
     markets = []
 
     # Match winner (1x2 or moneyline) — first ml_count selections
-    mw_odds = selections[:ml_count]
     if is_no_draw:
         market_type = "moneyline"
         mw_outcomes = [
