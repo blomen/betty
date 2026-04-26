@@ -88,6 +88,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         self.site_url: str = raw_site_url.rstrip("/")
         self._camoufox_browser = None
         self._camoufox_page = None
+        # Track Firefox PIDs spawned by Camoufox so we can SIGKILL the
+        # process tree if __aexit__ silently fails. Same orphan-process
+        # source as coolbet — see CoolbetRetriever._cleanup_camoufox.
+        self._camoufox_pids: set[int] = set()
 
     # ------------------------------------------------------------------
     # Camoufox anti-detect browser (Cloudflare bypass)
@@ -138,8 +142,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             ).__aenter__()
 
             self._camoufox_page = await self._camoufox_browser.new_page()
+            self._camoufox_pids = self._snapshot_firefox_pids()
             proxy_msg = " with residential proxy" if proxy else ""
-            logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time() - t0:.1f}s")
+            logger.info(
+                f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time() - t0:.1f}s "
+                f"(tracking {len(self._camoufox_pids)} firefox PIDs)"
+            )
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
@@ -147,8 +155,28 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             self._camoufox_page = None
             return None
 
+    def _snapshot_firefox_pids(self) -> set[int]:
+        """Snapshot PIDs of firefox children that Camoufox just spawned."""
+        try:
+            import os
+
+            import psutil
+        except ImportError:
+            return set()
+        try:
+            children = psutil.Process(os.getpid()).children(recursive=True)
+            return {c.pid for c in children if "firefox" in (c.name() or "").lower()}
+        except Exception:
+            return set()
+
     async def _cleanup_camoufox(self):
-        """Close camoufox browser."""
+        """Close camoufox browser, then SIGKILL any orphan Firefox processes.
+
+        See CoolbetRetriever._cleanup_camoufox — same root cause: __aexit__
+        can return without actually killing the Firefox subprocess, leaving
+        orphans for the container watchdog to hard-kill later.
+        """
+        tracked_pids = self._camoufox_pids
         if self._camoufox_browser:
             try:
                 await self._camoufox_browser.__aexit__(None, None, None)
@@ -157,6 +185,40 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             finally:
                 self._camoufox_browser = None
                 self._camoufox_page = None
+
+        if not tracked_pids:
+            self._camoufox_pids = set()
+            return
+        try:
+            import os
+            import signal
+
+            import psutil
+
+            survivors = []
+            for pid in tracked_pids:
+                try:
+                    if psutil.Process(pid).is_running():
+                        survivors.append(pid)
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except Exception:
+                    survivors.append(pid)
+            for pid in survivors:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    continue
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] SIGKILL failed for orphan PID {pid}: {e}")
+            if survivors:
+                logger.warning(
+                    f"[{self.provider_id}] SIGKILL'd {len(survivors)} orphan Firefox PIDs that __aexit__ left behind"
+                )
+        except ImportError:
+            pass
+        finally:
+            self._camoufox_pids = set()
 
     async def _get_page(self):
         """Get a browser page — Camoufox for Cloudflare bypass, Playwright fallback."""
@@ -221,44 +283,55 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         )
 
         for sport_idx, sport_key in enumerate(sports_to_extract):
-            # Proactively recycle the Camoufox page between sports.
-            # After 20+ page.goto() calls per sport, the page accumulates SPA state
-            # and memory until it crashes. Recycling prevents the crash entirely
-            # and keeps the API league discovery working (faster than DOM fallback).
-            if sport_idx > 0 and self._camoufox_browser:
-                # Close old page (may already be dead — that's fine)
-                if self._camoufox_page:
-                    with contextlib.suppress(Exception):
-                        await self._camoufox_page.close()
-                    self._camoufox_page = None
-
-                # Create fresh page from existing browser
+            # Light recycle between sports: navigate the SAME page through
+            # about:blank to drop accumulated SPA state, instead of closing
+            # and re-opening a tab + re-warming the homepage. Pre-fix the
+            # close+new+goto+sleep+dismiss path cost 5-7s per sport boundary
+            # (35-50s per cycle for 7 sports). Cloudflare cookies persist on
+            # the existing context, so we keep the warm-up handshake.
+            #
+            # Fall back to the heavy full-recycle path on failure (e.g., the
+            # SPA wedged so badly that even about:blank can't take over).
+            if sport_idx > 0 and self._camoufox_browser and self._camoufox_page is not None:
+                light_recycled = False
                 try:
-                    self._camoufox_page = await self._camoufox_browser.new_page()
-                    self._page = self._camoufox_page
-                    # Re-warm: visit homepage to pass Cloudflare + set cookies
-                    await self._page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(2)
-                    await self._dismiss_cookie_overlay(self._page)
-                    self._cookie_dismissed = True
-                    logger.debug(f"[{self.provider_id}] Recycled page before {sport_key}")
+                    await self._camoufox_page.goto("about:blank", wait_until="domcontentloaded", timeout=10000)
+                    light_recycled = True
+                    logger.debug(f"[{self.provider_id}] Light recycle (about:blank) before {sport_key}")
                 except Exception as e:
-                    logger.warning(f"[{self.provider_id}] Page recycle failed ({e}), full relaunch...")
-                    await self._cleanup_camoufox()
-                    page = await self._ensure_camoufox()
-                    if page:
-                        self._page = page
-                        try:
-                            await page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
-                            await asyncio.sleep(2)
-                            await self._dismiss_cookie_overlay(page)
-                            self._warmed_up = True
-                            self._cookie_dismissed = True
-                        except Exception:
-                            pass
-                    else:
-                        logger.error(f"[{self.provider_id}] Page recovery failed, stopping extraction")
-                        break
+                    logger.debug(f"[{self.provider_id}] Light recycle failed ({e}), falling back to heavy recycle")
+
+                if not light_recycled:
+                    # Heavy fallback: close + new tab + full warm-up. Same as pre-fix.
+                    if self._camoufox_page:
+                        with contextlib.suppress(Exception):
+                            await self._camoufox_page.close()
+                        self._camoufox_page = None
+                    try:
+                        self._camoufox_page = await self._camoufox_browser.new_page()
+                        self._page = self._camoufox_page
+                        await self._page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
+                        await asyncio.sleep(2)
+                        await self._dismiss_cookie_overlay(self._page)
+                        self._cookie_dismissed = True
+                        logger.debug(f"[{self.provider_id}] Heavy recycle complete before {sport_key}")
+                    except Exception as e:
+                        logger.warning(f"[{self.provider_id}] Heavy recycle failed ({e}), full relaunch...")
+                        await self._cleanup_camoufox()
+                        page = await self._ensure_camoufox()
+                        if page:
+                            self._page = page
+                            try:
+                                await page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
+                                await asyncio.sleep(2)
+                                await self._dismiss_cookie_overlay(page)
+                                self._warmed_up = True
+                                self._cookie_dismissed = True
+                            except Exception:
+                                pass
+                        else:
+                            logger.error(f"[{self.provider_id}] Page recovery failed, stopping extraction")
+                            break
 
             try:
                 sports_attempted += 1

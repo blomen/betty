@@ -104,6 +104,11 @@ class CoolbetRetriever(BrowserRetriever):
         self._camoufox_browser = None
         self._camoufox_page = None
         self._sports_on_page = 0  # Track usage to proactively recycle
+        # Track Firefox PIDs spawned by Camoufox so we can SIGKILL the process
+        # tree if __aexit__ silently fails. Pre-fix the cleanup swallowed pipe
+        # errors and orphan Firefox processes accumulated until the container
+        # watchdog hard-killed them — explains the 30+/night force-kill events.
+        self._camoufox_pids: set[int] = set()
 
     async def _recycle_page(self):
         """Close current page and create a fresh one from existing browser.
@@ -198,7 +203,11 @@ class CoolbetRetriever(BrowserRetriever):
                 logger.info(f"[{self.provider_id}] Camoufox launched with proxy + fresh fingerprint")
 
             self._camoufox_page = await self._camoufox_browser.new_page()
-            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time() - t0:.1f}s")
+            self._camoufox_pids = self._snapshot_firefox_pids()
+            logger.info(
+                f"[{self.provider_id}] Camoufox browser ready in {time.time() - t0:.1f}s "
+                f"(tracking {len(self._camoufox_pids)} firefox PIDs)"
+            )
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
@@ -206,8 +215,39 @@ class CoolbetRetriever(BrowserRetriever):
             self._camoufox_page = None
             return None
 
+    def _snapshot_firefox_pids(self) -> set[int]:
+        """Snapshot PIDs of firefox processes that look like Camoufox children.
+
+        Used at launch time and on cleanup to detect orphans that __aexit__
+        failed to kill. Best-effort — if psutil isn't installed (rare), we
+        return an empty set and the cleanup falls back to its existing
+        exception-suppress behavior.
+        """
+        try:
+            import os
+
+            import psutil
+        except ImportError:
+            return set()
+        my_pid = os.getpid()
+        try:
+            children = psutil.Process(my_pid).children(recursive=True)
+            return {c.pid for c in children if "firefox" in (c.name() or "").lower()}
+        except Exception:
+            return set()
+
     async def _cleanup_camoufox(self):
-        """Close camoufox browser (suppresses pipe errors from subprocess cleanup)."""
+        """Close camoufox browser, then SIGKILL any orphan Firefox processes.
+
+        Camoufox's `__aexit__` can return without actually terminating the
+        Firefox subprocess (known under memory pressure / hung navigation).
+        Pre-fix the cleanup just suppressed the pipe error and Firefox went on
+        living until the container watchdog hard-killed it — accounting for
+        the 30+/night force-kill events. We now snapshot PIDs at launch (see
+        `_snapshot_firefox_pids`) and explicitly SIGKILL any of them that
+        survive `__aexit__`.
+        """
+        tracked_pids = self._camoufox_pids
         if self._camoufox_browser:
             try:
                 await self._camoufox_browser.__aexit__(None, None, None)
@@ -218,6 +258,41 @@ class CoolbetRetriever(BrowserRetriever):
             finally:
                 self._camoufox_browser = None
                 self._camoufox_page = None
+
+        if not tracked_pids:
+            self._camoufox_pids = set()
+            return
+        try:
+            import os
+            import signal
+
+            import psutil
+
+            survivors = []
+            for pid in tracked_pids:
+                try:
+                    p = psutil.Process(pid)
+                    if p.is_running():
+                        survivors.append(pid)
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except Exception:
+                    survivors.append(pid)
+            for pid in survivors:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    continue
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] SIGKILL failed for orphan PID {pid}: {e}")
+            if survivors:
+                logger.warning(
+                    f"[{self.provider_id}] SIGKILL'd {len(survivors)} orphan Firefox PIDs that __aexit__ left behind"
+                )
+        except ImportError:
+            pass
+        finally:
+            self._camoufox_pids = set()
 
     async def _get_page(self) -> Any | None:
         """Get a browser page — tries Camoufox first, falls back to CDP transport."""
