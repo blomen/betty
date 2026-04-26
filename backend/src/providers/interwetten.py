@@ -144,6 +144,43 @@ class InterwettenRetriever(BrowserRetriever):
         self.base_url = config.get("site_url", "https://www.interwetten.se")
         # Interwetten only reads data-betting attributes — no CSS needed
         self.transport._BLOCK_STYLESHEETS = True
+        # Track whether the cookie-consent init script is registered for this
+        # context. Truendo stores consent in localStorage which is per-tab —
+        # without seeding it on every new page, each of the 16 league + 8
+        # detail tabs runs the dismissal handler again (~12s wasted per cycle).
+        self._truendo_seed_installed = False
+
+    # Init script seeded into every page in the context BEFORE the page's own
+    # scripts run, so Truendo finds the consent state already set and skips
+    # the banner. Setting all categories `true` is equivalent to "ACCEPT ALL".
+    _TRUENDO_INIT_SCRIPT = """
+    try {
+        const consent = {
+            necessary: true, functional: true, marketing: true,
+            analytics: true, preferences: true, all: true,
+        };
+        localStorage.setItem('truendo_consents', JSON.stringify(consent));
+        localStorage.setItem('truendo_show_banner', 'false');
+        localStorage.setItem('truendoConsents', JSON.stringify(consent));
+    } catch (e) {}
+    """
+
+    async def _seed_truendo_consent(self):
+        """Install the Truendo localStorage seed once per browser context.
+
+        Idempotent — subsequent calls return immediately. Pages opened after
+        this point inherit the consent state from the init script and skip
+        the dismissal handler entirely.
+        """
+        if self._truendo_seed_installed:
+            return
+        try:
+            ctx = self.transport.page.context
+            await ctx.add_init_script(self._TRUENDO_INIT_SCRIPT)
+            self._truendo_seed_installed = True
+            logger.debug(f"[{self.provider_id}] Truendo consent init-script installed on context")
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] Truendo init-script install failed: {e}")
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
         """
@@ -159,9 +196,17 @@ class InterwettenRetriever(BrowserRetriever):
 
         await self.transport._ensure_browser()
         page = self.transport.page
+
+        # Seed Truendo consent in localStorage BEFORE navigation so subsequent
+        # tabs (16 league + 8 detail) skip the per-tab dismissal handler.
+        # The init script applies to ALL pages opened in this context.
+        await self._seed_truendo_consent()
+
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")
 
-        # Dismiss cookie consent banner (blocks DOM visibility)
+        # Defensive fallback — banner usually doesn't appear after seeding,
+        # but keep the dismissal handler for the rare case the init script
+        # raced the page's own consent check.
         await self._dismiss_cookie_banner(page)
 
         # Discover leagues dynamically from sport overview page
