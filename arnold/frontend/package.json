@@ -11,7 +11,6 @@
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",
     "@tanstack/react-virtual": "^3.13.23",
-    "lightweight-charts": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

@@ -1,10 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
-import {
-  createChart,
-  ColorType,
-  type IChartApi,
-  type Time,
-} from 'lightweight-charts'
+import { useState, useEffect } from 'react'
 import { api } from '@/hooks/useStocksApi'
 import type { BrokerTrade } from '@/types/stocks'
 
@@ -158,66 +152,6 @@ function SummaryCard({ label, value, color }: { label: string; value: string; co
 }
 
 function EquityCurve({ trades }: { trades: BrokerTrade[] }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
-
-  useEffect(() => {
-    if (!containerRef.current || trades.length === 0) return
-
-    const chart = createChart(containerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#9AA0A6',
-        fontSize: 10,
-        fontFamily: 'monospace',
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.03)' },
-        horzLines: { color: 'rgba(255,255,255,0.03)' },
-      },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true },
-      handleScroll: { vertTouchDrag: false },
-    })
-
-    const series = chart.addLineSeries({
-      color: '#3b82f6',
-      lineWidth: 2,
-      lastValueVisible: true,
-      priceLineVisible: false,
-    })
-
-    const sorted = [...trades].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
-    const data: Array<{ time: Time; value: number }> = []
-    let cumPnL = 0
-
-    for (const t of sorted) {
-      cumPnL += t.pnl_dollars ?? 0
-      const ts = Math.floor(new Date(t.closed_at ?? t.ts).getTime() / 1000) as Time
-      data.push({ time: ts, value: cumPnL })
-    }
-
-    if (data.length > 0) {
-      series.setData(data)
-      chart.timeScale().fitContent()
-    }
-
-    chartRef.current = chart
-
-    const observer = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height })
-      }
-    })
-    observer.observe(containerRef.current)
-
-    return () => {
-      observer.disconnect()
-      chart.remove()
-      chartRef.current = null
-    }
-  }, [trades])
-
   if (trades.length === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center text-xs font-mono text-zinc-600">
@@ -226,7 +160,53 @@ function EquityCurve({ trades }: { trades: BrokerTrade[] }) {
     )
   }
 
-  return <div ref={containerRef} className="w-full h-full" />
+  const sorted = [...trades].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+  const points: number[] = []
+  let cumPnL = 0
+  for (const t of sorted) {
+    cumPnL += t.pnl_dollars ?? 0
+    points.push(cumPnL)
+  }
+
+  const W = 800
+  const H = 160
+  const pad = { top: 8, right: 8, bottom: 20, left: 44 }
+  const minV = Math.min(0, ...points)
+  const maxV = Math.max(0, ...points)
+  const range = maxV - minV || 1
+
+  const toX = (i: number) => pad.left + ((i) / (points.length - 1 || 1)) * (W - pad.left - pad.right)
+  const toY = (v: number) => pad.top + (1 - (v - minV) / range) * (H - pad.top - pad.bottom)
+
+  const polyline = points.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ')
+  const zeroY = toY(0)
+  const lastVal = points[points.length - 1]
+  const lineColor = lastVal >= 0 ? '#3b82f6' : '#ef4444'
+
+  // Y-axis labels (3 ticks: min, 0, max)
+  const yTicks = Array.from(new Set([minV, 0, maxV]))
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="none">
+      {/* zero line */}
+      <line x1={pad.left} y1={zeroY} x2={W - pad.right} y2={zeroY}
+        stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+      {/* equity line */}
+      <polyline points={polyline} fill="none" stroke={lineColor} strokeWidth="2" strokeLinejoin="round" />
+      {/* Y-axis ticks */}
+      {yTicks.map(v => (
+        <text key={v} x={pad.left - 4} y={toY(v) + 3} textAnchor="end"
+          fontSize="8" fill="#6b7280" fontFamily="monospace">
+          {v === 0 ? '0' : `$${v.toFixed(0)}`}
+        </text>
+      ))}
+      {/* last value label */}
+      <text x={W - pad.right + 2} y={toY(lastVal) + 3} textAnchor="start"
+        fontSize="8" fill={lineColor} fontFamily="monospace">
+        ${lastVal.toFixed(0)}
+      </text>
+    </svg>
+  )
 }
 
 function computeStats(trades: BrokerTrade[]) {
