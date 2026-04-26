@@ -189,19 +189,24 @@ class TipwinRetriever(BrowserRetriever):
             from urllib.parse import urlparse
 
             api_responses: list[dict] = []
-            # Captured by route handler during initial nav so we can fan out
-            # subsequent pages directly through context.request.get instead of
-            # sequential page.goto. Pre-fix: 120 navigations × ~2-3s each =
-            # 240-360s minimum. Now: page 1 via page.goto, pages 2..N parallel
-            # via Sem(8) — typical 60-80s total.
-            captured_api_url: dict = {"url": None, "headers": None}
+            # Captured by route handler so we can fan out subsequent pages via
+            # context.request.get instead of sequential page.goto. Pre-fix the
+            # full-sports pagination took 240-360s sequential. We need the URL
+            # of the FULL-LISTING endpoint (`items` shape, hundreds of events)
+            # — not the homepage's small `offer` shape (~40 highlights). The
+            # initial homepage nav fires /offer/data first; if we captured
+            # that URL the parallel pagination only walked the highlights and
+            # returned ~5% of expected events.
+            captured_api_url: dict = {"url": None, "headers": None, "best_total": 0}
 
             async def intercept_offer_api(route):
-                """Intercept offer/data API calls, capture body inline before navigation disposes it."""
+                """Intercept offer/data API calls, capture body inline before navigation disposes it.
+
+                Capture the URL only from `items`-shaped responses (full listing)
+                and prefer the response with the highest totalNumberOfItems so
+                a later, larger nav overrides an earlier homepage snapshot.
+                """
                 try:
-                    if captured_api_url["url"] is None:
-                        captured_api_url["url"] = route.request.url
-                        captured_api_url["headers"] = dict(route.request.headers)
                     response = await route.fetch()
                     body = await response.text()
                     data = _json.loads(body)
@@ -210,6 +215,15 @@ class TipwinRetriever(BrowserRetriever):
                         has_offer = "offer" in data and isinstance(data.get("offer"), list) and len(data["offer"]) > 0
                         if has_items or has_offer:
                             api_responses.append(data)
+                        # Only capture pagination URL from full-listing responses;
+                        # homepage offers don't paginate the same way and have far
+                        # fewer items.
+                        if has_items:
+                            total = int(data.get("totalNumberOfItems", 0) or 0)
+                            if total > captured_api_url["best_total"]:
+                                captured_api_url["url"] = route.request.url
+                                captured_api_url["headers"] = dict(route.request.headers)
+                                captured_api_url["best_total"] = total
                     await route.fulfill(response=response, body=body)
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Route intercept error: {e}")
