@@ -151,6 +151,7 @@ class ArbRunner:
         self._planned_anchor_odds = 0.0
         self._dethroned_to = None
         self._current_recomputed_profit_pct = None
+        self._all_green = False
         self.state = STATE_IDLE
 
     @property
