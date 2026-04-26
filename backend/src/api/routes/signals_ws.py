@@ -119,9 +119,7 @@ def _buffer_tick(app, price: float, size: int, ts_dt, side: str) -> None:
             batch = list(_tick_batch)
             _tick_batch.clear()
     if batch:
-        threading.Thread(
-            target=_do_flush, args=(app, batch), daemon=True, name="ws-tick-flush"
-        ).start()
+        threading.Thread(target=_do_flush, args=(app, batch), daemon=True, name="ws-tick-flush").start()
 
 
 def _flush_tick_batch(app) -> None:

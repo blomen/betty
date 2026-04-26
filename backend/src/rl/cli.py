@@ -1759,7 +1759,6 @@ def ingest_live_trades() -> None:
     lt_list: list[int] = []
     st_list: list[float] = []
 
-    NQ_POINT = 20.0  # $/point
     for r in new_rows:
         try:
             arr = np.frombuffer(base64.b64decode(r.observation_b64), dtype=np.float32)

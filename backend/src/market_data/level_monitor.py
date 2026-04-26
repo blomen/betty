@@ -31,6 +31,7 @@ def _persist_stock_signal_async(payload: dict) -> None:
     time. We base64-encode the float32 bytes for compact storage (~1.5 KB)
     so it can later be loaded back into the trainer as ground-truth obs.
     """
+
     def _worker(p: dict) -> None:
         try:
             from ..db.models import StockSignal, get_session
@@ -47,6 +48,7 @@ def _persist_stock_signal_async(payload: dict) -> None:
             if obs is not None:
                 try:
                     import base64
+
                     import numpy as np
 
                     arr = np.asarray(obs, dtype=np.float32)
@@ -95,6 +97,7 @@ def _maybe_int(v):
         return int(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
 
 # File-based kill switch: `touch /app/data/rl/trading_paused` to raise the
 # signal dispatch threshold to 0.99 without a rebuild. Used while we're
@@ -1290,17 +1293,25 @@ class LevelMonitor:
                 elif confidence < _broker_conf_floor:
                     logger.info(
                         "broker gate: conf %.3f < %.2f at zone %.2f — vetoed",
-                        confidence, _broker_conf_floor, zone.center_price,
+                        confidence,
+                        _broker_conf_floor,
+                        zone.center_price,
                     )
                 elif of_score < 0.30:
                     logger.info(
                         "broker gate: of_score %.3f < 0.30 at zone %.2f (conf=%.3f, %s) — vetoed",
-                        of_score, zone.center_price, confidence, action,
+                        of_score,
+                        zone.center_price,
+                        confidence,
+                        action,
                     )
                 else:
                     logger.info(
                         "broker gate PASSED: of=%.3f conf=%.3f action=%s zone=%.2f — dispatching",
-                        of_score, confidence, action, zone.center_price,
+                        of_score,
+                        confidence,
+                        action,
+                        zone.center_price,
                     )
                 if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= 0.30:
                     import asyncio
