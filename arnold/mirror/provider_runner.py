@@ -281,6 +281,23 @@ class ProviderRunner:
                     logger.info(f"[Runner:{pid}] Queue empty — done")
                     break
 
+                # Release the tab back to home_url so the pending loop can sync
+                # history while we wait for the next bet to be popped/processed.
+                # The next iteration's navigate_to_event will move it back.
+                # Only do this between bets (not on the very first bet).
+                if self.stats["total"] > 0:
+                    try:
+                        page_release = await workflow.find_tab(self._browser.context) if self._browser.context else None
+                        if page_release and workflow.home_url and workflow.domain not in (page_release.url or ""):
+                            pass  # Already away from provider — let the user / pending_loop drive
+                        elif page_release and workflow.home_url:
+                            current = (page_release.url or "").rstrip("/")
+                            home = workflow.home_url.rstrip("/")
+                            if current != home:
+                                await page_release.goto(workflow.home_url, wait_until="domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+
                 if self._is_blocked(bet):
                     logger.debug(f"[Runner:{pid}] Skipping blocked bet: {bet.get('event_id')} {bet.get('market')}")
                     continue
