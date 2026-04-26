@@ -2249,9 +2249,7 @@ def _run_pg_migrations(engine) -> None:
     with engine.begin() as conn:
         for table, col, col_type in additions:
             try:
-                conn.execute(
-                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
-                )
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
             except Exception:
                 logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
 
@@ -2432,8 +2430,8 @@ class StockSignal(Base):
     ts = Column(DateTime, nullable=False, default=_utcnow, index=True)
     symbol = Column(String, nullable=False, default="NQ")
     # Signal context
-    action = Column(String, nullable=False)          # enter_long / enter_short / SKIP
-    price = Column(Float, nullable=False)            # tick price when signal fired
+    action = Column(String, nullable=False)  # enter_long / enter_short / SKIP
+    price = Column(Float, nullable=False)  # tick price when signal fired
     confidence = Column(Float, nullable=True)
     cont_p = Column(Float, nullable=True)
     rev_p = Column(Float, nullable=True)
@@ -2441,7 +2439,7 @@ class StockSignal(Base):
     stop_ticks = Column(Integer, nullable=True)
     zone_center = Column(Float, nullable=True)
     zone_members = Column(Integer, nullable=True)
-    model_type = Column(String, nullable=True)       # "gbt+dqn", "dqn", etc.
+    model_type = Column(String, nullable=True)  # "gbt+dqn", "dqn", etc.
     # Full observation vector — base64(np.float32[279].tobytes()).
     # ~1.5 KB per signal, decoded back to numpy with np.frombuffer.
     observation_b64 = Column(Text, nullable=True)
@@ -2449,9 +2447,7 @@ class StockSignal(Base):
     # Outcome linkage (filled by the correlate step when a matching trade closes)
     trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
 
-    __table_args__ = (
-        Index("ix_stock_signals_ts_price", "ts", "price"),
-    )
+    __table_args__ = (Index("ix_stock_signals_ts_price", "ts", "price"),)
 
 
 if __name__ == "__main__":

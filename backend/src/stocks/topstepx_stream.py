@@ -57,9 +57,7 @@ class TopstepXStream:
     ) -> None:
         # Accept a callable so reconnects pick up rotated tokens; tokens
         # expire ~24h and the WS would otherwise spin on stale-token 401s.
-        self._token_provider: Callable[[], str] = (
-            token if callable(token) else (lambda t=token: t)
-        )
+        self._token_provider: Callable[[], str] = token if callable(token) else (lambda t=token: t)
         self._contract_id = contract_id
         self._account_id = account_id
         self._market_hub_url = market_hub or _MARKET_HUB

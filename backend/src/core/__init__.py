@@ -1,7 +1,7 @@
 from .browser_retriever import BrowserRetriever
 from .exceptions import (
-    FatalError,
     ArnoldError,
+    FatalError,
     RateLimitError,
     RetryableError,
     TimeoutError,
