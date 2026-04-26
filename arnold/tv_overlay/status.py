@@ -12,7 +12,6 @@ class _Status:
     attached_clients: int = 0
     last_paint_at: float | None = None
     draw_count: int = 0
-    retries: int = 0
     error: str | None = None
 
 
@@ -31,7 +30,6 @@ def get_status() -> dict:
         "attached_clients": s.attached_clients,
         "last_paint_at": s.last_paint_at,
         "draw_count": s.draw_count,
-        "retries": s.retries,
         "error": s.error,
         "userscript_url": "/stocks/api/tv-overlay/userscript",
     }

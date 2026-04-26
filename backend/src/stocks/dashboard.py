@@ -108,6 +108,11 @@ def create_dashboard_router() -> APIRouter:
             "account": _state["account"],
             "positions": _state["positions"],
             "stats": _state["stats"],
+            # When the server owns the TopstepX session, GatewayDepth never
+            # reaches the local _state["depth"] book (the server's /ws/signals
+            # doesn't broadcast depth). Frontend needs this so the L2Ladder
+            # card can explain the empty state instead of looking broken.
+            "autonomous": os.environ.get("STOCKS_AUTONOMOUS", "").lower() == "true",
         }
 
     @router.get("/api/candles")

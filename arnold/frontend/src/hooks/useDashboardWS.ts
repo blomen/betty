@@ -14,6 +14,10 @@ export interface DashboardState {
   positions: Position[]
   quote: Quote | null
   depth: DepthSnapshot | null
+  // True when STOCKS_AUTONOMOUS=true — server owns TopstepX, local app
+  // never sees GatewayDepth. L2Ladder uses this to render an explanatory
+  // empty state instead of "No depth feed" which looks broken.
+  autonomous: boolean
   dqnInference: DQNInferenceEvent | null
   dqnInferenceAt: number | null  // Date.now() when last inference arrived
 }
@@ -42,6 +46,7 @@ export function useDashboardWS() {
     positions: [],
     quote: null,
     depth: null,
+    autonomous: false,
     dqnInference: null,
     dqnInferenceAt: null,
   })
@@ -73,6 +78,9 @@ export function useDashboardWS() {
             }
             if (snap.depth && (snap.depth.bids?.length || snap.depth.asks?.length) && !s.depth) {
               next.depth = snap.depth
+            }
+            if (typeof snap.autonomous === 'boolean') {
+              next.autonomous = snap.autonomous
             }
             return next
           })

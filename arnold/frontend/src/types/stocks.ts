@@ -336,7 +336,6 @@ export interface TVOverlayStatus {
   attached_clients: number
   last_paint_at: number | null
   draw_count: number
-  retries: number
   error: string | null
   userscript_url: string
 }
