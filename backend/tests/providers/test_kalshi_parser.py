@@ -1,4 +1,5 @@
 """Tests for Kalshi market parser."""
+
 import json
 from pathlib import Path
 
@@ -103,8 +104,13 @@ class TestParseEvent:
         assert result is not None
         assert result.sport == "basketball"
         assert result.provider == "kalshi"
-        assert result.home_team == "Warriors"
-        assert result.away_team == "Lakers"
+        # Canonical-team override resolves GSW → "warriors", LAL → "lakers"
+        # via KALSHI_TICKER_CODES so home/away match Pinnacle's stored aliases
+        # (lowercase). Pre-fix this assertion checked title-derived "Warriors"
+        # / "Lakers" but the canonical lookup runs after _match_market_to_side
+        # and overrides them — the case-difference is intentional, not a bug.
+        assert result.home_team == "warriors"
+        assert result.away_team == "lakers"
         assert len(result.markets) == 1
         mkt = result.markets[0]
         assert mkt["type"] == "moneyline"
@@ -204,9 +210,7 @@ class TestParseEvent:
 
 class TestKalshiRetriever:
     def test_parse_fixture_produces_events(self):
-        fixture_path = (
-            Path(__file__).parent / "fixtures" / "kalshi" / "events_sports.json"
-        )
+        fixture_path = Path(__file__).parent / "fixtures" / "kalshi" / "events_sports.json"
         raw = json.loads(fixture_path.read_text(encoding="utf-8"))
 
         config = {"id": "kalshi", "params": {"min_volume_usd": 100}}
