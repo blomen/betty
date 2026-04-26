@@ -591,6 +591,10 @@ class ArbRunner:
         # Block forever until the user clicks Place in mirror; cancel via stop().
         await self._anchor_event.wait()
 
+        # Watcher may have set _dethroned_to and fired the event — treat as non-placement.
+        if self._dethroned_to is not None:
+            return None
+
         wf = get_workflow(self.provider_id)
         body = self._intercepted_body or {}
         pstatus = wf.parse_placement_status(body) if hasattr(wf, "parse_placement_status") else {"success": True}
