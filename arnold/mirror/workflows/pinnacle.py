@@ -155,6 +155,9 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
         # intercept the /0.1/wagers or /0.1/bets/history XHR.  Implement once
         # the first manual visit to the history page captures the endpoint shape.
         """
+        logger.info(
+            f"[{self.provider_id}] sync_history stub returning [] — pending bets won't reconcile until implemented"
+        )
         return []
 
     # ------------------------------------------------------------------

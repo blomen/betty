@@ -477,3 +477,192 @@ class TestHedgeFailureEmits:
         assert len(recorded) == 1
         # arb_complete fires after all hedges resolve
         assert "arb_complete" in names
+
+
+class TestPlacedWhileRedGate:
+    """Spec §4.2: anchor click while any leg is red → reject + don't record."""
+
+    def _make_runner_in_standby(self):
+        runner = ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+        runner.state = "standby"
+        runner.current_arb_group_id = "abc"
+        runner._planned_anchor_odds = 2.10
+        runner._anchor_stake = 100.0
+        runner._counter_legs = []
+        return runner
+
+    def test_on_bet_intercepted_sets_red_flag_when_not_all_green(self):
+        runner = self._make_runner_in_standby()
+        runner._all_green = False
+        runner.on_bet_intercepted({"wagerNumber": 1}, None)
+        assert runner._intercepted_while_red is True
+        assert runner._anchor_event.is_set()
+
+    def test_on_bet_intercepted_clears_red_flag_when_all_green(self):
+        runner = self._make_runner_in_standby()
+        runner._all_green = True
+        runner.on_bet_intercepted({"wagerNumber": 1}, None)
+        assert runner._intercepted_while_red is False
+
+    @pytest.mark.asyncio
+    async def test_stream_and_await_anchor_emits_rejected_when_red(self):
+        runner = self._make_runner_in_standby()
+        runner._all_green = False
+
+        async def _intercept_after_delay():
+            await asyncio.sleep(0.05)
+            runner.on_bet_intercepted({"wagerNumber": 1}, None)
+
+        asyncio.create_task(_intercept_after_delay())
+        result = await asyncio.wait_for(runner._stream_and_await_anchor(), timeout=2.0)
+        assert result is None
+        events = [c.args for c in runner._broadcaster.publish.call_args_list]
+        rejected = [e for e in events if e[0] == "arb_anchor_rejected"]
+        assert rejected, "arb_anchor_rejected must fire on red intercept"
+        assert rejected[-1][1].get("reason") == "placed_while_red"
+
+    @pytest.mark.asyncio
+    async def test_stream_and_await_anchor_proceeds_when_green(self, monkeypatch):
+        runner = self._make_runner_in_standby()
+        runner._all_green = True
+
+        # Force the anchor workflow's parser to report success regardless of body shape
+        from arnold.mirror.workflows import get_workflow
+
+        wf = get_workflow("betinia")
+        monkeypatch.setattr(
+            type(wf),
+            "parse_placement_status",
+            staticmethod(lambda body: {"success": True, "error": None, "max_stake": None}),
+        )
+
+        async def _intercept_after_delay():
+            await asyncio.sleep(0.05)
+            runner.on_bet_intercepted({"wagerNumber": 1}, None)
+
+        asyncio.create_task(_intercept_after_delay())
+        result = await asyncio.wait_for(runner._stream_and_await_anchor(), timeout=2.0)
+        assert result is not None
+        events = [c.args[0] for c in runner._broadcaster.publish.call_args_list]
+        assert "arb_anchor_placed" in events
+        assert "arb_anchor_rejected" not in events
+
+
+class TestWatchTopOppLoop:
+    """Coverage gap from final review: _watch_top_opp loop body integration."""
+
+    def _make_runner(self):
+        runner = ArbRunner(
+            provider_id="betinia",
+            browser=_make_browser(),
+            broadcaster=_make_broadcaster(),
+            proxy_url="https://x.test",
+            block_event_market=lambda b: None,
+            is_blocked=lambda b: False,
+            placed_today={},
+            active_providers=["betinia", "pinnacle"],
+        )
+        runner.current_opp_key = "evt-A|1x2||home"
+        runner._current_recomputed_profit_pct = 1.0
+        runner.current_arb_group_id = "watcher_test"
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_watcher_fires_dethrone_when_better_opp_appears(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        runner = self._make_runner()
+        # Speed up the loop sleep so the test finishes quickly
+        monkeypatch.setattr(ar, "RERANK_INTERVAL_S", 0.05)
+
+        better = {
+            "event_id": "evt-B",
+            "market": "1x2",
+            "point": None,
+            "outcome": "away",
+            "guaranteed_profit_pct": 5.0,  # +4pp over current 1.0 → above hysteresis
+            "arb_legs": [{"provider": "betinia", "outcome": "away", "odds": 2.20}],
+        }
+
+        async def fake_fetch():
+            return [better]
+
+        monkeypatch.setattr(runner, "_fetch_arb_opps", fake_fetch)
+
+        await asyncio.wait_for(runner._watch_top_opp(), timeout=2.0)
+
+        assert runner._dethroned_to == better
+        assert runner._anchor_event.is_set()
+        events = [c.args[0] for c in runner._broadcaster.publish.call_args_list]
+        assert "arb_dethroned" in events
+
+    @pytest.mark.asyncio
+    async def test_watcher_does_not_dethrone_for_same_opp(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        runner = self._make_runner()
+        monkeypatch.setattr(ar, "RERANK_INTERVAL_S", 0.05)
+
+        same = {
+            "event_id": "evt-A",
+            "market": "1x2",
+            "point": None,
+            "outcome": "home",
+            "guaranteed_profit_pct": 99.0,  # huge profit but same opp_key → no dethrone
+            "arb_legs": [{"provider": "betinia", "outcome": "home", "odds": 2.10}],
+        }
+
+        async def fake_fetch():
+            return [same]
+
+        monkeypatch.setattr(runner, "_fetch_arb_opps", fake_fetch)
+
+        # Run for a bit then cancel — watcher should NOT exit on its own
+        task = asyncio.create_task(runner._watch_top_opp())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert runner._dethroned_to is None
+        events = [c.args[0] for c in runner._broadcaster.publish.call_args_list]
+        assert "arb_dethroned" not in events
+
+    @pytest.mark.asyncio
+    async def test_watcher_swallows_fetch_exceptions_and_continues(self, monkeypatch):
+        from arnold.mirror import arb_runner as ar
+
+        runner = self._make_runner()
+        monkeypatch.setattr(ar, "RERANK_INTERVAL_S", 0.05)
+
+        call_count = {"n": 0}
+
+        async def fake_fetch():
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                raise RuntimeError("transient fetch failure")
+            return []  # nothing to dethrone — watcher continues
+
+        monkeypatch.setattr(runner, "_fetch_arb_opps", fake_fetch)
+
+        task = asyncio.create_task(runner._watch_top_opp())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert call_count["n"] >= 3, "watcher must keep looping past errors"
+        assert runner._dethroned_to is None

@@ -108,6 +108,7 @@ class ArbRunner:
         self._anchor_event: asyncio.Event = asyncio.Event()
         self._intercepted_body: dict | None = None
         self._intercepted_request_body: dict | None = None
+        self._intercepted_while_red: bool = False  # spec §4.2 placed-while-red gate
 
         # Counter intercepts
         self._counter_events: dict[str, asyncio.Event] = {}
@@ -165,9 +166,18 @@ class ArbRunner:
         return self._task is not None and not self._task.done()
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
-        """Anchor (soft) leg placement intercepted."""
+        """Anchor (soft) leg placement intercepted.
+
+        Per spec §4.2 green-gate: if any leg was red at intercept time,
+        flag intercepted_while_red so _stream_and_await_anchor refuses to
+        record the bet and emits arb_anchor_rejected with reason='placed_while_red'.
+        """
         if self.state in (STATE_STANDBY, STATE_LOADING_LEGS):
-            logger.info(f"[Arb:{self.provider_id}] Anchor placement intercepted")
+            self._intercepted_while_red = not self._all_green
+            if self._intercepted_while_red:
+                logger.warning(f"[Arb:{self.provider_id}] Anchor intercepted while NOT all-green — will reject")
+            else:
+                logger.info(f"[Arb:{self.provider_id}] Anchor placement intercepted")
             self._intercepted_body = body
             self._intercepted_request_body = request_body
             self._anchor_event.set()
@@ -577,11 +587,27 @@ class ArbRunner:
         """Wait for the anchor (soft) placement to be intercepted. Returns the placement details or None on reject."""
         self._anchor_event.clear()
         self._intercepted_body = None
+        self._intercepted_while_red = False
         # Block forever until the user clicks Place in mirror; cancel via stop().
         await self._anchor_event.wait()
 
         # Watcher may have set _dethroned_to and fired the event — treat as non-placement.
         if self._dethroned_to is not None:
+            return None
+
+        # Spec §4.2 green-gate: refuse to record a placement made while a leg was red.
+        # The site placement still went through (we can't stop a user's click), but it
+        # is not part of the arb_group from our perspective. Pending-loop reconciliation
+        # picks it up later via provider history.
+        if self._intercepted_while_red:
+            self._broadcaster.publish(
+                "arb_anchor_rejected",
+                {
+                    "arb_group_id": self.current_arb_group_id,
+                    "provider_id": self.provider_id,
+                    "reason": "placed_while_red",
+                },
+            )
             return None
 
         wf = get_workflow(self.provider_id)
@@ -824,7 +850,7 @@ class ArbRunner:
             "league": opp.get("league", ""),
             "start_time": opp.get("starts_at"),
             "is_bonus": False,
-            "provider_meta": {},  # Filled by navigate_to_event
+            "provider_meta": dict(leg.get("provider_meta") or {}),  # From leg (matchup_id etc.)
         }
 
     async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
