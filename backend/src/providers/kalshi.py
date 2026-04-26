@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 
-import aiohttp
-
-from ..core import Retriever, StandardEvent
+from ..core import HttpTransport, Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
+
+# How long the per-extract cache survives. Kalshi runs every 5 min via the
+# `kalshi:` tier, and the per-sport orchestrator loop iterates 17 sports back-
+# to-back; without caching we'd re-walk the same sport-agnostic /events stream
+# 17× per cycle. 60s lets ALL 17 sport calls in one cycle hit the cache while
+# still refreshing each cycle.
+_EVENTS_CACHE_TTL_SEC = 60.0
 
 # Ticker-prefix → canonical sport. Extend as new series appear.
 KALSHI_SERIES_TO_SPORT: dict[str, str] = {
@@ -294,31 +300,41 @@ def _match_market_to_side(m: dict, home: str, away: str) -> str | None:
     ticker suffix identifies which team it represents. ``None`` if ambiguous.
 
     Strategy:
-        1. ``yes_sub_title`` substring match against home/away (case-insensitive).
-        2. Ticker suffix substring match against home/away.
-    Both sides must not match simultaneously for the match to count.
+        1. Token-overlap match on ``yes_sub_title`` against home/away.
+        2. Ticker suffix prefix-match against home/away tokens.
+    Substring matching previously collided when teams shared a token
+    ("Real" → both Real Madrid and Real Sociedad). Now requires shared
+    3+ char tokens and forbids both-sides ambiguity.
     """
     home_l = (home or "").lower().strip()
     away_l = (away or "").lower().strip()
     if not home_l or not away_l:
         return None
 
+    def _tokens(name: str) -> set[str]:
+        return {w for w in name.split() if len(w) >= 3}
+
+    home_tokens = _tokens(home_l)
+    away_tokens = _tokens(away_l)
+
     sub = str(m.get("yes_sub_title", "") or "").lower().strip()
     if sub:
-        in_home = sub in home_l or home_l in sub
-        in_away = sub in away_l or away_l in sub
-        if in_home and not in_away:
+        sub_tokens = _tokens(sub)
+        home_overlap = sub_tokens & home_tokens
+        away_overlap = sub_tokens & away_tokens
+        if home_overlap and not away_overlap:
             return "home"
-        if in_away and not in_home:
+        if away_overlap and not home_overlap:
             return "away"
 
     suffix = _ticker_suffix(m.get("ticker", "")).lower()
-    if suffix:
-        in_home = suffix in home_l or home_l.startswith(suffix)
-        in_away = suffix in away_l or away_l.startswith(suffix)
-        if in_home and not in_away:
+    if suffix and len(suffix) >= 2:
+        # Ticker suffixes are short codes (HOU, LAL); accept prefix-of-token.
+        starts_home = any(t.startswith(suffix) for t in home_tokens)
+        starts_away = any(t.startswith(suffix) for t in away_tokens)
+        if starts_home and not starts_away:
             return "home"
-        if in_away and not in_home:
+        if starts_away and not starts_home:
             return "away"
 
     return None
@@ -465,65 +481,87 @@ def parse_event(
 class KalshiRetriever(Retriever):
     """Kalshi event-level retriever. Unauthenticated — market data is public.
 
-    Paginates `/events?with_nested_markets=true&status=open` until the API
-    stops returning a `cursor`. Filters by sport post-fetch.
+    Paginates `/events?with_nested_markets=true&status=open` once per
+    extraction cycle (cached for 60s) and dispatches by sport in `parse()`.
+    Pre-fix this provider re-walked the entire ~10k-event paginated stream
+    once per sport (17 times per cycle) AND bypassed HttpTransport entirely;
+    now it uses the inherited transport's circuit breaker + 429 retry and
+    reuses parsed events across sports within a cycle.
     """
 
     DEFAULT_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
     DEFAULT_PAGE_LIMIT = 200
+    # Hard cap on pagination loops — protects against malformed cursors.
+    # 50 pages × 200 = 10k events, well above any observed event count.
+    _MAX_PAGES = 50
 
-    def __init__(self, config: dict, circuit_breaker=None, rate_limit_config=None):
-        super().__init__(config)
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
+        if transport is None:
+            transport = HttpTransport(circuit_breaker=circuit_breaker, rate_limit_config=rate_limit_config)
+        super().__init__(config, transport)
         self.base_url = config.get("base_url", self.DEFAULT_BASE_URL)
         self.min_volume_usd = float(config.get("params", {}).get("min_volume_usd", 100))
         from ..constants import KALSHI_FEE_RATE
 
         self.fee_rate = float(config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE))
-        self._circuit_breaker = circuit_breaker
+
+        # Per-instance cross-sport cache. The factory builds a fresh retriever
+        # at the start of every pipeline run, so the cache is naturally bounded
+        # to one cycle's lifetime. Within a cycle, all 17 sport calls share it.
+        self._cached_events_by_sport: dict[str, list[StandardEvent]] | None = None
+        self._cache_at: float = 0.0
 
     def _get_sport_url(self, sport: str) -> str:
         # Kalshi's /events endpoint is sport-agnostic; we filter in parse().
         return f"{self.base_url}/events?status=open&with_nested_markets=true&limit={self.DEFAULT_PAGE_LIMIT}"
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
-        """Fetch open Kalshi events page-by-page, parsing as we go.
-
-        Kalshi's `/events` endpoint is sport-agnostic and serves ~10k events
-        across 50 pages. Pre-fix the loop fetched all pages before filtering,
-        which made the orchestrator's 60s health check (limit=1) time out.
-        We now parse each page incrementally and stop once we have enough
-        sport-relevant events to satisfy `limit`.
-        """
-        parsed: list[StandardEvent] = []
-        total_raw = 0
+    async def _populate_cache(self) -> None:
+        """Walk the sport-agnostic /events feed once; index by sport for O(1) dispatch."""
+        url = self._get_sport_url("")
         cursor: str | None = None
-        url = self._get_sport_url(sport)
+        total_raw = 0
+        events_by_sport: dict[str, list[StandardEvent]] = {}
 
-        async with aiohttp.ClientSession() as session:
-            for _ in range(50):  # hard cap at 50 pages × 200 = 10k events
-                page_url = url + (f"&cursor={cursor}" if cursor else "")
-                try:
-                    async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                        resp.raise_for_status()
-                        body = await resp.json()
-                except Exception as e:
-                    logger.warning(f"[kalshi] fetch failed at cursor={cursor}: {e}")
-                    break
-                events = body.get("events", [])
-                total_raw += len(events)
-                parsed.extend(self.parse({"events": events}, sport))
-                if limit and len(parsed) >= limit:
-                    break
-                cursor = body.get("cursor") or None
-                if not cursor or not events:
-                    break
+        for page in range(self._MAX_PAGES):
+            page_url = url + (f"&cursor={cursor}" if cursor else "")
+            body = await self.transport.get(page_url, provider_id=self.provider_id, timeout=15)
+            if not isinstance(body, dict):
+                if page == 0:
+                    logger.warning(f"[{self.provider_id}] events fetch returned no data")
+                break
+            events = body.get("events", [])
+            total_raw += len(events)
+            for raw in events:
+                ev = parse_event(raw, min_volume_usd=self.min_volume_usd, fee_rate=self.fee_rate)
+                if ev is None:
+                    continue
+                events_by_sport.setdefault(ev.sport, []).append(ev)
+            cursor = body.get("cursor") or None
+            if not cursor or not events:
+                break
+        else:
+            logger.warning(
+                f"[{self.provider_id}] hit MAX_PAGES={self._MAX_PAGES} cap "
+                f"({total_raw} raw events) — pagination may be truncated"
+            )
 
-        logger.info(f"[kalshi] fetched {total_raw} raw events across pages, {len(parsed)} parsed for {sport}")
-        if limit and len(parsed) > limit:
-            parsed = parsed[:limit]
-        return parsed
+        self._cached_events_by_sport = events_by_sport
+        self._cache_at = time.time()
+        logger.info(
+            f"[{self.provider_id}] cached {sum(len(v) for v in events_by_sport.values())} parsed events "
+            f"across {len(events_by_sport)} sports (raw={total_raw})"
+        )
+
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
+        """Return parsed events for a sport from the cycle-shared cache."""
+        if self._cached_events_by_sport is None or (time.time() - self._cache_at) > _EVENTS_CACHE_TTL_SEC:
+            await self._populate_cache()
+        events = (self._cached_events_by_sport or {}).get(sport, [])
+        return events[:limit] if limit and len(events) > limit else events
 
     def parse(self, data: dict, sport: str) -> list[StandardEvent]:
+        # Kept for back-compat / unit tests. Live extraction goes through
+        # _populate_cache which calls parse_event directly.
         out: list[StandardEvent] = []
         for raw in data.get("events", []):
             ev = parse_event(
