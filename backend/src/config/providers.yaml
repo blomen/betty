@@ -917,10 +917,14 @@ extraction_scheduling:
       - unibet
       # Altenar — canonical only (represents 6: betinia, campobet, lodur, quickcasino, swiper, dbet)
       - betinia
-      # Gecko V2 — split into independent extractors (45% odds differ between brands)
+      # Gecko V2 — split: betsson canonical + bethard independent.
+      # spelklubben removed 2026-04-27: its standalone catalog drifted to esports +
+      # ITF/WTA Challenger doubles that Pinnacle doesn't cover, producing 0 matched
+      # odds for 16 days while burning 250s every 2min. It's already a member of the
+      # gecko_betsson cluster (constants.py PLATFORM_GROUPS) so betsson's odds
+      # fan out to spelklubben automatically — no extraction needed.
       - betsson
       - bethard
-      - spelklubben
       # BetConstruct (1) — WebSocket API
       - vbet
     interval_minutes: 2
@@ -1003,13 +1007,13 @@ active:
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
-  # Gecko V2 — betsson group (shared odds: betsson, nordicbet, betsafe)
+  # Gecko V2 — betsson group (shared odds: betsson, nordicbet, betsafe, spelklubben)
   - betsson
   - betsafe
   - nordicbet
+  - spelklubben  # extracted via betsson canonical (odds fan-out via PLATFORM_GROUPS)
   # Gecko V2 — independent brands (45% different odds from betsson)
   - bethard
-  - spelklubben
   # ComeOn Group (4: comeon, lyllo, hajper, snabbare) — comeon is best extractor (275ev/589s vs hajper 152/738s, snabbare 96/544s, lyllo 93/900s)
   - comeon
   # - hajper    # TESTED 2026-03-18: 152 events, 738s — worse than comeon
