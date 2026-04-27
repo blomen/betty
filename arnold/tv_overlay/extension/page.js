@@ -89,12 +89,12 @@
   function sendAck(count) { up({ type: 'ack', count }); }
   function sendError(message) { up({ type: 'error', message }); }
 
-  function safeRemove(key) {
-    const entityId = drawn.get(key);
-    if (entityId == null || !chart) return;
-    try { chart.removeEntity(entityId); } catch (_) {}
+  async function safeRemove(key) {
+    const entityId = await _resolve(drawn.get(key));
     drawn.delete(key);
     zoneFirstSeenAt.delete(key);
+    if (entityId == null || !chart) return;
+    try { chart.removeEntity(entityId); } catch (_) {}
   }
 
   // Recognizable text marker on every shape we draw so cleanupStaleShapes
@@ -102,9 +102,19 @@
   // user's manual drawings (LuxAlgo session boxes, hand-drawn levels, etc).
   const ARNOLD_TAG = '​[arn]';  // zero-width-space + tag, basically invisible
 
-  function drawZone(p) {
+  // chart.createMultipointShape and createStudy can return either a sync
+  // entity-id or a Promise<entity-id> depending on TV build. Always resolve
+  // before storing so removeEntity gets the real id, not "[object Promise]".
+  async function _resolve(maybePromise) {
+    if (maybePromise && typeof maybePromise.then === 'function') {
+      try { return await maybePromise; } catch (_) { return null; }
+    }
+    return maybePromise;
+  }
+
+  async function drawZone(p) {
     if (!chart) return false;
-    safeRemove(p.key);
+    await safeRemove(p.key);
     const now = Math.floor(Date.now() / 1000);
     if (!zoneFirstSeenAt.has(p.key)) zoneFirstSeenAt.set(p.key, now);
     const tStart = zoneFirstSeenAt.get(p.key);
@@ -117,7 +127,7 @@
     const showLabel = (p.members ?? 0) >= 2;
     const labelText = showLabel ? `${p.kind} ×${p.members}` : '';
     try {
-      const id = chart.createMultipointShape(
+      const id = await _resolve(chart.createMultipointShape(
         [
           { time: tStart, price: p.top },
           { time: tEnd,   price: p.bottom },
@@ -136,7 +146,7 @@
             showLabel,
           },
         }
-      );
+      ));
       if (id != null) {
         drawn.set(p.key, id);
         return true;
@@ -325,9 +335,12 @@
     console.log('[arnold-overlay/page] attached to chart', c);
 
     // Sweep up shapes left over from previous extension sessions before
-    // we start drawing fresh — otherwise the chart accumulates duplicates
-    // every time the user reloads or the extension restarts.
+    // we start drawing fresh. TV may not have finished loading shapes from
+    // the chart's saved state at the moment attachPromise resolves, so we
+    // run the sweep twice: once now, and again 4s later to catch anything
+    // that loaded after the first pass.
     await cleanupStaleShapes();
+    setTimeout(() => { cleanupStaleShapes().catch(() => {}); }, 4000);
 
     document.addEventListener('arnold:msg', async (ev) => {
       let msg;
@@ -348,15 +361,25 @@
         }
         case 'force_cleanup': {
           // User-triggered nuke from the SignalsPage button. Clears in-session
-          // drawn state (so the next reconcile redraws from scratch) and runs
-          // cleanupStaleShapes again to catch anything orphaned.
+          // drawn state and uses chart.removeAllShapes() — the nuclear option
+          // that hits shapes loaded from TV's chart-saved-state too (which
+          // getAllShapes() doesn't always enumerate). User drawings ARE
+          // wiped — the button's UX (orange "Clear chart") signals that.
           for (const id of drawn.values()) {
-            try { chart.removeEntity(id); } catch (_) {}
+            const realId = await _resolve(id);
+            if (realId != null) {
+              try { chart.removeEntity(realId); } catch (_) {}
+            }
           }
           drawn.clear();
           zoneFirstSeenAt.clear();
           for (const key of [...drawnPositions.keys()]) {
             await removePosition(key);
+          }
+          if (typeof chart.removeAllShapes === 'function') {
+            try { chart.removeAllShapes(); console.log('[arnold-overlay/page] removeAllShapes() invoked'); } catch (e) {
+              console.warn('[arnold-overlay/page] removeAllShapes failed', e);
+            }
           }
           await cleanupStaleShapes();
           sendAck(1);
