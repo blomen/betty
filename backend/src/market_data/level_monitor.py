@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from src.rl.config import LevelType as RLLevelType
-from src.rl.zone_builder import Zone, build_zones
+from src.rl.zone_builder import _LEVEL_FAMILY, Zone, build_zones
 
 from .amt_dynamics import AMTDynamicsTracker
 
@@ -59,6 +59,9 @@ def _persist_stock_signal_async(payload: dict) -> None:
 
             db = get_session()
             try:
+                reasoning = p.get("reasoning")
+                if not isinstance(reasoning, dict):
+                    reasoning = None
                 row = StockSignal(
                     ts=ts,
                     symbol="NQ",
@@ -74,6 +77,7 @@ def _persist_stock_signal_async(payload: dict) -> None:
                     model_type=str(p.get("model_type") or "")[:32] or None,
                     observation_b64=obs_b64,
                     observation_dim=obs_dim,
+                    reasoning=reasoning,
                 )
                 db.add(row)
                 db.commit()
@@ -97,6 +101,109 @@ def _maybe_int(v):
         return int(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+# Families whose presence in a zone qualifies a REVERSAL as a "failed auction" —
+# the model is fading a known structural level (PDH/PDL, IB H/L, daily/weekly
+# value or POC, VWAP bands, swing pivots, prior sessions). Not in the set:
+# fvg / order_block (those are SMC tags, separate factor) / naked_poc (rare,
+# ambiguous) / monthly_swing (too coarse to call an auction at this TF).
+_FAILED_AUCTION_FAMILIES = {
+    "prior_session",
+    "nyib",
+    "daily_vp",
+    "weekly_vp",
+    "monthly_vp",
+    "vwap",
+    "daily_swing",
+    "weekly_swing",
+    "tpo",
+    "sessions",
+}
+
+
+def _build_reasoning(
+    *,
+    zone,
+    action: str,
+    confidence: float,
+    cont_p,
+    rev_p,
+    of_score: float,
+    size_multiplier: float,
+    stop_ticks: int,
+    sig_action: str,
+) -> dict:
+    """Derive structured "why we took it" tags from zone + model state.
+
+    Output schema (JSONB-stored on broker_trades + stock_signals):
+      summary: 1-line human-readable
+      primary_factors: ordered list of qualitative tags
+      zone: {strength, members, families, failed_auction_at}
+      of: {score}
+      stake: {multiplier}
+      stop: {ticks}
+      conviction: {cont_p, rev_p, confidence}
+    """
+    families: list[str] = []
+    seen: set[str] = set()
+    for m in zone.members:
+        fam = _LEVEL_FAMILY.get(m.level_type)
+        if fam is None:
+            fam = m.level_type.value if hasattr(m.level_type, "value") else str(m.level_type)
+        if fam not in seen:
+            seen.add(fam)
+            families.append(fam)
+
+    failed_auction_at = [f for f in families if f in _FAILED_AUCTION_FAMILIES]
+
+    primary: list[str] = []
+    if zone.hierarchy_score >= 0.6 or len(families) >= 3:
+        primary.append("strong_level")
+    if action == "REVERSAL" and failed_auction_at:
+        primary.append("failed_auction")
+    if of_score >= 0.70:
+        primary.append("of_confluence")
+    elif of_score >= 0.45:
+        primary.append("of_pass")
+    if size_multiplier and float(size_multiplier) > 1.0:
+        primary.append("higher_stake")
+    if "fvg" in families and "order_block" in families:
+        primary.append("smc_double")
+    elif "order_block" in families:
+        primary.append("order_block_present")
+    elif "fvg" in families:
+        primary.append("fvg_present")
+
+    parts = [
+        f"{sig_action} at zone {zone.center_price:.2f}",
+        f"({len(families)}-fam, str={zone.hierarchy_score:.2f})",
+    ]
+    if failed_auction_at:
+        parts.append(f"+{failed_auction_at[0]} rejection")
+    parts.append(f"OF={of_score:.2f}")
+    if size_multiplier and float(size_multiplier) > 1.0:
+        parts.append(f"sized {float(size_multiplier):.1f}x")
+    summary = "; ".join(parts)
+
+    return {
+        "summary": summary,
+        "primary_factors": primary,
+        "zone": {
+            "strength": round(float(zone.hierarchy_score), 3),
+            "members": int(zone.member_count),
+            "families": families,
+            "failed_auction_at": failed_auction_at,
+        },
+        "of": {"score": round(float(of_score), 3)},
+        "stake": {"multiplier": float(size_multiplier or 1.0)},
+        "stop": {"ticks": int(stop_ticks)},
+        "conviction": {
+            "cont_p": round(float(cont_p), 3) if cont_p is not None else None,
+            "rev_p": round(float(rev_p), 3) if rev_p is not None else None,
+            "confidence": round(float(confidence), 3),
+        },
+    }
 
 
 # File-based kill switch: `touch /app/data/rl/trading_paused` to raise the
@@ -1326,12 +1433,25 @@ class LevelMonitor:
                             stop_ticks = max(stop_ticks, 23)
                         stop_offset = stop_ticks * 0.25
                         raw_stop = price - stop_offset if is_long else price + stop_offset
+                        size_mult = result.get("size_multiplier", result.get("sizing_signal", 1.0))
+                        reasoning = _build_reasoning(
+                            zone=zone,
+                            action=action,
+                            confidence=confidence,
+                            cont_p=result.get("cont_p"),
+                            rev_p=result.get("rev_p"),
+                            of_score=of_score,
+                            size_multiplier=size_mult,
+                            stop_ticks=stop_ticks,
+                            sig_action=sig_action,
+                        )
+                        logger.info("Reasoning: %s", reasoning.get("summary"))
                         broker_signal = {
                             "action": sig_action,
                             "price": price,
                             "stop_price": round(raw_stop * 4) / 4,
                             "stop_ticks": stop_ticks,
-                            "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
+                            "size": size_mult,
                             "confidence": confidence,
                             "orderflow_score": of_score,
                             "zone": zone.center_price,
@@ -1339,6 +1459,7 @@ class LevelMonitor:
                             "cont_p": result.get("cont_p"),
                             "rev_p": result.get("rev_p"),
                             "model_type": result.get("model_type"),
+                            "reasoning": reasoning,
                         }
                         asyncio.create_task(broker.on_signal(broker_signal))
                     except Exception:
@@ -1423,12 +1544,24 @@ class LevelMonitor:
                         stop_ticks,
                         zone.center_price,
                     )
+                    cb_size_mult = result.get("size_multiplier", result.get("sizing_signal", 1.0))
+                    cb_reasoning = _build_reasoning(
+                        zone=zone,
+                        action=action,
+                        confidence=confidence,
+                        cont_p=result.get("cont_p"),
+                        rev_p=result.get("rev_p"),
+                        of_score=_compute_orderflow_score_live(rl_state, zone, price, action),
+                        size_multiplier=cb_size_mult,
+                        stop_ticks=stop_ticks,
+                        sig_action=sig_action,
+                    )
                     signal_payload = {
                         "type": "signal",
                         "action": sig_action,
                         "price": price,
                         "stop_price": stop_price,
-                        "size": result.get("size_multiplier", result.get("sizing_signal", 1.0)),
+                        "size": cb_size_mult,
                         "confidence": confidence,
                         "cont_p": result.get("cont_p"),
                         "rev_p": result.get("rev_p"),
@@ -1436,6 +1569,7 @@ class LevelMonitor:
                         "model_type": result.get("model_type"),
                         "zone": zone.center_price,
                         "zone_members": zone.member_count,
+                        "reasoning": cb_reasoning,
                         "ts": time.time(),
                     }
                     _send(signal_payload)

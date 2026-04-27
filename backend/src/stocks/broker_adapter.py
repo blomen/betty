@@ -87,6 +87,11 @@ def _log_broker_trade(**kwargs) -> None:
         kwargs.get("stop_ticks", "?"),
         kwargs.get("session_pnl", 0),
     )
+    # Why we took it — surface the 1-line summary alongside the trade row so
+    # `docker logs` is enough to scan the day's reasoning without joining DB.
+    reasoning = kwargs.get("reasoning")
+    if isinstance(reasoning, dict) and reasoning.get("summary"):
+        log.info("    why: %s", reasoning["summary"])
     # Add session_pnl to kwargs for dashboard
     from . import dashboard
 
@@ -447,6 +452,7 @@ class TopstepXBrokerAdapter:
                 signal_cont_p=self._pending_trade.get("signal_cont_p"),
                 signal_rev_p=self._pending_trade.get("signal_rev_p"),
                 orderflow_score=self._pending_trade.get("orderflow_score"),
+                reasoning=self._pending_trade.get("reasoning"),
                 closed_at=datetime.now(timezone.utc),
             )
             self._pending_trade = None
@@ -605,6 +611,7 @@ class TopstepXBrokerAdapter:
             "signal_cont_p": float(signal.get("cont_p", 0) or 0),
             "signal_rev_p": float(signal.get("rev_p", 0) or 0),
             "orderflow_score": float(signal.get("orderflow_score", 0) or 0),
+            "reasoning": signal.get("reasoning") if isinstance(signal.get("reasoning"), dict) else None,
             "trail_count": 0,
         }
 

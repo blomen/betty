@@ -2240,6 +2240,9 @@ def _run_pg_migrations(engine) -> None:
         # stock_signals: full observation snapshot for training feedback (2026-04-25)
         ("stock_signals", "observation_b64", "TEXT"),
         ("stock_signals", "observation_dim", "INTEGER"),
+        # broker_trades + stock_signals: structured "why we took it" tags (2026-04-27)
+        ("broker_trades", "reasoning", "JSONB"),
+        ("stock_signals", "reasoning", "JSONB"),
         # extraction_features: renamed dutch_opportunities_found → arb_opportunities_found
         # in code; existing prod DB has only the old name. Add new column so the
         # current code's INSERT/UPDATE doesn't error every cycle (was spamming
@@ -2425,6 +2428,9 @@ class BrokerTrade(Base):
     signal_cont_p = Column(Float, nullable=True)
     signal_rev_p = Column(Float, nullable=True)
     orderflow_score = Column(Float, nullable=True)
+    # Why we took it — derived structured tags + 1-line summary.
+    # JSONB in Postgres so factors can be queried with ? / ->>.
+    reasoning = Column(JSON, nullable=True)
 
     closed_at = Column(DateTime, nullable=True)
 
@@ -2469,6 +2475,8 @@ class StockSignal(Base):
     observation_dim = Column(Integer, nullable=True)
     # Outcome linkage (filled by the correlate step when a matching trade closes)
     trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
+    # Why we emitted the signal — same shape as broker_trades.reasoning.
+    reasoning = Column(JSON, nullable=True)
 
     __table_args__ = (Index("ix_stock_signals_ts_price", "ts", "price"),)
 

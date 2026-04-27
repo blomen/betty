@@ -151,6 +151,7 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                     signal_cont_p=p.get("signal_cont_p"),
                     signal_rev_p=p.get("signal_rev_p"),
                     orderflow_score=p.get("orderflow_score"),
+                    reasoning=p.get("reasoning") if isinstance(p.get("reasoning"), dict) else None,
                     closed_at=closed_at,
                 )
                 db.add(row)
