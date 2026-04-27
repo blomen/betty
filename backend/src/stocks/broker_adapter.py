@@ -556,6 +556,11 @@ class TopstepXBrokerAdapter:
         if not self.tracker.is_flat:
             await self.flatten("flip")
 
+        # Stamp the actual order-submit moment so fill_latency_ms measures
+        # submit→fill, not "_pending_trade init → fill arrival" (which would
+        # include stop placement + retries + tracker init and bloats the
+        # number — was 67.7s on trade #54).
+        entry_submit_ts = datetime.now(timezone.utc)
         log.info(
             "=== ENTRY === %s size=%d stop=%.2f (%d ticks) conf=%.3f cont_p=%.3f rev_p=%.3f zone=%.2f",
             action,
@@ -682,7 +687,7 @@ class TopstepXBrokerAdapter:
             "tp_price": tp_price,
             "stop_ticks": stop_dist_ticks,
             "signal_price": price,
-            "entry_submit_ts": now,
+            "entry_submit_ts": entry_submit_ts,
             "entry_fill_ts": None,
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),

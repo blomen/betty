@@ -1562,13 +1562,14 @@ class LevelMonitor:
                         zone.center_price,
                     )
                     cb_size_mult = result.get("size_multiplier", result.get("sizing_signal", 1.0))
+                    cb_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
                     cb_reasoning = _build_reasoning(
                         zone=zone,
                         action=action,
                         confidence=confidence,
                         cont_p=result.get("cont_p"),
                         rev_p=result.get("rev_p"),
-                        of_score=_compute_orderflow_score_live(rl_state, zone, price, action),
+                        of_score=cb_of_score,
                         size_multiplier=cb_size_mult,
                         stop_ticks=stop_ticks,
                         sig_action=sig_action,
@@ -1586,6 +1587,13 @@ class LevelMonitor:
                         "model_type": result.get("model_type"),
                         "zone": zone.center_price,
                         "zone_members": zone.member_count,
+                        # trigger + orderflow_score were missing from the relay
+                        # signal_payload — without them, broker_adapter._pending_trade
+                        # records signal_trigger="" and orderflow_score=0 even though
+                        # reasoning JSONB carries the real OF in summary. This is
+                        # exactly what showed up on broker_trade #54.
+                        "trigger": "zone_entry",
+                        "orderflow_score": cb_of_score,
                         "reasoning": cb_reasoning,
                         "ts": time.time(),
                     }
