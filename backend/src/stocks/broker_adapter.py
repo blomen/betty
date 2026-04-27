@@ -114,6 +114,64 @@ def _log_broker_trade(**kwargs) -> None:
             log.exception("BrokerTrade persist callback failed (trade still in logs)")
 
 
+# File-based trade-context persistence so reasoning + signal_* fields
+# survive container restarts. The bug it fixes:
+#   - Old container places entry → stop placed → fill pending
+#   - Container restarts (deploy, watchdog, OOM)
+#   - New container's _pending_trade dict is empty
+#   - Stream fill arrives with the close → orphan close → no reasoning
+# Now the dict is mirrored to disk on entry; on startup we read it; on
+# exit we clear. Any orphan close that lands while the file exists can
+# still pull full context (reasoning, signal_*, conviction).
+import json as _json
+import os as _os_
+
+_PENDING_TRADE_PATH = _os_.environ.get("BROKER_PENDING_TRADE_PATH", "/app/data/rl/pending_trade.json")
+
+
+def _save_pending_trade_to_disk(p: dict | None) -> None:
+    try:
+        _os_.makedirs(_os_.path.dirname(_PENDING_TRADE_PATH), exist_ok=True)
+        if p is None:
+            try:
+                _os_.remove(_PENDING_TRADE_PATH)
+            except FileNotFoundError:
+                pass
+            return
+        # Convert datetime to ISO so json can serialize. Reasoning is already
+        # a plain dict so it round-trips cleanly.
+        serializable = {}
+        for k, v in p.items():
+            if isinstance(v, datetime):
+                serializable[k] = v.isoformat()
+            else:
+                serializable[k] = v
+        with open(_PENDING_TRADE_PATH, "w") as f:
+            _json.dump(serializable, f)
+    except Exception:
+        log.warning("pending_trade disk save failed", exc_info=True)
+
+
+def _load_pending_trade_from_disk() -> dict | None:
+    try:
+        with open(_PENDING_TRADE_PATH) as f:
+            p = _json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        log.warning("pending_trade disk load failed", exc_info=True)
+        return None
+    # Restore datetimes
+    for k in ("ts", "entry_submit_ts", "entry_fill_ts", "closed_at"):
+        v = p.get(k)
+        if isinstance(v, str):
+            try:
+                p[k] = datetime.fromisoformat(v)
+            except Exception:
+                pass
+    return p
+
+
 class TopstepXBrokerAdapter:
     """Risk-enforced order execution with dynamic stop management."""
 
@@ -125,7 +183,17 @@ class TopstepXBrokerAdapter:
         self.tracker = PositionTracker()
         self._halted = False
         self._halt_reason = ""
-        self._pending_trade: dict | None = None
+        # Recover any in-flight trade from disk so a restart between
+        # entry-fill and exit-fill doesn't drop reasoning + signal context.
+        self._pending_trade: dict | None = _load_pending_trade_from_disk()
+        if self._pending_trade:
+            log.warning(
+                "Recovered _pending_trade from disk on startup: side=%s entry=%.2f stop=%.2f trigger=%s",
+                self._pending_trade.get("side"),
+                self._pending_trade.get("entry_price", 0) or 0,
+                self._pending_trade.get("stop_price", 0) or 0,
+                self._pending_trade.get("signal_trigger", ""),
+            )
         self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
         self._trail_count = 0  # how many times we've trailed the stop
 
@@ -260,6 +328,7 @@ class TopstepXBrokerAdapter:
             if self.tracker.entry_price == 0.0:
                 self.tracker.on_exit(0.0)
                 self._pending_trade = None
+                _save_pending_trade_to_disk(None)
 
         log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
         return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
@@ -417,12 +486,22 @@ class TopstepXBrokerAdapter:
         if entry_px:
             # Normal close: full _pending_trade context available.
             # Orphan close: position survived a process restart so we have
-            # no signal context — write a partial row anyway so we don't
-            # lose the realized outcome (entry/exit/pnl). Empty fields will
-            # show up as NULL in broker_trades and signal that this was an
-            # untracked close, but the trainer can still learn from it once
-            # correlate links it to a stock_signal by ts + price.
-            pt = self._pending_trade or {}
+            # no signal context — but check disk for a saved context first
+            # (saved at entry time) so reasoning + signal_* still land in
+            # broker_trades. If both in-memory and disk are empty, we still
+            # write a partial row so the realized outcome (entry/exit/pnl)
+            # reaches the trainer.
+            pt = self._pending_trade
+            if not pt:
+                pt = _load_pending_trade_from_disk()
+                if pt:
+                    log.info(
+                        "Orphan exit recovered context from disk: side=%s entry=%.2f trigger=%s",
+                        pt.get("side"),
+                        pt.get("entry_price", 0) or 0,
+                        pt.get("signal_trigger", ""),
+                    )
+            pt = pt or {}
             now_utc = datetime.now(timezone.utc)
             side = pt.get("side") or self.tracker.side or ("long" if price > entry_px else "short")
             size = pt.get("size") or max(self.tracker.size or 1, 1)
@@ -487,6 +566,7 @@ class TopstepXBrokerAdapter:
                 closed_at=now_utc,
             )
             self._pending_trade = None
+            _save_pending_trade_to_disk(None)
 
     def reset_session(self) -> None:
         """Daily midnight reset."""
@@ -699,6 +779,9 @@ class TopstepXBrokerAdapter:
             "reasoning": signal.get("reasoning") if isinstance(signal.get("reasoning"), dict) else None,
             "trail_count": 0,
         }
+        # Mirror to disk so a container restart between this point and the
+        # close fill doesn't strip reasoning + signal context (orphan loss).
+        _save_pending_trade_to_disk(self._pending_trade)
 
         return {
             "action": action,
