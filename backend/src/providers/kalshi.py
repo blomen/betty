@@ -481,44 +481,71 @@ class KalshiRetriever(Retriever):
         self.fee_rate = float(config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE))
         self._circuit_breaker = circuit_breaker
 
+    def _series_tickers_for_sport(self, sport: str) -> list[str]:
+        """Inverse of KALSHI_SERIES_TO_SPORT — series_tickers that map to this sport."""
+        return [prefix for prefix, mapped_sport in KALSHI_SERIES_TO_SPORT.items() if mapped_sport == sport]
+
     def _get_sport_url(self, sport: str) -> str:
-        # Kalshi's /events endpoint is sport-agnostic; we filter in parse().
+        # Legacy method kept for compatibility; the new extract() uses
+        # series_ticker filtering directly per sport.
         return f"{self.base_url}/events?status=open&with_nested_markets=true&limit={self.DEFAULT_PAGE_LIMIT}"
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
-        """Fetch open Kalshi events page-by-page, parsing as we go.
+        """Fetch open Kalshi events for the sport via the series_ticker filter.
 
-        Kalshi's `/events` endpoint is sport-agnostic and serves ~10k events
-        across 50 pages. Pre-fix the loop fetched all pages before filtering,
-        which made the orchestrator's 60s health check (limit=1) time out.
-        We now parse each page incrementally and stop once we have enough
-        sport-relevant events to satisfy `limit`.
+        Pre-fix this paginated /events?status=open with no filter — that's
+        sport-agnostic, serves ~10k mixed markets (politics, futures, news,
+        plus a thin slice of head-to-head sports), and we parser-rejected
+        99% of them. Today's catalog (verified 2026-04-27) has zero head-to
+        head sports in the first 200 events because Kalshi orders by trading
+        volume and political/futures markets dominate the top.
+
+        Kalshi supports a `series_ticker` query parameter that filters at
+        the API. KALSHI_SERIES_TO_SPORT lists the relevant prefixes per
+        sport (KXNBAGAME, KXNCAABGAME for basketball, etc.). We query each
+        in turn and aggregate.
         """
         parsed: list[StandardEvent] = []
         total_raw = 0
-        cursor: str | None = None
-        url = self._get_sport_url(sport)
+        series_tickers = self._series_tickers_for_sport(sport)
+        if not series_tickers:
+            logger.debug(f"[kalshi] no series_tickers configured for sport={sport}")
+            return []
 
         async with aiohttp.ClientSession() as session:
-            for _ in range(50):  # hard cap at 50 pages × 200 = 10k events
-                page_url = url + (f"&cursor={cursor}" if cursor else "")
-                try:
-                    async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                        resp.raise_for_status()
-                        body = await resp.json()
-                except Exception as e:
-                    logger.warning(f"[kalshi] fetch failed at cursor={cursor}: {e}")
-                    break
-                events = body.get("events", [])
-                total_raw += len(events)
-                parsed.extend(self.parse({"events": events}, sport))
+            for series_ticker in series_tickers:
+                cursor: str | None = None
+                base = (
+                    f"{self.base_url}/events?status=open&with_nested_markets=true"
+                    f"&limit={self.DEFAULT_PAGE_LIMIT}&series_ticker={series_ticker}"
+                )
+                # Per series, allow up to 5 pages (1000 events) — events for a single
+                # series_ticker rarely exceed a few hundred. Hard cap protects against
+                # API misbehaviour.
+                for _ in range(5):
+                    page_url = base + (f"&cursor={cursor}" if cursor else "")
+                    try:
+                        async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            resp.raise_for_status()
+                            body = await resp.json()
+                    except Exception as e:
+                        logger.warning(f"[kalshi] fetch failed series={series_ticker} cursor={cursor}: {e}")
+                        break
+                    events = body.get("events", [])
+                    total_raw += len(events)
+                    parsed.extend(self.parse({"events": events}, sport))
+                    if limit and len(parsed) >= limit:
+                        break
+                    cursor = body.get("cursor") or None
+                    if not cursor or not events:
+                        break
                 if limit and len(parsed) >= limit:
                     break
-                cursor = body.get("cursor") or None
-                if not cursor or not events:
-                    break
 
-        logger.info(f"[kalshi] fetched {total_raw} raw events across pages, {len(parsed)} parsed for {sport}")
+        logger.info(
+            f"[kalshi] fetched {total_raw} raw events across {len(series_tickers)} series, "
+            f"{len(parsed)} parsed for {sport}"
+        )
         if limit and len(parsed) > limit:
             parsed = parsed[:limit]
         return parsed
