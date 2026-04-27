@@ -1737,8 +1737,9 @@ def ingest_live_trades() -> None:
     engine = create_engine(db_url)
 
     sql = text(
-        "SELECT s.id AS sid, s.action, s.confidence, s.observation_b64, s.observation_dim,"
-        "       s.stop_ticks, t.id AS tid, t.pnl_dollars, t.pnl_r, t.exit_price, t.entry_price,"
+        "SELECT s.id AS sid, s.action, s.confidence, s.cont_p, s.rev_p,"
+        "       s.observation_b64, s.observation_dim, s.stop_ticks,"
+        "       t.id AS tid, t.pnl_dollars, t.pnl_r, t.exit_price, t.entry_price,"
         "       t.was_stop "
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
@@ -1767,15 +1768,6 @@ def ingest_live_trades() -> None:
         except Exception:
             continue
 
-        # Action mapping: enter_long/short → continuation (0) or reversal (1).
-        # We don't know which from the action label alone — confidence/cont_p/rev_p
-        # would tell us, but for a simple first pass treat enter_* as continuation
-        # (the model fired CONT or REV; we map both to action 0 for the trainer
-        # because the trainer's reward model is direction-agnostic at the action
-        # axis — the rc/rr split carries the directional reward).
-        action_name = (r.action or "").lower()
-        is_long = "long" in action_name
-
         # Reward: realized R-multiple if available, else derived from $ + stop_ticks.
         if r.pnl_r is not None:
             reward_r = float(r.pnl_r)
@@ -1785,13 +1777,22 @@ def ingest_live_trades() -> None:
         else:
             reward_r = float(r.pnl_dollars) / 500.0  # rough normalization
 
-        # rc / rr: only the realized side gets the reward; the alternative is 0
-        # (no information). The trainer's loss only weights observed actions.
-        rc = reward_r if is_long else 0.0
-        rr = reward_r if not is_long else 0.0
-        # Action label: 0 (continuation) — we treat enter_* as continuation in
-        # the action axis. The directional split lives in rc vs rr.
-        action_label = 0
+        # Action label: pick CONT (0) vs REV (1) from the model's own
+        # cont_p / rev_p at signal time — that's the decision the model
+        # actually made. Falling back to CONT only when both are missing,
+        # which keeps very-old rows trainable instead of dropping them.
+        cont_p = float(r.cont_p) if r.cont_p is not None else 0.0
+        rev_p = float(r.rev_p) if r.rev_p is not None else 0.0
+        action_label = 1 if rev_p > cont_p else 0  # 0=CONT, 1=REV
+
+        # rc / rr: realized reward attributed to the head the model picked.
+        # Other head gets 0 (no information). Trainer's loss masks unobserved
+        # heads, so this preserves the model's own CONT-vs-REV calibration in
+        # the live training signal — losing it (the prior bug labeled every
+        # live trade as CONT) makes the model unable to learn that its REV
+        # picks were profitable / unprofitable distinctly from CONT.
+        rc = reward_r if action_label == 0 else 0.0
+        rr = reward_r if action_label == 1 else 0.0
         stop_target = float(r.stop_ticks or 25)
 
         obs_list.append(arr.astype(np.float32))
