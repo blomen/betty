@@ -704,6 +704,8 @@ class LiveInferenceV5:
             "inputs": base_obs.tolist(),
             "action": Action(action_idx).name,
             "confidence": float(confidence),
+            "cont_p": float(prob_cont),
+            "rev_p": float(prob_rev),
             "q_values": dqn_q_values if dqn_q_values is not None else [prob_cont, prob_rev, 0.0],
             "stop_ticks": float(stop_ticks),
             "stop_ticks_raw": stop_ticks_raw,

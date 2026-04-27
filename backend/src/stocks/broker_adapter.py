@@ -581,21 +581,54 @@ class TopstepXBrokerAdapter:
 
         stop_order_id = None
         if stop_price > 0:
-            for attempt in (1, 2):
+            current_stop = stop_price
+            for attempt in (1, 2, 3):
                 try:
-                    stop_result = await self.client.place_stop_order(stop_action, size, stop_price)
+                    stop_result = await self.client.place_stop_order(stop_action, size, current_stop)
                 except Exception:
-                    log.exception("Stop placement raised (attempt %d/2)", attempt)
+                    log.exception("Stop placement raised (attempt %d/3)", attempt)
                     stop_result = None
                 if isinstance(stop_result, dict):
                     if stop_result.get("success", True):
                         stop_order_id = stop_result.get("orderId")
                         break
+                    err_msg = str(stop_result.get("errorMessage", ""))
                     log.warning(
-                        "Stop placement rejected (attempt %d/2): %s",
+                        "Stop placement rejected (attempt %d/3): %s",
                         attempt,
-                        stop_result.get("errorMessage"),
+                        err_msg,
                     )
+                    # "Order price is outside allowed range" means the market
+                    # has moved through our pre-computed stop level between
+                    # signal time and order placement. Recompute the stop from
+                    # the actual fill price (entry_price as set by stream fill)
+                    # with an extra 2-tick safety buffer + widen by 4 ticks
+                    # each retry. This adapts to fast-moving NQ where the
+                    # signal-time stop is stale by the time the order lands.
+                    if (
+                        "allowed range" in err_msg.lower()
+                        or "best ask" in err_msg.lower()
+                        or "best bid" in err_msg.lower()
+                    ):
+                        live_entry = self.tracker.entry_price or price
+                        # Widen by 4 ticks per retry. is_long: stop below; short: stop above.
+                        widen_ticks = 4 * attempt
+                        widen_offset = (stop_dist_ticks + widen_ticks) * 0.25
+                        if is_long:
+                            current_stop = _round_tick(live_entry - widen_offset)
+                        else:
+                            current_stop = _round_tick(live_entry + widen_offset)
+                        log.info(
+                            "Stop recalc from live entry %.2f: new_stop=%.2f (was %.2f, +%d ticks)",
+                            live_entry,
+                            current_stop,
+                            stop_price,
+                            widen_ticks,
+                        )
+                        # Reflect updated stop in pending trade record so
+                        # broker_trades persists the actual placed stop, not
+                        # the stale signal-time one.
+                        stop_price = current_stop
 
             if stop_order_id is None:
                 # We have a filled (or about-to-fill) market order but no stop. Sitting
