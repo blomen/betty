@@ -148,38 +148,65 @@
     }
   }
 
-  // Cleanup any stale arnold-tagged shapes left over from previous extension
-  // sessions (TV persists shapes in the chart's saved state by default; we
-  // now use disableSave but pre-existing ones from before that fix landed
-  // need to be swept up).
+  // Cleanup any stale arnold-tagged or legacy shapes left over from previous
+  // extension sessions. TV persists shapes in chart-saved-state by default
+  // and our older code didn't set disableSave or include a marker, so anything
+  // drawn before this fix needs aggressive sweeping.
+  //
+  // Strategy: remove any rectangle/horizontal_line/text shape whose:
+  //   (a) text contains ARNOLD_TAG (current shapes — should be empty since
+  //       disableSave is on, but covers in-session redraws), OR
+  //   (b) text matches a legacy arnold pattern (zone ×N, arnold-*, bare
+  //       "entry"/"stop"/"tp" labels from Phase 0 probes, etc.), OR
+  //   (c) text is empty AND shape is a rectangle/horizontal_line that could
+  //       only be ours (LuxAlgo session boxes always have a session-name
+  //       text like "Tokyo"/"London"/"New York" — confirmed by user
+  //       screenshot — so empty text on these shape types is a strong
+  //       arnold signal).
+  //
+  // Manual drawings with text (entry lines, custom levels) are preserved
+  // because they have non-empty user-typed text that doesn't match (a) or (b).
   async function cleanupStaleShapes() {
     if (!chart || typeof chart.getAllShapes !== 'function') return;
     let shapes;
     try { shapes = chart.getAllShapes(); } catch (_) { return; }
     if (!Array.isArray(shapes)) return;
-    let cleaned = 0;
+
+    const isOurs = (text, name) => {
+      if (text && text.includes(ARNOLD_TAG)) return true;
+      if (text) {
+        const t = String(text).trim();
+        if (/×\d+/.test(t)) return true;                          // zone ×N
+        if (/arnold[-_]?(test|probe|overlay)/i.test(t)) return true;
+        if (/^(LONG|SHORT)\s+entry/i.test(t)) return true;        // our position label
+        if (/^stop(\s|$)/i.test(t)) return true;                  // our stop label
+        if (/^tp(\s|$)/i.test(t)) return true;                    // our tp label
+        if (/^entry$/i.test(t)) return true;                      // bare label from Phase 0
+      } else {
+        // Empty text + drawable shape ⇒ almost certainly ours. LuxAlgo
+        // session boxes (Tokyo/London/New York) always carry a label, as
+        // do user-typed levels. Empty-label rectangles are arnold zones
+        // from before the ARNOLD_TAG marker existed.
+        if (name === 'rectangle' || name === 'horizontal_line') return true;
+      }
+      return false;
+    };
+
+    let scanned = 0, cleaned = 0;
     for (const s of shapes) {
+      scanned += 1;
       try {
         const obj = typeof chart.getShapeById === 'function' ? chart.getShapeById(s.id) : null;
         if (!obj) continue;
         const props = typeof obj.getProperties === 'function' ? obj.getProperties() : null;
         const text = (props && (props.text || props.title)) || '';
-        // Match: shapes tagged with ARNOLD_TAG, OR legacy "zone ×N" pattern,
-        // OR our old test shapes (arnold-test/arnold-probe), OR pre-fix
-        // entry/stop/tp horizontal_line shapes.
-        const isOurs =
-          text.includes(ARNOLD_TAG) ||
-          /^.* ×\d+$/.test(text) ||
-          /arnold-(test|probe)/.test(text) ||
-          /^(LONG|SHORT) entry [\d.]+$/.test(text) ||
-          /^stop [\d.]+$/.test(text) ||
-          /^tp [\d.]+$/.test(text);
-        if (isOurs) {
+        const name = (s && s.name) || (props && props.name) || '';
+        if (isOurs(text, name)) {
           try { chart.removeEntity(s.id); cleaned += 1; } catch (_) {}
         }
-      } catch (_) { /* skip this shape */ }
+      } catch (_) { /* skip */ }
     }
-    if (cleaned > 0) console.log(`[arnold-overlay/page] cleaned up ${cleaned} stale shapes`);
+    console.log(`[arnold-overlay/page] cleanup: scanned ${scanned} shapes, removed ${cleaned}`);
   }
 
   // Native trading widgets — TradingView's createPositionLine / createOrderLine
@@ -317,6 +344,22 @@
               chart.bringToFront(entityId);
             }
           } catch (_) {}
+          break;
+        }
+        case 'force_cleanup': {
+          // User-triggered nuke from the SignalsPage button. Clears in-session
+          // drawn state (so the next reconcile redraws from scratch) and runs
+          // cleanupStaleShapes again to catch anything orphaned.
+          for (const id of drawn.values()) {
+            try { chart.removeEntity(id); } catch (_) {}
+          }
+          drawn.clear();
+          zoneFirstSeenAt.clear();
+          for (const key of [...drawnPositions.keys()]) {
+            await removePosition(key);
+          }
+          await cleanupStaleShapes();
+          sendAck(1);
           break;
         }
       }

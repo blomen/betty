@@ -63,6 +63,16 @@ def create_router() -> APIRouter:
         await broadcast({"type": "ping_zone", "zone_key": zone_key})
         return {"ok": True}
 
+    @router.post("/api/tv-overlay/force-cleanup")
+    async def force_cleanup() -> dict:
+        """Tell every attached overlay client to wipe its drawings + run
+        cleanupStaleShapes again. Useful when the TV chart has accumulated
+        leftover shapes from earlier sessions that the auto-cleanup on
+        attach didn't catch.
+        """
+        await broadcast({"type": "force_cleanup"})
+        return {"ok": True}
+
     @router.websocket("/ws/tv-overlay")
     async def overlay_ws(ws: WebSocket) -> None:
         await ws.accept()

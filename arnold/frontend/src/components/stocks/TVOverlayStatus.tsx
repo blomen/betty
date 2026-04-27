@@ -92,6 +92,15 @@ export function TVOverlayStatus() {
             {opening ? 'Opening…' : 'Open TV in mirror'}
           </button>
           <button
+            onClick={async () => {
+              await fetch('/stocks/api/tv-overlay/force-cleanup', { method: 'POST' }).catch(() => {})
+            }}
+            className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-orange-900/60 hover:bg-orange-800/60 text-orange-300 rounded"
+            title="Wipe all overlay drawings on TV and let the next reconcile redraw fresh"
+          >
+            Clear chart
+          </button>
+          <button
             onClick={copyUrl}
             className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded"
           >
