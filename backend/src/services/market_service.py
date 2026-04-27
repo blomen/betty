@@ -1464,7 +1464,13 @@ class MarketService:
         start_utc = today_dt.astimezone(timezone.utc)
         end_utc = datetime.now(timezone.utc)
         db_bars = self.repo.get_candles(symbol, "1m", start_utc, end_utc)
-        bar_dicts = [{"high": b["high"], "low": b["low"], "close": b["close"]} for b in db_bars] if db_bars else []
+        # get_candles returns MarketCandle ORM rows (o/h/l/c/v attributes), not
+        # dicts. Earlier code dict-subscripted them and raised
+        # "'MarketCandle' object is not subscriptable" on every level touch,
+        # which silently starved get_indicators() — the orderflow
+        # computation downstream therefore returned a near-empty signals
+        # object, and the broker gate vetoed every trade with of_score≈0.05.
+        bar_dicts = [{"high": b.h, "low": b.l, "close": b.c} for b in db_bars] if db_bars else []
 
         # Direction from structure, not manual gates
         from ..market_data.levels import detect_swing_points

@@ -414,56 +414,77 @@ class TopstepXBrokerAdapter:
             self.tracker.session_pnl,
         )
 
-        if self._pending_trade and entry_px:
-            side = self._pending_trade["side"]
+        if entry_px:
+            # Normal close: full _pending_trade context available.
+            # Orphan close: position survived a process restart so we have
+            # no signal context — write a partial row anyway so we don't
+            # lose the realized outcome (entry/exit/pnl). Empty fields will
+            # show up as NULL in broker_trades and signal that this was an
+            # untracked close, but the trainer can still learn from it once
+            # correlate links it to a stock_signal by ts + price.
+            pt = self._pending_trade or {}
+            now_utc = datetime.now(timezone.utc)
+            side = pt.get("side") or self.tracker.side or ("long" if price > entry_px else "short")
+            size = pt.get("size") or max(self.tracker.size or 1, 1)
             direction = 1.0 if side == "long" else -1.0
             pnl_pts = direction * (price - entry_px)
-            pnl_dollars = pnl_pts * _NQ_POINT_VALUE * self._pending_trade["size"]
-            stop_price = self._pending_trade.get("stop_price", 0)
+            pnl_dollars = pnl_pts * _NQ_POINT_VALUE * size
+            stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
             risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
             pnl_r = pnl_pts / max(risk_pts, 0.25)
 
             # Slippage = adverse fill vs. intended signal price, in NQ ticks.
             # Positive = paid worse than signal (long filled higher / short filled lower).
-            signal_price = self._pending_trade.get("signal_price")
+            signal_price = pt.get("signal_price")
             slippage_ticks = None
             if signal_price:
                 slippage_ticks = round(direction * (entry_px - signal_price) / 0.25, 2)
 
             # Latency = signal-dispatch → entry-fill (ms). End-to-end including order ack.
-            submit_ts = self._pending_trade.get("entry_submit_ts")
-            fill_ts = self._pending_trade.get("entry_fill_ts")
+            submit_ts = pt.get("entry_submit_ts")
+            fill_ts = pt.get("entry_fill_ts")
             fill_latency_ms = None
             if submit_ts and fill_ts:
                 fill_latency_ms = round((fill_ts - submit_ts).total_seconds() * 1000.0, 1)
 
+            if not self._pending_trade:
+                log.warning(
+                    "Orphan exit: entry_px=%.2f exit=%.2f pnl=$%.2f pnl_r=%.3f side=%s "
+                    "(no _pending_trade; persisting partial row)",
+                    entry_px,
+                    price,
+                    pnl_dollars,
+                    pnl_r,
+                    side,
+                )
+
             _log_broker_trade(
                 session_pnl=round(self.tracker.session_pnl, 2),
-                ts=self._pending_trade["ts"],
-                session_date=self._pending_trade["session_date"],
-                symbol=self._pending_trade["symbol"],
+                ts=pt.get("ts") or now_utc,
+                session_date=pt.get("session_date") or now_utc.strftime("%Y-%m-%d"),
+                symbol=pt.get("symbol") or "NQ",
                 side=side,
-                size=self._pending_trade["size"],
+                size=size,
                 entry_price=entry_px,
                 stop_price=stop_price,
-                tp_price=self._pending_trade.get("tp_price"),
+                tp_price=pt.get("tp_price"),
                 exit_price=price,
                 pnl_dollars=round(pnl_dollars, 2),
                 pnl_r=round(pnl_r, 3),
                 fill_latency_ms=fill_latency_ms,
                 slippage_ticks=slippage_ticks,
                 was_stop=is_stop,
-                trail_count=self._pending_trade.get("trail_count", 0),
-                stop_ticks=self._pending_trade.get("stop_ticks"),
-                signal_action=self._pending_trade.get("signal_action"),
-                signal_confidence=self._pending_trade.get("signal_confidence"),
-                signal_zone=self._pending_trade.get("signal_zone"),
-                signal_trigger=self._pending_trade.get("signal_trigger"),
-                signal_cont_p=self._pending_trade.get("signal_cont_p"),
-                signal_rev_p=self._pending_trade.get("signal_rev_p"),
-                orderflow_score=self._pending_trade.get("orderflow_score"),
-                reasoning=self._pending_trade.get("reasoning"),
-                closed_at=datetime.now(timezone.utc),
+                trail_count=pt.get("trail_count", 0),
+                stop_ticks=pt.get("stop_ticks"),
+                signal_action=pt.get("signal_action"),
+                signal_confidence=pt.get("signal_confidence"),
+                signal_zone=pt.get("signal_zone"),
+                signal_trigger=pt.get("signal_trigger") or ("orphan" if not self._pending_trade else None),
+                signal_cont_p=pt.get("signal_cont_p"),
+                signal_rev_p=pt.get("signal_rev_p"),
+                orderflow_score=pt.get("orderflow_score"),
+                reasoning=pt.get("reasoning"),
+                closed_at=now_utc,
             )
             self._pending_trade = None
 
