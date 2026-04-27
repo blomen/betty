@@ -1517,9 +1517,15 @@ class LevelMonitor:
                 # Send trading signal — filter low confidence + fix stop calculation
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                # 0.30 normally; 0.99 when the trading_paused flag is set so we
-                # collect signals + episodes without placing any orders.
-                MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else 0.30
+                # In reckless learning mode this gate must NOT be stricter than
+                # the broker's, otherwise the broker takes a trade but the
+                # relay path skips persisting (no obs / reasoning / trade_id
+                # linkage). Match the broker conf floor when reckless is on.
+                # 0.99 when paused so no signals get persisted as "real" while
+                # collecting passive episodes.
+                _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+                _baseline_min = 0.05 if _reckless_relay else 0.30
+                MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
 
                 if action in ("SKIP", "skip"):
                     logger.debug("SKIP for zone %.2f (conf=%.3f)", zone.center_price, confidence)

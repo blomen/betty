@@ -547,10 +547,26 @@ class TopstepXBrokerAdapter:
             float(signal.get("zone", 0) or 0),
         )
 
-        try:
-            result = await self.client.place_market_order(order_action, size)
-        except Exception:
-            log.exception("Market order failed")
+        # Network flakiness to api.topstepx.com surfaces as ConnectTimeout.
+        # Retry once before failing so a single dropped connection doesn't
+        # cost an entire setup. Two attempts is the cap — beyond that we
+        # genuinely cannot place and should bail out so the caller doesn't
+        # think the order is in flight.
+        result = None
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                result = await self.client.place_market_order(order_action, size)
+                break
+            except Exception as exc:
+                last_exc = exc
+                log.warning(
+                    "place_market_order attempt %d/2 failed: %s — retrying",
+                    attempt,
+                    type(exc).__name__,
+                )
+        if result is None:
+            log.error("Market order failed after 2 attempts: %s", last_exc)
             return {"rejected": True, "reason": "order_failed"}
 
         if isinstance(result, dict) and not result.get("success", True):
