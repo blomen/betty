@@ -17,9 +17,19 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
-MIN_TRADE_INTERVAL_S = 30.0
-MIN_CONFIDENCE = 0.30  # reject signals below this confidence
-ZONE_COOLDOWN_S = 120.0  # don't re-enter same zone within 2 minutes
+# RECKLESS_LEARNING_MODE (env, default 1 = on): we have only 16 trades total,
+# all from 04-23/04-24 — the model can't learn its own outcomes if the live
+# gate filters everything out. Loosened thresholds let weak signals through
+# so the trainer accumulates labelled (obs, action, realized_pnl_r) tuples.
+# Risk caps (daily loss / trailing DD / size) stay intact — they bound the
+# downside, not the take rate. Set RECKLESS_LEARNING_MODE=0 to retighten.
+import os as _os
+
+_RECKLESS = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+
+MIN_TRADE_INTERVAL_S = 10.0 if _RECKLESS else 30.0
+MIN_CONFIDENCE = 0.10 if _RECKLESS else 0.30  # reject signals below this confidence
+ZONE_COOLDOWN_S = 30.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
 DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
 MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
 MAX_STOP_TICKS = 40  # maximum stop distance

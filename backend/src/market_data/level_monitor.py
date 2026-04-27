@@ -1390,9 +1390,19 @@ class LevelMonitor:
                 if action == "CONTINUATION":
                     action = "REVERSAL"
                 of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
+                # RECKLESS_LEARNING_MODE: with zero post-migration trades, the
+                # bottleneck is too-strict gating, not signal quality. Drop
+                # the confidence floor + OF floor here so the broker actually
+                # gets to see weak-but-nonzero model preferences. We need the
+                # outcomes to keep the trainer fed.
+                # Set RECKLESS_LEARNING_MODE=0 to restore old defaults
+                # (conf 0.15, of_score 0.30).
+                _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+                _conf_floor_default = 0.05 if _reckless else 0.15
+                _of_floor = 0.15 if _reckless else 0.30
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
-                _broker_conf_floor = 0.99 if _trading_paused() else 0.15
+                _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
                 # Log the gate decision so silent veto causes are visible in
                 # deploy logs without having to attach a debugger.
                 if action in ("SKIP", "skip"):
@@ -1404,10 +1414,11 @@ class LevelMonitor:
                         _broker_conf_floor,
                         zone.center_price,
                     )
-                elif of_score < 0.30:
+                elif of_score < _of_floor:
                     logger.info(
-                        "broker gate: of_score %.3f < 0.30 at zone %.2f (conf=%.3f, %s) — vetoed",
+                        "broker gate: of_score %.3f < %.2f at zone %.2f (conf=%.3f, %s) — vetoed",
                         of_score,
+                        _of_floor,
                         zone.center_price,
                         confidence,
                         action,
@@ -1420,7 +1431,7 @@ class LevelMonitor:
                         action,
                         zone.center_price,
                     )
-                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= 0.30:
+                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= _of_floor:
                     import asyncio
 
                     try:
