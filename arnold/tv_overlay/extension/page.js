@@ -35,8 +35,10 @@
     const sat = 0.6 + 0.4 * clamped;
     const lit = 0.55 - 0.1 * clamped;
     const color = _hslToHex(hue, sat, lit);
-    // strength² for transparency so the curve emphasizes high-confidence zones
-    const transparency = Math.round(85 - 60 * clamped * clamped);
+    // strength² for transparency so the curve emphasizes high-confidence
+    // zones. Range: weak ≈ 95% transparent (barely visible), strong ≈ 60%
+    // transparent (clearly visible but chart underneath stays readable).
+    const transparency = Math.round(95 - 35 * clamped * clamped);
     return { color, transparency };
   }
 
@@ -95,6 +97,11 @@
     zoneFirstSeenAt.delete(key);
   }
 
+  // Recognizable text marker on every shape we draw so cleanupStaleShapes
+  // can find and remove them on extension reload, without touching the
+  // user's manual drawings (LuxAlgo session boxes, hand-drawn levels, etc).
+  const ARNOLD_TAG = '​[arn]';  // zero-width-space + tag, basically invisible
+
   function drawZone(p) {
     if (!chart) return false;
     safeRemove(p.key);
@@ -108,6 +115,7 @@
     // Only label confluence zones (members ≥ 2) — labelling every "zone ×1"
     // creates the clutter the user complained about.
     const showLabel = (p.members ?? 0) >= 2;
+    const labelText = showLabel ? `${p.kind} ×${p.members}` : '';
     try {
       const id = chart.createMultipointShape(
         [
@@ -116,7 +124,11 @@
         ],
         {
           shape: 'rectangle',
-          text: showLabel ? `${p.kind} ×${p.members}` : '',
+          // Tag every shape so cleanup can find them, even when label is empty
+          text: ARNOLD_TAG + labelText,
+          // disableSave so TV doesn't persist these shapes in the chart's
+          // saved state — when extension reloads, no leftover orphans
+          disableSave: true,
           overrides: {
             color,
             backgroundColor: color,
@@ -134,6 +146,40 @@
       sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
+  }
+
+  // Cleanup any stale arnold-tagged shapes left over from previous extension
+  // sessions (TV persists shapes in the chart's saved state by default; we
+  // now use disableSave but pre-existing ones from before that fix landed
+  // need to be swept up).
+  async function cleanupStaleShapes() {
+    if (!chart || typeof chart.getAllShapes !== 'function') return;
+    let shapes;
+    try { shapes = chart.getAllShapes(); } catch (_) { return; }
+    if (!Array.isArray(shapes)) return;
+    let cleaned = 0;
+    for (const s of shapes) {
+      try {
+        const obj = typeof chart.getShapeById === 'function' ? chart.getShapeById(s.id) : null;
+        if (!obj) continue;
+        const props = typeof obj.getProperties === 'function' ? obj.getProperties() : null;
+        const text = (props && (props.text || props.title)) || '';
+        // Match: shapes tagged with ARNOLD_TAG, OR legacy "zone ×N" pattern,
+        // OR our old test shapes (arnold-test/arnold-probe), OR pre-fix
+        // entry/stop/tp horizontal_line shapes.
+        const isOurs =
+          text.includes(ARNOLD_TAG) ||
+          /^.* ×\d+$/.test(text) ||
+          /arnold-(test|probe)/.test(text) ||
+          /^(LONG|SHORT) entry [\d.]+$/.test(text) ||
+          /^stop [\d.]+$/.test(text) ||
+          /^tp [\d.]+$/.test(text);
+        if (isOurs) {
+          try { chart.removeEntity(s.id); cleaned += 1; } catch (_) {}
+        }
+      } catch (_) { /* skip this shape */ }
+    }
+    if (cleaned > 0) console.log(`[arnold-overlay/page] cleaned up ${cleaned} stale shapes`);
   }
 
   // Native trading widgets — TradingView's createPositionLine / createOrderLine
@@ -203,13 +249,20 @@
       }
 
       // Anchored Volume Profile rooted at the entry time so volume
-      // distribution since entry is visible at a glance. Best-effort —
-      // the study id isn't always returned synchronously, so we hold the
-      // Promise and resolve the actual id when removing.
+      // distribution since entry is visible at a glance. TV deprecated the
+      // ordered-array input form ("Passing study inputs as an ordered array
+      // is now deprecated"), so use the object form keyed by the input name.
+      // The actual key name varies by TV version; pass both common names
+      // so at least one anchors correctly.
       try {
         const now = Math.floor(Date.now() / 1000);
-        const avpPromise = chart.createStudy('Anchored Volume Profile', false, false, [now]);
-        entry.avpStudyId = avpPromise; // may be a Promise<id> or an id
+        const avpPromise = chart.createStudy(
+          'Anchored Volume Profile',
+          false,
+          false,
+          { time: now, anchor_time: now, anchorTime: now },
+        );
+        entry.avpStudyId = avpPromise;
       } catch (_) { /* AVP unsupported on this account/symbol — non-fatal */ }
 
       drawnPositions.set(p.key, entry);
@@ -237,12 +290,17 @@
     } catch (_) {}
   }
 
-  attachPromise.then((c) => {
+  attachPromise.then(async (c) => {
     if (!c) {
       console.warn('[arnold-overlay/page] could not find TradingView chart object — overlay disabled');
       return;
     }
     console.log('[arnold-overlay/page] attached to chart', c);
+
+    // Sweep up shapes left over from previous extension sessions before
+    // we start drawing fresh — otherwise the chart accumulates duplicates
+    // every time the user reloads or the extension restarts.
+    await cleanupStaleShapes();
 
     document.addEventListener('arnold:msg', async (ev) => {
       let msg;
