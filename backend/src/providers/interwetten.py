@@ -172,18 +172,19 @@ class InterwettenRetriever(BrowserRetriever):
         if target_leagues:
             leagues = self._filter_leagues(leagues, target_leagues)
 
-        # Cap discovered league count when no Pinnacle filter is in play.
-        # Sports like handball/volleyball can return 100+ leagues — many tier-3
-        # obscure ones — and chewing through all of them blows past the 600s
-        # per-sport budget without yielding extra Pinnacle-matchable events.
-        # Top 30 keeps every mainstream comp + a long tail of secondaries.
-        MAX_LEAGUES_NO_TARGET = 30
-        if not target_leagues and len(leagues) > MAX_LEAGUES_NO_TARGET:
+        # Hard cap on league count: sports like handball/volleyball return 100+
+        # leagues and chewing through all of them blows past the 600s per-sport
+        # budget. _filter_leagues sometimes lets a lot through too — its substring
+        # match (e.g. target "handball" matches every league with "handball" in
+        # the name) over-includes the long tail. Cap unconditionally after any
+        # filter pass; top 30 keeps every mainstream comp plus secondaries.
+        MAX_LEAGUES_PER_SPORT = 30
+        if len(leagues) > MAX_LEAGUES_PER_SPORT:
             logger.info(
-                f"[{self.provider_id}] {sport}: capping {len(leagues)} discovered leagues to top {MAX_LEAGUES_NO_TARGET} "
-                "(no Pinnacle target list, prevents 600s sport timeout on long tail)"
+                f"[{self.provider_id}] {sport}: capping {len(leagues)} leagues to top {MAX_LEAGUES_PER_SPORT} "
+                f"(target_filter={'on' if target_leagues else 'off'})"
             )
-            leagues = leagues[:MAX_LEAGUES_NO_TARGET]
+            leagues = leagues[:MAX_LEAGUES_PER_SPORT]
 
         logger.info(f"[{self.provider_id}] {sport}: discovered {len(leagues)} leagues")
 

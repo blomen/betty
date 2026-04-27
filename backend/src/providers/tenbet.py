@@ -321,20 +321,30 @@ class TenBetRetriever(BrowserRetriever):
         url = f"{self.site_url}/sports/{sport_slug}/competitions"
         page = self.transport.page
 
-        # 30s was the previous bump after 15s was too tight under proxy contention.
-        # Even 30s is now intermittently timing out (observed `[10bet] Failed to
-        # discover competitions for football: Page.goto: Timeout 30000ms`), and
-        # a single goto failure tanks the whole sport extraction. One retry with
-        # a 60s budget recovers the transient case without cementing a longer
-        # default for healthy runs.
+        # 10bet's competitions page is heavy (Playtech SPA) and frequently slow
+        # under Bahnhof proxy contention. Three attempts: 30s/60s/120s. After
+        # observing a single 60s retry STILL hit timeout (boxing: 60000ms exceeded
+        # observed 2026-04-27), the third attempt with 120s budget catches the
+        # genuinely slow-but-completing case. If even 120s fails, the page is
+        # truly dead (proxy blocked / site outage) — failing the sport is correct.
+        async def _goto_with_retry():
+            for attempt, budget_ms in enumerate((30_000, 60_000, 120_000), 1):
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=budget_ms)
+                    if attempt > 1:
+                        logger.info(
+                            f"[{self.provider_id}] {sport_slug} goto succeeded on attempt {attempt}/{budget_ms // 1000}s"
+                        )
+                    return
+                except Exception as e:
+                    if attempt == 3:
+                        raise
+                    logger.warning(
+                        f"[{self.provider_id}] {sport_slug} goto attempt {attempt}/{budget_ms // 1000}s failed ({e}); retrying"
+                    )
+
         try:
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            except Exception as goto_err:
-                logger.warning(
-                    f"[{self.provider_id}] {sport_slug} goto failed once ({goto_err}); retrying with 60s budget"
-                )
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await _goto_with_retry()
 
             # Try to wait for competition links to appear
             try:
