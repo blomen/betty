@@ -296,7 +296,22 @@ class InterwettenRetriever(BrowserRetriever):
         sport_id, slug = sport_info
         url = f"{self.base_url}/en/sportsbook/o/{sport_id}/{slug}"
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Same proxy-contention pattern as 10bet — discovery page is heavy
+            # and intermittently times out at 30s. Three-attempt ladder.
+            for attempt, budget_ms in enumerate((30_000, 60_000, 120_000), 1):
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=budget_ms)
+                    if attempt > 1:
+                        logger.info(
+                            f"[{self.provider_id}] {sport} discovery succeeded on attempt {attempt}/{budget_ms // 1000}s"
+                        )
+                    break
+                except Exception as e:
+                    if attempt == 3:
+                        raise
+                    logger.warning(
+                        f"[{self.provider_id}] {sport} discovery attempt {attempt}/{budget_ms // 1000}s failed ({e}); retrying"
+                    )
             # Use state='attached' to bypass cookie banner overlay
             try:
                 await page.wait_for_selector('a[href*="/l/"]', timeout=5000, state="attached")
