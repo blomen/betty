@@ -27,6 +27,7 @@ from typing import Any
 
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
+from ..core.camoufox_utils import capture_camoufox_driver_pid, force_kill_camoufox_tree
 from ..core.exceptions import RetryableError
 from ..core.transport import BrowserTransport, get_proxy_dict
 from ..matching.normalizer import normalize_outcome, normalize_team_name

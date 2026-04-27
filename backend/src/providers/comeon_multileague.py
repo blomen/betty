@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
+from ..core.camoufox_utils import capture_camoufox_driver_pid, force_kill_camoufox_tree
 from ..core.exceptions import RetryableError
 from ..core.transport import get_proxy_dict
 from . import comeon_dom_js as JS
