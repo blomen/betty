@@ -801,7 +801,9 @@ async def lifespan(app: FastAPI):
                             except Exception as exc:
                                 logger.debug("[Stocks] compute attempt %s failed: %s", attempt_date, exc)
 
-                        # Set full session context (VWAP, VP, IB, macro, swings, ATR)
+                        # Set full session context (VWAP, VP, IB, macro, swings, ATR).
+                        # Also pull get_indicators() so day_type lands in the
+                        # context dict the reasoning JSONB reads from.
                         if expanded and session_data and isinstance(session_data, dict):
                             rl_context = {
                                 "volume_profile": session_data.get("volume_profile"),
@@ -811,6 +813,12 @@ async def lifespan(app: FastAPI):
                                 "swing_structure": expanded.get("swing_structure") if expanded else None,
                                 "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                             }
+                            try:
+                                indicators = await svc.get_indicators()
+                                rl_context["day_type"] = indicators.get("ml_day_type")
+                                rl_context["day_type_confidence"] = indicators.get("ml_day_type_confidence")
+                            except Exception:
+                                logger.debug("[Stocks] get_indicators failed in init load", exc_info=True)
                             level_monitor.set_session_context(rl_context)
                             logger.info(
                                 "[Stocks] Session context set: %d keys, ATR=%.1f",
@@ -851,6 +859,15 @@ async def lifespan(app: FastAPI):
                                     "swing_structure": expanded.get("swing_structure"),
                                     "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
                                 }
+                                try:
+                                    indicators = await svc.get_indicators()
+                                    rl_context["day_type"] = indicators.get("ml_day_type")
+                                    rl_context["day_type_confidence"] = indicators.get("ml_day_type_confidence")
+                                except Exception:
+                                    logger.debug(
+                                        "[Stocks] get_indicators failed in periodic recompute",
+                                        exc_info=True,
+                                    )
                                 level_monitor.set_session_context(rl_context)
                             logger.info(
                                 "[Stocks] Session recomputed: %d levels, %d zones",

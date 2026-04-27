@@ -122,6 +122,79 @@ _FAILED_AUCTION_FAMILIES = {
 }
 
 
+def _classify_session_phase(now_utc: datetime) -> str:
+    """Wall-clock phase derived from UTC. NQ globex day boundaries:
+      tokyo       22:00-03:00 UTC  (Asia open through pre-EU)
+      eu          03:00-13:30 UTC  (London/Frankfurt run-up)
+      rth_open    13:30-15:30 UTC  (US cash open + first hour — Tanner's IB)
+      rth_mid     15:30-19:30 UTC  (mid-session, lunch fade)
+      rth_close   19:30-21:00 UTC  (US close drift + post-cash chop)
+      post_close  21:00-22:00 UTC  (gap before Sunday/Asia restart)
+    Different liquidity / participant mix per phase — strategy edge varies.
+    """
+    h = now_utc.hour
+    m = now_utc.minute
+    minutes = h * 60 + m
+    if minutes >= 22 * 60 or minutes < 3 * 60:
+        return "tokyo"
+    if minutes < 13 * 60 + 30:
+        return "eu"
+    if minutes < 15 * 60 + 30:
+        return "rth_open"
+    if minutes < 19 * 60 + 30:
+        return "rth_mid"
+    if minutes < 21 * 60:
+        return "rth_close"
+    return "post_close"
+
+
+def _classify_ib_state(price: float, session_levels) -> dict | None:
+    """Where is current price relative to today's Initial Balance?
+    above / inside / below + extension multiple (how many IB-widths beyond).
+    Day-type prediction hinges on this: trend days extend > 1x IB; normal
+    days stay inside.
+    """
+    if session_levels is None:
+        return None
+    ib_high = getattr(session_levels, "ib_high", 0) or 0
+    ib_low = getattr(session_levels, "ib_low", 0) or 0
+    if not ib_high or not ib_low or ib_high <= ib_low:
+        return None
+    width = ib_high - ib_low
+    if price > ib_high:
+        ext = round((price - ib_high) / max(width, 0.25), 2)
+        state = "above"
+    elif price < ib_low:
+        ext = round((ib_low - price) / max(width, 0.25), 2)
+        state = "below"
+    else:
+        ext = 0.0
+        state = "inside"
+    return {
+        "state": state,
+        "extension_x": ext,  # widths beyond IB; 0 if inside
+        "ib_high": round(float(ib_high), 2),
+        "ib_low": round(float(ib_low), 2),
+        "width": round(float(width), 2),
+    }
+
+
+def _classify_trend_context(swing_structure) -> dict | None:
+    """Higher-TF directional bias from swing structure on D/W/M timeframes.
+    Trading WITH bias has materially different expected outcome than against.
+    """
+    if not swing_structure or not isinstance(swing_structure, dict):
+        return None
+    out = {}
+    for tf in ("daily", "weekly", "monthly"):
+        bucket = swing_structure.get(tf)
+        if isinstance(bucket, dict):
+            s = bucket.get("structure") or bucket.get("trend")
+            if s:
+                out[tf] = str(s)
+    return out or None
+
+
 def _build_reasoning(
     *,
     zone,
@@ -133,6 +206,9 @@ def _build_reasoning(
     size_multiplier: float,
     stop_ticks: int,
     sig_action: str,
+    session_ctx: dict | None = None,
+    price: float = 0.0,
+    now_utc: datetime | None = None,
 ) -> dict:
     """Derive structured "why we took it" tags from zone + model state.
 
@@ -144,6 +220,11 @@ def _build_reasoning(
       stake: {multiplier}
       stop: {ticks}
       conviction: {cont_p, rev_p, confidence}
+      day_type / day_type_confidence: M7 ML day classifier output
+      trend_context: per-TF directional bias (daily/weekly/monthly)
+      ib_state: above/inside/below + extension multiple
+      session_phase: wall-clock liquidity regime
+      macro: VIX + regime snapshot
     """
     families: list[str] = []
     seen: set[str] = set()
@@ -156,6 +237,21 @@ def _build_reasoning(
             families.append(fam)
 
     failed_auction_at = [f for f in families if f in _FAILED_AUCTION_FAMILIES]
+
+    ctx = session_ctx or {}
+    day_type = ctx.get("day_type") or ctx.get("ml_day_type")
+    day_type_conf = ctx.get("day_type_confidence") or ctx.get("ml_day_type_confidence")
+    trend_context = _classify_trend_context(ctx.get("swing_structure"))
+    ib_state = _classify_ib_state(price, ctx.get("session_levels"))
+    session_phase = _classify_session_phase(now_utc or datetime.now(timezone.utc))
+    macro_raw = ctx.get("macro") if isinstance(ctx.get("macro"), dict) else None
+    macro_block = None
+    if macro_raw:
+        macro_block = {
+            "vix": macro_raw.get("vix"),
+            "regime": macro_raw.get("regime"),
+            "regime_score": macro_raw.get("regime_score"),
+        }
 
     primary: list[str] = []
     if zone.hierarchy_score >= 0.6 or len(families) >= 3:
@@ -174,6 +270,19 @@ def _build_reasoning(
         primary.append("order_block_present")
     elif "fvg" in families:
         primary.append("fvg_present")
+    # Trend-alignment tag: REV against daily trend = counter-trend (high risk
+    # but classic SFP-style fade); CONT with daily trend = momentum trade.
+    daily_trend = (trend_context or {}).get("daily")
+    if daily_trend and action in ("REVERSAL", "CONTINUATION"):
+        is_long = "long" in (sig_action or "")
+        if action == "CONTINUATION":
+            with_trend = (is_long and daily_trend == "uptrend") or (not is_long and daily_trend == "downtrend")
+        else:  # REVERSAL fades the prevailing tendency at the level
+            with_trend = (not is_long and daily_trend == "uptrend") or (is_long and daily_trend == "downtrend")
+        primary.append("with_trend" if with_trend else "counter_trend")
+    # Day-type strategy hint: trend-day fades are usually wrong
+    if day_type and "trend" in str(day_type).lower() and action == "REVERSAL":
+        primary.append("trend_day_fade_warning")
 
     parts = [
         f"{sig_action} at zone {zone.center_price:.2f}",
@@ -184,6 +293,11 @@ def _build_reasoning(
     parts.append(f"OF={of_score:.2f}")
     if size_multiplier and float(size_multiplier) > 1.0:
         parts.append(f"sized {float(size_multiplier):.1f}x")
+    if day_type:
+        parts.append(f"day={day_type}")
+    if ib_state:
+        parts.append(f"ib={ib_state['state']}({ib_state['extension_x']}x)")
+    parts.append(f"phase={session_phase}")
     summary = "; ".join(parts)
 
     return {
@@ -203,6 +317,12 @@ def _build_reasoning(
             "rev_p": round(float(rev_p), 3) if rev_p is not None else None,
             "confidence": round(float(confidence), 3),
         },
+        "day_type": day_type,
+        "day_type_confidence": day_type_conf,
+        "trend_context": trend_context,
+        "ib_state": ib_state,
+        "session_phase": session_phase,
+        "macro": macro_block,
     }
 
 
@@ -1455,6 +1575,9 @@ class LevelMonitor:
                             size_multiplier=size_mult,
                             stop_ticks=stop_ticks,
                             sig_action=sig_action,
+                            session_ctx=self._session_context,
+                            price=price,
+                            now_utc=datetime.now(timezone.utc),
                         )
                         logger.info("Reasoning: %s", reasoning.get("summary"))
                         broker_signal = {
@@ -1573,6 +1696,9 @@ class LevelMonitor:
                         size_multiplier=cb_size_mult,
                         stop_ticks=stop_ticks,
                         sig_action=sig_action,
+                        session_ctx=self._session_context,
+                        price=price,
+                        now_utc=datetime.now(timezone.utc),
                     )
                     signal_payload = {
                         "type": "signal",
