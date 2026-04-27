@@ -66,11 +66,19 @@ PLATFORM_MAP: dict[str, str] = {
     "campobet": "altenar",
     "swiper": "altenar",
     "quickcasino": "altenar",
-    # Gecko V2 — betsson+nordicbet+spelklubben share odds, bethard is independent
-    "betsson": "gecko_betsson",
-    "nordicbet": "gecko_betsson",
-    "spelklubben": "gecko_betsson",
-    "bethard": "gecko_bethard",
+    # Gecko V2 / OBG — empirically all 5 brands serve the same backend (live API
+    # audit 2026-04-27 hit each brand simultaneously, paired event IDs across all
+    # 5, sub-percent odds variance across the matrix). Two margin tiers exist:
+    #   Cluster A (CDN-fronted, slightly softer payouts): bethard, spelklubben — 0.00% diff
+    #   Cluster B (origin-domain): betsson, betsafe, nordicbet — 0.00% diff in-cluster
+    # Cross-cluster diff ≈1-2% — same lines, different markup config. We collapse
+    # to a single platform anchored on spelklubben (Cluster A: faster CDN endpoint,
+    # slightly better payouts, peak 8.2 ev/s observed). Other 4 fan-out as members.
+    "betsson": "gecko_obg",
+    "nordicbet": "gecko_obg",
+    "spelklubben": "gecko_obg",
+    "betsafe": "gecko_obg",
+    "bethard": "gecko_obg",
     # Spectate — 100% identical
     "mrgreen": "spectate",
     "888sport": "spectate",
@@ -115,9 +123,13 @@ PLATFORM_GROUPS: dict[str, dict] = {
         "canonical": "betinia",
         "members": ["betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"],
     },
-    "gecko_betsson": {
-        "canonical": "betsson",
-        "members": ["betsson", "nordicbet", "betsafe", "spelklubben"],
+    "gecko_obg": {
+        # Spelklubben canonical: same OBG backend as the others (verified by live API
+        # comparison 2026-04-27, 13 shared event IDs, 0.00% diff vs bethard, ~1% vs
+        # betsson group). CDN-fronted endpoint d-cf.spelklubbenplayground.net is
+        # faster and more stable than origin-domain alternatives.
+        "canonical": "spelklubben",
+        "members": ["spelklubben", "bethard", "betsson", "betsafe", "nordicbet"],
     },
     "comeon_group": {
         "canonical": "comeon",
