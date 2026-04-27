@@ -936,7 +936,14 @@ extraction_scheduling:
       - interwetten
       - 10bet
       - tipwin
-    interval_minutes: 10
+    # Bumped 10 → 20 (2026-04-27): 10-min cadence kept queueing the next run
+    # before the previous one finished. Per-run wallclock for 10bet+interwetten
+    # is now 4-7 min with the retry ladders, plus discovery overhead, so a
+    # 10-min cycle starts the next attempt while the proxy is still recovering
+    # from the last. 20 min gives clean cooldown between attempts and lets the
+    # multi-attempt goto retries (30s/60s/120s) actually finish on the slow
+    # path without watchdog pressure. Trades extraction freshness for stability.
+    interval_minutes: 20
     grouped: false
 
   browser_antibot:
