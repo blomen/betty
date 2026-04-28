@@ -234,6 +234,32 @@ export interface Account {
   [key: string]: unknown
 }
 
+export interface AccountLimits {
+  max_trailing_dd: number
+  max_daily_loss: number
+}
+
+export interface PropFirmAccount {
+  id: number
+  name: string
+  product: string
+  balance: number | null
+  can_trade: boolean
+  simulated: boolean
+  active: boolean
+  limits: AccountLimits | null
+}
+
+export interface PropFirm {
+  id: string
+  name: string
+  accounts: PropFirmAccount[]
+}
+
+export interface AccountResponse {
+  prop_firms: PropFirm[]
+}
+
 export interface Trade {
   id: number
   accountId: number
