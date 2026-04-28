@@ -51,6 +51,10 @@ class PositionTracker:
         # by the augmented-obs position_state fed back to live inference.
         self.peak_R: float = 0.0
         self.locked_half_R: bool = False
+        # Once peak_R clears 2.0, the broker moves the stop to entry+small
+        # buffer (covers fees + spread + tiny profit). Flag prevents re-firing
+        # the modify_stop on every subsequent tick at peak_R>=2.0.
+        self.locked_BE: bool = False
 
     @property
     def is_flat(self) -> bool:
@@ -169,6 +173,7 @@ class PositionTracker:
         self.stop_order_id = None
         self.peak_R = 0.0
         self.locked_half_R = False
+        self.locked_BE = False
 
         return pnl_dollars
 
