@@ -33,14 +33,14 @@ Expose `POST /api/profiles/{id}/seed-bonuses` for manual re-runs and call the he
 
 Each provider entry returned by `GET /api/bankroll` gains two optional fields:
 
-- `bonus_trigger_amount: float | None` — the yaml `min_deposit` from the provider's bonus block.
+- `bonus_trigger_amount: float | None` — the yaml `amount` from the provider's bonus block. For `bonusdeposit` this is the deposit needed to maximize the matched bonus (e.g. Leovegas: 600); for `freebet` this is both the freebet value and the typical trigger-bet size (e.g. Unibet: 1000). Either way it's the figure the user thinks of as "deposit to unlock".
 - `bonus_currency: str | None` — provider's native currency for that trigger.
 
 Populated when **all** of:
 
-- The provider has a `bonus` block in `providers.yaml`.
+- The provider has a `bonus` block in `providers.yaml` with `amount > 0`.
 - The active profile has a `ProfileProviderBonus` row with `bonus_status="available"`.
-- Current per-provider balance is `0` (or below the bonus's `min_deposit`).
+- Current per-provider balance is `0` (or below the bonus's `amount`).
 
 Returned `null`/absent in every other case so the frontend doesn't render a stale hint.
 
@@ -111,7 +111,7 @@ If the value-bet feed is empty at audit time, the live-solve section reports `"f
 ## Error handling
 
 - **yaml-orphan bonus** (yaml lists a bonus for a provider not in the DB): seed helper logs warning, skips, audit report records `[!] yaml-orphan`.
-- **Missing or zero `min_deposit`** in yaml: `bonus_trigger_amount` is `null`, frontend renders no hint.
+- **Missing or zero `amount`** in yaml: `bonus_trigger_amount` is `null`, frontend renders no hint.
 - **Empty value-bet feed**: deposit recommendation explicitly states the feed is empty rather than reporting `0 kr`.
 - **`/api/bankroll` shape change**: new fields are optional in the TS interface, old responses still render — no crash.
 - **Audit profile already exists** (re-run): script skips creation, still seeds (idempotent), still activates, still produces a report.
