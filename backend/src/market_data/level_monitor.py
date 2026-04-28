@@ -1521,9 +1521,14 @@ class LevelMonitor:
                 # produces calibrated probabilities — most live signals
                 # land at 0.10-0.25 conf so a higher floor would mute
                 # everything again.
+                # PAPER-TRADING: keep gates loose so the trainer gets a
+                # constant stream of labelled (obs, action, realized_R)
+                # tuples. Once we have ~200 real trades + go live, raise
+                # OF floor back to 0.30 (early audit showed OF>=0.30 was
+                # 4/4; need bigger sample to confirm).
                 _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _conf_floor_default = 0.05 if _reckless else 0.15
-                _of_floor = 0.30  # was 0.15 in reckless; data justifies the original
+                _of_floor = 0.15 if _reckless else 0.30
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
@@ -1654,9 +1659,10 @@ class LevelMonitor:
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
-                # OF gate matches Path-1 default (0.30). Audit data: OF>=0.30
-                # wins 4/4, OF<0.30 is coin-flip + drag.
-                _RELAY_OF_FLOOR = 0.30
+                # PAPER-TRADING: relay OF gate matches Path-1 reckless floor
+                # (0.15) so trainer keeps getting labelled live trades. Both
+                # paths share the same threshold so we can't leak again.
+                _RELAY_OF_FLOOR = 0.15 if _reckless_relay else 0.30
                 relay_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
 
                 if action in ("SKIP", "skip"):
