@@ -817,8 +817,15 @@ async def lifespan(app: FastAPI):
                                 indicators = await svc.get_indicators()
                                 rl_context["day_type"] = indicators.get("ml_day_type")
                                 rl_context["day_type_confidence"] = indicators.get("ml_day_type_confidence")
+                                if rl_context["day_type"] is None:
+                                    # Predictor not loaded or feature build returned empty —
+                                    # all overnight signals had day_type=null because of this.
+                                    # Log loudly so we know which one to fix.
+                                    logger.warning(
+                                        "[Stocks] day_type unavailable (init): predictor returned None — model is not classifying day type"
+                                    )
                             except Exception:
-                                logger.debug("[Stocks] get_indicators failed in init load", exc_info=True)
+                                logger.exception("[Stocks] get_indicators raised in init load")
                             level_monitor.set_session_context(rl_context)
                             logger.info(
                                 "[Stocks] Session context set: %d keys, ATR=%.1f",
@@ -863,11 +870,12 @@ async def lifespan(app: FastAPI):
                                     indicators = await svc.get_indicators()
                                     rl_context["day_type"] = indicators.get("ml_day_type")
                                     rl_context["day_type_confidence"] = indicators.get("ml_day_type_confidence")
+                                    if rl_context["day_type"] is None:
+                                        logger.warning(
+                                            "[Stocks] day_type unavailable (recompute): predictor returned None"
+                                        )
                                 except Exception:
-                                    logger.debug(
-                                        "[Stocks] get_indicators failed in periodic recompute",
-                                        exc_info=True,
-                                    )
+                                    logger.exception("[Stocks] get_indicators raised in periodic recompute")
                                 level_monitor.set_session_context(rl_context)
                             logger.info(
                                 "[Stocks] Session recomputed: %d levels, %d zones",

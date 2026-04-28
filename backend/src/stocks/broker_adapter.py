@@ -509,8 +509,23 @@ class TopstepXBrokerAdapter:
             pnl_pts = direction * (price - entry_px)
             pnl_dollars = pnl_pts * _NQ_POINT_VALUE * size
             stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
-            risk_pts = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
-            pnl_r = pnl_pts / max(risk_pts, 0.25)
+            # Risk floor: never let a missing/near-zero stop divide pnl into
+            # absurd R-multiples. Trade #68 produced pnl_r=39 because stop
+            # was unset → fallback was 1 tick → $195 / $5 = 39R. Use
+            # MIN_STOP_TICKS as the canonical floor (15 ticks = 3.75 pts) so
+            # the trainer doesn't see synthetic +39R outliers in live data.
+            _MIN_RISK_PTS = MIN_STOP_TICKS * 0.25
+            raw_risk = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
+            risk_pts = max(raw_risk, _MIN_RISK_PTS)
+            pnl_r = pnl_pts / risk_pts
+            if raw_risk < _MIN_RISK_PTS:
+                log.warning(
+                    "pnl_r risk-floor applied: raw_risk=%.2fpt < %.2fpt; pnl_r capped to %.3f (was %.3f)",
+                    raw_risk,
+                    _MIN_RISK_PTS,
+                    pnl_r,
+                    pnl_pts / max(raw_risk, 0.25),
+                )
 
             # Slippage = adverse fill vs. intended signal price, in NQ ticks.
             # Positive = paid worse than signal (long filled higher / short filled lower).

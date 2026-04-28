@@ -111,12 +111,23 @@ def _persist_broker_trade_direct(payload: dict) -> None:
 
             db = get_session()
             try:
-                # Dedupe on (closed_at, symbol, side, entry_price, size)
+                # Dedupe within a ±2s window on (symbol, side, entry_price, size).
+                # Two close events can fire for the same logical trade (signal
+                # flatten arrives, then the stop-hit fill lands a moment later
+                # via SignalR replay) — without windowing, both pass the
+                # exact-equality dedupe and we get duplicate rows. If the new
+                # event is the actual stop-hit (was_stop=True), prefer it: stop
+                # outcomes are the truthful close. Otherwise drop as duplicate.
                 if closed_at is not None:
-                    exists = (
-                        db.query(BrokerTrade.id)
+                    from datetime import timedelta as _td
+
+                    window_lo = closed_at - _td(seconds=2)
+                    window_hi = closed_at + _td(seconds=2)
+                    existing = (
+                        db.query(BrokerTrade)
                         .filter(
-                            BrokerTrade.closed_at == closed_at,
+                            BrokerTrade.closed_at >= window_lo,
+                            BrokerTrade.closed_at <= window_hi,
                             BrokerTrade.symbol == p.get("symbol", "NQ"),
                             BrokerTrade.side == p.get("side"),
                             BrokerTrade.entry_price == p.get("entry_price"),
@@ -124,7 +135,28 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                         )
                         .first()
                     )
-                    if exists:
+                    if existing is not None:
+                        new_was_stop = bool(p.get("was_stop"))
+                        old_was_stop = bool(existing.was_stop)
+                        if new_was_stop and not old_was_stop:
+                            # Upgrade: stop-hit close is more informative
+                            existing.was_stop = True
+                            if p.get("exit_price") is not None:
+                                existing.exit_price = p.get("exit_price")
+                            if p.get("pnl_dollars") is not None:
+                                existing.pnl_dollars = p.get("pnl_dollars")
+                            if p.get("pnl_r") is not None:
+                                existing.pnl_r = p.get("pnl_r")
+                            db.commit()
+                            log.info(
+                                "broker_trades dedupe: upgraded id=%d to was_stop=True",
+                                existing.id,
+                            )
+                        else:
+                            log.debug(
+                                "broker_trades dedupe: dropped duplicate close (existing id=%d)",
+                                existing.id,
+                            )
                         return
 
                 row = BrokerTrade(
