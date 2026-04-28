@@ -132,7 +132,7 @@ def test_topstepx_failure_with_cache_returns_cached_payload():
     app = _make_app(account_search_payload=_LIVE_PAYLOAD)
     client = TestClient(app)
     first = client.get("/api/stocks/account").json()
-    assert first["prop_firms"][0]["accounts"]
+    assert len(first["prop_firms"][0]["accounts"]) == 2
 
     # Now make TopstepX fail; cache should be served
     runtime = app.state.stocks_runtime

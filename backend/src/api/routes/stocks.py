@@ -16,14 +16,14 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-log = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...db.models import BrokerTrade, StockSignal
 from ..deps import get_db
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
