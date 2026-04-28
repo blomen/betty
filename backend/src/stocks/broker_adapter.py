@@ -412,6 +412,18 @@ class TopstepXBrokerAdapter:
         new_stop_price = _round_tick(new_stop_price)
         side = self.tracker.side
         cur_stop = self.tracker.stop_price
+        # Diagnostic: track every stop-mutation attempt so we can post-mortem
+        # mystery stop_price values in broker_trades (trade #85 had stop end
+        # up at entry-2 ticks for a long with no log explaining how).
+        log.info(
+            "modify_stop call: side=%s cur=%.2f new=%.2f entry=%.2f peak_R=%.2f locked_BE=%s",
+            side or "?",
+            cur_stop,
+            new_stop_price,
+            self.tracker.entry_price,
+            self.tracker.peak_R,
+            getattr(self.tracker, "locked_BE", False),
+        )
         if side == "long" and cur_stop > 0 and new_stop_price < cur_stop:
             log.warning("Refusing to relax long stop: %.2f → %.2f", cur_stop, new_stop_price)
             return {"action": "reject", "reason": "stop_relaxed", "stop_price": cur_stop}

@@ -1685,7 +1685,42 @@ class LevelMonitor:
                         if of_score < 0.70:
                             stop_ticks = max(stop_ticks, 23)
                         stop_offset = stop_ticks * 0.25
-                        raw_stop = price - stop_offset if is_long else price + stop_offset
+                        # Model-derived stop relative to signal price.
+                        model_stop = price - stop_offset if is_long else price + stop_offset
+                        # Zone-aware safety: place stop OUTSIDE the zone (so a
+                        # wick through the level doesn't take us out — only
+                        # acceptance beyond the zone, which actually
+                        # invalidates the setup, does). 4-tick buffer past the
+                        # zone's far bound.
+                        ZONE_SAFETY_BUFFER_TICKS = 4
+                        zb = ZONE_SAFETY_BUFFER_TICKS * 0.25
+                        if is_long:
+                            zone_safety_stop = float(zone.lower_bound) - zb
+                            # Stop must be the LOWER (further) of the two for a long
+                            raw_stop = min(model_stop, zone_safety_stop)
+                        else:
+                            zone_safety_stop = float(zone.upper_bound) + zb
+                            # Stop must be the HIGHER (further) of the two for a short
+                            raw_stop = max(model_stop, zone_safety_stop)
+                        # Clamp to MAX_STOP distance from signal so we don't
+                        # accidentally over-extend on huge zones.
+                        max_offset = 50 * 0.25  # 50-tick hard cap
+                        if is_long and (price - raw_stop) > max_offset:
+                            raw_stop = price - max_offset
+                        elif not is_long and (raw_stop - price) > max_offset:
+                            raw_stop = price + max_offset
+                        # Update stop_ticks to reflect actual placed distance
+                        stop_ticks = int(round(abs(raw_stop - price) / 0.25))
+                        if raw_stop != model_stop:
+                            logger.info(
+                                "Zone-aware stop: model=%.2f → final=%.2f (zone bounds %.2f-%.2f, buffer=%d ticks, ticks_from_signal=%d)",
+                                model_stop,
+                                raw_stop,
+                                zone.lower_bound,
+                                zone.upper_bound,
+                                ZONE_SAFETY_BUFFER_TICKS,
+                                stop_ticks,
+                            )
                         size_mult = result.get("size_multiplier", result.get("sizing_signal", 1.0))
                         reasoning = _build_reasoning(
                             zone=zone,
@@ -1810,9 +1845,26 @@ class LevelMonitor:
                     stop_ticks = result.get("stop_ticks") or 25  # default 25 ticks if None
                     stop_ticks = int(max(6, min(50, stop_ticks)))  # match stop_policy bounds
                     stop_offset = stop_ticks * 0.25  # NQ tick = 0.25 points
-                    stop_price = price - stop_offset if is_long else price + stop_offset
-                    # Round to NQ tick increment (0.25)
+                    model_stop = price - stop_offset if is_long else price + stop_offset
+                    # Zone-aware safety (matches Path-1): stop OUTSIDE the
+                    # zone with 4-tick buffer past the far bound. Whichever
+                    # is further from entry is used.
+                    _ZB_RELAY = 4 * 0.25
+                    if is_long:
+                        zone_safety_stop = float(zone.lower_bound) - _ZB_RELAY
+                        stop_price = min(model_stop, zone_safety_stop)
+                    else:
+                        zone_safety_stop = float(zone.upper_bound) + _ZB_RELAY
+                        stop_price = max(model_stop, zone_safety_stop)
+                    # 50-tick hard cap from signal price
+                    _MAX_OFFSET = 50 * 0.25
+                    if is_long and (price - stop_price) > _MAX_OFFSET:
+                        stop_price = price - _MAX_OFFSET
+                    elif not is_long and (stop_price - price) > _MAX_OFFSET:
+                        stop_price = price + _MAX_OFFSET
                     stop_price = round(stop_price * 4) / 4
+                    # Update stop_ticks to reflect actual placed distance
+                    stop_ticks = int(round(abs(stop_price - price) / 0.25))
 
                     logger.info(
                         "Dispatching signal: %s conf=%.3f price=%.2f stop=%.2f (%d ticks) zone=%.2f",
