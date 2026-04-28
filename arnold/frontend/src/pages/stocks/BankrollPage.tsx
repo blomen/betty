@@ -36,16 +36,18 @@ export function BankrollPage() {
         Bankroll
       </h2>
 
-      <div className="border-l-2 border-tabTradingBankroll">
-        <div className="border border-zinc-800 bg-zinc-900 p-3">
-          <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider mb-1">Total Capital</div>
-          <div className="text-text text-3xl font-semibold">
-            {formatCurrency(activeAccount?.balance, { decimals: 2 })}
+      {activeAccount && (
+        <div className="border-l-2 border-tabTradingBankroll">
+          <div className="border border-zinc-800 bg-zinc-900 p-3">
+            <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider mb-1">Total Capital</div>
+            <div className="text-text text-3xl font-semibold">
+              {formatCurrency(activeAccount.balance, { decimals: 2 })}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {propFirms.length === 0 ? (
+      {data === null ? null : propFirms.length === 0 ? (
         <EmptyPropFirm />
       ) : (
         propFirms.map(firm => <PropFirmCard key={firm.id} propFirm={firm} />)
@@ -59,7 +61,7 @@ function EmptyPropFirm() {
     <div className="border border-zinc-800 bg-zinc-900 p-3">
       <div className="text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2">Prop Firm</div>
       <div className="text-sm text-zinc-500">
-        No prop firm connected. Set <code className="text-zinc-300">STOCKS_AUTONOMOUS=true</code> and configure TopstepX credentials.
+        TopstepX not connected. Check that the autonomous broker is running on the server.
       </div>
     </div>
   )
