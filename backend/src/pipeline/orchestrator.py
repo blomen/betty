@@ -264,6 +264,9 @@ class ExtractionPipeline:
         total = sum(len(v) for v in self.event_cache.values())
         if total > 0:
             logger.debug(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
+        # Read-only — release the implicit transaction so the connection
+        # doesn't sit idle-in-transaction until the next session use.
+        self.session.rollback()
 
     # Typical sport durations (hours) — used for time-based FT detection
     SPORT_DURATION_HOURS: dict[str, float] = {
@@ -372,6 +375,8 @@ class ExtractionPipeline:
             self._sharp_odds_cache[event_id][outcome] = odds
 
         logger.debug(f"Pre-warmed Pinnacle caches: {len(self._sharp_odds_cache)} sharp odds entries")
+        # Read-only — release the implicit transaction.
+        self.session.rollback()
 
     def _init_orchestrator(self):
         """Initialize orchestrator components (called from __init__)."""
@@ -1509,6 +1514,18 @@ class ExtractionPipeline:
             log_progress(f"Pipeline error: {e}")
             raise
 
+        finally:
+            # Safety net: ensure the run's session has no dangling implicit
+            # transaction. Without this, a read query late in the pipeline
+            # leaves the connection idle-in-transaction until the next run
+            # reaches line 666 (self.session.close()). Multiple concurrent
+            # tier pipelines compound, exhausting Postgres' max_connections
+            # and hanging /api/bets and /api/bankroll/stats.
+            try:
+                self.session.rollback()
+            except Exception:
+                pass
+
         return results
 
     async def _extract_polymarket(self, max_per_sport: int = 100) -> dict:
@@ -2057,13 +2074,20 @@ class ExtractionPipeline:
             Number of events with 2+ providers
         """
 
-        return (
-            self.session.query(Event)
-            .join(Odds)
-            .group_by(Event.id)
-            .having(func.count(func.distinct(Odds.provider_id)) > 1)
-            .count()
-        )
+        try:
+            return (
+                self.session.query(Event)
+                .join(Odds)
+                .group_by(Event.id)
+                .having(func.count(func.distinct(Odds.provider_id)) > 1)
+                .count()
+            )
+        finally:
+            # Read-only — release the implicit transaction.
+            try:
+                self.session.rollback()
+            except Exception:
+                pass
 
     def get_matched_events(self, limit: int = 50) -> list[dict]:
         """
