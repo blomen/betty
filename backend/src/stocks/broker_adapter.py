@@ -480,6 +480,48 @@ class TopstepXBrokerAdapter:
                     self._pending_trade["entry_price"] = price
                     self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
+
+                # Re-anchor stop to ACTUAL fill price. The stop was originally
+                # computed from the signal-time price, but slippage can move
+                # the entry by 6-8pt during high-volatility moments (trades
+                # 81/82 had 24-33 ticks adverse slip). Without re-anchoring,
+                # the stop ends up 2-3x further than intended → the trade
+                # risks far more than stop_ticks dollars but reads as -1R
+                # in the data, hiding the cost from the trainer.
+                if self._pending_trade:
+                    intended_ticks = self._pending_trade.get("stop_ticks")
+                    cur_stop = self.tracker.stop_price
+                    if intended_ticks and cur_stop > 0:
+                        intended_pts = float(intended_ticks) * 0.25
+                        if self.tracker.side == "long":
+                            target_stop = _round_tick(price - intended_pts)
+                        else:
+                            target_stop = _round_tick(price + intended_pts)
+                        # Only move if the difference materially changes risk
+                        # (>= 2 ticks). Don't relax — modify_stop enforces
+                        # only-tighten direction. So if slip went IN our favor
+                        # (better fill), stop will move closer; if slip went
+                        # AGAINST us, modify_stop will refuse to widen and
+                        # we'll log a warning so the cost is visible.
+                        if abs(target_stop - cur_stop) >= 0.5:
+                            log.info(
+                                "Re-anchoring stop after fill: cur=%.2f → target=%.2f "
+                                "(slip=%.2f pts, intended=%d ticks from fill %.2f)",
+                                cur_stop,
+                                target_stop,
+                                price - (self._pending_trade.get("signal_price") or price),
+                                int(intended_ticks),
+                                price,
+                            )
+                            try:
+                                # Schedule the stop modify; can't await here
+                                # (on_stream_fill is sync). modify_stop is
+                                # idempotent + has only-tighten guards.
+                                import asyncio as _a
+
+                                _a.create_task(self.modify_stop(target_stop))
+                            except Exception:
+                                log.warning("stop re-anchor on fill failed", exc_info=True)
             else:
                 log.debug("Duplicate entry fill ignored: %.2f order_id=%s", price, order_id)
             return
