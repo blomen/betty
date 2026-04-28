@@ -50,8 +50,8 @@ export const api = {
     return fetchJson<{ trades?: import('@/types/stocks').Trade[] }>('/trades')
   },
 
-  getAccountInfo() {
-    return fetchJson<import('@/types/stocks').Account>('/account-info')
+  getAccount() {
+    return fetchJson<import('@/types/stocks').AccountResponse>('/account')
   },
 
   getBrokerTrades(days = 30) {
