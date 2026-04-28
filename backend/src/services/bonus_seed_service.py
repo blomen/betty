@@ -4,7 +4,6 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from ..api.routes.providers import load_provider_bonuses
 from ..db.models import ProfileProviderBonus, Provider
 
 logger = logging.getLogger(__name__)
@@ -19,6 +18,8 @@ def seed_provider_bonuses(profile_id: int, db: Session) -> int:
 
     Returns the count of rows inserted.
     """
+    from ..api.routes.providers import load_provider_bonuses
+
     yaml_bonuses = load_provider_bonuses()
     if not yaml_bonuses:
         return 0

@@ -38,7 +38,7 @@ def client(monkeypatch):
             s.close()
 
     monkeypatch.setattr(
-        "src.services.bonus_seed_service.load_provider_bonuses",
+        "src.api.routes.providers.load_provider_bonuses",
         lambda: {
             "unibet": {"type": "freebet", "amount": 1000},
             "leovegas": {"type": "bonusdeposit", "amount": 600},

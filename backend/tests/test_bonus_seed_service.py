@@ -44,7 +44,7 @@ def _yaml_bonuses():
 
 def test_seed_creates_one_row_per_yaml_bonus(db, monkeypatch):
     monkeypatch.setattr(
-        "src.services.bonus_seed_service.load_provider_bonuses",
+        "src.api.routes.providers.load_provider_bonuses",
         _yaml_bonuses,
     )
     inserted = seed_provider_bonuses(profile_id=1, db=db)
@@ -63,7 +63,7 @@ def test_seed_skips_yaml_orphans(db, monkeypatch):
     """A yaml bonus for a provider not in the providers table is skipped, not raised."""
     yaml_with_orphan = dict(_yaml_bonuses(), ghost={"type": "freebet", "amount": 500})
     monkeypatch.setattr(
-        "src.services.bonus_seed_service.load_provider_bonuses",
+        "src.api.routes.providers.load_provider_bonuses",
         lambda: yaml_with_orphan,
     )
     inserted = seed_provider_bonuses(profile_id=1, db=db)
@@ -76,7 +76,7 @@ def test_seed_skips_yaml_orphans(db, monkeypatch):
 
 def test_seed_is_idempotent(db, monkeypatch):
     monkeypatch.setattr(
-        "src.services.bonus_seed_service.load_provider_bonuses",
+        "src.api.routes.providers.load_provider_bonuses",
         _yaml_bonuses,
     )
     seed_provider_bonuses(profile_id=1, db=db)
@@ -92,7 +92,7 @@ def test_seed_is_idempotent(db, monkeypatch):
 def test_seed_respects_existing_in_progress_bonus(db, monkeypatch):
     """Pre-existing non-available row for one provider is left untouched."""
     monkeypatch.setattr(
-        "src.services.bonus_seed_service.load_provider_bonuses",
+        "src.api.routes.providers.load_provider_bonuses",
         _yaml_bonuses,
     )
     db.add(
