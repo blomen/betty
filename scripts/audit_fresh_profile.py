@@ -37,7 +37,7 @@ SOFT_CLUSTER_MEMBERS = {
 SOFT_STANDALONES = {"interwetten", "vbet", "10bet", "tipwin", "coolbet", "bethard"}
 
 # Signal-only providers expected to NOT appear on the arb page (no bet placement).
-SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus"}
+SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus", "smarkets"}
 
 TARGET_BANKROLLS = [10_000, 25_000, 50_000, 100_000]
 UNLIMITED_FOR_DEPOSIT = ("pinnacle", "polymarket", "cloudbet", "kalshi")
@@ -65,7 +65,7 @@ def load_yaml(path: Path) -> dict:
 
 def build_provider_coverage(yaml_doc: dict, bankroll: dict) -> tuple[list[str], int]:
     """Verify every active yaml provider appears in /api/bankroll with balance=0."""
-    yaml_active = set(yaml_doc.get("active_providers", []))
+    yaml_active = set(yaml_doc.get("active", []))
     bankroll_ids = {p["id"] for p in bankroll["providers"]}
     bankroll_by_id = {p["id"]: p for p in bankroll["providers"]}
 
@@ -121,7 +121,7 @@ def build_bonus_coverage(yaml_bonuses: dict, bankroll: dict) -> tuple[list[str],
 
 def build_arb_page_sanity(yaml_doc: dict) -> tuple[list[str], int]:
     """Verify every active yaml provider is reachable through PlayPage's cluster map."""
-    yaml_active = set(yaml_doc.get("active_providers", []))
+    yaml_active = set(yaml_doc.get("active", []))
     reachable = set(UNLIMITED_PROVIDERS) | set(SOFT_STANDALONES)
     for members in SOFT_CLUSTER_MEMBERS.values():
         reachable.update(members)
@@ -156,7 +156,7 @@ def fetch_full_batch(api: httpx.Client, profile_id: int) -> list[dict]:
         json={"balance": 1_000_000},
     ).raise_for_status()
     try:
-        batch = api.post("/api/play/batch", json={}).raise_for_status().json()
+        batch = api.post("/api/opportunities/play/batch", json={}).raise_for_status().json()
     finally:
         api.post(
             f"/api/bankroll/set/{SIM_PROBE_PROVIDER}",
@@ -278,7 +278,7 @@ def main() -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _client(args.api, 30.0, args.api_key) as api:
+    with _client(args.api, 300.0, args.api_key) as api:
         profile_id = find_or_create_audit_profile(api)
         print(f"[audit] using Audit profile id={profile_id}")
         setup_audit_profile(api, profile_id)
@@ -313,7 +313,7 @@ def main() -> int:
         sections.extend(section_lines)
         total_critical += flags
 
-    with _client(args.api, 60.0, args.api_key) as api:
+    with _client(args.api, 180.0, args.api_key) as api:
         bets = fetch_full_batch(api, profile_id)
     sections.extend(build_deposit_section(bets))
 
