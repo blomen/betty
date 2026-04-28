@@ -306,7 +306,6 @@ class CloudbetRetriever(Retriever):
             return []
         logger.info(f"[{self.provider_id}] {sport}: {len(competitions)} active competitions")
 
-        market_keys = _SPORT_MARKETS.get(sport_key, "").split(",")
         events: list[StandardEvent] = []
 
         # Health probes call extract(sport, limit=1). Walking 200+ competitions
@@ -317,15 +316,25 @@ class CloudbetRetriever(Retriever):
         if limit and limit <= 5 and len(competitions) > 10:
             competitions = competitions[:10]
 
-        # Step 2: fetch each competition
+        # Step 2: fetch each competition.
+        #
+        # Critical (verified live 2026-04-28): the `?markets=...` URL filter is
+        # broken on Cloudbet's pub/v2 endpoint — it returns events with
+        # `markets: {}` (empty) instead of the requested markets. Without the
+        # filter, the API returns the full event payload (~20 markets per
+        # event). Verified with EPL: 20 EVENT_TYPE_EVENT events, with-filter
+        # = 0 with markets, without-filter = 20/20 with markets. Soccer was
+        # producing only ~11 events per cycle vs an actual 1486-event catalog
+        # because EVERY event came back with empty markets and parse_event
+        # rejected them.
+        # parse_event filters to the markets we want (soccer.match_odds,
+        # asian_handicap, total_goals via parse_selections_to_market) so
+        # downloading the full payload doesn't pollute the result set.
         for comp in competitions:
             comp_key = comp.get("key") or comp.get("id")
             if not comp_key:
                 continue
-
-            # Build URL with multiple markets params
-            market_params = "&".join(f"markets={mk}" for mk in market_keys if mk)
-            comp_url = f"{BASE_URL}/competitions/{comp_key}?{market_params}"
+            comp_url = f"{BASE_URL}/competitions/{comp_key}"
             comp_data = await self.transport.get(comp_url, headers=self._headers())
             if not comp_data:
                 continue
