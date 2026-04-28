@@ -512,7 +512,15 @@ class KalshiRetriever(Retriever):
             logger.debug(f"[kalshi] no series_tickers configured for sport={sport}")
             return []
 
+        # Inter-request spacing to avoid kalshi's per-IP rate limit. With 12+
+        # series_tickers across all sports + multi-page pagination, hammering
+        # /events back-to-back trips 429 within seconds (verified in production
+        # logs 2026-04-28). 1.5s delay between fetches keeps us under the cap
+        # while only adding ~15-25s to a full kalshi run (was 7s; becomes ~25s).
+        INTER_REQUEST_DELAY_S = 1.5
+
         async with aiohttp.ClientSession() as session:
+            first_request = True
             for series_ticker in series_tickers:
                 cursor: str | None = None
                 base = (
@@ -523,11 +531,30 @@ class KalshiRetriever(Retriever):
                 # series_ticker rarely exceed a few hundred. Hard cap protects against
                 # API misbehaviour.
                 for _ in range(5):
+                    if not first_request:
+                        await asyncio.sleep(INTER_REQUEST_DELAY_S)
+                    first_request = False
                     page_url = base + (f"&cursor={cursor}" if cursor else "")
                     try:
                         async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                            resp.raise_for_status()
-                            body = await resp.json()
+                            # 429: back off harder, then retry once before giving up
+                            # on this series. Series-level break loses anything past
+                            # the first page; one retry recovers the typical case
+                            # where rate-limiter just needs a beat.
+                            if resp.status == 429:
+                                logger.info(f"[kalshi] 429 on series={series_ticker}; backing off 5s and retrying once")
+                                await asyncio.sleep(5.0)
+                                async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
+                                    if resp2.status == 429:
+                                        logger.warning(
+                                            f"[kalshi] 429 persistent on series={series_ticker}; skipping series"
+                                        )
+                                        break
+                                    resp2.raise_for_status()
+                                    body = await resp2.json()
+                            else:
+                                resp.raise_for_status()
+                                body = await resp.json()
                     except Exception as e:
                         logger.warning(f"[kalshi] fetch failed series={series_ticker} cursor={cursor}: {e}")
                         break
