@@ -602,13 +602,21 @@ class TopstepXBrokerAdapter:
             pnl_pts = direction * (price - entry_px)
             pnl_dollars = pnl_pts * _NQ_POINT_VALUE * size
             stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
-            # Risk floor: never let a missing/near-zero stop divide pnl into
-            # absurd R-multiples. Trade #68 produced pnl_r=39 because stop
-            # was unset → fallback was 1 tick → $195 / $5 = 39R. Use
-            # MIN_STOP_TICKS as the canonical floor (15 ticks = 3.75 pts) so
-            # the trainer doesn't see synthetic +39R outliers in live data.
+            # R is realized-pnl-vs-INITIAL-risk, never against the trailed stop.
+            # When a stop trails close before TP, entry−current_stop shrinks
+            # and a small dollar win turns into +3-5R while losses still hit
+            # at the original distance — net result was +R but −equity in
+            # the stats UI. Prefer stop_ticks (captured at entry, never modified
+            # by trailing); fall back to entry-vs-current-stop for orphan
+            # trades that lost _pending_trade context.
             _MIN_RISK_PTS = MIN_STOP_TICKS * 0.25
-            raw_risk = abs(entry_px - stop_price) if stop_price else DEFAULT_STOP_TICKS * 0.25
+            initial_stop_ticks = pt.get("stop_ticks") or 0
+            if initial_stop_ticks > 0:
+                raw_risk = initial_stop_ticks * 0.25
+            elif stop_price:
+                raw_risk = abs(entry_px - stop_price)
+            else:
+                raw_risk = DEFAULT_STOP_TICKS * 0.25
             risk_pts = max(raw_risk, _MIN_RISK_PTS)
             pnl_r = pnl_pts / risk_pts
             if raw_risk < _MIN_RISK_PTS:
