@@ -1505,21 +1505,25 @@ class LevelMonitor:
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                # FORCE_REV_ONLY: training data shows CONT is effectively a weak REV
-                # (~0% argmax). Convert CONT → equivalent REV direction.
-                if action == "CONTINUATION":
-                    action = "REVERSAL"
+                # FORCE_REV_ONLY removed (2026-04-28). The override converted
+                # every CONT decision into REV, which destroyed the trainer's
+                # CONT vs REV calibration: the only post-fix CONT trade
+                # (id=64, +0.74R) was a winner, but every CONT signal since
+                # was rebranded REV → trail/flip path → losses. Let the
+                # model's actual head choice through; the in-position
+                # framework (pyramid/reversal-exit/early-exit) handles
+                # winning-trend management.
                 of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
-                # RECKLESS_LEARNING_MODE: with zero post-migration trades, the
-                # bottleneck is too-strict gating, not signal quality. Drop
-                # the confidence floor + OF floor here so the broker actually
-                # gets to see weak-but-nonzero model preferences. We need the
-                # outcomes to keep the trainer fed.
-                # Set RECKLESS_LEARNING_MODE=0 to restore old defaults
-                # (conf 0.15, of_score 0.30).
+                # OF floor: data shows OF>=0.30 wins 4/4, OF<0.30 is
+                # coin-flip + drag. Reckless mode was for bootstrapping
+                # data; now we have it. Default OF floor back to 0.30.
+                # Confidence floor stays at 0.05 (reckless) until trainer
+                # produces calibrated probabilities — most live signals
+                # land at 0.10-0.25 conf so a higher floor would mute
+                # everything again.
                 _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _conf_floor_default = 0.05 if _reckless else 0.15
-                _of_floor = 0.15 if _reckless else 0.30
+                _of_floor = 0.30  # was 0.15 in reckless; data justifies the original
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default

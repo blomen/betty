@@ -241,51 +241,73 @@ class TopstepXBrokerAdapter:
                 self._trail_count = 0
             return result
 
-        # --- IN POSITION: same direction → trail stop ---
+        # --- IN POSITION: same direction → trail / hold ---
+        # Audit found 3/3 trailed trades closed losing (-$420). The original
+        # logic tightened the stop on EVERY same-side zone touch, which on a
+        # winning trend baked in early exits — counter-trend wicks would
+        # take us out before the move continued.
+        # New rule:
+        #   - Trade UNDERWATER (peak_R <= 0): allow one defensive trail to
+        #     entry+0.5R (the legacy behavior — fades a counter-zone).
+        #   - Trade PROFITABLE (peak_R > 0): don't tighten. Either hold or
+        #     pyramid, but never bake in a tighter stop on a winner just
+        #     because price rotated to a same-direction zone.
         if signal_side == self.tracker.side:
             if self.tracker.entry_price == 0.0:
                 log.info("Signal skipped — awaiting entry fill confirmation")
                 return None
 
-            # Move stop to this zone (lock in profit at the level we just passed)
             entry = self.tracker.entry_price
             stop_dist = abs(entry - self.tracker.stop_price) if self.tracker.stop_price else DEFAULT_STOP_TICKS * 0.25
             new_stop = _round_tick(zone_price if zone_price > 0 else price)
+            peak_R = float(self.tracker.peak_R or 0.0)
 
-            # First trail: lock +0.5R profit (covers $14 fees + $36 profit)
+            # Profitable trade — no tighten. The pyramid / reversal-exit /
+            # early-exit framework upstream will handle add/exit decisions.
+            if peak_R > 0.0:
+                log.info(
+                    "Same-side signal at %.2f on profitable trade (peak_R=%.2f) — holding (no tighten)",
+                    price,
+                    peak_R,
+                )
+                return None
+
+            # Trade still underwater — apply the legacy first-trail defense.
             if self.tracker.side == "long" and new_stop <= entry:
                 if self._trail_count == 0:
                     new_stop = _round_tick(entry + stop_dist * 0.5)
                     log.info(
-                        "CONT signal at %.2f — locking +0.5R profit, stop → %.2f (trail #%d)",
+                        "Defensive trail at %.2f (peak_R=%.2f<=0) — stop → %.2f (trail #%d)",
                         price,
+                        peak_R,
                         new_stop,
                         self._trail_count + 1,
                     )
                 else:
-                    log.info("CONT signal at %.2f — stop already above entry, holding", price)
+                    log.info("Same-side signal at %.2f — already trailed once, holding", price)
                     return None
             elif self.tracker.side == "short" and new_stop >= entry:
                 if self._trail_count == 0:
                     new_stop = _round_tick(entry - stop_dist * 0.5)
                     log.info(
-                        "CONT signal at %.2f — locking +0.5R profit, stop → %.2f (trail #%d)",
+                        "Defensive trail at %.2f (peak_R=%.2f<=0) — stop → %.2f (trail #%d)",
                         price,
+                        peak_R,
                         new_stop,
                         self._trail_count + 1,
                     )
                 else:
-                    log.info("CONT signal at %.2f — stop already above entry, holding", price)
+                    log.info("Same-side signal at %.2f — already trailed once, holding", price)
                     return None
             else:
+                # zone is now beyond entry on the favorable side — let the
+                # pyramid framework decide; defensive trail-tighten doesn't
+                # apply here.
                 log.info(
-                    "CONT signal at %.2f — trailing stop to %.2f (trail #%d, locking %.1fR profit)",
+                    "Same-side signal at %.2f past entry on favorable side — holding for pyramid framework",
                     price,
-                    new_stop,
-                    self._trail_count + 1,
-                    abs(new_stop - self.tracker.entry_price)
-                    / (abs(self.tracker.stop_price - self.tracker.entry_price) or 1),
                 )
+                return None
 
             self._trail_count += 1
             if self._pending_trade:
