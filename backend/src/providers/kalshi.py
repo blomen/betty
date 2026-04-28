@@ -20,18 +20,61 @@ logger = logging.getLogger(__name__)
 
 # Ticker-prefix → canonical sport. Extend as new series appear.
 KALSHI_SERIES_TO_SPORT: dict[str, str] = {
+    # Re-discovered 2026-04-28 from kalshi /trade-api/v2/series listing
+    # (9,862 open series). Previous mapping had 12 entries; many h2h-game
+    # series were missing entirely (especially KXATPGAME / KXWTAGAME for
+    # tennis — was only mapping KXTENNIS which is futures-only).
+    # Basketball
     "KXNBAGAME": "basketball",
+    "KXWNBAGAME": "basketball",
     "KXNCAABGAME": "basketball",
+    "KXEUROLEAGUEGAME": "basketball",
+    "KXABAGAME": "basketball",
+    "KXACBGAME": "basketball",
+    "KXARGLNBGAME": "basketball",
+    "KXCBAGAME": "basketball",
+    "KXVTBGAME": "basketball",
+    "KXNBLGAME": "basketball",
+    # American football
     "KXNFLGAME": "american_football",
     "KXNCAAFGAME": "american_football",
+    # Baseball
     "KXMLBGAME": "baseball",
+    "KXKBOGAME": "baseball",
+    "KXNPBGAME": "baseball",
+    # Ice hockey
     "KXNHLGAME": "ice_hockey",
-    "KXTENNIS": "tennis",
+    "KXAHLGAME": "ice_hockey",
+    "KXKHLGAME": "ice_hockey",
+    "KXSHLGAME": "ice_hockey",
+    # Tennis — switched from KXTENNIS (futures-only) to actual h2h match series
+    "KXATPGAME": "tennis",
+    "KXATPMATCH": "tennis",
+    "KXWTAGAME": "tennis",
+    "KXWTAMATCH": "tennis",
+    # Combat sports
     "KXUFC": "mma",
     "KXBOXING": "boxing",
+    # Football — kept legacy KXEPL/KXUCL/KXWC + added live game-series
     "KXEPL": "football",
     "KXUCL": "football",
     "KXWC": "football",
+    "KXUEL": "football",
+    "KXUECL": "football",
+    "KXLALIGAGAME": "football",
+    "KXSERIEAGAME": "football",
+    "KXBUNDESLIGAGAME": "football",
+    "KXLIGUE1GAME": "football",
+    "KXEREDIVISIE": "football",
+    "KXMLSGAME": "football",
+    "KXALLSVENSKANGAME": "football",
+    "KXALEAGUEGAME": "football",
+    "KXJLEAGUEGAME": "football",
+    "KXKLEAGUEGAME": "football",
+    "KXARGPREMDIVGAME": "football",
+    "KXAFCACGAME": "football",
+    "KXAFCCLGAME": "football",
+    "KXAFCONGAME": "football",
 }
 
 # Sports with no draw outcome → 2-way moneyline; others → 3-way 1x2.
