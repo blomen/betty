@@ -962,20 +962,27 @@ extraction_scheduling:
     # Demoted browser providers — extraction cost > yield. Run hourly so they
     # produce at least some data without competing with healthier extractors.
     # 10bet: site/proxy contention has it at 0.03 ev/s; sometimes catches a
-    # handful of handball/mma events on a successful cycle. If reliability
-    # recovers (proxy unblock, site change), promote back to browser_soft.
+    # handful of handball/mma events on a successful cycle.
+    # coolbet: demoted 2026-04-28. Per-provider audit confirmed coolbet's
+    # backend is returning 503 + NetworkError on the category API endpoints
+    # consistently (not Imperva — Imperva bypass works fine, "Session
+    # established — Imperva bypassed" logs). The 503s come from coolbet's
+    # own /s/sbgate/sports/fo-category/ service. With 0/10 sports producing
+    # events on every recent cycle, hourly is wasted enough.
+    # If either site recovers, promote back to browser_soft / browser_antibot.
     max_concurrent_browsers: 1
     providers:
       - 10bet
+      - coolbet
     interval_minutes: 60
     grouped: false
 
   browser_antibot:
     # Providers with aggressive anti-bot (Cloudflare, Imperva). Lowest priority
-    # alongside browser_soft.
+    # alongside browser_soft. coolbet was here but its backend is currently
+    # returning 503s (not an Imperva block) — moved to browser_slow above.
     max_concurrent_browsers: 1           # Reduced from 2 — comeon alone takes 20min + 1.5GB
     providers:
-      - coolbet
       - comeon
     # Bumped 15 → 25 (2026-04-28): camoufox launches are heavy and can stall
     # under proxy contention. Camoufox subprocess teardown takes 5-10s after
