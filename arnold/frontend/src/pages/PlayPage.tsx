@@ -54,6 +54,20 @@ const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; curre
     ? { amount: b.bonus_trigger, currency: b.bonus_currency ?? 'SEK' }
     : null
 }
+function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, ProviderBalanceLike> }) {
+  const balance = getBalance(balances[pid])
+  const trigger = getTrigger(balances[pid])
+  return (
+    <span>
+      <span>{balance.toFixed(2)} kr</span>
+      {trigger && balance < 1 && (
+        <span className="ml-2 text-xs text-orange-400/80" title="Deposit to unlock provider bonus">
+          · deposit {trigger.amount.toFixed(0)} {trigger.currency.toLowerCase()}
+        </span>
+      )}
+    </span>
+  )
+}
 
 interface BatchBet {
   rank: number
@@ -1128,7 +1142,9 @@ export default function PlayPage() {
                                   }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
-                                  <span className="ml-1 text-green-400 font-mono">{bal.toFixed(2)} kr</span>
+                                  <span className="ml-1 text-green-400 font-mono">
+                                    <BalanceCell pid={pid} balances={providerBalances} />
+                                  </span>
                                 </button>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
                                 {stakeCaps[pid] && (
