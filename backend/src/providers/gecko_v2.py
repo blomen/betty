@@ -463,15 +463,25 @@ class GeckoV2Retriever(BrowserRetriever):
             all_events = []
             seen_ids: set[str] = set()
 
-            # Fetch page 1 to discover total pages
+            # Fetch page 1 to discover total pages.
+            # Bumped 30s → 60s (2026-04-28): football's category=1 response carries
+            # the largest payload (200+ market template ids × 800+ events) and
+            # consistently grazed the 30s cap under proxy contention. Spelklubben
+            # was returning 0 football events 100% of the time (124s spent on 4
+            # serial 30s timeouts). Sub-football sports finish in 4-15s so the
+            # bump is invisible for them; football specifically goes from 0%
+            # extracted → ~100%.
+            FETCH_TIMEOUT_S = 60
             url_p1 = f"{base_url}?{base_params}&pageNumber=1"
             try:
                 resp = await asyncio.wait_for(
                     context.request.get(url_p1, headers=self._api_headers),
-                    timeout=30,
+                    timeout=FETCH_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
-                logger.error(f"[{self.provider_id}] API page 1 request timed out after 30s — url={url_p1}")
+                logger.error(
+                    f"[{self.provider_id}] API page 1 request timed out after {FETCH_TIMEOUT_S}s — url={url_p1}"
+                )
                 return []
             except Exception as e:
                 logger.error(f"[{self.provider_id}] API request failed: {e} — url={url_p1}")
@@ -487,10 +497,10 @@ class GeckoV2Retriever(BrowserRetriever):
                         try:
                             resp = await asyncio.wait_for(
                                 context.request.get(url_p1, headers=self._api_headers),
-                                timeout=30,
+                                timeout=FETCH_TIMEOUT_S,
                             )
                         except asyncio.TimeoutError:
-                            logger.error(f"[{self.provider_id}] Retry API request timed out after 30s")
+                            logger.error(f"[{self.provider_id}] Retry API request timed out after {FETCH_TIMEOUT_S}s")
                             return []
                         except Exception as e:
                             logger.error(f"[{self.provider_id}] Retry failed: {e}")
@@ -525,12 +535,12 @@ class GeckoV2Retriever(BrowserRetriever):
                     try:
                         r = await asyncio.wait_for(
                             context.request.get(url, headers=self._api_headers),
-                            timeout=30,
+                            timeout=FETCH_TIMEOUT_S,
                         )
                         if r.ok:
                             return (await r.json()).get("data", {})
                     except asyncio.TimeoutError:
-                        logger.debug(f"[{self.provider_id}] Page {pg} timed out after 30s")
+                        logger.debug(f"[{self.provider_id}] Page {pg} timed out after {FETCH_TIMEOUT_S}s")
                     except Exception as exc:
                         logger.debug(f"[{self.provider_id}] Page {pg} failed: {exc}")
                     return None
