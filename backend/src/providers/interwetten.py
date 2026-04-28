@@ -45,19 +45,24 @@ class InterwettenRetriever(BrowserRetriever):
     server-rendered event data from the DOM.
     """
 
+    # (sport_id, slug) re-discovered live from interwetten.se nav 2026-04-28.
+    # The previous comment claimed several IDs returned wrong content (basketball
+    # serving Argentine football, etc.) — but live audit shows the IDs are correct
+    # when paired with the right slug. Earlier failures likely used stale slugs.
     SPORT_OVERVIEW_MAP = {
         "football": (10, "football"),
-        "ice_hockey": (40, "ice-hockey"),
-        "basketball": (15, "basketball"),
         "tennis": (11, "tennis"),
-        "handball": (1002, "handball"),
-        "volleyball": (1012, "volleyball"),
-        "rugby": (16, "rugby"),
-        "cricket": (1027, "cricket"),
         "american_football": (13, "american-football"),
         "baseball": (14, "baseball"),
+        "basketball": (15, "basketball"),
+        "ice_hockey": (40, "ice-hockey"),
         "boxing": (90, "boxing"),
-        "darts": (42, "darts"),
+        "handball": (1002, "handball"),
+        "rugby": (1003, "rugby"),
+        "volleyball": (1012, "volleyball"),
+        "cricket": (1027, "cricket"),
+        "mma": (1076, "mixed-martial-arts"),
+        "darts": (1016, "darts"),
     }
 
     OUTCOME_MAP = {"1": "home", "X": "draw", "2": "away"}
