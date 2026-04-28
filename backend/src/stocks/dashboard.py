@@ -369,27 +369,9 @@ def create_dashboard_router() -> APIRouter:
             result["stop_price"] = tracker.stop_price
         return result
 
-    @router.get("/api/account-info")
-    async def get_account_info():
-        client = _state.get("topstepx_client")
-        if not client:
-            return {}
-        try:
-            data = await client._post(
-                "/api/Account/search",
-                {
-                    "onlyActiveAccounts": True,
-                },
-            )
-            accounts = data.get("accounts", []) if isinstance(data, dict) else data
-            # Return the account the client is actually using
-            acct = next(
-                (a for a in accounts if a.get("id") == client._account_id),
-                accounts[0] if accounts else {},
-            )
-            return acct
-        except Exception:
-            return {}
+    @router.get("/api/account")
+    async def get_account():
+        return await _proxy("/api/stocks/account", cache_ttl=5.0)
 
     @router.get("/api/orders")
     async def get_orders():
