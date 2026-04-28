@@ -204,18 +204,46 @@ def get_provider_intervals() -> dict[str, int]:
 
 # ── Extraction Health Assessment ─────────────────────────────────────────────
 
-# Thresholds applied to each provider's expected interval (minutes). Multipliers
-# alone don't work for fast tiers — api_soft providers run on a 2-min interval
-# but the actual orchestrator cycle (extract + storage + analysis) takes 5-10
-# minutes on a contended box, so 3x interval = 6m would false-warn on every
-# successful run. Floor the thresholds at a realistic minimum cycle time.
-WARN_MULTIPLIER = 3
-CRIT_MULTIPLIER = 6
+# providers.yaml `interval_minutes` is the cooldown AFTER a run completes, not
+# the total cycle time (CLAUDE.md: "cycle time = run duration + cooldown").
+# A polymarket run takes 11-31 min and then sleeps 5 min, so true cycle is
+# 16-36 min — using interval × 3 = 15m as warn would false-flag every cycle.
+#
+# We therefore base thresholds on measured cycle time: cooldown +
+# P95 run duration over the last 24h, padded by a multiplier to absorb
+# scheduler jitter / browser-pool contention. Falls back to a floor when no
+# run history exists yet (e.g. fresh container).
+CYCLE_WARN_MULTIPLIER = 1.5  # warn at 1.5× expected cycle
+CYCLE_CRIT_MULTIPLIER = 3.0  # crit at 3× expected cycle
 WARN_FLOOR_MINUTES = 10
 CRIT_FLOOR_MINUTES = 25
 # Pinnacle is the only sharp source — without it, no fair odds, no arbs. Tighter floor.
 SHARP_WARN_MINUTES = 5
 SHARP_CRIT_MINUTES = 15
+
+
+def _measure_p95_run_minutes(db, provider_ids: list[str]) -> dict[str, float]:
+    """P95 run duration per provider over last 24h from provider_run_metrics.
+
+    Uses only completed runs (end_time IS NOT NULL). Returns minutes.
+    """
+    if not provider_ids:
+        return {}
+    rows = db.execute(
+        text(
+            "SELECT provider_id, "
+            "  PERCENTILE_CONT(0.95) WITHIN GROUP ("
+            "    ORDER BY EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0"
+            "  ) AS p95_min "
+            "FROM provider_run_metrics "
+            "WHERE provider_id = ANY(:provs) "
+            "  AND start_time > NOW() - INTERVAL '24 hours' "
+            "  AND end_time IS NOT NULL "
+            "GROUP BY provider_id"
+        ),
+        {"provs": provider_ids},
+    ).fetchall()
+    return {r[0]: float(r[1] or 0.0) for r in rows}
 
 
 def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[str], list[dict]]:
@@ -228,6 +256,10 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
     everything-stale even when fresh odds were landing every minute. The odds
     table cannot lie: a row's updated_at is set at insert/update time, so a
     fresh value proves the provider is actually producing data.
+
+    Thresholds adapt to measured run duration: each provider's warn/crit is
+    derived from `cooldown + P95 run duration` × multipliers, so a slow
+    browser provider isn't flagged stale during its normal cycle.
 
     Returns (status, issues, providers) where status is "ok"/"warning"/"critical",
     issues is the human-readable list (kept for back-compat with the existing
@@ -248,6 +280,7 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
         {"provs": list(intervals.keys())},
     ).fetchall()
     last_update_by_provider: dict[str, datetime] = {r[0]: r[1] for r in rows}
+    p95_run_by_provider = _measure_p95_run_minutes(db, list(intervals.keys()))
 
     for provider_id, expected_interval in intervals.items():
         is_sharp = provider_id == "pinnacle"
@@ -261,8 +294,10 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
         if is_sharp:
             warn_min, crit_min = SHARP_WARN_MINUTES, SHARP_CRIT_MINUTES
         else:
-            warn_min = max(expected_interval * WARN_MULTIPLIER, WARN_FLOOR_MINUTES)
-            crit_min = max(expected_interval * CRIT_MULTIPLIER, CRIT_FLOOR_MINUTES)
+            p95_run = p95_run_by_provider.get(provider_id, 0.0)
+            cycle_min = expected_interval + p95_run
+            warn_min = max(int(cycle_min * CYCLE_WARN_MULTIPLIER), WARN_FLOOR_MINUTES)
+            crit_min = max(int(cycle_min * CYCLE_CRIT_MULTIPLIER), CRIT_FLOOR_MINUTES)
 
         if age_min is None:
             provider_status = "down"
