@@ -811,6 +811,11 @@ providers:
     domain: marathonbet.com
     retriever_type: marathon
     api_base: https://www.marathonbet.com/en/betting
+    # Expanded 2026-04-28 — live nav probe found 30+ sports, retriever was
+    # only mapping 8. Added handball / volleyball / cricket / esports where
+    # Pinnacle has matching coverage. Skipped niche sports without sharp
+    # baseline (darts, futsal, gaelic football, etc.) since unmatched events
+    # just deferred-rot anyway.
     supported_sports:
       - football
       - basketball
@@ -820,6 +825,10 @@ providers:
       - baseball
       - mma
       - boxing
+      - handball
+      - volleyball
+      - cricket
+      - esports
 
   cloudbet:
     id: cloudbet

@@ -28,9 +28,23 @@ _HEADERS = {
 }
 
 # Sports with no draw outcome — use moneyline instead of 1x2
-_NO_DRAW_SPORTS = {"basketball", "tennis", "ice-hockey", "american-football", "baseball", "mma", "boxing"}
+_NO_DRAW_SPORTS = {
+    "basketball",
+    "tennis",
+    "ice-hockey",
+    "american-football",
+    "baseball",
+    "mma",
+    "boxing",
+    "volleyball",
+    "cricket",
+    "esports",
+}
 
-# Sport slug → URL path segment
+# Sport slug → URL path segment.
+# Marathon's URL pattern is /en/betting/{Slug}+-+{id} but the human slug alone
+# (without the id suffix) redirects to the full URL, so we just send the slug.
+# Verified live 2026-04-28 against marathonbet.com nav.
 _SPORT_URL_MAP = {
     "football": "Football",
     "basketball": "Basketball",
@@ -40,6 +54,12 @@ _SPORT_URL_MAP = {
     "baseball": "Baseball",
     "mma": "Mixed+Martial+Arts",
     "boxing": "Boxing",
+    # Added 2026-04-28 — sports with Pinnacle coverage (handball ~16ev,
+    # volleyball ~7ev, cricket ~6ev, esports ~25ev per Pinnacle baseline).
+    "handball": "Handball",
+    "volleyball": "Volleyball",
+    "cricket": "Cricket",
+    "esports": "e-Sports",
 }
 
 _BASE_URL = "https://www.marathonbet.com/en/betting/"
