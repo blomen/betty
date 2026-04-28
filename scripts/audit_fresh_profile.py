@@ -19,6 +19,9 @@ from pathlib import Path
 import httpx
 import yaml
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend" / "src"))
+from bankroll.stake_calculator import calculate_stake, dynamic_min_stake  # noqa: E402
+
 # Mirror of arnold/frontend/src/pages/PlayPage.tsx:6 — keep in sync.
 UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}
 
@@ -34,6 +37,10 @@ SOFT_STANDALONES = {"interwetten", "vbet", "10bet", "tipwin", "coolbet", "bethar
 
 # Signal-only providers expected to NOT appear on the arb page (no bet placement).
 SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus"}
+
+TARGET_BANKROLLS = [10_000, 25_000, 50_000, 100_000]
+UNLIMITED_FOR_DEPOSIT = ("pinnacle", "polymarket", "cloudbet", "kalshi")
+SIM_PROBE_PROVIDER = "pinnacle"  # arbitrary unlimited provider used only to pre-fund
 
 
 def find_or_create_audit_profile(api: httpx.Client) -> int:
@@ -134,6 +141,114 @@ def build_arb_page_sanity(yaml_doc: dict) -> tuple[list[str], int]:
     return lines, flags
 
 
+def fetch_full_batch(api: httpx.Client, profile_id: int) -> list[dict]:
+    """Fetch the full play batch with a temporarily inflated balance, then reset.
+
+    The batch builder skips bets when bankroll is too small; we inflate to
+    1,000,000 SEK so we observe the raw set, then restore to 0.
+    """
+    api.post(
+        f"/api/bankroll/set/{SIM_PROBE_PROVIDER}",
+        json={"balance": 1_000_000},
+    ).raise_for_status()
+    try:
+        batch = api.post("/api/play/batch", json={}).raise_for_status().json()
+    finally:
+        api.post(
+            f"/api/bankroll/set/{SIM_PROBE_PROVIDER}",
+            json={"balance": 0},
+        ).raise_for_status()
+    return batch.get("bets") or batch.get("batch") or []
+
+
+def simulate_at_bankroll(bets: list[dict], bankroll: float) -> dict:
+    """Run calculate_stake at a given bankroll, return per-bet stakes + funded count."""
+    funded = []
+    skipped = []
+    per_provider_stake: dict[str, float] = {}
+    total_ev = 0.0
+    for b in bets:
+        edge_raw = (b["odds"] / b["fair_odds"] - 1.0) if b.get("fair_odds") else 0.0
+        result = calculate_stake(
+            bankroll_total=bankroll,
+            edge_raw=edge_raw,
+            odds=b["odds"],
+            min_stake=dynamic_min_stake(bankroll),
+        )
+        if result.skip_reason or result.stake <= 0:
+            skipped.append((b, result.skip_reason))
+            continue
+        funded.append((b, result.stake))
+        per_provider_stake[b["provider_id"]] = (
+            per_provider_stake.get(b["provider_id"], 0.0) + result.stake
+        )
+        total_ev += result.stake * edge_raw
+    return {
+        "funded": funded,
+        "skipped": skipped,
+        "per_provider_stake": per_provider_stake,
+        "total_ev": total_ev,
+        "bankroll": bankroll,
+    }
+
+
+def solve_min_bankroll(bets: list[dict], step: int = 1_000, ceiling: int = 500_000) -> dict:
+    """Smallest bankroll funding 100% of bets (every result has no skip_reason)."""
+    for B in range(step, ceiling + step, step):
+        sim = simulate_at_bankroll(bets, float(B))
+        if not sim["skipped"]:
+            return sim
+    # Couldn't fund all bets — return ceiling result anyway
+    return simulate_at_bankroll(bets, float(ceiling))
+
+
+def build_deposit_section(bets: list[dict]) -> list[str]:
+    if not bets:
+        return [
+            "## Deposit recommendation",
+            "",
+            "_Value-bet feed empty at audit time — re-run during market hours._",
+            "",
+        ]
+
+    solved = solve_min_bankroll(bets)
+    sims = [(B, simulate_at_bankroll(bets, float(B))) for B in TARGET_BANKROLLS]
+
+    def split(stakes: dict[str, float]) -> str:
+        unlim_stakes = {p: stakes.get(p, 0.0) for p in UNLIMITED_FOR_DEPOSIT}
+        total = sum(unlim_stakes.values())
+        if total <= 0:
+            return "—"
+        return ", ".join(
+            f"{p}={int(round(unlim_stakes[p] / total * 100))}%"
+            for p in UNLIMITED_FOR_DEPOSIT if unlim_stakes[p] > 0
+        )
+
+    lines = [
+        "## Deposit recommendation",
+        "",
+        f"**Live solve:** smallest bankroll funding 100% of {len(bets)} current bets:",
+        "",
+        f"- **Total: {int(solved['bankroll']):,} SEK**",
+        f"- Per-unlimited-provider split (weighted by bet stakes): {split(solved['per_provider_stake'])}",
+        f"- Bets fundable: {len(solved['funded'])}/{len(bets)}",
+        f"- Total expected EV: {solved['total_ev']:.2f} SEK",
+        "",
+        "**Target-bankroll table:**",
+        "",
+        "| Bankroll | Bets fundable | % of feed | Total EV | Per-unlimited split |",
+        "|---|---|---|---|---|",
+    ]
+    for B, sim in sims:
+        pct = (len(sim["funded"]) / len(bets) * 100) if bets else 0.0
+        lines.append(
+            f"| {B:,} SEK | {len(sim['funded'])}/{len(bets)} | {pct:.0f}% | "
+            f"{sim['total_ev']:.2f} SEK | {split(sim['per_provider_stake'])} |"
+        )
+    lines.append("")
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
@@ -184,10 +299,9 @@ def main() -> int:
         sections.extend(section_lines)
         total_critical += flags
 
-    sections.append("## Deposit recommendation")
-    sections.append("")
-    sections.append("_Filled in by Task 8._")
-    sections.append("")
+    with httpx.Client(base_url=args.api, timeout=60.0) as api:
+        bets = fetch_full_batch(api, profile_id)
+    sections.extend(build_deposit_section(bets))
 
     sections.append(f"## Verdict: {'PASS' if total_critical == 0 else f'FAIL ({total_critical} critical flags)'}")
     sections.append("")
