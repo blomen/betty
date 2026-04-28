@@ -944,7 +944,10 @@ extraction_scheduling:
     providers:
       - 888sport
       - interwetten
-      - 10bet
+      # 10bet moved to browser_slow tier 2026-04-28 — see below. Football is
+      # fully dead (1200s timeout per attempt, 3-attempt ladder still fails).
+      # Aggregate 4h yield: 0.03 ev/s, 1 run, 53 events. Burning a browser
+      # slot every 30m for nothing. Demoted to its own slow tier.
       - tipwin
     # Bumped 20 → 30 (2026-04-28): even at 20m, slow-path runs (interwetten
     # capping 119 leagues, 10bet 3-attempt goto ladder) consume 5-8 min of
@@ -953,6 +956,18 @@ extraction_scheduling:
     # between cycles, reduces proxy contention, and frees CPU for the higher
     # priority tiers when they need it.
     interval_minutes: 30
+    grouped: false
+
+  browser_slow:
+    # Demoted browser providers — extraction cost > yield. Run hourly so they
+    # produce at least some data without competing with healthier extractors.
+    # 10bet: site/proxy contention has it at 0.03 ev/s; sometimes catches a
+    # handful of handball/mma events on a successful cycle. If reliability
+    # recovers (proxy unblock, site change), promote back to browser_soft.
+    max_concurrent_browsers: 1
+    providers:
+      - 10bet
+    interval_minutes: 60
     grouped: false
 
   browser_antibot:
