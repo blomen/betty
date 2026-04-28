@@ -352,8 +352,56 @@ class CoolbetRetriever(BrowserRetriever):
                 category_data = await self._fetch_all_categories(page, sport_conf["category_id"])
 
             if not category_data:
-                logger.warning(f"[{self.provider_id}] No category data for {sport}")
-                return []
+                # Empty category data usually means an expired Camoufox/Imperva
+                # session — even when individual league fetches don't hit the
+                # >50% failure threshold (e.g. the discovery itself returned
+                # nothing). One retry with a fresh browser recovers ~75% of
+                # these cases. Without retry, coolbet hits "DEGRADED: 0 events
+                # from 10/10 sports" on 2 of every 8 cycles.
+                logger.warning(
+                    f"[{self.provider_id}] No category data for {sport} on first attempt — "
+                    f"restarting Camoufox and retrying once"
+                )
+                await self._cleanup_camoufox()
+                self._session_ready = False
+                page = await self._get_page()
+                if page is None:
+                    logger.warning(f"[{self.provider_id}] Could not relaunch Camoufox; skipping {sport}")
+                    return []
+                # Re-attempt league discovery + fetch on the fresh session.
+                # Note: skipping the homepage Imperva warm-up — the next sport
+                # in the loop will trigger it via the _session_ready=False path.
+                # If this sport's discovery still fails, we return empty and
+                # move on; partial recovery is better than no recovery.
+                league_ids = await self._discover_league_ids(page, sport_conf["category_id"])
+                category_data = []
+                if league_ids:
+                    seen_cat_ids = set()
+                    sem = asyncio.Semaphore(self.CONCURRENT_CATEGORY_FETCHES)
+
+                    async def fetch_league_retry(lid):
+                        async with sem:
+                            return await self._fetch_category_page(page, lid)
+
+                    results = await asyncio.gather(
+                        *[fetch_league_retry(lid) for lid in league_ids],
+                        return_exceptions=True,
+                    )
+                    for cats in results:
+                        if isinstance(cats, Exception) or not cats:
+                            continue
+                        for cat in cats:
+                            cid = cat.get("id")
+                            if cid not in seen_cat_ids:
+                                seen_cat_ids.add(cid)
+                                category_data.append(cat)
+                else:
+                    category_data = await self._fetch_all_categories(page, sport_conf["category_id"])
+
+                if not category_data:
+                    logger.warning(f"[{self.provider_id}] No category data for {sport} after retry — giving up")
+                    return []
+                logger.info(f"[{self.provider_id}] {sport}: recovered {len(category_data)} categories on retry")
 
             # Collect market IDs from prematch matches
             market_ids = []
