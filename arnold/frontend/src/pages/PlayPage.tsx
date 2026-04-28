@@ -1044,6 +1044,15 @@ export default function PlayPage() {
                               {qualifyingOpps.length} qualifying arb{qualifyingOpps.length === 1 ? '' : 's'} ≥ {DEPOSIT_HINT_MIN_PROFIT_PCT}%
                             </span>
                           </div>
+                          {/* Per-member deposit hints — each cluster member with its bonus trigger */}
+                          <div className="flex flex-wrap gap-3 px-3 py-2 bg-zinc-900/20 border-b border-zinc-800/30 text-[11px]">
+                            {members.map(pid => (
+                              <div key={pid} className="flex items-center gap-1.5">
+                                <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
+                                <BalanceCell pid={pid} balances={providerBalances} />
+                              </div>
+                            ))}
+                          </div>
                           <table className="w-full text-xs">
                             <tbody>
                               {qualifyingOpps.map((opp: any, i: number) => {
