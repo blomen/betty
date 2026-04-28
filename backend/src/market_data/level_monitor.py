@@ -1641,18 +1641,23 @@ class LevelMonitor:
                     }
                 )
 
-                # Send trading signal — filter low confidence + fix stop calculation
+                # Send trading signal — filter low confidence + filter low OF
+                # so the relay (trading_service subprocess) honours the same
+                # gate as the autonomous broker. Without the OF check here,
+                # trade #77 fired with OF=0.00 because the trading_service
+                # adapter only checks MIN_CONFIDENCE — bypassing my Path-1
+                # OF gate. The relay path is the production trading path
+                # (autonomous bootstrap loses the SignalR session race), so
+                # this is where the gate must enforce.
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                # In reckless learning mode this gate must NOT be stricter than
-                # the broker's, otherwise the broker takes a trade but the
-                # relay path skips persisting (no obs / reasoning / trade_id
-                # linkage). Match the broker conf floor when reckless is on.
-                # 0.99 when paused so no signals get persisted as "real" while
-                # collecting passive episodes.
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
+                # OF gate matches Path-1 default (0.30). Audit data: OF>=0.30
+                # wins 4/4, OF<0.30 is coin-flip + drag.
+                _RELAY_OF_FLOOR = 0.30
+                relay_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
 
                 if action in ("SKIP", "skip"):
                     logger.debug("SKIP for zone %.2f (conf=%.3f)", zone.center_price, confidence)
@@ -1663,6 +1668,15 @@ class LevelMonitor:
                         confidence,
                         MIN_SIGNAL_CONFIDENCE,
                         zone.center_price,
+                    )
+                elif relay_of_score < _RELAY_OF_FLOOR:
+                    logger.info(
+                        "Signal filtered (relay OF gate): %s of=%.3f < %.2f at zone %.2f conf=%.3f",
+                        action,
+                        relay_of_score,
+                        _RELAY_OF_FLOOR,
+                        zone.center_price,
+                        confidence,
                     )
                 else:
                     approach = "up" if price < zone.center_price else "down"
@@ -1689,7 +1703,7 @@ class LevelMonitor:
                         zone.center_price,
                     )
                     cb_size_mult = result.get("size_multiplier", result.get("sizing_signal", 1.0))
-                    cb_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
+                    cb_of_score = relay_of_score  # already computed for the gate above
                     cb_reasoning = _build_reasoning(
                         zone=zone,
                         action=action,
