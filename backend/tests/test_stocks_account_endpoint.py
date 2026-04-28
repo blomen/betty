@@ -73,3 +73,69 @@ def test_account_endpoint_returns_nested_prop_firm_shape():
     assert firm["id"] == "topstepx"
     assert firm["name"] == "TopstepX"
     assert len(firm["accounts"]) == 2
+
+
+def test_active_account_has_limits_and_inactive_does_not():
+    app = _make_app(account_search_payload=_LIVE_PAYLOAD, active_account_id=21795795)
+    client = TestClient(app)
+    body = client.get("/api/stocks/account").json()
+    accounts = body["prop_firms"][0]["accounts"]
+    by_id = {a["id"]: a for a in accounts}
+
+    active = by_id[21795795]
+    inactive = by_id[21480650]
+
+    assert active["active"] is True
+    assert inactive["active"] is False
+    assert active["limits"] == {"max_trailing_dd": 5000.0, "max_daily_loss": 1500.0}
+    assert inactive["limits"] is None
+
+
+def test_account_fields_use_snake_case():
+    app = _make_app(account_search_payload=_LIVE_PAYLOAD)
+    client = TestClient(app)
+    body = client.get("/api/stocks/account").json()
+    a = body["prop_firms"][0]["accounts"][0]
+
+    assert "can_trade" in a
+    assert "canTrade" not in a
+    assert isinstance(a["can_trade"], bool)
+
+
+def test_product_derived_from_account_name_prefix():
+    app = _make_app(account_search_payload=_LIVE_PAYLOAD)
+    client = TestClient(app)
+    body = client.get("/api/stocks/account").json()
+    by_id = {a["id"]: a for a in body["prop_firms"][0]["accounts"]}
+
+    assert by_id[21795795]["product"] == "PRAC"
+    assert by_id[21480650]["product"] == "50KTC"
+
+
+def test_returns_empty_when_runtime_missing():
+    app = _make_app(runtime_present=False)
+    client = TestClient(app)
+    resp = client.get("/api/stocks/account")
+    assert resp.status_code == 200
+    assert resp.json() == {"prop_firms": []}
+
+
+def test_topstepx_failure_with_no_cache_returns_empty():
+    app = _make_app(account_search_raises=RuntimeError("boom"))
+    client = TestClient(app)
+    resp = client.get("/api/stocks/account")
+    assert resp.status_code == 200
+    assert resp.json() == {"prop_firms": []}
+
+
+def test_topstepx_failure_with_cache_returns_cached_payload():
+    app = _make_app(account_search_payload=_LIVE_PAYLOAD)
+    client = TestClient(app)
+    first = client.get("/api/stocks/account").json()
+    assert first["prop_firms"][0]["accounts"]
+
+    # Now make TopstepX fail; cache should be served
+    runtime = app.state.stocks_runtime
+    runtime.client._post = AsyncMock(side_effect=RuntimeError("transient"))
+    second = client.get("/api/stocks/account").json()
+    assert second == first
