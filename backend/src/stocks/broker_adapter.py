@@ -437,6 +437,14 @@ class TopstepXBrokerAdapter:
                 result = await self.client.place_stop_order(stop_action, self.tracker.size or 1, new_stop_price)
                 self.tracker.stop_order_id = result.get("orderId") if isinstance(result, dict) else None
                 self.tracker.stop_price = new_stop_price
+                # Mirror the new stop into _pending_trade so broker_trades.stop_price
+                # reflects the actually-placed stop, not the stale entry-time one.
+                # Trade #88 hit a 27062.50 stop but broker_trades showed 27062.50
+                # because _pending_trade was never updated when the on-fill
+                # re-anchor moved it to a tighter price.
+                if self._pending_trade is not None:
+                    self._pending_trade["stop_price"] = new_stop_price
+                    _save_pending_trade_to_disk(self._pending_trade)
                 log.info("New stop placed at %.2f", new_stop_price)
                 return {"action": "new_stop", "stop_price": new_stop_price}
             except Exception:
@@ -445,6 +453,9 @@ class TopstepXBrokerAdapter:
         try:
             await self.client.modify_order(self.tracker.stop_order_id, stop_price=new_stop_price)
             self.tracker.stop_price = new_stop_price
+            if self._pending_trade is not None:
+                self._pending_trade["stop_price"] = new_stop_price
+                _save_pending_trade_to_disk(self._pending_trade)
             log.info("Stop moved to %.2f", new_stop_price)
             return {"action": "modify_stop", "stop_price": new_stop_price}
         except Exception:
@@ -500,6 +511,12 @@ class TopstepXBrokerAdapter:
                 # the stop ends up 2-3x further than intended → the trade
                 # risks far more than stop_ticks dollars but reads as -1R
                 # in the data, hiding the cost from the trainer.
+                log.info(
+                    "Re-anchor check: pending=%s intended_ticks=%s cur_stop=%.2f",
+                    bool(self._pending_trade),
+                    self._pending_trade.get("stop_ticks") if self._pending_trade else None,
+                    self.tracker.stop_price,
+                )
                 if self._pending_trade:
                     intended_ticks = self._pending_trade.get("stop_ticks")
                     cur_stop = self.tracker.stop_price
