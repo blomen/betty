@@ -177,13 +177,15 @@ class InterwettenRetriever(BrowserRetriever):
         if target_leagues:
             leagues = self._filter_leagues(leagues, target_leagues)
 
-        # Hard cap on league count: sports like handball/volleyball return 100+
-        # leagues and chewing through all of them blows past the 600s per-sport
-        # budget. _filter_leagues sometimes lets a lot through too — its substring
-        # match (e.g. target "handball" matches every league with "handball" in
-        # the name) over-includes the long tail. Cap unconditionally after any
-        # filter pass; top 30 keeps every mainstream comp plus secondaries.
-        MAX_LEAGUES_PER_SPORT = 30
+        # Hard cap on league count: per-league cost is ~5-10s (page goto + DOM
+        # scrape + detail enrichment) and several sports were hitting the 600s
+        # per-sport budget at 30 leagues — handball + volleyball + ice_hockey
+        # all timed out 2026-04-29, dragging interwetten's full cycle past 45 min
+        # and overrunning its 30m cadence. _filter_leagues' substring match
+        # over-includes the long tail too. Tightened 30 → 15 to keep cycles
+        # under the budget; top 15 still covers every mainstream Pinnacle-
+        # matchable comp (Bundesliga / Champions League / EPL / NHL / etc.).
+        MAX_LEAGUES_PER_SPORT = 15
         if len(leagues) > MAX_LEAGUES_PER_SPORT:
             logger.info(
                 f"[{self.provider_id}] {sport}: capping {len(leagues)} leagues to top {MAX_LEAGUES_PER_SPORT} "

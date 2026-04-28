@@ -964,13 +964,14 @@ extraction_scheduling:
       # Aggregate 4h yield: 0.03 ev/s, 1 run, 53 events. Burning a browser
       # slot every 30m for nothing. Demoted to its own slow tier.
       - tipwin
-    # Bumped 20 → 30 (2026-04-28): even at 20m, slow-path runs (interwetten
-    # capping 119 leagues, 10bet 3-attempt goto ladder) consume 5-8 min of
-    # browser+proxy capacity. Stacking that against the next cycle 12-15m
-    # later left zero idle window. 30m gives the browser pool clean teardown
-    # between cycles, reduces proxy contention, and frees CPU for the higher
-    # priority tiers when they need it.
-    interval_minutes: 30
+    # Bumped 30 → 45 (2026-04-29): interwetten was running 41+ min cycles even
+    # with the league cap — handball/volleyball/ice_hockey hitting 600s per-
+    # sport budget timeouts. 30m cadence kept queueing fresh runs while old
+    # cycles were still going. Combined with MAX_LEAGUES tighten 30→15 in
+    # interwetten.py, 45m gives the slowest provider in the tier room to
+    # finish before the next start. 888sport + tipwin run faster but stay
+    # in the same tier for simplicity; their freshness staying < 45m is fine.
+    interval_minutes: 45
     grouped: false
 
   browser_slow:
