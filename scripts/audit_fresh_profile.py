@@ -8,11 +8,12 @@ Usage:
 Pre-req: arnold.bat is running so /api/* routes through the SSH tunnel to
 the production server.
 """
+
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
+import os
 import sys
 from pathlib import Path
 
@@ -36,7 +37,7 @@ SOFT_CLUSTER_MEMBERS = {
 SOFT_STANDALONES = {"interwetten", "vbet", "10bet", "tipwin", "coolbet", "bethard"}
 
 # Signal-only providers expected to NOT appear on the arb page (no bet placement).
-SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus"}
+SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus", "smarkets"}
 
 TARGET_BANKROLLS = [10_000, 25_000, 50_000, 100_000]
 UNLIMITED_FOR_DEPOSIT = ("pinnacle", "polymarket", "cloudbet", "kalshi")
@@ -64,7 +65,7 @@ def load_yaml(path: Path) -> dict:
 
 def build_provider_coverage(yaml_doc: dict, bankroll: dict) -> tuple[list[str], int]:
     """Verify every active yaml provider appears in /api/bankroll with balance=0."""
-    yaml_active = set(yaml_doc.get("active_providers", []))
+    yaml_active = set(yaml_doc.get("active", []))
     bankroll_ids = {p["id"] for p in bankroll["providers"]}
     bankroll_by_id = {p["id"]: p for p in bankroll["providers"]}
 
@@ -76,8 +77,7 @@ def build_provider_coverage(yaml_doc: dict, bankroll: dict) -> tuple[list[str], 
         lines.append(f"- [!] missing-from-bankroll: `{pid}` is active in yaml but absent from `/api/bankroll`")
         flags += 1
 
-    nonzero = [p for p in bankroll["providers"]
-               if p["id"] in yaml_active and (p["balance"] or 0) > 0]
+    nonzero = [p for p in bankroll["providers"] if p["id"] in yaml_active and (p["balance"] or 0) > 0]
     for p in nonzero:
         lines.append(f"- [!] non-zero-balance: `{p['id']}` has balance={p['balance']} on the Audit profile")
         flags += 1
@@ -111,7 +111,9 @@ def build_bonus_coverage(yaml_bonuses: dict, bankroll: dict) -> tuple[list[str],
             )
             flags += 1
         else:
-            lines.append(f"- [ok] `{pid}`: deposit {int(trigger)} {provider_row.get('bonus_currency', 'SEK')} ({cfg.get('type')})")
+            lines.append(
+                f"- [ok] `{pid}`: deposit {int(trigger)} {provider_row.get('bonus_currency', 'SEK')} ({cfg.get('type')})"
+            )
 
     lines.append("")
     return lines, flags
@@ -119,7 +121,7 @@ def build_bonus_coverage(yaml_bonuses: dict, bankroll: dict) -> tuple[list[str],
 
 def build_arb_page_sanity(yaml_doc: dict) -> tuple[list[str], int]:
     """Verify every active yaml provider is reachable through PlayPage's cluster map."""
-    yaml_active = set(yaml_doc.get("active_providers", []))
+    yaml_active = set(yaml_doc.get("active", []))
     reachable = set(UNLIMITED_PROVIDERS) | set(SOFT_STANDALONES)
     for members in SOFT_CLUSTER_MEMBERS.values():
         reachable.update(members)
@@ -129,7 +131,9 @@ def build_arb_page_sanity(yaml_doc: dict) -> tuple[list[str], int]:
 
     orphans = sorted(yaml_active - reachable - SIGNAL_ONLY_PROVIDERS)
     for pid in orphans:
-        lines.append(f"- [~] not-on-arb-page: `{pid}` is active but missing from PlayPage cluster map (add to SOFT_STANDALONES or a cluster)")
+        lines.append(
+            f"- [~] not-on-arb-page: `{pid}` is active but missing from PlayPage cluster map (add to SOFT_STANDALONES or a cluster)"
+        )
 
     expected_signal = sorted(yaml_active & SIGNAL_ONLY_PROVIDERS)
     for pid in expected_signal:
@@ -152,7 +156,7 @@ def fetch_full_batch(api: httpx.Client, profile_id: int) -> list[dict]:
         json={"balance": 1_000_000},
     ).raise_for_status()
     try:
-        batch = api.post("/api/play/batch", json={}).raise_for_status().json()
+        batch = api.post("/api/opportunities/play/batch", json={}).raise_for_status().json()
     finally:
         api.post(
             f"/api/bankroll/set/{SIM_PROBE_PROVIDER}",
@@ -179,9 +183,7 @@ def simulate_at_bankroll(bets: list[dict], bankroll: float) -> dict:
             skipped.append((b, result.skip_reason))
             continue
         funded.append((b, result.stake))
-        per_provider_stake[b["provider_id"]] = (
-            per_provider_stake.get(b["provider_id"], 0.0) + result.stake
-        )
+        per_provider_stake[b["provider_id"]] = per_provider_stake.get(b["provider_id"], 0.0) + result.stake
         total_ev += result.stake * edge_raw
     return {
         "funded": funded,
@@ -220,8 +222,7 @@ def build_deposit_section(bets: list[dict]) -> list[str]:
         if total <= 0:
             return "—"
         return ", ".join(
-            f"{p}={int(round(unlim_stakes[p] / total * 100))}%"
-            for p in UNLIMITED_FOR_DEPOSIT if unlim_stakes[p] > 0
+            f"{p}={int(round(unlim_stakes[p] / total * 100))}%" for p in UNLIMITED_FOR_DEPOSIT if unlim_stakes[p] > 0
         )
 
     lines = [
@@ -249,22 +250,35 @@ def build_deposit_section(bets: list[dict]) -> list[str]:
     return lines
 
 
+def _client(base_url: str, timeout: float, api_key: str | None) -> httpx.Client:
+    """httpx.Client with optional X-API-Key header (for direct backend access)."""
+    headers = {"X-API-Key": api_key} if api_key else None
+    return httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--repo-root", default=str(Path(__file__).parent.parent))
-    parser.add_argument("--out", default=None,
-                        help="Output report path (defaults to docs/audits/YYYY-MM-DD-fresh-profile-audit.md)")
+    parser.add_argument(
+        "--out", default=None, help="Output report path (defaults to docs/audits/YYYY-MM-DD-fresh-profile-audit.md)"
+    )
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("ARNOLD_API_KEY"),
+        help="X-API-Key header value (env: ARNOLD_API_KEY). Required when hitting the backend directly without going through arnold.bat's tunnel.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root)
-    out_path = Path(args.out) if args.out else (
-        repo_root / "docs" / "audits" /
-        f"{dt.date.today().isoformat()}-fresh-profile-audit.md"
+    out_path = (
+        Path(args.out)
+        if args.out
+        else (repo_root / "docs" / "audits" / f"{dt.date.today().isoformat()}-fresh-profile-audit.md")
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with httpx.Client(base_url=args.api, timeout=30.0) as api:
+    with _client(args.api, 300.0, args.api_key) as api:
         profile_id = find_or_create_audit_profile(api)
         print(f"[audit] using Audit profile id={profile_id}")
         setup_audit_profile(api, profile_id)
@@ -299,7 +313,7 @@ def main() -> int:
         sections.extend(section_lines)
         total_critical += flags
 
-    with httpx.Client(base_url=args.api, timeout=60.0) as api:
+    with _client(args.api, 180.0, args.api_key) as api:
         bets = fetch_full_batch(api, profile_id)
     sections.extend(build_deposit_section(bets))
 
