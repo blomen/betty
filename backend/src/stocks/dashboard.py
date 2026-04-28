@@ -115,6 +115,17 @@ def create_dashboard_router() -> APIRouter:
             "autonomous": os.environ.get("STOCKS_AUTONOMOUS", "").lower() == "true",
         }
 
+    @router.get("/api/observation-schema")
+    async def get_observation_schema():
+        """Layout of the 279/306-dim observation vector emitted on dqn_inference.
+
+        Fetched once by the Stocks UI on connect and cached. Lets the dims
+        breakdown panel slice + label `dqn_inference.inputs[]` per group.
+        """
+        from ..rl.features.observation_index import schema
+
+        return schema()
+
     @router.get("/api/candles")
     async def get_candles(interval: str = "5m", days: int = 3, date: str | None = None):
         """Fetch 1m candles from server and aggregate locally (same as old DB path)."""
@@ -339,7 +350,10 @@ def create_dashboard_router() -> APIRouter:
 
     @router.get("/api/broker-trades")
     async def get_broker_trades(days: int = 30):
-        """Return completed trades — not yet available via server API."""
+        """Proxy to server — completed broker trades are stored server-side in Postgres."""
+        data = await _proxy("/api/stocks/broker-trades", params={"days": days}, cache_ttl=15.0)
+        if isinstance(data, dict) and "trades" in data:
+            return data
         return {"trades": []}
 
     @router.get("/api/model-status")

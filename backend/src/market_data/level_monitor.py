@@ -465,11 +465,21 @@ class LevelMonitor:
         except Exception:
             self._outcome_tracker = None
 
+    def get_raw_levels(self) -> list[dict]:
+        """Return the raw level dicts from the most recent load_levels()
+        call — used by the TV overlay to draw every individual dim
+        (FVG/OB ranges with price_high/low, swings, session H/L, etc.).
+        Empty list before first load."""
+        return list(getattr(self, "_raw_levels", []) or [])
+
     def load_levels(self, expanded_session: dict) -> None:
         """Load levels from an ExpandedSession dict. Called on compute_session()."""
         self._levels.clear()
         session = expanded_session.get("session", {})
         levels_list = expanded_session.get("levels", [])
+        # Stash raw levels for the TV overlay broadcaster — preserves
+        # price_high / price_low so FVG/OB rectangles render correctly.
+        self._raw_levels = list(levels_list)
 
         for lv in levels_list:
             name = lv.get("type", "unknown")
@@ -1394,6 +1404,66 @@ class LevelMonitor:
         except Exception:
             logger.debug("DQN inference failed for %s", level.name, exc_info=True)
 
+    def _build_inference_gates(
+        self,
+        result: dict,
+        rl_state: dict,
+        zone: Zone,
+        price: float,
+        broker,
+    ) -> dict:
+        """Mirror the broker-path gate logic so the UI can render pass/fail.
+
+        Mirrors lines 1547-1605 in `_emit_zone_dqn_inference` — every change
+        to the broker gating thresholds must be reflected here, otherwise
+        the UI will lie about the dispatch decision.
+        """
+        action = result.get("action", "SKIP")
+        confidence = float(result.get("confidence", 0.0) or 0.0)
+        of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
+        reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+        conf_floor_default = 0.05 if reckless else 0.15
+        of_floor = 0.15 if reckless else 0.30
+        halted = _trading_paused()
+        conf_floor = 0.99 if halted else conf_floor_default
+        is_flat = bool(broker is None or broker.tracker.is_flat)
+
+        action_pass = action not in ("SKIP", "skip")
+        conf_pass = confidence >= conf_floor
+        of_pass = of_score >= of_floor
+
+        # Order matters — first failing gate is the headline blocker. Halt
+        # short-circuits everything else (it raises conf_floor to 0.99).
+        if halted:
+            blocker: str | None = "halted"
+        elif not action_pass:
+            blocker = "model_skip"
+        elif not conf_pass:
+            blocker = "confidence"
+        elif not of_pass:
+            blocker = "orderflow"
+        elif not is_flat:
+            # The broker path doesn't dispatch a new entry while in-position,
+            # it routes to pyramid/reversal-exit/early-exit handlers instead.
+            blocker = "in_position"
+        else:
+            blocker = None
+
+        return {
+            "model_action": action,
+            "confidence": confidence,
+            "conf_floor": conf_floor,
+            "conf_pass": conf_pass,
+            "of_score": of_score,
+            "of_floor": of_floor,
+            "of_pass": of_pass,
+            "is_flat": is_flat,
+            "halted": halted,
+            "decision": "DISPATCHED" if blocker is None else "BLOCKED",
+            "blocker": blocker,
+            "reckless": reckless,
+        }
+
     def _emit_zone_dqn_inference(self, zone: Zone, price: float) -> None:
         try:
             from src.rl.live_inference import get_dqn_inference
@@ -1433,6 +1503,15 @@ class LevelMonitor:
                 rl_state["position_size"] = float(tr.size)
 
             result = dqn.infer(rl_state)
+            # Compute the gates the broker path will evaluate, then surface
+            # them on every dqn_inference event so the Stocks UI can render
+            # an explicit pass/fail checklist instead of guessing why a
+            # touch did or didn't trade.
+            gates_block = (
+                self._build_inference_gates(result, rl_state, zone, price, broker=broker)
+                if result is not None
+                else None
+            )
             if result is not None:
                 self._publish(
                     {
@@ -1442,6 +1521,8 @@ class LevelMonitor:
                         "zone_center": zone.center_price,
                         "zone_hierarchy": round(zone.hierarchy_score, 3),
                         **result,
+                        "gates": gates_block,
+                        "of_score": gates_block["of_score"] if gates_block else None,
                         "timestamp": time.time(),
                     }
                 )
@@ -1673,6 +1754,8 @@ class LevelMonitor:
                         "zone_center": zone.center_price,
                         "zone_hierarchy": round(zone.hierarchy_score, 3),
                         **result,
+                        "gates": gates_block,
+                        "of_score": gates_block["of_score"] if gates_block else None,
                         "price": price,
                         "timestamp": time.time(),
                     }

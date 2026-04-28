@@ -151,6 +151,29 @@ export interface DQNConnection {
   sign: number
 }
 
+export type GateBlocker =
+  | 'halted'
+  | 'model_skip'
+  | 'confidence'
+  | 'orderflow'
+  | 'in_position'
+  | null
+
+export interface InferenceGates {
+  model_action: string
+  confidence: number
+  conf_floor: number
+  conf_pass: boolean
+  of_score: number
+  of_floor: number
+  of_pass: boolean
+  is_flat: boolean
+  halted: boolean
+  decision: 'DISPATCHED' | 'BLOCKED'
+  blocker: GateBlocker
+  reckless: boolean
+}
+
 export interface DQNInferenceEvent {
   type: 'dqn_inference'
   trigger: 'approaching' | 'touched' | 'zone_entry'
@@ -185,6 +208,31 @@ export interface DQNInferenceEvent {
   level?: string
   level_price?: number
   timestamp: number
+  /** Gate evaluation snapshot — present on zone_entry events, null on
+   *  approaching/touched (those run inference but skip gating). */
+  gates?: InferenceGates | null
+  /** Mirrored from gates.of_score for convenience. */
+  of_score?: number | null
+  /** Named macro/regime scores (NARRATIVE_NAMES on the server). Optional —
+   *  only present when the v5 hybrid model produces it. */
+  narrative?: Record<string, number>
+}
+
+export interface ObservationSegment {
+  name: string
+  title: string
+  size: number
+  start: number
+  end: number
+  labels: string[]
+  kind: 'scalar' | 'multi_hot' | 'one_hot'
+}
+
+export interface ObservationSchema {
+  version: number
+  total_dim: number
+  narrative_names: string[]
+  segments: ObservationSegment[]
 }
 
 export interface Zone {

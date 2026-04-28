@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Signal, Zone, Fill, ExitEvent, Quote, Position, DQNInferenceEvent, DepthSnapshot } from '@/types/stocks'
+import type { Signal, Zone, Fill, ExitEvent, Quote, Position, DQNInferenceEvent, DepthSnapshot, ObservationSchema } from '@/types/stocks'
+
+export type InferenceTrigger = 'approaching' | 'touched' | 'zone_entry'
 
 export interface DashboardState {
   connected: boolean
@@ -20,6 +22,12 @@ export interface DashboardState {
   autonomous: boolean
   dqnInference: DQNInferenceEvent | null
   dqnInferenceAt: number | null  // Date.now() when last inference arrived
+  /** Latest inference per trigger phase. Lets the lifecycle header show
+   *  approaching → touched → zone_entry continuity even if the events
+   *  arrive close together. */
+  dqnByTrigger: Partial<Record<InferenceTrigger, { event: DQNInferenceEvent; at: number }>>
+  /** Schema for the dqn_inference.inputs[] vector (fetched once on connect). */
+  observationSchema: ObservationSchema | null
 }
 
 export interface TickEvent {
@@ -49,6 +57,8 @@ export function useDashboardWS() {
     autonomous: false,
     dqnInference: null,
     dqnInferenceAt: null,
+    dqnByTrigger: {},
+    observationSchema: null,
   })
 
   const [lastTick, setLastTick] = useState<TickEvent | null>(null)
@@ -84,6 +94,16 @@ export function useDashboardWS() {
             }
             return next
           })
+        })
+        .catch(() => { /* ignore */ })
+      // Schema is invariant across runs of a model version — fetch once on
+      // connect and cache. The DimsBreakdownCard slices inputs[] using this.
+      fetch('/stocks/api/observation-schema')
+        .then(r => (r.ok ? r.json() : null))
+        .then((schema: ObservationSchema | null) => {
+          if (schema && Array.isArray(schema.segments)) {
+            setState(s => ({ ...s, observationSchema: schema }))
+          }
         })
         .catch(() => { /* ignore */ })
     }
@@ -141,9 +161,18 @@ export function useDashboardWS() {
             streamRunning: msg.stream_running,
           }))
           break
-        case 'dqn_inference':
-          setState(s => ({ ...s, dqnInference: msg as DQNInferenceEvent, dqnInferenceAt: Date.now() }))
+        case 'dqn_inference': {
+          const ev = msg as DQNInferenceEvent
+          const now = Date.now()
+          const trigger = (ev.trigger ?? 'zone_entry') as InferenceTrigger
+          setState(s => ({
+            ...s,
+            dqnInference: ev,
+            dqnInferenceAt: now,
+            dqnByTrigger: { ...s.dqnByTrigger, [trigger]: { event: ev, at: now } },
+          }))
           break
+        }
         case 'fill':
           setState(s => ({
             ...s,
