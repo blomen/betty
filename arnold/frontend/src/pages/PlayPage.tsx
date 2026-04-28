@@ -600,8 +600,6 @@ export default function PlayPage() {
     }
   }, [mirror.lastEvent])
 
-  const handlePlace = () => api.placeCurrent()
-
   const handleToastConfirm = (toast: SettleToast) => {
     setConfirmedSettlements(prev => [...prev, { bet_id: toast.bet_id, result: toast.result, payout: toast.payout }])
     setToasts(prev => prev.filter(t => t.id !== toast.id))
@@ -729,6 +727,14 @@ export default function PlayPage() {
 
   const fmtStake = (b: BatchBet) => b.tier === 'polymarket' ? `$${b.stake.toFixed(1)}` : `${Math.round(b.stake)} kr`
   const fmtEv = (b: BatchBet) => b.tier === 'polymarket' ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
+  // Polymarket prices are quoted in cents (¢) on the trading site. Show both
+  // decimal and cent so the user can manually cross-check against what the
+  // Polymarket Chromium tab displays before clicking Buy. Keep 2-decimal
+  // precision on the cent value (no integer rounding) — Polymarket's betslip
+  // shows fractional cents and we need an exact match for confirmation.
+  const oddsToCents = (odds: number) => odds > 0 ? (100 / odds).toFixed(2) : '0.00'
+  const fmtOddsWithCents = (odds: number, isPoly: boolean) =>
+    isPoly ? `${odds.toFixed(2)} (${oddsToCents(odds)}¢)` : odds.toFixed(2)
 
   const resolveOutcome = (b: BatchBet) => {
     if (b.outcome === 'home') return b.display_home || 'Home'
@@ -846,10 +852,15 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Per-provider status rows */}
+      {/* Per-provider status rows.
+          Polymarket is rendered inline inside its own cluster header below
+          (search for "POLYMARKET inline status") — keeps the ready/Skip
+          control next to the polymarket bets list, not in the global header. */}
       {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
         <div className="border-b border-zinc-800">
-          {Object.entries(loopProviderStatus).map(([pid, status]: [string, any]) => (
+          {Object.entries(loopProviderStatus)
+            .filter(([pid]) => pid !== 'polymarket')
+            .map(([pid, status]: [string, any]) => (
             <div key={pid} className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
               <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">{pid}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${
@@ -865,21 +876,18 @@ export default function PlayPage() {
                     {status.current_bet.display_home} v {status.current_bet.display_away}
                   </span>
                   <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
-                  <span className="text-[10px] font-mono text-zinc-200">@ {(status.current_bet.live_odds ?? status.current_bet.odds)?.toFixed(2)}</span>
+                  <span className="text-[10px] font-mono text-zinc-200">
+                    @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, pid === 'polymarket')}
+                  </span>
                   {status.current_bet.edge_pct != null && <span className="text-[10px] text-green-400">+{status.current_bet.edge_pct?.toFixed(1)}%</span>}
                   <span className="text-[10px] font-mono text-zinc-500">{Math.round(status.current_bet.stake ?? 0)} kr</span>
                 </>
               )}
               {status.state === 'ready' && (
                 <div className="ml-auto flex items-center gap-2">
-                  {/* Pinnacle is mirror-only: user clicks Place in the Playwright tab,
-                      runner intercepts the XHR and records to DB. No Place button here. */}
-                  {pid !== 'pinnacle' && (
-                    <button
-                      onClick={() => api.placeCurrent()}
-                      className="px-2.5 py-0.5 text-[10px] font-semibold rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
-                    >Place</button>
-                  )}
+                  {/* No Place button — user always pulls the trigger directly on the
+                      provider's site (Playwright tab). Runner intercepts the placement
+                      XHR / WebSocket frame and records to DB. */}
                   <button
                     onClick={() => api.skipCurrent(pid)}
                     className="text-[10px] text-zinc-500 hover:text-zinc-300"
@@ -1316,6 +1324,47 @@ export default function PlayPage() {
                 <span className="text-[10px] text-green-400">+{stats.ev.toFixed(0)} kr</span>
               </div>
 
+              {/* POLYMARKET inline status — moved out of the global header so the
+                  ready/Skip control sits next to the polymarket bet list. */}
+              {clusterId === 'polymarket' && loopRunning && loopProviderStatus?.polymarket && (() => {
+                const status = loopProviderStatus.polymarket
+                return (
+                  <div className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
+                    <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">polymarket</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      status.state === 'ready' ? 'bg-green-900/40 text-green-400' :
+                      status.state === 'navigating' ? 'bg-blue-900/40 text-blue-400' :
+                      status.state === 'placing' ? 'bg-amber-900/40 text-amber-400' :
+                      status.state === 'settling' ? 'bg-purple-900/40 text-purple-400' :
+                      'bg-zinc-800 text-zinc-500'
+                    }`}>{status.state}</span>
+                    {status.current_bet && (
+                      <>
+                        <span className="text-[10px] text-zinc-300 truncate">
+                          {status.current_bet.display_home} v {status.current_bet.display_away}
+                        </span>
+                        <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
+                        <span className="text-[10px] font-mono text-zinc-200">
+                          @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, true)}
+                        </span>
+                        {status.current_bet.edge_pct != null && (
+                          <span className="text-[10px] text-green-400">+{status.current_bet.edge_pct?.toFixed(1)}%</span>
+                        )}
+                        <span className="text-[10px] font-mono text-zinc-500">${status.current_bet.stake?.toFixed(2)}</span>
+                      </>
+                    )}
+                    {status.state === 'ready' && (
+                      <div className="ml-auto flex items-center gap-2">
+                        <button
+                          onClick={() => api.skipCurrent('polymarket')}
+                          className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                        >Skip</button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+
               {/* Pending bets for this cluster */}
               {(() => {
                 const clusterPending = stats.providers.flatMap(pid =>
@@ -1381,14 +1430,25 @@ export default function PlayPage() {
                 )
               })()}
 
-              {/* Bet rows */}
+              {/* Bet rows.
+                  Filter out bets whose CURRENT (live-streamed when available)
+                  edge has gone non-positive — they're no longer +EV so showing
+                  them is noise. The runner's slip-stream auto-skips the active
+                  one within ~1s of edge < 0; the table filter mirrors that
+                  decision for sibling rows in the queue. */}
               <table className="w-full text-xs">
                 <tbody>
-                  {[...cb].sort((a, b) => {
-                    const aEdge = livePrices[`${a.event_id}:${a.market}:${a.outcome}`]?.edge ?? a.edge_pct
-                    const bEdge = livePrices[`${b.event_id}:${b.market}:${b.outcome}`]?.edge ?? b.edge_pct
-                    return bEdge - aEdge
-                  }).map(b => {
+                  {[...cb]
+                    .filter(b => {
+                      const liveEdge = livePrices[`${b.event_id}:${b.market}:${b.outcome}`]?.edge
+                      const currentEdge = liveEdge ?? b.edge_pct
+                      return currentEdge > 0
+                    })
+                    .sort((a, b) => {
+                      const aEdge = livePrices[`${a.event_id}:${a.market}:${a.outcome}`]?.edge ?? a.edge_pct
+                      const bEdge = livePrices[`${b.event_id}:${b.market}:${b.outcome}`]?.edge ?? b.edge_pct
+                      return bEdge - aEdge
+                    }).map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
                     const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
                     const live = livePrices[liveKey]
@@ -1406,10 +1466,10 @@ export default function PlayPage() {
                         <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
                         <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
                         <td className={`px-2 py-1 text-right font-mono ${oddsChanged ? (live!.odds > b.odds ? 'text-green-400' : 'text-red-400') : 'text-zinc-200'}`}>
-                          {displayOdds.toFixed(2)}
-                          {oddsChanged && <span className="text-zinc-600 text-[9px] ml-0.5">({b.odds.toFixed(2)})</span>}
+                          {fmtOddsWithCents(displayOdds, b.tier === 'polymarket')}
+                          {oddsChanged && <span className="text-zinc-600 text-[9px] ml-0.5">({fmtOddsWithCents(b.odds, b.tier === 'polymarket')})</span>}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{b.fair_odds.toFixed(2)}</td>
+                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, b.tier === 'polymarket')}</td>
                         <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
                         </td>

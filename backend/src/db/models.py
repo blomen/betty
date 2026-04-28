@@ -280,6 +280,13 @@ class Bet(Base):
 
     # Bet confirmation
     confirmation_id = Column(String, nullable=True)  # Provider's bet reference
+    # provider_bet_id: the provider/coupon/order ID returned by the provider's
+    # placement response (Pinnacle betId, Kambi couponId, Polymarket clob order
+    # hash, etc.). Used by reconcile/sync_history for exact-ID settlement matching.
+    # Distinct from confirmation_id (legacy field, polymarket-specific event_slug).
+    # Without this column the BetCreate schema field would crash bet_repo.create
+    # with TypeError — schema accepts it, repo unpacks **kwargs into Bet().
+    provider_bet_id = Column(String, nullable=True, index=True)
     placement_status = Column(String, default="manual")  # Legacy — always "manual"
     actual_odds_at_placement = Column(Float, nullable=True)  # Odds user confirmed at placement
     placement_latency_ms = Column(Float, nullable=True)  # Legacy — no longer populated
@@ -2248,6 +2255,10 @@ def _run_pg_migrations(engine) -> None:
         # current code's INSERT/UPDATE doesn't error every cycle (was spamming
         # 'column "arb_opportunities_found" does not exist' on every extraction).
         ("extraction_features", "arb_opportunities_found", "INTEGER"),
+        # bets.provider_bet_id: BetCreate schema accepts this since the mirror
+        # workflow split (early 2026); the column was never added to Bet,
+        # silently crashing every /api/bets POST with TypeError. Adding now.
+        ("bets", "provider_bet_id", "VARCHAR"),
     ]
     with engine.begin() as conn:
         for table, col, col_type in additions:
@@ -2255,6 +2266,12 @@ def _run_pg_migrations(engine) -> None:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
             except Exception:
                 logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
+
+        # Index for provider_bet_id lookups during settlement reconciliation
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_bets_provider_bet_id ON bets(provider_bet_id)"))
+        except Exception:
+            logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
 
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(
