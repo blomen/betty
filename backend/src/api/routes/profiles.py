@@ -13,6 +13,7 @@ from ...bankroll import calculate_stake as calc_stake
 from ...bankroll.stake_calculator import dynamic_min_stake
 from ...db.models import Profile, ProfileProviderBalance, Provider
 from ...repositories import ProfileRepo
+from ...services.bonus_seed_service import seed_provider_bonuses
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
 
@@ -114,7 +115,7 @@ def get_active_profile(db: Session = Depends(get_db)):
 
 @router.post("")
 def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
-    """Create a new profile with fresh state (0 balance, no data copied)."""
+    """Create a new profile with fresh state (0 balance) + seeded bonus rows."""
     profile_repo = ProfileRepo(db)
     existing = db.query(Profile).filter(Profile.name == data.name).first()
     if existing:
@@ -133,6 +134,9 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         color=color,
     )
     db.add(profile)
+    db.commit()
+
+    seed_provider_bonuses(profile.id, db)
     db.commit()
 
     return {
@@ -231,6 +235,17 @@ def delete_profile(profile_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"success": True}
+
+
+@router.post("/{profile_id}/seed-bonuses")
+def seed_bonuses(profile_id: int, db: Session = Depends(get_db)):
+    """Idempotently seed ProfileProviderBonus rows from providers.yaml."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, f"Profile {profile_id} not found")
+    inserted = seed_provider_bonuses(profile_id, db)
+    db.commit()
+    return {"success": True, "profile_id": profile_id, "inserted": inserted}
 
 
 @router.post("/calculate/stake")

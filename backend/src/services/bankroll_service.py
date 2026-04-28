@@ -28,8 +28,16 @@ class BankrollService:
 
     def get_bankroll(self) -> dict:
         """Get provider balances and total bankroll for active profile."""
+        from ..api.routes.providers import load_provider_bonuses
+
         profile = self.profile_repo.get_active()
         providers = self.db.query(Provider).filter(Provider.is_enabled).all()
+
+        yaml_bonuses = load_provider_bonuses()
+        bonus_records = {
+            b.provider_id: b
+            for b in self.db.query(ProfileProviderBonus).filter(ProfileProviderBonus.profile_id == profile.id).all()
+        }
 
         provider_data = []
         total_sek = 0.0
@@ -38,6 +46,13 @@ class BankrollService:
             currency = get_provider_currency(p.id)
             rate = get_exchange_rate(p.id)
             total_sek += balance * rate
+
+            cfg = yaml_bonuses.get(p.id) or {}
+            amount = float(cfg.get("amount") or 0)
+            record = bonus_records.get(p.id)
+            is_available = record is not None and record.bonus_status == "available"
+            trigger_actionable = is_available and amount > 0 and balance < amount
+
             provider_data.append(
                 {
                     "id": p.id,
@@ -46,6 +61,8 @@ class BankrollService:
                     "currency": currency,
                     "exchange_rate_sek": rate,
                     "balance_sek": round(balance * rate, 2),
+                    "bonus_trigger_amount": amount if trigger_actionable else None,
+                    "bonus_currency": currency if trigger_actionable else None,
                 }
             )
 
