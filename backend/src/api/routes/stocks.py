@@ -12,8 +12,11 @@ endpoints here let the local frontend (and humans via curl) read them back.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -94,6 +97,15 @@ def runtime_status(request: Request):
 
     adapter = rt.adapter
     tracker = adapter.tracker
+    # The TV overlay shape needs entry/stop/tp on the chart's Y axis. The
+    # tracker carries entry_price + stop_price (sometimes 0.0 right after
+    # a fill before the GatewayUserAccount payload lands), but tp_price
+    # only lives on the adapter's `_pending_trade` dict. Expose all three
+    # with safe fallbacks so the userscript always has on-chart anchors.
+    pending = getattr(adapter, "_pending_trade", None) or {}
+    entry = tracker.entry_price or float(pending.get("entry_price") or 0.0) or float(pending.get("signal_price") or 0.0)
+    stop = tracker.stop_price or pending.get("stop_price")
+    tp = pending.get("tp_price")
     return {
         "running": True,
         "paused": paused,
@@ -104,8 +116,9 @@ def runtime_status(request: Request):
             "flat": tracker.is_flat,
             "side": tracker.side,
             "size": tracker.size,
-            "entry_price": tracker.entry_price,
-            "stop_price": tracker.stop_price,
+            "entry_price": entry,
+            "stop_price": float(stop) if stop is not None else 0.0,
+            "tp_price": float(tp) if tp is not None else None,
             "peak_R": tracker.peak_R,
             "locked_half_R": tracker.locked_half_R,
         },
@@ -116,6 +129,61 @@ def runtime_status(request: Request):
             "trailing_dd": tracker.trailing_dd,
         },
     }
+
+
+@router.get("/account")
+async def get_account(request: Request):
+    """Active TopstepX account + risk limits, scoped per prop firm.
+
+    Shape is intentionally an array of prop_firms each with an array of
+    accounts so adding a second prop firm or surfacing a second active
+    account is purely additive.
+    """
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    if rt is None:
+        return {"prop_firms": []}
+
+    client = rt.client
+    cfg = client._config
+
+    cache = getattr(request.app.state, "_account_cache", None)
+    try:
+        data = await client._post(
+            "/api/Account/search",
+            {"onlyActiveAccounts": True},
+        )
+        accounts = data.get("accounts", []) if isinstance(data, dict) else []
+    except Exception:
+        log.exception("TopstepX /Account/search failed")
+        if cache is not None:
+            return cache
+        return {"prop_firms": []}
+
+    active_id = client._account_id
+    out_accounts = []
+    for a in accounts:
+        is_active = a.get("id") == active_id
+        out_accounts.append(
+            {
+                "id": a.get("id"),
+                "name": a.get("name", ""),
+                "product": (a.get("name", "").split("-", 1)[0] or "").upper(),
+                "balance": a.get("balance"),
+                "can_trade": a.get("canTrade", False),
+                "simulated": a.get("simulated", False),
+                "active": is_active,
+                "limits": {
+                    "max_trailing_dd": cfg.max_trailing_dd,
+                    "max_daily_loss": cfg.max_daily_loss,
+                }
+                if is_active
+                else None,
+            }
+        )
+
+    payload = {"prop_firms": [{"id": "topstepx", "name": "TopstepX", "accounts": out_accounts}]}
+    request.app.state._account_cache = payload
+    return payload
 
 
 @router.post("/halt")
@@ -285,6 +353,7 @@ def list_broker_trades(
             "size": r.size,
             "entry_price": r.entry_price,
             "stop_price": r.stop_price,
+            "tp_price": r.tp_price,
             "exit_price": r.exit_price,
             "pnl_dollars": r.pnl_dollars,
             "pnl_r": r.pnl_r,
