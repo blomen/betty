@@ -794,22 +794,28 @@ class ExtractionPipeline:
             # Order sports by Pinnacle event count (most events first)
             # Browser providers that time out will at least have extracted high-value sports
             pin_event_counts = {}
-            try:
-                # Use a fresh session — per-tier pipelines have isolated sessions
-                # that may not see data committed by the sharp tier's session.
-                from sqlalchemy import func as sa_count
+            # Use a fresh session — per-tier pipelines have isolated sessions
+            # that may not see data committed by the sharp tier's session.
+            # JOIN+DISTINCT (instead of WHERE id IN (subquery)) lets the planner
+            # use idx_odds_provider_event_id; the IN-form was scanning odds and
+            # leaving sessions idle-in-transaction, exhausting the pool.
+            from sqlalchemy import distinct as sa_distinct
+            from sqlalchemy import func as sa_count
 
-                fresh_session = get_session()
+            fresh_session = get_session()
+            try:
                 rows = (
-                    fresh_session.query(Event.sport, sa_count.count(Event.id))
-                    .filter(Event.id.in_(fresh_session.query(Odds.event_id).filter(Odds.provider_id == "pinnacle")))
+                    fresh_session.query(Event.sport, sa_count.count(sa_distinct(Event.id)))
+                    .join(Odds, Odds.event_id == Event.id)
+                    .filter(Odds.provider_id == "pinnacle")
                     .group_by(Event.sport)
                     .all()
                 )
                 pin_event_counts = {sport: count for sport, count in rows}
-                fresh_session.close()
             except Exception:
-                pass
+                fresh_session.rollback()
+            finally:
+                fresh_session.close()
 
             if pin_event_counts:
                 kambi_sports = sorted(kambi_sports, key=lambda s: pin_event_counts.get(s, 0), reverse=True)
@@ -819,14 +825,26 @@ class ExtractionPipeline:
                     f"{', '.join(f'{s}({c})' for s, c in top3)}..."
                 )
 
-            # Build league lookup from Pinnacle events in DB for filtering soft books
-            # Works whether Pinnacle was extracted this run or a previous one
-            sharp_league_rows = (
-                self.session.query(Event.sport, Event.league)
-                .filter(Event.id.in_(self.session.query(Odds.event_id).filter(Odds.provider_id == "pinnacle")))
-                .distinct()
-                .all()
-            )
+            # Build league lookup from Pinnacle events in DB for filtering soft books.
+            # Works whether Pinnacle was extracted this run or a previous one.
+            # Uses a fresh session (closed in finally) — the previous version held
+            # self.session open during a slow IN-subquery and leaked idle-in-tx
+            # connections every extraction tier, eventually exhausting the pool
+            # and hanging /api/bets and /api/bankroll/stats.
+            league_session = get_session()
+            try:
+                sharp_league_rows = (
+                    league_session.query(Event.sport, Event.league)
+                    .join(Odds, Odds.event_id == Event.id)
+                    .filter(Odds.provider_id == "pinnacle")
+                    .distinct()
+                    .all()
+                )
+            except Exception:
+                league_session.rollback()
+                sharp_league_rows = []
+            finally:
+                league_session.close()
 
             self.sharp_leagues = {}
             for sport, league in sharp_league_rows:
