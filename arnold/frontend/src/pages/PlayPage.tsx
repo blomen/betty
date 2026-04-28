@@ -40,6 +40,21 @@ for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
 // Resolve a soft provider's cluster (fallback to pid for standalones).
 const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
 
+type ProviderBalanceInfo = {
+  balance: number
+  bonus_trigger?: number
+  bonus_currency?: string
+}
+type ProviderBalanceLike = number | ProviderBalanceInfo
+const getBalance = (b: ProviderBalanceLike | undefined): number =>
+  typeof b === 'number' ? b : (b?.balance ?? 0)
+const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; currency: string } | null => {
+  if (b == null || typeof b === 'number') return null
+  return b.bonus_trigger != null && b.bonus_trigger > 0
+    ? { amount: b.bonus_trigger, currency: b.bonus_currency ?? 'SEK' }
+    : null
+}
+
 interface BatchBet {
   rank: number
   tier: string
@@ -92,7 +107,7 @@ type ArbLeg = {
 export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
-  const [providerBalances, setProviderBalances] = useState<Record<string, number>>({})
+  const [providerBalances, setProviderBalances] = useState<Record<string, ProviderBalanceLike>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(24)
@@ -155,18 +170,32 @@ export default function PlayPage() {
     const selectedClusters = new Set(allPids.map(p => providerToCluster[p] || p))
     const allBets = bets.filter(b => selectedClusters.has(b.cluster || b.provider_id))
     setLoopRunning(true)
-    await api.startPlayLoop(allBets, providerBalances, allPids)
+    const numericBalances = Object.fromEntries(Object.entries(providerBalances).map(([k, v]) => [k, getBalance(v)]))
+    await api.startPlayLoop(allBets, numericBalances, allPids)
   }
 
   const load = useCallback(async () => {
     try {
-      const [result, pendingResult] = await Promise.all([
+      const [result, pendingResult, bankrollResult] = await Promise.all([
         api.getPlayBatch(),
         api.getPendingBets().catch(() => ({ providers: [] })),
+        api.getBankrollSummary().catch(() => ({ providers: [] })),
       ])
       setBatch(result.batch ?? [])
       setSummary(result.summary ?? null)
-      setProviderBalances(result.provider_balances ?? {})
+      // Build balance map: start from numeric batch balances then overlay bonus info from /api/bankroll
+      const balanceMap: Record<string, ProviderBalanceLike> = {}
+      for (const [pid, num] of Object.entries(result.provider_balances ?? {})) {
+        balanceMap[pid] = num as number
+      }
+      for (const p of bankrollResult.providers ?? []) {
+        balanceMap[p.id] = {
+          balance: p.balance_sek ?? p.balance ?? 0,
+          bonus_trigger: p.bonus_trigger_amount ?? undefined,
+          bonus_currency: p.bonus_currency ?? undefined,
+        }
+      }
+      setProviderBalances(balanceMap)
       setPlacedToday(result.placed_today ?? {})
       const grouped: Record<string, any[]> = {}
       for (const p of pendingResult.providers ?? [])
@@ -200,7 +229,7 @@ export default function PlayPage() {
     const reps: Array<{ cluster: string; rep: string }> = []
     const fundedAll: string[] = []
     for (const [cluster, members] of Object.entries(softByCluster)) {
-      const funded = members.filter(pid => (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK)
+      const funded = members.filter(pid => getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK)
       if (funded.length > 0) {
         reps.push({ cluster, rep: funded[0] })
         fundedAll.push(...funded)
@@ -711,7 +740,7 @@ export default function PlayPage() {
     for (const pid of Object.keys(providerBalances)) {
       if ((providerToCluster[pid] || pid) === clusterId) providers.add(pid)
     }
-    const totalBal = [...providers].reduce((s, p) => s + (providerBalances[p] ?? 0), 0)
+    const totalBal = [...providers].reduce((s, p) => s + getBalance(providerBalances[p]), 0)
     const ev = cb.reduce((s, b) => s + b.expected_profit, 0)
     const pending = [...providers].reduce((s, p) => s + (pendingByProvider[p]?.length ?? 0), 0)
     return { providers: [...providers], ev, totalBal, pending, betCount: cb.length }
@@ -927,7 +956,7 @@ export default function PlayPage() {
 
           // Funded check (used by both visibility filter and per-cluster render)
           const isFunded = (pid: string) =>
-            (providerBalances[pid] ?? 0) >= DRAIN_THRESHOLD_SEK ||
+            getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK ||
             (pendingByProvider[pid]?.length ?? 0) > 0
 
           // Visibility: cluster shows if any member is funded, OR if the cluster
@@ -1080,7 +1109,7 @@ export default function PlayPage() {
 
                         {/* One card per funded sibling — same opps, different balance/active context */}
                         {funded.map(pid => {
-                          const bal = providerBalances[pid] ?? 0
+                          const bal = getBalance(providerBalances[pid])
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
@@ -1287,8 +1316,8 @@ export default function PlayPage() {
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">{clusterId}</span>
                 {/* Skin tabs — sorted by balance desc */}
                 <div className="flex items-center gap-1">
-                  {stats.providers.sort((a, b) => (providerBalances[b] ?? 0) - (providerBalances[a] ?? 0)).map(pid => {
-                    const bal = providerBalances[pid] ?? 0
+                  {stats.providers.sort((a, b) => getBalance(providerBalances[b]) - getBalance(providerBalances[a])).map(pid => {
+                    const bal = getBalance(providerBalances[pid])
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
