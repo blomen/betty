@@ -352,13 +352,21 @@ class PolymarketRetriever(Retriever):
         """
         API_MAX_LIMIT = 500  # Polymarket API caps at 500 events per request
 
-        # Phase 1: Fetch all raw event data from Gamma API
+        # Phase 1: Fetch raw event data from Gamma API.
+        #
+        # Cap at MAX_PAGES (2026-04-28) — direct API probing showed each page
+        # is 14-31 MB at limit=500 with the catalog at 2500+ active events.
+        # Without the cap we paginate 5-10 times through proxy, hitting 28-min
+        # wallclock and triggering the watchdog. Events are ordered by
+        # startTime ascending; the first 2500 cover all near-term events
+        # (further pages = months-out futures with no arbs anyway).
+        MAX_PAGES = 5
         all_raw = []
         offset = 0
         page = 1
         page_limit = min(limit, API_MAX_LIMIT)
 
-        while True:
+        while page <= MAX_PAGES:
             params = {
                 "active": "true",
                 "closed": "false",
@@ -383,6 +391,11 @@ class PolymarketRetriever(Retriever):
 
             offset += page_limit
             page += 1
+        if page > MAX_PAGES:
+            logger.info(
+                f"[{self.provider_id}] Phase 1 hit pagination cap at {MAX_PAGES} pages "
+                f"({len(all_raw)} events) — later pages skipped"
+            )
 
         # Phase 1b: Catch-up — also fetch recently closed events (last 48h)
         # Prevents data loss when extraction gaps occur (e.g., scheduler downtime).
@@ -392,7 +405,9 @@ class PolymarketRetriever(Retriever):
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
         closed_offset = 0
         closed_count = 0
-        while True:
+        # Same MAX_PAGES cap as Phase 1 — closed-event response sizes are similar.
+        closed_page = 1
+        while closed_page <= MAX_PAGES:
             closed_params = {
                 "active": "true",
                 "closed": "true",
@@ -415,6 +430,7 @@ class PolymarketRetriever(Retriever):
             if len(closed_data) < page_limit:
                 break
             closed_offset += page_limit
+            closed_page += 1
         if closed_count:
             logger.info(f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events")
 

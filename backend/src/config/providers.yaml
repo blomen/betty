@@ -902,8 +902,14 @@ extraction_scheduling:
 
   polymarket:
     # Event matching only (not a sharp source). Doesn't need real-time refresh.
+    # Bumped 5 → 10 (2026-04-28): Polymarket's active catalog grew to 2500+
+    # events at ~15-30 MB/page; full pagination through proxy hits 10-28 min
+    # wallclock and overruns a 5-min cadence. Combined with MAX_PAGES=5 cap
+    # in polymarket.py, 10-min cadence gives clean room without re-queueing
+    # while a slow run is in flight. Polymarket isn't sharp — extra 5 min
+    # of staleness on event-matching is fine.
     providers: [polymarket]
-    interval_minutes: 5
+    interval_minutes: 10
     grouped: false
 
   kalshi:
