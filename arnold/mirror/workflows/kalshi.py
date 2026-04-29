@@ -217,17 +217,23 @@ class KalshiWorkflow(ProviderWorkflow):
 
     async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
         # No DOM interaction; stash the order params for place_bet().
+        bid = getattr(bet, "bet_id", None)
+        if bid is None:
+            bid = getattr(bet, "id", 0)
         self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(bet, "provider_event_id", None)
         if not self._pending_ticker:
-            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_ticker")
+            return PlacementResult(status="failed", bet_id=bid, reason="no_ticker")
         yes_price_dollars = self._infer_yes_price(bet)
         self._pending_yes_price_cents = max(1, min(99, int(round(yes_price_dollars * 100))))
-        self._pending_count = max(1, int(stake // max(yes_price_dollars, 0.01)))
+        # Round-nearest (not floor) so a $5 stake at 66¢ buys 8 contracts ($5.28),
+        # not 7 ($4.62). Floor systematically under-stakes.
+        self._pending_count = max(1, round(stake / max(yes_price_dollars, 0.01)))
+        actual_stake = round(self._pending_count * yes_price_dollars, 2)
         return PlacementResult(
             status="ready",
-            bet_id=getattr(bet, "id", 0),
+            bet_id=bid,
             actual_odds=round(1.0 / yes_price_dollars, 4),
-            actual_stake=round(self._pending_count * yes_price_dollars, 2),
+            actual_stake=actual_stake,
         )
 
     def _infer_yes_price(self, bet) -> float:

@@ -97,3 +97,44 @@ class TestCheckLivePrice:
         odds, edge = await workflow.check_live_price(page=None, bet=bet)
         assert odds is None
         assert edge is None
+
+
+class TestPrepBetslip:
+    @pytest.mark.asyncio
+    async def test_stake_round_nearest_not_truncate(self, workflow):
+        # $5 stake at yes_price=$0.66: floor → 7 ($4.62); round-nearest → 8 ($5.28).
+        bet = _make_bet(odds=round(1.0 / 0.66, 4))  # yes_price ≈ 0.66
+        result = await workflow.prep_betslip(page=None, bet=bet, stake=5.0)
+
+        assert result.status == "ready"
+        # 5 / 0.66 ≈ 7.576 → round → 8
+        assert workflow._pending_count == 8
+        # actual_stake reflects what will be charged: 8 * 0.66 = 5.28
+        assert result.actual_stake == pytest.approx(5.28, abs=0.01)
+        assert workflow._pending_yes_price_cents == 66
+
+    @pytest.mark.asyncio
+    async def test_stake_below_one_contract_floors_to_one(self, workflow):
+        # $0.30 at yes_price=$0.50 → 0.6 contracts → must clamp to 1
+        bet = _make_bet(odds=2.0)  # yes_price=0.5
+        result = await workflow.prep_betslip(page=None, bet=bet, stake=0.30)
+        assert workflow._pending_count == 1
+        assert result.actual_stake == pytest.approx(0.50, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_no_ticker_returns_failed(self, workflow):
+        bet = _make_bet(provider_market_ticker=None, provider_event_id=None)
+        result = await workflow.prep_betslip(page=None, bet=bet, stake=5.0)
+        assert result.status == "failed"
+        assert result.reason == "no_ticker"
+
+    @pytest.mark.asyncio
+    async def test_yes_price_clamped_1_to_99_cents(self, workflow):
+        # Implausibly low odds → yes_price > 1.0 should clamp to 99¢
+        bet = _make_bet(odds=1.001)  # yes_price ≈ 0.999
+        await workflow.prep_betslip(page=None, bet=bet, stake=5.0)
+        assert workflow._pending_yes_price_cents == 99
+        # Implausibly high odds → yes_price < 0.01 should clamp to 1¢
+        bet = _make_bet(odds=10000.0)  # yes_price ≈ 0.0001
+        await workflow.prep_betslip(page=None, bet=bet, stake=5.0)
+        assert workflow._pending_yes_price_cents == 1
