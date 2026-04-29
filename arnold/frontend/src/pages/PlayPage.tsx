@@ -311,12 +311,22 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            // Auto-activate once per page lifetime; use this effect's own `activated`
-            // set rather than activeProviders so we avoid React state-closure races.
-            if (!activated.has(pid) && (d.balance ?? 0) > 0) {
-              // Fetch fresh batch + balances and start the loop directly — bypasses
-              // startSkin which reads `bets` from a potentially stale render closure.
+            // Auto-activate when logged in + funded + has +EV bets AND the
+            // play loop is NOT currently running for this provider. Re-fires
+            // whenever the runner exits (queue drained, manual stop, etc.)
+            // so the loop is "always on" while the React UI is open. The
+            // server.py background task provides the same guarantee when the
+            // UI is closed — belt-and-suspenders.
+            if ((d.balance ?? 0) > 0) {
               try {
+                // Probe play status: skip if a runner is already active.
+                const psResp = await fetch('/mirror/play/status')
+                const ps = await psResp.json()
+                const runnerState = ps?.providers?.[pid]?.state
+                if (runnerState && runnerState !== 'idle' && runnerState !== 'none') {
+                  activated.add(pid)
+                  continue  // already running, nothing to do
+                }
                 const bResp = await fetch('/api/opportunities/play/batch', {
                   method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
                 })

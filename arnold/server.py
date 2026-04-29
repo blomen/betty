@@ -115,6 +115,8 @@ async def startup():
         _stocks_runtime = None
 
     broadcaster = OverlayBroadcaster(emit=overlay_broadcast)
+    # Stash on app.state so the overlay router can expose its snapshot.
+    app.state.overlay_broadcaster = broadcaster
     _overlay_task = asyncio.create_task(broadcaster.loop(), name="tv-overlay-broadcaster")
     logger.info("TV overlay broadcaster started")
 
@@ -123,30 +125,42 @@ async def startup():
     # Sportsbook flows continue to use the same mirror — they share tabs.
     asyncio.create_task(_auto_open_tradingview(), name="tv-mirror-autoopen")
 
+    # Server-side play-loop autostart: polls every 30s and kicks off the
+    # polymarket runner whenever it's not running AND polymarket is logged in
+    # AND there are +EV opportunities. This makes "always on" robust to React
+    # UI being closed, the runner exiting after queue drain, or anything else
+    # that would otherwise leave the loop idle.
+    asyncio.create_task(_auto_start_play_loop(), name="play-loop-autostart")
+
 
 async def _auto_open_tradingview() -> None:
-    """Wait briefly for the local server to settle, then start the mirror
-    and navigate it to the NQ chart.
+    """Ensure a TradingView NQ chart tab is open in the mirror. Idempotent:
+    if a TV tab already exists (from a previous launch's persistent profile
+    or from a prior auto-open), no new tab is created.
 
-    Uses print() with flush=True (not just logger) because arnold.bat shows
-    print output prominently in its cmd window, and uvicorn's `log_level=warning`
-    swallows logger.info messages — making auto-open silent if anything goes
-    wrong was exactly what made past failures hard to diagnose. Three retry
-    attempts with backoff to survive transient profile-lock / Chromium-startup
-    races. Failures are logged, never raised — sportsbook flows keep working
-    even if the mirror can't boot.
+    Print to stdout with flush=True so arnold.bat's cmd window surfaces
+    failures (uvicorn's log_level=warning swallows logger.info). Long
+    backoff schedule because Chrome profile-lock takes 30-60s to clear
+    when a previous arnold session crashed.
     """
     url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
-    delays = [3, 6, 12]  # seconds before each attempt
+    delays = [3, 6, 12, 30, 60]  # extended backoff
     for attempt, delay in enumerate(delays, 1):
         try:
             await asyncio.sleep(delay)
-            print(f"[tv-overlay] auto-open attempt {attempt}/{len(delays)}: starting mirror...", flush=True)
+            print(f"[tv-overlay] auto-open attempt {attempt}/{len(delays)}", flush=True)
             if not browser.running:
                 await browser.start()
                 print("[tv-overlay] mirror browser started", flush=True)
-            else:
-                print("[tv-overlay] mirror already running, reusing", flush=True)
+            # Idempotency check — reuse existing TV tab if any.
+            if browser.context:
+                for p in browser.context.pages:
+                    try:
+                        if "tradingview.com" in (p.url or ""):
+                            print(f"[tv-overlay] TV tab already open: {p.url}", flush=True)
+                            return
+                    except Exception:
+                        continue
             page = await browser.open_tab(url)
             print(f"[tv-overlay] opened TV tab: {page.url}", flush=True)
             return
@@ -158,9 +172,79 @@ async def _auto_open_tradingview() -> None:
             if attempt == len(delays):
                 logger.exception("Auto-open TradingView failed after %d attempts", len(delays))
                 print(
-                    "[tv-overlay] auto-open giving up. Click 'Open TV in mirror' in the SignalsPage to retry manually.",
+                    "[tv-overlay] auto-open giving up. POST /mirror/tv-open or click 'Open TV in mirror' to retry.",
                     flush=True,
                 )
+
+
+async def _auto_start_play_loop() -> None:
+    """Background task: ensures the polymarket play loop is always running
+    when polymarket is logged in and has +EV opportunities.
+
+    Polls every 30s. Kicks off the loop via the same /mirror/play/start API
+    the React UI uses, so the runner gets the latest batch + balance and
+    auto-restarts after queue drains, runner exits, or React UI is closed.
+
+    Idempotent: skips if play loop is already running for polymarket.
+    Survives transient errors (tunnel hiccups, batch fetch failures) and
+    retries on the next 30s tick.
+    """
+    import httpx
+
+    POLL_INTERVAL = 30.0
+    while True:
+        try:
+            await asyncio.sleep(POLL_INTERVAL)
+            if not browser.running or not browser.context:
+                continue
+            # Check polymarket login state via the existing internal cache.
+            poly_data = browser.provider_data.get("polymarket", {})
+            if not poly_data.get("logged_in"):
+                continue
+            balance = poly_data.get("balance") or 0.0
+            if balance <= 0:
+                continue
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Skip if a polymarket runner is already active. /play/status
+                # returns providers.polymarket.state == 'navigating'/'ready'/
+                # 'placing'/etc. when a runner is alive.
+                pstatus = await client.get("http://127.0.0.1:8000/mirror/play/status")
+                if pstatus.status_code == 200:
+                    pdata = pstatus.json()
+                    poly_runner = (pdata.get("providers") or {}).get("polymarket") or {}
+                    if poly_runner.get("state") and poly_runner.get("state") not in ("idle", "none", None):
+                        continue  # already running
+                # Fetch fresh batch (same path React uses).
+                bresp = await client.post(
+                    "http://127.0.0.1:8000/api/opportunities/play/batch",
+                    json={},
+                )
+                if bresp.status_code != 200:
+                    continue
+                bdata = bresp.json()
+                full_batch = bdata.get("batch") or []
+                poly_bets = [b for b in full_batch if b.get("provider_id") == "polymarket"]
+                if not poly_bets:
+                    continue
+                start_payload = {
+                    "provider_ids": ["polymarket"],
+                    "batch": poly_bets,
+                    "balances": {"polymarket": balance},
+                }
+                sresp = await client.post(
+                    "http://127.0.0.1:8000/mirror/play/start",
+                    json=start_payload,
+                )
+                if sresp.status_code == 200:
+                    print(
+                        f"[play-autostart] kicked off polymarket runner — "
+                        f"{len(poly_bets)} bets queued, balance ${balance:.2f}",
+                        flush=True,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("play-loop autostart tick raised — will retry")
 
 
 @app.on_event("shutdown")

@@ -112,7 +112,12 @@ class PlayLoop:
         # re-adds it, and the loop pops it AGAIN, causing the runner to drain
         # the entire queue down to its lowest-edge bet within minutes.
         self._recently_skipped: dict[tuple[str, str, str], float] = {}
-        self._recently_skipped_ttl_s: float = 300.0  # 5 min — long enough to break the cascade
+        # Short TTL — only used for USER-initiated skips. Auto-skips (dethrone,
+        # READY-timeout) don't mark, so the runner can immediately come back to
+        # the top edge if it's still top. 60s is enough that user skip ≈
+        # "show me other options for a minute" without locking out the actual
+        # top-edge bet for too long.
+        self._recently_skipped_ttl_s: float = 60.0
 
         # Per-cluster queues: cluster_name → list of bets
         self._cluster_queues: dict[str, list[dict]] = {}

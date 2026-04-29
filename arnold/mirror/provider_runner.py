@@ -62,12 +62,12 @@ DETHRONE_POLL_S = 3.0
 # Keeping the constant for back-compat / future tuning but set to 0 (off).
 EDGE_DRIFT_SKIP_PCT = 0.0
 
-# READY-state timeout: max seconds to sit at READY waiting for user to click
-# Buy on the provider's tab. After this, auto-skip and pop the next bet.
-# Long enough to let user evaluate and click without thrashing. The runner
-# will return to a previously-skipped bet on the next refresh cycle if it's
-# still top-edge. Set 0 to disable (wait forever, original behavior).
-READY_TIMEOUT_S = 120.0
+# READY-state timeout: DISABLED. The runner should sit on the top-edge bet
+# indefinitely until the user clicks Place/Skip OR a better bet appears in
+# the queue (dethrone). Auto-cycling causes the active bet to drift away
+# from the actual top-edge over time. Keeping the constant so it can be
+# re-enabled if needed; set 0 to disable.
+READY_TIMEOUT_S = 0.0
 
 
 class ProviderRunner:
@@ -699,10 +699,11 @@ class ProviderRunner:
                         },
                     )
                     self.stats["skipped"] += 1
-                    # Auto-skip path (dethrone / READY-timeout / edge<0). Mark
-                    # so refresh_batch doesn't immediately re-add the bet to
-                    # queue and trigger the same cascade again.
-                    self._mark_recently_skipped(bet)
+                    # Auto-skip path (dethrone / READY-timeout / edge<0).
+                    # Do NOT mark recently_skipped — auto-skipped bets must be
+                    # allowed back into the queue immediately so the runner
+                    # always tracks the top-edge bet. The peek_top exclude_key
+                    # already prevents the cascade-on-self-re-add bug.
 
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
@@ -712,11 +713,13 @@ class ProviderRunner:
                         logger.exception(f"[Runner:{pid}] Recording failed")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})
                         self.stats["skipped"] += 1
-                        self._mark_recently_skipped(bet)
+                        # Recording exception is transient — don't lock out.
                 elif self._skip_event.is_set() and _auto_skip_reason is None:
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "user_skip"})
                     self.stats["skipped"] += 1
-                    # User skip — mark so refresh doesn't re-queue the same bet.
+                    # User skip — explicit "I don't want this now" — keep the
+                    # short cooldown (60s, see play_loop._recently_skipped_ttl_s)
+                    # so the runner doesn't immediately re-suggest the same bet.
                     self._mark_recently_skipped(bet)
                 # else: auto-skipped by stream callback (already broadcast + counted)
 
