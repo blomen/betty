@@ -4580,3 +4580,149 @@ def simulate_phase2_gate(
     typer.echo(
         f"  Max equity DD (gated)      : {dd_g:+.1f} R  ({'BETTER' if dd_g > dd_b else 'WORSE'} by {dd_g - dd_b:+.1f} R)"
     )
+
+
+# ---------------------------------------------------------------------------
+# analyze-pivots — surface the dim values the model captured at major moves
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("analyze-pivots")
+def analyze_pivots(
+    hours: int = typer.Option(12, help="Lookback window in hours"),
+    min_range_pts: float = typer.Option(15.0, help="Minimum 15-min range (points) to qualify as a pivot"),
+    max_pivots: int = typer.Option(15, help="How many top pivots to analyze"),
+    bucket_minutes: int = typer.Option(15, help="Pivot detection bucket size"),
+) -> None:
+    """Detect the biggest price-reversal windows over the last N hours and
+    show what the model SAW at each pivot — orderflow, zone composition,
+    macro, conviction, and the actual trade outcome (if any).
+
+    Lets you cross-reference live chart pivots against the obs the model
+    captured, so we can recognize the same pattern next time.
+
+    Output per pivot:
+      - Time window + price range
+      - Each stock_signals row that fired in that window
+      - Decoded reasoning JSONB (factors, OF, zone, conviction)
+      - Linked broker_trade outcome (or "no trade" if gated out)
+    """
+    import base64
+    import json
+    import os
+    from datetime import timedelta
+
+    import numpy as np
+    from sqlalchemy import create_engine, text
+
+    pw = os.environ.get("DB_PASSWORD", "")
+    market_url = f"postgresql://arnold:{pw}@postgres:5432/market"
+    arnold_url = f"postgresql://arnold:{pw}@postgres:5432/arnold"
+
+    market_engine = create_engine(market_url)
+    arnold_engine = create_engine(arnold_url)
+
+    # 1. Find the biggest N pivot windows in market_trades.
+    pivot_sql = text(
+        f"""
+        SELECT
+          date_trunc('hour', ts) + (FLOOR(EXTRACT(MINUTE FROM ts)/{bucket_minutes})::int * INTERVAL '{bucket_minutes} minutes') AS bucket,
+          ROUND(MAX(price)::numeric, 2) AS hi,
+          ROUND(MIN(price)::numeric, 2) AS lo,
+          ROUND((MAX(price) - MIN(price))::numeric, 2) AS range_pt,
+          COUNT(*) AS ticks
+        FROM market_trades
+        WHERE ts > NOW() - INTERVAL ':hours hours'
+        GROUP BY 1
+        HAVING MAX(price) - MIN(price) > :min_range
+        ORDER BY range_pt DESC
+        LIMIT :limit
+        """.replace(":hours hours", f"{hours} hours")
+    )
+    with market_engine.connect() as conn:
+        pivots = conn.execute(pivot_sql, {"min_range": min_range_pts, "limit": max_pivots}).fetchall()
+
+    if not pivots:
+        typer.echo(f"No pivots found > {min_range_pts}pt range in last {hours}h.")
+        return
+
+    typer.echo(f"\n=== TOP {len(pivots)} PIVOTS (last {hours}h, min range {min_range_pts}pt) ===\n")
+
+    # 2. For each pivot, pull stock_signals + linked broker_trade
+    sig_sql = text(
+        """
+        SELECT s.id AS sid, s.ts, s.action, s.price, s.confidence, s.cont_p, s.rev_p,
+               s.observation_b64, s.observation_dim, s.zone_center, s.zone_members,
+               s.reasoning, s.trade_id,
+               t.id AS tid, t.entry_price, t.exit_price, t.was_stop, t.pnl_r, t.pnl_dollars,
+               t.signal_trigger
+        FROM stock_signals s
+        LEFT JOIN broker_trades t ON s.trade_id = t.id
+        WHERE s.ts BETWEEN :lo AND :hi
+          AND s.observation_b64 IS NOT NULL
+        ORDER BY s.ts
+        """
+    )
+
+    for p in pivots:
+        bucket: datetime = p.bucket
+        bucket_end = bucket + timedelta(minutes=bucket_minutes)
+        typer.echo(f"━━━ {bucket:%Y-%m-%d %H:%M} UTC: hi={p.hi} lo={p.lo} range={p.range_pt}pt ({p.ticks} ticks) ━━━")
+        with arnold_engine.connect() as conn:
+            sigs = conn.execute(sig_sql, {"lo": bucket, "hi": bucket_end}).fetchall()
+        if not sigs:
+            typer.echo("  (no stock_signals in this window)")
+            continue
+        for s in sigs:
+            r = s.reasoning or {}
+            if isinstance(r, str):
+                try:
+                    r = json.loads(r)
+                except Exception:
+                    r = {}
+            zone = r.get("zone", {}) if isinstance(r, dict) else {}
+            of = r.get("of", {}) if isinstance(r, dict) else {}
+            factors = r.get("primary_factors", []) if isinstance(r, dict) else []
+            macro = r.get("macro", {}) if isinstance(r, dict) else {}
+            tline = (
+                f"  {s.ts:%H:%M:%S} sid={s.sid} {s.action:<11} px={s.price:.2f}"
+                f"  cp={(s.cont_p or 0):.2f}/rp={(s.rev_p or 0):.2f}  conf={(s.confidence or 0):.3f}"
+                f"  OF={(of.get('score') or 0):.2f}  zone_str={(zone.get('strength') or 0):.2f}"
+                f"  fams={zone.get('families', [])}"
+            )
+            typer.echo(tline)
+            if factors:
+                typer.echo(f"     factors: {factors}")
+            if macro:
+                typer.echo(
+                    f"     macro: VIX={macro.get('vix')} regime={macro.get('regime')} score={macro.get('regime_score')}"
+                )
+            if s.tid is not None:
+                outcome = "WIN" if (s.pnl_r or 0) > 0 else "LOSS" if (s.pnl_r or 0) < 0 else "BE"
+                stop_kind = "STOPPED" if s.was_stop else "signal-exit"
+                typer.echo(
+                    f"     → traded id={s.tid} {outcome} pnl_r={(s.pnl_r or 0):+.2f}R ${(s.pnl_dollars or 0):+.0f} ({stop_kind})"
+                )
+            else:
+                typer.echo("     → not traded (gated/cooldown/in-position)")
+
+            # Decode key obs dims at this pivot moment
+            try:
+                obs = np.frombuffer(base64.b64decode(s.observation_b64), dtype=np.float32)
+                # Orderflow segment lives at obs[21:42] per features/orderflow_features.py:
+                #   [0] delta_pct, [1] delta_norm, [2] cvd, [3] cvd_trend,
+                #   [4] vol_ratio, [9] stacked_imb_count, [10] stacked_dir,
+                #   [13] vsa_absorption, [16] absorption_strength,
+                #   [18] volume_climax, [19] delta_divergence, [20] flow_shift
+                if obs.size >= 42:
+                    of_seg = obs[21:42]
+                    typer.echo(
+                        f"     obs[OF]: delta_pct={of_seg[0]:+.2f} cvd_trend={of_seg[3]:+.0f}"
+                        f" stacked={of_seg[9]:.2f}({of_seg[10]:+.0f})"
+                        f" abs_str={of_seg[16]:.2f} vol_climax={of_seg[18]:.2f}"
+                        f" delta_div={of_seg[19]:.0f} flow_shift={of_seg[20]:.0f}"
+                    )
+            except Exception:
+                pass
+        typer.echo("")
+    typer.echo("=== END ===")

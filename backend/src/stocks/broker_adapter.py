@@ -28,7 +28,11 @@ import os as _os
 _RECKLESS = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
 
 MIN_TRADE_INTERVAL_S = 10.0 if _RECKLESS else 30.0
-MIN_CONFIDENCE = 0.10 if _RECKLESS else 0.30  # reject signals below this confidence
+# In reckless paper-trading mode this MUST match level_monitor's broker
+# conf floor (0.05) — otherwise this filter silently rejects pivot
+# signals the upstream gate already approved. Today's 12:31 pivot
+# fired 4 signals with OF=0.40 but conf=0.078, all silently dropped.
+MIN_CONFIDENCE = 0.05 if _RECKLESS else 0.30
 ZONE_COOLDOWN_S = 30.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
 DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
 MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
