@@ -577,6 +577,7 @@ class TopstepXBrokerAdapter:
                 if self._pending_trade:
                     self._pending_trade["entry_price"] = price
                     self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
+                    self._set_pending_trade(self._pending_trade)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
 
                 # Adverse-slip kill switch: if the fill came in much worse
