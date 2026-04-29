@@ -62,6 +62,16 @@ def runtime_diagnostic(request: Request):
         diag["level_count"] = len(getattr(lm, "_levels", []))
         diag["zone_count"] = len(getattr(lm, "_zones", []))
         diag["signal_callback_count"] = len(getattr(lm, "_signal_callbacks", set()))
+        # Breakdown of raw_levels by `type` so the TV overlay debug can
+        # confirm TPO/swing/FVG/etc levels are actually being broadcast.
+        try:
+            from collections import Counter
+
+            raw = lm.get_raw_levels() if hasattr(lm, "get_raw_levels") else []
+            diag["raw_level_count"] = len(raw)
+            diag["raw_level_types"] = dict(Counter(lv.get("type") or "unknown" for lv in raw))
+        except Exception as exc:
+            diag["raw_level_types_error"] = str(exc)
     if tb is not None:
         try:
             diag["tick_buffer_size"] = len(tb.ticks)
