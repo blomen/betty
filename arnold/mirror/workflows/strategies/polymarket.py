@@ -570,16 +570,46 @@ _LOCATE_TARGET_JS = r"""(args) => {
     }
 
     // Step 2: pick the right button based on market + outcome + point.
+    // Team extraction: button text concatenates TEAM + (optional LINE) + CENTS¢
+    //   moneyline: "ktc50¢"        → team "ktc"
+    //   spread:    "ktc-1.525¢"    → team "ktc" (line "-1.5", cents "25")
+    //   spread:    "dnsc+1.576¢"   → team "dnsc" (line "+1.5", cents "76")
+    //   total:     "o 2.551¢"      → team "o"   (line "2.5", cents "51")
+    // Two-pass strip: first remove the trailing "<digits>¢..." (cents),
+    // then remove any remaining trailing line value "[+-]?<digits.digits>".
+    const extractTeam = (text) => {
+        let s = text.replace(/(\d+(?:\.\d+)?)¢.*$/i, '').trim();  // strip "25¢..."
+        s = s.replace(/[-+]?\d+(?:\.\d+)?\s*$/, '').trim();        // strip trailing "-1.5"
+        return s;
+    };
     const initials = targetName.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
     const teamMatch = (text) => {
-        const team = text.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
-        if (!team) return false;
+        const team = extractTeam(text);
+        // Single-character teams (e.g. "o" / "u" left over from O/U total
+        // buttons after stripping line+cents) are too noisy — they match
+        // any targetName via tn.includes("o"). Require ≥ 2 chars.
+        if (!team || team.length < 2) return false;
+        // Polymarket uses team abbreviations (KTC, DNSC, NYK, ATL) that don't
+        // map cleanly to full display names. Multiple match strategies:
+        //  - exact substring either way
+        //  - startsWith on either side
+        //  - all-letter-initials match (KRC for "KT Rolster Challengers" — rare)
+        //  - first-2-of-first-word match (KTC starts with KT, DN SOOPers starts with DN)
+        //  - any word in target starts with the team string
+        const t2 = team.slice(0, 2);
+        const t3 = team.slice(0, 3);
         return targetName.startsWith(team)
             || team.startsWith(targetName.slice(0, 3))
             || targetName.includes(team)
             || (team.length >= 2 && team === initials)
             || (team.length >= 2 && initials.startsWith(team))
-            || (team.length >= 3 && targetName.split(/\s+/).some(w => w.startsWith(team)));
+            || (team.length >= 3 && targetName.split(/\s+/).some(w => w.startsWith(team)))
+            // Lenient: button-team's first 2 chars appear as prefix of any
+            // word in targetName. Catches "ktc" → "kt" prefix of "kt rolster".
+            || (t2.length === 2 && targetName.split(/\s+/).some(w => w.startsWith(t2)))
+            || (t2.length === 2 && targetName.startsWith(t2))
+            // Or first 3 chars of button-team are inside any word.
+            || (t3.length === 3 && targetName.split(/\s+/).some(w => w.startsWith(t3)));
     };
 
     for (const b of centBtns) {
@@ -599,7 +629,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
                 const pStr = String(point);
                 if (!bt.includes(pStr)) continue;
             }
-            const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
+            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
             return {
                 full_text: b.textContent.trim(),
                 cents: m ? parseFloat(m[1]) : null,
@@ -620,7 +650,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
                 const absStr = absPoint % 1 === 0 ? String(absPoint) : absPoint.toString();
                 if (!bt.includes(absStr)) continue;
             }
-            const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
+            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
             return {
                 full_text: b.textContent.trim(),
                 cents: m ? parseFloat(m[1]) : null,
@@ -631,7 +661,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
 
         // moneyline / 1x2 / default — match team name only.
         if (!teamMatch(bt)) continue;
-        const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
+        const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
         return {
             full_text: b.textContent.trim(),
             cents: m ? parseFloat(m[1]) : null,
@@ -640,19 +670,59 @@ _LOCATE_TARGET_JS = r"""(args) => {
         };
     }
 
-    // Fallback: only return first cent button if market is moneyline-ish.
-    // For spread/total we'd rather fail than click the wrong outcome.
-    if (centBtns.length > 0 && (market === 'moneyline' || market === '1x2' || market === '')) {
-        const b = centBtns[0];
-        const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
-        return {
-            full_text: b.textContent.trim(),
-            cents: m ? parseFloat(m[1]) : null,
-            market_block: !!block,
-            market: market || 'moneyline',
-            fallback: true,
-        };
+    // Positional fallback for moneyline/1x2 — Polymarket lays out buttons in
+    // a consistent order: 2-way [home, away], 3-way [home, draw, away].
+    // Reliable when team-name matching fails on obscure abbreviations.
+    if (market === 'moneyline' || market === '1x2' || market === '') {
+        let idx = -1;
+        if (centBtns.length === 2) {
+            if (outcome === 'home' || outcome === '1') idx = 0;
+            else if (outcome === 'away' || outcome === '2') idx = 1;
+        } else if (centBtns.length === 3) {
+            // 3-way: home / draw / away in DOM order
+            if (outcome === 'home' || outcome === '1') idx = 0;
+            else if (outcome === 'draw' || outcome === 'x') idx = 1;
+            else if (outcome === 'away' || outcome === '2') idx = 2;
+        }
+        if (idx >= 0 && idx < centBtns.length) {
+            const b = centBtns[idx];
+            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
+            return {
+                full_text: b.textContent.trim(),
+                cents: m ? parseFloat(m[1]) : null,
+                market_block: !!block,
+                market: market || 'moneyline',
+                fallback: 'positional',
+            };
+        }
     }
+
+    // Sign-based fallback for spread — pick the button whose sign matches
+    // the bet's point. e.g. point=-1.5 → look for "-1.5" in button text.
+    // Works regardless of which team is home/away because the polymarket
+    // page renders both spread sides with explicit signs.
+    if (market === 'spread' && point != null) {
+        const sign = point < 0 ? '-' : '+';
+        const absStr = String(Math.abs(point));
+        const want = sign + absStr;
+        for (const b of centBtns) {
+            const bt = (b.textContent || '').trim();
+            if (bt.includes(want)) {
+                const m = bt.match(/(\d{1,3}(?:\.\d)?)¢/);
+                return {
+                    full_text: bt,
+                    cents: m ? parseFloat(m[1]) : null,
+                    market_block: !!block,
+                    market: market,
+                    fallback: 'sign',
+                };
+            }
+        }
+    }
+
+    // Total: outcome+point disambiguates uniquely; team-name irrelevant. If we
+    // got here it means the over/under check above didn't match — bail rather
+    // than guess.
     return null;
 }"""
 

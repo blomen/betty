@@ -411,6 +411,19 @@ class ProviderRunner:
                 bet_ns.stake = stake
                 prep_result = await workflow.prep_betslip(page, bet_ns, stake)
 
+                # Auto-skip if prep failed — without this the runner goes to
+                # READY with no/wrong outcome selected and the user clicks Buy
+                # on whatever's currently highlighted on the page (potentially
+                # a wrong-market bet).
+                if prep_result and prep_result.status == "failed":
+                    logger.warning(f"[Runner:{pid}] Prep failed: {prep_result.reason} — skipping bet")
+                    self._broadcaster.publish(
+                        "bet_skipped",
+                        {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
+                    )
+                    self.stats["skipped"] += 1
+                    continue
+
                 # Check live price
                 live_odds = prep_result.actual_odds
                 live_edge = bet.get("edge_pct")
