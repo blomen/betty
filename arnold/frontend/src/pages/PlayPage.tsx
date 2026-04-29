@@ -1348,6 +1348,60 @@ export default function PlayPage() {
             <span className="text-[10px] text-zinc-500 font-mono">{bets.length}</span>
           </div>
         )}
+        {/* Deposit recommendation — sums current Kelly stakes per unlimited provider.
+            Stakes ramp with bankroll (Kelly is bankroll-fraction), so this is the
+            "fund all NOW at current Kelly" number; depositing more lets stakes grow. */}
+        {bets.length > 0 && (() => {
+          const stakeByProvider: Record<string, number> = {}
+          let totalSek = 0
+          for (const b of bets) {
+            if (!b.stake || b.stake <= 0) continue
+            const stakeSek = b.tier === 'polymarket' ? b.stake * 10.5 : b.stake
+            stakeByProvider[b.provider_id] = (stakeByProvider[b.provider_id] || 0) + stakeSek
+            totalSek += stakeSek
+          }
+          const need: Record<string, number> = {}
+          let additionalTotal = 0
+          for (const [pid, stakeSek] of Object.entries(stakeByProvider)) {
+            const balRaw = providerBalances[pid]
+            const balSek = typeof balRaw === 'object' && balRaw?.balance != null
+              ? balRaw.balance * (pid === 'polymarket' ? 10.5 : 1)
+              : (typeof balRaw === 'number' ? balRaw * (pid === 'polymarket' ? 10.5 : 1) : 0)
+            const gap = Math.max(0, stakeSek - balSek)
+            if (gap > 0) need[pid] = gap
+            additionalTotal += gap
+          }
+          if (totalSek <= 0) return null
+          return (
+            <div className="px-3 py-2 bg-amber-950/25 border-b border-amber-800/30 text-[11px] flex items-center gap-3 flex-wrap">
+              <span className="text-amber-300 font-semibold uppercase tracking-wider">Deposit to play all</span>
+              <span className="text-amber-200 font-mono font-semibold">{Math.round(totalSek)} kr</span>
+              <span className="text-zinc-500">·</span>
+              {Object.entries(stakeByProvider).sort(([,a],[,b]) => b - a).map(([pid, stakeSek]) => {
+                const gap = need[pid] || 0
+                return (
+                  <span key={pid} className="flex items-center gap-1">
+                    <span className="text-zinc-400 uppercase">{pid}</span>
+                    <span className="text-amber-200/90 font-mono">{Math.round(stakeSek)} kr</span>
+                    {gap > 0 && (
+                      <span className="text-orange-400 font-mono" title="Additional deposit needed at this provider given current balance">
+                        (+{Math.round(gap)})
+                      </span>
+                    )}
+                  </span>
+                )
+              })}
+              {additionalTotal > 0 && (
+                <span className="ml-auto text-orange-300 font-mono">
+                  + {Math.round(additionalTotal)} kr to top up
+                </span>
+              )}
+              <span className="text-zinc-500 text-[10px]" title="Kelly stakes scale with total bankroll. Re-check this number after depositing.">
+                · ramps with bankroll
+              </span>
+            </div>
+          )
+        })()}
         {clusterIds.length === 0 && batch.length > 0 && (
           <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet).</div>
         )}
