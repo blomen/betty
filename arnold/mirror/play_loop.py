@@ -271,14 +271,22 @@ class PlayLoop:
     # ------------------------------------------------------------------
 
     async def _refresh_batch(self) -> None:
-        """Fetch fresh opportunities and merge new ones into cluster queues."""
+        """Fetch fresh opportunities and merge new ones into cluster queues.
+
+        Uses POST /api/opportunities/play/batch — same endpoint the React
+        frontend uses. Previous code called GET /api/play/batch which returns
+        404 (no such route), so refresh was silently failing for the entire
+        play session, leaving the queue draining permanently as bets got
+        popped without replenishment.
+        """
         try:
             import httpx
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{self._proxy_url}/api/play/batch",
-                    headers={_AUTH_HEADER: _AUTH_VALUE},
+                resp = await client.post(
+                    f"{self._proxy_url}/api/opportunities/play/batch",
+                    headers={_AUTH_HEADER: _AUTH_VALUE, "Content-Type": "application/json"},
+                    json={},
                 )
                 if resp.status_code != 200:
                     return

@@ -651,6 +651,21 @@ class LevelMonitor:
             "weekly_swing_low": RLLevelType.WEEKLY_SWING_LOW,
             "monthly_swing_high": RLLevelType.MONTHLY_SWING_HIGH,
             "monthly_swing_low": RLLevelType.MONTHLY_SWING_LOW,
+            # Source-data aliases — expanded_session["levels"] emits these
+            # short names; without aliases they fell through to the VWAP
+            # default and lost their swing identity in zone clustering.
+            "weekly_high": RLLevelType.WEEKLY_SWING_HIGH,
+            "weekly_low": RLLevelType.WEEKLY_SWING_LOW,
+            "monthly_high": RLLevelType.MONTHLY_SWING_HIGH,
+            "monthly_low": RLLevelType.MONTHLY_SWING_LOW,
+            "daily_high": RLLevelType.DAILY_SWING_HIGH,
+            "daily_low": RLLevelType.DAILY_SWING_LOW,
+            # Normalized VWAP SD names — `_rebuild_zones` strips spaces+
+            # signs from "VWAP +1SD" → "vwap_1sd"; map key was `vwap +1sd`
+            # so the lookup missed and SD bands collapsed onto VWAP.
+            "vwap_1sd": RLLevelType.VWAP_SD1,
+            "vwap_2sd": RLLevelType.VWAP_SD2,
+            "vwap_3sd": RLLevelType.VWAP_SD3,
             "fvg_bullish": RLLevelType.FVG_BULL,
             "fvg_bearish": RLLevelType.FVG_BEAR,
             "order_block_bullish": RLLevelType.ORDER_BLOCK_BULL,

@@ -351,42 +351,31 @@
   // grouping in TV's object tree; primitive determines render type
   // (horizontal_line for static price, horizontal_ray for ongoing
   // session-anchored levels, rectangle for FVG/OB ranges).
+  // Mapped against the ACTUAL `type` strings in expanded_session["levels"]
+  // (probed via /api/stocks/runtime-diagnostic raw_level_types). Server
+  // does NOT currently produce TPO (tpoc/tvah/tval/tibh/tibl), naked_poc,
+  // or daily_swing_* — those are missing upstream and need to be added in
+  // session expansion before they can render here.
   const _LEVEL_META = {
-    // Anchored VWAP family — already created by Anchored VWAP study, skip.
+    // Covered by Anchored VWAP study + 3 FRVPs — skip our redraw.
     vwap: { skip: true }, vwap_sd1: { skip: true }, vwap_sd2: { skip: true }, vwap_sd3: { skip: true },
-    // Daily/weekly/monthly POC/VAH/VAL — drawn by FRVP studies, skip.
-    daily_poc: { skip: true }, daily_vah: { skip: true }, daily_val: { skip: true },
-    weekly_poc: { skip: true }, weekly_vah: { skip: true }, weekly_val: { skip: true },
-    monthly_poc: { skip: true }, monthly_vah: { skip: true }, monthly_val: { skip: true },
-    // Prior session + sessions — already drawn by LuxAlgo / TV-native
-    // session indicators on the chart, so skip our own redraw.
-    pdh: { skip: true },
-    pdl: { skip: true },
-    tokyo_high: { skip: true },
-    tokyo_low: { skip: true },
-    nyib_high: { skip: true },
-    nyib_low: { skip: true },
-    // TPO profile — POC, value area H/L, initial balance H/L. Session-based
-    // analog of volume profile; distinct family so the user can hide it
-    // separately from the price-volume profiles. Color CYAN.
-    tpoc: { family: 'TPO', color: PALETTE[5], shape: 'horizontal_line' },
-    tvah: { family: 'TPO', color: PALETTE[5], shape: 'horizontal_line' },
-    tval: { family: 'TPO', color: PALETTE[5], shape: 'horizontal_line' },
-    tibh: { family: 'TPO', color: PALETTE[5], shape: 'horizontal_line' },
-    tibl: { family: 'TPO', color: PALETTE[5], shape: 'horizontal_line' },
-    // Swings — color graded by timeframe
-    daily_swing_high: { family: 'Swings', color: PALETTE[2], shape: 'horizontal_line' },
-    daily_swing_low: { family: 'Swings', color: PALETTE[2], shape: 'horizontal_line' },
-    weekly_swing_high: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
-    weekly_swing_low: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
-    monthly_swing_high: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
-    monthly_swing_low: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
-    // SMC ranges
+    poc: { skip: true }, vah: { skip: true }, val: { skip: true },
+    // Sessions covered by LuxAlgo Sessions study + TV native — skip.
+    pdh: { skip: true }, pdl: { skip: true },
+    tokyo_high: { skip: true }, tokyo_low: { skip: true },
+    london_high: { skip: true }, london_low: { skip: true },
+    ib_high: { skip: true }, ib_low: { skip: true },
+    // Swings (server emits as <tf>_high/low, NOT <tf>_swing_<dir>).
+    // monthly = RED (strongest), weekly = ORANGE.
+    monthly_high: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
+    monthly_low: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
+    weekly_high: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
+    weekly_low: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
+    // SMC ranges — drawn as distribution rectangles far right of price.
     fvg_bullish: { family: 'FVG', color: PALETTE[3], shape: 'rectangle' },
     fvg_bearish: { family: 'FVG', color: PALETTE[0], shape: 'rectangle' },
     order_block_bullish: { family: 'Order Blocks', color: PALETTE[3], shape: 'rectangle' },
     order_block_bearish: { family: 'Order Blocks', color: PALETTE[0], shape: 'rectangle' },
-    naked_poc: { family: 'Naked POC', color: PALETTE[8], shape: 'horizontal_line' },
   };
 
   async function applyLevel(p) {
@@ -522,17 +511,21 @@
     // avoids the visual flicker of TV recomputing from scratch.
     const winColor = ({ monthly: PALETTE[0], weekly: PALETTE[1], daily: PALETTE[2] })[win] || PALETTE[2];
     const overrides = {
+      // POC at full opacity (key reference line); VAH/VAL at 50%
+      // transparency (≈50% opacity, matching user request).
       'graphics.horizlines.pocLines.visible': true,
       'graphics.horizlines.pocLines.color': winColor,
+      'graphics.horizlines.pocLines.showPrice': false,
+      'graphics.horizlines.pocLines.transparency': 0,
       'graphics.horizlines.vahLines.visible': true,
       'graphics.horizlines.vahLines.color': winColor,
+      'graphics.horizlines.vahLines.showPrice': false,
+      'graphics.horizlines.vahLines.transparency': 50,
       'graphics.horizlines.valLines.visible': true,
       'graphics.horizlines.valLines.color': winColor,
-      // Histogram visible but compressed: percentWidth: 8 means each bar
-      // takes 8% of the VP's time range (vs default 30). For monthly that's
-      // ~2.4 days which is still wide; for daily ~1h. Combined with high
-      // transparencies, the histogram reads as a faint distribution next
-      // to price action without painting solid blocks across the chart.
+      'graphics.horizlines.valLines.showPrice': false,
+      'graphics.horizlines.valLines.transparency': 50,
+      // Histogram visible but compressed.
       'graphics.hhists.histBars2.visible': true,
       'graphics.hhists.histBars2.colors': [winColor, winColor],
       'graphics.hhists.histBars2.percentWidth': 8,
@@ -542,6 +535,10 @@
       'graphics.hhists.histBarsVA.percentWidth': 8,
       'graphics.hhists.histBarsVA.transparencies': [60, 60],
       'graphics.polygons.histBoxBg.transparency': 100,
+      // Hide the FRVP from the chart's status line / arguments header
+      // so the top strip stays clean.
+      showStudyArguments: false,
+      showStudyTitle: false,
     };
     const existingId = drawnStudies.get(studyName);
     if (existingId != null && typeof chart.getStudyById === 'function') {

@@ -108,29 +108,20 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
-      .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime());
+      .map(b => ({ bet: b, t: new Date(b.placed_at).getTime() }))
+      .filter(x => Number.isFinite(x.t))
+      .sort((a, b) => a.t - b.t);
     if (settled.length === 0) return [];
 
-    const startBankroll = netDeposited;
-
-    // Aggregate by day
-    const dailyProfit = new Map<string, { date: Date; profit: number }>();
-    for (const bet of settled) {
-      const d = new Date(bet.placed_at);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      const existing = dailyProfit.get(key);
-      if (existing) {
-        existing.profit += toSEK(bet.profit, bet.currency);
-      } else {
-        dailyProfit.set(key, { date: d, profit: toSEK(bet.profit, bet.currency) });
-      }
-    }
-
-    let cumulative = startBankroll;
-    const points = [{ date: new Date(settled[0].placed_at), value: startBankroll }];
-    for (const day of dailyProfit.values()) {
-      cumulative += day.profit;
-      points.push({ date: day.date, value: cumulative });
+    // One point per bet — no daily aggregation. Aggregating to daily buckets
+    // collapsed clusters of same-day bets into single steps, producing the
+    // flat-line-then-cliff shape. Per-bet points trace the actual equity walk.
+    let cumulative = netDeposited;
+    const firstDate = new Date(settled[0].t);
+    const points: { date: Date; value: number }[] = [{ date: firstDate, value: cumulative }];
+    for (const { bet, t } of settled) {
+      cumulative += toSEK(bet.profit, bet.currency);
+      points.push({ date: new Date(t), value: cumulative });
     }
     return points;
   }, [bets, netDeposited]);
@@ -146,14 +137,16 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
   const yMin = rawMin - pad;
   const yMax = rawMax + pad;
   const range = yMax - yMin;
-  const minDate = data[0].date.getTime();
-  const maxDate = data[data.length - 1].date.getTime();
-  const dateRange = maxDate - minDate || 1;
 
-  const xPos = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
+  // X-axis = bet sequence, not wall-clock time. With wall-clock x, settling
+  // bunched at the right edge whenever betting clustered (e.g. one bet in
+  // January, hundreds in April), producing a flat-line-then-cliff that hid
+  // the actual equity walk. Sequence-x gives every bet equal width and
+  // traces the real shape; date markers still appear on the axis for context.
+  const xPos = (i: number) => PL + (i / (data.length - 1 || 1)) * (W - PL - PR);
   const yPos = (v: number) => PT + (1 - (v - yMin) / range) * (H - PT - PB);
 
-  const pts = data.map(p => ({ x: xPos(p.date), y: yPos(p.value) }));
+  const pts = data.map((p, i) => ({ x: xPos(i), y: yPos(p.value) }));
   const { yLines, pathD } = polyChart(pts, {
     yMin, yMax,
     yFormat: v => `${(v / 1000).toFixed(1)}k`,
@@ -164,14 +157,17 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
   const isUp = lastVal >= firstVal;
   const lineColor = isUp ? '#3fb950' : '#f85149';
 
-  // X labels — months
+  // X labels — month at first occurrence in the sequence; sparse early
+  // periods and dense late periods both stay legible since each bet has
+  // equal width.
   const xLabels: { label: string; pos: number }[] = [];
   const seen = new Set<string>();
-  for (const p of data) {
-    const key = `${p.date.getFullYear()}-${p.date.getMonth()}`;
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i].date;
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
     if (!seen.has(key)) {
       seen.add(key);
-      xLabels.push({ label: p.date.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(p.date) });
+      xLabels.push({ label: d.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(i) });
     }
   }
 
@@ -207,6 +203,10 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
             </linearGradient>
           </defs>
           <path d={`${pathD} L${pts[pts.length - 1].x.toFixed(1)},${H - PB} L${pts[0].x.toFixed(1)},${H - PB} Z`} fill="url(#bankrollGrad)" />
+          {/* Net deposited baseline — shows at a glance whether we're above or below starting capital */}
+          {firstVal >= yMin && firstVal <= yMax && (
+            <line x1={PL} y1={yPos(firstVal)} x2={W - PR} y2={yPos(firstVal)} stroke="#484f58" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          )}
           {/* Main line */}
           <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
           {/* Endpoint dot */}
@@ -238,28 +238,25 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
 
   const { W, H, PL, PR, PT, PB } = CHART;
 
-  const minDate = data[0].date.getTime();
-  const maxDate = data[data.length - 1].date.getTime();
-  const dateRange = maxDate - minDate || 1;
-
-  const xPos = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
+  // X-axis = bet sequence (matches BankrollChart) so clustering doesn't
+  // squeeze the line to one edge of the chart.
+  const xPos = (i: number, n: number) => PL + (i / (n - 1 || 1)) * (W - PL - PR);
 
   // Cumulative average (running mean of ALL bets up to each point)
-  const cumAvgAll: { date: Date; avg: number }[] = [];
+  const cumAvgAll: { date: Date; avg: number; idx: number }[] = [];
   let cumSum = 0;
   for (let i = 0; i < data.length; i++) {
     cumSum += data[i].clv;
-    cumAvgAll.push({ date: data[i].date, avg: cumSum / (i + 1) });
+    cumAvgAll.push({ date: data[i].date, avg: cumSum / (i + 1), idx: i });
   }
 
   // Downsample to ~80 points for a smooth line
   const maxPts = 80;
   const step = Math.max(1, Math.floor(cumAvgAll.length / maxPts));
-  const avgPoints: { date: Date; avg: number }[] = [];
+  const avgPoints: { date: Date; avg: number; idx: number }[] = [];
   for (let i = 0; i < cumAvgAll.length; i += step) {
     avgPoints.push(cumAvgAll[i]);
   }
-  // Always include the last point
   if (avgPoints[avgPoints.length - 1] !== cumAvgAll[cumAvgAll.length - 1]) {
     avgPoints.push(cumAvgAll[cumAvgAll.length - 1]);
   }
@@ -276,7 +273,8 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const yPos = (v: number) => PT + (1 - (v - yMin) / range) * (H - PT - PB);
   const zeroY = yPos(0);
 
-  const clvPts = avgPoints.map(p => ({ x: xPos(p.date), y: yPos(p.avg) }));
+  const total = data.length;
+  const clvPts = avgPoints.map(p => ({ x: xPos(p.idx, total), y: yPos(p.avg) }));
   const { yLines, pathD: avgPathD } = polyChart(clvPts, {
     yMin, yMax,
     yFormat: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}%`,
@@ -287,14 +285,15 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const positiveCount = data.filter(d => d.clv >= 0).length;
   const beatPct = ((positiveCount / data.length) * 100).toFixed(0);
 
-  // X labels — months
+  // X labels — month at first occurrence in sequence
   const xLabels: { label: string; pos: number }[] = [];
   const seen = new Set<string>();
-  for (const d of data) {
-    const key = `${d.date.getFullYear()}-${d.date.getMonth()}`;
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i].date;
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
     if (!seen.has(key)) {
       seen.add(key);
-      xLabels.push({ label: d.date.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(d.date) });
+      xLabels.push({ label: d.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(i, total) });
     }
   }
 

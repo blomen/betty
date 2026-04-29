@@ -70,6 +70,10 @@ def runtime_diagnostic(request: Request):
             raw = lm.get_raw_levels() if hasattr(lm, "get_raw_levels") else []
             diag["raw_level_count"] = len(raw)
             diag["raw_level_types"] = dict(Counter(lv.get("type") or "unknown" for lv in raw))
+            # Also dump _levels names — these are the actual zone-clustering
+            # inputs (raw_levels + session-dict extracted: poc/tpo*/ib*/vwap*).
+            mlevels = getattr(lm, "_levels", []) or []
+            diag["_levels_names"] = dict(Counter(getattr(lv, "name", "?") for lv in mlevels))
         except Exception as exc:
             diag["raw_level_types_error"] = str(exc)
     if tb is not None:

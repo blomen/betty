@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from arnold.tv_overlay import status as overlay_status
@@ -45,6 +45,13 @@ def create_router() -> APIRouter:
     async def status_endpoint() -> dict:
         return overlay_status.get_status()
 
+    @router.get("/api/tv-overlay/debug")
+    async def debug_endpoint(request: Request) -> dict:
+        bc = getattr(request.app.state, "overlay_broadcaster", None)
+        if bc is None:
+            return {"error": "broadcaster not initialized"}
+        return {**overlay_status.get_status(), "broadcaster": bc.state_snapshot()}
+
     @router.get("/api/tv-overlay/userscript")
     async def serve_userscript() -> Response:
         if not _USERSCRIPT_PATH.exists():
@@ -79,6 +86,23 @@ def create_router() -> APIRouter:
         async with _clients_lock:
             clients.append(ws)
             overlay_status.client_attached()
+
+        # Replay current state to this client only — broadcaster's diff
+        # dedup means new clients otherwise see nothing until the next
+        # change (could be hours for stable zones).
+        bc = getattr(ws.app.state, "overlay_broadcaster", None)
+        if bc is not None:
+
+            async def _send_one(event: dict) -> None:
+                try:
+                    await ws.send_text(json.dumps(event, default=str))
+                except Exception:
+                    pass
+
+            try:
+                await bc.replay_to(_send_one)
+            except Exception:
+                log.exception("overlay replay failed")
         try:
             while True:
                 # Userscript may post ack / paint stats / errors.

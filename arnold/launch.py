@@ -208,13 +208,35 @@ def _start_mirror():
     Eagerly opens the 4 unlimited counter tabs (pinnacle, polymarket, cloudbet,
     kalshi) so the user can log in once and they stay available as arb counters
     + value-bet sources. Idempotent — safe even if mirror already running.
+
+    Retries until at least the 4 unlimited tabs are visible — covers a race
+    with the tv-overlay auto-open which calls browser.start() in parallel and
+    can momentarily lock out our concurrent /mirror/start call.
     """
-    try:
-        req = urllib.request.Request(f"{LOCAL_URL}/mirror/start", method="POST")
-        urllib.request.urlopen(req, timeout=120).read()
-        print("[arnold] Mirror started — unlimited tabs opening")
-    except Exception as e:
-        print(f"[arnold] Mirror start failed (will retry on first UI access): {e}")
+    deadline = time.time() + 60
+    last_err = ""
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(f"{LOCAL_URL}/mirror/start", method="POST")
+            urllib.request.urlopen(req, timeout=120).read()
+            # Verify the unlimited tabs actually opened
+            tabs_resp = urllib.request.urlopen(f"{LOCAL_URL}/mirror/browser/tabs", timeout=5).read()
+            import json as _json
+
+            tab_urls = [t.get("url", "") for t in _json.loads(tabs_resp).get("tabs", [])]
+            unlimited_open = sum(
+                1
+                for d in ("pinnacle.se", "polymarket.com", "cloudbet.com", "kalshi.com")
+                if any(d in u for u in tab_urls)
+            )
+            if unlimited_open >= 4:
+                print(f"[arnold] Mirror started — {unlimited_open}/4 unlimited tabs open")
+                return
+            last_err = f"only {unlimited_open}/4 unlimited tabs visible"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(5)
+    print(f"[arnold] Mirror start did not reach 4 unlimited tabs in 60s: {last_err}")
 
 
 def _open_browser_when_ready():

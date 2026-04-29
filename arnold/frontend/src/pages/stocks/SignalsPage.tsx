@@ -1,63 +1,37 @@
-import { useEffect, useState } from 'react'
-import { TVOverlayStatus } from '@/components/stocks/TVOverlayStatus'
-import { PositionCard } from '@/components/stocks/PositionCard'
+import { LivePositionPanel } from '@/components/stocks/LivePositionPanel'
 import { LifecycleHeader } from '@/components/stocks/LifecycleHeader'
-import { DecisionGatesCard } from '@/components/stocks/DecisionGatesCard'
+import { DecisionFlow } from '@/components/stocks/DecisionFlow'
+import { ContextStrip } from '@/components/stocks/ContextStrip'
 import { DimsBreakdownCard } from '@/components/stocks/DimsBreakdownCard'
-import { EventLog } from '@/components/stocks/EventLog'
-import { L2Ladder } from '@/components/stocks/L2Ladder'
-import { api } from '@/hooks/useStocksApi'
 import type { DashboardState } from '@/hooks/useDashboardWS'
-import type { ModelStatus } from '@/types/stocks'
 
 interface Props {
   ws: DashboardState
 }
 
 export default function SignalsPage({ ws }: Props) {
-  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null)
-
-  useEffect(() => {
-    const poll = () => {
-      api.getModelStatus().then(setModelStatus).catch(() => {})
-    }
-    poll()
-    const iv = setInterval(poll, 5000)
-    return () => clearInterval(iv)
-  }, [])
-
-  // Prefer the latest zone_entry inference for the gates + dims view: those
-  // are the only events that carry a gate decision, so falling back to an
-  // earlier "approaching" event would render an empty gates panel.
+  // The trader's signal sheet only cares about the latest zone_entry —
+  // approaching/touched events run inference but don't carry a gate decision.
   const zoneEntry = ws.dqnByTrigger.zone_entry
-  const decisionInference = zoneEntry?.event ?? ws.dqnInference
+  const inference = zoneEntry?.event ?? ws.dqnInference
+  const inferenceAt = zoneEntry?.at ?? ws.dqnInferenceAt
 
   return (
     <div className="flex flex-col flex-1 min-h-0 p-3 gap-3 overflow-y-auto bg-zinc-950">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <TVOverlayStatus />
-        <PositionCard
-          positions={ws.positions}
-          modelStatus={modelStatus}
-          lastPrice={ws.lastPrice}
-        />
-        <LifecycleHeader
-          inference={ws.dqnInference}
-          inferenceAt={ws.dqnInferenceAt}
-          zones={ws.zones}
-          lastPrice={ws.lastPrice}
-        />
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="lg:col-span-1">
-          <DecisionGatesCard inference={decisionInference} />
-        </div>
-        <div className="lg:col-span-2">
-          <DimsBreakdownCard inference={decisionInference} schema={ws.observationSchema} />
-        </div>
-      </div>
-      <L2Ladder depth={ws.depth} lastPrice={ws.lastPrice} />
-      <EventLog signals={ws.signals} fills={ws.fills} exits={ws.exits} />
+      <LivePositionPanel
+        positions={ws.positions}
+        lastPrice={ws.lastPrice}
+        fills={ws.fills}
+        exits={ws.exits}
+      />
+      <LifecycleHeader
+        inference={inference}
+        inferenceAt={inferenceAt}
+        lastPrice={ws.lastPrice}
+      />
+      <DecisionFlow inference={inference} schema={ws.observationSchema} />
+      <ContextStrip inference={inference} schema={ws.observationSchema} />
+      <DimsBreakdownCard inference={inference} schema={ws.observationSchema} />
     </div>
   )
 }

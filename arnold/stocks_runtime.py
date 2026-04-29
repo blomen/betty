@@ -112,6 +112,152 @@ class StocksRuntime:
         log.info("Stocks runtime stopped")
 
 
+class _TrackerShim:
+    """Quacks like the broker_adapter.tracker the broadcaster reads. Holds
+    just enough fields for `reconcile_position` to compute entry/stop/tp."""
+
+    __slots__ = ("entry_price", "stop_price")
+
+    def __init__(self, entry_price: float | None, stop_price: float | None) -> None:
+        self.entry_price = entry_price
+        self.stop_price = stop_price
+
+
+class _AdapterShim:
+    __slots__ = ("tracker",)
+
+    def __init__(self, tracker: _TrackerShim) -> None:
+        self.tracker = tracker
+
+
+async def _passive_position_poller() -> None:
+    """Mirror server-side position state into local `dash_state` so the TV
+    overlay broadcaster emits `position_upsert`/`position_remove`.
+
+    Polls /api/stocks/runtime-status via the local /api proxy every 2s.
+    Cheap — static-route handler returns a small JSON dict.
+    """
+    import json
+
+    import httpx
+
+    from src.stocks.dashboard import _state as dash_state
+    from src.stocks.dashboard import update_positions
+
+    # Self-call through the local /api proxy — it injects the upstream API
+    # key for us, so the poller doesn't need its own credentials. One extra
+    # in-process hop is negligible at 0.5 Hz.
+    url = "http://127.0.0.1:8000/api/stocks/runtime-status"
+
+    # Track flat ↔ open transitions so we can stamp entry_time when the
+    # position first opens. Server-side tracker doesn't expose this — the
+    # closest fill timestamp lives only in broker_trades after close.
+    # Also capture a fallback entry price from the last tick: server-side
+    # tracker.entry_price is buggy and stays at 0.0 even when a position is
+    # open, which would draw the long/short shape at price 0 (off-chart).
+    last_was_flat = True
+    entry_time: float | None = None
+    fallback_entry: float | None = None
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while True:
+            try:
+                r = await client.get(url)
+                data = r.json() if r.status_code == 200 else {}
+                pos = (data or {}).get("position") or {}
+                if pos and not pos.get("flat"):
+                    side_raw = pos.get("side", "long")
+                    side = "long" if str(side_raw).lower() == "long" else "short"
+                    size = int(pos.get("size", 0))
+                    entry = float(pos.get("entry_price") or 0.0)
+                    stop = pos.get("stop_price")
+                    tp = pos.get("tp_price")
+                    if size > 0:
+                        if last_was_flat:
+                            entry_time = time.time()
+                            fallback_entry = None
+                        last_was_flat = False
+                        # Keep refreshing fallback from the latest tick while
+                        # tracker.entry_price stays 0 — server tracker often
+                        # never populates entry_price at all in autonomous
+                        # mode. Once we have a real entry from the tracker,
+                        # we lock it; otherwise we follow the live price so
+                        # the shape at least appears at a sensible spot.
+                        if entry <= 0:
+                            ticks = dash_state.get("ticks") or []
+                            if ticks:
+                                try:
+                                    last = list(ticks)[-1]
+                                    px = float(last.get("p") or 0.0)
+                                    if px > 0:
+                                        fallback_entry = px
+                                except Exception:
+                                    pass
+                        effective_entry = entry if entry > 0 else (fallback_entry or 0.0)
+                        update_positions(
+                            [
+                                {
+                                    "price": effective_entry,
+                                    "size": size,
+                                    "side": side,
+                                    "entry_time": entry_time,
+                                    "tp_price": float(tp) if tp else None,
+                                }
+                            ]
+                        )
+                        dash_state["adapter"] = _AdapterShim(
+                            _TrackerShim(effective_entry, float(stop) if stop else None)
+                        )
+                    else:
+                        last_was_flat = True
+                        entry_time = None
+                        fallback_entry = None
+                        update_positions([])
+                        dash_state.pop("adapter", None)
+                else:
+                    last_was_flat = True
+                    entry_time = None
+                    fallback_entry = None
+                    update_positions([])
+                    dash_state.pop("adapter", None)
+            except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+                log.debug("position poller: %s", exc)
+            except Exception:
+                log.exception("position poller iteration failed")
+            await asyncio.sleep(2.0)
+
+
+async def _passive_trades_poller() -> None:
+    """Fetch the last 7 days of broker_trades and stash them in
+    `dash_state["trades"]` so the TV overlay broadcaster can paint each
+    trade on the chart (closed AND open, with entry/exit/stop/tp/timestamps).
+
+    Polls every 30s — historical data is slow-changing; the active position
+    has its own faster poller for live updates.
+    """
+    import json
+
+    import httpx
+
+    from src.stocks.dashboard import _state as dash_state
+
+    url = "http://127.0.0.1:8000/api/stocks/broker-trades?days=7"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            try:
+                r = await client.get(url)
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    trades = data.get("trades") or []
+                    dash_state["trades"] = trades
+            except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+                log.debug("trades poller: %s", exc)
+            except Exception:
+                log.exception("trades poller iteration failed")
+            await asyncio.sleep(30.0)
+
+
 async def _passive_dashboard_listener() -> None:
     """Mirror server-side dashboard events into the local dashboard state.
 
@@ -175,6 +321,54 @@ async def _passive_dashboard_listener() -> None:
                             float(msg.get("ts", 0)),
                             msg.get("side", "B"),
                         )
+                    elif t == "position_update":
+                        # Server pushes the live position snapshot whenever
+                        # tracker / pending-trade state changes. Mirror into
+                        # dash_state so the TV overlay broadcaster's next
+                        # tick sees fresh entry/stop/tp/entry_time without
+                        # an HTTP poll.
+                        from src.stocks.dashboard import _state as _ds
+                        from src.stocks.dashboard import update_positions as _upd
+
+                        if msg.get("flat"):
+                            _upd([])
+                            _ds.pop("adapter", None)
+                        else:
+                            _upd(
+                                [
+                                    {
+                                        "price": float(msg.get("entry_price") or 0.0),
+                                        "size": int(msg.get("size") or 0),
+                                        "side": msg.get("side"),
+                                        "entry_time": msg.get("entry_time"),
+                                        "tp_price": msg.get("tp_price"),
+                                    }
+                                ]
+                            )
+                            _ds["adapter"] = _AdapterShim(
+                                _TrackerShim(
+                                    float(msg.get("entry_price") or 0.0),
+                                    float(msg.get("stop_price")) if msg.get("stop_price") else None,
+                                )
+                            )
+                    elif t == "level_update":
+                        # Server pushes the full individual-level list.
+                        # Stored separately from zones so the TV overlay
+                        # broadcaster can emit per-dim shapes.
+                        from src.stocks.dashboard import _state as _ds
+
+                        _ds["levels"] = list(msg.get("levels") or [])
+                    elif t == "trade_closed":
+                        # New broker_trade row just landed server-side —
+                        # prepend to dash_state["trades"] so the TV overlay
+                        # paints the closed shape with no 30s poll lag.
+                        from src.stocks.dashboard import _state as _ds
+
+                        trade = msg.get("trade") or {}
+                        if trade:
+                            existing = list(_ds.get("trades") or [])
+                            existing.insert(0, trade)
+                            _ds["trades"] = existing[:2000]
                     elif t == "depth":
                         # Server pre-aggregates a top-20 snapshot. Mirror it
                         # directly into _state["depth"] (skip per-level
@@ -223,6 +417,13 @@ async def bootstrap_stocks() -> StocksRuntime | None:
         # Arnold app, so its _state needs to be populated even though all real
         # TopstepX work happens server-side.
         asyncio.create_task(_passive_dashboard_listener(), name="passive-dashboard")
+        # Server doesn't broadcast position state (update_positions is unused
+        # server-side as of 2026-04-27), so the local broadcaster has no
+        # position to draw on TV. Poll /api/stocks/runtime-status instead.
+        asyncio.create_task(_passive_position_poller(), name="passive-position-poller")
+        # All historical broker_trades (last 7 days) drawn on the chart:
+        # entry_time → close_time bounded shapes with stop/tp levels.
+        asyncio.create_task(_passive_trades_poller(), name="passive-trades-poller")
         return None
 
     from src.broker.flatten_scheduler import FlattenScheduler
