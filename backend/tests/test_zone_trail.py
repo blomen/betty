@@ -117,3 +117,14 @@ def test_zero_risk_unit_returns_none_safely():
     result = compute_zone_trail_target(tr, zone, all_zones=[zone], current_zone_R=0.0)
 
     assert result is None
+
+
+def test_pending_trade_initializes_current_zone_R():
+    """A fresh _pending_trade carries current_zone_R = 0.0."""
+    # This is a smoke test — full entry path is exercised by integration tests.
+    # Just verify the constant is present in the dict template.
+    import inspect
+
+    from src.stocks import broker_adapter
+    src = inspect.getsource(broker_adapter.TopstepXBrokerAdapter._execute_entry)
+    assert '"current_zone_R": 0.0' in src

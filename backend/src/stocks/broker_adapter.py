@@ -998,6 +998,7 @@ class TopstepXBrokerAdapter:
             "orderflow_score": float(signal.get("orderflow_score", 0) or 0),
             "reasoning": signal.get("reasoning") if isinstance(signal.get("reasoning"), dict) else None,
             "trail_count": 0,
+            "current_zone_R": 0.0,   # last zone advance level (in R units)
         }
         # Mirror to disk so a container restart between this point and the
         # close fill doesn't strip reasoning + signal context (orphan loss).
