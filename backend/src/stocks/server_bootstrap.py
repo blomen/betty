@@ -528,6 +528,21 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
 
     adapter = TopstepXBrokerAdapter(client, config)
 
+    from .tracker_reconciler import reconcile_tracker_from_broker
+
+    reconcile_result = await reconcile_tracker_from_broker(adapter, client, config.contract_id)
+    if reconcile_result.degraded and adapter._pending_trade:
+        # Layer 2 fallback: restore from disk snapshot if REST failed.
+        snap = adapter._pending_trade.get("tracker_snapshot")
+        if snap:
+            log.warning("reconcile: REST failed, falling back to disk snapshot")
+            adapter.tracker.restore_from_snapshot(snap)
+        else:
+            log.error(
+                "reconcile: REST failed AND no disk snapshot — broker_adapter is in unknown state; halting trading"
+            )
+            adapter._halt("reconcile_failed")
+
     # Wire the adapter to LevelMonitor — this replaces the /ws/signals →
     # local relay → adapter round trip with a direct in-process call.
     level_monitor.set_broker_adapter(adapter)
