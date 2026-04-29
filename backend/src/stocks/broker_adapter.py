@@ -839,24 +839,48 @@ class TopstepXBrokerAdapter:
         offset = stop_dist_ticks * 0.25
         stop_price = _round_tick(price - offset if is_long else price + offset)
 
-        # Risk-based sizing
+        # Risk-based sizing — base contracts derived from drawdown budget +
+        # stop distance, then scaled by the trained SizeModel multiplier from
+        # the signal (composite of DQN observation + narrative — tiers 0.0,
+        # 0.3, 0.6, 1.0, 1.5 per rl/agent/size_model.py:SIZE_TIERS). Without
+        # the multiplier, sizing was a binary 1.5%/2% confidence flip with
+        # the SizeModel output dropped on the floor.
         risk_pct = RISK_PCT_HIGH if confidence > 0.70 else RISK_PCT_BASE
         risk_dollars = self.config.max_trailing_dd * risk_pct
         risk_per_contract = stop_dist_ticks * _NQ_TICK_VALUE
-        size = max(
+        base_size = max(
             1,
             min(
                 int(risk_dollars / risk_per_contract),
                 self.config.max_position,
             ),
         )
+
+        # SizeModel multiplier — defaults to 1.0 if absent (legacy signal
+        # source) so existing callers behave identically. Tier 0 (0.0x) means
+        # the model voted skip; honor it by rejecting the entry.
+        size_mult = float(signal.get("size", 1.0) or 1.0)
+        scaled = base_size * size_mult
+        if size_mult <= 0.0:
+            log.info(
+                "SizeModel skip: base=%d × mult=%.2f → 0 contracts; rejecting entry",
+                base_size,
+                size_mult,
+            )
+            return {"rejected": True, "reason": "size_model_skip"}
+        # Round half-up so 0.3-0.49 rounds to 0 (then floors to 1), 0.5+ to 1,
+        # 1.5 with base=1 to 2. Clamp to [1, max_position].
+        size = max(1, min(int(scaled + 0.5), self.config.max_position))
+
         log.info(
-            "Sizing: risk=$%.0f (%.1f%% of $%.0f DD), stop=%d ticks ($%.0f/contract) → %d contracts",
+            "Sizing: risk=$%.0f (%.1f%% of $%.0f DD), stop=%d ticks ($%.0f/contract) → base=%d × size_mult=%.2f → %d contracts",
             risk_dollars,
             risk_pct * 100,
             self.config.max_trailing_dd,
             stop_dist_ticks,
             risk_per_contract,
+            base_size,
+            size_mult,
             size,
         )
 
@@ -1005,7 +1029,7 @@ class TopstepXBrokerAdapter:
             "orderflow_score": float(signal.get("orderflow_score", 0) or 0),
             "reasoning": signal.get("reasoning") if isinstance(signal.get("reasoning"), dict) else None,
             "trail_count": 0,
-            "current_zone_R": 0.0,   # last zone advance level (in R units)
+            "current_zone_R": 0.0,  # last zone advance level (in R units)
         }
         # Mirror to disk so a container restart between this point and the
         # close fill doesn't strip reasoning + signal context (orphan loss).
