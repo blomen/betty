@@ -45,8 +45,10 @@ JS_PARSE_GAME_CARDS = """() => {
     const events = [];
 
     for (const card of cards) {
-        // Skip live events: pre-match cards have UpcomingGameTime, live ones don't
-        const upcomingTime = card.querySelector('[class*="UpcomingGameTime"]');
+        // Skip live events: pre-match cards have UpcomingEventTime
+        // (renamed from UpcomingGameTime in comeon's 2026-04 build).
+        // The same <small> element holds the date/time text — used below for timeText.
+        const upcomingTime = card.querySelector('[class*="UpcomingEventTime"]');
         if (!upcomingTime) continue;
 
         const link = card.querySelector('a[data-at="link-to-event"]');
@@ -67,8 +69,9 @@ JS_PARSE_GAME_CARDS = """() => {
         }
         if (teams.length < 2) continue;
 
-        const timeEl = card.querySelector('[class*="game-card-time"]');
-        const timeText = timeEl ? timeEl.textContent.trim() : '';
+        // timeText now lives inside the same UpcomingEventTime element
+        // (was a separate game-card-time element pre-2026-04).
+        const timeText = upcomingTime.textContent.trim();
 
         const oddsBtns = card.querySelectorAll('button[data-at="sportsbook-selection-btn"]');
         const odds = [];
@@ -119,7 +122,7 @@ JS_GET_CARD_ODDS = """() => {
     const cards = document.querySelectorAll('[data-at="game-card"]');
     const result = {};
     for (const card of cards) {
-        if (!card.querySelector('[class*="UpcomingGameTime"]')) continue;
+        if (!card.querySelector('[class*="UpcomingEventTime"]')) continue;
         const link = card.querySelector('a[data-at="link-to-event"]');
         if (!link) continue;
         const href = link.getAttribute('href') || '';
@@ -149,7 +152,7 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
         const cards = document.querySelectorAll('[data-at="game-card"]');
         const result = {};
         for (const card of cards) {
-            if (!card.querySelector('[class*="UpcomingGameTime"]')) continue;
+            if (!card.querySelector('[class*="UpcomingEventTime"]')) continue;
             const link = card.querySelector('a[data-at="link-to-event"]');
             if (!link) continue;
             const href = link.getAttribute('href') || '';
@@ -183,7 +186,7 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
     const cards = document.querySelectorAll('[data-at="game-card"]');
     const events = [];
     for (const card of cards) {
-        const upcomingTime = card.querySelector('[class*="UpcomingGameTime"]');
+        const upcomingTime = card.querySelector('[class*="UpcomingEventTime"]');
         if (!upcomingTime) continue;
         const link = card.querySelector('a[data-at="link-to-event"]');
         if (!link) continue;
@@ -201,8 +204,9 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
             }
         }
         if (teams.length < 2) continue;
-        const timeEl = card.querySelector('[class*="game-card-time"]');
-        const timeText = timeEl ? timeEl.textContent.trim() : '';
+        // timeText now lives inside the same UpcomingEventTime element
+        // (was a separate game-card-time element pre-2026-04).
+        const timeText = upcomingTime.textContent.trim();
         const oddsBtns = card.querySelectorAll('button[data-at="sportsbook-selection-btn"]');
         const odds = [];
         for (const btn of oddsBtns) {

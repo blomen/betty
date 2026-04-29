@@ -1140,20 +1140,34 @@ class ExtractionPipeline:
                         if sport_errors:
                             status += f" ({len(sport_errors)} err)"
 
-                        # Flag silent failures: provider "succeeded" but returned 0 events
-                        # Skip when all sports errored (those are noisy failures, not silent)
-                        if ev == 0 and sports_ok > 0 and not sport_errors:
-                            logger.warning(
-                                f"[{provider_id}] DEGRADED: 0 events from "
-                                f"{sports_ok}/{sports_total} sports — possible silent failure"
-                            )
-                            # Directly update metrics to avoid duration corruption
-                            # from calling end_provider() a second time
-                            if self.metrics and hasattr(self.metrics, "_current_run"):
+                        # Mark zero-event runs as failed so /health/extraction and
+                        # the staleness watcher see them. Two flavours:
+                        #   - silent: sports reported success but produced 0 events
+                        #     (extractor parsed nothing — site DOM/API likely changed)
+                        #   - noisy: every sport raised an error (timeouts, navigation
+                        #     failures) — explicit failure but the run-level status was
+                        #     still "success" because no exception bubbled to orchestrator
+                        if ev == 0:
+                            if sports_ok > 0 and not sport_errors:
+                                err_msg = "Silent failure: 0 events extracted"
+                                logger.warning(
+                                    f"[{provider_id}] DEGRADED: 0 events from "
+                                    f"{sports_ok}/{sports_total} sports — possible silent failure"
+                                )
+                            elif sports_total > 0 and sports_ok == 0:
+                                err_msg = f"All sports errored: {len(sport_errors)}/{sports_total}, 0 events"
+                                logger.warning(
+                                    f"[{provider_id}] FAILED: 0 events, "
+                                    f"{len(sport_errors)}/{sports_total} sports errored"
+                                )
+                            else:
+                                err_msg = None
+
+                            if err_msg and self.metrics and hasattr(self.metrics, "_current_run"):
                                 pm = self.metrics._current_run.providers.get(provider_id)
                                 if pm:
                                     pm.success = False
-                                    pm.error = "Silent failure: 0 events extracted"
+                                    pm.error = err_msg
 
                         log_progress(f"[{provider_id}] {ev} ev, {odds} odds (r={ratio}), {status}{match_str}{mkt_str}")
 
