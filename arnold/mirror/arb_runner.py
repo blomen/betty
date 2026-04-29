@@ -89,6 +89,7 @@ class ArbRunner:
         is_blocked: Callable[[dict], bool],
         placed_today: dict[str, int],
         active_providers: list[str] | None = None,
+        stake_caps: dict[str, float] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -98,6 +99,7 @@ class ArbRunner:
         self._is_blocked = is_blocked
         self._placed_today = placed_today
         self._active_providers = list(active_providers or [])
+        self._stake_caps = stake_caps if stake_caps is not None else {}
 
         self.state: str = STATE_IDLE
         self.current_opp: dict | None = None
@@ -406,9 +408,13 @@ class ArbRunner:
         if not anchor_leg or not counter_legs:
             return False
 
-        # Anchor stake = full balance (capped at site max)
+        # Anchor stake = min(balance, learned site cap). _stake_caps is populated
+        # by ProviderRunner / placement responses; if the soft book has rejected
+        # us before with a maxStake hint, we honour it here so the next attempt
+        # sizes correctly instead of getting rejected again.
         balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
-        anchor_stake = round(balance, 2)  # site-max cap learned later from limit responses
+        cap = self._stake_caps.get(self.provider_id)
+        anchor_stake = round(min(balance, cap) if cap else balance, 2)
         if anchor_stake <= 0:
             return False
 

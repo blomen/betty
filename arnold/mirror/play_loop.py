@@ -415,6 +415,7 @@ class PlayLoop:
                     is_blocked=self._is_blocked,
                     placed_today=self._placed_today,
                     active_providers=active,
+                    stake_caps=self._stake_caps,
                 )
             self._runners[pid] = runner
             runner.start()
