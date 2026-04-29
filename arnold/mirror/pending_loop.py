@@ -241,6 +241,12 @@ class PendingLoop:
                 resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
                 resp.raise_for_status()
                 data = resp.json()
+        except (httpx.ReadTimeout, httpx.ReadError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+            # Tunnel/server transient — already logged elsewhere by the
+            # tunnel watchdog. Single-line at debug level instead of a
+            # multi-page traceback every cycle.
+            logger.debug(f"[PendingLoop] fetch failed (tunnel/server down): {e.__class__.__name__}")
+            return {}
         except Exception:
             logger.exception("[PendingLoop] failed to fetch pending bets")
             return {}
