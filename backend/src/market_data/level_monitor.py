@@ -697,12 +697,38 @@ class LevelMonitor:
         for every level inside the zone — gives the trader exact prices for
         stop placement (just beyond the outermost anchor) and entry sizing
         (visible confluence vs. filler bands).
+
+        Members are quantized to 0.25 (NQ tick) and deduped by (family, price)
+        so VWAP σ-band micro-drift doesn't churn the userscript's diff
+        detector and force needless redraws.
         """
         from src.rl.zone_builder import _LEVEL_FAMILY, _weight
 
         callbacks = getattr(self, "_signal_callbacks", set())
         if not callbacks or not self._zones:
             return
+
+        def _stable_members(zone) -> list[dict]:
+            seen: set[tuple[str, float]] = set()
+            out: list[dict] = []
+            for m in zone.members:
+                family = _LEVEL_FAMILY.get(m.level_type, m.level_type.value)
+                price = round(m.price / 0.25) * 0.25
+                if (family, price) in seen:
+                    continue
+                seen.add((family, price))
+                out.append(
+                    {
+                        "name": m.name,
+                        "type": m.level_type.value,
+                        "family": family,
+                        "price": price,
+                        "weight": round(_weight(m.level_type), 3),
+                    }
+                )
+            out.sort(key=lambda d: d["price"])
+            return out
+
         payload = {
             "type": "zone_update",
             "zones": [
@@ -712,16 +738,7 @@ class LevelMonitor:
                     "upper": round(z.upper_bound, 2),
                     "lower": round(z.lower_bound, 2),
                     "hierarchy": round(z.hierarchy_score, 3),
-                    "members_detail": [
-                        {
-                            "name": m.name,
-                            "type": m.level_type.value,
-                            "family": _LEVEL_FAMILY.get(m.level_type, m.level_type.value),
-                            "price": round(m.price, 2),
-                            "weight": round(_weight(m.level_type), 3),
-                        }
-                        for m in z.members
-                    ],
+                    "members_detail": _stable_members(z),
                 }
                 for z in self._zones
             ],
