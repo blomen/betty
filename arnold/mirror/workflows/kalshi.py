@@ -111,7 +111,7 @@ class KalshiWorkflow(ProviderWorkflow):
         self._pending_ticker: str | None = None
         self._pending_count: int = 0
         self._pending_yes_price_cents: int = 0
-        self._balance_cache: float | None = None  # last successful sync_balance value
+        self._balance_cache: float | None = None
         self._init_client()
 
     def _init_client(self) -> None:

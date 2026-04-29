@@ -152,7 +152,6 @@ class TestSyncBalance:
         workflow._portfolio.get_balance.return_value = SimpleNamespace(balance=12345)
         first = await workflow.sync_balance(page=None)
         assert first == pytest.approx(123.45)
-        # Subsequent failure should return the cached value, not 0.0.
         workflow._portfolio.get_balance.side_effect = RuntimeError("transient")
         second = await workflow.sync_balance(page=None)
         assert second == pytest.approx(123.45)
@@ -165,6 +164,6 @@ class TestSyncBalance:
 
     @pytest.mark.asyncio
     async def test_no_api_returns_zero(self, workflow):
-        workflow._portfolio = None  # simulate no-creds stub
+        workflow._portfolio = None
         bal = await workflow.sync_balance(page=None)
         assert bal == 0.0
