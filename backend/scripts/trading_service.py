@@ -75,7 +75,16 @@ async def run():
     )
 
     # Wire ticks → relay → server → signal → adapter → TopstepX
+    # Also tick the adapter's update_mark + BE-lock check so peak_R climbs
+    # and a +2R cross moves the stop to entry+small-profit. Without this,
+    # BE-lock never fires in the trading_service subprocess (its tracker
+    # is independent of the FastAPI process's). Trade orphans on chart
+    # showed +2R reaches with no stop-move — exactly this bug.
     def on_tick(price: float, size: int, ts: float, side: str = "B") -> None:
+        try:
+            adapter.update_mark_and_check_be_lock(price)
+        except Exception:
+            log.debug("BE-lock tick check failed", exc_info=True)
         asyncio.create_task(relay.forward_tick(price, size, ts, side))
 
     def on_fill(fill: dict) -> None:

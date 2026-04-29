@@ -926,43 +926,13 @@ class LevelMonitor:
 
     def _check_positions(self, price: float) -> None:
         """Check if any open position has reached a target level."""
-        # Tick-rate mark update so peak_R is accurate when a zone touch
-        # later consults it for the EarlyExit lock.
+        # Tick-rate mark update + BE-lock check via the adapter method so
+        # the same logic runs in both the FastAPI process and the
+        # trading_service subprocess (whichever process owns the live
+        # position will fire BE-lock when peak_R crosses 2.0).
         broker = getattr(self, "_broker_adapter", None)
         if broker is not None and not broker.tracker.is_flat:
-            broker.tracker.update_mark(price)
-
-            # +2R BE-lock with tiny profit buffer:
-            # When peak_R first crosses 2.0, move stop to entry ± 2 ticks
-            # (covers fees + spread + small profit). Once locked, the trade
-            # rides freely until a reverse signal / opposite-zone flip /
-            # reversal_signals.should_exit fires. modify_stop only-tightens,
-            # so this can never relax risk. Single-shot via locked_BE flag.
-            tr = broker.tracker
-            if not tr.locked_BE and tr.peak_R >= 2.0 and tr.entry_price > 0 and not tr.is_flat:
-                # 2 ticks (0.5pt = $10 on NQ) above entry for long, below for
-                # short. NQ round-trip fees ~$3, spread ~1 tick = $5, so $10
-                # leaves a couple bucks of guaranteed profit on the locked exit.
-                BE_BUFFER_TICKS = 2
-                buffer_pts = BE_BUFFER_TICKS * 0.25
-                if tr.side == "long":
-                    target_stop = tr.entry_price + buffer_pts
-                else:
-                    target_stop = tr.entry_price - buffer_pts
-                target_stop = round(target_stop * 4) / 4
-                tr.locked_BE = True
-                logger.info(
-                    "BE-lock at peak_R=%.2f: stop → %.2f (entry %s %d ticks, side=%s)",
-                    tr.peak_R,
-                    target_stop,
-                    "+" if tr.side == "long" else "-",
-                    BE_BUFFER_TICKS,
-                    tr.side,
-                )
-                try:
-                    asyncio.create_task(broker.modify_stop(target_stop))
-                except Exception:
-                    logger.warning("BE-lock modify_stop failed", exc_info=True)
+            broker.update_mark_and_check_be_lock(price)
 
         for pos in self._open_positions:
             for target in pos["targets"]:

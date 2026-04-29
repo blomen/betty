@@ -197,6 +197,52 @@ class TopstepXBrokerAdapter:
         self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
         self._trail_count = 0  # how many times we've trailed the stop
 
+    def update_mark_and_check_be_lock(self, price: float) -> None:
+        """Per-tick: update peak_R AND fire BE-lock at +2R if not yet locked.
+
+        Called from BOTH paths:
+          - FastAPI level_monitor._check_positions (autonomous broker tick)
+          - trading_service tick handler (subprocess broker tick)
+
+        Without this method living on the adapter, BE-lock only ran in the
+        FastAPI process — but trading_service's tracker is a different
+        instance, so its peak_R stayed at 0 and BE-lock never fired on the
+        actual production trades. This makes BE-lock work on whichever
+        process owns the live position.
+        """
+        if self.tracker.is_flat or self.tracker.entry_price <= 0:
+            return
+        self.tracker.update_mark(price)
+
+        # +2R BE-lock: lock a small profit (entry ± 2 ticks = $10) so the
+        # trade can never give back below break-even. Single-shot via
+        # locked_BE flag on the tracker.
+        if getattr(self.tracker, "locked_BE", False) or self.tracker.peak_R < 2.0 or self.tracker.entry_price <= 0:
+            return
+
+        BE_BUFFER_TICKS = 2
+        buffer_pts = BE_BUFFER_TICKS * 0.25
+        if self.tracker.side == "long":
+            target_stop = self.tracker.entry_price + buffer_pts
+        else:
+            target_stop = self.tracker.entry_price - buffer_pts
+        target_stop = _round_tick(target_stop)
+        self.tracker.locked_BE = True
+        log.info(
+            "BE-lock at peak_R=%.2f: stop → %.2f (entry %s %d ticks, side=%s)",
+            self.tracker.peak_R,
+            target_stop,
+            "+" if self.tracker.side == "long" else "-",
+            BE_BUFFER_TICKS,
+            self.tracker.side,
+        )
+        try:
+            import asyncio as _abe
+
+            _abe.create_task(self.modify_stop(target_stop))
+        except Exception:
+            log.warning("BE-lock modify_stop failed", exc_info=True)
+
     async def on_signal(self, signal: dict) -> dict | None:
         """Handle signal with dynamic position management.
 
