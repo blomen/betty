@@ -159,8 +159,22 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                             )
                         return
 
+                # Resolve owning profile by mapping the active TopstepX account
+                # back to whichever sports profile claimed it. Falls back to the
+                # currently-active sports profile so single-account setups work
+                # without explicit binding.
+                from ..db.models import Profile
+
+                tsx_account_id = p.get("topstepx_account_id")
+                profile_row = None
+                if tsx_account_id is not None:
+                    profile_row = db.query(Profile).filter(Profile.topstepx_account_id == tsx_account_id).first()
+                if profile_row is None:
+                    profile_row = db.query(Profile).filter(Profile.is_active).first()
+
                 row = BrokerTrade(
                     ts=ts_open,
+                    profile_id=profile_row.id if profile_row else None,
                     session_date=p.get("session_date") or ts_open.strftime("%Y-%m-%d"),
                     symbol=p.get("symbol", "NQ"),
                     side=p.get("side"),
@@ -194,6 +208,186 @@ def _persist_broker_trade_direct(payload: dict) -> None:
             log.warning("broker_trades direct persist failed", exc_info=True)
 
     threading.Thread(target=_worker, args=(payload,), daemon=True, name="broker-trade-persist").start()
+
+    # ALSO push the close to /ws/signals listeners so the local TV overlay
+    # appends the closed trade instantly (no 30s broker-trades poll lag).
+    try:
+        _broadcast_via_signal_callbacks({"type": "trade_closed", "trade": _trade_payload_to_dict(payload)})
+    except Exception:
+        log.warning("trade_closed broadcast failed", exc_info=True)
+
+
+def _trade_payload_to_dict(p: dict) -> dict:
+    """Match the shape of /api/stocks/broker-trades row dicts so the local
+    overlay's reconcile_trades treats this just like a polled trade row."""
+
+    def _iso(v):
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v.isoformat()
+        if isinstance(v, (int, float)):
+            return datetime.fromtimestamp(float(v), tz=timezone.utc).isoformat()
+        return str(v)
+
+    return {
+        "id": f"live:{int(datetime.now(tz=timezone.utc).timestamp() * 1000)}",  # synthetic — DB row may not exist yet
+        "ts": _iso(p.get("ts")),
+        "session_date": p.get("session_date"),
+        "symbol": p.get("symbol", "NQ"),
+        "side": p.get("side"),
+        "size": p.get("size"),
+        "entry_price": p.get("entry_price"),
+        "stop_price": p.get("stop_price"),
+        "tp_price": p.get("tp_price"),
+        "exit_price": p.get("exit_price"),
+        "pnl_dollars": p.get("pnl_dollars"),
+        "pnl_r": p.get("pnl_r"),
+        "closed_at": _iso(p.get("closed_at")),
+    }
+
+
+# Captured at bootstrap so threaded broker-trade persists + the position
+# watcher task can reach the live LevelMonitor's signal_callbacks set.
+_LIVE_LEVEL_MONITOR: Any = None
+
+
+async def _levels_watcher_loop(level_monitor: Any) -> None:
+    """Emit `level_update` over /ws/signals when individual dim levels
+    change. Each entry carries name (e.g. 'fvg_bullish'), price, and where
+    available top/bottom (price_high/price_low). The local TV overlay
+    draws each as a primitive matched to its family.
+
+    Polls every 5s; rebuild_zones runs on a 5-min cadence so changes are
+    rare. Diff via JSON-equality of the raw list.
+    """
+    last_emit: list | None = None
+    while True:
+        try:
+            raw = level_monitor.get_raw_levels() if hasattr(level_monitor, "get_raw_levels") else []
+            # Snapshot a stable subset of fields for diff + emission.
+            snap = [
+                {
+                    "name": str(lv.get("type") or lv.get("name") or "unknown"),
+                    "price": (
+                        float(lv.get("price"))
+                        if lv.get("price") is not None
+                        else (
+                            (float(lv["price_high"]) + float(lv["price_low"])) / 2.0
+                            if lv.get("price_high") is not None and lv.get("price_low") is not None
+                            else None
+                        )
+                    ),
+                    "top": float(lv["price_high"]) if lv.get("price_high") is not None else None,
+                    "bottom": float(lv["price_low"]) if lv.get("price_low") is not None else None,
+                }
+                for lv in raw
+                if lv
+            ]
+            snap = [s for s in snap if s["price"] is not None]
+            if snap != last_emit:
+                _broadcast_via_signal_callbacks({"type": "level_update", "levels": snap})
+                last_emit = snap
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("levels_watcher iteration failed")
+        await asyncio.sleep(5.0)
+
+
+async def _position_watcher_loop(adapter: Any) -> None:
+    """Emit `position_update` over /ws/signals whenever the tracker /
+    pending-trade state changes. Replaces the local arnold's HTTP polling
+    of /api/stocks/runtime-status — flat→open, stop trail, tp set, and
+    flat transitions all push live.
+
+    1Hz tick is plenty: stops typically trail in chunks of seconds, not
+    sub-second, and entry/tp move only at trade open/close.
+    """
+    import time as _time
+
+    last_payload: dict | None = None
+    while True:
+        try:
+            tracker = adapter.tracker
+            pending = getattr(adapter, "_pending_trade", None) or {}
+            if tracker.is_flat:
+                payload = {"type": "position_update", "flat": True}
+            else:
+                entry = (
+                    tracker.entry_price
+                    or float(pending.get("entry_price") or 0.0)
+                    or float(pending.get("signal_price") or 0.0)
+                )
+                stop = tracker.stop_price or pending.get("stop_price")
+                tp = pending.get("tp_price")
+                # entry_time: first tracker fill timestamp if available,
+                # otherwise pending-trade's submit ts.
+                entry_ts = pending.get("entry_fill_ts") or pending.get("entry_submit_ts") or pending.get("ts")
+                if isinstance(entry_ts, datetime):
+                    entry_time = entry_ts.timestamp()
+                elif isinstance(entry_ts, (int, float)):
+                    entry_time = float(entry_ts)
+                else:
+                    entry_time = _time.time()
+                payload = {
+                    "type": "position_update",
+                    "flat": False,
+                    "side": tracker.side,
+                    "size": int(tracker.size),
+                    "entry_price": float(entry) if entry else 0.0,
+                    "stop_price": float(stop) if stop else 0.0,
+                    "tp_price": float(tp) if tp else None,
+                    "entry_time": entry_time,
+                }
+            if payload != last_payload:
+                _broadcast_via_signal_callbacks(payload)
+                last_payload = payload
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("position_watcher iteration failed")
+        await asyncio.sleep(1.0)
+
+
+def _broadcast_via_signal_callbacks(msg: dict) -> None:
+    """Push a JSON-serializable dict to every /ws/signals client by
+    invoking the active LevelMonitor's _signal_callbacks (same channel as
+    zones / depth). Cross-thread safe via call_soon_threadsafe on the
+    dashboard's captured loop.
+    """
+    import asyncio as _asyncio
+
+    from . import dashboard as _dash
+
+    lm = _LIVE_LEVEL_MONITOR
+    if lm is None:
+        return
+    callbacks = getattr(lm, "_signal_callbacks", None) or set()
+    if not callbacks:
+        return
+
+    loop = getattr(_dash, "_dash_loop", None)
+    if loop is None or loop.is_closed():
+        # On-loop fallback (caller already on the event loop)
+        for cb in list(callbacks):
+            try:
+                _asyncio.create_task(cb(msg))
+            except Exception:
+                pass
+        return
+
+    def _on_loop():
+        for cb in list(callbacks):
+            try:
+                _asyncio.create_task(cb(msg))
+            except Exception:
+                pass
+
+    try:
+        loop.call_soon_threadsafe(_on_loop)
+    except Exception:
+        pass
 
 
 def _build_server_depth_handler(level_monitor):
@@ -398,8 +592,22 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
 
     _seed_task = asyncio.create_task(_seed_dashboard_zones_when_ready())
 
-    # Direct DB insert for closed trades (no HTTP needed — same process)
+    # Capture the active LevelMonitor so threaded broker-trade callbacks +
+    # the position watcher can reach _signal_callbacks (the /ws/signals
+    # broadcast channel). Done before any task that might emit.
+    global _LIVE_LEVEL_MONITOR
+    _LIVE_LEVEL_MONITOR = level_monitor
+
+    # Direct DB insert for closed trades (no HTTP needed — same process).
+    # Persist callback also broadcasts trade_closed via signal_callbacks.
     _broker_adapter_mod.set_persist_callback(_persist_broker_trade_direct)
+
+    # Position watcher — emits position_update on every tracker delta so
+    # the local TV overlay can drop its 2s polling. Reads tracker + the
+    # adapter's pending-trade dict (which carries tp_price + entry fallback)
+    # to assemble the full y-axis picture for the long/short shape.
+    _pos_task = asyncio.create_task(_position_watcher_loop(adapter), name="server-position-watcher")
+    _lvl_task = asyncio.create_task(_levels_watcher_loop(level_monitor), name="server-levels-watcher")
 
     # Tick stream — same tick-handler as the /ws/signals path so data flow
     # is identical whether ticks come from the local relay or here.

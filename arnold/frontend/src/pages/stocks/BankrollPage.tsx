@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '@/hooks/useStocksApi'
+import { useProfiles } from '@/hooks/useProfiles'
 import type { AccountResponse, PropFirm, PropFirmAccount } from '@/types/stocks'
 
 const PRODUCT_LABELS: Record<string, string> = {
@@ -14,16 +15,38 @@ function formatCurrency(value: number | null | undefined, opts?: { decimals?: nu
 }
 
 export function BankrollPage() {
+  const { activeProfile } = useProfiles()
   const [data, setData] = useState<AccountResponse | null>(null)
 
   useEffect(() => {
+    if (!activeProfile) {
+      setData(null)
+      return
+    }
     const poll = () => {
       api.getAccount().then(setData).catch(() => {})
     }
     poll()
     const iv = setInterval(poll, 10_000)
     return () => clearInterval(iv)
-  }, [])
+  }, [activeProfile?.id])
+
+  if (!activeProfile) {
+    return (
+      <div className="flex-1 min-h-0 space-y-4 overflow-y-auto">
+        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+          <span className="w-2 h-2 bg-tabTradingBankroll" />
+          Bankroll
+        </h2>
+        <div className="border border-zinc-800 bg-zinc-900 p-4 text-zinc-500 text-sm text-center">
+          Select a profile to view trading bankroll.
+          <div className="text-zinc-600 text-[11px] mt-1">
+            TopstepX accounts are bound per profile.
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const propFirms = data?.prop_firms ?? []
   const activeAccount: PropFirmAccount | null =

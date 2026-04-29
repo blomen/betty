@@ -474,6 +474,12 @@ class Profile(Base):
     is_active = Column(Boolean, default=False)  # Currently selected profile
     chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
+    # Forward-compat for multi-profile trading: each profile may own one
+    # TopstepX account. Trading stats / bankroll filter on this so two
+    # profiles can each have their own broker without leaking trades.
+    # NULL means "not bound to a TopstepX account" — typical for
+    # sports-only profiles.
+    topstepx_account_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -2259,6 +2265,10 @@ def _run_pg_migrations(engine) -> None:
         # workflow split (early 2026); the column was never added to Bet,
         # silently crashing every /api/bets POST with TypeError. Adding now.
         ("bets", "provider_bet_id", "VARCHAR"),
+        # 2026-04-29 — profile↔TopstepX account binding so trading stats and
+        # bankroll are scoped per-profile (forward-compat for multi-profile).
+        ("broker_trades", "profile_id", "INTEGER"),
+        ("profiles", "topstepx_account_id", "INTEGER"),
     ]
     with engine.begin() as conn:
         for table, col, col_type in additions:
@@ -2272,6 +2282,12 @@ def _run_pg_migrations(engine) -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_bets_provider_bet_id ON bets(provider_bet_id)"))
         except Exception:
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
+
+        # Index for per-profile broker-trades lookups (stats + bankroll filter)
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_broker_trades_profile ON broker_trades(profile_id)"))
+        except Exception:
+            logger.warning("pg migration: broker_trades.profile_id index failed", exc_info=True)
 
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(
@@ -2417,6 +2433,11 @@ class BrokerTrade(Base):
 
     id = Column(Integer, primary_key=True)
     ts = Column(DateTime, nullable=False, default=_utcnow)
+    # Owning sports-betting profile. Lets us scope trading stats / equity
+    # curve to the active profile so two profiles trading different
+    # TopstepX accounts don't see each other's trades. NULL only for
+    # legacy rows pre-migration (backfilled to the rasmus profile).
+    profile_id = Column(Integer, nullable=True, index=True)
     session_date = Column(String, nullable=False)
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)

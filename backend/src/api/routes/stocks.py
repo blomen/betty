@@ -133,11 +133,18 @@ def runtime_status(request: Request):
 
 @router.get("/account")
 async def get_account(request: Request):
-    """Active TopstepX account + risk limits, scoped per prop firm.
+    """Active TopstepX account + risk limits, scoped per prop firm and per
+    sports profile.
 
     Shape is intentionally an array of prop_firms each with an array of
     accounts so adding a second prop firm or surfacing a second active
     account is purely additive.
+
+    Per-profile filtering: if the active sports profile has a
+    `topstepx_account_id` set, only that account is returned (so two
+    profiles each running their own broker don't leak each other's
+    balances). When unset, returns every account from TopstepX so the
+    user can see what's there and bind one.
     """
     rt = getattr(request.app.state, "stocks_runtime", None)
     if rt is None:
@@ -159,9 +166,27 @@ async def get_account(request: Request):
             return cache
         return {"prop_firms": []}
 
+    # Resolve which TopstepX account the active sports profile owns. If
+    # bound, hide the others — keeps profile isolation intact.
+    from ...db.models import Profile, get_session
+
+    profile_account_id: int | None = None
+    active_profile_id: int | None = None
+    db = get_session()
+    try:
+        active_profile = db.query(Profile).filter(Profile.is_active).first()
+        if active_profile is not None:
+            active_profile_id = active_profile.id
+            profile_account_id = active_profile.topstepx_account_id
+    finally:
+        db.close()
+
     active_id = client._account_id
     out_accounts = []
     for a in accounts:
+        # Skip accounts not owned by the active profile, when bound.
+        if profile_account_id is not None and a.get("id") != profile_account_id:
+            continue
         is_active = a.get("id") == active_id
         out_accounts.append(
             {
@@ -181,9 +206,44 @@ async def get_account(request: Request):
             }
         )
 
-    payload = {"prop_firms": [{"id": "topstepx", "name": "TopstepX", "accounts": out_accounts}]}
+    payload = {
+        "prop_firms": [{"id": "topstepx", "name": "TopstepX", "accounts": out_accounts}],
+        "active_profile_id": active_profile_id,
+        "profile_bound_account_id": profile_account_id,
+    }
     request.app.state._account_cache = payload
     return payload
+
+
+@router.post("/account/bind")
+def bind_account_to_profile(payload: dict, db: Session = Depends(get_db)):
+    """Bind a TopstepX account_id to the active sports profile.
+
+    Future-compat for multi-profile trading: each profile may own one
+    TopstepX account. Pass {"account_id": <int|null>} — null clears the
+    binding. Caller must already have an active profile.
+    """
+    from ...db.models import Profile
+
+    account_id = payload.get("account_id")
+    if account_id is not None:
+        try:
+            account_id = int(account_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="account_id must be an integer or null") from None
+
+    active = db.query(Profile).filter(Profile.is_active).first()
+    if active is None:
+        raise HTTPException(status_code=409, detail="no active profile") from None
+
+    active.topstepx_account_id = account_id
+    db.commit()
+    db.refresh(active)
+    return {
+        "profile_id": active.id,
+        "profile_name": active.name,
+        "topstepx_account_id": active.topstepx_account_id,
+    }
 
 
 @router.post("/halt")
@@ -336,9 +396,32 @@ def list_broker_trades(
     symbol: str | None = None,
     db: Session = Depends(get_db),
 ):
-    """Return recent persisted trades — for the local dashboard's history view."""
+    """Return recent persisted trades scoped to the active profile.
+
+    Trading equity / R / win-rate must not bleed across profiles when one
+    user has multiple TopstepX accounts (e.g. eval + funded). Filters by
+    profile_id when an active profile exists; legacy NULL rows pre-binding
+    are returned only if no profile is active so we don't silently hide
+    historical trades during the migration window.
+    """
+    from ...db.models import Profile
+    from ..deps import get_db as _  # noqa: F401  (keeps imports local-scoped)
+
+    active = db.query(Profile).filter(Profile.is_active).first()
+
     cutoff = datetime.utcnow() - __import__("datetime").timedelta(days=days)
     q = db.query(BrokerTrade).filter(BrokerTrade.ts >= cutoff)
+    if active is not None:
+        # Show trades the active profile owns. Fall back to NULL rows only
+        # when this profile has no claimed TopstepX account — otherwise the
+        # active profile sees its scoped trades and unbound trades stay
+        # invisible until backfilled.
+        if active.topstepx_account_id is not None:
+            q = q.filter(BrokerTrade.profile_id == active.id)
+        else:
+            from sqlalchemy import or_
+
+            q = q.filter(or_(BrokerTrade.profile_id == active.id, BrokerTrade.profile_id.is_(None)))
     if symbol:
         q = q.filter(BrokerTrade.symbol == symbol)
     rows = q.order_by(BrokerTrade.ts.desc()).limit(2000).all()

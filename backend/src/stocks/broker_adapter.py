@@ -747,6 +747,11 @@ class TopstepXBrokerAdapter:
                     side,
                 )
 
+            # Carry the live TopstepX account id through to the persist layer
+            # so it can resolve the owning sports profile via
+            # profiles.topstepx_account_id (forward-compat for multi-profile).
+            tsx_account_id = getattr(self.client, "_account_id", None)
+
             _log_broker_trade(
                 session_pnl=round(self.tracker.session_pnl, 2),
                 ts=pt.get("ts") or now_utc,
@@ -774,6 +779,7 @@ class TopstepXBrokerAdapter:
                 orderflow_score=pt.get("orderflow_score"),
                 reasoning=pt.get("reasoning"),
                 closed_at=now_utc,
+                topstepx_account_id=tsx_account_id,
             )
             self._pending_trade = None
             _save_pending_trade_to_disk(None)
