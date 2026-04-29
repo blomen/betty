@@ -293,3 +293,19 @@ class TestPlaceBet:
         result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
         assert result.status == "failed"
         assert result.reason == "no_client"
+
+    @pytest.mark.asyncio
+    async def test_create_response_missing_order_id_trusts_create(self, workflow):
+        order_resp = MagicMock(spec=[])  # no order_id attribute
+        order_resp.to_dict = lambda: {}
+        workflow._portfolio.create_order.return_value = order_resp
+
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "placed"
+        assert result.reason == "no_order_id_trusting_create"
+        workflow._portfolio.get_order.assert_not_called()
+        workflow._portfolio.cancel_order.assert_not_called()
