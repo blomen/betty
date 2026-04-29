@@ -132,6 +132,13 @@ async def startup():
     # that would otherwise leave the loop idle.
     asyncio.create_task(_auto_start_play_loop(), name="play-loop-autostart")
 
+    # SSH tunnel watchdog: pings the tunnel every 30s. If it's unhealthy
+    # for 3 consecutive checks, force-respawn it. Without this the user
+    # sees "API 502" in the UI for minutes (or until manual launcher
+    # restart) when the underlying SSH connection drops or the server
+    # backend has a transient hiccup.
+    asyncio.create_task(_tunnel_watchdog(), name="tunnel-watchdog")
+
 
 async def _auto_open_tradingview() -> None:
     """Ensure a TradingView NQ chart tab is open in the mirror. Idempotent:
@@ -245,6 +252,137 @@ async def _auto_start_play_loop() -> None:
             raise
         except Exception:
             logger.exception("play-loop autostart tick raised — will retry")
+
+
+async def _tunnel_watchdog() -> None:
+    """Monitor the SSH tunnel; force-respawn after 3 consecutive failed
+    health checks. Surfaces the source of the user-facing "API 502" badge
+    and recovers from it without manual intervention.
+
+    Strategy:
+      - Ping http://127.0.0.1:18000/health (the tunnel-local port) every 30s.
+      - Track consecutive failures. After 3, kill the SSH process bound to
+        port 18000 and respawn via the same flow launch.py uses.
+      - Log every transition (healthy → degraded → respawned) so the user
+        can see in the launcher console what's happening.
+    """
+    import os
+    import signal
+    import socket
+    import subprocess
+
+    import httpx
+
+    TUNNEL_PORT = 18000
+    POLL_INTERVAL = 30.0
+    MAX_FAILURES = 3
+    SERVER = os.environ.get("ARNOLD_SERVER", "148.251.40.251")
+
+    consecutive_failures = 0
+
+    def _kill_tunnel() -> None:
+        # Find PID owning the tunnel port and kill it. We use psutil if
+        # available, fall back to system tools.
+        try:
+            import psutil
+
+            for conn in psutil.net_connections(kind="inet"):
+                if conn.laddr and conn.laddr.port == TUNNEL_PORT and conn.status == "LISTEN":
+                    if conn.pid:
+                        try:
+                            os.kill(conn.pid, signal.SIGTERM)
+                            print(f"[tunnel-watchdog] killed pid {conn.pid} on port {TUNNEL_PORT}", flush=True)
+                        except Exception:
+                            pass
+        except ImportError:
+            # Fallback: shell out to taskkill on Windows.
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        [
+                            "powershell",
+                            "-Command",
+                            f"Get-NetTCPConnection -LocalPort {TUNNEL_PORT} -State Listen "
+                            f"-ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}",
+                        ],
+                        timeout=10,
+                        capture_output=True,
+                    )
+                except Exception:
+                    pass
+
+    def _spawn_tunnel() -> None:
+        try:
+            subprocess.Popen(
+                [
+                    "ssh",
+                    "-N",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ServerAliveInterval=15",
+                    "-o",
+                    "ServerAliveCountMax=3",
+                    "-o",
+                    "ExitOnForwardFailure=yes",
+                    "-o",
+                    "TCPKeepAlive=yes",
+                    "-L",
+                    f"{TUNNEL_PORT}:localhost:8000",
+                    f"root@{SERVER}",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"[tunnel-watchdog] respawned SSH tunnel localhost:{TUNNEL_PORT} → {SERVER}:8000", flush=True)
+        except Exception:
+            logger.exception("tunnel-watchdog: spawn failed")
+
+    while True:
+        try:
+            await asyncio.sleep(POLL_INTERVAL)
+            # Quick TCP-level check first — is anyone listening?
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            tcp_ok = False
+            try:
+                sock.connect(("127.0.0.1", TUNNEL_PORT))
+                tcp_ok = True
+            except Exception:
+                pass
+            finally:
+                sock.close()
+            # HTTP-level check: actually fetches /health through the tunnel.
+            http_ok = False
+            if tcp_ok:
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.get(f"http://127.0.0.1:{TUNNEL_PORT}/health")
+                        http_ok = resp.status_code == 200
+                except Exception:
+                    pass
+
+            if http_ok:
+                if consecutive_failures > 0:
+                    print(f"[tunnel-watchdog] recovered after {consecutive_failures} failure(s)", flush=True)
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                print(
+                    f"[tunnel-watchdog] tunnel unhealthy (tcp={tcp_ok}, http={http_ok}) — "
+                    f"failure {consecutive_failures}/{MAX_FAILURES}",
+                    flush=True,
+                )
+                if consecutive_failures >= MAX_FAILURES:
+                    print(f"[tunnel-watchdog] respawning SSH tunnel after {MAX_FAILURES} failures", flush=True)
+                    _kill_tunnel()
+                    await asyncio.sleep(2.0)
+                    _spawn_tunnel()
+                    consecutive_failures = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("tunnel-watchdog tick raised — will retry")
 
 
 @app.on_event("shutdown")

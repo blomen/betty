@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
@@ -132,6 +132,11 @@ export default function PlayPage() {
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(24)
   const [error, setError] = useState<string | null>(null)
+  // Mirror error into a ref so the polling tick can read the latest value
+  // without re-creating the effect (avoids restarting the timer chain on
+  // every state flip).
+  const errorRef = useRef<string | null>(null)
+  useEffect(() => { errorRef.current = error }, [error])
   const mirror = useMirrorStream()
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
@@ -231,8 +236,25 @@ export default function PlayPage() {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 10_000)
-    return () => clearInterval(id)
+    // Adaptive polling: when load() succeeds, poll every 10s; when it fails
+    // (server 502/504, tunnel hiccup), poll every 3s so the UI auto-recovers
+    // as soon as the server comes back instead of waiting up to 10s. The
+    // banner stays visible for those few seconds, then clears automatically
+    // on the first successful tick.
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let cancelled = false
+    const tick = async () => {
+      await load()
+      if (cancelled) return
+      // If error is set, retry sooner; else normal cadence.
+      const interval = errorRef.current ? 3_000 : 10_000
+      timer = setTimeout(tick, interval)
+    }
+    timer = setTimeout(tick, 10_000)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [load])
 
   // Fetch top 10 arb opps per cluster of funded soft providers.
@@ -878,7 +900,12 @@ export default function PlayPage() {
           {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
           {loopStatus && <span className="text-amber-400">{loopStatus}</span>}
         </div>
-        {error && <span className="text-red-400">{error}</span>}
+        {error && (
+          <span className="text-red-400">
+            {error}
+            <span className="ml-2 text-amber-400 text-[10px] animate-pulse">● reconnecting…</span>
+          </span>
+        )}
         {!error && batch.length === 0 && <span className="text-zinc-500">Loading...</span>}
       </div>
 
