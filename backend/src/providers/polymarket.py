@@ -250,15 +250,21 @@ class PolymarketRetriever(Retriever):
         return vwap, total_depth_usd
 
     async def _fetch_clob_books(self, token_ids: list[str]):
-        """Fetch order book depth for each token and compute VWAP pricing.
+        """Fetch order book depth for all tokens and compute VWAP pricing.
 
-        Uses GET /book?token_id=XXX to get the full order book, then walks the
-        ask side to calculate the volume-weighted average price for fill_size_usd.
-        This replaces the old POST /prices approach that only returned top-of-book.
+        Uses POST /books with batches of token_ids — Polymarket's CLOB returns
+        all requested books in a single response. ~500 tokens per request,
+        ~7 round-trips for the full catalog (vs 5000+ individual GET /book
+        calls under the old design, which routinely throttled into 5-22 min
+        wallclock and produced empty extractions).
+
+        Each book item has shape:
+            {"asset_id": "<token_id>", "bids": [...], "asks": [...]}
 
         Stores results in:
         - self._clob_prices: token_id -> VWAP price (depth-adjusted)
-        - self._clob_depth: token_id -> total ask-side depth in USD
+        - self._clob_depth:  token_id -> total ask-side depth in USD
+        - self._clob_bids/_clob_asks: token_id -> best bid/ask
         """
         import asyncio
 
@@ -267,68 +273,89 @@ class PolymarketRetriever(Retriever):
         if not token_ids or not self.use_clob_prices:
             return
 
-        unique_tokens = list(set(token_ids))
-        # CLOB allows 1500 req / 10s = 150 req/s. With ~5000 tokens this used
-        # to chunk into 50-token batches, waiting for each batch to fully drain
-        # before starting the next — slow tokens stalled the whole pipeline
-        # for 1000+ seconds. Now we fire all requests concurrently and let the
-        # semaphore (50 in flight) be the only limiter; effective throughput
-        # tracks server response time instead of worst-case chunk latency.
-        semaphore = asyncio.Semaphore(50)
+        unique_tokens = list({str(t) for t in token_ids if t})
+        BATCH_SIZE = 500
+        CONCURRENT_BATCHES = 4  # ~4 × 500 = 2000 tokens in flight, well under 150 req/s
+        MAX_RETRIES = 2
         fill_size = self.fill_size_usd
 
-        async def fetch_book(session: aiohttp.ClientSession, token_id: str):
-            async with semaphore:
+        chunks = [unique_tokens[i : i + BATCH_SIZE] for i in range(0, len(unique_tokens), BATCH_SIZE)]
+        semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
+        url = f"{self.clob_url}/books"
+
+        def _process_book(book: dict) -> None:
+            token_id = str(book.get("asset_id") or "")
+            if not token_id:
+                return
+            asks = book.get("asks") or []
+            bids = book.get("bids") or []
+            if asks:
+                vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
+                self._clob_depth[token_id] = depth_usd
+                if 0.01 < vwap < 0.99:
+                    self._clob_prices[token_id] = vwap
                 try:
-                    url = f"{self.clob_url}/book"
-                    params = {"token_id": token_id}
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            asks = data.get("asks", [])
-                            bids = data.get("bids", [])
-                            if asks:
-                                vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
-                                # Always store depth so _is_liquid works correctly
-                                self._clob_depth[token_id] = depth_usd
-                                # Only use CLOB VWAP when in valid range; otherwise
-                                # _get_clob_price falls back to Gamma mid-price
-                                if 0.01 < vwap < 0.99:
-                                    self._clob_prices[token_id] = vwap
-                                # Extract best ask (lowest price on ask side)
-                                try:
-                                    best_ask = min(float(a["price"]) for a in asks if float(a.get("price", 0)) > 0)
-                                    if 0.01 < best_ask < 0.99:
-                                        self._clob_asks[token_id] = best_ask
-                                except (ValueError, TypeError, KeyError):
-                                    pass
-                            # Extract best bid (highest price on bid side)
-                            if bids:
-                                try:
-                                    best_bid = max(float(b["price"]) for b in bids if float(b.get("price", 0)) > 0)
-                                    if 0.01 < best_bid < 0.99:
-                                        self._clob_bids[token_id] = best_bid
-                                except (ValueError, TypeError, KeyError):
-                                    pass
-                        elif resp.status != 404:
+                    best_ask = min(float(a["price"]) for a in asks if float(a.get("price", 0)) > 0)
+                    if 0.01 < best_ask < 0.99:
+                        self._clob_asks[token_id] = best_ask
+                except (ValueError, TypeError, KeyError):
+                    pass
+            if bids:
+                try:
+                    best_bid = max(float(b["price"]) for b in bids if float(b.get("price", 0)) > 0)
+                    if 0.01 < best_bid < 0.99:
+                        self._clob_bids[token_id] = best_bid
+                except (ValueError, TypeError, KeyError):
+                    pass
+
+        async def fetch_batch(session: aiohttp.ClientSession, batch: list[str]) -> int:
+            payload = [{"token_id": t} for t in batch]
+            async with semaphore:
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        async with session.post(
+                            url,
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=20),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if not isinstance(data, list):
+                                    return 0
+                                for book in data:
+                                    if isinstance(book, dict):
+                                        _process_book(book)
+                                return len(data)
+                            if resp.status in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
+                                # Token bucket–style: back off on rate limit / transient 5xx
+                                await asyncio.sleep(1.5 * (attempt + 1))
+                                continue
                             logger.debug(
-                                f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}..."
+                                f"[{self.provider_id}] CLOB /books returned {resp.status} "
+                                f"(batch={len(batch)}, attempt={attempt + 1})"
                             )
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] CLOB /book failed for {token_id[:12]}...: {e}")
+                            return 0
+                    except (TimeoutError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+                        if attempt < MAX_RETRIES:
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                            continue
+                        logger.debug(f"[{self.provider_id}] CLOB /books failed: {type(e).__name__}: {e}")
+                        return 0
+                return 0
 
         try:
-            # Single connection pool sized for the new concurrency cap.
-            connector = aiohttp.TCPConnector(limit=100, limit_per_host=100)
+            connector = aiohttp.TCPConnector(limit=CONCURRENT_BATCHES * 2, limit_per_host=CONCURRENT_BATCHES * 2)
             async with aiohttp.ClientSession(connector=connector) as session:
-                await asyncio.gather(
-                    *(fetch_book(session, tid) for tid in unique_tokens),
+                results = await asyncio.gather(
+                    *(fetch_batch(session, chunk) for chunk in chunks),
                     return_exceptions=True,
                 )
 
+            books_returned = sum(r for r in results if isinstance(r, int))
             thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
             logger.debug(
-                f"[{self.provider_id}] CLOB book depth: {len(self._clob_prices)}/{len(unique_tokens)} tokens "
+                f"[{self.provider_id}] CLOB book depth: {len(self._clob_prices)}/{len(unique_tokens)} priced, "
+                f"{books_returned} books returned across {len(chunks)} batches "
                 f"(fill_size=${fill_size}, thin_markets={thin_count})"
             )
         except Exception as e:
