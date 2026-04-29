@@ -254,7 +254,7 @@ class KalshiWorkflow(ProviderWorkflow):
             if yes_ask_cents <= 0:
                 return None, None
             live_odds = round(100.0 / yes_ask_cents, 4)
-            fair = getattr(bet, "fair_odds", None) if not isinstance(bet, dict) else bet.get("fair_odds")
+            fair = getattr(bet, "fair_odds", None)
             live_edge = round((live_odds / float(fair) - 1.0) * 100.0, 2) if fair else None
             return live_odds, live_edge
         except Exception as e:
