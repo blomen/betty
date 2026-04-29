@@ -4726,3 +4726,165 @@ def analyze_pivots(
                 pass
         typer.echo("")
     typer.echo("=== END ===")
+
+
+# ---------------------------------------------------------------------------
+# label-zone-outcomes — retroactive REV/CONT/SKIP labels from market history
+# ---------------------------------------------------------------------------
+
+
+@rl_app.command("label-zone-outcomes")
+def label_zone_outcomes(
+    days: int = typer.Option(7, help="Lookback window for stock_signals"),
+    horizon_min: int = typer.Option(30, help="Forward replay horizon (minutes)"),
+    min_R_to_count: float = typer.Option(0.5, help="Min absolute R for a side to win"),
+    default_stop_ticks: int = typer.Option(25, help="Stop ticks when signal didn't carry one"),
+    write_chunk: bool = typer.Option(True, help="Write live_episodes chunk for trainer"),
+) -> None:
+    """For every zone touch in stock_signals, replay forward N minutes via
+    market_trades and label the actual outcome (REV-win / CONT-win / SKIP).
+
+    Generates retroactive (obs, action, reward) tuples — bypasses the
+    live-execution gap. Every zone touch becomes a training label, not just
+    the ones we actually traded.
+
+    Output:
+      live_episodes/obs_ZONE<ts>.npy  (and rc/rr/lt/st chunks)
+      → next pipeline cycle's merge-live folds it into the training pool.
+
+    Example::
+
+        python -m src.app rl label-zone-outcomes --days 7 --horizon-min 30
+    """
+    import base64
+    import os
+    import time as _time
+    from datetime import timedelta
+
+    import numpy as np
+    from sqlalchemy import create_engine, text
+
+    from .data.zone_replay import simulate_forward
+
+    pw = os.environ.get("DB_PASSWORD", "")
+    arnold_engine = create_engine(f"postgresql://arnold:{pw}@postgres:5432/arnold")
+    market_engine = create_engine(f"postgresql://arnold:{pw}@postgres:5432/market")
+
+    sig_sql = text(
+        """
+        SELECT id, ts, action, price, zone_center, zone_members, stop_ticks,
+               cont_p, rev_p, confidence, observation_b64, observation_dim
+        FROM stock_signals
+        WHERE ts > NOW() - INTERVAL ':days days'
+          AND observation_b64 IS NOT NULL
+          AND price IS NOT NULL AND zone_center IS NOT NULL
+        ORDER BY ts
+        """.replace(":days days", f"{days} days")
+    )
+    typer.echo(f"Loading stock_signals from last {days} days...")
+    with arnold_engine.connect() as conn:
+        sigs = conn.execute(sig_sql).fetchall()
+    typer.echo(f"Found {len(sigs)} signals with observations.")
+
+    if not sigs:
+        return
+
+    obs_list: list[np.ndarray] = []
+    rc_list: list[float] = []
+    rr_list: list[float] = []
+    lt_list: list[int] = []
+    st_list: list[float] = []
+
+    rev_wins = cont_wins = skips = errors = 0
+    rev_R_sum = cont_R_sum = 0.0
+
+    tick_sql = text(
+        """
+        SELECT EXTRACT(EPOCH FROM ts) AS ts_s, price
+        FROM market_trades
+        WHERE ts >= :lo AND ts <= :hi
+        ORDER BY ts
+        """
+    )
+
+    for i, s in enumerate(sigs):
+        if i % 250 == 0 and i > 0:
+            typer.echo(f"  processed {i}/{len(sigs)} ...")
+        try:
+            obs = np.frombuffer(base64.b64decode(s.observation_b64), dtype=np.float32)
+            if s.observation_dim and obs.size != s.observation_dim:
+                continue
+
+            entry = float(s.price)
+            zone_c = float(s.zone_center)
+            stop_ticks = int(s.stop_ticks or default_stop_ticks)
+            stop_ticks = max(8, min(50, stop_ticks))
+
+            # approach direction: which way price came into the zone
+            approach_up = entry < zone_c
+            rev_side = "short" if approach_up else "long"
+            cont_side = "long" if approach_up else "short"
+
+            # pull tick window
+            t_end = s.ts + timedelta(minutes=horizon_min)
+            with market_engine.connect() as mconn:
+                rows = mconn.execute(tick_sql, {"lo": s.ts, "hi": t_end}).fetchall()
+            ticks = [(r.ts_s, float(r.price)) for r in rows]
+            if not ticks:
+                continue
+
+            rev_out = simulate_forward(ticks, entry, rev_side, stop_ticks)
+            cont_out = simulate_forward(ticks, entry, cont_side, stop_ticks)
+
+            # Decide label
+            if rev_out.pnl_r >= min_R_to_count and rev_out.pnl_r > cont_out.pnl_r:
+                action_label = 1  # REV
+                reward = float(rev_out.pnl_r)
+                rev_wins += 1
+                rev_R_sum += reward
+                rc = 0.0
+                rr = reward
+            elif cont_out.pnl_r >= min_R_to_count and cont_out.pnl_r > rev_out.pnl_r:
+                action_label = 0  # CONT
+                reward = float(cont_out.pnl_r)
+                cont_wins += 1
+                cont_R_sum += reward
+                rc = reward
+                rr = 0.0
+            else:
+                # chop / no clear winner — skip from training pool
+                skips += 1
+                continue
+
+            obs_list.append(obs.astype(np.float32))
+            rc_list.append(np.float32(rc))
+            rr_list.append(np.float32(rr))
+            lt_list.append(int(action_label))
+            st_list.append(np.float32(stop_ticks))
+
+        except Exception:
+            errors += 1
+            continue
+
+    typer.echo("")
+    typer.echo("=== Outcome breakdown ===")
+    typer.echo(f"  REV wins:   {rev_wins}   avg R = {rev_R_sum / max(rev_wins, 1):+.3f}")
+    typer.echo(f"  CONT wins:  {cont_wins}  avg R = {cont_R_sum / max(cont_wins, 1):+.3f}")
+    typer.echo(f"  SKIP/chop:  {skips}")
+    typer.echo(f"  errors:     {errors}")
+    typer.echo(f"  TOTAL labelled: {len(obs_list)}")
+
+    if not write_chunk or not obs_list:
+        typer.echo("Not writing chunk (write_chunk=False or no labels).")
+        return
+
+    chunk_id = f"ZONE{int(_time.time())}"
+    live_dir = _DATA_DIR / "live_episodes"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    np.save(live_dir / f"obs_{chunk_id}.npy", np.stack(obs_list))
+    np.save(live_dir / f"rc_{chunk_id}.npy", np.array(rc_list, dtype=np.float32))
+    np.save(live_dir / f"rr_{chunk_id}.npy", np.array(rr_list, dtype=np.float32))
+    np.save(live_dir / f"lt_{chunk_id}.npy", np.array(lt_list, dtype=np.int32))
+    np.save(live_dir / f"st_{chunk_id}.npy", np.array(st_list, dtype=np.float32))
+    typer.echo(f"\nWrote chunk {chunk_id}: {len(obs_list)} labelled tuples → live_episodes/")
+    typer.echo("Next pipeline cycle (merge-live) will fold these into the training pool.")
