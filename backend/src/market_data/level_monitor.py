@@ -691,7 +691,15 @@ class LevelMonitor:
         self._broadcast_zones()
 
     def _broadcast_zones(self) -> None:
-        """Send current zones to all relay clients so the chart can render them."""
+        """Send current zones to all relay clients so the chart can render them.
+
+        Per-member detail is included so the userscript can paint thin lines
+        for every level inside the zone — gives the trader exact prices for
+        stop placement (just beyond the outermost anchor) and entry sizing
+        (visible confluence vs. filler bands).
+        """
+        from src.rl.zone_builder import _LEVEL_FAMILY, _weight
+
         callbacks = getattr(self, "_signal_callbacks", set())
         if not callbacks or not self._zones:
             return
@@ -704,6 +712,16 @@ class LevelMonitor:
                     "upper": round(z.upper_bound, 2),
                     "lower": round(z.lower_bound, 2),
                     "hierarchy": round(z.hierarchy_score, 3),
+                    "members_detail": [
+                        {
+                            "name": m.name,
+                            "type": m.level_type.value,
+                            "family": _LEVEL_FAMILY.get(m.level_type, m.level_type.value),
+                            "price": round(m.price, 2),
+                            "weight": round(_weight(m.level_type), 3),
+                        }
+                        for m in z.members
+                    ],
                 }
                 for z in self._zones
             ],

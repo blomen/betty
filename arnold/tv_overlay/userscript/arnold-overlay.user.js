@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.2.0
-// @description  Draws Arnold zones and open positions on TradingView charts via WebSocket from local Arnold server.
+// @version      0.3.0
+// @description  Draws Arnold zones (with per-member thin lines) and open positions on TradingView charts via WebSocket from local Arnold server.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -38,6 +38,41 @@
     if (s < 0.9)  return '#f97316';
     return '#ef4444';
   };
+
+  // Family palette — picks the thin-line color for each zone member.
+  // Mirrors the families defined in `backend/src/rl/zone_builder.py:_LEVEL_FAMILY`.
+  // Distinct from the strength heatmap so member lines stand out against the zone fill.
+  const FAMILY_PALETTE = {
+    daily_vp:       '#ef4444', // red    — today's POC/VAH/VAL
+    weekly_vp:      '#f97316', // orange — rolling 7d POC/VAH/VAL
+    monthly_vp:     '#eab308', // amber  — rolling 30d POC/VAH/VAL
+    vwap:           '#06b6d4', // cyan   — VWAP center + σ bands
+    prior_session:  '#a855f7', // violet — PDH/PDL
+    sessions:       '#94a3b8', // gray   — Tokyo H/L
+    nyib:           '#94a3b8', // gray   — NY initial balance
+    tpo:            '#0ea5e9', // sky    — TPO POC/VAH/VAL/IBH/IBL
+    daily_swing:    '#64748b', // slate  — daily swing H/L
+    weekly_swing:   '#3b82f6', // blue   — weekly swing H/L
+    monthly_swing:  '#6366f1', // indigo — monthly swing H/L
+    naked_poc:      '#dc2626', // crimson— untested POC
+    fvg:            '#10b981', // emerald— fair value gap mid
+    order_block:    '#ec4899', // pink   — order block mid
+  };
+
+  // Anchor types render solid; σ-bands / dispersion render dashed so the
+  // primary structural prices visually dominate over their bands.
+  const DASHED_TYPES = new Set([
+    'vwap_sd1', 'vwap_sd2', 'vwap_sd3',
+    // VAH/VAL are anchors but visually secondary to POC for picking stops.
+    'daily_vah', 'daily_val',
+    'weekly_vah', 'weekly_val',
+    'monthly_vah', 'monthly_val',
+    'tvah', 'tval', 'tibh', 'tibl',
+  ]);
+
+  // Console-toggleable. Set `unsafeWindow.arnoldOverlay.showMembers = false`
+  // and the next zone diff will redraw without the thin lines. Defaults on.
+  PAGE.arnoldOverlay = PAGE.arnoldOverlay || { showMembers: true };
 
   // --- TV chart attach ---
   // Phase 0 confirmed PAGE.TradingViewApi.activeChart() works on
@@ -85,9 +120,22 @@
     drawn.delete(key);
   }
 
+  // Remove every entity whose registry key starts with the given prefix.
+  // Used to clear all per-member lines belonging to a zone before redraw —
+  // members are stored as `${zone.key}:member:${family}:${price}`.
+  function safeRemovePrefix(prefix) {
+    const toRemove = [];
+    for (const k of drawn.keys()) {
+      if (k.startsWith(prefix)) toRemove.push(k);
+    }
+    for (const k of toRemove) safeRemove(k);
+  }
+
   function drawZone(p) {
     if (!chart) return false;
     safeRemove(p.key);
+    safeRemovePrefix(`${p.key}:member:`);
+
     const now = Math.floor(Date.now() / 1000);
     const tStart = now - 8 * 60 * 60; // 8h back
     const tEnd = now;
@@ -111,13 +159,56 @@
       );
       if (id != null) {
         drawn.set(p.key, id);
-        return true;
+      } else {
+        return false;
       }
-      return false;
     } catch (e) {
       sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
+
+    // Per-member thin lines. Each member draws one short horizontal line
+    // confined to the zone's time window so it visually "lives inside" the
+    // rectangle. Color from FAMILY_PALETTE; line width keyed off weight so
+    // structural anchors (POC ~1.0, monthly swings ~1.0) stand out from
+    // filler bands (VWAP σ3 ~0.3). Dashed style for σ-bands and VAH/VAL
+    // to keep the eye on POC/VWAP/swing anchors when picking stops.
+    if (PAGE.arnoldOverlay && PAGE.arnoldOverlay.showMembers) {
+      for (const m of (p.members_detail || [])) {
+        const family = m.family || 'unknown';
+        const linecolor = FAMILY_PALETTE[family] || '#cbd5e1';
+        const weight = typeof m.weight === 'number' ? m.weight : 0.5;
+        const linewidth = weight >= 1.0 ? 3 : (weight >= 0.7 ? 2 : 1);
+        const linestyle = DASHED_TYPES.has(m.type) ? 1 : 0; // 0=solid, 1=dashed
+        const memberKey = `${p.key}:member:${family}:${m.price.toFixed(2)}`;
+        try {
+          const mid = chart.createMultipointShape(
+            [
+              { time: tStart, price: m.price },
+              { time: tEnd,   price: m.price },
+            ],
+            {
+              shape: 'trend_line',
+              text: '',
+              overrides: {
+                linecolor,
+                linewidth,
+                linestyle,
+                showLabel: false,
+                extendLeft: false,
+                extendRight: false,
+              },
+            }
+          );
+          if (mid != null) drawn.set(memberKey, mid);
+        } catch (e) {
+          // Individual member-line failure shouldn't kill the zone draw.
+          // Log once via sendError, continue with other members.
+          sendError(`drawZone member failed (${m.name}): ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    return true;
   }
 
   function drawPosition(p) {
@@ -198,7 +289,7 @@
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
       switch (msg.type) {
         case 'zone_upsert':     if (drawZone(msg)) sendAck(1); break;
-        case 'zone_remove':     safeRemove(msg.key); sendAck(1); break;
+        case 'zone_remove':     safeRemove(msg.key); safeRemovePrefix(`${msg.key}:member:`); sendAck(1); break;
         case 'position_upsert': if (drawPosition(msg)) sendAck(1); break;
         case 'position_remove': removePosition(msg.key); sendAck(1); break;
         case 'ping_zone': {

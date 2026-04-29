@@ -70,10 +70,39 @@ def _zone_payload(z: dict) -> dict:
     the diff detector and force an unnecessary safeRemove + redraw on the
     userscript. Strength is quantized to 0.05 (still 20 distinct heat steps).
     Top/bottom rounded to 0.25 (NQ tick size) — sub-tick changes are noise.
+
+    `members_detail` carries one entry per zone member so the userscript can
+    paint thin per-level lines inside the zone rectangle. Prices are
+    quantized to 0.25 and deduped by (family, price) so VWAP σ-band micro-
+    drift doesn't churn the diff detector.
     """
     strength = float(z.get("hierarchy") or 0.0)
     top = float(z.get("upper") or z["price"])
     bottom = float(z.get("lower") or z["price"])
+
+    seen_member_keys: set[tuple[str, float]] = set()
+    members_detail: list[dict] = []
+    for m in z.get("members_detail") or []:
+        try:
+            family = str(m.get("family") or m.get("type") or "unknown")
+            price = round(float(m["price"]) / 0.25) * 0.25
+            dedup_key = (family, price)
+            if dedup_key in seen_member_keys:
+                continue
+            seen_member_keys.add(dedup_key)
+            members_detail.append(
+                {
+                    "name": str(m.get("name") or m.get("type") or "level"),
+                    "type": str(m.get("type") or "unknown"),
+                    "family": family,
+                    "price": price,
+                    "weight": round(float(m.get("weight") or 0.0), 2),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    members_detail.sort(key=lambda d: d["price"])
+
     return {
         "key": _zone_key(z),
         "price": round(float(z["price"]) / 0.25) * 0.25,
@@ -82,6 +111,7 @@ def _zone_payload(z: dict) -> dict:
         "members": int(z.get("members", 0)),
         "strength": round(strength / 0.05) * 0.05,
         "kind": str(z.get("name") or "zone"),
+        "members_detail": members_detail,
     }
 
 
