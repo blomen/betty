@@ -23,18 +23,17 @@ REM Open lockfile for exclusive write — call fails immediately if held.
   cd /d "%~dp0arnold"
   REM Prefer the project venv's Python ^(has the right playwright + chromium versions^).
   REM Fall back to system Python if the venv isn't present.
+  REM
+  REM `start /WAIT /B` runs python in this console but as its own process
+  REM group, so Ctrl+C is delivered to python ^(which exits cleanly via
+  REM launch.py's signal handler^) without bubbling up to cmd.exe — that
+  REM avoids the "Terminate batch job ^(Y/N^)?" prompt on exit.
+  REM `< nul` disconnects stdin so the batch interpreter has nothing to
+  REM read after python returns.
   if exist "%~dp0.venv\Scripts\python.exe" (
-    "%~dp0.venv\Scripts\python.exe" launch.py
+    start "" /WAIT /B "%~dp0.venv\Scripts\python.exe" launch.py < nul
   ) else (
-    python launch.py
-  )
-
-  REM Pause on abnormal exit so the user can read the error before the
-  REM cmd window vanishes. Normal Ctrl+C still closes immediately.
-  if errorlevel 1 (
-    echo.
-    echo [arnold] launcher exited with code %ERRORLEVEL%
-    pause
+    start "" /WAIT /B python launch.py < nul
   )
 ) || (
   echo [arnold] another instance is already running ^(lock held: %LOCKFILE%^)
