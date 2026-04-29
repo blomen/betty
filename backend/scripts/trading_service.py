@@ -63,6 +63,28 @@ async def run():
 
     # Build adapter + relay
     adapter = TopstepXBrokerAdapter(client, config)
+
+    # Reconcile tracker from TopstepX REST before SignalR stream starts.
+    # Mirrors the FastAPI bootstrap path (server_bootstrap.py): without this
+    # call, a container restart with an open TopstepX position leaves the
+    # subprocess's fresh tracker flat — replayed SignalR fills then drop with
+    # "arrived while flat", peak_R never updates, BE-lock never fires.
+    # Layer 2 fallback: restore from the disk snapshot embedded in
+    # _pending_trade by _set_pending_trade if REST is degraded.
+    from src.stocks.tracker_reconciler import reconcile_tracker_from_broker
+
+    reconcile_result = await reconcile_tracker_from_broker(adapter, client, config.contract_id)
+    if reconcile_result.degraded and adapter._pending_trade:
+        snap = adapter._pending_trade.get("tracker_snapshot")
+        if snap:
+            log.warning("reconcile: REST failed, falling back to disk snapshot")
+            adapter.tracker.restore_from_snapshot(snap)
+        else:
+            log.error(
+                "reconcile: REST failed AND no disk snapshot — broker_adapter is in unknown state; halting trading"
+            )
+            adapter._halt("reconcile_failed")
+
     relay = SignalRelayClient(config.server_ws_url, client, adapter=adapter)
 
     # Build stream
@@ -114,7 +136,10 @@ async def run():
 
     log.info("Trading service running — Ctrl+C to stop")
 
-    # Keep-alive loop with health logging
+    # Keep-alive loop with health logging + periodic size reconciliation.
+    # The size-reconcile mirrors server_bootstrap._reconcile_position_loop:
+    # if our tracker.size disagrees with the broker's view of the position,
+    # halt + flatten — better wash trade than diverged state.
     while True:
         await asyncio.sleep(60)
         log.info(
@@ -123,6 +148,28 @@ async def run():
             stream._running,
             adapter.tracker.session_pnl,
         )
+
+        if adapter.tracker.is_flat:
+            continue
+        try:
+            positions = await client.search_open_positions()
+        except Exception:
+            log.warning("reconcile loop: REST query failed; skipping cycle", exc_info=True)
+            continue
+        matching = [p for p in positions if p.get("contractId") == config.contract_id]
+        broker_size = sum(int(p.get("size") or 0) for p in matching)
+        local_size = int(adapter.tracker.size or 0)
+        if broker_size != local_size:
+            log.error(
+                "reconcile loop: SIZE MISMATCH — broker=%d local=%d; halting + flattening",
+                broker_size,
+                local_size,
+            )
+            adapter._halt("size_mismatch")
+            try:
+                await adapter.flatten("size_mismatch_recovery")
+            except Exception:
+                log.exception("reconcile loop: flatten after mismatch failed")
 
 
 def main():
