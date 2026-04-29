@@ -501,68 +501,155 @@ _FILL_JS = r"""(amount) => {
 }"""
 
 
-_LOCATE_TARGET_JS = r"""(targetName) => {
-    // Identify which ¢ button matches target, return its DOM path markers so
-    // Playwright can re-locate it via a text-based locator.
-    let moneyline = null;
-    for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
-        const t = (el.textContent || '').trim();
-        if (t !== 'Moneyline' || el.tagName === 'BUTTON') continue;
-        let p = el.parentElement;
-        for (let i = 0; i < 6 && p; i++) {
-            const btns = p.querySelectorAll('button');
-            let cc = 0;
-            for (const b of btns) if (b.textContent.includes('¢')) cc++;
-            if (cc >= 2) { moneyline = p; break; }
-            p = p.parentElement;
+_LOCATE_TARGET_JS = r"""(args) => {
+    // Locate the target ¢ button on a polymarket event page across ALL market
+    // types: moneyline (1x2), spread (Game Handicap), total (Total Games).
+    //
+    // args = { targetName, market, point, outcome }
+    //   targetName — team name (display_home / display_away) lowercased
+    //   market — 'moneyline' / '1x2' / 'spread' / 'total'
+    //   point — line value for spread/total (number or null)
+    //   outcome — 'home' / 'away' / 'over' / 'under' (for total disambiguation)
+    //
+    // DOM layout (verified 2026-04-29):
+    //   Moneyline block: header "Moneyline" + 2 cent buttons "<TEAM> <cents>¢"
+    //   Game Handicap (spread): header "Game Handicap" / "Spread" + 2 buttons
+    //     "<TEAM> +/-<point> <cents>¢"
+    //   Total Games (total): header "Total Games" / "Total" / "Total Maps" +
+    //     2 buttons "O <point> <cents>¢" / "U <point> <cents>¢"
+    const targetName = (args.targetName || '').toLowerCase();
+    const market = (args.market || '').toLowerCase();
+    const point = args.point;
+    const outcome = (args.outcome || '').toLowerCase();
+
+    // Map market type → header text candidates. Polymarket sometimes uses
+    // sport-specific labels; try each in order.
+    const HEADERS = {
+        moneyline: ['Moneyline'],
+        '1x2': ['Moneyline', '1X2', '1x2'],
+        spread: ['Game Handicap', 'Spread', 'Handicap', 'Run Line', 'Puck Line'],
+        total: ['Total Games', 'Total Maps', 'Total Goals', 'Total', 'Over/Under'],
+    };
+    const headerCandidates = HEADERS[market] || ['Moneyline'];
+
+    // Step 1: find the market block by header text.
+    let block = null;
+    for (const headerText of headerCandidates) {
+        for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
+            const t = (el.textContent || '').trim();
+            if (t !== headerText || el.tagName === 'BUTTON') continue;
+            // Walk up to find an ancestor with at least 2 cent buttons.
+            let p = el.parentElement;
+            for (let i = 0; i < 6 && p; i++) {
+                const btns = p.querySelectorAll('button');
+                let cc = 0;
+                for (const b of btns) if (b.textContent.includes('¢')) cc++;
+                if (cc >= 2) { block = p; break; }
+                p = p.parentElement;
+            }
+            if (block) break;
         }
-        if (moneyline) break;
+        if (block) break;
     }
+
+    // Collect cent buttons in the block.
     let centBtns = [];
-    if (moneyline) {
-        for (const b of moneyline.querySelectorAll('button')) {
+    if (block) {
+        for (const b of block.querySelectorAll('button')) {
             const t = (b.textContent || '').trim();
             if (t.includes('¢') && t.length < 60) centBtns.push(b);
         }
     }
+    // Fallback to global scan if block lookup failed (older / different layout).
     if (centBtns.length < 2) {
         centBtns = [];
         for (const b of document.querySelectorAll('button')) {
             const t = (b.textContent || '').trim();
             if (t.includes('¢') && t.length < 60) centBtns.push(b);
-            if (centBtns.length >= 2) break;
         }
     }
-    const tn = targetName.toLowerCase();
-    const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
-    for (const b of centBtns) {
-        const bt = b.textContent.trim().toLowerCase();
-        const team = bt.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
-        if (!team) continue;
-        const match =
-            tn.startsWith(team)
-            || team.startsWith(tn.slice(0, 3))
-            || tn.includes(team)
+
+    // Step 2: pick the right button based on market + outcome + point.
+    const initials = targetName.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
+    const teamMatch = (text) => {
+        const team = text.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
+        if (!team) return false;
+        return targetName.startsWith(team)
+            || team.startsWith(targetName.slice(0, 3))
+            || targetName.includes(team)
             || (team.length >= 2 && team === initials)
             || (team.length >= 2 && initials.startsWith(team))
-            || (team.length >= 3 && tn.split(/\s+/).some(w => w.startsWith(team)));
-        if (match) {
-            const m = b.textContent.match(/(\d+)¢/);
+            || (team.length >= 3 && targetName.split(/\s+/).some(w => w.startsWith(team)));
+    };
+
+    for (const b of centBtns) {
+        const bt = (b.textContent || '').trim().toLowerCase();
+
+        if (market === 'total') {
+            // Match Over/Under prefix + (optional) point. Polymarket uses
+            // "O 2.5 51¢" / "U 2.5 50¢" or sometimes "Over 2.5" / "Under 2.5".
+            const wantOver = outcome === 'over';
+            const wantUnder = outcome === 'under';
+            const isOver = /^o(?:ver)?\s/.test(bt) || bt.startsWith('o ');
+            const isUnder = /^u(?:nder)?\s/.test(bt) || bt.startsWith('u ');
+            if (wantOver && !isOver) continue;
+            if (wantUnder && !isUnder) continue;
+            if (point != null) {
+                // Require the point to appear in the button text.
+                const pStr = String(point);
+                if (!bt.includes(pStr)) continue;
+            }
+            const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
             return {
                 full_text: b.textContent.trim(),
-                cents: m ? parseInt(m[1]) : null,
-                moneyline: !!moneyline,
+                cents: m ? parseFloat(m[1]) : null,
+                market_block: !!block,
+                market: market,
             };
         }
-    }
-    // Fallback: first moneyline button
-    if (centBtns.length > 0) {
-        const b = centBtns[0];
-        const m = b.textContent.match(/(\d+)¢/);
+
+        if (market === 'spread') {
+            // Match team name + signed point. e.g. "ktc -1.5 25¢" matches
+            // KT Rolster Challengers with point=-1.5.
+            if (!teamMatch(bt)) continue;
+            if (point != null) {
+                // Polymarket renders points with explicit sign for both sides
+                // (DNSC +1.5 / KTC -1.5). Match by absolute value to dodge
+                // sign-flipping variations across sports.
+                const absPoint = Math.abs(point);
+                const absStr = absPoint % 1 === 0 ? String(absPoint) : absPoint.toString();
+                if (!bt.includes(absStr)) continue;
+            }
+            const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
+            return {
+                full_text: b.textContent.trim(),
+                cents: m ? parseFloat(m[1]) : null,
+                market_block: !!block,
+                market: market,
+            };
+        }
+
+        // moneyline / 1x2 / default — match team name only.
+        if (!teamMatch(bt)) continue;
+        const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
         return {
             full_text: b.textContent.trim(),
-            cents: m ? parseInt(m[1]) : null,
-            moneyline: !!moneyline,
+            cents: m ? parseFloat(m[1]) : null,
+            market_block: !!block,
+            market: market || 'moneyline',
+        };
+    }
+
+    // Fallback: only return first cent button if market is moneyline-ish.
+    // For spread/total we'd rather fail than click the wrong outcome.
+    if (centBtns.length > 0 && (market === 'moneyline' || market === '1x2' || market === '')) {
+        const b = centBtns[0];
+        const m = b.textContent.match(/(\d+(?:\.\d+)?)¢/);
+        return {
+            full_text: b.textContent.trim(),
+            cents: m ? parseFloat(m[1]) : null,
+            market_block: !!block,
+            market: market || 'moneyline',
             fallback: true,
         };
     }
@@ -588,9 +675,18 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
         return str(val or "")
 
     outcome = _g("outcome").lower()
+    market = _g("market").lower()
     home = (_g("display_home") or _g("poly_home")).strip().lower()
     away = (_g("display_away") or _g("poly_away")).strip().lower()
     bet_id = getattr(bet, "bet_id", 0) if not isinstance(bet, dict) else bet.get("bet_id", 0)
+    # Spread/total bets carry a `point` (line value). Fetch it from the bet
+    # so the locator can disambiguate handicap buttons (e.g. KTC -1.5 vs +1.5)
+    # and Over/Under buttons by their line.
+    point_val = None
+    if isinstance(bet, dict):
+        point_val = bet.get("point")
+    else:
+        point_val = getattr(bet, "point", None)
 
     if outcome in ("home", "1"):
         target = home
@@ -608,21 +704,32 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     except Exception:
         await asyncio.sleep(3)
 
-    # Step 1: identify the target button text via JS (same matching logic as before)
+    # Step 1: identify the target button text via JS — market-aware locator
+    # picks the right block (Moneyline / Game Handicap / Total Games) AND
+    # the right button within it (team for ML/spread, O/U for total). For
+    # spread + total, the line value is matched too so e.g. SPR -1.5 doesn't
+    # accidentally pick the +1.5 side.
     target_info = None
     try:
-        target_info = await page.evaluate(_LOCATE_TARGET_JS, target)
+        target_info = await page.evaluate(
+            _LOCATE_TARGET_JS,
+            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
+        )
     except Exception as e:
         logger.warning(f"[polymarket] prep locate failed: {e}")
 
     if not target_info:
-        return PlacementResult(status="failed", bet_id=bet_id, reason="no_cent_button_matched")
+        return PlacementResult(
+            status="failed",
+            bet_id=bet_id,
+            reason=f"no_cent_button_matched (market={market}, target={target}, point={point_val})",
+        )
 
     full_text = target_info["full_text"]
     cents = target_info.get("cents")
     logger.info(
-        f"[polymarket] Target outcome: '{full_text}' (target='{target}', "
-        f"cents={cents}, moneyline={target_info.get('moneyline')}"
+        f"[polymarket] Target outcome: '{full_text}' (market={market}, target='{target}', "
+        f"point={point_val}, cents={cents}, block={target_info.get('market_block')}"
         f"{', fallback' if target_info.get('fallback') else ''})"
     )
 
@@ -703,55 +810,12 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     )
 
 
-_READ_CENTS_JS = r"""(targetName) => {
-    // Find the ¢ button matching target (same logic as prep) and return its current cents.
-    let moneyline = null;
-    for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
-        const t = (el.textContent || '').trim();
-        if (t !== 'Moneyline' || el.tagName === 'BUTTON') continue;
-        let p = el.parentElement;
-        for (let i = 0; i < 6 && p; i++) {
-            const btns = p.querySelectorAll('button');
-            let cc = 0;
-            for (const b of btns) if (b.textContent.includes('¢')) cc++;
-            if (cc >= 2) { moneyline = p; break; }
-            p = p.parentElement;
-        }
-        if (moneyline) break;
-    }
-    let centBtns = [];
-    if (moneyline) {
-        for (const b of moneyline.querySelectorAll('button')) {
-            const t = (b.textContent || '').trim();
-            if (t.includes('¢') && t.length < 60) centBtns.push(b);
-        }
-    }
-    if (centBtns.length < 2) return null;
-
-    const tn = targetName.toLowerCase();
-    const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
-    for (const b of centBtns) {
-        const bt = b.textContent.trim().toLowerCase();
-        const team = bt.replace(/[-+]?\d+(?:\.\d+)?\s*¢.*/, '').trim();
-        if (!team) continue;
-        const match =
-            tn.startsWith(team)
-            || team.startsWith(tn.slice(0, 3))
-            || tn.includes(team)
-            || (team.length >= 2 && team === initials)
-            || (team.length >= 2 && initials.startsWith(team))
-            || (team.length >= 3 && tn.split(/\s+/).some(w => w.startsWith(team)));
-        if (match) {
-            const m = b.textContent.match(/(\d+)¢/);
-            return m ? parseInt(m[1]) : null;
-        }
-    }
-    return null;
-}"""
-
-
 async def _check_live_price(page: Page, bet, intel: dict | None = None):
-    """Read the current ¢ price for the target outcome and compute (live_odds, live_edge)."""
+    """Read the current ¢ price for the target outcome and compute (live_odds, live_edge).
+
+    Reuses _LOCATE_TARGET_JS so cent reading is market-aware (correctly reads
+    spread / total cents instead of always landing on the moneyline price).
+    """
 
     def _g(attr: str) -> str:
         if isinstance(bet, dict):
@@ -771,8 +835,11 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
         return None, None
 
     outcome = _g("outcome").lower()
+    market = _g("market").lower()
     home = (_g("display_home") or _g("poly_home")).strip().lower()
     away = (_g("display_away") or _g("poly_away")).strip().lower()
+    point_val = bet.get("point") if isinstance(bet, dict) else getattr(bet, "point", None)
+
     if outcome in ("home", "1"):
         target = home
     elif outcome in ("away", "2"):
@@ -785,10 +852,16 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
         target = outcome
 
     try:
-        cents = await page.evaluate(_READ_CENTS_JS, target)
+        info = await page.evaluate(
+            _LOCATE_TARGET_JS,
+            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
+        )
     except Exception:
         return None, None
 
+    if not info:
+        return None, None
+    cents = info.get("cents")
     if not cents or cents <= 0 or cents >= 100:
         return None, None
 
