@@ -271,27 +271,101 @@ class KalshiWorkflow(ProviderWorkflow):
             logger.warning(f"[kalshi] check_live_price failed: {e}")
             return None, None
 
+    @staticmethod
+    def _classify_order_state(resp) -> tuple[str, dict]:
+        """Centralizes SDK status field names so a future SDK change touches one spot."""
+        order = getattr(resp, "order", None) or resp
+        status = (getattr(order, "status", "") or "").lower()
+        if status in {"executed", "filled"}:
+            return "filled", {
+                "fill_count": int(getattr(order, "fill_count", 0) or 0),
+                "fill_price": int(getattr(order, "fill_price", 0) or 0),
+            }
+        if status in {"canceled", "cancelled"}:
+            return "canceled", {"reason": getattr(order, "reason", None) or "canceled"}
+        if status in {"failed", "rejected"}:
+            return "failed", {"reason": getattr(order, "reason", None) or status}
+        return "resting", {}
+
     async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
+        import asyncio
+
+        bid = getattr(bet, "bet_id", None)
+        if bid is None:
+            bid = getattr(bet, "id", 0)
+
         if not self.has_api or not self._pending_ticker:
-            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_client")
+            return PlacementResult(status="failed", bet_id=bid, reason="no_client")
+
         try:
-            resp = self._portfolio.create_order(
+            create_resp = self._portfolio.create_order(
                 ticker=self._pending_ticker,
                 action="buy",
                 side="yes",
                 type="limit",
                 yes_price=self._pending_yes_price_cents,
                 count=self._pending_count,
-                expiration_ts=int(time.time()) + 60,  # 60-second resting limit
-            )
-            raw = resp.to_dict() if hasattr(resp, "to_dict") else None
-            return PlacementResult(
-                status="placed",
-                bet_id=getattr(bet, "id", 0),
-                actual_odds=round(100.0 / self._pending_yes_price_cents, 4),
-                actual_stake=round(self._pending_count * self._pending_yes_price_cents / 100.0, 2),
-                raw_response=raw,
+                expiration_ts=int(time.time()) + 60,
             )
         except Exception as e:
-            logger.error(f"[kalshi] place_bet failed: {e}")
-            return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason=str(e))
+            logger.error(f"[kalshi] create_order failed: {e}")
+            return PlacementResult(status="failed", bet_id=bid, reason=str(e))
+
+        order_id = getattr(create_resp, "order_id", None)
+        raw = create_resp.to_dict() if hasattr(create_resp, "to_dict") else None
+
+        # Poll up to 5x at 1s intervals. After 2 consecutive polling errors,
+        # trust the create response — a flaky GET shouldn't double-cancel a real fill.
+        poll_errors = 0
+        if order_id:
+            for _ in range(5):
+                await asyncio.sleep(1.0)
+                try:
+                    poll_resp = self._portfolio.get_order(order_id)
+                    poll_errors = 0
+                except Exception as e:
+                    poll_errors += 1
+                    logger.warning(f"[kalshi] get_order poll failed: {e}")
+                    if poll_errors >= 2:
+                        return PlacementResult(
+                            status="placed",
+                            bet_id=bid,
+                            actual_odds=round(100.0 / max(self._pending_yes_price_cents, 1), 4),
+                            actual_stake=round(self._pending_count * self._pending_yes_price_cents / 100.0, 2),
+                            reason="poll_unavailable_trusting_create",
+                            raw_response=raw,
+                        )
+                    continue
+                state, info = self._classify_order_state(poll_resp)
+                if state == "filled":
+                    fc = info.get("fill_count") or self._pending_count
+                    fp = info.get("fill_price") or self._pending_yes_price_cents
+                    return PlacementResult(
+                        status="placed",
+                        bet_id=bid,
+                        actual_odds=round(100.0 / max(fp, 1), 4),
+                        actual_stake=round(fc * fp / 100.0, 2),
+                        raw_response=raw,
+                    )
+                if state in {"canceled", "failed"}:
+                    return PlacementResult(
+                        status="failed",
+                        bet_id=bid,
+                        reason=info.get("reason") or state,
+                        raw_response=raw,
+                    )
+
+        # Still resting after the poll budget — cancel and report failed.
+        cancel_reason = "unfilled_within_5s"
+        if order_id:
+            try:
+                self._portfolio.cancel_order(order_id)
+            except Exception as e:
+                logger.error(f"[kalshi] cancel_order on resting timeout failed: {e}")
+                cancel_reason = "unfilled_cancel_failed"
+        return PlacementResult(
+            status="failed",
+            bet_id=bid,
+            reason=cancel_reason,
+            raw_response=raw,
+        )

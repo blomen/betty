@@ -167,3 +167,129 @@ class TestSyncBalance:
         workflow._portfolio = None
         bal = await workflow.sync_balance(page=None)
         assert bal == 0.0
+
+
+class TestPlaceBet:
+    @pytest.mark.asyncio
+    async def test_immediate_fill_returns_placed(self, workflow, monkeypatch):
+        # Skip real sleeps in the polling loop.
+        sleeps = []
+
+        async def fake_sleep(s):
+            sleeps.append(s)
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+        order_resp = MagicMock()
+        order_resp.to_dict.return_value = {"order_id": "o-1"}
+        order_resp.order_id = "o-1"
+        workflow._portfolio.create_order.return_value = order_resp
+
+        # First poll already shows executed
+        executed = SimpleNamespace(order=SimpleNamespace(status="executed", fill_count=10, fill_price=50))
+        workflow._portfolio.get_order.return_value = executed
+
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "placed"
+        assert result.actual_odds == pytest.approx(2.0, abs=0.001)
+        # 10 contracts * $0.50 = $5.00
+        assert result.actual_stake == pytest.approx(5.0, abs=0.01)
+        # No cancel call on a filled order
+        workflow._portfolio.cancel_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resting_then_canceled_after_timeout(self, workflow, monkeypatch):
+        async def fake_sleep(s):
+            return
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+        order_resp = MagicMock()
+        order_resp.to_dict.return_value = {"order_id": "o-2"}
+        order_resp.order_id = "o-2"
+        workflow._portfolio.create_order.return_value = order_resp
+
+        # All polls show resting
+        resting = SimpleNamespace(order=SimpleNamespace(status="resting", fill_count=0))
+        workflow._portfolio.get_order.return_value = resting
+        workflow._portfolio.cancel_order.return_value = SimpleNamespace()
+
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "failed"
+        assert result.reason == "unfilled_within_5s"
+        workflow._portfolio.cancel_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_canceled_terminal_state(self, workflow, monkeypatch):
+        async def fake_sleep(s):
+            return
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+        order_resp = MagicMock()
+        order_resp.to_dict.return_value = {"order_id": "o-3"}
+        order_resp.order_id = "o-3"
+        workflow._portfolio.create_order.return_value = order_resp
+        workflow._portfolio.get_order.return_value = SimpleNamespace(
+            order=SimpleNamespace(status="canceled", reason="user_cancel")
+        )
+
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "failed"
+        assert "cancel" in result.reason.lower()
+        workflow._portfolio.cancel_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_polling_errors_twice_falls_back_to_create_response(self, workflow, monkeypatch):
+        async def fake_sleep(s):
+            return
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+        order_resp = MagicMock()
+        order_resp.to_dict.return_value = {"order_id": "o-4"}
+        order_resp.order_id = "o-4"
+        workflow._portfolio.create_order.return_value = order_resp
+        workflow._portfolio.get_order.side_effect = [
+            RuntimeError("503"),
+            RuntimeError("503"),
+        ]
+
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        # After 2 polling errors, trust create response → placed
+        assert result.status == "placed"
+        # actual_odds derived from yes_price_cents=50 → 2.0
+        assert result.actual_odds == pytest.approx(2.0, abs=0.001)
+        workflow._portfolio.cancel_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_order_exception_returns_failed(self, workflow):
+        workflow._portfolio.create_order.side_effect = RuntimeError("rate_limited")
+        workflow._pending_ticker = "T"
+        workflow._pending_yes_price_cents = 50
+        workflow._pending_count = 10
+
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "failed"
+        assert "rate_limited" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_no_pending_ticker_returns_failed(self, workflow):
+        workflow._pending_ticker = None
+        result = await workflow.place_bet(page=None, bet=_make_bet(), stake=5.0)
+        assert result.status == "failed"
+        assert result.reason == "no_client"
