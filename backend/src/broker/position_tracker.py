@@ -82,6 +82,37 @@ class PositionTracker:
             self.peak_R = r
         return r
 
+    def to_snapshot(self) -> dict:
+        """Serialize tracker state for disk persistence."""
+        return {
+            "side": self.side,
+            "entry_price": self.entry_price,
+            "stop_price": self.stop_price,
+            "size": self.size,
+            "entry_order_id": self.entry_order_id,
+            "stop_order_id": self.stop_order_id,
+            "peak_R": self.peak_R,
+            "locked_half_R": self.locked_half_R,
+            "locked_BE": self.locked_BE,
+        }
+
+    def restore_from_snapshot(self, snap: dict) -> None:
+        """Restore tracker state from a to_snapshot() dict.
+
+        Used by the bootstrap reconciliation path. Does NOT call on_fill
+        (which would log a fresh "Position opened" line) — silently restores
+        prior state without re-emitting events.
+        """
+        self.side = snap.get("side")
+        self.entry_price = float(snap.get("entry_price") or 0.0)
+        self.stop_price = float(snap.get("stop_price") or 0.0)
+        self.size = int(snap.get("size") or 0)
+        self.entry_order_id = snap.get("entry_order_id")
+        self.stop_order_id = snap.get("stop_order_id")
+        self.peak_R = float(snap.get("peak_R") or 0.0)
+        self.locked_half_R = bool(snap.get("locked_half_R", False))
+        self.locked_BE = bool(snap.get("locked_BE", False))
+
     def on_fill(self, side: str, price: float, size: int, stop_price: float, signal_price: float = 0.0) -> None:
         """Record a new position entry."""
         self.side = side

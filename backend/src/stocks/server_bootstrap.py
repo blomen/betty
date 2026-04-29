@@ -481,6 +481,40 @@ def _build_server_tick_handler(app, level_monitor):
     return _on_tick
 
 
+async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
+    """Periodically (60s) verify tracker.size matches TopstepX position size.
+    On mismatch, halt + flatten — better to take a wash trade than to
+    operate with diverged state.
+    """
+    while True:
+        try:
+            await asyncio.sleep(60)
+            if adapter.tracker.is_flat:
+                continue
+            try:
+                positions = await client.search_open_positions()
+            except Exception:
+                log.warning("reconcile loop: REST query failed; skipping cycle", exc_info=True)
+                continue
+            matching = [p for p in positions if p.get("contractId") == contract_id]
+            broker_size = sum(int(p.get("size") or 0) for p in matching)
+            local_size = int(adapter.tracker.size or 0)
+            if broker_size != local_size:
+                log.error(
+                    "reconcile loop: SIZE MISMATCH — broker=%d local=%d; halting + flattening",
+                    broker_size, local_size,
+                )
+                adapter._halt("size_mismatch")
+                try:
+                    await adapter.flatten("size_mismatch_recovery")
+                except Exception:
+                    log.exception("reconcile loop: flatten after mismatch failed")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("reconcile loop: unexpected error; continuing")
+
+
 async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     """Start TopstepX client + stream + broker adapter inside the FastAPI
     process. Returns None when disabled or when auth fails.
@@ -527,6 +561,21 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     log.info("TopstepX authenticated: account=%s", client._account_id)
 
     adapter = TopstepXBrokerAdapter(client, config)
+
+    from .tracker_reconciler import reconcile_tracker_from_broker
+
+    reconcile_result = await reconcile_tracker_from_broker(adapter, client, config.contract_id)
+    if reconcile_result.degraded and adapter._pending_trade:
+        # Layer 2 fallback: restore from disk snapshot if REST failed.
+        snap = adapter._pending_trade.get("tracker_snapshot")
+        if snap:
+            log.warning("reconcile: REST failed, falling back to disk snapshot")
+            adapter.tracker.restore_from_snapshot(snap)
+        else:
+            log.error(
+                "reconcile: REST failed AND no disk snapshot — broker_adapter is in unknown state; halting trading"
+            )
+            adapter._halt("reconcile_failed")
 
     # Wire the adapter to LevelMonitor — this replaces the /ws/signals →
     # local relay → adapter round trip with a direct in-process call.
@@ -625,6 +674,11 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     log.info("Starting TopstepX stream (server-side)...")
     await stream.start()
 
+    _reconcile_task = asyncio.create_task(
+        _reconcile_position_loop(adapter, client, config.contract_id),
+        name="server-position-reconciler",
+    )
+
     flatten_scheduler = FlattenScheduler(adapter, config.flatten_et)
     flatten_scheduler.start()
     log.info("FlattenScheduler started (flatten at %s ET)", config.flatten_et)
@@ -634,7 +688,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         adapter=adapter,
         stream=stream,
         flatten_scheduler=flatten_scheduler,
-        tasks={"zone_seed": _seed_task},
+        tasks={"zone_seed": _seed_task, "reconcile": _reconcile_task},
     )
     app.state.stocks_runtime = runtime
     log.info("ServerStocksRuntime active — autonomous trading ON")

@@ -247,6 +247,14 @@ class TopstepXBrokerAdapter:
         except Exception:
             log.warning("BE-lock modify_stop failed", exc_info=True)
 
+    def _set_pending_trade(self, value: dict | None) -> None:
+        """In-memory + disk update with tracker snapshot for restart recovery."""
+        if value is not None:
+            value = dict(value)  # don't mutate caller's dict
+            value["tracker_snapshot"] = self.tracker.to_snapshot()
+        self._pending_trade = value
+        _save_pending_trade_to_disk(value)
+
     async def on_signal(self, signal: dict) -> dict | None:
         """Handle signal with dynamic position management.
 
@@ -417,8 +425,7 @@ class TopstepXBrokerAdapter:
                 log.exception("Failed to liquidate position")
             if self.tracker.entry_price == 0.0:
                 self.tracker.on_exit(0.0)
-                self._pending_trade = None
-                _save_pending_trade_to_disk(None)
+                self._set_pending_trade(None)
 
         log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
         return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
@@ -512,7 +519,7 @@ class TopstepXBrokerAdapter:
                 # re-anchor moved it to a tighter price.
                 if self._pending_trade is not None:
                     self._pending_trade["stop_price"] = new_stop_price
-                    _save_pending_trade_to_disk(self._pending_trade)
+                    self._set_pending_trade(self._pending_trade)
                 log.info("New stop placed at %.2f", new_stop_price)
                 return {"action": "new_stop", "stop_price": new_stop_price}
             except Exception:
@@ -523,7 +530,7 @@ class TopstepXBrokerAdapter:
             self.tracker.stop_price = new_stop_price
             if self._pending_trade is not None:
                 self._pending_trade["stop_price"] = new_stop_price
-                _save_pending_trade_to_disk(self._pending_trade)
+                self._set_pending_trade(self._pending_trade)
             log.info("Stop moved to %.2f", new_stop_price)
             return {"action": "modify_stop", "stop_price": new_stop_price}
         except Exception:
@@ -570,6 +577,7 @@ class TopstepXBrokerAdapter:
                 if self._pending_trade:
                     self._pending_trade["entry_price"] = price
                     self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
+                    self._set_pending_trade(self._pending_trade)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
 
                 # Adverse-slip kill switch: if the fill came in much worse
@@ -785,8 +793,7 @@ class TopstepXBrokerAdapter:
                 closed_at=now_utc,
                 topstepx_account_id=tsx_account_id,
             )
-            self._pending_trade = None
-            _save_pending_trade_to_disk(None)
+            self._set_pending_trade(None)
 
     def reset_session(self) -> None:
         """Daily midnight reset."""
@@ -1001,7 +1008,8 @@ class TopstepXBrokerAdapter:
         }
         # Mirror to disk so a container restart between this point and the
         # close fill doesn't strip reasoning + signal context (orphan loss).
-        _save_pending_trade_to_disk(self._pending_trade)
+        # _set_pending_trade also embeds a tracker snapshot for Layer 2 recovery.
+        self._set_pending_trade(self._pending_trade)
 
         return {
             "action": action,
