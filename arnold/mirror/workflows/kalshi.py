@@ -20,6 +20,7 @@ SDK reality check (vs. original plan):
     - Responses are pydantic v2 models, accessed via attributes (not `.get()`).
     - There is no `now_ts()` helper — use `int(time.time())`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -145,11 +146,11 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Login / balance ----------
 
-    async def check_login(self, page: "Page") -> bool:
+    async def check_login(self, page: Page) -> bool:
         # API auth is independent of web session; presence of a client is enough.
         return self.has_api
 
-    async def sync_balance(self, page: "Page") -> float:
+    async def sync_balance(self, page: Page) -> float:
         if not self.has_api:
             return 0.0
         try:
@@ -162,7 +163,7 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- History sync (for settlement reconciliation) ----------
 
-    async def sync_history(self, page: "Page") -> list[HistoryEntry]:
+    async def sync_history(self, page: Page) -> list[HistoryEntry]:
         if not self.has_api:
             return []
         try:
@@ -199,7 +200,7 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Navigation (visual context only) ----------
 
-    async def navigate_to_event(self, page: "Page", bet) -> bool:
+    async def navigate_to_event(self, page: Page, bet) -> bool:
         ticker = getattr(bet, "provider_event_id", "") or ""
         ticker = ticker.replace("kalshi_", "")
         if not ticker:
@@ -214,11 +215,9 @@ class KalshiWorkflow(ProviderWorkflow):
 
     # ---------- Placement ----------
 
-    async def prep_betslip(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def prep_betslip(self, page: Page, bet, stake: float) -> PlacementResult:
         # No DOM interaction; stash the order params for place_bet().
-        self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(
-            bet, "provider_event_id", None
-        )
+        self._pending_ticker = getattr(bet, "provider_market_ticker", None) or getattr(bet, "provider_event_id", None)
         if not self._pending_ticker:
             return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_ticker")
         yes_price_dollars = self._infer_yes_price(bet)
@@ -237,22 +236,32 @@ class KalshiWorkflow(ProviderWorkflow):
         odds = float(getattr(bet, "odds", 2.0))
         return max(0.01, min(0.99, round(1.0 / odds, 4)))
 
-    async def check_live_price(self, page: "Page", bet) -> tuple[float | None, float | None]:
+    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
         if not self.has_api or not self._pending_ticker:
             return None, None
         try:
             resp = self._markets.get_market(self._pending_ticker)
             mkt = getattr(resp, "market", None)
-            yes_ask_cents = int(getattr(mkt, "yes_ask", 0) or 0) if mkt else 0
+            if mkt is None:
+                return None, None
+            # SDK ships both yes_ask (cents int) and yes_ask_dollars (float 0-1).
+            # Prefer dollars (newer field), fall back to cents.
+            yad = getattr(mkt, "yes_ask_dollars", None)
+            if yad is not None and float(yad) > 0:
+                yes_ask_cents = float(yad) * 100.0
+            else:
+                yes_ask_cents = float(getattr(mkt, "yes_ask", 0) or 0)
             if yes_ask_cents <= 0:
                 return None, None
-            odds = round(100.0 / yes_ask_cents, 4)
-            return odds, None
+            live_odds = round(100.0 / yes_ask_cents, 4)
+            fair = getattr(bet, "fair_odds", None) if not isinstance(bet, dict) else bet.get("fair_odds")
+            live_edge = round((live_odds / float(fair) - 1.0) * 100.0, 2) if fair else None
+            return live_odds, live_edge
         except Exception as e:
             logger.warning(f"[kalshi] check_live_price failed: {e}")
             return None, None
 
-    async def place_bet(self, page: "Page", bet, stake: float) -> PlacementResult:
+    async def place_bet(self, page: Page, bet, stake: float) -> PlacementResult:
         if not self.has_api or not self._pending_ticker:
             return PlacementResult(status="failed", bet_id=getattr(bet, "id", 0), reason="no_client")
         try:
