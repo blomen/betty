@@ -321,6 +321,33 @@ async def signal_relay(ws: WebSocket):
 
                 # Feed level monitor (triggers zone detection + inference)
                 level_monitor.on_tick(price, size, ts)
+
+                # Echo tick to other WS clients so passive listeners (the
+                # local Arnold UI's _passive_dashboard_listener) can show a
+                # live last price. Only the trading_service is supposed to
+                # PUSH ticks, so other clients never receive them otherwise.
+                # Downsampled to every 10th tick to mirror dashboard cadence
+                # and avoid flooding callbacks during high-volume bursts.
+                _echo_n = getattr(ws.app.state, "_signal_ws_tick_echo_n", 0) + 1
+                ws.app.state._signal_ws_tick_echo_n = _echo_n
+                if _echo_n % 10 == 0:
+                    echo_msg = {
+                        "type": "tick",
+                        "price": price,
+                        "size": size,
+                        "ts": ts,
+                        "side": msg.get("side", "B"),
+                    }
+                    for cb in list(getattr(level_monitor, "_signal_callbacks", set())):
+                        if cb is _on_signal:
+                            continue  # don't echo to sender
+                        try:
+                            if asyncio.iscoroutinefunction(cb):
+                                asyncio.create_task(cb(echo_msg))
+                            else:
+                                cb(echo_msg)
+                        except Exception:
+                            log.debug("tick echo failed", exc_info=True)
             elif msg_type == "fill":
                 adapter = getattr(ws.app.state, "broker_adapter", None)
                 if adapter:

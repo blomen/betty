@@ -25,7 +25,7 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Segment(TypedDict):
@@ -454,6 +454,19 @@ def _build_segments() -> list[Segment]:
             "title": "Zone touch memory",
             "size": 3,
             "labels": ["touch_count_norm", "last_result", "time_since_last"],
+            "kind": "scalar",
+        },
+        {
+            "name": "prev_zone",
+            "title": "Cross-zone narrative",
+            "size": 5,
+            "labels": [
+                "prev_zone_dist_norm",
+                "prev_zone_outcome",
+                "prev_zone_age_norm",
+                "prev_zone_valid",
+                "stack_density",
+            ],
             "kind": "scalar",
         },
     ]
