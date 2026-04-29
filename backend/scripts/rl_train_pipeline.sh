@@ -106,7 +106,18 @@ echo ""
 echo "[0/8] Ingesting live trades → episodes..."
 python -m src.app rl ingest-live-trades || echo "[0/8] No live trades to ingest (non-critical)."
 
-# Step 0c: Merge live episodes (always runs — new episodes accumulate between cycles)
+# Step 0c: Retroactive zone-outcome labels — for every stock_signals row in
+# the last 7 days, replay forward 30 minutes via market_trades and emit
+# REV/CONT/SKIP labels. Generates synthetic (obs, action, reward) tuples
+# for every zone touch (not just the ones we actually traded), bypassing
+# the live-execution gap. ~hundreds of labels per market day.
+echo ""
+echo "[0/8] Labelling zone outcomes (retroactive, last 7d)..."
+python -m src.app rl label-zone-outcomes --days 7 --horizon-min 30 \
+    || echo "[0/8] Zone outcome labelling failed (non-critical)."
+
+# Step 0d: Merge live episodes — folds ALL chunks (live trades + zone
+# outcomes + raw collector chunks) into the main training pool.
 echo ""
 echo "[0/8] Merging live episodes..."
 python -m src.app rl merge-live || echo "[0/8] No live episodes to merge (non-critical)."
