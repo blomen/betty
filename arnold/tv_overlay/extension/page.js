@@ -387,13 +387,6 @@
     const now = Math.floor(Date.now() / 1000);
     const tStart = now - 6 * 3600;
     const tEnd = now + 6 * 3600;
-    // Distribution-style anchor for FVG / Order Block rectangles: place
-    // them as narrow bars far to the right of price action so they read
-    // as a vertical "distribution" of zones at each price level instead
-    // of overlapping the live candles. 30-min wide, 1h-3h ahead of now.
-    const isDistShape = meta.family === 'FVG' || meta.family === 'Order Blocks';
-    const distStart = now + 1 * 3600;
-    const distEnd = now + 1 * 3600 + 30 * 60;
 
     const existing = drawnLevels.get(p.key);
     if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
@@ -401,9 +394,7 @@
         const obj = chart.getShapeById(existing.shapeId);
         if (obj && typeof obj.setPoints === 'function') {
           if (meta.shape === 'rectangle' && p.top != null && p.bottom != null) {
-            const a = isDistShape ? distStart : tStart;
-            const b = isDistShape ? distEnd : tEnd;
-            obj.setPoints([{ time: a, price: p.top }, { time: b, price: p.bottom }]);
+            obj.setPoints([{ time: tStart, price: p.top }, { time: tEnd, price: p.bottom }]);
           } else {
             obj.setPoints([{ time: now, price: p.price }]);
           }
@@ -416,12 +407,13 @@
       let id = null;
       const linecolor = _hexToRgba(meta.color, 0.6);
       if (meta.shape === 'rectangle' && p.top != null && p.bottom != null) {
-        const a = isDistShape ? distStart : tStart;
-        const b = isDistShape ? distEnd : tEnd;
+        // FVG / Order Block rectangles: filled box bounded by price_high
+        // and price_low. Faint fill + thin border so the SMC zone reads
+        // as a translucent band the user can spot at any zoom level.
         id = await _resolve(chart.createMultipointShape(
-          [{ time: a, price: p.top }, { time: b, price: p.bottom }],
+          [{ time: tStart, price: p.top }, { time: tEnd, price: p.bottom }],
           { shape: 'rectangle', disableSave: true,
-            overrides: { color: meta.color, backgroundColor: meta.color, transparency: 88, linewidth: 1 } },
+            overrides: { color: meta.color, backgroundColor: meta.color, transparency: 92, linewidth: 1 } },
         ));
       } else {
         id = await _resolve(chart.createMultipointShape(
@@ -510,21 +502,39 @@
     // setInputValues — much cheaper than removeStudy + createStudy and
     // avoids the visual flicker of TV recomputing from scratch.
     const winColor = ({ monthly: PALETTE[0], weekly: PALETTE[1], daily: PALETTE[2] })[win] || PALETTE[2];
+    // Horizlines schema has `color` + `style` + `visible` + `width` +
+    // `showPrice` + `showLastValue` only. Bake alpha into the rgba color
+    // for fade since there's no `transparency` field. POC at full opacity
+    // (primary level); VAH/VAL at 50%. showPrice=false hides the inline
+    // price-on-line text; showLastValue=false hides the right-axis price
+    // tag. Both needed to remove all price labels.
+    const fadedColor = _hexToRgba(winColor, 0.5);
     const overrides = {
-      // POC at full opacity (key reference line); VAH/VAL at 50%
-      // transparency (≈50% opacity, matching user request).
       'graphics.horizlines.pocLines.visible': true,
       'graphics.horizlines.pocLines.color': winColor,
       'graphics.horizlines.pocLines.showPrice': false,
-      'graphics.horizlines.pocLines.transparency': 0,
+      'graphics.horizlines.pocLines.showLastValue': false,
+      'graphics.horizlines.pocLines.width': 1,
       'graphics.horizlines.vahLines.visible': true,
-      'graphics.horizlines.vahLines.color': winColor,
+      'graphics.horizlines.vahLines.color': fadedColor,
       'graphics.horizlines.vahLines.showPrice': false,
-      'graphics.horizlines.vahLines.transparency': 50,
+      'graphics.horizlines.vahLines.showLastValue': false,
+      'graphics.horizlines.vahLines.width': 1,
       'graphics.horizlines.valLines.visible': true,
-      'graphics.horizlines.valLines.color': winColor,
+      'graphics.horizlines.valLines.color': fadedColor,
       'graphics.horizlines.valLines.showPrice': false,
-      'graphics.horizlines.valLines.transparency': 50,
+      'graphics.horizlines.valLines.showLastValue': false,
+      'graphics.horizlines.valLines.width': 1,
+      // Kill the developing* plot labels too (display: 0 = price-scale only,
+      // no last-value bubble on right axis).
+      'styles.developingPoc.display': 0,
+      'styles.developingVAHigh.display': 0,
+      'styles.developingVALow.display': 0,
+      'styles.developingPoc.showLastValue': false,
+      'styles.developingVAHigh.showLastValue': false,
+      'styles.developingVALow.showLastValue': false,
+      showLastValue: false,
+      showStudyLastValue: false,
       // Histogram visible but compressed.
       'graphics.hhists.histBars2.visible': true,
       'graphics.hhists.histBars2.colors': [winColor, winColor],
@@ -777,6 +787,37 @@
       return;
     }
     console.log('[arnold-overlay/page] attached to chart', c);
+
+    // Hide study arguments + values in the chart's status-line legend
+    // (otherwise every FRVP shows "Number Of Rows 100 Up/Down 70" etc.,
+    // stacking 3+ deep in the top-left).
+    try {
+      chart.applyOverrides({
+        'paneProperties.legendProperties.showStudyArguments': false,
+        'paneProperties.legendProperties.showStudyValues': false,
+      });
+    } catch (_) {}
+
+    // Strip right-axis last-value labels off every existing study (VWAP,
+    // Volume, LuxAlgo Sessions, RSI, etc.) — the user's preference is a
+    // clean axis. FRVPs already get this via the per-window overrides.
+    // Skips FRVPs to avoid double-processing.
+    try {
+      const studies = chart.getAllStudies && chart.getAllStudies() || [];
+      for (const s of studies) {
+        if (/Fixed Range Volume Profile/i.test(String(s.name || ''))) continue;
+        const obj = chart.getStudyById(s.id);
+        if (!obj || typeof obj.getStyleValues !== 'function') continue;
+        const sv = obj.getStyleValues();
+        const styleKeys = Object.keys(sv.styles || {});
+        const ov = {};
+        for (const k of styleKeys) {
+          ov[`styles.${k}.display`] = 0;
+          ov[`styles.${k}.showLastValue`] = false;
+        }
+        try { obj.applyOverrides(ov); } catch (_) {}
+      }
+    } catch (_) {}
 
     // Sweep up shapes left over from previous extension sessions before
     // we start drawing fresh. TV may not have finished loading shapes from

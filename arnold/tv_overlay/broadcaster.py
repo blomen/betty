@@ -162,6 +162,25 @@ class OverlayBroadcaster:
 
         now = int(datetime.now(tz=timezone.utc).timestamp())
         seen: dict[str, dict] = {}
+        # Cap closed trades to the most recent 30 to avoid the overlapping-
+        # shape soup that 80+ trades produce on a busy session. Active
+        # trade always passes through.
+        active = [t for t in trades if t.get("id") == "active"]
+        closed = [t for t in trades if t.get("id") != "active"]
+        # Drop zero-duration trades (closed_at == ts) — instant stops or
+        # broken fills produce 1-point shapes that auto-extend forever and
+        # clutter the chart. Threshold: at least 5 seconds.
+        closed = [
+            t
+            for t in closed
+            if not t.get("closed_at")
+            or not t.get("ts")
+            or (t.get("closed_at") and t.get("ts") and t["closed_at"] > t["ts"])
+        ]
+        # Most recent 30 by ts
+        closed.sort(key=lambda t: t.get("ts") or "", reverse=True)
+        closed = closed[:30]
+        trades = active + closed
         for t in trades:
             tid = t.get("id")
             if tid is None:
