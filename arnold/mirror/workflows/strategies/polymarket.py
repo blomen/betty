@@ -629,7 +629,12 @@ _LOCATE_TARGET_JS = r"""(args) => {
                 const pStr = String(point);
                 if (!bt.includes(pStr)) continue;
             }
-            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
+            // Cents are 1-99 on Polymarket. Cap at 2 digits so the regex
+            // doesn't greedily eat the trailing chars of a concatenated line
+            // value (e.g. "o 2.551¢" — without the cap this matched "551¢"
+            // instead of "51¢", returning 0.18 odds for what should have
+            // been ~1.96).
+            const m = b.textContent.match(/(\d{1,2}(?:\.\d)?)¢/);
             return {
                 full_text: b.textContent.trim(),
                 cents: m ? parseFloat(m[1]) : null,
@@ -650,7 +655,9 @@ _LOCATE_TARGET_JS = r"""(args) => {
                 const absStr = absPoint % 1 === 0 ? String(absPoint) : absPoint.toString();
                 if (!bt.includes(absStr)) continue;
             }
-            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
+            // See cents-cap comment above (total branch) — same bug class:
+            // "ktc-1.525¢" must match "25¢", not "525¢".
+            const m = b.textContent.match(/(\d{1,2}(?:\.\d)?)¢/);
             return {
                 full_text: b.textContent.trim(),
                 cents: m ? parseFloat(m[1]) : null,
@@ -661,7 +668,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
 
         // moneyline / 1x2 / default — match team name only.
         if (!teamMatch(bt)) continue;
-        const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
+        const m = b.textContent.match(/(\d{1,2}(?:\.\d)?)¢/);
         return {
             full_text: b.textContent.trim(),
             cents: m ? parseFloat(m[1]) : null,
@@ -686,7 +693,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
         }
         if (idx >= 0 && idx < centBtns.length) {
             const b = centBtns[idx];
-            const m = b.textContent.match(/(\d{1,3}(?:\.\d)?)¢/);
+            const m = b.textContent.match(/(\d{1,2}(?:\.\d)?)¢/);
             return {
                 full_text: b.textContent.trim(),
                 cents: m ? parseFloat(m[1]) : null,
@@ -708,7 +715,7 @@ _LOCATE_TARGET_JS = r"""(args) => {
         for (const b of centBtns) {
             const bt = (b.textContent || '').trim();
             if (bt.includes(want)) {
-                const m = bt.match(/(\d{1,3}(?:\.\d)?)¢/);
+                const m = bt.match(/(\d{1,2}(?:\.\d)?)¢/);
                 return {
                     full_text: bt,
                     cents: m ? parseFloat(m[1]) : null,
@@ -977,7 +984,10 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
         logger.warning(f"[polymarket] click eval raised: {e}")
         return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_eval_failed:{e}")
 
-    live_odds = round(1.0 / (cents / 100.0), 3) if cents and cents > 0 else None
+    # Cents must be 1-99 on Polymarket. Reject out-of-band values so a stray
+    # greedy regex match (e.g. "519" from a concatenated line+cents) can't
+    # surface as a 0.19-odds bet_ready broadcast.
+    live_odds = round(1.0 / (cents / 100.0), 3) if cents and 0 < cents < 100 else None
 
     # Step 3: fill Amount input.
     # Polymarket's betslip mounts ~1.5-3s AFTER the outcome click (React hydrates
