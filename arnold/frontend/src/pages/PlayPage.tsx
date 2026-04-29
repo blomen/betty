@@ -1646,7 +1646,6 @@ export default function PlayPage() {
                     const isCurrent = currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome
                     const displayOdds = live?.odds ?? b.odds
                     const displayEdge = live?.edge ?? b.edge_pct
-                    const oddsChanged = live && Math.abs(live.odds - b.odds) >= 0.01
                     return (
                       <tr key={key}
                         className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 transition-colors ${
@@ -1657,11 +1656,12 @@ export default function PlayPage() {
                         <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
                         <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">{fmtMarket(b)}</td>
                         <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${oddsChanged ? (live!.odds > b.odds ? 'text-green-400' : 'text-red-400') : 'text-zinc-200'}`}>
+                        <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
                           {fmtOddsWithCents(displayOdds, b.tier === 'polymarket')}
-                          {/* Drift direction is conveyed by green/red color — no
-                              need to show the original-batch-odds in dim parens
-                              (visually overlaps with the fair-odds column). */}
+                          {/* Sky color = streaming live from the provider tab.
+                              Drift direction is intentionally not shown — the
+                              edge column already conveys whether the live odds
+                              still leave us +EV. */}
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, b.tier === 'polymarket')}</td>
                         <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
