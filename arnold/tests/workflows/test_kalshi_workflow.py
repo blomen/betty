@@ -138,3 +138,33 @@ class TestPrepBetslip:
         bet = _make_bet(odds=10000.0)  # yes_price ≈ 0.0001
         await workflow.prep_betslip(page=None, bet=bet, stake=5.0)
         assert workflow._pending_yes_price_cents == 1
+
+
+class TestSyncBalance:
+    @pytest.mark.asyncio
+    async def test_returns_balance_in_dollars(self, workflow):
+        workflow._portfolio.get_balance.return_value = SimpleNamespace(balance=12345)
+        bal = await workflow.sync_balance(page=None)
+        assert bal == pytest.approx(123.45, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_caches_last_known_value(self, workflow):
+        workflow._portfolio.get_balance.return_value = SimpleNamespace(balance=12345)
+        first = await workflow.sync_balance(page=None)
+        assert first == pytest.approx(123.45)
+        # Subsequent failure should return the cached value, not 0.0.
+        workflow._portfolio.get_balance.side_effect = RuntimeError("transient")
+        second = await workflow.sync_balance(page=None)
+        assert second == pytest.approx(123.45)
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_no_cache_and_failure(self, workflow):
+        workflow._portfolio.get_balance.side_effect = RuntimeError("offline")
+        bal = await workflow.sync_balance(page=None)
+        assert bal == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_api_returns_zero(self, workflow):
+        workflow._portfolio = None  # simulate no-creds stub
+        bal = await workflow.sync_balance(page=None)
+        assert bal == 0.0

@@ -111,6 +111,7 @@ class KalshiWorkflow(ProviderWorkflow):
         self._pending_ticker: str | None = None
         self._pending_count: int = 0
         self._pending_yes_price_cents: int = 0
+        self._balance_cache: float | None = None  # last successful sync_balance value
         self._init_client()
 
     def _init_client(self) -> None:
@@ -154,11 +155,15 @@ class KalshiWorkflow(ProviderWorkflow):
         if not self.has_api:
             return 0.0
         try:
-            resp = self._portfolio.get_balance()  # GetBalanceResponse(balance=int cents)
+            resp = self._portfolio.get_balance()
             cents = getattr(resp, "balance", None) or 0
-            return round(float(cents) / 100.0, 2)
+            value = round(float(cents) / 100.0, 2)
+            self._balance_cache = value
+            return value
         except Exception as e:
             logger.warning(f"[kalshi] sync_balance failed: {e}")
+            if self._balance_cache is not None:
+                return self._balance_cache
             return 0.0
 
     # ---------- History sync (for settlement reconciliation) ----------
