@@ -281,21 +281,42 @@ async def _tunnel_watchdog() -> None:
     consecutive_failures = 0
 
     def _kill_tunnel() -> None:
-        # Find PID owning the tunnel port and kill it. We use psutil if
-        # available, fall back to system tools.
+        """Kill any SSH process holding the tunnel — both the case where it's
+        actively listening on TUNNEL_PORT AND the zombie case where the SSH
+        process is alive but the port-forward died (port not listening but
+        SSH still consuming the socket). Without the cmdline-based kill, a
+        zombie SSH would block respawn forever — port 18000 stays held by
+        the dead-tunnel SSH, new ssh -L can't bind."""
+        killed_any = False
         try:
             import psutil
 
+            # 1. Anything LISTENing on the tunnel port.
             for conn in psutil.net_connections(kind="inet"):
                 if conn.laddr and conn.laddr.port == TUNNEL_PORT and conn.status == "LISTEN":
                     if conn.pid:
                         try:
                             os.kill(conn.pid, signal.SIGTERM)
                             print(f"[tunnel-watchdog] killed pid {conn.pid} on port {TUNNEL_PORT}", flush=True)
+                            killed_any = True
                         except Exception:
                             pass
+            # 2. Any ssh.exe (or ssh) process whose cmdline references the tunnel
+            #    forward — catches the zombie case.
+            for p in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    name = (p.info.get("name") or "").lower()
+                    if name not in ("ssh.exe", "ssh"):
+                        continue
+                    cmdline = " ".join(p.info.get("cmdline") or [])
+                    if f"{TUNNEL_PORT}:localhost:" in cmdline or f"-L {TUNNEL_PORT}:" in cmdline:
+                        os.kill(p.info["pid"], signal.SIGTERM)
+                        print(f"[tunnel-watchdog] killed zombie ssh pid {p.info['pid']}", flush=True)
+                        killed_any = True
+                except Exception:
+                    continue
         except ImportError:
-            # Fallback: shell out to taskkill on Windows.
+            # Fallback: PowerShell — kill by port AND by ssh cmdline match.
             if os.name == "nt":
                 try:
                     subprocess.run(
@@ -303,13 +324,18 @@ async def _tunnel_watchdog() -> None:
                             "powershell",
                             "-Command",
                             f"Get-NetTCPConnection -LocalPort {TUNNEL_PORT} -State Listen "
-                            f"-ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}",
+                            f"-ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }};"
+                            f"Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | "
+                            f"Where-Object {{ $_.CommandLine -match '{TUNNEL_PORT}:localhost:' }} | "
+                            f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
                         ],
                         timeout=10,
                         capture_output=True,
                     )
                 except Exception:
                     pass
+        if not killed_any:
+            print("[tunnel-watchdog] _kill_tunnel: nothing matched (psutil path)", flush=True)
 
     def _spawn_tunnel() -> None:
         try:
