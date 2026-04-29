@@ -225,8 +225,7 @@ class KalshiWorkflow(ProviderWorkflow):
             return PlacementResult(status="failed", bet_id=bid, reason="no_ticker")
         yes_price_dollars = self._infer_yes_price(bet)
         self._pending_yes_price_cents = max(1, min(99, int(round(yes_price_dollars * 100))))
-        # Round-nearest (not floor) so a $5 stake at 66¢ buys 8 contracts ($5.28),
-        # not 7 ($4.62). Floor systematically under-stakes.
+        # round-nearest, not floor: floor systematically under-stakes
         self._pending_count = max(1, round(stake / max(yes_price_dollars, 0.01)))
         actual_stake = round(self._pending_count * yes_price_dollars, 2)
         return PlacementResult(
