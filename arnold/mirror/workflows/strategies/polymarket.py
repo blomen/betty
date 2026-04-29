@@ -769,10 +769,40 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     else:
         target = outcome
 
+    # Verify post-navigation URL contains the bet's event_slug — Polymarket
+    # silently REDIRECTS invalid /event/<slug> URLs to a default/popular event
+    # page. Without this check the locator runs on the wrong event entirely
+    # (e.g. tries to click "Voca v Zomblers home" on a "Sharks v Falcons" page),
+    # finds the wrong cent buttons, returns null → prep_failed. Detecting the
+    # redirect early lets us skip with a clear reason instead of misleading
+    # "no_cent_button_matched".
+    expected_slug = _g("event_slug").lower()
+    if expected_slug:
+        current_url = (page.url or "").lower()
+        if expected_slug not in current_url:
+            return PlacementResult(
+                status="failed",
+                bet_id=bet_id,
+                reason=f"navigation_redirected (expected slug '{expected_slug}' not in URL '{current_url[:80]}')",
+            )
+
+    # Wait for the actual market cent buttons to render — Polymarket
+    # navigates client-side and the market data populates ~1-3s after
+    # domcontentloaded. Waiting for any "button" was matching nav/menu
+    # buttons way too early, leaving locator with zero cent buttons to
+    # search and prep_betslip returning no_cent_button_matched.
+    # Wait up to 10s for a button containing ¢. If still no cent button
+    # after 10s, the page genuinely has no markets (closed event /
+    # pre-launch / wrong slug) — fall through and let the locator return
+    # null which the runner will treat as prep_failed.
     try:
-        await page.wait_for_selector("button", timeout=10000)
+        await page.wait_for_function(
+            "() => Array.from(document.querySelectorAll('button')).some(b => b.textContent && b.textContent.includes('¢'))",
+            timeout=10000,
+        )
     except Exception:
-        await asyncio.sleep(3)
+        # Final fallback: extra fixed sleep, then proceed.
+        await asyncio.sleep(2.0)
 
     # Step 1: identify the target button text via JS — market-aware locator
     # picks the right block (Moneyline / Game Handicap / Total Games) AND
@@ -803,15 +833,149 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
         f"{', fallback' if target_info.get('fallback') else ''})"
     )
 
-    # Step 2: click via Playwright locator (real pointer events fire React handlers)
+    # Step 2: click the button. Polymarket renders text via CSS uppercase
+    # transforms, so the visible "BSTA 16¢" actually has textContent "bsta16¢"
+    # (lowercased, no space). Playwright's get_by_role(name=, exact=True)
+    # often fails to resolve by accessible-name in this case. Instead, use the
+    # JS we already evaluated to dispatch the click directly on the same
+    # button — same React onClick handler fires either way. Falls back to
+    # Playwright locator if the JS click somehow didn't register.
+    click_js = r"""(args) => {
+        const targetName = (args.targetName || '').toLowerCase();
+        const market = (args.market || '').toLowerCase();
+        const point = args.point;
+        const outcome = (args.outcome || '').toLowerCase();
+        const HEADERS = {
+            moneyline: ['Moneyline'], '1x2': ['Moneyline', '1X2', '1x2'],
+            spread: ['Game Handicap', 'Spread', 'Handicap', 'Run Line', 'Puck Line'],
+            total: ['Total Games', 'Total Maps', 'Total Goals', 'Total', 'Over/Under'],
+        };
+        const headerCandidates = HEADERS[market] || ['Moneyline'];
+        let block = null;
+        for (const headerText of headerCandidates) {
+            for (const el of document.querySelectorAll('div, span, p, h2, h3, h4')) {
+                const t = (el.textContent || '').trim();
+                if (t !== headerText || el.tagName === 'BUTTON') continue;
+                let p = el.parentElement;
+                for (let i = 0; i < 6 && p; i++) {
+                    const btns = p.querySelectorAll('button');
+                    let cc = 0;
+                    for (const b of btns) if (b.textContent.includes('¢')) cc++;
+                    if (cc >= 2) { block = p; break; }
+                    p = p.parentElement;
+                }
+                if (block) break;
+            }
+            if (block) break;
+        }
+        let centBtns = [];
+        if (block) {
+            for (const b of block.querySelectorAll('button')) {
+                const t = (b.textContent || '').trim();
+                if (t.includes('¢') && t.length < 60) centBtns.push(b);
+            }
+        }
+        if (centBtns.length < 2) {
+            centBtns = [];
+            for (const b of document.querySelectorAll('button')) {
+                const t = (b.textContent || '').trim();
+                if (t.includes('¢') && t.length < 60) centBtns.push(b);
+            }
+        }
+        // Re-run the same matching logic and click the matching button.
+        // (Inline-duplicates the locator's selection logic — that's OK
+        // since the Python side already validated a target_info exists.)
+        const tn = targetName;
+        const initials = tn.split(/\s+/).filter(w => w.length > 0).map(w => w[0]).join('');
+        const extractTeam = (text) => {
+            let s = text.replace(/(\d+(?:\.\d+)?)¢.*$/i, '').trim();
+            s = s.replace(/[-+]?\d+(?:\.\d+)?\s*$/, '').trim();
+            return s;
+        };
+        const teamMatch = (text) => {
+            const team = extractTeam(text);
+            if (!team || team.length < 2) return false;
+            const t2 = team.slice(0, 2);
+            const t3 = team.slice(0, 3);
+            return tn.startsWith(team) || team.startsWith(tn.slice(0, 3))
+                || tn.includes(team) || team === initials || initials.startsWith(team)
+                || tn.split(/\s+/).some(w => w.startsWith(team))
+                || (t2.length === 2 && tn.split(/\s+/).some(w => w.startsWith(t2)))
+                || (t2.length === 2 && tn.startsWith(t2))
+                || (t3.length === 3 && tn.split(/\s+/).some(w => w.startsWith(t3)));
+        };
+        let target = null;
+        for (const b of centBtns) {
+            const bt = (b.textContent || '').trim().toLowerCase();
+            if (market === 'total') {
+                const isOver = /^o(?:ver)?\s/.test(bt) || bt.startsWith('o ') || bt.startsWith('o2') || bt.startsWith('o1') || bt.startsWith('o3');
+                const isUnder = /^u(?:nder)?\s/.test(bt) || bt.startsWith('u ') || bt.startsWith('u2') || bt.startsWith('u1') || bt.startsWith('u3');
+                if (outcome === 'over' && !isOver) continue;
+                if (outcome === 'under' && !isUnder) continue;
+                if (point != null && !bt.includes(String(point))) continue;
+                target = b; break;
+            }
+            if (market === 'spread') {
+                if (!teamMatch(bt)) continue;
+                if (point != null && !bt.includes(String(Math.abs(point)))) continue;
+                target = b; break;
+            }
+            if (!teamMatch(bt)) continue;
+            target = b; break;
+        }
+        if (!target) {
+            // Positional fallback for ML/1x2
+            if (market === 'moneyline' || market === '1x2' || market === '') {
+                let idx = -1;
+                if (centBtns.length === 2) {
+                    if (outcome === 'home' || outcome === '1') idx = 0;
+                    else if (outcome === 'away' || outcome === '2') idx = 1;
+                } else if (centBtns.length === 3) {
+                    if (outcome === 'home' || outcome === '1') idx = 0;
+                    else if (outcome === 'draw' || outcome === 'x') idx = 1;
+                    else if (outcome === 'away' || outcome === '2') idx = 2;
+                }
+                if (idx >= 0 && idx < centBtns.length) target = centBtns[idx];
+            }
+            // Sign fallback for spread
+            if (!target && market === 'spread' && point != null) {
+                const want = (point < 0 ? '-' : '+') + String(Math.abs(point));
+                for (const b of centBtns) if ((b.textContent || '').includes(want)) { target = b; break; }
+            }
+        }
+        if (!target) return {clicked: false, reason: 'no_match'};
+        try {
+            target.scrollIntoView({block: 'center'});
+            target.click();
+            return {clicked: true, text: target.textContent.trim()};
+        } catch (e) {
+            return {clicked: false, reason: String(e)};
+        }
+    }"""
     try:
-        locator = page.get_by_role("button", name=full_text, exact=True).first
-        await locator.scroll_into_view_if_needed(timeout=3000)
-        await locator.click(timeout=5000)
-        logger.info(f"[polymarket] Clicked '{full_text}' via locator")
+        click_result = await page.evaluate(
+            click_js,
+            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
+        )
+        if not click_result or not click_result.get("clicked"):
+            logger.warning(f"[polymarket] JS click failed: {click_result}")
+            # Fallback to Playwright locator (rarely succeeds when JS click didn't)
+            try:
+                locator = page.get_by_role("button", name=full_text, exact=True).first
+                await locator.scroll_into_view_if_needed(timeout=3000)
+                await locator.click(timeout=5000)
+                logger.info(f"[polymarket] Clicked '{full_text}' via locator (JS fallback)")
+            except Exception:
+                return PlacementResult(
+                    status="failed",
+                    bet_id=bet_id,
+                    reason=f"click_failed: {click_result.get('reason') if click_result else 'js_eval_returned_none'}",
+                )
+        else:
+            logger.info(f"[polymarket] Clicked '{click_result.get('text')}' via JS")
     except Exception as e:
-        logger.warning(f"[polymarket] locator click failed: {e}")
-        return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_failed:{e}")
+        logger.warning(f"[polymarket] click eval raised: {e}")
+        return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_eval_failed:{e}")
 
     live_odds = round(1.0 / (cents / 100.0), 3) if cents and cents > 0 else None
 
