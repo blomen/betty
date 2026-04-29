@@ -247,6 +247,11 @@ class TopstepXBrokerAdapter:
         except Exception:
             log.warning("BE-lock modify_stop failed", exc_info=True)
 
+    def _set_pending_trade(self, value: dict | None) -> None:
+        """Single-step in-memory + disk update so callers don't drift."""
+        self._pending_trade = value
+        _save_pending_trade_to_disk(value)
+
     async def on_signal(self, signal: dict) -> dict | None:
         """Handle signal with dynamic position management.
 

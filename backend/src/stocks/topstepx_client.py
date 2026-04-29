@@ -225,10 +225,18 @@ class TopstepXClient:
         data = await self._post("/api/Position/searchOpen", {"accountId": self._account_id})
         return data if isinstance(data, list) else data.get("positions", [])
 
+    async def search_open_positions(self) -> list[dict]:
+        """Alias for get_positions — used by tracker_reconciler on bootstrap."""
+        return await self.get_positions()
+
     async def get_orders(self) -> list[dict]:
         """Get all working orders."""
         data = await self._post("/api/Order/searchOpen", {"accountId": self._account_id})
         return data if isinstance(data, list) else data.get("orders", [])
+
+    async def search_open_orders(self) -> list[dict]:
+        """Alias for get_orders — used by tracker_reconciler on bootstrap."""
+        return await self.get_orders()
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
