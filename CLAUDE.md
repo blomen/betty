@@ -187,7 +187,11 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
 11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down. Don't rely on manual monitoring.
 12. **Stocks-aware rebuild rules (when `STOCKS_AUTONOMOUS=true`)**: every rebuild severs the TopstepX SignalR session, causing ~15-60s of tick/candle data loss and a "Multiple sessions detected" reconnect race. For the trading side this matters more than for extraction. Rules:
-    - **Check the live position first**: `curl http://localhost:8000/api/stocks/runtime-status` — if `position.flat != true`, hold off unless the deploy is genuinely urgent. An open trade gets flattened by the shutdown handler; that's a real PnL event, not a rebuild artifact.
+    - **Open-position gate (enforced)**: `rebuild` and `restart` for the `backend` service in `server-deploy.sh` query TopstepX directly via `Position/searchOpen` and abort if anything is open. To deploy through a live trade anyway (e.g. paper account, or you accept the flatten), pass `ALLOW_OPEN_POSITION_DEPLOY=1`:
+      ```bash
+      ssh root@148.251.40.251 "ALLOW_OPEN_POSITION_DEPLOY=1 bash /opt/arnold/scripts/server-deploy.sh rebuild backend"
+      ```
+      Default-deny — an agent can't silently force-deploy through a live trade. The shutdown handler flattens the position; that's a real PnL event, not a rebuild artifact.
     - **Batch frequent edits**: if you're iterating (many small commits on the same feature), accumulate locally and deploy once — not once per commit. Target ≤ 2 stocks-impacting rebuilds per hour during trading.
     - **Stocks-hot window**: US RTH runs 14:30–21:00 UTC and that's when zone density and trade opportunities peak. Non-critical rebuilds in this window trade model-learning data for convenience. Prefer deploys outside this window when the change isn't blocking.
     - **Startup grace**: the server waits `STOCKS_AUTH_STARTUP_DELAY_SEC` (default 30s) before auth'ing TopstepX on a fresh container, so the prior container's SignalR session can be cleaned up by TopstepX before we connect. Shorten via env if you're sure no other session exists.

@@ -80,6 +80,57 @@ record_deploy_time() {
     date +%s > "$DEPLOY_COOLDOWN_FILE"
 }
 
+# Open-trade protection — abort deploy if a TopstepX position is live, unless
+# the operator passes ALLOW_OPEN_POSITION_DEPLOY=1. Every rebuild/restart kills
+# the broker subprocess; the shutdown handler then flattens the live trade —
+# a real PnL event, not a deploy artifact. Default-deny so an agent can't
+# silently force a deploy through it.
+check_open_position() {
+    [ "$service" != "backend" ] && return 0
+    if [ "${ALLOW_OPEN_POSITION_DEPLOY:-0}" = "1" ]; then
+        echo ">>> ALLOW_OPEN_POSITION_DEPLOY=1 — skipping open-position check."
+        return 0
+    fi
+    if ! docker compose ps backend --format json 2>/dev/null | grep -q '"State":"running"'; then
+        echo ">>> Backend not running — open-position check skipped."
+        return 0
+    fi
+    local pos_json
+    pos_json=$(docker compose exec -T backend bash -c 'cd /app/backend && python3 - <<PY 2>/dev/null
+import asyncio, json, sys
+from src.stocks.config import TopstepXConfig
+from src.stocks.topstepx_client import TopstepXClient
+async def main():
+    c = TopstepXClient(TopstepXConfig.from_env())
+    if not await c.connect():
+        print("AUTH_FAIL"); return
+    try:
+        pos = await c.search_open_positions()
+        print(json.dumps(pos or []))
+    finally:
+        await c.close()
+asyncio.run(main())
+PY
+') || pos_json=""
+    if [ -z "$pos_json" ] || [ "$pos_json" = "AUTH_FAIL" ]; then
+        echo "ERROR: could not verify TopstepX position state (auth failed or container exec error)."
+        echo "Re-run with ALLOW_OPEN_POSITION_DEPLOY=1 if you've manually verified the account is flat."
+        exit 1
+    fi
+    local count
+    count=$(echo "$pos_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)')
+    if [ "$count" -gt 0 ]; then
+        echo ""
+        echo "BLOCKED: TopstepX has ${count} open position(s) — rebuild/restart would flatten the live trade."
+        echo "$pos_json" | python3 -m json.tool 2>/dev/null || echo "$pos_json"
+        echo ""
+        echo "If you genuinely want to deploy through an open trade (e.g. paper account, or you accept the flatten):"
+        echo "  ssh root@148.251.40.251 \"ALLOW_OPEN_POSITION_DEPLOY=1 bash /opt/arnold/scripts/server-deploy.sh $action $service\""
+        exit 1
+    fi
+    echo ">>> No open positions — proceeding."
+}
+
 # RL training protection — wait for active pipeline to finish before killing container
 RL_PROGRESS="/opt/arnold/data/rl/pipeline_progress"
 RL_MAX_WAIT=7200  # 2 hours max wait
@@ -176,6 +227,7 @@ case "$action" in
         git pull
         ;;
     rebuild)
+        check_open_position
         check_cooldown
         echo ">>> git pull + rebuild $service"
         git pull
@@ -202,6 +254,7 @@ case "$action" in
         docker compose ps "$service"
         ;;
     restart)
+        check_open_position
         check_cooldown
         echo ">>> git pull + restart $service"
         git pull
