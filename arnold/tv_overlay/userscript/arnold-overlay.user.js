@@ -55,9 +55,14 @@
     weekly_swing:   '#3b82f6', // blue   — weekly swing H/L
     monthly_swing:  '#6366f1', // indigo — monthly swing H/L
     naked_poc:      '#dc2626', // crimson— untested POC
-    fvg:            '#10b981', // emerald— fair value gap mid
-    order_block:    '#ec4899', // pink   — order block mid
   };
+
+  // Families that contribute to a zone's strength score server-side but
+  // should NOT paint their own thin line inside the zone — keeps the chart
+  // readable and removes the "what is this random pink line" question.
+  // FVGs/OBs already feed _HIERARCHY_WEIGHTS in zone_builder.py, so they
+  // still strengthen zones; they just don't draw.
+  const SKIP_MEMBER_DRAW_FAMILIES = new Set(['order_block', 'fvg']);
 
   // Anchor types render solid; σ-bands / dispersion render dashed so the
   // primary structural prices visually dominate over their bands.
@@ -176,6 +181,7 @@
     if (PAGE.arnoldOverlay && PAGE.arnoldOverlay.showMembers) {
       for (const m of (p.members_detail || [])) {
         const family = m.family || 'unknown';
+        if (SKIP_MEMBER_DRAW_FAMILIES.has(family)) continue;
         const linecolor = FAMILY_PALETTE[family] || '#cbd5e1';
         const weight = typeof m.weight === 'number' ? m.weight : 0.5;
         const linewidth = weight >= 1.0 ? 3 : (weight >= 0.7 ? 2 : 1);

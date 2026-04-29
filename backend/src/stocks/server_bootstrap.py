@@ -261,6 +261,15 @@ async def _levels_watcher_loop(level_monitor: Any) -> None:
     Polls every 5s; rebuild_zones runs on a 5-min cadence so changes are
     rare. Diff via JSON-equality of the raw list.
     """
+    # FVGs and order blocks are zone members only — they strengthen zones via
+    # zone_builder._HIERARCHY_WEIGHTS but should never paint their own line on
+    # the chart. Filtered out here so they don't even cross the wire.
+    _SUPPRESSED_LEVEL_TYPES = {
+        "order_block_bullish",
+        "order_block_bearish",
+        "fvg_bullish",
+        "fvg_bearish",
+    }
     last_emit: list | None = None
     while True:
         try:
@@ -282,7 +291,7 @@ async def _levels_watcher_loop(level_monitor: Any) -> None:
                     "bottom": float(lv["price_low"]) if lv.get("price_low") is not None else None,
                 }
                 for lv in raw
-                if lv
+                if lv and str(lv.get("type") or lv.get("name") or "") not in _SUPPRESSED_LEVEL_TYPES
             ]
             snap = [s for s in snap if s["price"] is not None]
             if snap != last_emit:
@@ -502,7 +511,8 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
             if broker_size != local_size:
                 log.error(
                     "reconcile loop: SIZE MISMATCH — broker=%d local=%d; halting + flattening",
-                    broker_size, local_size,
+                    broker_size,
+                    local_size,
                 )
                 adapter._halt("size_mismatch")
                 try:
@@ -604,6 +614,33 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     # to update_zones. Future zone_update broadcasts (next rebuild) keep it
     # in sync via the forwarder.
     def _serialize_zones(zones) -> list[dict]:
+        # Match level_monitor._broadcast_zones payload shape exactly — the
+        # userscript draws thin per-member lines from members_detail, and
+        # without it the seeded zones render as bare rectangles until the
+        # next rebuild_zones tick refreshes them.
+        from src.rl.zone_builder import _LEVEL_FAMILY, _weight
+
+        def _members(z) -> list[dict]:
+            seen: set[tuple[str, float]] = set()
+            out: list[dict] = []
+            for m in z.members:
+                family = _LEVEL_FAMILY.get(m.level_type, m.level_type.value)
+                price = round(m.price / 0.25) * 0.25
+                if (family, price) in seen:
+                    continue
+                seen.add((family, price))
+                out.append(
+                    {
+                        "name": m.name,
+                        "type": m.level_type.value,
+                        "family": family,
+                        "price": price,
+                        "weight": round(_weight(m.level_type), 3),
+                    }
+                )
+            out.sort(key=lambda d: d["price"])
+            return out
+
         return [
             {
                 "price": round(z.center_price, 2),
@@ -611,6 +648,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
                 "upper": round(z.upper_bound, 2),
                 "lower": round(z.lower_bound, 2),
                 "hierarchy": round(z.hierarchy_score, 3),
+                "members_detail": _members(z),
             }
             for z in zones
         ]
