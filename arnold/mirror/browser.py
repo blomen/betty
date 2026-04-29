@@ -27,7 +27,12 @@ _BALANCE_KEYWORDS = (
     "wallet/balance",
     "payment-stats",
     "/cashier/balance",
-    "clob.polymarket.com/balance-allowance",  # Polymarket CLOB SDK balance
+    "clob.polymarket.com/balance-allowance",  # Polymarket CLOB SDK (fires only at order time)
+    # NOTE: data-api.polymarket.com/value returns POSITION value, NOT cash. Don't add it.
+    # NOTE: data-api.polymarket.com/positions also doesn't carry cash.
+    # Polymarket cash USDC balance is currently DOM-scraped only (see strategies/polymarket.py).
+    # The CLOB balance-allowance endpoint fires when SDK builds an order — we'll learn its
+    # exact shape when the first real bet is placed.
 )
 _HISTORY_KEYWORDS = (
     "bethistory",
@@ -161,6 +166,9 @@ class MirrorBrowser:
         self._on_event: Callable[[str, dict], None] | None = None
         # Callback for stream dispatch (provider_id, event_type, data)
         self._on_stream_callback: Callable[[str, str, Any], None] | None = None
+        # Domains the user/system intentionally opened — extends the static
+        # allowlist used by the stray-tab watchdog. Populated by open_tab().
+        self._dynamic_allowlist: set[str] = set()
 
     def set_event_callback(self, callback: Callable[[str, dict], None]):
         """Set callback for intercepted events (e.g. broadcaster.publish)."""
@@ -191,16 +199,55 @@ class MirrorBrowser:
         # Cookies, localStorage, service workers all survive restarts.
         _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Disable Chrome session restore — prevent old tabs from reopening
+        # Disable Chrome session restore — prevent old tabs from reopening.
+        # Two layers: (1) Preferences flags Chromium reads at launch, (2) wipe
+        # all on-disk snapshot/session state so the recovery code path has
+        # nothing to read even if the flags get ignored.
         prefs_file = _USER_DATA_DIR / "Default" / "Preferences"
         if prefs_file.exists():
             try:
                 prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
                 prefs.setdefault("session", {})["restore_on_startup"] = 5  # 5 = open blank
-                prefs.get("profile", {}).pop("exit_type", None)  # clear "Crashed" flag
+                # Explicitly mark previous run as clean. Just popping exit_type
+                # isn't enough — Chromium's session-crashed recovery checks both
+                # exit_type and exited_cleanly. Force both into the "no crash"
+                # state so the recovery path is bypassed even when our previous
+                # process was killed via Stop-Process -Force (which leaves the
+                # file in "Crashed" state).
+                profile = prefs.setdefault("profile", {})
+                profile["exit_type"] = "Normal"
+                profile["exited_cleanly"] = True
                 prefs_file.write_text(json.dumps(prefs), encoding="utf-8")
             except Exception:
                 pass
+
+        # Wipe ALL session/snapshot directories — the actual restoration source.
+        # Sessions/ is the live session store; Snapshots/<version>/ is Chromium's
+        # crash-recovery snapshot which is consulted even with restore_on_startup=5
+        # + --no-restore-state when exit_type=Crashed. With both gone there's
+        # literally no data for Chromium to restore from.
+        import shutil as _shutil
+
+        for path in (
+            _USER_DATA_DIR / "Default" / "Sessions",
+            _USER_DATA_DIR / "Snapshots",
+        ):
+            if path.exists():
+                try:
+                    _shutil.rmtree(path, ignore_errors=True)
+                except Exception:
+                    pass
+
+        # Also remove legacy single-file session artifacts if present
+        # (pre-Sessions/ Chromium versions). Belt-and-suspenders — these don't
+        # exist on modern Chrome but cost nothing to check.
+        for legacy in ("Last Tabs", "Current Tabs", "Last Session", "Current Session"):
+            f = _USER_DATA_DIR / "Default" / legacy
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
 
         print(f"[browser] Using profile: {_USER_DATA_DIR}", flush=True)
 
@@ -260,9 +307,113 @@ class MirrorBrowser:
             self._attach_page(page)
         self._context.on("page", lambda p: self._attach_page(p))
 
+        # Stray-tab killer: even with Sessions/ wiped + --no-restore-state,
+        # Chromium occasionally async-restores tabs (dbet etc.) AFTER our
+        # synchronous cleanup has run. Two-layer defense:
+        #   (a) Per-page event guard: catches tabs opened post-launch (within
+        #       _STRAY_TAB_WINDOW_S grace window) — registered via context.on.
+        #   (b) Delayed second-pass close: 3s after launch, sweep ALL existing
+        #       tabs and close any non-allowlisted ones. Catches the race where
+        #       Chromium async-restores tabs in a window where (a) wasn't yet
+        #       registered AND restored_pages snapshot above already passed.
+        # Allowlisted = the 4 unlimited counter providers + TradingView (chart)
+        # + about:blank/chrome://. /mirror/start re-opens unlimited tabs
+        # explicitly so this never closes a tab we wanted.
+        self._context.on("page", lambda p: self._guard_stray_tab(p))
+        asyncio.create_task(self._delayed_stray_sweep(), name="delayed_stray_sweep")
+
         self._running = True
         print("[browser] Mirror browser started (persistent profile)", flush=True)
         return self._context
+
+    # ------------------------------------------------------------------
+    # Stray-tab guard
+    # ------------------------------------------------------------------
+
+    _STRAY_TAB_WINDOW_S = 120.0
+    # Static allowlist — domains we ALWAYS allow regardless of how the tab got
+    # opened. The 4 unlimited counters are eagerly opened by /mirror/start;
+    # TradingView is opened by the tv-overlay auto-open task.
+    _ALLOWED_TAB_DOMAINS = (
+        "polymarket.com",
+        "pinnacle.se",
+        "cloudbet.com",
+        "kalshi.com",
+        "tradingview.com",
+        "127.0.0.1",
+        "localhost",
+    )
+
+    def _is_tab_allowed(self, url: str) -> bool:
+        """Allowlist check used by both startup guards and the permanent watchdog.
+
+        A tab is allowed if its URL is empty/blank/internal, matches the static
+        allowlist, OR is on a domain we intentionally opened via open_tab().
+        Soft-provider tabs are added to _dynamic_allowlist when the user clicks
+        a provider button — see open_tab().
+        """
+        u = (url or "").lower()
+        if not u or u == "about:blank" or u.startswith("chrome:") or u.startswith("devtools:"):
+            return True
+        if any(d in u for d in self._ALLOWED_TAB_DOMAINS):
+            return True
+        dyn = getattr(self, "_dynamic_allowlist", None) or ()
+        if any(d in u for d in dyn):
+            return True
+        return False
+
+    def _guard_stray_tab(self, page: Page) -> None:
+        """Watch a freshly-opened page; close it if it navigates to a
+        non-allowlisted URL. Allowlist is checked dynamically so user-initiated
+        soft-provider opens via open_tab() survive."""
+
+        async def _check_and_close() -> None:
+            try:
+                # Wait briefly for the page to settle on a real URL (initial
+                # opens often start at about:blank then navigate).
+                await asyncio.sleep(1.5)
+                url = (page.url or "").lower()
+                if self._is_tab_allowed(url):
+                    return
+                await page.close()
+                print(f"[browser] Closed stray restored tab: {url[:80]}", flush=True)
+            except Exception:
+                pass
+
+        asyncio.create_task(_check_and_close(), name="guard_stray_tab")
+
+    async def _delayed_stray_sweep(self) -> None:
+        """Permanent background watchdog — runs forever while the browser is up.
+
+        Sweeps every 10s and closes any tab that isn't allowlisted (static
+        allowlist + dynamic allowlist populated by open_tab). Chromium has
+        repeatedly demonstrated it can lazily materialize ghost tabs minutes
+        after launch (e.g. dbet.com appearing despite no History entry, no
+        bookmark, no startup URL, no explicit code path opening it). Bounded
+        grace windows kept missing them. A permanent watchdog is the only
+        defense that doesn't leak.
+
+        Soft-provider tabs survive because PlayPage.startSkin → /mirror/open-
+        provider-tab → open_tab() adds the domain to _dynamic_allowlist
+        before the tab navigation completes.
+        """
+        try:
+            await asyncio.sleep(3.0)  # initial settle
+            while True:
+                if not self._context:
+                    return
+                for page in list(self._context.pages):
+                    try:
+                        url = (page.url or "").lower()
+                        if self._is_tab_allowed(url):
+                            continue
+                        await page.close()
+                        print(f"[browser] Watchdog closed stray tab: {url[:80]}", flush=True)
+                    except Exception:
+                        pass
+                await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            pass
 
     async def stop(self):
         if not self._running:
@@ -328,6 +479,18 @@ class MirrorBrowser:
     async def open_tab(self, url: str) -> Page:
         if not self._context:
             raise RuntimeError("Browser not started")
+        # Whitelist this domain BEFORE we navigate so the watchdog/guard don't
+        # race-close the tab between new_page() and goto().
+        try:
+            from urllib.parse import urlparse
+
+            host = (urlparse(url).hostname or "").lower()
+            if host:
+                # Strip leading "www." so the substring match in _is_tab_allowed
+                # catches both apex and www variants.
+                self._dynamic_allowlist.add(host[4:] if host.startswith("www.") else host)
+        except Exception:
+            pass
         # Reuse an about:blank tab if one exists instead of creating a new one
         page = None
         for p in self._context.pages:

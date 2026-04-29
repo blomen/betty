@@ -44,6 +44,12 @@ type ProviderBalanceInfo = {
   balance: number
   bonus_trigger?: number
   bonus_currency?: string
+  // Native-currency balance (USDC for polymarket, SEK for everyone else).
+  // Stored separately from `balance` because `balance` is normalised to SEK
+  // for cross-provider sorting/comparison — the cluster header needs the
+  // native-currency value to render correctly (e.g. "$107.35" not "$1127.17").
+  balance_native?: number
+  currency?: string
 }
 type ProviderBalanceLike = number | ProviderBalanceInfo
 const getBalance = (b: ProviderBalanceLike | undefined): number =>
@@ -205,6 +211,8 @@ export default function PlayPage() {
       for (const p of bankrollResult.providers ?? []) {
         balanceMap[p.id] = {
           balance: p.balance_sek ?? p.balance ?? 0,
+          balance_native: p.balance ?? 0,
+          currency: p.currency ?? 'SEK',
           bonus_trigger: p.bonus_trigger_amount ?? undefined,
           bonus_currency: p.bonus_currency ?? undefined,
         }
@@ -726,7 +734,14 @@ export default function PlayPage() {
     if (!byCluster[cluster]) byCluster[cluster] = []
     byCluster[cluster].push(b)
   }
-  // Ensure clusters exist for UNLIMITED providers with balance or pending (even if no bets)
+  // ALWAYS surface all 4 unlimited cluster sections — even with 0 bets / 0
+  // balance / 0 pending — so the user can see the system is monitoring each
+  // (kalshi/cloudbet/etc.) and not silently dropped. The cluster header still
+  // renders, just with empty stats.
+  for (const pid of UNLIMITED_PROVIDERS) {
+    const cluster = providerToCluster[pid] || pid
+    if (!byCluster[cluster]) byCluster[cluster] = []
+  }
   for (const pid of Object.keys(providerBalances)) {
     if (!UNLIMITED_PROVIDERS.has(pid)) continue
     const cluster = providerToCluster[pid] || pid
@@ -770,6 +785,21 @@ export default function PlayPage() {
 
   const fmtStake = (b: BatchBet) => b.tier === 'polymarket' ? `$${b.stake.toFixed(1)}` : `${Math.round(b.stake)} kr`
   const fmtEv = (b: BatchBet) => b.tier === 'polymarket' ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
+  // Compact market label so the user can tell at a glance whether the bet is
+  // on the moneyline / total / spread / 1x2. Includes the line value for
+  // total/spread (e.g. "O/U 215.5"). Falls back to the raw market string for
+  // anything we don't have a friendly name for.
+  const fmtMarket = (b: BatchBet) => {
+    const m = (b.market || '').toLowerCase()
+    if (m === 'moneyline' || m === '1x2') return m === '1x2' ? '1X2' : 'ML'
+    if (m === 'total') return b.point != null ? `O/U ${b.point}` : 'O/U'
+    if (m === 'spread') {
+      if (b.point == null) return 'SPREAD'
+      const sign = b.point > 0 ? '+' : ''
+      return `SPR ${sign}${b.point}`
+    }
+    return (b.market || '').toUpperCase() || '—'
+  }
   // Polymarket prices are quoted in cents (¢) on the trading site. Show both
   // decimal and cent so the user can manually cross-check against what the
   // Polymarket Chromium tab displays before clicking Buy. Keep 2-decimal
@@ -1343,6 +1373,12 @@ export default function PlayPage() {
                 <div className="flex items-center gap-1">
                   {stats.providers.sort((a, b) => getBalance(providerBalances[b]) - getBalance(providerBalances[a])).map(pid => {
                     const bal = getBalance(providerBalances[pid])
+                    // Native-currency display: USDC for polymarket (the SEK
+                    // value would be misleading with a $ prefix), SEK for
+                    // everyone else. Falls back to bal if balance_native isn't
+                    // populated (e.g. transient race during initial load).
+                    const balRaw = providerBalances[pid]
+                    const balDisplay = (typeof balRaw === 'object' && balRaw?.balance_native != null) ? balRaw.balance_native : bal
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const isSkinActive = activeProviders.has(pid)
                     const isLoggedIn = loggedInProviders.has(pid)
@@ -1363,9 +1399,9 @@ export default function PlayPage() {
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
-                        {bal > 0 && (
+                        {balDisplay > 0 && (
                           <span className="ml-1 text-green-400 font-mono">
-                            {pid === 'polymarket' ? '$' : ''}{bal.toFixed(2)}{pid !== 'polymarket' ? ' kr' : ''}
+                            {pid === 'polymarket' ? '$' : ''}{balDisplay.toFixed(2)}{pid !== 'polymarket' ? ' kr' : ''}
                           </span>
                         )}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
@@ -1375,7 +1411,9 @@ export default function PlayPage() {
                   })}
                 </div>
                 <span className="text-[10px] text-zinc-500 ml-auto">{stats.betCount} bets</span>
-                <span className="text-[10px] text-green-400">+{stats.ev.toFixed(0)} kr</span>
+                <span className="text-[10px] text-green-400">
+                  {clusterId === 'polymarket' ? `+$${stats.ev.toFixed(2)}` : `+${stats.ev.toFixed(0)} kr`}
+                </span>
               </div>
 
               {/* POLYMARKET inline status — moved out of the global header so the
@@ -1397,6 +1435,7 @@ export default function PlayPage() {
                         <span className="text-[10px] text-zinc-300 truncate">
                           {status.current_bet.display_home} v {status.current_bet.display_away}
                         </span>
+                        <span className="text-[10px] text-cyan-400/80 font-mono uppercase">{fmtMarket(status.current_bet)}</span>
                         <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
                         <span className="text-[10px] font-mono text-zinc-200">
                           @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, true)}
@@ -1434,11 +1473,16 @@ export default function PlayPage() {
                   <div className="border-b border-zinc-800 bg-amber-900/5">
                     <div className="flex items-center gap-2 px-3 py-0.5 border-b border-zinc-800/30">
                       <span className="text-[10px] text-amber-500 uppercase font-medium">Pending</span>
-                      <span className="text-[10px] text-zinc-600">{clusterPending.length} bets · {Math.round(clusterPending.reduce((s: number, p: any) => s + (p.stake ?? 0), 0))} kr</span>
+                      <span className="text-[10px] text-zinc-600">
+                        {clusterPending.length} bets · {(() => {
+                          const sum = clusterPending.reduce((s: number, p: any) => s + (p.stake ?? 0), 0)
+                          return clusterId === 'polymarket' ? `$${sum.toFixed(2)}` : `${Math.round(sum)} kr`
+                        })()}
+                      </span>
                       {clusterSettled.length > 0 && (
                         <>
                           <span className={`text-[10px] font-mono font-semibold ${clusterPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {clusterPnl >= 0 ? '+' : ''}{Math.round(clusterPnl)} kr
+                            {clusterPnl >= 0 ? '+' : ''}{clusterId === 'polymarket' ? `$${clusterPnl.toFixed(2)}` : `${Math.round(clusterPnl)} kr`}
                           </span>
                           <button onClick={handleConfirmSettlements}
                             className="ml-auto px-2 py-0.5 text-[10px] font-semibold bg-green-900/40 text-green-400 border border-green-700/50 rounded hover:bg-green-900/60 transition-colors">
@@ -1461,8 +1505,10 @@ export default function PlayPage() {
                           <span className="text-[10px] text-zinc-600 uppercase w-[80px]">{p._pid}</span>
                           <span className={`truncate flex-1 ${det ? 'text-zinc-400' : 'text-amber-300/70'}`}>{eventLabel}</span>
                           <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
-                          <span className="text-zinc-500 font-mono text-[10px]">@ {(p.odds ?? 0).toFixed(2)}</span>
-                          <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(p.stake ?? 0)} kr</span>
+                          <span className="text-zinc-500 font-mono text-[10px]">@ {fmtOddsWithCents(p.odds ?? 0, clusterId === 'polymarket')}</span>
+                          <span className="text-amber-300/50 font-mono text-[10px]">
+                            {clusterId === 'polymarket' ? `$${(p.stake ?? 0).toFixed(2)}` : `${Math.round(p.stake ?? 0)} kr`}
+                          </span>
                           {det && (
                             <>
                               <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
@@ -1471,7 +1517,7 @@ export default function PlayPage() {
                                 'text-zinc-400 bg-zinc-800'
                               }`}>{det.result}</span>
                               <span className={`text-[10px] font-mono font-semibold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {profit >= 0 ? '+' : ''}{Math.round(profit)} kr
+                                {profit >= 0 ? '+' : ''}{clusterId === 'polymarket' ? `$${profit.toFixed(2)}` : `${Math.round(profit)} kr`}
                               </span>
                               <button onClick={() => handleDismissSettlement(betId)}
                                 className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
@@ -1518,10 +1564,13 @@ export default function PlayPage() {
                       >
                         <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">{b.cluster && b.cluster !== b.provider_id ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '') : b.provider_id}</td>
                         <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
+                        <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">{fmtMarket(b)}</td>
                         <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
                         <td className={`px-2 py-1 text-right font-mono ${oddsChanged ? (live!.odds > b.odds ? 'text-green-400' : 'text-red-400') : 'text-zinc-200'}`}>
                           {fmtOddsWithCents(displayOdds, b.tier === 'polymarket')}
-                          {oddsChanged && <span className="text-zinc-600 text-[9px] ml-0.5">({fmtOddsWithCents(b.odds, b.tier === 'polymarket')})</span>}
+                          {/* Drift direction is conveyed by green/red color — no
+                              need to show the original-batch-odds in dim parens
+                              (visually overlaps with the fair-odds column). */}
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, b.tier === 'polymarket')}</td>
                         <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>

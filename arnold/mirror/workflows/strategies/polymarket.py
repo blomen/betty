@@ -14,8 +14,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from . import Strategy
 from ..base import HistoryEntry
+from . import Strategy
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -73,59 +73,67 @@ async def _sync_balance(page: Page, intel: dict | None) -> float:
 
 
 _HISTORY_SCRAPE_JS = r"""() => {
+    // History row schema (verified 2026-04-27):
+    //   Loss  → bet lost, no payout. Row text: "Loss<market>0.0 shares-<time> ago..."
+    //   Redeemed → bet won + already redeemed. Row text: "Redeem<market>+$<value><time> ago..."
+    //   Lost / Claimed → legacy labels (older Polymarket UI), kept for back-compat
+    //   Bought → open position purchased (informational)
+    // Row container: width 600-1200, kids 2-4. Dedup by getBoundingClientRect().top.
+    // Value regex anchored to \d+\.\d{2} (USDC always shows 2 decimals) to avoid
+    // greedy-matching into adjacent time strings (e.g. "+$27.7515h ago").
     const results = [];
-    const activityLabels = ['Bought', 'Lost', 'Claimed', 'Sold', 'Deposited', 'Withdrawn'];
-    const allElements = document.querySelectorAll('div, span, p');
-    const seen = new Set();
-    for (const el of allElements) {
+    const labels = ['Loss', 'Redeemed', 'Bought', 'Sold', 'Lost', 'Claimed'];
+    const seenTops = new Set();
+    for (const el of document.querySelectorAll('div, span, p')) {
         const text = (el.textContent || '').trim();
-        if (!activityLabels.includes(text)) continue;
+        if (!labels.includes(text)) continue;
         if (el.children.length > 2) continue;
         let row = el.parentElement;
-        for (let i = 0; i < 6 && row; i++) {
-            if (row.offsetWidth > 500 && row.children.length >= 3) break;
+        let chosen = null;
+        for (let i = 0; i < 10 && row; i++) {
+            const w = row.offsetWidth;
+            const k = row.children.length;
+            if (w >= 600 && w <= 1200 && k >= 2 && k <= 4) { chosen = row; break; }
             row = row.parentElement;
         }
-        if (!row) continue;
-        const rowId = row.textContent.slice(0, 100);
-        if (seen.has(rowId)) continue;
-        seen.add(rowId);
-        const activity = text;
+        if (!chosen) continue;
+        const top = Math.round(chosen.getBoundingClientRect().top);
+        if (seenTops.has(top)) continue;
+        seenTops.add(top);
+        const rowText = (chosen.textContent || '').trim();
+
+        // Value: anchored to exactly 2 decimal places to avoid greedy match into trailing digits.
+        const valMatch = rowText.match(/([+-])\$(\d+\.\d{2})/);
+        let value = 0;
+        if (valMatch) {
+            value = parseFloat(valMatch[2]);
+            if (valMatch[1] === '-') value = -value;
+        }
+        const sharesMatch = rowText.match(/(\d+(?:\.\d+)?)\s*shares/);
+        const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
+        const outcomeMatch = rowText.match(/(Yes|No)\s+\d+¢/);
+        const outcomeTag = outcomeMatch ? outcomeMatch[1] : '';
+
+        // Market name: prefer link text, fallback to splitting row text on label tokens.
         let market = '';
-        for (const a of row.querySelectorAll('a, [href]')) {
+        for (const a of chosen.querySelectorAll('a, [href]')) {
             const t = (a.textContent || '').trim();
-            if (t.length > market.length && t.length > 10 && !activityLabels.includes(t)) {
+            if (t.length > market.length && t.length > 10 && !labels.includes(t)) {
                 market = t;
             }
         }
         if (!market) {
-            for (const child of row.querySelectorAll('span, p, div')) {
-                const t = (child.textContent || '').trim();
-                if (t.length > 20 && !t.includes('$') && !activityLabels.includes(t) && t.length > market.length) {
-                    market = t.slice(0, 120);
-                }
-            }
+            let body = rowText;
+            for (const lbl of labels) body = body.split(lbl).join('|');
+            const chunks = body.split(/\|/).map(s => s.trim()).filter(s =>
+                s.length > 15
+                && !s.match(/^[+-]?\$\d/)
+                && !s.match(/^\d+\s*shares/)
+                && !s.match(/^\d+[hmd]\s*ago$/)
+                && !s.includes('Position closedView'));
+            if (chunks.length > 0) market = chunks[0];
         }
-        let outcomeTag = '';
-        let shares = 0;
-        for (const child of row.querySelectorAll('span, div, p')) {
-            const t = (child.textContent || '').trim();
-            const tagMatch = t.match(/^(.+?)\s+(\d+)¢$/);
-            if (tagMatch && t.length < 50) outcomeTag = tagMatch[1];
-            const sharesMatch = t.match(/([\d.]+)\s*shares/);
-            if (sharesMatch) shares = parseFloat(sharesMatch[1]);
-        }
-        let value = 0;
-        for (const child of row.querySelectorAll('span, p, div')) {
-            const t = (child.textContent || '').trim();
-            const valMatch = t.match(/^[+-]?\$(\d[\d,.]*)/);
-            if (valMatch && child.children.length <= 1) {
-                value = parseFloat(valMatch[1].replace(',', ''));
-                if (t.startsWith('-')) value = -value;
-                break;
-            }
-        }
-        results.push({ activity, market: market.slice(0, 120), outcomeTag, shares, value });
+        results.push({ activity: text, market: market.slice(0, 150), outcomeTag, shares, value });
     }
     return results;
 }"""
@@ -134,10 +142,15 @@ _HISTORY_SCRAPE_JS = r"""() => {
 async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     """Navigate to history tab, scrape activity rows, return HistoryEntry list.
 
-    Bought → status=pending (open bet)
-    Lost   → status=lost   (payout 0)
-    Claimed→ status=won    (payout = $value)
-    PendingLoop does the matching against DB pending bets.
+    Activity → status mapping (current Polymarket DOM as of 2026-04-27):
+      Loss / Lost      → status="lost"   payout=0
+      Redeemed/Claimed → status="won"    payout=value
+      Bought           → status="pending" (open position)
+      Sold             → ignored (manual exit; not a settlement)
+
+    Loss rows have value=0 (no payout) — must NOT be skipped on value≤0.
+    Redeemed rows carry the realized USDC payout in `value`.
+    Reconcile/_match_polymarket_settlements does the fuzzy match against pending DB bets.
     """
     current_url = page.url or ""
     if "/portfolio" not in current_url or "tab=history" not in current_url:
@@ -161,28 +174,36 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     if not raw:
         return []
 
+    _STATUS_MAP = {
+        "Loss": ("lost", 0.0),
+        "Lost": ("lost", 0.0),
+        "Redeemed": ("won", None),  # payout = value
+        "Claimed": ("won", None),
+        "Bought": ("pending", 0.0),
+    }
+
     entries: list[HistoryEntry] = []
     for r in raw:
         activity = r.get("activity", "")
         market = r.get("market", "")
+        if not market or activity not in _STATUS_MAP:
+            continue
+
         value = float(r.get("value", 0) or 0)
         shares = float(r.get("shares", 0) or 0)
         outcome = r.get("outcomeTag", "") or ""
-        if not market or value <= 0:
-            continue
-        if activity == "Bought":
-            status, payout = "pending", 0.0
-            odds = round(1.0 / (value / shares), 4) if shares > 0 else 0.0
+
+        status, payout_override = _STATUS_MAP[activity]
+        payout = round(abs(value), 2) if payout_override is None else payout_override
+
+        # Loss rows show "0.0 shares" — odds/stake aren't recoverable from the row alone.
+        # Bought rows give cost basis; downstream matching cares about market+status.
+        if activity == "Bought" and shares > 0 and value > 0:
+            odds = round(1.0 / (value / shares), 4)
             stake = round(value, 2)
-        elif activity == "Lost":
-            status, payout = "lost", 0.0
-            odds = round(1.0 / (value / shares), 4) if shares > 0 else 0.0
-            stake = round(value, 2)
-        elif activity == "Claimed":
-            status, payout = "won", round(abs(value), 2)
-            odds, stake = 0.0, 0.0
         else:
-            continue
+            odds, stake = 0.0, 0.0
+
         entries.append(
             HistoryEntry(
                 provider_bet_id="",
@@ -251,17 +272,19 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
         shares = float(shares_match.group(1)) if shares_match else None
         market = text[:60].split("\n")[0] if text else ""
         market = re.sub(r"[\d¢$→].+", "", market).strip()
-        positions.append({
-            "market": market[:80],
-            "full_text": text[:200],
-            "avg_price": avg_price,
-            "now_price": now_price,
-            "values": dollar_values,
-            "shares": shares,
-            "status": status,
-            "has_redeem": btn_type == "Redeem",
-            "has_sell": btn_type == "Sell",
-        })
+        positions.append(
+            {
+                "market": market[:80],
+                "full_text": text[:200],
+                "avg_price": avg_price,
+                "now_price": now_price,
+                "values": dollar_values,
+                "shares": shares,
+                "status": status,
+                "has_redeem": btn_type == "Redeem",
+                "has_sell": btn_type == "Sell",
+            }
+        )
 
     logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
     return positions
@@ -613,21 +636,63 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
         logger.warning(f"[polymarket] locator click failed: {e}")
         return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_failed:{e}")
 
-    await asyncio.sleep(1.5)
-
     live_odds = round(1.0 / (cents / 100.0), 3) if cents and cents > 0 else None
 
-    # Step 3: fill Amount input — betslip should now be rendered on the right
+    # Step 3: fill Amount input.
+    # Polymarket's betslip mounts ~1.5-3s AFTER the outcome click (React hydrates
+    # the trade form). The previous fixed 1.5s sleep was too short, leaving the
+    # input empty. Worse: Polymarket's controlled-input wraps the value in React
+    # state, so a single setter+input-event sometimes gets clobbered by a delayed
+    # re-render. Strategy: wait for the input to actually exist, then fill, then
+    # verify the value stuck — retry up to 3 times before giving up.
     if stake > 0:
         stake_str = f"{stake:.2f}" if stake != int(stake) else str(int(stake))
         try:
-            filled = await page.evaluate(_FILL_JS, stake_str)
+            await page.wait_for_selector(
+                'input[placeholder="$0"], input[placeholder="$0.00"], input[placeholder="0"], input[placeholder="Amount"]',
+                timeout=8000,
+                state="visible",
+            )
+        except Exception:
+            # Fall through to the fill attempt anyway — some Polymarket pages
+            # use a non-standard placeholder we can still find via context.
+            await asyncio.sleep(2.0)
+
+        for attempt in range(3):
+            try:
+                filled = await page.evaluate(_FILL_JS, stake_str)
+            except Exception as e:
+                logger.warning(f"[polymarket] stake fill attempt {attempt + 1} failed: {e}")
+                filled = None
             if filled and filled.get("filled"):
-                logger.info(f"[polymarket] Filled Amount input: ${stake_str}")
+                # Verify the value actually stuck (controlled-input race).
+                await asyncio.sleep(0.6)
+                try:
+                    current = await page.evaluate(
+                        r"""() => {
+                            const inputs = document.querySelectorAll('input');
+                            for (const inp of inputs) {
+                                if (inp.placeholder === '$0' || inp.placeholder === '$0.00' ||
+                                    inp.placeholder === '0' || inp.placeholder === 'Amount') {
+                                    return inp.value || '';
+                                }
+                            }
+                            return '';
+                        }"""
+                    )
+                except Exception:
+                    current = ""
+                if current and current.replace(",", ".") == stake_str:
+                    logger.info(f"[polymarket] Filled Amount input: ${stake_str} (attempt {attempt + 1})")
+                    break
+                logger.warning(
+                    f"[polymarket] Fill cleared (attempt {attempt + 1}): set='{stake_str}' got='{current}' — retrying"
+                )
             else:
-                logger.warning("[polymarket] Amount input not found — stake not filled")
-        except Exception as e:
-            logger.warning(f"[polymarket] stake fill failed: {e}")
+                logger.warning(f"[polymarket] Amount input not found (attempt {attempt + 1})")
+            await asyncio.sleep(0.8)
+        else:
+            logger.warning(f"[polymarket] Amount fill failed after 3 attempts (stake=${stake_str})")
 
     return PlacementResult(
         status="prepped",
@@ -687,6 +752,7 @@ _READ_CENTS_JS = r"""(targetName) => {
 
 async def _check_live_price(page: Page, bet, intel: dict | None = None):
     """Read the current ¢ price for the target outcome and compute (live_odds, live_edge)."""
+
     def _g(attr: str) -> str:
         if isinstance(bet, dict):
             val = bet.get(attr)
@@ -731,6 +797,51 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
     return live_odds, round(live_edge, 2)
 
 
+async def restore_amount_if_cleared(page: Page, stake: float) -> bool:
+    """Re-fill the betslip Amount input if Polymarket's React clobbered it.
+
+    Polymarket's controlled-input occasionally wipes the Amount value after the
+    initial prep — typically when the betslip re-renders on a price tick or
+    focus event. Without this, the user clicks "Buy" with $0 staked and either
+    sees an error or places a wrong-size order.
+
+    Idempotent: reads current value, only fills if empty/zero.
+    Returns True if a fill happened, False if no action needed.
+    """
+    if stake <= 0:
+        return False
+    try:
+        current = await page.evaluate(
+            r"""() => {
+                const inputs = document.querySelectorAll('input');
+                for (const inp of inputs) {
+                    if (inp.placeholder === '$0' || inp.placeholder === '$0.00' ||
+                        inp.placeholder === '0' || inp.placeholder === 'Amount') {
+                        return inp.value || '';
+                    }
+                }
+                return null;
+            }"""
+        )
+    except Exception:
+        return False
+    # `null` → input not present (betslip closed). `''` or '0' → cleared.
+    if current is None:
+        return False
+    if current.strip() not in ("", "0", "0.00"):
+        return False  # already populated, leave alone
+    stake_str = f"{stake:.2f}" if stake != int(stake) else str(int(stake))
+    try:
+        result = await page.evaluate(_FILL_JS, stake_str)
+    except Exception as e:
+        logger.debug(f"[polymarket] amount-keeper fill raised: {e}")
+        return False
+    if result and result.get("filled"):
+        logger.info(f"[polymarket] Amount auto-restored to ${stake_str} (was '{current}')")
+        return True
+    return False
+
+
 strategy = Strategy(
     sync_balance=_sync_balance,
     sync_history=_sync_history,
@@ -740,3 +851,6 @@ strategy = Strategy(
     claim_banner=_claim_banner,
     redeem_all=_redeem_all,
 )
+# Module-level export so provider_runner can import without going through the
+# Strategy dataclass (which would require adding yet another field).
+strategy.restore_amount_if_cleared = restore_amount_if_cleared  # type: ignore[attr-defined]

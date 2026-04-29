@@ -43,6 +43,32 @@ from .play_loop import (
     _bet_ns,
 )
 
+# Dethrone-on-better: while a bet sits at READY, periodically check the cluster
+# queue for a higher-edge bet. If a new bet's edge exceeds the current bet's by
+# at least this many percentage points, auto-skip and let the runner pop the new
+# top. Hysteresis prevents thrashing on small fluctuations — but too high and
+# we sit on a stale bet while a better one ages out. 2pts is aggressive enough
+# to switch when the queue clearly has a winner, conservative enough to ignore
+# noise. Mirrors arb_runner.py:DETHRONE_HYSTERESIS_PCT pattern.
+DETHRONE_HYSTERESIS_PCT = 2.0
+DETHRONE_POLL_S = 3.0
+
+# Edge-drift skip: DISABLED. The previous threshold (5pts of edge dropped from
+# queue cache to live) was too aggressive — it killed FRESH top-edge bets the
+# moment polymarket tightened a few cents. Skip semantics now rely on:
+#   (1) absolute edge < 0 (negative EV) — always skip, in slip-stream callback
+#   (2) dethrone hysteresis — switch to better bet in queue if it appears
+#   (3) READY_TIMEOUT_S — eventually cycle off bets the user hasn't acted on
+# Keeping the constant for back-compat / future tuning but set to 0 (off).
+EDGE_DRIFT_SKIP_PCT = 0.0
+
+# READY-state timeout: max seconds to sit at READY waiting for user to click
+# Buy on the provider's tab. After this, auto-skip and pop the next bet.
+# Long enough to let user evaluate and click without thrashing. The runner
+# will return to a previously-skipped bet on the next refresh cycle if it's
+# still top-edge. Set 0 to disable (wait forever, original behavior).
+READY_TIMEOUT_S = 120.0
+
 
 class ProviderRunner:
     """Runs the play loop for a single provider as an asyncio task."""
@@ -59,6 +85,7 @@ class ProviderRunner:
         placed_today: dict[str, int],
         peek_top_edge: Callable[[], float | None] | None = None,
         stake_caps: dict[str, float] | None = None,
+        mark_recently_skipped: Callable[[dict], None] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -70,6 +97,7 @@ class ProviderRunner:
         self._placed_today = placed_today
         self._peek_top_edge = peek_top_edge
         self._stake_caps = stake_caps if stake_caps is not None else {}
+        self._mark_recently_skipped = mark_recently_skipped or (lambda _b: None)
 
         # Per-runner state
         self.state: str = STATE_IDLE
@@ -278,8 +306,26 @@ class ProviderRunner:
 
                 bet = self._pop_bet()
                 if bet is None:
-                    logger.info(f"[Runner:{pid}] Queue empty — done")
-                    break
+                    # Queue empty — but don't exit. Coordinator's _refresh_batch
+                    # adds new opportunities every 10s. Idle-wait and retry so a
+                    # fresh +EV opp picks up the runner without having to restart
+                    # the whole play loop. Cap the idle wait so we exit cleanly
+                    # if the user truly stops play.
+                    self._broadcaster.publish(
+                        "queue_idle",
+                        {"provider_id": pid, "msg": "waiting for new opportunities"},
+                    )
+                    idle_seconds = 0
+                    while idle_seconds < 600:  # max 10 min idle, then exit
+                        await asyncio.sleep(5)
+                        idle_seconds += 5
+                        if self._peek_top_edge and self._peek_top_edge() is not None:
+                            break
+                    bet = self._pop_bet()
+                    if bet is None:
+                        logger.info(f"[Runner:{pid}] Queue still empty after 10min idle — done")
+                        break
+                    logger.info(f"[Runner:{pid}] Resumed from idle — {idle_seconds}s wait")
 
                 # Release the tab back to home_url so the pending loop can sync
                 # history while we wait for the next bet to be popped/processed.
@@ -441,11 +487,90 @@ class ProviderRunner:
                             _auto_skip_reason = f"negative EV ({odds:.2f}, edge {edge:.1f}%)"
                             self._skip_event.set()
                             return
+                        # Edge-drift from intent: live odds moved against us so
+                        # the realised edge dropped meaningfully from what we
+                        # queued at. Disabled when EDGE_DRIFT_SKIP_PCT <= 0 —
+                        # the > 0 guard prevents skipping on every tiny positive
+                        # drift (since intent - live >= 0 is true any time live
+                        # edge has tightened at all, even by 0.1pts).
+                        intent_edge = bet.get("edge_pct")
+                        if (
+                            EDGE_DRIFT_SKIP_PCT > 0
+                            and intent_edge is not None
+                            and (intent_edge - edge) >= EDGE_DRIFT_SKIP_PCT
+                        ):
+                            _auto_skip_reason = (
+                                f"edge drift {edge:.1f}% (intent {intent_edge:.1f}%, "
+                                f"lost {intent_edge - edge:.1f}pts ≥ {EDGE_DRIFT_SKIP_PCT:.0f})"
+                            )
+                            self._skip_event.set()
+                            return
                         if self._peek_top_edge:
                             top_edge = self._peek_top_edge()
                             if top_edge is not None and top_edge > 0 and edge < top_edge * 0.5:
                                 _auto_skip_reason = f"edge dropped ({edge:.1f}% < 50% of top {top_edge:.1f}%)"
                                 self._skip_event.set()
+
+                # Dethrone watcher: while we're at READY, periodically check the
+                # cluster queue. If a NEW bet beats THIS bet's LIVE edge by
+                # >= hysteresis, auto-skip so the runner pops the new top.
+                # Uses live_edge_holder[0] (the polymarket watcher updates this
+                # every 1s with the freshest live edge) so we demote a bet
+                # whose live odds tightened below the queue's cached top.
+                # Falls back to cached batch edge until first live read lands.
+                _dethrone_reason: str | None = None
+                _intent_edge = bet.get("edge_pct") or 0.0
+                # Mutable single-element list so closures in both watchers can
+                # share state without nonlocal gymnastics across nested scopes.
+                live_edge_holder: list[float | None] = [None]
+
+                # Active bet's queue key — passed to peek_top so it excludes
+                # the active bet's own re-added entry when computing the queue's
+                # top edge. Without this exclusion, refresh_batch re-adds the
+                # active bet at its cached edge and dethrone fires falsely
+                # whenever the live edge dips below the cached value.
+                _active_key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
+
+                async def _watch_for_better() -> None:
+                    nonlocal _dethrone_reason, _auto_skip_reason
+                    while True:
+                        try:
+                            await asyncio.sleep(DETHRONE_POLL_S)
+                        except asyncio.CancelledError:
+                            raise
+                        if self._peek_top_edge is None:
+                            continue
+                        try:
+                            top_edge = self._peek_top_edge(_active_key)
+                        except TypeError:
+                            # Older peek_top callable without exclude_key kwarg
+                            top_edge = self._peek_top_edge()
+                        except Exception:
+                            continue
+                        if top_edge is None:
+                            continue
+                        # Compare against LIVE edge (preferred) or cached intent
+                        # (fallback before first live read).
+                        compare_edge = live_edge_holder[0]
+                        if compare_edge is None:
+                            compare_edge = _intent_edge
+                        if top_edge >= compare_edge + DETHRONE_HYSTERESIS_PCT:
+                            _dethrone_reason = (
+                                f"dethroned by +{top_edge:.1f}% bet "
+                                f"(current live +{compare_edge:.1f}%, hysteresis {DETHRONE_HYSTERESIS_PCT:.1f}pts)"
+                            )
+                            _auto_skip_reason = _dethrone_reason
+                            self._broadcaster.publish(
+                                "bet_dethroned",
+                                {
+                                    "bet": bet,
+                                    "provider_id": pid,
+                                    "old_edge": compare_edge,
+                                    "new_top_edge": top_edge,
+                                },
+                            )
+                            self._skip_event.set()
+                            return
 
                 self._slip_stream = SlipOddsStream(
                     provider_id=pid,
@@ -455,15 +580,105 @@ class ProviderRunner:
                     poll_interval_s=1.0,
                 )
                 self._slip_stream.start()
+                _dethrone_task = asyncio.create_task(_watch_for_better(), name=f"dethrone_{pid}")
+
+                # Polymarket-specific watcher: SlipOddsStream's read_slip_odds is
+                # not implemented for polymarket (no betslip-widget scraper like
+                # altenar), so the stream's _on_slip_change never fires for poly.
+                # That breaks BOTH (a) auto-skip on edge < 0 and (b) live edge
+                # display in the UI. Plus polymarket's React occasionally clobbers
+                # the Amount input after prep, so we need a continuous re-fill.
+                # This watcher polls workflow.check_live_price (which IS wired)
+                # every 1s and reuses the existing _on_slip_change callback path.
+                _poly_watch_task: asyncio.Task | None = None
+
+                async def _watch_polymarket() -> None:
+                    # Two responsibilities, every 1s:
+                    #   (a) Amount-keeper: re-fill betslip if React clobbered it.
+                    #   (b) Live edge poll: read cents → compute edge → publish
+                    #       to live_edge_holder[0] so the dethrone watcher can
+                    #       compare against the FRESHEST live edge (not the
+                    #       stale cached batch value). Also broadcast live_price
+                    #       SSE for the UI's table colors.
+                    # Crucially does NOT fire _skip_event on its own — earlier
+                    # version did via _on_slip_change and was firing spurious
+                    # skips. Skipping is now ONLY the dethrone watcher's job
+                    # (live vs queue comparison) or user Skip click.
+                    bet_ns = _bet_ns(bet)
+                    fair = bet.get("fair_odds")
+                    strat = getattr(workflow, "strategy", None)
+                    restore = getattr(strat, "restore_amount_if_cleared", None) if strat else None
+                    while True:
+                        try:
+                            await asyncio.sleep(1.0)
+                        except asyncio.CancelledError:
+                            raise
+                        # Live edge read
+                        try:
+                            result = await workflow.check_live_price(page, bet_ns)
+                        except Exception:
+                            result = None
+                        if isinstance(result, tuple) and len(result) == 2:
+                            live_o, live_e = result
+                            if live_e is not None:
+                                live_edge_holder[0] = live_e
+                                self._broadcaster.publish(
+                                    "live_price",
+                                    {
+                                        "event_id": bet.get("event_id", ""),
+                                        "market": bet.get("market", ""),
+                                        "outcome": bet.get("outcome", ""),
+                                        "provider_id": pid,
+                                        "live_odds": live_o,
+                                        "live_edge": live_e,
+                                        "fair_odds": fair,
+                                    },
+                                )
+                        # Amount-keeper
+                        if restore:
+                            try:
+                                await restore(page, stake)
+                            except Exception:
+                                logger.debug(f"[Runner:{pid}] amount-keeper raised", exc_info=True)
+
+                if pid == "polymarket":
+                    _poly_watch_task = asyncio.create_task(_watch_polymarket(), name=f"poly_watch_{pid}")
+
                 try:
-                    await asyncio.wait(
+                    # READY-state timeout: cycle to next bet if user hasn't
+                    # clicked within READY_TIMEOUT_S. Without this we camp on
+                    # the first +EV bet forever, which blocks the runner from
+                    # showing the user other options that may be just as good
+                    # or better.
+                    _wait_timeout = READY_TIMEOUT_S if READY_TIMEOUT_S > 0 else None
+                    done, pending = await asyncio.wait(
                         [
                             asyncio.ensure_future(self._bet_intercepted_event.wait()),
                             asyncio.ensure_future(self._skip_event.wait()),
                         ],
                         return_when=asyncio.FIRST_COMPLETED,
+                        timeout=_wait_timeout,
                     )
+                    # Cancel any still-pending awaits to release resources.
+                    for fut in pending:
+                        fut.cancel()
+                    if not done and _wait_timeout:
+                        # Timeout fired — auto-skip on stale READY.
+                        _auto_skip_reason = f"READY-timeout ({READY_TIMEOUT_S:.0f}s without user click)"
+                        self._skip_event.set()
                 finally:
+                    if _poly_watch_task and not _poly_watch_task.done():
+                        _poly_watch_task.cancel()
+                        try:
+                            await _poly_watch_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    if not _dethrone_task.done():
+                        _dethrone_task.cancel()
+                        try:
+                            await _dethrone_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     if self._slip_stream is not None:
                         self._slip_stream.stop()
                         self._slip_stream = None
@@ -484,6 +699,10 @@ class ProviderRunner:
                         },
                     )
                     self.stats["skipped"] += 1
+                    # Auto-skip path (dethrone / READY-timeout / edge<0). Mark
+                    # so refresh_batch doesn't immediately re-add the bet to
+                    # queue and trigger the same cascade again.
+                    self._mark_recently_skipped(bet)
 
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
@@ -493,9 +712,12 @@ class ProviderRunner:
                         logger.exception(f"[Runner:{pid}] Recording failed")
                         self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})
                         self.stats["skipped"] += 1
+                        self._mark_recently_skipped(bet)
                 elif self._skip_event.is_set() and _auto_skip_reason is None:
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "user_skip"})
                     self.stats["skipped"] += 1
+                    # User skip — mark so refresh doesn't re-queue the same bet.
+                    self._mark_recently_skipped(bet)
                 # else: auto-skipped by stream callback (already broadcast + counted)
 
             # Done
@@ -754,6 +976,48 @@ class ProviderRunner:
                         "settlements_confirmed",
                         {"provider_id": provider_id, "settlements": settlements},
                     )
+
+                # History fallback: any DB pending bet not represented in current
+                # positions is either already-redeemed (out of positions view) or a
+                # ghost. Scrape history → fuzzy-match → reconcile → settle. Without
+                # this, old already-resolved bets accumulate as ghost-pending forever.
+                settled_ids = {s.get("bet_id") for s in settlements if s.get("bet_id")}
+                unmatched = [b for b in pending_bets if b.get("bet_id") not in settled_ids]
+                if unmatched and getattr(strat, "sync_history", None):
+                    try:
+                        raw_history = await workflow.sync_history(page)
+                        history = [
+                            {
+                                "odds": e.odds,
+                                "stake": e.stake,
+                                "status": e.status,
+                                "payout": e.payout,
+                                "provider_bet_id": e.provider_bet_id,
+                                "event_name": e.event_name,
+                                "market": e.market,
+                                "outcome": e.outcome,
+                            }
+                            for e in raw_history
+                        ]
+                        from .reconcile import reconcile_and_publish
+
+                        n = await reconcile_and_publish(
+                            self._proxy_url,
+                            _AUTH_HEADER,
+                            _AUTH_VALUE,
+                            provider_id,
+                            unmatched,
+                            history,
+                            self._broadcaster,
+                            page=page,
+                            workflow=workflow,
+                        )
+                        if n:
+                            logger.info(
+                                f"[Runner:{provider_id}] history-fallback reconciled {n}/{len(unmatched)} unmatched bets"
+                            )
+                    except Exception:
+                        logger.exception(f"[Runner:{provider_id}] history-fallback reconcile failed")
 
                 # Sync balance after claim/redeem
                 try:
@@ -1051,6 +1315,15 @@ class ProviderRunner:
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
         url = f"{self._proxy_url}/api/bets"
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
+        # Capture analytics-critical fields from the queued bet so post-settlement
+        # CLV / edge / kelly drift can be computed against the placement-time fair odds.
+        # Without these, settled bets carry actual_odds + result only — no way to
+        # back out whether the model's edge prediction held up.
+        fair_odds = bet.get("fair_odds")
+        edge_pct = bet.get("edge_pct")
+        # selection_probability is the implied true win-rate (1 / fair_odds) — used
+        # for Brier-score / calibration analysis. Skip if fair_odds missing or zero.
+        selection_prob = (1.0 / fair_odds) if fair_odds and fair_odds > 0 else None
         payload = {
             "event_id": bet.get("event_id", ""),
             "provider_id": bet.get("provider_id", ""),
@@ -1062,6 +1335,10 @@ class ProviderRunner:
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
             "provider_bet_id": provider_bet_id,
+            "fair_odds_at_placement": fair_odds,
+            "selection_probability": selection_prob,
+            "utility_score": edge_pct,
+            "bet_type": bet.get("bet_type") or bet.get("tier") or "value",
         }
         for attempt in range(3):
             try:

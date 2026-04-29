@@ -300,6 +300,48 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         result = await page.evaluate(body["js"])
         return {"result": result}
 
+    @router.post("/tv-open")
+    async def tv_open():
+        """Manual fallback for opening the TradingView NQ chart in the
+        mirror — same logic as the auto-open task but callable any time.
+        Idempotent: returns existing TV tab if one is already open.
+        """
+        url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
+        try:
+            if not browser.running:
+                await browser.start()
+            if browser.context:
+                for p in browser.context.pages:
+                    try:
+                        if "tradingview.com" in (p.url or ""):
+                            return {"ok": True, "reused": True, "url": p.url}
+                    except Exception:
+                        continue
+            page = await browser.open_tab(url)
+            return {"ok": True, "reused": False, "url": page.url}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @router.post("/browser/tv-eval")
+    async def tv_eval(body: dict[str, Any]):
+        """Evaluate JS on the TradingView tab. TV isn't a 'provider' so it has
+        no workflow — find the tab by URL substring instead. Useful for
+        peeking at userscript console state from outside the browser.
+        """
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        for page in browser.context.pages:
+            try:
+                if "tradingview.com" in (page.url or ""):
+                    try:
+                        result = await page.evaluate(body["js"])
+                    except Exception as e:
+                        return {"error": f"eval failed: {e}"}
+                    return {"url": page.url, "result": result}
+            except Exception:
+                continue
+        return {"error": "no tradingview tab"}
+
     @router.get("/status")
     async def get_status():
         """Return current browser status: running flag, tab count, open pages."""
@@ -313,8 +355,37 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         cloudbet, kalshi) so the user can log into each in one pass. They stay open for
         the session and serve as on-demand counter legs for arb opps. Idempotent —
         re-calling /start is safe; existing tabs are reused.
+
+        Also performs a defensive sweep: any tab whose URL doesn't match an allowed
+        domain (the 4 unlimited + tradingview + about:blank) gets closed. Catches
+        the case where Chromium async-restored a stray tab (dbet, etc.) past the
+        browser's startup grace window.
         """
         await browser.start()
+        # Defensive sweep BEFORE re-opening unlimited tabs so we don't end up
+        # with both a stray dbet AND a fresh cloudbet (Chromium can refuse to
+        # open a duplicate tab if it already has one for the same provider).
+        _ALLOWED = (
+            "polymarket.com",
+            "pinnacle.se",
+            "cloudbet.com",
+            "kalshi.com",
+            "tradingview.com",
+            "127.0.0.1",
+            "localhost",
+        )
+        if browser.context:
+            for page in list(browser.context.pages):
+                try:
+                    url = (page.url or "").lower()
+                    if not url or url == "about:blank" or url.startswith("chrome:"):
+                        continue
+                    if any(d in url for d in _ALLOWED):
+                        continue
+                    await page.close()
+                    print(f"[mirror/start] Closed stray tab: {url[:80]}", flush=True)
+                except Exception:
+                    pass
         for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi"):
             try:
                 workflow = get_workflow(pid)

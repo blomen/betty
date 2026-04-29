@@ -106,6 +106,13 @@ class PlayLoop:
         self._blocked: set[tuple[str, str]] = set()
         # Per-provider stake cap learned from limit responses (e.g. Unibet caps 70 SEK)
         self._stake_caps: dict[str, float] = {}
+        # Recently-skipped bets: (event_id, market_key, outcome) → unix_ts of skip.
+        # _refresh_batch checks this to avoid re-adding a bet we just dethroned —
+        # without it the cascade pops the same top bet, dethrones it, refresh
+        # re-adds it, and the loop pops it AGAIN, causing the runner to drain
+        # the entire queue down to its lowest-edge bet within minutes.
+        self._recently_skipped: dict[tuple[str, str, str], float] = {}
+        self._recently_skipped_ttl_s: float = 300.0  # 5 min — long enough to break the cascade
 
         # Per-cluster queues: cluster_name → list of bets
         self._cluster_queues: dict[str, list[dict]] = {}
@@ -276,6 +283,7 @@ class PlayLoop:
                     return
 
                 added = 0
+                touched_clusters: set[str] = set()
                 for bet in fresh_bets:
                     pid = bet.get("provider_id", "")
                     cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
@@ -284,9 +292,19 @@ class PlayLoop:
                     queue = self._cluster_queues[cluster]
                     key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
                     existing = {(b.get("event_id"), b.get("market"), b.get("outcome")) for b in queue}
-                    if key not in existing and not self._is_blocked(bet):
+                    if key not in existing and not self._is_blocked(bet) and not self._is_recently_skipped(bet):
                         queue.append(bet)
+                        touched_clusters.add(cluster)
                         added += 1
+
+                # Re-sort queues by descending edge so the top-edge bet is always at
+                # the front. Without this, newly-added bets land at the tail and the
+                # runner could pop a stale lower-edge bet next.
+                for cluster in touched_clusters:
+                    self._cluster_queues[cluster].sort(
+                        key=lambda b: float(b.get("edge_pct") or 0),
+                        reverse=True,
+                    )
 
                 if added:
                     self._queue_total = sum(len(q) for q in self._cluster_queues.values())
@@ -304,7 +322,9 @@ class PlayLoop:
         self._runners.clear()
         self._spawn_runners(self._provider_ids)
 
-        _BATCH_REFRESH_INTERVAL = 30.0
+        # Refresh frequently so newly-emerging high-edge opps reach the runner
+        # without us sitting on a stale READY bet for half a minute.
+        _BATCH_REFRESH_INTERVAL = 10.0
         _last_refresh = asyncio.get_event_loop().time()
 
         # Poll until all runners are done (supports dynamically added runners)
@@ -370,6 +390,7 @@ class PlayLoop:
                     placed_today=self._placed_today,
                     peek_top_edge=self._make_peek_top_edge(cluster),
                     stake_caps=self._stake_caps,
+                    mark_recently_skipped=self._mark_recently_skipped,
                 )
             else:
                 runner = ArbRunner(
@@ -411,10 +432,19 @@ class PlayLoop:
         """Return a function that peeks at the highest edge in the queue without popping."""
         queue = self._cluster_queues[cluster]
 
-        def peek() -> float | None:
-            if not queue:
+        def peek(exclude_key: tuple[str, str, str] | None = None) -> float | None:
+            # Optional exclude_key lets the dethrone watcher exclude the active
+            # bet's own (event_id, market, outcome) from peek — without this,
+            # _refresh_batch can re-add the currently-active bet to the queue,
+            # making peek_top return the bet's OWN cached edge and causing
+            # dethrone to fire false positives whenever the live edge dips
+            # even slightly below the cached value.
+            candidates = queue
+            if exclude_key is not None:
+                candidates = [b for b in queue if (b.get("event_id"), b.get("market"), b.get("outcome")) != exclude_key]
+            if not candidates:
                 return None
-            return max(b.get("edge_pct", 0.0) for b in queue)
+            return max(b.get("edge_pct", 0.0) for b in candidates)
 
         return peek
 
@@ -447,6 +477,31 @@ class PlayLoop:
         market = bet.get("market", "")
         market_key = "moneyline" if market in ("1x2", "moneyline") else market
         return (event_id, market_key) in self._blocked
+
+    def _mark_recently_skipped(self, bet: dict) -> None:
+        """Mark a bet as recently skipped so refresh doesn't re-add it during
+        the TTL window. Called by ProviderRunner when a bet is skipped (any
+        reason). Keyed on (event_id, market, outcome) so different outcomes
+        on the same event remain independent."""
+        import time as _time
+
+        key = (bet.get("event_id", ""), bet.get("market", ""), bet.get("outcome", ""))
+        if not key[0]:
+            return
+        self._recently_skipped[key] = _time.monotonic()
+
+    def _is_recently_skipped(self, bet: dict) -> bool:
+        """Check if this bet was skipped within the TTL window. Side-effects:
+        cleans up expired entries on each call (no separate sweeper needed)."""
+        import time as _time
+
+        now = _time.monotonic()
+        # Cleanup expired entries lazily.
+        expired = [k for k, ts in self._recently_skipped.items() if now - ts > self._recently_skipped_ttl_s]
+        for k in expired:
+            del self._recently_skipped[k]
+        key = (bet.get("event_id", ""), bet.get("market", ""), bet.get("outcome", ""))
+        return key in self._recently_skipped
 
     def _find_runner(self, provider_id: str | None, state: str | None = None):
         """Find a runner by provider_id, or first runner in the given state."""

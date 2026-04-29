@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ class Strategy:
 
     Each field is an async callable(page, intel) -> result, or None to use generic.
     """
+
     check_login: Callable | None = None
     sync_balance: Callable | None = None
     sync_history: Callable | None = None
@@ -31,8 +32,12 @@ class Strategy:
     # Optional settlement extensions (Polymarket uses these for claim + redeem on-chain).
     # Provider runner delegates to the strategy when all three are present.
     scrape_portfolio: Callable | None = None  # (page, intel) -> list[dict] open positions
-    claim_banner: Callable | None = None      # (page, intel) -> {claimed, amount}
-    redeem_all: Callable | None = None        # (page, intel) -> {redeemed, skipped_open, errors, total}
+    claim_banner: Callable | None = None  # (page, intel) -> {claimed, amount}
+    redeem_all: Callable | None = None  # (page, intel) -> {redeemed, skipped_open, errors, total}
+    # Optional account-level methods referenced by GenericWorkflow.scan / .settle_all.
+    # Without these fields the dataclass would AttributeError on access.
+    scan: Callable | None = None  # (page, intel) -> dict read-only account preview
+    settle_all: Callable | None = None  # (page, intel) -> dict full settlement run
 
 
 def load_strategy(provider_id: str) -> Strategy | None:
