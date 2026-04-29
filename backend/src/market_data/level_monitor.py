@@ -14,6 +14,7 @@ from src.rl.config import LevelType as RLLevelType
 from src.rl.zone_builder import _LEVEL_FAMILY, Zone, build_zones
 
 from .amt_dynamics import AMTDynamicsTracker
+from .zone_trail import compute_zone_trail_target
 
 logger = logging.getLogger(__name__)
 
@@ -1583,6 +1584,23 @@ class LevelMonitor:
                             )
                             tr.locked_half_R = True
                             asyncio.create_task(broker.flatten("early_exit_lock"))
+                        elif tr.peak_R >= 2.0:
+                            # 4. Cont-trail: at a new zone in trade direction past entry,
+                            # trail stop to the previously-broken zone's edge. Idempotent
+                            # via current_zone_R (refuses to re-trail at the same level).
+                            pending = broker._pending_trade or {}
+                            current_zone_R = float(pending.get("current_zone_R") or 0.0)
+                            trail = compute_zone_trail_target(tr, zone, self._zones, current_zone_R)
+                            if trail is not None:
+                                target_stop, advance_zone_R = trail
+                                logger.info(
+                                    "Cont-trail: peak_R=%.2f advance_zone_R=%.2f → trail stop to %.2f",
+                                    tr.peak_R, advance_zone_R, target_stop,
+                                )
+                                asyncio.create_task(broker.modify_stop(target_stop))
+                                if pending:
+                                    pending["current_zone_R"] = advance_zone_R
+                                    broker._set_pending_trade(pending)
                         elif pyr.get("should_add"):
                             add_size = int(max(1, round(float(pyr.get("add_size") or 0))))
                             logger.info(
