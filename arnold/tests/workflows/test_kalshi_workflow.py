@@ -38,3 +38,62 @@ def _make_bet(**overrides) -> SimpleNamespace:
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+class TestCheckLivePrice:
+    @pytest.mark.asyncio
+    async def test_returns_odds_and_edge_from_yes_ask_dollars(self, workflow):
+        # yes_ask_dollars=0.5 → 50¢ → live_odds=2.0, fair_odds=1.6 → edge=+25%
+        market = SimpleNamespace(yes_ask_dollars=0.5, yes_ask=0)
+        workflow._markets.get_market.return_value = SimpleNamespace(market=market)
+        workflow._pending_ticker = "TICKER"
+
+        bet = _make_bet(fair_odds=1.6)
+        odds, edge = await workflow.check_live_price(page=None, bet=bet)
+
+        assert odds == pytest.approx(2.0, abs=0.001)
+        assert edge == pytest.approx(25.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_yes_ask_cents_when_dollars_missing(self, workflow):
+        market = SimpleNamespace(yes_ask=50)  # 50 cents, no yes_ask_dollars
+        workflow._markets.get_market.return_value = SimpleNamespace(market=market)
+        workflow._pending_ticker = "TICKER"
+
+        bet = _make_bet(fair_odds=2.0)
+        odds, edge = await workflow.check_live_price(page=None, bet=bet)
+
+        assert odds == pytest.approx(2.0, abs=0.001)
+        assert edge == pytest.approx(0.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_no_fair_odds_returns_none_edge(self, workflow):
+        market = SimpleNamespace(yes_ask_dollars=0.5)
+        workflow._markets.get_market.return_value = SimpleNamespace(market=market)
+        workflow._pending_ticker = "TICKER"
+
+        bet = _make_bet(fair_odds=None)
+        odds, edge = await workflow.check_live_price(page=None, bet=bet)
+
+        assert odds == pytest.approx(2.0, abs=0.001)
+        assert edge is None
+
+    @pytest.mark.asyncio
+    async def test_zero_yes_ask_returns_none_none(self, workflow):
+        market = SimpleNamespace(yes_ask_dollars=0, yes_ask=0)
+        workflow._markets.get_market.return_value = SimpleNamespace(market=market)
+        workflow._pending_ticker = "TICKER"
+
+        bet = _make_bet()
+        odds, edge = await workflow.check_live_price(page=None, bet=bet)
+
+        assert odds is None
+        assert edge is None
+
+    @pytest.mark.asyncio
+    async def test_no_pending_ticker_returns_none_none(self, workflow):
+        workflow._pending_ticker = None
+        bet = _make_bet()
+        odds, edge = await workflow.check_live_price(page=None, bet=bet)
+        assert odds is None
+        assert edge is None
