@@ -212,6 +212,24 @@ class TopstepXBrokerAdapter:
             log.warning("Signal rejected — halted: %s", self._halt_reason)
             return {"rejected": True, "reason": self._halt_reason}
 
+        # Stale-signal veto: if the signal was emitted more than
+        # STALE_SIGNAL_MAX_AGE_S seconds ago, drop it. Today's audit showed
+        # signals reaching the broker 2-200s after emission via the SignalR
+        # relay path. NQ moves enough in even 2 seconds to invalidate the
+        # zone-touch premise → adverse slip → stop hit at -1R within minutes.
+        # Better to skip than to enter on a phantom price.
+        STALE_SIGNAL_MAX_AGE_S = 1.5
+        sig_ts = float(signal.get("ts", 0) or 0)
+        if sig_ts > 0:
+            age = time.time() - sig_ts
+            if age > STALE_SIGNAL_MAX_AGE_S:
+                log.info(
+                    "Signal rejected — stale (age=%.2fs > %.1fs)",
+                    age,
+                    STALE_SIGNAL_MAX_AGE_S,
+                )
+                return {"rejected": True, "reason": "stale_signal", "age_s": age}
+
         # Confidence filter
         confidence = float(signal.get("confidence", 0) or 0)
         if confidence < MIN_CONFIDENCE:
@@ -503,6 +521,36 @@ class TopstepXBrokerAdapter:
                     self._pending_trade["entry_price"] = price
                     self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
+
+                # Adverse-slip kill switch: if the fill came in much worse
+                # than the signal price, the trade is already deep in the
+                # red before the stop has a chance — almost certain to hit
+                # the stop within minutes. Don't sit in a -3.75pt-already-down
+                # position; flatten immediately. Today's data: 6 of 9 stops
+                # had adverse slip ≥17 ticks, all closed at near -1R.
+                ADVERSE_SLIP_KILL_TICKS = 15
+                if self._pending_trade:
+                    sig_price = self._pending_trade.get("signal_price")
+                    side = self._pending_trade.get("side") or self.tracker.side
+                    if sig_price and side:
+                        # Direction +1 = adverse for the trade
+                        direction = 1.0 if side == "long" else -1.0
+                        adverse_ticks = direction * (price - sig_price) / 0.25
+                        if adverse_ticks > ADVERSE_SLIP_KILL_TICKS:
+                            log.warning(
+                                "Adverse-slip KILL: filled %.2f vs signal %.2f (%.1f ticks adverse > %d) — flattening",
+                                price,
+                                sig_price,
+                                adverse_ticks,
+                                ADVERSE_SLIP_KILL_TICKS,
+                            )
+                            try:
+                                import asyncio as _aks
+
+                                _aks.create_task(self.flatten("adverse_slip_kill"))
+                            except Exception:
+                                log.warning("adverse-slip flatten task failed", exc_info=True)
+                            return
 
                 # Re-anchor stop to ACTUAL fill price. The stop was originally
                 # computed from the signal-time price, but slippage can move
