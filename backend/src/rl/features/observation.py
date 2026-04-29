@@ -371,6 +371,25 @@ def build_observation(state: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
+    # 18. Cross-zone narrative (5) — connects stacked zones so the model
+    # treats cascading breakdowns / climbs as a continuous trend instead
+    # of independent zone-by-zone decisions.
+    pz = state.get("prev_zone", {}) or {}
+    # Normalise dist by 20pt (typical NQ stacked-zone spacing); clip ±1.0
+    dist_norm = max(-1.0, min(1.0, float(pz.get("dist_pts", 0.0)) / 20.0))
+    age_norm = min(float(pz.get("age_s", 0.0)) / 3600.0, 1.0)
+    stack_density = int(state.get("zone_stack", 0))
+    seg_prev_zone = np.array(
+        [
+            dist_norm,  # signed dist to prev zone (-1 to +1)
+            float(pz.get("outcome", 0.0)),  # +1 prev rejected / -1 prev broke / 0 unknown
+            age_norm,  # how long ago (0=now, 1=1h+)
+            float(pz.get("valid", 0.0)),  # 1 if prev exists, else 0
+            min(stack_density, 8) / 8.0,  # zones-within-5pt count, normed 0-1
+        ],
+        dtype=np.float32,
+    )
+
     obs = np.concatenate(
         [
             seg_level,  # len(LevelType) — multi-hot (zone) or one-hot (legacy)
@@ -396,6 +415,7 @@ def build_observation(state: dict) -> np.ndarray:
             seg_pattern,  # 5 (Phase 3a — explicit pattern detectors)
             seg_zone_quality,  # 1 (Phase 3a — unified level quality score)
             seg_zone_memory,  # 3
+            seg_prev_zone,  # 5 (Phase 3d — cross-zone narrative for stacked zones)
         ]
     )
 

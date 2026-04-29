@@ -49,7 +49,7 @@ class FeatureSchema:
 #      "broken old feature"
 # ---------------------------------------------------------------------------
 
-BASE_OBSERVATION_SCHEMA_VERSION = 5  # v5: session_memory added (augmented 318→324)
+BASE_OBSERVATION_SCHEMA_VERSION = 6  # v6: prev_zone (cross-zone narrative) added
 
 BASE_OBSERVATION_SCHEMA: list[FeatureSchema] = [
     FeatureSchema("level_composition", 1, 31, "multi-hot (zone) or one-hot (legacy) level types"),
@@ -86,6 +86,13 @@ BASE_OBSERVATION_SCHEMA: list[FeatureSchema] = [
     ),
     FeatureSchema("zone_quality", 1, 1, "unified level quality scalar (hierarchy × members)"),
     FeatureSchema("zone_memory", 1, 3, "touch_count + last_result + time_since_last"),
+    # v6 — cross-zone narrative for stacked-zone scenarios:
+    FeatureSchema(
+        "prev_zone",
+        1,
+        5,
+        "signed dist to prev different zone, prev outcome (-1/0/+1), age, valid flag, stack density (zones within 5pt)",
+    ),
 ]
 
 

@@ -1595,7 +1595,9 @@ class LevelMonitor:
                                 target_stop, advance_zone_R = trail
                                 logger.info(
                                     "Cont-trail: peak_R=%.2f advance_zone_R=%.2f → trail stop to %.2f",
-                                    tr.peak_R, advance_zone_R, target_stop,
+                                    tr.peak_R,
+                                    advance_zone_R,
+                                    target_stop,
                                 )
                                 asyncio.create_task(broker.modify_stop(target_stop))
                                 if pending:
@@ -1972,6 +1974,24 @@ class LevelMonitor:
             self._zone_touch_history = {}  # zone_key → {touch_count, last_result, last_ts}
         return self._zone_touch_history
 
+    def _get_last_zone_state(self) -> dict:
+        """Cross-zone narrative tracker — the LAST DIFFERENT zone touched.
+
+        Different from _zone_touch_history (which is per-zone). This holds
+        a single pointer to the most-recently-touched zone identity so each
+        new zone touch can compute "distance to previous zone" + "outcome
+        of previous zone." Lets the model recognize stacked zones cascading
+        one-after-another as a continuous breakdown / climb.
+        """
+        if not hasattr(self, "_last_zone_touch"):
+            self._last_zone_touch = {
+                "key": 0.0,  # zone_center of last touched zone (0 = none yet)
+                "ts": 0.0,  # touch timestamp
+                "result": 0.0,  # +1 rejected / -1 broke / 0 unknown
+                "approach": "",  # "up" / "down" — direction of approach
+            }
+        return self._last_zone_touch
+
     def record_zone_touch(self, zone_key: float, result: float = 0.0) -> None:
         """Record a zone touch result for memory features.
 
@@ -1988,6 +2008,17 @@ class LevelMonitor:
         entry["last_result"] = result
         entry["last_ts"] = _time.time()
         mem[zone_key] = entry
+        # Also update the cross-zone tracker so the NEXT different zone's
+        # observation knows the previous zone's location + outcome.
+        last = self._get_last_zone_state()
+        if abs(last["key"] - zone_key) > 0.5:  # different zone (>2 ticks apart)
+            last["key"] = float(zone_key)
+            last["ts"] = _time.time()
+            last["result"] = float(result)
+        else:
+            # Same zone re-touched — refresh ts/result but keep the entry
+            last["ts"] = _time.time()
+            last["result"] = float(result)
 
     def _build_zone_memory_for_state(self) -> dict:
         """Build zone_memory dict for the RL state.
@@ -2060,7 +2091,36 @@ class LevelMonitor:
             "swing_structure": ctx.get("swing_structure"),
             "amt_dynamics": self._amt_tracker.snapshot(),
             "zone_memory": self._build_zone_memory_for_state(),
+            "prev_zone": self._build_prev_zone_state(zone, price),
+            "zone_stack": self._compute_zone_stack_density(price),
         }
+
+    def _build_prev_zone_state(self, current_zone, price: float) -> dict:
+        """Cross-zone narrative for the model: distance + outcome of the
+        previous DIFFERENT zone. Lets stacked zones (one breakdown after
+        another) be recognized as a continuous trend rather than independent
+        decisions per touch.
+        """
+        last = self._get_last_zone_state()
+        cur_key = round(current_zone.center_price * 4) / 4 if current_zone else round(price * 4) / 4
+        # If last_zone is the same as current, treat as no prior zone
+        if abs(last["key"] - cur_key) < 0.5 or last["key"] == 0.0:
+            return {"dist_pts": 0.0, "outcome": 0.0, "age_s": 0.0, "valid": 0.0}
+        return {
+            "dist_pts": float(cur_key - last["key"]),  # signed: + = new zone above prev
+            "outcome": float(last["result"]),  # +1 rejected, -1 broke, 0 unknown
+            "age_s": float(min(time.time() - last["ts"], 3600)),  # capped 1h
+            "valid": 1.0,
+        }
+
+    def _compute_zone_stack_density(self, price: float, radius_pts: float = 5.0) -> int:
+        """Count distinct zones whose center is within ±radius_pts of the
+        current price. High density = stacked-zone scenario; the model can
+        weight cont/rev decisions based on how cluttered the structure is.
+        """
+        if not getattr(self, "_zones", None):
+            return 0
+        return sum(1 for z in self._zones if abs(z.center_price - price) <= radius_pts)
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
         """Assemble a state dict compatible with RL build_observation().
