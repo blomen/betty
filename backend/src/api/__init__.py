@@ -241,7 +241,12 @@ async def lifespan(app: FastAPI):
 
         threading.Thread(target=_start_rl_daemon, daemon=True, name="startup-rl-daemon").start()
 
-        # Auto-start TopstepX trading service (server-side, 24/7)
+        # Auto-start TopstepX trading service (server-side, 24/7).
+        # Skipped when STOCKS_AUTONOMOUS=true — in that mode the FastAPI
+        # process owns the broker via bootstrap_stocks_on_server, and
+        # running a second TopstepX SignalR session in the subprocess
+        # triggers a "Multiple sessions detected" reconnect storm that
+        # blocks trading. One process, one broker.
         def _start_trading_service():
             import subprocess as _sp
 
@@ -250,6 +255,12 @@ async def lifespan(app: FastAPI):
                 return
             if not os.getenv("TOPSTEPX_USERNAME"):
                 logger.info("[Startup] Trading service skipped (no TOPSTEPX_USERNAME)")
+                return
+            if os.getenv("STOCKS_AUTONOMOUS", "").lower() == "true":
+                logger.info(
+                    "[Startup] Trading service skipped (STOCKS_AUTONOMOUS=true; "
+                    "FastAPI owns the TopstepX SignalR session)"
+                )
                 return
             try:
                 _sp.Popen(
