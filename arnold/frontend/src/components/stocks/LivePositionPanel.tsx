@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '@/hooks/useStocksApi'
-import type { Fill, ExitEvent, ModelStatus, Position } from '@/types/stocks'
+import type { Fill, ExitEvent, ModelStatus, Position, Quote } from '@/types/stocks'
 
 interface Props {
   positions: Position[]
   lastPrice: number | null
   fills: Fill[]
   exits: ExitEvent[]
+  quote?: Quote | null
+  modelStatus: ModelStatus | null
 }
 
 const TICK_SIZE = 0.25
@@ -39,19 +40,19 @@ function PnLPill({ value }: { value: number | null }) {
   return <span className={`tabular-nums font-semibold ${cls}`}>{fmtCurrency(value)}</span>
 }
 
-export function LivePositionPanel({ positions, lastPrice, fills, exits }: Props) {
-  const [model, setModel] = useState<ModelStatus | null>(null)
+export function LivePositionPanel({
+  positions,
+  lastPrice,
+  fills,
+  exits,
+  quote,
+  modelStatus,
+}: Props) {
+  const model = modelStatus
   const [now, setNow] = useState(Date.now())
   const [flash, setFlash] = useState<'fill' | 'exit' | null>(null)
   const lastFillRef = useRef<number>(0)
   const lastExitRef = useRef<number>(0)
-
-  useEffect(() => {
-    const poll = () => api.getModelStatus().then(setModel).catch(() => {})
-    poll()
-    const iv = setInterval(poll, 3000)
-    return () => clearInterval(iv)
-  }, [])
 
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 1000)
@@ -168,6 +169,18 @@ export function LivePositionPanel({ positions, lastPrice, fills, exits }: Props)
         <span className="text-zinc-200 font-semibold">FLAT</span>
         <span className="text-zinc-500">last</span>
         <span className="text-zinc-200 tabular-nums">{lastPrice?.toFixed(2) ?? '—'}</span>
+        {quote && quote.bid && quote.ask && (
+          <>
+            <span className="text-zinc-700">·</span>
+            <span className="text-zinc-500">bid</span>
+            <span className="text-zinc-300 tabular-nums">{quote.bid.toFixed(2)}</span>
+            <span className="text-zinc-500">ask</span>
+            <span className="text-zinc-300 tabular-nums">{quote.ask.toFixed(2)}</span>
+            <span className="text-zinc-500 text-[10px]">
+              ({Math.round((quote.ask - quote.bid) / TICK_SIZE)}t)
+            </span>
+          </>
+        )}
         <span className="text-zinc-700">·</span>
         <span className="text-zinc-500">session</span>
         <PnLPill value={sessionPnL} />

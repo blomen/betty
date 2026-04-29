@@ -216,6 +216,12 @@ export interface DQNInferenceEvent {
   /** Named macro/regime scores (NARRATIVE_NAMES on the server). Optional —
    *  only present when the v5 hybrid model produces it. */
   narrative?: Record<string, number>
+  /** Stop-decision breakdown from the model (base ticks + final adjusted). */
+  stop_breakdown?: { base_ticks?: number; final_ticks?: number; [k: string]: unknown }
+  /** Composite confidence (multi-factor) from v5 hybrid. */
+  composite_confidence?: number
+  /** Suggested size multiplier from v5 hybrid sizing head. */
+  size_multiplier?: number
 }
 
 export interface ObservationSegment {
