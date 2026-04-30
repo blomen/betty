@@ -406,6 +406,34 @@ class GenericWorkflow(ProviderWorkflow):
         return None, None
 
     # ------------------------------------------------------------------
+    # Slip read/write — consumed by ArbRunner + SlipOddsStream
+    # ------------------------------------------------------------------
+
+    async def read_slip_odds(self, page) -> float | None:
+        if self.strategy and self.strategy.read_slip_odds:
+            return await self.strategy.read_slip_odds(page, self.intel)
+        return await super().read_slip_odds(page)
+
+    async def update_slip_stake(self, page, stake: float) -> bool:
+        if self.strategy and self.strategy.update_slip_stake:
+            return await self.strategy.update_slip_stake(page, stake, self.intel)
+        return await super().update_slip_stake(page, stake)
+
+    # ------------------------------------------------------------------
+    # Placement response parsing — called by browser placement interceptor
+    # ------------------------------------------------------------------
+
+    def parse_placement_response(self, body: dict) -> str | None:
+        if self.strategy and self.strategy.parse_placement_response:
+            return self.strategy.parse_placement_response(body)
+        return super().parse_placement_response(body)
+
+    def parse_placement_status(self, body: dict) -> dict:
+        if self.strategy and self.strategy.parse_placement_status:
+            return self.strategy.parse_placement_status(body)
+        return super().parse_placement_status(body)
+
+    # ------------------------------------------------------------------
     # Scan — read-only account state preview
     # ------------------------------------------------------------------
 
