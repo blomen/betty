@@ -198,11 +198,13 @@ class ProviderRunner:
         # stale and a batch refresh / restart is needed. Reset on first
         # successful prep.
         self._consecutive_hard_fails = 0
-        # Run-gate. Cleared by default — runner reaches STATE_READY_TO_RUN and
-        # awaits this event before entering the bet loop. Set/cleared via
-        # set_run(); pausing from STATE_RUNNING also clears it and the loop
-        # checks it at the top of each iteration.
+        # Run-gate. Default-OPEN as of 2026-04-30 (rev 2): the user wanted a
+        # fully automatic flow — detect tab + detect login + start full
+        # workflow with no manual toggle. The gate primitive stays in code
+        # so manual control can be re-introduced later, but the runner now
+        # blows through STATE_READY_TO_RUN without parking.
         self._run_event: asyncio.Event = asyncio.Event()
+        self._run_event.set()
         # Background task that performs continuous balance + pending sync
         # while the runner is at STATE_READY_TO_RUN. Spawned on entry to
         # ready, cancelled on transition to bet loop or stop().

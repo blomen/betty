@@ -220,23 +220,10 @@ export default function PlayPage() {
   const [subTab, setSubTab] = useState<'arb' | 'value'>('value')
 
   const startSkin = async (pid: string) => {
-    // Deselect — click active provider to remove it
-    if (activeProviders.has(pid)) {
-      setActiveProviders(prev => {
-        const next = new Set(prev)
-        next.delete(pid)
-        // If last provider removed, stop everything
-        if (next.size === 0 && loopRunning) {
-          api.stopPlayLoop()
-          setLoopRunning(false)
-          setCurrentBetReady(null)
-          setLoopStatus(null)
-          setLoopProviderStatus(null)
-        }
-        return next
-      })
-      return
-    }
+    // No-op if already active — clicking again should NOT toggle off.
+    // Once selected, the runner auto-progresses (login → settle → bet loop)
+    // without further user interaction. To stop, the user closes arnold.
+    if (activeProviders.has(pid)) return
     // Add provider — open tab and start/add to loop
     setActiveProviders(prev => new Set(prev).add(pid))
     try { await api.startMirror() } catch { /* */ }
@@ -250,24 +237,12 @@ export default function PlayPage() {
     await api.startPlayLoop(allBets, numericBalances, allPids)
   }
 
-  const handleCardClick = async (pid: string) => {
-    const isSelected = activeProviders.has(pid)
-    const runnerState = loopProviderStatus?.[pid]?.state
-    const cardState = deriveCardState(isSelected, runnerState)
-    if (cardState === 'idle') return startSkin(pid)
-    if (cardState === 'tab_open' || cardState === 'logged_in_syncing') {
-      // Click during opening/syncing → deselect the provider entirely.
-      // Reuse startSkin's own deselect path.
-      return startSkin(pid)
-    }
-    if (cardState === 'ready_to_run') {
-      try { await api.runProvider(pid) } catch (e) { console.error('runProvider failed', e) }
-      return
-    }
-    if (cardState === 'running') {
-      try { await api.pauseProvider(pid) } catch (e) { console.error('pauseProvider failed', e) }
-      return
-    }
+  const handleCardClick = (pid: string) => {
+    // The card is a one-way START button. Click while idle → opens tab and
+    // begins the auto-progression (login → settle → bet loop). Clicks in
+    // any other state are no-ops: no toggle-off, no pause, no manual gate.
+    if (activeProviders.has(pid)) return
+    return startSkin(pid)
   }
 
   const load = useCallback(async () => {
@@ -1422,7 +1397,7 @@ export default function PlayPage() {
                                   <span className="uppercase font-semibold">{pid}</span>
                                   {cardState === 'ready_to_run' && (
                                     <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/20 text-yellow-300">
-                                      Press to run
+                                      Starting...
                                     </span>
                                   )}
                                   {cardState === 'running' && (

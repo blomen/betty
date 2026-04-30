@@ -136,12 +136,11 @@ class ArbRunner:
         self.last_idle_reason: str | None = None
         self.last_skip_counts: dict[str, int] = {}
 
-        # Run-gate. Cleared by default — arb runner reaches STATE_READY_TO_RUN
-        # and awaits this event before entering the arb bet loop. Counter-bet
-        # routing via on_counter_bet_intercepted is unaffected: a yellow
-        # (Ready) provider can still serve as a counter when another provider's
-        # anchor (whose Run was pressed) fires.
+        # Run-gate. Default-OPEN as of 2026-04-30 (rev 2) — see ProviderRunner
+        # for rationale. The arb runner now flows from settle directly into
+        # the arb bet loop with no user-facing pause.
         self._run_event: asyncio.Event = asyncio.Event()
+        self._run_event.set()
         self._ready_sync_task: asyncio.Task | None = None
 
     # ----- public surface -----
