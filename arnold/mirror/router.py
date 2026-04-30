@@ -569,7 +569,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     @router.post("/play/run/{provider_id}")
     async def play_run(provider_id: str):
         """Release the Run gate for a provider runner: yellow → green.
-        409 if no runner exists for this provider."""
+        409 if no runner exists or gate already open."""
         ok = play_loop.set_run(provider_id, True)
         if not ok:
             raise HTTPException(
