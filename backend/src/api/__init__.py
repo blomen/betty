@@ -914,10 +914,30 @@ async def lifespan(app: FastAPI):
             from ..stocks.server_bootstrap import bootstrap_stocks_on_server
 
             async def _stocks_bg_bootstrap():
-                try:
-                    await bootstrap_stocks_on_server(app)
-                except Exception:
-                    logger.exception("[Stocks] Background bootstrap raised — trading disabled")
+                # Retry-forever supervisor: a single auth/network failure used to
+                # leave the broker silently dead until container restart. Now we
+                # back off and try again so transient failures self-heal.
+                # Config-level skips (STOCKS_AUTONOMOUS off, missing creds) exit
+                # immediately — retrying can't fix those.
+                if os.environ.get("STOCKS_AUTONOMOUS", "").lower() != "true":
+                    return
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        rt = await bootstrap_stocks_on_server(app)
+                        if rt is not None:
+                            return  # success — runtime is installed on app.state
+                        logger.warning(
+                            "[Stocks] Bootstrap returned None (attempt %d); retrying in 60s",
+                            attempt,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[Stocks] Bootstrap raised (attempt %d); retrying in 60s",
+                            attempt,
+                        )
+                    await asyncio.sleep(60)
 
             _stocks_bootstrap_task = asyncio.create_task(
                 _stocks_bg_bootstrap(),

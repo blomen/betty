@@ -17,6 +17,10 @@ class FlattenScheduler:
     Tracks by calendar date (not a per-run boolean) so a restart after
     15:55 ET (e.g. Sunday evening Globex open) does NOT re-trigger EOD
     flatten.  Only fires on weekdays (Mon–Fri).
+
+    Session reset runs Mon–Fri AND Sunday: Globex opens Sun 18:00 ET, so
+    Sunday's pre-open midnight slot must clear any residual Friday halt.
+    Saturday is the only day with no reset (no trading).
     """
 
     def __init__(self, adapter, flatten_et: str = "15:55") -> None:
@@ -41,8 +45,10 @@ class FlattenScheduler:
             current_time = now_et.time()
             today = now_et.date()
 
-            # Reset session at midnight on a new trading day (Mon–Fri)
-            if current_time < time(0, 5) and today.weekday() < 5 and self._flattened_date != today:
+            # Reset session at midnight on any day that has trading hours.
+            # Mon-Fri: full RTH ahead. Sunday: Globex opens 18:00 ET.
+            # Saturday is the only flat day. weekday(): Mon=0..Sun=6.
+            if current_time < time(0, 5) and today.weekday() != 5 and self._flattened_date != today:
                 self._adapter.reset_session()
                 log.info("Flatten scheduler: new trading day %s, session reset", today)
 
