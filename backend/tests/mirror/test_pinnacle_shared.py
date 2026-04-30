@@ -160,3 +160,34 @@ async def test_value_loop_waits_for_lent_event(monkeypatch):
 
     runner.release_to_value()
     await asyncio.wait_for(waited, timeout=1.0)
+
+
+async def test_coordinator_spawns_shared_runner_when_soft_anchors_present(monkeypatch):
+    """PlayCoordinator must instantiate PinnacleSharedRunner — not ProviderRunner —
+    when the active set contains both pinnacle and at least one soft anchor."""
+    from arnold.mirror.pinnacle_shared import PinnacleSharedRunner
+    from arnold.mirror.play_loop import PlayLoop
+
+    pl = PlayLoop(browser=_FakeBrowser(), broadcaster=_RecordingBroadcaster(), proxy_url="http://x")
+    pl._provider_ids = ["betinia", "pinnacle"]
+    pl._spawn_runners(["betinia", "pinnacle"])
+
+    assert isinstance(pl._runners["pinnacle"], PinnacleSharedRunner)
+    for r in pl._runners.values():
+        r.stop()
+
+
+async def test_coordinator_uses_plain_provider_runner_when_only_unlimited(monkeypatch):
+    from arnold.mirror.pinnacle_shared import PinnacleSharedRunner
+    from arnold.mirror.play_loop import PlayLoop
+    from arnold.mirror.provider_runner import ProviderRunner
+
+    pl = PlayLoop(browser=_FakeBrowser(), broadcaster=_RecordingBroadcaster(), proxy_url="http://x")
+    pl._provider_ids = ["pinnacle", "polymarket"]
+    pl._spawn_runners(["pinnacle", "polymarket"])
+
+    runner = pl._runners["pinnacle"]
+    assert isinstance(runner, ProviderRunner)
+    assert not isinstance(runner, PinnacleSharedRunner)
+    for r in pl._runners.values():
+        r.stop()

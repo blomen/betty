@@ -392,19 +392,37 @@ class PlayLoop:
                 cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
                 if cluster not in self._cluster_queues:
                     self._cluster_queues[cluster] = []
-                runner = ProviderRunner(
-                    provider_id=pid,
-                    browser=self._browser,
-                    broadcaster=self._broadcaster,
-                    proxy_url=self._proxy_url,
-                    pop_bet=self._make_pop_bet(cluster),
-                    block_event_market=self._block_event_market,
-                    is_blocked=self._is_blocked,
-                    placed_today=self._placed_today,
-                    peek_top_edge=self._make_peek_top_edge(cluster),
-                    stake_caps=self._stake_caps,
-                    mark_recently_skipped=self._mark_recently_skipped,
-                )
+                soft_anchors_present = any(p not in UNLIMITED_PROVIDERS for p in provider_ids)
+                if pid == "pinnacle" and soft_anchors_present:
+                    from .pinnacle_shared import PinnacleSharedRunner
+
+                    runner = PinnacleSharedRunner(
+                        provider_id=pid,
+                        browser=self._browser,
+                        broadcaster=self._broadcaster,
+                        proxy_url=self._proxy_url,
+                        pop_bet=self._make_pop_bet(cluster),
+                        block_event_market=self._block_event_market,
+                        is_blocked=self._is_blocked,
+                        placed_today=self._placed_today,
+                        peek_top_edge=self._make_peek_top_edge(cluster),
+                        stake_caps=self._stake_caps,
+                        mark_recently_skipped=self._mark_recently_skipped,
+                    )
+                else:
+                    runner = ProviderRunner(
+                        provider_id=pid,
+                        browser=self._browser,
+                        broadcaster=self._broadcaster,
+                        proxy_url=self._proxy_url,
+                        pop_bet=self._make_pop_bet(cluster),
+                        block_event_market=self._block_event_market,
+                        is_blocked=self._is_blocked,
+                        placed_today=self._placed_today,
+                        peek_top_edge=self._make_peek_top_edge(cluster),
+                        stake_caps=self._stake_caps,
+                        mark_recently_skipped=self._mark_recently_skipped,
+                    )
             else:
                 runner = ArbRunner(
                     provider_id=pid,
