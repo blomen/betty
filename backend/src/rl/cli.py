@@ -259,6 +259,25 @@ _EPISODES_DIR = _DATA_DIR / "episodes"
 _MODELS_DIR = _DATA_DIR / "models"
 
 
+def _target_obs_dim() -> int | None:
+    """Dim that merge-live will accept (the main pool's dim, if it exists).
+    Returns None when no main pool — caller falls back to the most common
+    dim observed in the candidate rows.
+    """
+    main_path = _EPISODES_DIR / "observations.npy"
+    if not main_path.exists():
+        return None
+    try:
+        import numpy as _np
+
+        with open(main_path, "rb") as _f:
+            _v = _np.lib.format.read_magic(_f)
+            shape, _, _ = _np.lib.format._read_array_header(_f, _v)
+        return int(shape[1]) if len(shape) >= 2 else None
+    except Exception:
+        return None
+
+
 def _simulate_session_position_states(
     touch_epochs,
     rewards_cont,
@@ -1754,16 +1773,30 @@ def ingest_live_trades() -> None:
     if not new_rows:
         return
 
+    target_dim = _target_obs_dim()
+    if target_dim is None:
+        from collections import Counter
+
+        dim_counts = Counter(int(r.observation_dim or 0) for r in new_rows if r.observation_dim)
+        if dim_counts:
+            target_dim = max(dim_counts, key=lambda d: (dim_counts[d], d))
+    if target_dim:
+        typer.echo(f"Target obs dim: {target_dim} (rows at other dims will be skipped).")
+
     obs_list: list[np.ndarray] = []
     rc_list: list[float] = []
     rr_list: list[float] = []
     lt_list: list[int] = []
     st_list: list[float] = []
+    skipped_dim = 0
 
     for r in new_rows:
         try:
             arr = np.frombuffer(base64.b64decode(r.observation_b64), dtype=np.float32)
             if r.observation_dim and r.observation_dim > 0 and arr.size != r.observation_dim:
+                continue
+            if target_dim and arr.size != target_dim:
+                skipped_dim += 1
                 continue
         except Exception:
             continue
@@ -1801,7 +1834,15 @@ def ingest_live_trades() -> None:
         lt_list.append(int(action_label))
         st_list.append(np.float32(stop_target))
 
+    if skipped_dim:
+        typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
+
     if not obs_list:
+        # Still persist the seen-set so dim-mismatched rows don't requeue forever.
+        if skipped_dim:
+            seen.update(r.tid for r in new_rows)
+            with seen_path.open("w") as f:
+                f.write(" ".join(str(x) for x in sorted(seen)))
         typer.echo("No usable rows after filtering.")
         return
 
@@ -4789,13 +4830,23 @@ def label_zone_outcomes(
     if not sigs:
         return
 
+    target_dim = _target_obs_dim()
+    if target_dim is None:
+        from collections import Counter
+
+        dim_counts = Counter(int(s.observation_dim or 0) for s in sigs if s.observation_dim)
+        if dim_counts:
+            target_dim = max(dim_counts, key=lambda d: (dim_counts[d], d))
+    if target_dim:
+        typer.echo(f"Target obs dim: {target_dim} (rows at other dims will be skipped).")
+
     obs_list: list[np.ndarray] = []
     rc_list: list[float] = []
     rr_list: list[float] = []
     lt_list: list[int] = []
     st_list: list[float] = []
 
-    rev_wins = cont_wins = skips = errors = 0
+    rev_wins = cont_wins = skips = errors = skipped_dim = 0
     rev_R_sum = cont_R_sum = 0.0
 
     tick_sql = text(
@@ -4813,6 +4864,9 @@ def label_zone_outcomes(
         try:
             obs = np.frombuffer(base64.b64decode(s.observation_b64), dtype=np.float32)
             if s.observation_dim and obs.size != s.observation_dim:
+                continue
+            if target_dim and obs.size != target_dim:
+                skipped_dim += 1
                 continue
 
             entry = float(s.price)
@@ -4872,6 +4926,7 @@ def label_zone_outcomes(
     typer.echo(f"  CONT wins:  {cont_wins}  avg R = {cont_R_sum / max(cont_wins, 1):+.3f}")
     typer.echo(f"  SKIP/chop:  {skips}")
     typer.echo(f"  errors:     {errors}")
+    typer.echo(f"  dim-skipped: {skipped_dim}")
     typer.echo(f"  TOTAL labelled: {len(obs_list)}")
 
     if not write_chunk or not obs_list:
