@@ -50,12 +50,22 @@ class Strategy:
 
 
 def load_strategy(provider_id: str) -> Strategy | None:
-    """Import strategies/{provider_id}.py if it exists, return .strategy attr."""
-    try:
-        mod = importlib.import_module(f"mirror.workflows.strategies.{provider_id}")
-        return getattr(mod, "strategy", None)
-    except ModuleNotFoundError:
-        return None
-    except Exception as e:
-        logger.warning(f"[generic] Failed to load strategy for {provider_id}: {e}")
-        return None
+    """Import strategies/{provider_id}.py if it exists, return .strategy attr.
+
+    Tries both `arnold.mirror.workflows.strategies.<id>` (repo-root sys.path,
+    e.g. pytest) and `mirror.workflows.strategies.<id>` (arnold.bat launcher
+    that puts `arnold/` on sys.path directly).
+    """
+    for module_path in (
+        f"arnold.mirror.workflows.strategies.{provider_id}",
+        f"mirror.workflows.strategies.{provider_id}",
+    ):
+        try:
+            mod = importlib.import_module(module_path)
+            return getattr(mod, "strategy", None)
+        except ModuleNotFoundError:
+            continue
+        except Exception as e:
+            logger.warning(f"[generic] Failed to load strategy for {provider_id}: {e}")
+            return None
+    return None
