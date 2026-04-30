@@ -315,7 +315,7 @@ class TestSyncHistory:
     @pytest.mark.asyncio
     async def test_open_position_stays_pending(self, workflow):
         # Position exists but no result field (market not closed).
-        position = SimpleNamespace(market_ticker="T1", result=None)
+        position = SimpleNamespace(ticker="T1", market_result=None)
         workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
         fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
         workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
@@ -327,7 +327,7 @@ class TestSyncHistory:
 
     @pytest.mark.asyncio
     async def test_settled_yes_result_marks_won(self, workflow):
-        position = SimpleNamespace(market_ticker="T1", result="yes", total_count=10)
+        position = SimpleNamespace(ticker="T1", market_result="yes")
         workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
         fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
         workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
@@ -339,7 +339,7 @@ class TestSyncHistory:
 
     @pytest.mark.asyncio
     async def test_settled_no_result_marks_lost(self, workflow):
-        position = SimpleNamespace(market_ticker="T1", result="no", total_count=10)
+        position = SimpleNamespace(ticker="T1", market_result="no")
         workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
         fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
         workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
@@ -350,7 +350,7 @@ class TestSyncHistory:
 
     @pytest.mark.asyncio
     async def test_void_result_marks_void_with_stake_refund(self, workflow):
-        position = SimpleNamespace(market_ticker="T1", result="void", total_count=10)
+        position = SimpleNamespace(ticker="T1", market_result="void")
         workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
         fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
         workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
@@ -385,7 +385,7 @@ class TestSyncHistory:
     @pytest.mark.asyncio
     async def test_multiple_fills_one_position(self, workflow):
         # User bought twice on the same ticker; both fills, one position.
-        position = SimpleNamespace(market_ticker="T1", result="yes", total_count=20)
+        position = SimpleNamespace(ticker="T1", market_result="yes")
         workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
         fills = [
             SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1"),

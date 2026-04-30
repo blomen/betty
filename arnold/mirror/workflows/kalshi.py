@@ -178,15 +178,18 @@ class KalshiWorkflow(ProviderWorkflow):
             logger.warning(f"[kalshi] get_fills failed: {e}")
             return []
 
-        # Best-effort: fetch settled positions to merge result into history.
-        # If positions fails, every entry stays pending — matching old behavior.
+        # Best-effort: a positions failure degrades to all-pending rather
+        # than blocking fill sync entirely.
+        # SDK Position carries `ticker` + `market_result` (verified against
+        # kalshi_python.models.Position 2026-04-30 — neither `market_ticker`
+        # nor `result` exist on this model).
         positions_by_ticker: dict[str, str] = {}
         try:
             pos_resp = self._portfolio.get_positions()
             positions = getattr(pos_resp, "positions", None) or []
             for p in positions:
-                ticker = getattr(p, "market_ticker", "") or getattr(p, "ticker", "") or ""
-                result = (getattr(p, "result", "") or "").lower()
+                ticker = getattr(p, "ticker", "") or ""
+                result = (getattr(p, "market_result", "") or "").lower()
                 if ticker and result in {"yes", "no", "void"}:
                     positions_by_ticker[ticker] = result
         except Exception as e:
