@@ -210,7 +210,15 @@ async def _post_api(page: Page, url: str, body: dict) -> dict | None:
 
 
 async def _check_login(page: Page, intel: dict | None) -> bool:
-    """Authenticated header shows 'SEK X.XX' + customer ID 'SSnnnnnnn'. Logged-out shows 'LOG IN'."""
+    """True when Pinnacle session is live.
+
+    Two-signal check — accept either:
+      1. localStorage['Main:User'].loggedIn === true && token (primary, survives
+         UI language switch).
+      2. DOM text shows DEPONERA/DEPOSIT + SEK balance + no LOG IN button
+         (fallback — covers the brief window after navigation when localStorage
+         hasn't repopulated yet, and matchup pages where Main:User is cleared).
+    """
     import asyncio
 
     await asyncio.sleep(1)
@@ -218,15 +226,20 @@ async def _check_login(page: Page, intel: dict | None) -> bool:
         try:
             result = await page.evaluate(
                 r"""() => {
-                    // Pinnacle stores auth state in localStorage['Main:User'] as JSON.
-                    // loggedIn: true AND a token present means the session is live.
+                    // Signal 1: localStorage Main:User
                     try {
                         const raw = localStorage.getItem('Main:User');
                         if (raw) {
                             const u = JSON.parse(raw);
-                            if (u && u.loggedIn === true && u.token) return {logged_in: true};
+                            if (u && u.loggedIn === true && u.token) return {logged_in: true, via: 'storage'};
                         }
                     } catch {}
+                    // Signal 2: DOM text — DEPONERA + SEK balance + no LOG IN.
+                    const text = document.body.innerText || '';
+                    const hasLogin = /\bLOG IN\b/i.test(text) || /\bLOGGA IN\b/i.test(text);
+                    const hasBalance = /SEK\s*[\d,.]+/i.test(text) || /[\d,.]+\s*KR/i.test(text);
+                    const hasDeposit = /\bDEPONERA\b/i.test(text) || /\bDEPOSIT\b/i.test(text);
+                    if (hasBalance && hasDeposit && !hasLogin) return {logged_in: true, via: 'dom'};
                     return {logged_in: false};
                 }"""
             )
