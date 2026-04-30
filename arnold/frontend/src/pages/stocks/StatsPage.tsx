@@ -347,25 +347,9 @@ export function StatsPage() {
       .finally(() => setLoading(false))
   }, [days, activeProfile?.id])
 
-  if (!activeProfile) {
-    return (
-      <div className="space-y-3 min-w-0 overflow-y-auto overflow-x-hidden flex-1 min-h-0">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-            <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
-            Stats
-          </h2>
-        </div>
-        <div className="border border-border bg-panel text-muted text-sm py-12 text-center">
-          Select a profile to view trading stats.
-          <div className="text-muted2 text-[11px] mt-1">
-            Stats are scoped per profile so multiple TopstepX accounts stay isolated.
-          </div>
-        </div>
-      </div>
-    )
-  }
-
+  // Hooks must run on every render — the early `if (!activeProfile)` return
+  // below would otherwise change the hook count when a profile loads
+  // mid-session and trip React error #310.
   const stats = useMemo(() => computeStats(trades), [trades])
 
   const historyTrades = useMemo(() => {
@@ -395,6 +379,25 @@ export function StatsPage() {
 
     return result
   }, [trades, sort, search])
+
+  if (!activeProfile) {
+    return (
+      <div className="space-y-3 min-w-0 overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+            <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
+            Stats
+          </h2>
+        </div>
+        <div className="border border-border bg-panel text-muted text-sm py-12 text-center">
+          Select a profile to view trading stats.
+          <div className="text-muted2 text-[11px] mt-1">
+            Stats are scoped per profile so multiple TopstepX accounts stay isolated.
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const handleSort = (key: SortKey) => {
     setSort(prev => {
