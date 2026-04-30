@@ -702,8 +702,12 @@ class ArbRunner:
 
         # Inspect each counter placement: emit arb_hedge_failed on rejection,
         # arb_hedge_placed + _record_bet on success (per spec §6).
+        # Skip legs whose intercept never fired — those were already handled
+        # by the user_timeout branch above.
         for leg in self._counter_legs:
             pid = leg["provider"]
+            if pid not in self._counter_intercepted:
+                continue
             intercepted = self._counter_intercepted.get(pid, {})
             body = intercepted.get("body", {}) if isinstance(intercepted, dict) else {}
             wf = get_workflow(pid)

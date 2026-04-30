@@ -66,15 +66,22 @@ async def test_hedge_timeout_emits_failure_for_unclicked_counters(monkeypatch, r
     monkeypatch.setattr(_ar, "get_workflow", get_wf_stub)
     monkeypatch.setattr(_ar, "COUNTER_HEDGE_TIMEOUT_S", 0.2)
 
-    # Stub _record_bet to a no-op so we don't hit httpx
-    async def _stub_record(*_a, **_k):
-        return None
+    record_calls: list[tuple] = []
+
+    async def _stub_record(*args, **kwargs):
+        record_calls.append((args, kwargs))
 
     runner._record_bet = _stub_record  # type: ignore
 
     await runner._update_counter_slips_and_await_hedges(anchor_actual_stake=50.0, anchor_actual_odds=2.0)
 
     failed = [p for e, p in bc.events if e == "arb_hedge_failed"]
+    placed = [p for e, p in bc.events if e == "arb_hedge_placed"]
+
     assert len(failed) == 1
     assert failed[0]["counter_provider"] == "pinnacle"
     assert failed[0]["reason"] == "user_timeout"
+    # Lock down the phantom-bet fix: no arb_hedge_placed for the unclicked leg,
+    # no _record_bet call for it either.
+    assert placed == []
+    assert record_calls == []
