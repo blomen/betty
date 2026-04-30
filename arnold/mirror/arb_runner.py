@@ -408,13 +408,9 @@ class ArbRunner:
         if not anchor_leg or not counter_legs:
             return False
 
-        # Anchor stake = min(balance, learned site cap). _stake_caps is populated
-        # by ProviderRunner / placement responses; if the soft book has rejected
-        # us before with a maxStake hint, we honour it here so the next attempt
-        # sizes correctly instead of getting rejected again.
         balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
         cap = self._stake_caps.get(self.provider_id)
-        anchor_stake = round(min(balance, cap) if cap else balance, 2)
+        anchor_stake = self._sized_anchor(balance, cap)
         if anchor_stake <= 0:
             return False
 
@@ -776,6 +772,17 @@ class ArbRunner:
         except Exception:
             logger.exception(f"[Arb:{self.provider_id}] Failed to fetch arb opps")
             return []
+
+    @staticmethod
+    def _sized_anchor(balance: float, cap: float | None) -> float:
+        """Pick the anchor stake honouring a learned site cap.
+
+        cap > 0 wins when balance exceeds it; cap is None / 0 / negative falls
+        back to balance. NaN cap also falls back (NaN comparisons are False).
+        """
+        if cap is not None and cap > 0 and balance > cap:
+            return round(cap, 2)
+        return round(balance, 2)
 
     @staticmethod
     def _compute_slip_state(planned_odds: float, live_odds: float | None) -> str:
