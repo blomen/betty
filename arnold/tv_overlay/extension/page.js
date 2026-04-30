@@ -286,11 +286,22 @@
     // red and weak bands (VWAP σ3 ≈ 0.3) sit purple inside the same zone.
     // Recreated on every upsert: cheap because broadcaster diff-gating keeps
     // upsert rate low and members are quantized server-side.
+    // Bake 50% alpha straight into the linecolor — TV's `transparency` override
+    // is honored on rectangle backgrounds but ignored on brush.linecolor, so
+    // setting transparency:50 in overrides doesn't actually fade the line.
+    // _paletteFor returns hex (#rrggbb); convert to rgba(r,g,b,0.5).
+    const _hexToRgbaHalf = (hex) => {
+      if (typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return hex;
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},0.5)`;
+    };
     await safeRemovePrefix(`${p.key}:member:`);
     for (const m of (p.members_detail || [])) {
       const family = m.family || 'unknown';
       const weight = typeof m.weight === 'number' ? m.weight : 0.5;
-      const linecolor = _paletteFor(weight);
+      const linecolor = _hexToRgbaHalf(_paletteFor(weight));
       const memberKey = `${p.key}:member:${family}:${Number(m.price).toFixed(2)}`;
       try {
         const mid = await _resolve(chart.createMultipointShape(
@@ -304,7 +315,6 @@
             overrides: {
               linecolor,
               linewidth: 1,
-              transparency: 50,
               showLabel: false,
               extendLeft: false,
               extendRight: false,

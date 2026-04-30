@@ -895,6 +895,7 @@ class MarketService:
         """
         from ..market_data.levels import (
             compute_developing_poc,
+            compute_multi_tf_swings,
             detect_naked_pocs,
             detect_swing_points,
         )
