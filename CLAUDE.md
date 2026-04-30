@@ -175,18 +175,31 @@ The `Dockerfile` uses a 2-stage build for fast rebuilds:
 
 Multiple Claude Code agents may work on this repo concurrently. **Follow these rules to avoid conflicts:**
 
-1. **Always check server status before deploying**: Run `server-deploy.sh status` first
+1. **Always check server status before deploying**: Run `server-deploy.sh status` first. Note: status only shows "active deploy" if `STATUS_FILE` is present — it does NOT detect a wedged-but-still-running script. To see whether the lockfile is actually held, also run `ssh root@148.251.40.251 "pgrep -fa 'server-deploy.sh' && lsof /opt/arnold/.deploy.lock 2>/dev/null"`. A `pgrep` hit means the slot is still in use.
 2. **Never run raw `docker compose up/restart/build`** — always use `scripts/server-deploy.sh` which acquires an exclusive `flock`. A PreToolUse hook blocks raw docker compose commands.
 3. **Read-only operations are safe concurrently**: logs, status, DB queries, extraction logs
-4. **Destructive operations are serialized by the lock**: rebuild, restart, git pull
-5. **If the lock is held**, wait and retry — don't bypass it
-6. **Coordinate git pushes**: If you're about to push + deploy, check `git log` on the server first to ensure no other agent pushed recently
+4. **Destructive operations are serialized by the lock**: rebuild, restart. **`git pull` outside the script is NOT lock-protected** — never run `cd /opt/arnold && git pull` manually. Use `bash server-deploy.sh pull` if you need to advance the server's working tree without rebuilding. Manual `git pull` followed by a cached rebuild creates source-vs-image drift: HEAD advances but the docker `COPY backend/` layer stays cached, so the new code is on disk but not in the running container.
+5. **If the lock is held**, wait and retry — don't bypass it. If you suspect the holder is wedged, see "Deploy stuck on RL wait" below before forcibly clearing the lock.
+6. **Coordinate git pushes**: Before pushing + deploying, run `git fetch && git log HEAD..origin/main --oneline` to see what other agents pushed since you forked, and `git log origin/main..HEAD --oneline` to confirm your push is a clean fast-forward. If origin is ahead, rebase or merge before pushing — don't force-push.
 7. **Use `/deploy` skill** for guided deployment with health verification
 8. **Use `/server-health` skill** for quick production status checks
 9. **Deploy cooldown enforced**: 5-minute minimum between rebuilds — each rebuild kills extraction for 5-10 min. Batch changes and deploy once, don't rebuild per commit.
 10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
 11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down. Don't rely on manual monitoring.
-12. **Stocks-aware rebuild rules (when `STOCKS_AUTONOMOUS=true`)**: every rebuild severs the TopstepX SignalR session, causing ~15-60s of tick/candle data loss and a "Multiple sessions detected" reconnect race. For the trading side this matters more than for extraction. Rules:
+12. **Deploy stuck on RL wait (DEADLOCK ESCAPE)**: `server-deploy.sh` calls `wait_for_rl_training` which blocks up to **7200s** (2h) for a pipeline that the script's own comment admits "has never completed in 12 days." There is NO chunk-progress watchdog — the script only checks `ps aux | grep rl_train_pipeline`, so a daemon stuck at "step 1, chunks: 0/38" looks identical to one making real progress. **If the deploy hasn't advanced past `step 1` for 5 min**, treat it as wedged:
+    1. Confirm the wedge: `ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T backend cat /app/data/rl/pipeline_progress; docker compose exec -T backend bash -c 'ls /app/data/rl/episodes/_chunks/obs_*.npy 2>/dev/null | wc -l'"` — if both numbers are unchanged after 5 min, RL is not progressing.
+    2. Find the daemon PID: `docker compose exec -T backend bash -c 'ps aux | grep -E "rl_train" | grep -v grep'`.
+    3. Kill it inside the container: `docker compose exec -T backend kill -9 <PID>` (`pkill` may itself get killed in a memory-pressured container — kill by PID).
+    4. The deploy script's wait loop will see `rl_running=0` on its next 30s tick and proceed.
+    5. **If you killed the local SSH but the remote bash is still running**: SSH to the server and `pkill -f 'server-deploy.sh rebuild'` then `rm -f /opt/arnold/.deploy.lock` — the orphaned bash holds the flock indefinitely. Verify with `pgrep -fa 'server-deploy.sh'` showing nothing before clearing the lock.
+13. **Verify the running container actually has your code**: docker build cache + cached `COPY backend/ backend/` layers can ship an image whose source predates the latest `git pull`. After every rebuild, confirm:
+    - `ssh root@148.251.40.251 "cd /opt/arnold && git rev-parse HEAD"` — server's git HEAD
+    - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
+    - `ssh root@148.251.40.251 "cd /opt/arnold && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed
+    - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
+14. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `arnold/frontend/`, `arnold/mirror/`, `arnold/stocks_runtime.py`, `arnold/server.py`, `arnold/launch.py`, `arnold/proxy.py`, or `arnold/tv_overlay/` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -v '^arnold/' | head -1` — if empty, no backend deploy needed. The autonomous broker tracker on active trades is far more fragile than any local-client bug.
+15. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free. Prefer foreground deploys when the change is blocking; background only when you have other independent work to do in parallel.
+16. **Stocks-aware rebuild rules (when `STOCKS_AUTONOMOUS=true`)**: every rebuild severs the TopstepX SignalR session, causing ~15-60s of tick/candle data loss and a "Multiple sessions detected" reconnect race. For the trading side this matters more than for extraction. Rules:
     - **Open-position gate (enforced)**: `rebuild` and `restart` for the `backend` service in `server-deploy.sh` query TopstepX directly via `Position/searchOpen` and abort if anything is open. To deploy through a live trade anyway (e.g. paper account, or you accept the flatten), pass `ALLOW_OPEN_POSITION_DEPLOY=1`:
       ```bash
       ssh root@148.251.40.251 "ALLOW_OPEN_POSITION_DEPLOY=1 bash /opt/arnold/scripts/server-deploy.sh rebuild backend"
