@@ -1239,6 +1239,35 @@ class TopstepXBrokerAdapter:
                 self._halt("stop_placement_failed")
                 return {"rejected": True, "reason": "stop_placement_failed"}
 
+            # Verify the stop is actually live on the broker. TopstepX
+            # sometimes accepts the place_stop_order call (returns success +
+            # orderId) but the order doesn't end up in the book — trade 128
+            # (2026-04-30 15:50, +$890) entered with a "successful" stop
+            # response but Order/searchOpen later showed zero open orders,
+            # leaving the position naked. Confirm before tracking it.
+            try:
+                open_orders = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
+                live_ids = {int(o.get("id")) for o in (open_orders.get("orders") or []) if o.get("id")}
+                if int(stop_order_id) not in live_ids:
+                    log.error(
+                        "Stop verify FAILED: orderId %s not in Order/searchOpen (%d open) — "
+                        "flattening to avoid naked position",
+                        stop_order_id,
+                        len(live_ids),
+                    )
+                    try:
+                        await self.client.liquidate_position()
+                    except Exception:
+                        log.exception("Emergency liquidate after stop-verify failure also failed")
+                    self._halt("stop_verify_failed")
+                    return {"rejected": True, "reason": "stop_verify_failed"}
+                log.info("Stop verified live: orderId=%s @ %.2f", stop_order_id, current_stop)
+            except Exception:
+                # Verification call itself failed — don't block trade on a
+                # transient REST error. The reconcile loop will catch any
+                # genuine naked-position state within 60s.
+                log.warning("Stop verification REST call failed; continuing", exc_info=True)
+
         side = "long" if is_long else "short"
         self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
         self.tracker.entry_order_id = entry_order_id

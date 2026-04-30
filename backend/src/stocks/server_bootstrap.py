@@ -519,6 +519,17 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
                     await adapter.flatten("size_mismatch_recovery")
                 except Exception:
                     log.exception("reconcile loop: flatten after mismatch failed")
+                # flatten() now invokes _recover_via_broker_truth which
+                # reconciles the tracker and writes any missing broker_trades
+                # row. The halt was a safety wall during the inconsistent
+                # moment; once we're back in sync (broker flat AND tracker
+                # flat), lift it so trading resumes without manual /recover
+                # calls. If the recovery left tracker still non-flat, leave
+                # halt in place so a human can inspect.
+                if adapter._halted and adapter._halt_reason.startswith("size_mismatch") and adapter.tracker.is_flat:
+                    adapter._halted = False
+                    adapter._halt_reason = ""
+                    log.info("reconcile loop: auto-cleared size_mismatch halt after recovery")
         except asyncio.CancelledError:
             return
         except Exception:
