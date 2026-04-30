@@ -228,3 +228,23 @@ def test_convergence_max_iter_constant():
     from arnold.mirror.provider_runner import CONVERGENCE_MAX_ITER
 
     assert CONVERGENCE_MAX_ITER == 5
+
+
+def test_convergence_iter_attribute_exists():
+    """ProviderRunner tracks _convergence_iter on self for the convergence cap."""
+    from unittest.mock import MagicMock
+
+    from arnold.mirror.provider_runner import ProviderRunner
+
+    runner = ProviderRunner(
+        provider_id="polymarket",
+        browser=MagicMock(running=True, context=MagicMock(pages=[]), provider_data={}),
+        broadcaster=MagicMock(),
+        proxy_url="https://x.test",
+        pop_bet=lambda: None,
+        block_event_market=lambda b: None,
+        is_blocked=lambda b: False,
+        placed_today={},
+        push_bet=lambda b: None,
+    )
+    assert runner._convergence_iter == 0

@@ -157,6 +157,10 @@ class ProviderRunner:
 
         self._task: asyncio.Task | None = None
         self._slip_stream = None  # Set when a slip is loaded; cleared when bet ready/placed/skipped
+        # Per-bet convergence iteration counter — reset to 0 each time we
+        # successfully reach READY. Used as a hard cap so a flapping queue
+        # can't cause infinite re-navigation. See should_redirect_to_top.
+        self._convergence_iter = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -284,6 +288,39 @@ class ProviderRunner:
     # ------------------------------------------------------------------
     # Main loop — extracted from PlayLoop._run()
     # ------------------------------------------------------------------
+
+    async def _prep_and_read_live_edge(
+        self, bet: dict, pid: str, workflow, page
+    ) -> tuple[Any, float | None, float | None]:
+        """One iteration of: navigate-already-done → prep_betslip → check_live_price.
+
+        Returns (prep_result, live_odds, live_edge). Caller handles failure
+        modes (prep_result.status == "failed") and convergence decisions.
+        """
+        bet_ns = _bet_ns(bet)
+        stake = bet.get("stake", 0.0)
+        cached_bal = self._browser.provider_data.get(pid, {}).get("balance")
+        if cached_bal is not None and cached_bal > 0 and stake > cached_bal:
+            stake = cached_bal
+        cap = self._stake_caps.get(pid)
+        if cap is not None and cap > 0 and stake > cap:
+            logger.info(f"[Runner:{pid}] Capping stake {stake} → {cap} (provider limit)")
+            stake = cap
+        bet["stake"] = stake
+        bet_ns.stake = stake
+        prep_result = await workflow.prep_betslip(page, bet_ns, stake)
+
+        live_odds = prep_result.actual_odds if prep_result else None
+        live_edge = bet.get("edge_pct")
+        if prep_result and prep_result.status != "failed" and hasattr(workflow, "check_live_price"):
+            try:
+                lo, le = await workflow.check_live_price(page, bet_ns)
+                if lo is not None:
+                    live_odds = lo
+                    live_edge = le
+            except Exception:
+                pass
+        return prep_result, live_odds, live_edge
 
     async def _run(self) -> None:
         self.state = STATE_PROVIDER_OPENING
@@ -445,24 +482,13 @@ class ProviderRunner:
                     self._mark_recently_skipped(bet)
                     continue
 
-                # Prep betslip
-                stake = bet.get("stake", 0.0)
-                cached_bal = self._browser.provider_data.get(pid, {}).get("balance")
-                if cached_bal is not None and cached_bal > 0 and stake > cached_bal:
-                    stake = cached_bal
-                # Apply per-provider stake cap (learned from prior limit responses)
-                cap = self._stake_caps.get(pid)
-                if cap is not None and cap > 0 and stake > cap:
-                    logger.info(f"[Runner:{pid}] Capping stake {stake} → {cap} (provider limit)")
-                    stake = cap
-                bet["stake"] = stake
-                bet_ns.stake = stake
-                prep_result = await workflow.prep_betslip(page, bet_ns, stake)
+                # Prep + live-edge read. For polymarket, wrap in a convergence
+                # loop: re-pop the queue's new top whenever live edge drops
+                # below it. Cap iterations at CONVERGENCE_MAX_ITER. Other
+                # providers (pinnacle/cloudbet/kalshi) use the single-pass path.
+                prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(bet, pid, workflow, page)
 
-                # Auto-skip if prep failed — without this the runner goes to
-                # READY with no/wrong outcome selected and the user clicks Buy
-                # on whatever's currently highlighted on the page (potentially
-                # a wrong-market bet).
+                # Hard-fail handling (any provider).
                 if prep_result and prep_result.status == "failed":
                     logger.warning(f"[Runner:{pid}] Prep failed: {prep_result.reason} — skipping bet")
                     self._broadcaster.publish(
@@ -470,27 +496,96 @@ class ProviderRunner:
                         {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
                     )
                     self.stats["skipped"] += 1
-                    # Hard fails (redirect / closed event / unmatched cent button) get
-                    # the 60s TTL so they don't immediately re-pop into the queue on
-                    # the next _refresh_batch. Soft fails (none currently exist) fall
-                    # through and may be re-fetched right away.
                     if is_hard_fail_reason(prep_result.reason):
                         self._mark_recently_skipped(bet)
+                    self._convergence_iter = 0
                     continue
 
-                # Check live price
-                live_odds = prep_result.actual_odds
-                live_edge = bet.get("edge_pct")
-                if hasattr(workflow, "check_live_price"):
-                    try:
-                        lo, le = await workflow.check_live_price(page, bet_ns)
-                        if lo is not None:
-                            live_odds = lo
-                            live_edge = le
-                    except Exception:
-                        pass
+                # Polymarket-only convergence loop.
+                if pid == "polymarket":
+                    redirected = False
+                    while self._convergence_iter < CONVERGENCE_MAX_ITER:
+                        try:
+                            queue_top = (
+                                self._peek_top_edge((bet.get("event_id"), bet.get("market"), bet.get("outcome")))
+                                if self._peek_top_edge
+                                else None
+                            )
+                        except TypeError:
+                            queue_top = self._peek_top_edge() if self._peek_top_edge else None
+                        if not should_redirect_to_top(live_edge, queue_top):
+                            break  # Active bet IS top — proceed to READY.
+                        # Stamp live edge on the bet and push back.
+                        old_cached = bet.get("edge_pct")
+                        bet["edge_pct"] = live_edge
+                        self._convergence_iter += 1
+                        self._broadcaster.publish(
+                            "bet_converging",
+                            {
+                                "provider_id": pid,
+                                "bet": bet,
+                                "live_edge": live_edge,
+                                "queue_top": queue_top,
+                                "iteration": self._convergence_iter,
+                                "old_cached_edge": old_cached,
+                            },
+                        )
+                        logger.info(
+                            f"[Runner:{pid}] Converging (iter {self._convergence_iter}/{CONVERGENCE_MAX_ITER}): "
+                            f"live edge {live_edge:.1f}% < queue top {queue_top:.1f}% — re-inserting and re-popping"
+                        )
+                        self._push_bet(bet)
+                        # Pop new top, navigate, prep again. If pop returns None
+                        # (queue drained mid-cycle), break out and fall through
+                        # to READY on the current (still-pushed-back) bet.
+                        new_bet = self._pop_bet()
+                        if new_bet is None:
+                            logger.warning(f"[Runner:{pid}] Queue empty mid-convergence — falling through")
+                            break
+                        bet = new_bet
+                        bet["provider_id"] = pid
+                        self.current_bet = bet
+                        bet_ns = _bet_ns(bet)
+                        nav_ok = await workflow.navigate_to_event(page, bet_ns)
+                        if not nav_ok:
+                            self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "navigation_failed"})
+                            self.stats["skipped"] += 1
+                            redirected = True
+                            break
+                        if await self._is_event_closed(page):
+                            self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "event_closed"})
+                            self.stats["skipped"] += 1
+                            self._mark_recently_skipped(bet)
+                            redirected = True
+                            break
+                        prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(
+                            bet, pid, workflow, page
+                        )
+                        if prep_result and prep_result.status == "failed":
+                            self._broadcaster.publish(
+                                "bet_skipped",
+                                {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
+                            )
+                            self.stats["skipped"] += 1
+                            if is_hard_fail_reason(prep_result.reason):
+                                self._mark_recently_skipped(bet)
+                            redirected = True
+                            break
+                    else:
+                        # Hit CONVERGENCE_MAX_ITER — log and proceed on whatever we have.
+                        logger.warning(
+                            f"[Runner:{pid}] Convergence cap hit ({CONVERGENCE_MAX_ITER}) — "
+                            f"proceeding to READY on {bet.get('display_home')} v {bet.get('display_away')} "
+                            f"with live edge {live_edge}"
+                        )
+                    if redirected:
+                        # Inner break fired with a skip — restart the outer loop.
+                        self._convergence_iter = 0
+                        continue
+                    # Reset for the next bet pop.
+                    self._convergence_iter = 0
 
-                # Auto-skip negative EV
+                # Auto-skip negative EV (any provider).
                 if live_edge is not None and live_edge < 0:
                     logger.info(f"[Runner:{pid}] Auto-skip: live edge {live_edge:.1f}%")
                     self._broadcaster.publish(
@@ -504,6 +599,7 @@ class ProviderRunner:
                     )
                     self.stats["skipped"] += 1
                     continue
+                stake = bet["stake"]
 
                 # Ready — wait for interceptor or skip, polling live price
                 self.state = STATE_READY
