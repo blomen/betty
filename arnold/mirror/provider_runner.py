@@ -36,6 +36,7 @@ from .play_loop import (
     STATE_PLACING,
     STATE_PROVIDER_OPENING,
     STATE_READY,
+    STATE_READY_TO_RUN,
     STATE_SETTLING,
     UNCAPPED_PROVIDERS,
     _bet_ns,
@@ -105,6 +106,12 @@ CONVERGING_PROVIDERS = frozenset({"polymarket", "pinnacle"})
 # are closed events, the cached batch's event slugs are likely stale (e.g.,
 # polymarket changed slug format). User should refresh batch or restart.
 CONSECUTIVE_HARD_FAIL_ALERT = 5
+
+# Continuous-sync intervals while the runner sits at STATE_READY_TO_RUN.
+# Conservative defaults — settlement events are infrequent and balance
+# fetches incur a network round trip per tick.
+READY_BALANCE_SYNC_INTERVAL_S = 60.0
+READY_PENDING_SYNC_INTERVAL_S = 300.0
 
 
 def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None) -> bool:
@@ -190,6 +197,15 @@ class ProviderRunner:
         # stale and a batch refresh / restart is needed. Reset on first
         # successful prep.
         self._consecutive_hard_fails = 0
+        # Run-gate. Cleared by default — runner reaches STATE_READY_TO_RUN and
+        # awaits this event before entering the bet loop. Set/cleared via
+        # set_run(); pausing from STATE_RUNNING also clears it and the loop
+        # checks it at the top of each iteration.
+        self._run_event: asyncio.Event = asyncio.Event()
+        # Background task that performs continuous balance + pending sync
+        # while the runner is at STATE_READY_TO_RUN. Spawned on entry to
+        # ready, cancelled on transition to bet loop or stop().
+        self._ready_sync_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -207,6 +223,9 @@ class ProviderRunner:
             except Exception:
                 pass
             self._slip_stream = None
+        if self._ready_sync_task and not self._ready_sync_task.done():
+            self._ready_sync_task.cancel()
+        self._ready_sync_task = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -214,6 +233,7 @@ class ProviderRunner:
         self.current_bet = None
         self._bet_intercepted_event.set()
         self._skip_event.set()
+        self._run_event.set()  # unblock _run if it's awaiting the gate
 
     @property
     def running(self) -> bool:
@@ -221,6 +241,29 @@ class ProviderRunner:
 
     def skip(self) -> None:
         self._skip_event.set()
+
+    def set_run(self, run: bool) -> bool:
+        """Toggle the run gate. Returns True if state actually changed.
+
+        Setting True while at STATE_READY_TO_RUN releases the gate so the
+        bet loop iteration can begin. Clearing while running causes the
+        loop to drop back to STATE_READY_TO_RUN at the top of the next
+        iteration (mid-bet placements unwind naturally — pausing while at
+        STATE_READY waiting for Place/Skip simulates a Skip)."""
+        if run:
+            if self._run_event.is_set():
+                return False
+            self._run_event.set()
+            return True
+        else:
+            if not self._run_event.is_set():
+                return False
+            self._run_event.clear()
+            # If runner is sitting at STATE_READY waiting on Place/Skip,
+            # signal Skip so the bet loop can unwind and re-check the gate.
+            if self.state == STATE_READY:
+                self._skip_event.set()
+            return True
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
         if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
@@ -372,6 +415,38 @@ class ProviderRunner:
                 pass
         return prep_result, live_odds, live_edge
 
+    async def _ready_sync_loop(self, workflow: Any, page: Any) -> None:
+        """Continuously refresh balance and re-detect pending while at
+        STATE_READY_TO_RUN. Cancelled when the runner enters its bet loop
+        or stops. Errors are swallowed — staleness is preferable to crashing
+        the runner mid-idle."""
+        pid = self.provider_id
+        last_balance = 0.0
+        last_pending = 0.0
+        while True:
+            now = asyncio.get_event_loop().time()
+            try:
+                if now - last_balance >= READY_BALANCE_SYNC_INTERVAL_S:
+                    if hasattr(workflow, "fetch_balance"):
+                        try:
+                            await workflow.fetch_balance(page)
+                        except Exception as e:
+                            logger.debug(f"[Runner:{pid}] ready balance sync failed: {e!r}")
+                    last_balance = now
+                if now - last_pending >= READY_PENDING_SYNC_INTERVAL_S:
+                    try:
+                        await self._detect_pending(pid, workflow, page)
+                        # _detect_pending sets self.state = STATE_SETTLING; restore
+                        self.state = STATE_READY_TO_RUN
+                    except Exception as e:
+                        logger.debug(f"[Runner:{pid}] ready pending sync failed: {e!r}")
+                    last_pending = now
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(5.0)
+
     async def _run(self) -> None:
         self.state = STATE_PROVIDER_OPENING
         pid = self.provider_id
@@ -424,9 +499,67 @@ class ProviderRunner:
                     )
                     return
 
-            # 5. Process bets from shared queue
+            # 5. NEW: Wait at READY_TO_RUN for the user to press Run.
+            # While waiting, run a slow continuous-sync task so balance
+            # and pending stay fresh. The task is cancelled the moment
+            # the gate is released.
+            self.state = STATE_READY_TO_RUN
+            self._broadcaster.publish(
+                "provider_ready",
+                {
+                    "provider_id": pid,
+                    "state": STATE_READY_TO_RUN,
+                    "placed_today": self._placed_today.get(pid, 0),
+                    "daily_cap": DAILY_BET_CAP,
+                },
+            )
+            self._ready_sync_task = asyncio.create_task(
+                self._ready_sync_loop(workflow, page),
+                name=f"ready_sync_{pid}",
+            )
+            try:
+                await self._run_event.wait()
+            finally:
+                if self._ready_sync_task and not self._ready_sync_task.done():
+                    self._ready_sync_task.cancel()
+                    try:
+                        await self._ready_sync_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                self._ready_sync_task = None
+            self._broadcaster.publish("provider_running", {"provider_id": pid})
+
+            # 6. Process bets from shared queue
             logger.info(f"[Runner:{pid}] Entering bet loop")
             while True:
+                # If the user paused, drop back to ready and await the gate again.
+                if not self._run_event.is_set():
+                    self.state = STATE_READY_TO_RUN
+                    self._broadcaster.publish(
+                        "provider_ready",
+                        {
+                            "provider_id": pid,
+                            "state": STATE_READY_TO_RUN,
+                            "placed_today": self._placed_today.get(pid, 0),
+                            "daily_cap": DAILY_BET_CAP,
+                        },
+                    )
+                    self._ready_sync_task = asyncio.create_task(
+                        self._ready_sync_loop(workflow, page),
+                        name=f"ready_sync_{pid}",
+                    )
+                    try:
+                        await self._run_event.wait()
+                    finally:
+                        if self._ready_sync_task and not self._ready_sync_task.done():
+                            self._ready_sync_task.cancel()
+                            try:
+                                await self._ready_sync_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        self._ready_sync_task = None
+                    self._broadcaster.publish("provider_running", {"provider_id": pid})
+
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
                     if placed >= DAILY_BET_CAP:
