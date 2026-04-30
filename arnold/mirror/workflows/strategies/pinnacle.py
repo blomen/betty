@@ -833,6 +833,44 @@ async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
         return False
 
 
+# ------------------------------------------------------------------
+# Placement-XHR parsers — called by browser placement interceptor when
+# the user clicks CONFIRM on pinnacle.se and the placement XHR returns.
+# Pure functions — no Page, no intel.
+# ------------------------------------------------------------------
+
+
+def parse_placement_status(body: dict) -> dict:
+    """Infer success/failure from Pinnacle placement XHR response.
+
+    Returns dict with success: bool, error: str | None, max_stake: float | None.
+    Success path: response carries wagerNumber or betId.
+    Failure path: extract max_stake from top-level keys or limits[].type=='maxRiskStake'.
+    """
+    if body.get("wagerNumber") or body.get("betId"):
+        return {"success": True, "error": None, "max_stake": None}
+    max_stake = body.get("maxStake") or body.get("max_stake") or body.get("maximumStake")
+    if max_stake is None:
+        for limit in body.get("limits") or []:
+            if limit.get("type") == "maxRiskStake":
+                max_stake = limit.get("amount")
+                break
+    return {
+        "success": False,
+        "error": body.get("error") or body.get("errorCode") or "unknown",
+        "max_stake": max_stake,
+    }
+
+
+def parse_placement_response(body: dict) -> str | None:
+    """Extract provider_bet_id from Pinnacle placement response.
+
+    Tries wagerNumber first (inferred primary), then betId.
+    """
+    bid = body.get("wagerNumber") or body.get("betId")
+    return str(bid) if bid else None
+
+
 strategy = Strategy(
     check_login=_check_login,
     sync_balance=_sync_balance,
