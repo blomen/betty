@@ -65,8 +65,16 @@ class SignalRelayClient:
         while True:
             try:
                 log.info("SignalRelay: connecting to %s", self._url)
-                # ping_timeout=60: tolerate brief server-side event-loop stalls
-                # during tick bursts so we don't churn through reconnects.
+                # ping_interval=None disables WebSocket-level keepalive entirely.
+                # Both endpoints are localhost on the same machine; TCP itself
+                # detects a dead connection. With ping_interval=30/timeout=60
+                # the relay was logging 1011 (internal error) keepalive timeouts
+                # ~once per minute (1558 occurrences in the day's log) because
+                # tick bursts + RL inference stall the FastAPI event loop past
+                # 60s, the server's reply ping doesn't return in time, and
+                # uvicorn closes the socket. The reconnect storm dropped ticks/
+                # fills until the bounded outbox replayed. No actual liveness
+                # benefit on loopback — silence the noise.
                 # X-API-Key authenticates us to /ws/signals — the server-side
                 # loopback trust can't identify us because Docker's port
                 # forwarding rewrites our source IP to the bridge gateway,
@@ -75,8 +83,7 @@ class SignalRelayClient:
                 headers = [("X-API-Key", api_key)] if api_key else []
                 async with websockets.connect(
                     self._url,
-                    ping_interval=30,
-                    ping_timeout=60,
+                    ping_interval=None,
                     additional_headers=headers,
                 ) as ws:
                     self._ws = ws

@@ -44,4 +44,4 @@ EXPOSE 8000
 
 USER arnold
 WORKDIR /app/backend
-CMD ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--ws-ping-interval", "30", "--ws-ping-timeout", "60", "--loop", "uvloop"]
+CMD ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--ws-ping-interval", "0", "--ws-ping-timeout", "0", "--loop", "uvloop"]

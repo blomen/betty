@@ -786,6 +786,29 @@ class TopstepXBrokerAdapter:
         if order_id is not None and self.tracker.entry_order_id is not None:
             is_entry = order_id == self.tracker.entry_order_id
             is_stop = order_id == self.tracker.stop_order_id
+            # Fingerprint check: if the fill's orderId matches NEITHER our
+            # entry nor our stop, it came from a different session on the
+            # same TopstepX account. Trade 124 (2026-04-29) was treated as
+            # an exit and corrupted the DB with a fake -$85 close. Halt
+            # immediately so the recovery path can reconcile via Order/search
+            # (where customTag != "arnold-prod" reveals the foreign source).
+            if not is_entry and not is_stop:
+                log.error(
+                    "Foreign-orderId fill detected (order_id=%s, our_entry=%s our_stop=%s, "
+                    "price=%.2f) — halting + flattening for safety",
+                    order_id,
+                    self.tracker.entry_order_id,
+                    self.tracker.stop_order_id,
+                    price,
+                )
+                self._halt(f"foreign_fill order_id={order_id}")
+                try:
+                    import asyncio as _asy
+
+                    _asy.create_task(self.flatten("foreign_fill"))
+                except Exception:
+                    log.warning("foreign-fill flatten task failed", exc_info=True)
+                return
         else:
             is_entry = self.tracker.entry_price == 0.0
             is_stop = not is_entry and self.tracker.stop_price > 0 and abs(price - self.tracker.stop_price) < 1.0
