@@ -131,6 +131,12 @@ class ArbRunner:
         self._top_opp_watcher_task: asyncio.Task | None = None
         self._update_tasks: set[asyncio.Task] = set()
 
+        # Last-known reason the runner went idle / didn't pick an opp.
+        # Surfaced via get_status() so the UI can show "betinia: idle (no_opps_in_pool)"
+        # instead of a silent dead state.
+        self.last_idle_reason: str | None = None
+        self.last_skip_counts: dict[str, int] = {}
+
     # ----- public surface -----
 
     def start(self) -> None:
@@ -206,6 +212,8 @@ class ArbRunner:
             "stats": self.stats,
             "placed_today": self._placed_today.get(self.provider_id, 0),
             "mode": "arb",
+            "last_idle_reason": self.last_idle_reason,
+            "last_skip_counts": dict(self.last_skip_counts),
         }
 
     # ----- main loop -----
@@ -235,7 +243,12 @@ class ArbRunner:
 
             if page is None:
                 logger.warning(f"[Arb:{pid}] No tab found — stopping")
+                self.last_idle_reason = "no_tab"
                 self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "no_tab"})
+                self._broadcaster.publish(
+                    "arb_runner_idle",
+                    {"provider_id": pid, "reason": "no_tab", "details": {"domain": workflow.domain}},
+                )
                 return
 
             # 2. Wait for login
@@ -244,7 +257,12 @@ class ArbRunner:
             logged_in = await self._wait_for_login(workflow, page)
             if not logged_in:
                 logger.warning(f"[Arb:{pid}] Login timeout — stopping")
+                self.last_idle_reason = "login_timeout"
                 self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "login_timeout"})
+                self._broadcaster.publish(
+                    "arb_runner_idle",
+                    {"provider_id": pid, "reason": "login_timeout", "details": {}},
+                )
                 return
 
             # 3. Settle pending bets
@@ -264,6 +282,7 @@ class ArbRunner:
 
             # 5. Arb bet loop
             logger.info(f"[Arb:{pid}] Entering arb bet loop (v2)")
+            skip_counts: dict[str, int] = {}
             while True:
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
@@ -277,18 +296,37 @@ class ArbRunner:
                 # Fetch fresh arb opps
                 opps = await self._fetch_arb_opps()
                 if not opps:
-                    logger.info(f"[Arb:{pid}] No arb opps available — done")
+                    logger.info(
+                        f"[Arb:{pid}] No arb opps available — done. "
+                        f"counter_pool={self._counter_pool()} active={self._active_providers}"
+                    )
+                    self.last_idle_reason = "no_opps_in_pool"
+                    self.last_skip_counts = dict(skip_counts)
+                    self._broadcaster.publish(
+                        "arb_runner_idle",
+                        {
+                            "provider_id": pid,
+                            "reason": "no_opps_in_pool",
+                            "details": {
+                                "counter_pool": self._counter_pool(),
+                                "active_providers": self._active_providers,
+                                "skip_counts": skip_counts,
+                            },
+                        },
+                    )
                     break
 
                 placed_any = False
                 for opp in opps:
                     if self._is_blocked(opp):
+                        skip_counts["blocked"] = skip_counts.get("blocked", 0) + 1
                         continue
 
                     # Load all legs in parallel
                     self.state = STATE_LOADING_LEGS
                     loaded = await self._load_all_legs(opp)
                     if not loaded:
+                        skip_counts["load_failed"] = skip_counts.get("load_failed", 0) + 1
                         continue
 
                     self.stats["total"] += 1
@@ -368,7 +406,17 @@ class ArbRunner:
                     break  # Re-fetch fresh opps after each placement
 
                 if not placed_any:
-                    logger.info(f"[Arb:{pid}] No viable opps in batch — done")
+                    logger.info(f"[Arb:{pid}] No viable opps in batch — done. skip_counts={skip_counts}")
+                    self.last_idle_reason = "no_viable_opps"
+                    self.last_skip_counts = dict(skip_counts)
+                    self._broadcaster.publish(
+                        "arb_runner_idle",
+                        {
+                            "provider_id": pid,
+                            "reason": "no_viable_opps",
+                            "details": {"skip_counts": skip_counts},
+                        },
+                    )
                     break
 
                 # Cooldown before re-fetching
@@ -404,12 +452,20 @@ class ArbRunner:
         anchor_leg = next((l for l in legs if l.get("provider") == self.provider_id), None)
         counter_legs = [l for l in legs if l.get("provider") != self.provider_id]
         if not anchor_leg or not counter_legs:
+            self._broadcaster.publish(
+                "bet_skipped",
+                {"opp": opp, "reason": "missing_legs"},
+            )
             return False
 
         # Anchor stake = full balance (capped at site max)
         balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
         anchor_stake = round(balance, 2)  # site-max cap learned later from limit responses
         if anchor_stake <= 0:
+            self._broadcaster.publish(
+                "bet_skipped",
+                {"opp": opp, "reason": "zero_anchor_stake", "balance": balance},
+            )
             return False
 
         anchor_odds = anchor_leg.get("odds", 0)
@@ -428,24 +484,24 @@ class ArbRunner:
         self.current_arb_group_id = uuid.uuid4().hex[:12]
 
         # Navigate + prep all legs in parallel
-        async def _prep_leg(leg: dict, planned_stake: float) -> tuple[str, bool]:
+        async def _prep_leg(leg: dict, planned_stake: float) -> tuple[str, bool, str]:
             pid = leg["provider"]
             try:
                 wf = get_workflow(pid)
                 if not self._browser.context:
-                    return pid, False
+                    return pid, False, "no_browser_context"
                 page = await wf.find_tab(self._browser.context)
                 if not page:
-                    return pid, False
+                    return pid, False, "no_tab"
                 bet = self._opp_to_bet(opp, leg)
                 bet["stake"] = planned_stake
                 bet_ns = _bet_ns(bet)
                 nav_ok = await wf.navigate_to_event(page, bet_ns)
                 if not nav_ok:
-                    return pid, False
+                    return pid, False, "navigate_failed"
                 prep = await wf.prep_betslip(page, bet_ns, planned_stake)
                 if prep.status not in ("prepped", "placed"):
-                    return pid, False
+                    return pid, False, f"prep_{prep.status}:{getattr(prep, 'reason', '') or 'no_reason'}"
                 # Start SlipOddsStream for this leg
                 stream = SlipOddsStream(
                     provider_id=pid,
@@ -456,19 +512,31 @@ class ArbRunner:
                 )
                 stream.start()
                 self._streams[pid] = stream
-                return pid, True
-            except Exception:
+                return pid, True, "ok"
+            except Exception as e:
                 logger.exception(f"[Arb:{self.provider_id}] prep failed for {pid}")
-                return pid, False
+                return pid, False, f"exception:{type(e).__name__}"
 
         prep_results = await asyncio.gather(
             _prep_leg(anchor_leg, anchor_stake),
             *[_prep_leg(l, s) for l, s in zip(counter_legs, counter_stakes)],
         )
-        if any(not ok for _, ok in prep_results):
+        failures = [(p, why) for p, ok, why in prep_results if not ok]
+        if failures:
             for s in self._streams.values():
                 s.stop()
             self._streams.clear()
+            self._broadcaster.publish(
+                "bet_skipped",
+                {
+                    "opp": opp,
+                    "reason": "prep_failed",
+                    "failures": [{"provider_id": p, "why": why} for p, why in failures],
+                },
+            )
+            logger.info(
+                f"[Arb:{self.provider_id}] _load_all_legs prep failed: {', '.join(f'{p}={why}' for p, why in failures)}"
+            )
             return False
 
         # Register counter events
