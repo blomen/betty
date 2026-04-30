@@ -786,29 +786,25 @@ class TopstepXBrokerAdapter:
         if order_id is not None and self.tracker.entry_order_id is not None:
             is_entry = order_id == self.tracker.entry_order_id
             is_stop = order_id == self.tracker.stop_order_id
-            # Fingerprint check: if the fill's orderId matches NEITHER our
-            # entry nor our stop, it came from a different session on the
-            # same TopstepX account. Trade 124 (2026-04-29) was treated as
-            # an exit and corrupted the DB with a fake -$85 close. Halt
-            # immediately so the recovery path can reconcile via Order/search
-            # (where customTag != "arnold-prod" reveals the foreign source).
+            # An unknown orderId is most often arnold's OWN close/flatten
+            # order (different orderId from the tracked entry+stop). Logging
+            # the mismatch for visibility, but falling through to sentinel
+            # detection so legitimate exits aren't classified as foreign.
+            # Trade 124's fake -$85 / today's halt cycle motivated this:
+            # the size_mismatch reconcile loop + _recover_via_broker_truth
+            # in flatten() catch genuine desyncs without false positives.
             if not is_entry and not is_stop:
-                log.error(
-                    "Foreign-orderId fill detected (order_id=%s, our_entry=%s our_stop=%s, "
-                    "price=%.2f) — halting + flattening for safety",
+                log.warning(
+                    "Unknown-orderId fill (order_id=%s, our_entry=%s our_stop=%s, "
+                    "price=%.2f) — treating as exit; reconcile will halt if size diverges",
                     order_id,
                     self.tracker.entry_order_id,
                     self.tracker.stop_order_id,
                     price,
                 )
-                self._halt(f"foreign_fill order_id={order_id}")
-                try:
-                    import asyncio as _asy
-
-                    _asy.create_task(self.flatten("foreign_fill"))
-                except Exception:
-                    log.warning("foreign-fill flatten task failed", exc_info=True)
-                return
+                # Sentinel fallback: assume exit if entry already confirmed
+                is_entry = self.tracker.entry_price == 0.0
+                is_stop = not is_entry and self.tracker.stop_price > 0 and abs(price - self.tracker.stop_price) < 1.0
         else:
             is_entry = self.tracker.entry_price == 0.0
             is_stop = not is_entry and self.tracker.stop_price > 0 and abs(price - self.tracker.stop_price) < 1.0
