@@ -69,6 +69,24 @@ EDGE_DRIFT_SKIP_PCT = 0.0
 # re-enabled if needed; set 0 to disable.
 READY_TIMEOUT_S = 0.0
 
+# Hard-fail prep_betslip reasons — the bet cannot be played in its current
+# state. Marked with the recently_skipped 60s TTL so it doesn't return on the
+# next refresh tick. Polymarket-specific (other providers use different
+# failure modes) but the matching is substring-based so it's safe everywhere.
+HARD_FAIL_PREP_REASONS = (
+    "navigation_redirected",
+    "no_cent_button_matched",
+    "event_closed",
+    "click_failed",
+)
+
+
+def is_hard_fail_reason(reason: str | None) -> bool:
+    """True if `reason` starts with or contains any HARD_FAIL_PREP_REASONS prefix."""
+    if not reason:
+        return False
+    return any(token in reason for token in HARD_FAIL_PREP_REASONS)
+
 
 class ProviderRunner:
     """Runs the play loop for a single provider as an asyncio task."""
@@ -424,6 +442,12 @@ class ProviderRunner:
                         {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
                     )
                     self.stats["skipped"] += 1
+                    # Hard fails (redirect / closed event / unmatched cent button) get
+                    # the 60s TTL so they don't immediately re-pop into the queue on
+                    # the next _refresh_batch. Soft fails (none currently exist) fall
+                    # through and may be re-fetched right away.
+                    if is_hard_fail_reason(prep_result.reason):
+                        self._mark_recently_skipped(bet)
                     continue
 
                 # Check live price

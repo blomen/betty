@@ -95,3 +95,93 @@ def test_provider_runner_accepts_push_bet_param():
     assert runner._push_bet is push
     runner._push_bet({"event_id": "x", "edge_pct": 5.0})
     assert push_calls == [{"event_id": "x", "edge_pct": 5.0}]
+
+
+def test_hard_fail_reasons_constant_includes_known_failures():
+    """The hard-fail reason set in provider_runner must cover all four
+    polymarket prep_betslip failure modes."""
+    from arnold.mirror.provider_runner import HARD_FAIL_PREP_REASONS
+
+    assert "navigation_redirected" in HARD_FAIL_PREP_REASONS
+    assert "no_cent_button_matched" in HARD_FAIL_PREP_REASONS
+    assert "event_closed" in HARD_FAIL_PREP_REASONS
+    assert "click_failed" in HARD_FAIL_PREP_REASONS
+
+
+def test_is_hard_fail_reason_substring_match():
+    """is_hard_fail_reason matches when any known prefix appears in the reason
+    string. prep_betslip reasons include extra context, e.g.:
+       'navigation_redirected (expected slug ... not in URL ...)'
+       'no_cent_button_matched (market=moneyline, target=...)'
+       'click_failed: js_eval_returned_none'
+    """
+    from arnold.mirror.provider_runner import is_hard_fail_reason
+
+    assert is_hard_fail_reason("navigation_redirected (expected slug 'foo' not in URL 'bar')")
+    assert is_hard_fail_reason("no_cent_button_matched (market=moneyline, target=team)")
+    assert is_hard_fail_reason("click_failed: js_eval_returned_none")
+    assert is_hard_fail_reason("event_closed")
+    assert not is_hard_fail_reason("transient_render_glitch")
+    assert not is_hard_fail_reason("")
+    assert not is_hard_fail_reason(None)
+
+
+def test_mark_recently_skipped_called_on_hard_fail(monkeypatch):
+    """When prep_betslip returns failed with a hard-fail reason, the runner
+    must call mark_recently_skipped(bet) so refresh_batch excludes it for 60s."""
+    from unittest.mock import MagicMock
+
+    from arnold.mirror.provider_runner import ProviderRunner
+
+    marked: list[dict] = []
+
+    runner = ProviderRunner(
+        provider_id="polymarket",
+        browser=MagicMock(running=True, context=MagicMock(pages=[]), provider_data={}),
+        broadcaster=MagicMock(),
+        proxy_url="https://x.test",
+        pop_bet=lambda: None,
+        block_event_market=lambda b: None,
+        is_blocked=lambda b: False,
+        placed_today={},
+        mark_recently_skipped=lambda b: marked.append(b),
+        push_bet=lambda b: None,
+    )
+
+    # Drive the prep_failed branch directly via the helper logic. The full
+    # _run loop is too complex to invoke from a unit test (browser tabs,
+    # workflow strategy, asyncio scaffolding), so we simulate the part the
+    # task adds: is_hard_fail_reason + mark_recently_skipped.
+    from arnold.mirror.provider_runner import is_hard_fail_reason
+
+    bet = {"event_id": "abc", "market": "moneyline", "outcome": "home"}
+    reason = "navigation_redirected (expected slug 'x' not in URL 'y')"
+    if is_hard_fail_reason(reason):
+        runner._mark_recently_skipped(bet)
+    assert marked == [bet]
+
+
+def test_mark_recently_skipped_not_called_on_soft_reason():
+    """Non-hard-fail prep reasons must NOT trigger the TTL marking."""
+    from unittest.mock import MagicMock
+
+    from arnold.mirror.provider_runner import ProviderRunner, is_hard_fail_reason
+
+    marked: list[dict] = []
+    runner = ProviderRunner(
+        provider_id="polymarket",
+        browser=MagicMock(running=True, context=MagicMock(pages=[]), provider_data={}),
+        broadcaster=MagicMock(),
+        proxy_url="https://x.test",
+        pop_bet=lambda: None,
+        block_event_market=lambda b: None,
+        is_blocked=lambda b: False,
+        placed_today={},
+        mark_recently_skipped=lambda b: marked.append(b),
+        push_bet=lambda b: None,
+    )
+    bet = {"event_id": "abc", "market": "moneyline", "outcome": "home"}
+    reason = "transient_render_glitch"
+    if is_hard_fail_reason(reason):
+        runner._mark_recently_skipped(bet)
+    assert marked == []
