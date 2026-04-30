@@ -890,6 +890,17 @@ async def _click_market_btn(page: Page, market: str, outcome: str) -> bool:
             logger.warning(f"[pinnacle] _click_market_btn: unknown outcome {outcome!r} for market {canon_market!r}")
             return False
 
+        # Wait for the markets section to mount — Pinnacle's matchup page lazy-renders
+        # button.market-btn ~1-3s after domcontentloaded. Without this, the JS lookup
+        # races the React mount and returns -1 (allBtns empty).
+        try:
+            await page.wait_for_selector("button.market-btn", timeout=10000, state="attached")
+        except Exception as e:
+            logger.warning(
+                f"[pinnacle] _click_market_btn: market-btn never appeared ({e}) — login wall or class rename?"
+            )
+            return False
+
         js = """
         (([market, outcome, pos]) => {
             const allBtns = Array.from(document.querySelectorAll('button.market-btn'));
