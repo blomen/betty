@@ -23,6 +23,7 @@ def compute_zone_trail_target(
     touched_zone,
     all_zones: list,
     current_zone_R: float,
+    of_score: float | None = None,
 ) -> tuple[float, float] | None:
     """Compute (target_stop, advance_zone_R) for a zone advance, or None.
 
@@ -33,7 +34,15 @@ def compute_zone_trail_target(
       - touched_zone's R-multiple > current_zone_R (genuine new advance)
       - risk_unit > 0 (computable R)
 
-    Trail target:
+    Trail target by orderflow strength (when ``of_score`` provided):
+      - of_score >= 0.7 (strong continuation conviction):
+          long  → touched_zone.lower_bound (TIGHT — lock aggressively)
+          short → touched_zone.upper_bound
+      - of_score in [0.3, 0.7): default behaviour (prior zone edge)
+      - of_score < 0.3: caller is expected to skip the trail entirely;
+        if it still calls us we use the prior-zone fallback.
+
+    Default trail target (no of_score / mid orderflow):
       - prior zone exists between entry and touched_zone in trade direction:
           long → prior_zone.upper_bound
           short → prior_zone.lower_bound
@@ -88,6 +97,13 @@ def compute_zone_trail_target(
         ]
         if candidates:
             prior_zone = min(candidates, key=lambda z: z.center_price)
+
+    # Strong-orderflow tighten: lock aggressively at the touched zone's
+    # near edge. The continuation conviction is high enough that giving
+    # the trade more room is more likely to give back than to extend.
+    if of_score is not None and of_score >= 0.7:
+        target_stop = _round_tick(touched_zone.lower_bound if side == "long" else touched_zone.upper_bound)
+        return target_stop, advance_zone_R
 
     if prior_zone is not None:
         target_stop = _round_tick(prior_zone.upper_bound if side == "long" else prior_zone.lower_bound)

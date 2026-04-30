@@ -1739,19 +1739,43 @@ class LevelMonitor:
                             # via current_zone_R (refuses to re-trail at the same level).
                             pending = broker._pending_trade or {}
                             current_zone_R = float(pending.get("current_zone_R") or 0.0)
-                            trail = compute_zone_trail_target(tr, zone, self._zones, current_zone_R)
-                            if trail is not None:
-                                target_stop, advance_zone_R = trail
-                                logger.info(
-                                    "Cont-trail: peak_R=%.2f advance_zone_R=%.2f → trail stop to %.2f",
-                                    tr.peak_R,
-                                    advance_zone_R,
-                                    target_stop,
+                            # Orderflow-aware trailing (RECKLESS_OF_TRAIL=1):
+                            #   of < 0.3 → SKIP the trail (let it run; weak conviction
+                            #              + tight zone trail = noise stops us out)
+                            #   of 0.3-0.7 → default prior-zone trail
+                            #   of >= 0.7 → TIGHTEN to touched-zone near-edge to lock
+                            # Off by default (env var not set) → behaviour unchanged.
+                            of_for_trail = None
+                            of_skip = False
+                            if os.environ.get("RECKLESS_OF_TRAIL", "1") != "0":
+                                action_for_of = result.get("action") or "CONT"
+                                of_for_trail = _compute_orderflow_score_live(rl_state, zone, price, action_for_of)
+                                if of_for_trail < 0.3:
+                                    of_skip = True
+                                    logger.info(
+                                        "Cont-trail SKIPPED: of=%.3f < 0.3 — letting position run "
+                                        "(peak_R=%.2f zone=%.2f)",
+                                        of_for_trail,
+                                        tr.peak_R,
+                                        zone.center_price,
+                                    )
+                            if not of_skip:
+                                trail = compute_zone_trail_target(
+                                    tr, zone, self._zones, current_zone_R, of_score=of_for_trail
                                 )
-                                asyncio.create_task(broker.modify_stop(target_stop))
-                                if pending:
-                                    pending["current_zone_R"] = advance_zone_R
-                                    broker._set_pending_trade(pending)
+                                if trail is not None:
+                                    target_stop, advance_zone_R = trail
+                                    logger.info(
+                                        "Cont-trail: peak_R=%.2f advance_zone_R=%.2f of=%s → trail stop to %.2f",
+                                        tr.peak_R,
+                                        advance_zone_R,
+                                        ("%.3f" % of_for_trail) if of_for_trail is not None else "n/a",
+                                        target_stop,
+                                    )
+                                    asyncio.create_task(broker.modify_stop(target_stop))
+                                    if pending:
+                                        pending["current_zone_R"] = advance_zone_R
+                                        broker._set_pending_trade(pending)
                         elif pyr.get("should_add"):
                             add_size = int(max(1, round(float(pyr.get("add_size") or 0))))
                             logger.info(
