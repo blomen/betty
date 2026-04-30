@@ -721,6 +721,11 @@ class BatchBuilder:
                     placed.expected_profit = placed.stake * (bet.edge_pct / 100.0)
                     placed.funded = True
                     pb.allocated += placed.stake
+                else:
+                    placed.funded = False
+                    placed.skip_reason = f"insufficient balance on {pid}"
+                    pb.missed_bets += 1
+                    pb.missed_ev += bet.expected_profit
                 bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
                 batch.append(placed)
                 continue
@@ -745,6 +750,7 @@ class BatchBuilder:
                     placed.funded = True
                     pb.allocated += placed.stake
                 else:
+                    placed.funded = False
                     placed.skip_reason = f"insufficient balance on {pid}"
                     pb.missed_bets += 1
                     pb.missed_ev += bet.expected_profit
