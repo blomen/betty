@@ -1076,8 +1076,44 @@ class ProviderRunner:
     # ------------------------------------------------------------------
 
     async def _wait_for_login(self, workflow, page) -> bool:
+        # Fast-path: try every login indicator immediately before sleeping. If the
+        # user already had the provider tab loaded + logged in when they hit Start,
+        # we want to enter the bet loop in <100ms — not eat the 2s upfront sleep
+        # that's only there for the slow-DOM-hydration case.
+        try:
+            wf_login = await workflow.check_login(page)
+            if wf_login:
+                bal = await workflow.sync_balance(page)
+                self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
+                    {"logged_in": True, "balance": bal if bal >= 0 else None, "source": "workflow_check"}
+                )
+                self._broadcaster.publish(
+                    "login_detected",
+                    {"provider_id": workflow.provider_id, "balance": bal if bal >= 0 else None},
+                )
+                logger.info(
+                    f"[Runner:{self.provider_id}] Login detected via workflow on first check (fast-path, balance: {bal})"
+                )
+                return True
+        except Exception:
+            pass
+        try:
+            dom_result = await self._browser.check_login_dom(workflow.provider_id)
+            if dom_result.get("logged_in"):
+                self._broadcaster.publish(
+                    "login_detected",
+                    {"provider_id": workflow.provider_id, "balance": dom_result.get("balance")},
+                )
+                logger.info(f"[Runner:{self.provider_id}] Login detected via DOM on first check (fast-path)")
+                return True
+        except Exception:
+            pass
+
+        # Slow path: page still hydrating. Short retries first (1s × 3), then back
+        # off to LOGIN_POLL_INTERVAL.
         await asyncio.sleep(2)
         elapsed = 2.0
+        retries = 0
         while elapsed < LOGIN_TIMEOUT:
             # 0. Workflow check_login is authoritative — always try it first
             try:
@@ -1125,8 +1161,13 @@ class ProviderRunner:
                     return True
             except Exception:
                 pass
-            await asyncio.sleep(LOGIN_POLL_INTERVAL)
-            elapsed += LOGIN_POLL_INTERVAL
+            # First 3 retries at 1s (DOM hydration is fast); after that back off
+            # to LOGIN_POLL_INTERVAL so we don't burn CPU when login is genuinely
+            # missing (user hasn't logged in yet).
+            interval = 1.0 if retries < 3 else LOGIN_POLL_INTERVAL
+            retries += 1
+            await asyncio.sleep(interval)
+            elapsed += interval
             self._broadcaster.publish(
                 "login_waiting",
                 {"provider_id": workflow.provider_id, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
