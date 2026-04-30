@@ -1139,6 +1139,22 @@ class ProviderRunner:
             and getattr(strat, "scrape_portfolio", None)
         )
         if supports_claim_redeem:
+            # Fast-path: nothing in DB to reconcile → skip the full /portfolio
+            # nav + scrape + claim + redeem dance and go straight to the bet
+            # loop. The pending_loop background task picks up any unredeemed
+            # positions on its own cadence, so we don't lose settlement coverage —
+            # we just stop blocking bet placement on it at runner start.
+            if not pending_bets:
+                logger.info(
+                    f"[Runner:{provider_id}] No DB pending bets — skipping startup settlement, "
+                    f"going straight to bet loop (pending_loop will catch unredeemed positions)"
+                )
+                self._broadcaster.publish(
+                    "settling_done",
+                    {"provider_id": provider_id, "pending_count": 0, "settled_count": 0, "skipped_fast_path": True},
+                )
+                return
+
             self.state = STATE_SETTLING
             self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
             try:
