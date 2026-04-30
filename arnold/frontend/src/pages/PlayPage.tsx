@@ -369,12 +369,10 @@ export default function PlayPage() {
 
     // Pick one representative per cluster that has at least one funded sibling
     const reps: Array<{ cluster: string; rep: string }> = []
-    const fundedAll: string[] = []
     for (const [cluster, members] of Object.entries(softByCluster)) {
       const funded = members.filter(pid => getBalance(balances[pid]) >= DRAIN_THRESHOLD_SEK)
       if (funded.length > 0) {
         reps.push({ cluster, rep: funded[0] })
-        fundedAll.push(...funded)
       }
     }
 
@@ -383,8 +381,13 @@ export default function PlayPage() {
       return
     }
 
-    // Non-drained counter pool: all funded soft books + unlimited providers
-    const pool = [...fundedAll, ...Array.from(UNLIMITED_PROVIDERS)]
+    // Counter pool: ONLY sharp/unlimited providers (cloudbet, polymarket,
+    // pinnacle, kalshi). Soft↔soft arbs are intentionally excluded — we
+    // only hedge a soft anchor against the sharp/unlimited side. Matches
+    // the drain-to-unlimited goal and avoids opps where both legs are
+    // caps-prone soft books (which the runner would also reject via
+    // is_valid_arb_shape, so generating them is just UI noise).
+    const pool = Array.from(UNLIMITED_PROVIDERS)
 
     try {
       setArbLoading(true)
