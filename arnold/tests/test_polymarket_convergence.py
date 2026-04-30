@@ -185,3 +185,14 @@ def test_mark_recently_skipped_not_called_on_soft_reason():
     if is_hard_fail_reason(reason):
         runner._mark_recently_skipped(bet)
     assert marked == []
+
+
+def test_is_hard_fail_reason_matches_click_eval_failed():
+    """Regression: click_eval_failed:<exception> emitted by polymarket's
+    JS-click path must trigger the 60s TTL (the substring 'click_failed'
+    alone does NOT match 'click_eval_failed' because the latter has a
+    different prefix)."""
+    from arnold.mirror.provider_runner import is_hard_fail_reason
+
+    assert is_hard_fail_reason("click_eval_failed:js_eval_returned_none") is True
+    assert is_hard_fail_reason("click_eval_failed: ReferenceError: foo is undefined") is True

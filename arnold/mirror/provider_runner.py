@@ -78,6 +78,7 @@ HARD_FAIL_PREP_REASONS = (
     "no_cent_button_matched",
     "event_closed",
     "click_failed",
+    "click_eval_failed",
 )
 
 
@@ -415,6 +416,9 @@ class ProviderRunner:
                 if await self._is_event_closed(page):
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "event_closed"})
                     self.stats["skipped"] += 1
+                    # Closed events go through the same 60s TTL as prep hard-fails
+                    # so they don't immediately re-pop on the next _refresh_batch.
+                    self._mark_recently_skipped(bet)
                     continue
 
                 # Prep betslip
