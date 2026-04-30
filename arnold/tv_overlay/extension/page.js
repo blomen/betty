@@ -719,115 +719,130 @@
   async function drawPosition(p) {
     if (!chart) return false;
     const isLong = p.side === 'long';
-    const shapeName = isLong ? 'long_position' : 'short_position';
+    const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
 
-    // Prefer the broker fill time from the broadcaster (`entry_time`) so the
-    // shape's entry handle lands on the actual fill candle, not on the
-    // moment the broadcaster first emitted. Fall back to "now" only if the
-    // broadcaster didn't supply it (older payload shape).
+    // Anchor + end timestamp. For closed trades (the vast majority of
+    // chart shapes), we ALWAYS sync to the latest entry_time/end_time —
+    // never cache an anchor that could go stale relative to the broker's
+    // authoritative timestamps. positionAnchors is reserved for the
+    // active trade only, where stop/tp updates would otherwise scrub the
+    // entry handle each tick.
     const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
     const now = Math.floor(Date.now() / 1000);
-    if (!positionAnchors.has(p.key)) positionAnchors.set(p.key, fillEpoch ?? now);
-    const anchor = positionAnchors.get(p.key);
+    let anchor;
+    if (isActive) {
+      if (!positionAnchors.has(p.key)) positionAnchors.set(p.key, fillEpoch ?? now);
+      anchor = positionAnchors.get(p.key);
+    } else {
+      anchor = fillEpoch ?? now;
+    }
+    let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
+    if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
-    // Treat stop=0 as missing — broken server-side tracker.stop_price is
-    // 0.0 in autonomous mode and 0 would translate into a wild tick offset.
+    // Closed trades render as a SIMPLE rectangle from entry-time to
+    // exit-time bounded vertically between entry and exit price, colored
+    // green (profit) or red (loss). This is dramatically cleaner than
+    // long_position / short_position TV shapes for historical records:
+    //   • No vertical stop/tp band that stacks across overlapping trades.
+    //   • The fill color directly encodes win/loss.
+    //   • The rectangle's height = realized P&L on the price axis.
+    // long_position / short_position primitive is reserved for the ACTIVE
+    // trade (its risk-reward bands + Open P&L label have value LIVE but
+    // are visual noise on closed trades).
+    if (!isActive) {
+      const exitPrice = (typeof p.exit_price === 'number') ? p.exit_price : p.entry;
+      const pnlPositive = isLong ? exitPrice >= p.entry : exitPrice <= p.entry;
+      const fillColor = pnlPositive ? '#10b981' /* emerald */ : '#ef4444' /* red */;
+      const top = Math.max(p.entry, exitPrice);
+      const bottom = Math.min(p.entry, exitPrice);
+      const rectPoints = [
+        { time: anchor, price: top },
+        { time: endEpoch, price: bottom },
+      ];
+      const rectOverrides = {
+        color: fillColor,
+        backgroundColor: fillColor,
+        transparency: 70,
+        linewidth: 1,
+        showLabel: false,
+      };
+
+      // Mutate-in-place if a shape already exists for this key.
+      const existing = drawnPositions.get(p.key);
+      if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
+        try {
+          const obj = chart.getShapeById(existing.shapeId);
+          if (obj) {
+            if (typeof obj.setPoints === 'function') obj.setPoints(rectPoints);
+            if (typeof obj.setProperties === 'function') obj.setProperties(rectOverrides);
+            return true;
+          }
+        } catch (_) {}
+      }
+
+      try {
+        const shapeId = await _resolve(chart.createMultipointShape(rectPoints, {
+          shape: 'rectangle',
+          disableSave: true,
+          overrides: rectOverrides,
+        }));
+        if (shapeId == null) return false;
+        if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+          try { chart.removeEntity(existing.shapeId); } catch (_) {}
+        }
+        drawnPositions.set(p.key, { shapeId });
+        _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
+        return true;
+      } catch (e) {
+        sendError(`drawPosition (closed-rect) failed: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
+      }
+    }
+
+    // ---- Active trade: keep TV's long_position / short_position shape ----
+    const shapeName = isLong ? 'long_position' : 'short_position';
     const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
     const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
-
-    // TV's long_position / short_position shapes take 1 OR 2 points. 2 pts
-    // bound the time range. **stopLevel and profitLevel are TICK OFFSETS
-    // from entry, not absolute prices.** Probe: passing 27349 to a SHORT
-    // at entry 27342.5 placed stop at price 34179.75 (= entry + 27349*0.25).
-    // Convert prices → ticks here.
     const NQ_TICK = 0.25;
     const stopOffsetTicks = Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
     const tpOffsetTicks   = Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK);
-
-    // Always emit a 2-point form so TV doesn't auto-extend long_position
-    // rightward indefinitely. Floor end_time to entry+60s if it's missing
-    // or non-positive (instant-close trades where ts == closed_at).
-    let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
-    if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
     const points = [
       { time: anchor, price: p.entry },
       { time: endEpoch, price: p.entry },
     ];
-
     const positionOverrides = {
       stopLevel: stopOffsetTicks,
       profitLevel: tpOffsetTicks,
-      // Hide the price labels at stop/entry/target — they clutter the chart
-      // when many trades are persisted. Auto P&L / R:R label still renders.
       showPriceLabels: false,
     };
 
-    // Mutate-in-place if we already have a live shape for this key.
     const existing = drawnPositions.get(p.key);
     if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
       try {
         const obj = chart.getShapeById(existing.shapeId);
         if (obj) {
-          let mutated = false;
-          if (typeof obj.setPoints === 'function') {
-            try {
-              obj.setPoints(points);
-              mutated = true;
-            } catch (_) {}
-          }
-          if (typeof obj.setProperties === 'function') {
-            try {
-              obj.setProperties(positionOverrides);
-              mutated = true;
-            } catch (_) {}
-          }
-          if (mutated) return true;
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') obj.setProperties(positionOverrides);
+          return true;
         }
       } catch (_) {}
     }
 
-    // No live shape (or mutation unavailable) → create.
     try {
-      const shapeId = await _resolve(chart.createMultipointShape(
-        points,
-        {
-          shape: shapeName,
-          // disableSave: TRUE — never let TV's chart-saved-state hold these
-          // shapes. On reload, drawnPositions resets to empty; saved-state
-          // shapes become orphans that drift on the chart with no way to
-          // mutate or remove them. The broadcaster's replay_to re-emits
-          // every trade to new clients, so closed positions naturally
-          // re-appear in their correct spots after reload.
-          disableSave: true,
-          overrides: positionOverrides,
-        },
-      ));
+      const shapeId = await _resolve(chart.createMultipointShape(points, {
+        shape: shapeName,
+        disableSave: true,
+        overrides: positionOverrides,
+      }));
       if (shapeId == null) {
         sendError(`drawPosition: createMultipointShape returned null for ${shapeName}`);
         return false;
       }
-
-      // Replace any prior id under this key (if mutate path failed).
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
-
-      const entry = { shapeId };
-      // Group by lifecycle: synthetic active trade → "Active Trade",
-      // historical broker_trade rows (trade:<id>) → "Closed Trades".
-      const groupName = (p.key === 'trade:active' || p.key === 'pos:current')
-        ? 'Arnold • Active Trade'
-        : 'Arnold • Closed Trades';
-      _ensureGroupAndAdd(groupName, shapeId);
-
-      // Anchored Volume Profile at entry time was here, but the createStudy
-      // call rejects our input format with "Passed color string does not
-      // match any of the known color representations". Disabled until we
-      // verify the correct input schema for this TV build. Tracked separately
-      // from the daily/weekly/monthly AVP broadcaster (also disabled until
-      // input format confirmed).
-
-      drawnPositions.set(p.key, entry);
+      drawnPositions.set(p.key, { shapeId });
+      _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
       return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);

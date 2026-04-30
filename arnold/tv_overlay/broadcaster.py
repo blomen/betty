@@ -192,24 +192,26 @@ class OverlayBroadcaster:
 
         now = int(datetime.now(tz=timezone.utc).timestamp())
         seen: dict[str, dict] = {}
-        # Cap closed trades to the most recent 30 to avoid the overlapping-
-        # shape soup that 80+ trades produce on a busy session. Active
-        # trade always passes through.
+        # Cap visible trade history aggressively. The full 7-day history
+        # remains in the Stats tab (`/api/stocks/broker-trades`); the chart
+        # is a *current-session* visualization. Two reasons:
+        #   1. 30+ overlapping long_position shapes produce visual soup —
+        #      stop/tp bands stack vertically across the same time window
+        #      and the chart becomes unreadable.
+        #   2. Trades > 24h old anchor to past timestamps, but on a tight
+        #      intraday chart range (1m / 5m) those anchors fall off-screen,
+        #      and TV may auto-shift the camera to fit them.
+        # Filter: only trades opened in the last 12h (covers a full Globex
+        # session start-to-now); cap to 12 most recent by ts.
         active = [t for t in trades if t.get("id") == "active"]
         closed = [t for t in trades if t.get("id") != "active"]
+        cutoff_iso = (datetime.now(tz=timezone.utc) - timedelta(hours=12)).replace(tzinfo=None).isoformat()
+        closed = [t for t in closed if (t.get("ts") or "") >= cutoff_iso]
         # Drop zero-duration trades (closed_at == ts) — instant stops or
-        # broken fills produce 1-point shapes that auto-extend forever and
-        # clutter the chart. Threshold: at least 5 seconds.
-        closed = [
-            t
-            for t in closed
-            if not t.get("closed_at")
-            or not t.get("ts")
-            or (t.get("closed_at") and t.get("ts") and t["closed_at"] > t["ts"])
-        ]
-        # Most recent 30 by ts
+        # broken fills produce 1-point shapes that auto-extend forever.
+        closed = [t for t in closed if not t.get("closed_at") or not t.get("ts") or t["closed_at"] > t["ts"]]
         closed.sort(key=lambda t: t.get("ts") or "", reverse=True)
-        closed = closed[:30]
+        closed = closed[:12]
         trades = active + closed
         for t in trades:
             tid = t.get("id")
@@ -232,6 +234,16 @@ class OverlayBroadcaster:
             effective_end = close_time if close_time else now
             if close_time is not None and effective_end <= entry_time:
                 effective_end = entry_time + 60
+            # Hard cap shape duration on chart at 30 min. A trade that ran
+            # for 4 hours doesn't need to render as a 4-hour band — that
+            # creates visual overlap with every other trade in that window.
+            # 30 min is enough to read direction + outcome at a glance.
+            # Active trade is exempt (its end tracks "now" and naturally
+            # grows; we want to see where it currently lives on the time
+            # axis).
+            MAX_DRAW_DURATION_S = 30 * 60
+            if tid != "active" and (effective_end - entry_time) > MAX_DRAW_DURATION_S:
+                effective_end = entry_time + MAX_DRAW_DURATION_S
             payload = {
                 "key": key,
                 "side": side,

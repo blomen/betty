@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.2.4",
-  "description": "Draws Arnold zones (with per-member 1px brush lines @ 50% opacity colored by hierarchy weight) and open positions on TradingView charts via WebSocket from local Arnold server. Every level renders as a zone member only. Zones containing swing-family members (daily/weekly/monthly swings) are force-colored bright amber at 50% opacity so they pop out even when 1-member thin bands.",
+  "version": "0.2.5",
+  "description": "Closed-trade rendering switched from TV long_position/short_position to simple green/red rectangles entry→exit (eliminates stacked stop/tp band soup); active trade still uses long_position for live R:R. Broadcaster caps closed trades to last 12 most recent within 12h and clamps each shape's chart duration to 30 min so long-running trades don't span the whole window.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",
