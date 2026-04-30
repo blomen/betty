@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
@@ -186,7 +187,11 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
                 """() => {
                     const rows = Array.from(document.querySelectorAll(
                         '[data-testid*=bet-row], [data-testid*=wager-row], tbody tr, .bet-history-row'
-                    ));
+                    )).filter(r => {
+                        const hasBetId = r.getAttribute('data-bet-id') || r.id;
+                        const hasEvent = r.querySelector('[data-testid*=event-name], .event-name');
+                        return hasBetId || hasEvent;
+                    });
                     return rows.map(r => {
                         const txt = (sel) => {
                             const el = r.querySelector(sel);
@@ -572,6 +577,20 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
 # ------------------------------------------------------------------
 
 
+# Strip currency suffixes / spaces / unicode garbage from numeric DOM cells.
+# Keeps digits, sign, decimal separator, and thousands separator. Comma →
+# dot conversion happens after stripping so "1,000.50" becomes "1.000.50"
+# (which float() correctly reads); plain "100,00 SEK" becomes "100.00".
+_NUM_NOISE_RE = re.compile(r"[^0-9.,\-]")
+
+
+def _coerce_decimal(s: str) -> float:
+    cleaned = _NUM_NOISE_RE.sub("", (s or "").strip()).replace(",", ".")
+    if not cleaned:
+        return 0.0
+    return float(cleaned)
+
+
 # Status text → canonical status. Pinnacle's exact wording is unknown until
 # discovery; we accept the most common bookmaker phrasings. Anything not in
 # this map (e.g. "PENDING") is treated as not-settled and skipped.
@@ -599,17 +618,21 @@ def _parse_pinnacle_dom_row(raw: dict) -> HistoryEntry | None:
     status = _STATUS_MAP.get((raw.get("status") or "").strip().upper())
     if not status:
         return None
+    pid = str(raw.get("provider_bet_id") or "").strip()
+    event = (raw.get("event_name") or "").strip()
+    if not pid and not event:
+        return None
     try:
-        odds = float((raw.get("odds") or "0").replace(",", ".").strip() or 0)
-        stake = float((raw.get("stake") or "0").replace(",", ".").strip() or 0)
-        payout = float((raw.get("payout") or "0").replace(",", ".").strip() or 0)
+        odds = _coerce_decimal(raw.get("odds") or "")
+        stake = _coerce_decimal(raw.get("stake") or "")
+        payout = _coerce_decimal(raw.get("payout") or "")
     except (ValueError, TypeError):
         return None
     if odds <= 0 or stake <= 0:
         return None
     return HistoryEntry(
-        provider_bet_id=str(raw.get("provider_bet_id") or ""),
-        event_name=raw.get("event_name") or "",
+        provider_bet_id=pid,
+        event_name=event,
         market=raw.get("market") or "",
         outcome=raw.get("outcome") or "",
         odds=odds,

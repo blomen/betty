@@ -63,3 +63,35 @@ def test_parse_malformed_numbers_returns_none():
 
     entry = _parse_pinnacle_dom_row(_row(odds="not-a-number"))
     assert entry is None
+
+
+def test_parse_swedish_currency_suffix():
+    """Stakes/payouts with 'kr' or 'SEK' suffix must parse cleanly."""
+    from arnold.mirror.workflows.pinnacle import _parse_pinnacle_dom_row
+
+    entry = _parse_pinnacle_dom_row(_row(stake="100,00 kr", payout="185,00 SEK", odds="1,85"))
+    assert entry is not None
+    assert entry.stake == pytest.approx(100.0)
+    assert entry.payout == pytest.approx(185.0)
+    assert entry.odds == pytest.approx(1.85)
+
+
+def test_parse_drops_row_with_no_id_and_no_event():
+    """Belt-and-suspenders: a row with neither bet id nor event name is noise."""
+    from arnold.mirror.workflows.pinnacle import _parse_pinnacle_dom_row
+
+    entry = _parse_pinnacle_dom_row(_row(provider_bet_id="", event_name=""))
+    assert entry is None
+
+
+def test_parse_keeps_row_with_event_but_no_id():
+    """If bet id is missing but event name is populated, keep the row.
+
+    Reconciler can fuzzy-match by event name even without a stable id.
+    """
+    from arnold.mirror.workflows.pinnacle import _parse_pinnacle_dom_row
+
+    entry = _parse_pinnacle_dom_row(_row(provider_bet_id="", event_name="Real Madrid vs Barcelona"))
+    assert entry is not None
+    assert entry.provider_bet_id == ""
+    assert entry.event_name == "Real Madrid vs Barcelona"
