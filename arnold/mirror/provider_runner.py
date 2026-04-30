@@ -1285,60 +1285,103 @@ class ProviderRunner:
     # ------------------------------------------------------------------
 
     async def _wait_for_login(self, workflow, page) -> bool:
+        """Robust login detection with 2-of-2 confirmation.
+
+        A login signal can flicker during page load (e.g. localStorage
+        rehydrating after wallet reconnect, balance API briefly returning
+        401 mid-refresh). To avoid false positives, we require TWO
+        consecutive positive checks at least `_LOGIN_CONFIRM_GAP_S` apart
+        before declaring login. Once any source returns a positive, we
+        switch to a faster poll cadence so confirmation lands quickly.
+        """
+        _LOGIN_CONFIRM_GAP_S = 1.5
+        _LOGIN_FAST_POLL_S = 1.0
+
+        # Wait for the page to reach a stable load state before the first
+        # check — avoids polling against a still-rehydrating DOM.
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
         await asyncio.sleep(2)
         elapsed = 2.0
-        while elapsed < LOGIN_TIMEOUT:
-            # 0. Workflow check_login is authoritative — always try it first
+        pid = workflow.provider_id
+        last_positive_source: str | None = None
+        last_positive_balance: float | None = None
+
+        async def _try_workflow() -> tuple[bool, float | None, str | None]:
             try:
-                wf_login = await workflow.check_login(page)
-                if wf_login:
-                    bal = await workflow.sync_balance(page)
-                    self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
-                        {"logged_in": True, "balance": bal if bal >= 0 else None, "source": "workflow_check"}
-                    )
-                    self._broadcaster.publish(
-                        "login_detected", {"provider_id": workflow.provider_id, "balance": bal if bal >= 0 else None}
-                    )
-                    logger.info(f"[Runner:{self.provider_id}] Login detected via workflow (balance: {bal})")
-                    return True
+                if await workflow.check_login(page):
+                    try:
+                        bal = await workflow.sync_balance(page)
+                    except Exception:
+                        bal = None
+                    return True, bal if (bal is not None and bal >= 0) else None, "workflow"
             except Exception:
                 pass
-            # 1. Check intercepted data (but verify with DOM to avoid stale state)
-            if self._browser.is_logged_in(workflow.provider_id):
-                # Double-check with DOM to avoid false positives from stale interceptor data
-                try:
-                    dom_result = await self._browser.check_login_dom(workflow.provider_id)
-                    if dom_result.get("logged_in"):
-                        bal = self._browser.get_balance(workflow.provider_id) or dom_result.get("balance")
-                        self._broadcaster.publish(
-                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
-                        )
-                        logger.info(f"[Runner:{self.provider_id}] Login confirmed (interceptor + DOM, balance: {bal})")
-                        return True
-                except Exception:
-                    # DOM check failed but interceptor says logged in — trust interceptor for non-polymarket
-                    if workflow.provider_id != "polymarket":
-                        bal = self._browser.get_balance(workflow.provider_id)
-                        self._broadcaster.publish(
-                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
-                        )
-                        return True
-            # 2. DOM scrape fallback (browser-level, different from workflow check_login)
+            return False, None, None
+
+        async def _try_interceptor() -> tuple[bool, float | None, str | None]:
+            if self._browser.is_logged_in(pid):
+                bal = self._browser.get_balance(pid)
+                return True, bal, "interceptor"
+            return False, None, None
+
+        async def _try_dom() -> tuple[bool, float | None, str | None]:
             try:
-                dom_result = await self._browser.check_login_dom(workflow.provider_id)
+                dom_result = await self._browser.check_login_dom(pid)
                 if dom_result.get("logged_in"):
+                    return True, dom_result.get("balance"), "dom"
+            except Exception:
+                pass
+            return False, None, None
+
+        async def _confirm() -> tuple[bool, float | None, str | None]:
+            """One pass through all signal sources. Returns first positive."""
+            for fn in (_try_workflow, _try_interceptor, _try_dom):
+                ok, bal, source = await fn()
+                if ok:
+                    return True, bal, source
+            return False, None, None
+
+        while elapsed < LOGIN_TIMEOUT:
+            ok, bal, source = await _confirm()
+            if ok:
+                if last_positive_source is not None:
+                    # Second consecutive positive → confirmed.
+                    final_bal = bal if bal is not None else last_positive_balance
+                    self._browser.provider_data.setdefault(pid, {}).update(
+                        {
+                            "logged_in": True,
+                            "balance": final_bal,
+                            "source": f"{last_positive_source}+{source}",
+                        }
+                    )
                     self._broadcaster.publish(
                         "login_detected",
-                        {"provider_id": workflow.provider_id, "balance": dom_result.get("balance")},
+                        {"provider_id": pid, "balance": final_bal},
+                    )
+                    logger.info(
+                        f"[Runner:{pid}] Login confirmed "
+                        f"(2-of-2: {last_positive_source} → {source}, balance: {final_bal})"
                     )
                     return True
-            except Exception:
-                pass
-            await asyncio.sleep(LOGIN_POLL_INTERVAL)
-            elapsed += LOGIN_POLL_INTERVAL
+                # First positive — record and re-check after the gap.
+                last_positive_source = source
+                last_positive_balance = bal
+                logger.debug(f"[Runner:{pid}] Login signal positive via {source}; awaiting second confirmation")
+                await asyncio.sleep(_LOGIN_CONFIRM_GAP_S)
+                elapsed += _LOGIN_CONFIRM_GAP_S
+                continue
+
+            # No positive this tick — reset confirmation state.
+            last_positive_source = None
+            last_positive_balance = None
+            await asyncio.sleep(_LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL)
+            elapsed += _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
             self._broadcaster.publish(
                 "login_waiting",
-                {"provider_id": workflow.provider_id, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
+                {"provider_id": pid, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
             )
         return False
 

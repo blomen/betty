@@ -1069,54 +1069,92 @@ class ArbRunner:
         logger.error(f"[Arb:{self.provider_id}] Bet lost after 3 attempts: {payload}")
 
     async def _wait_for_login(self, workflow: Any, page: Any) -> bool:
-        """Wait for user login — same logic as ProviderRunner."""
+        """Robust login detection — mirrors ProviderRunner._wait_for_login.
+
+        Requires 2-of-2 consecutive positive checks across workflow /
+        interceptor / DOM signal sources before declaring login. Avoids
+        false positives during page-load races (localStorage rehydration,
+        balance API briefly returning 401, etc.)."""
+        _LOGIN_CONFIRM_GAP_S = 1.5
+        _LOGIN_FAST_POLL_S = 1.0
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
         await asyncio.sleep(2)
         elapsed = 2.0
-        while elapsed < LOGIN_TIMEOUT:
+        pid = workflow.provider_id
+        last_positive_source: str | None = None
+        last_positive_balance: float | None = None
+
+        async def _try_workflow() -> tuple[bool, float | None, str | None]:
             try:
-                wf_login = await workflow.check_login(page)
-                if wf_login:
-                    bal = await workflow.sync_balance(page)
-                    self._browser.provider_data.setdefault(workflow.provider_id, {}).update(
-                        {"logged_in": True, "balance": bal if bal >= 0 else None, "source": "workflow_check"}
-                    )
-                    self._broadcaster.publish(
-                        "login_detected", {"provider_id": workflow.provider_id, "balance": bal if bal >= 0 else None}
-                    )
-                    return True
+                if await workflow.check_login(page):
+                    try:
+                        bal = await workflow.sync_balance(page)
+                    except Exception:
+                        bal = None
+                    return True, bal if (bal is not None and bal >= 0) else None, "workflow"
             except Exception:
                 pass
-            if self._browser.is_logged_in(workflow.provider_id):
-                try:
-                    dom_result = await self._browser.check_login_dom(workflow.provider_id)
-                    if dom_result.get("logged_in"):
-                        bal = self._browser.get_balance(workflow.provider_id) or dom_result.get("balance")
-                        self._broadcaster.publish(
-                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
-                        )
-                        return True
-                except Exception:
-                    if workflow.provider_id != "polymarket":
-                        bal = self._browser.get_balance(workflow.provider_id)
-                        self._broadcaster.publish(
-                            "login_detected", {"provider_id": workflow.provider_id, "balance": bal}
-                        )
-                        return True
+            return False, None, None
+
+        async def _try_interceptor() -> tuple[bool, float | None, str | None]:
+            if self._browser.is_logged_in(pid):
+                bal = self._browser.get_balance(pid)
+                return True, bal, "interceptor"
+            return False, None, None
+
+        async def _try_dom() -> tuple[bool, float | None, str | None]:
             try:
-                dom_result = await self._browser.check_login_dom(workflow.provider_id)
+                dom_result = await self._browser.check_login_dom(pid)
                 if dom_result.get("logged_in"):
+                    return True, dom_result.get("balance"), "dom"
+            except Exception:
+                pass
+            return False, None, None
+
+        async def _confirm() -> tuple[bool, float | None, str | None]:
+            for fn in (_try_workflow, _try_interceptor, _try_dom):
+                ok, bal, source = await fn()
+                if ok:
+                    return True, bal, source
+            return False, None, None
+
+        while elapsed < LOGIN_TIMEOUT:
+            ok, bal, source = await _confirm()
+            if ok:
+                if last_positive_source is not None:
+                    final_bal = bal if bal is not None else last_positive_balance
+                    self._browser.provider_data.setdefault(pid, {}).update(
+                        {
+                            "logged_in": True,
+                            "balance": final_bal,
+                            "source": f"{last_positive_source}+{source}",
+                        }
+                    )
                     self._broadcaster.publish(
                         "login_detected",
-                        {"provider_id": workflow.provider_id, "balance": dom_result.get("balance")},
+                        {"provider_id": pid, "balance": final_bal},
+                    )
+                    logger.info(
+                        f"[Arb:{pid}] Login confirmed (2-of-2: {last_positive_source} → {source}, balance: {final_bal})"
                     )
                     return True
-            except Exception:
-                pass
-            await asyncio.sleep(LOGIN_POLL_INTERVAL)
-            elapsed += LOGIN_POLL_INTERVAL
+                last_positive_source = source
+                last_positive_balance = bal
+                await asyncio.sleep(_LOGIN_CONFIRM_GAP_S)
+                elapsed += _LOGIN_CONFIRM_GAP_S
+                continue
+
+            last_positive_source = None
+            last_positive_balance = None
+            await asyncio.sleep(_LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL)
+            elapsed += _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
             self._broadcaster.publish(
                 "login_waiting",
-                {"provider_id": workflow.provider_id, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
+                {"provider_id": pid, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
             )
         return False
 

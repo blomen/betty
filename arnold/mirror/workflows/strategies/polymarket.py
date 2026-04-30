@@ -48,6 +48,73 @@ async def _dismiss_modal(page: Page, max_attempts: int = 3) -> bool:
     return False
 
 
+async def _check_login(page: Page, intel: dict | None) -> bool:
+    """True when Polymarket session is live.
+
+    Multi-signal — accepts ANY of the following, polls up to 3 times:
+      1. localStorage auth state — `polymarket-nonce` / `clob-auth-state` /
+         `wallet-address` keys are populated when wallet is connected.
+      2. Cookie-level — connect.sid or polymarket-* session cookies present.
+      3. DOM signals — "Cash $", "Deposit", profile menu, portfolio link
+         visibility ALL while there is no "Log In" / "Sign Up" CTA in nav.
+
+    A single signal is enough — does NOT require a non-zero balance, since
+    a logged-in user with $0 cash is still logged in. Multiple signals are
+    OR'd to recover from transient page-load races where one signal lags."""
+    import asyncio
+
+    await asyncio.sleep(1)
+    for attempt in range(3):
+        try:
+            result = await page.evaluate(
+                r"""() => {
+                    const signals = [];
+                    // Signal 1: localStorage auth keys (Polymarket uses several
+                    // depending on wallet connect path). Any one populated → login.
+                    try {
+                        const authKeys = [
+                            'polymarket-nonce', 'clob-auth-state', 'wallet-address',
+                            'polymarket:auth', 'polymarket-session', 'magic-iframe-shown',
+                            'amplitude_session_id_polymarket', 'wagmi.connected',
+                        ];
+                        for (const k of authKeys) {
+                            const v = localStorage.getItem(k);
+                            if (v && v !== 'null' && v !== 'false' && v.length > 2) {
+                                signals.push(`storage:${k}`);
+                                break;
+                            }
+                        }
+                    } catch {}
+                    // Signal 2: cookies — polymarket-session, connect.sid, _ga_session.
+                    try {
+                        const cookieStr = document.cookie || '';
+                        if (/polymarket[-_]?session|connect\.sid|polymarket[-_]?auth/i.test(cookieStr)) {
+                            signals.push('cookie');
+                        }
+                    } catch {}
+                    // Signal 3: DOM — Cash + balance amount visible, no Log In CTA.
+                    const text = document.body.innerText || '';
+                    const hasLogin = /\b(Log In|Sign Up|Connect Wallet)\b/i.test(text);
+                    const hasCash = /Cash\s*\$\s*[\d.,]+/i.test(text);
+                    const hasDeposit = /\bDeposit\b/i.test(text);
+                    const hasProfileMenu = !!document.querySelector(
+                        'a[href*="/profile"], a[href*="/portfolio"], button[aria-label*="profile" i], [data-testid*="profile"]'
+                    );
+                    if (hasCash && !hasLogin) signals.push('dom:cash');
+                    if (hasDeposit && hasProfileMenu && !hasLogin) signals.push('dom:profile+deposit');
+                    if (hasProfileMenu && !hasLogin && !hasCash) signals.push('dom:profile-only');
+                    return { logged_in: signals.length > 0, signals, attempt: 0 };
+                }"""
+            )
+            if isinstance(result, dict) and result.get("logged_in"):
+                logger.info(f"[polymarket] Login detected (attempt {attempt + 1}, signals: {result.get('signals')})")
+                return True
+        except Exception as e:
+            logger.debug(f"[polymarket] check_login attempt {attempt + 1} raised: {e}")
+        await asyncio.sleep(1.5)
+    return False
+
+
 async def _sync_balance(page: Page, intel: dict | None) -> float:
     """Scrape the Cash USDC amount from nav — avoids Portfolio total on combined rows."""
     try:
@@ -1160,6 +1227,7 @@ async def restore_amount_if_cleared(page: Page, stake: float) -> bool:
 
 
 strategy = Strategy(
+    check_login=_check_login,
     sync_balance=_sync_balance,
     sync_history=_sync_history,
     prep_betslip=_prep_betslip,

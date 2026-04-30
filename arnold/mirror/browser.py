@@ -561,31 +561,54 @@ class MirrorBrowser:
         if not page:
             return {"logged_in": False, "reason": "no_tab"}
         try:
-            balance_text = await page.evaluate(r"""() => {
-                // Look for balance in header/nav/toolbar area only — not promo banners
+            scrape = await page.evaluate(r"""() => {
+                // 1. Balance — header/nav/toolbar area only, not promo banners.
+                let balance = null;
                 const navEls = document.querySelectorAll('header, nav, [class*="header"], [class*="toolbar"], [class*="balance"], [class*="user"], [class*="account"], [class*="wallet"]');
                 for (const el of navEls) {
                     const text = el.innerText || '';
                     const m = text.match(/(\d+[,.\s]\d{2})\s*KR/i);
-                    if (m) return m[1].replace(/\s/g, '').replace(',', '.');
+                    if (m) { balance = parseFloat(m[1].replace(/\s/g, '').replace(',', '.')); break; }
                 }
-                // Polymarket: look for Cash $XX.XX in nav
-                const allNav = document.querySelectorAll('nav, nav *');
-                for (const el of allNav) {
-                    const text = el.textContent || '';
-                    const m2 = text.match(/Cash\s*\$\s*(\d+[,.]\d+)/);
-                    if (m2) return m2[1].replace(',', '.');
+                // Polymarket / USD providers: "Cash $XX.XX" in nav. Match even
+                // when balance is $0 — a logged-in user with zero cash is still
+                // logged in and we don't want to treat them as logged-out.
+                if (balance === null) {
+                    const allNav = document.querySelectorAll('nav, nav *, header, header *');
+                    for (const el of allNav) {
+                        const text = el.textContent || '';
+                        const m2 = text.match(/Cash\s*\$\s*(\d+(?:[,.]\d+)?)/i);
+                        if (m2) { balance = parseFloat(m2[1].replace(',', '.')); break; }
+                    }
                 }
-                return null;
+                // 2. Login signals — independent of balance, so $0 users still register.
+                const text = (document.body.innerText || '').slice(0, 5000);
+                const hasLoginCTA = /\b(Log In|Sign Up|Connect Wallet|Logga in)\b/i.test(text);
+                const hasDeposit = /\b(Deposit|Deponera|Insättning)\b/i.test(text);
+                const hasProfileMenu = !!document.querySelector(
+                    'a[href*="/profile"], a[href*="/portfolio"], a[href*="account" i], button[aria-label*="profile" i], [data-testid*="profile" i], [class*="avatar" i]'
+                );
+                const hasLogoutCTA = /\b(Log Out|Sign Out|Logga ut)\b/i.test(text);
+                const loggedInSignals = [];
+                if (balance !== null) loggedInSignals.push('balance');
+                if (hasDeposit && !hasLoginCTA) loggedInSignals.push('deposit_no_login_cta');
+                if (hasProfileMenu && !hasLoginCTA) loggedInSignals.push('profile_no_login_cta');
+                if (hasLogoutCTA) loggedInSignals.push('logout_cta');
+                return {
+                    balance,
+                    logged_in: loggedInSignals.length > 0,
+                    signals: loggedInSignals,
+                };
             }""")
-            if balance_text:
-                balance = float(balance_text)
+            if scrape and scrape.get("logged_in"):
+                balance = scrape.get("balance")
                 if provider_id not in self.provider_data:
                     self.provider_data[provider_id] = {}
                 self.provider_data[provider_id]["logged_in"] = True
-                self.provider_data[provider_id]["balance"] = balance
+                if balance is not None:
+                    self.provider_data[provider_id]["balance"] = balance
                 self.provider_data[provider_id]["source"] = "dom"
-                if self._on_event:
+                if self._on_event and balance is not None:
                     self._on_event(
                         "balance_intercepted",
                         {
@@ -594,7 +617,11 @@ class MirrorBrowser:
                             "source": "dom",
                         },
                     )
-                return {"logged_in": True, "balance": balance}
+                return {
+                    "logged_in": True,
+                    "balance": balance,
+                    "signals": scrape.get("signals", []),
+                }
         except Exception:
             pass
         return {"logged_in": False}
