@@ -149,16 +149,76 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Stub — history endpoint not observed during discovery.
+        """Best-effort DOM scrape of the bet-history page.
 
-        # TODO(pinnacle-history): Navigate to /en/account/bet-history/ and
-        # intercept the /0.1/wagers or /0.1/bets/history XHR.  Implement once
-        # the first manual visit to the history page captures the endpoint shape.
+        Phase A discovery (XHR pattern) lives at
+        docs/superpowers/specs/2026-04-30-pinnacle-history-discovery.md.
+        Until that lands, we navigate the page manually and parse visible
+        rows. Returns [] on selector miss — reconciler then runs in degraded
+        mode (no Pinnacle settlement until the next attempt).
         """
+        try:
+            await page.goto(
+                f"https://www.{self.domain}/en/account/bet-history/",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] sync_history: nav failed: {e}")
+            return []
+
+        # Wait briefly for the history table/rows to render. Selectors are
+        # speculative until discovery — we try several before giving up.
+        try:
+            await page.wait_for_selector(
+                "table, [data-testid*=history], [data-testid*=bet], .bet-history, .wager-row",
+                timeout=8000,
+            )
+        except Exception:
+            logger.info(f"[{self.provider_id}] sync_history: no history rows found in DOM")
+            return []
+
+        # Scrape rows in-page. Each row maps to a dict that _parse_pinnacle_dom_row
+        # converts to a HistoryEntry. Field selectors are best-effort until
+        # discovery captures the real DOM shape.
+        try:
+            raw_rows = await page.evaluate(
+                """() => {
+                    const rows = Array.from(document.querySelectorAll(
+                        '[data-testid*=bet-row], [data-testid*=wager-row], tbody tr, .bet-history-row'
+                    ));
+                    return rows.map(r => {
+                        const txt = (sel) => {
+                            const el = r.querySelector(sel);
+                            return el ? (el.textContent || '').trim() : '';
+                        };
+                        return {
+                            provider_bet_id: r.getAttribute('data-bet-id') || r.id || '',
+                            event_name: txt('[data-testid*=event-name]') || txt('.event-name') || '',
+                            market: txt('[data-testid*=market]') || txt('.market') || '',
+                            outcome: txt('[data-testid*=selection]') || txt('.selection') || '',
+                            odds: txt('[data-testid*=odds]') || txt('.odds') || '',
+                            stake: txt('[data-testid*=stake]') || txt('.stake') || '',
+                            status: (txt('[data-testid*=status]') || txt('.status') || '').toUpperCase(),
+                            payout: txt('[data-testid*=payout]') || txt('.payout') || '',
+                        };
+                    });
+                }"""
+            )
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] sync_history: DOM scrape failed: {e}")
+            return []
+
+        entries: list[HistoryEntry] = []
+        for raw in raw_rows or []:
+            entry = _parse_pinnacle_dom_row(raw)
+            if entry:
+                entries.append(entry)
+
         logger.info(
-            f"[{self.provider_id}] sync_history stub returning [] — pending bets won't reconcile until implemented"
+            f"[{self.provider_id}] sync_history (DOM): {len(entries)} settled entries from {len(raw_rows or [])} rows"
         )
-        return []
+        return entries
 
     # ------------------------------------------------------------------
     # Navigation
@@ -510,6 +570,53 @@ class PinnacleMirrorWorkflow(ProviderWorkflow):
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
+
+
+# Status text → canonical status. Pinnacle's exact wording is unknown until
+# discovery; we accept the most common bookmaker phrasings. Anything not in
+# this map (e.g. "PENDING") is treated as not-settled and skipped.
+_STATUS_MAP = {
+    "WON": "won",
+    "WIN": "won",
+    "LOST": "lost",
+    "LOSE": "lost",
+    "VOID": "void",
+    "VOIDED": "void",
+    "CANCELLED": "void",
+    "REFUND": "void",
+    "REFUNDED": "void",
+    "CASHOUT": "cashout",
+    "CASHED OUT": "cashout",
+}
+
+
+def _parse_pinnacle_dom_row(raw: dict) -> HistoryEntry | None:
+    """Map one DOM-scraped row dict into a HistoryEntry, or None if unparseable.
+
+    Tolerant of missing fields — we'd rather drop a row than crash the
+    reconciler. Numeric coercion errors → None.
+    """
+    status = _STATUS_MAP.get((raw.get("status") or "").strip().upper())
+    if not status:
+        return None
+    try:
+        odds = float((raw.get("odds") or "0").replace(",", ".").strip() or 0)
+        stake = float((raw.get("stake") or "0").replace(",", ".").strip() or 0)
+        payout = float((raw.get("payout") or "0").replace(",", ".").strip() or 0)
+    except (ValueError, TypeError):
+        return None
+    if odds <= 0 or stake <= 0:
+        return None
+    return HistoryEntry(
+        provider_bet_id=str(raw.get("provider_bet_id") or ""),
+        event_name=raw.get("event_name") or "",
+        market=raw.get("market") or "",
+        outcome=raw.get("outcome") or "",
+        odds=odds,
+        stake=stake,
+        status=status,
+        payout=payout,
+    )
 
 
 def _slugify(s: str) -> str:
