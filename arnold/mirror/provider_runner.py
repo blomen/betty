@@ -534,6 +534,24 @@ class ProviderRunner:
                         old_cached = bet.get("edge_pct")
                         bet["edge_pct"] = live_edge
                         self._convergence_iter += 1
+                        # Broadcast live_price so the frontend's livePrices map
+                        # picks up the new edge and re-sorts the list. Without
+                        # this, the UI shows the bet at its stale cached edge
+                        # (e.g. 14.7%) while local arnold's queue has it stamped
+                        # at the live value (e.g. 12.0%) — visible mismatch.
+                        if live_edge is not None:
+                            self._broadcaster.publish(
+                                "live_price",
+                                {
+                                    "event_id": bet.get("event_id", ""),
+                                    "market": bet.get("market", ""),
+                                    "outcome": bet.get("outcome", ""),
+                                    "provider_id": pid,
+                                    "live_odds": live_odds,
+                                    "live_edge": live_edge,
+                                    "fair_odds": bet.get("fair_odds"),
+                                },
+                            )
                         self._broadcaster.publish(
                             "bet_converging",
                             {
@@ -744,6 +762,22 @@ class ProviderRunner:
                         # and exit the wait so the runner pops the new top.
                         bet["edge_pct"] = compare_edge if compare_edge is not None else _intent_edge
                         self._push_bet(bet)
+                        # Atomically refresh the frontend's livePrices for this
+                        # bet so the list shows the stamped live edge from the
+                        # moment of dethrone, not the stale cached value.
+                        if compare_edge is not None:
+                            self._broadcaster.publish(
+                                "live_price",
+                                {
+                                    "event_id": bet.get("event_id", ""),
+                                    "market": bet.get("market", ""),
+                                    "outcome": bet.get("outcome", ""),
+                                    "provider_id": pid,
+                                    "live_odds": _last_live_odds,
+                                    "live_edge": compare_edge,
+                                    "fair_odds": bet.get("fair_odds"),
+                                },
+                            )
                         _dethrone_reason = (
                             f"reinserted at +{compare_edge:.1f}% "
                             f"(queue top +{top_edge:.1f}%, hysteresis {DETHRONE_HYSTERESIS_PCT:.1f}pts)"
