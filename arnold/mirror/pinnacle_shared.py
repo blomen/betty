@@ -130,3 +130,34 @@ class PinnacleSharedRunner(ProviderRunner):
         self._lent_page = None
         self._lent_event.set()
         self._broadcaster.publish("pinnacle_released", {"arb_group_id": group_id})
+
+    async def _await_unlent_or_done(self) -> None:
+        """Block until lent_event is set OR runner is being torn down.
+
+        The value loop in ProviderRunner._run is a tight loop; rather than
+        rewriting it here we expose this method and call it before each
+        navigation step. The patch in _run is small enough that we override
+        only the helper, not the entire loop.
+        """
+        await self._lent_event.wait()
+
+    async def _run(self) -> None:
+        """Wrap ProviderRunner._run so we yield via _pop_bet while lent.
+
+        Replace the bound _pop_bet with a gated shim: when lent, the popper
+        returns None — which sends the parent loop into its queue-empty idle
+        path (5s sleep then re-poll). When released, the popper delegates to
+        the original. This avoids copying the parent's loop body.
+        """
+        original_pop = self._pop_bet
+
+        def _gated_pop():
+            if not self._lent_event.is_set():
+                return None
+            return original_pop()
+
+        self._pop_bet = _gated_pop  # type: ignore
+        try:
+            await super()._run()
+        finally:
+            self._pop_bet = original_pop  # type: ignore

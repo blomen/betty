@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -131,3 +133,30 @@ async def test_lend_does_not_mutate_state_when_no_tab_found(monkeypatch):
     assert runner._lent_to_group_id is None
     lent_events = [e for e, _ in runner._broadcaster.events if e == "pinnacle_lent"]
     assert lent_events == []
+
+
+@pytest.mark.asyncio
+async def test_value_loop_waits_for_lent_event(monkeypatch):
+    """When lent, the value loop's pre-bet hook must yield until released."""
+    from arnold.mirror.pinnacle_shared import PinnacleSharedRunner  # noqa: F401
+
+    runner = _build_runner()
+
+    class _FakeWorkflow:
+        async def find_tab(self, _ctx):
+            return _FakePage()
+
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
+
+    await runner.lend_to_arb("g1")
+
+    # The hook should not return while lent
+    waited = asyncio.create_task(runner._await_unlent_or_done())
+    await asyncio.sleep(0.05)
+    assert not waited.done()
+
+    runner.release_to_value()
+    await asyncio.wait_for(waited, timeout=1.0)
