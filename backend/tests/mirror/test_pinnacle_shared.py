@@ -41,6 +41,11 @@ def _build_runner():
     )
 
 
+class _FakeWorkflow:
+    async def find_tab(self, _ctx):
+        return _FakePage()
+
+
 def test_runner_starts_in_idle_state():
     from arnold.mirror.pinnacle_shared import STATE_LENT_TO_ARB
 
@@ -55,11 +60,10 @@ async def test_lend_to_arb_marks_state_and_clears_event(monkeypatch):
 
     runner = _build_runner()
 
-    # Stub find_tab to return a fake page
-    async def _fake_find_tab(_ctx):
-        return _FakePage()
-
-    runner._find_tab = _fake_find_tab  # type: ignore
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
 
     page = await runner.lend_to_arb("group-abc")
     assert page is not None
@@ -75,10 +79,10 @@ async def test_release_to_value_sets_event_and_emits(monkeypatch):
 
     runner = _build_runner()
 
-    async def _fake_find_tab(_ctx):
-        return _FakePage()
-
-    runner._find_tab = _fake_find_tab  # type: ignore
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
     await runner.lend_to_arb("group-abc")
     runner.release_to_value()
 
@@ -92,12 +96,38 @@ async def test_release_to_value_sets_event_and_emits(monkeypatch):
 async def test_lend_is_idempotent(monkeypatch):
     runner = _build_runner()
 
-    async def _fake_find_tab(_ctx):
-        return _FakePage()
-
-    runner._find_tab = _fake_find_tab  # type: ignore
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
     p1 = await runner.lend_to_arb("group-abc")
     p2 = await runner.lend_to_arb("group-abc")
     assert p1 is p2
     lent_events = [e for e, _ in runner._broadcaster.events if e == "pinnacle_lent"]
     assert len(lent_events) == 1  # only emit once
+
+
+@pytest.mark.asyncio
+async def test_lend_does_not_mutate_state_when_no_tab_found(monkeypatch):
+    """If find_tab returns None, state stays free — no half-lent leak."""
+    from arnold.mirror.pinnacle_shared import STATE_LENT_TO_ARB
+
+    runner = _build_runner()
+
+    class _NoTabWorkflow:
+        async def find_tab(self, _ctx):
+            return None
+
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _NoTabWorkflow(),
+    )
+
+    page = await runner.lend_to_arb("group-no-tab")
+
+    assert page is None
+    assert runner.state != STATE_LENT_TO_ARB
+    assert runner._lent_event.is_set()  # still free
+    assert runner._lent_to_group_id is None
+    lent_events = [e for e, _ in runner._broadcaster.events if e == "pinnacle_lent"]
+    assert lent_events == []

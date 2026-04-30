@@ -14,7 +14,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from .play_loop import STATE_RUNNING
 from .provider_runner import ProviderRunner
+from .workflows import get_workflow
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -72,13 +74,6 @@ class PinnacleSharedRunner(ProviderRunner):
         self._pre_lend_state: str | None = None
         self._lent_page: Page | None = None
 
-    async def _find_tab(self, context):
-        """Indirection so tests can stub tab discovery without touching Playwright."""
-        from .workflows import get_workflow
-
-        wf = get_workflow(self.provider_id)
-        return await wf.find_tab(context)
-
     async def lend_to_arb(self, arb_group_id: str) -> Page | None:
         """Mark the runner as lent, return the current Pinnacle page.
 
@@ -90,7 +85,8 @@ class PinnacleSharedRunner(ProviderRunner):
         if self._lent_to_group_id == arb_group_id:
             # Idempotent: return the cached page without re-emitting
             if self._lent_page is None:
-                self._lent_page = await self._find_tab(self._browser.context)
+                wf = get_workflow(self.provider_id)
+                self._lent_page = await wf.find_tab(self._browser.context)
             return self._lent_page
         if self._lent_to_group_id is not None:
             logger.warning(
@@ -98,26 +94,37 @@ class PinnacleSharedRunner(ProviderRunner):
                 f"{self._lent_to_group_id} — returning shared page anyway"
             )
             return self._lent_page
+        wf = get_workflow(self.provider_id)
+        page = await wf.find_tab(self._browser.context)
+        if page is None:
+            # Tab not found — don't lend; the lent state is reserved for "I have a page".
+            logger.warning(f"[PinnacleShared] lend_to_arb({arb_group_id}) — no tab found; not lending")
+            return None
         self._pre_lend_state = self.state
         self.state = STATE_LENT_TO_ARB
         self._lent_to_group_id = arb_group_id
+        self._lent_page = page
         self._lent_event.clear()
         self._broadcaster.publish("pinnacle_lent", {"arb_group_id": arb_group_id})
-        page = await self._find_tab(self._browser.context)
-        self._lent_page = page
         return page
 
     def release_to_value(self) -> None:
-        """Mark the runner as free again. No-op if not lent."""
+        """Release the lent Pinnacle tab back to the value-bet loop.
+
+        Contract: the caller (ArbRunner) MUST stop using the Page reference
+        returned by lend_to_arb() before invoking this. The value loop unblocks
+        immediately on release; if the caller still holds a Page reference and
+        issues another Playwright call after release, it races against the
+        value loop's navigation.
+
+        No-op when the runner is not currently lent.
+        """
         if self._lent_to_group_id is None:
             return
         group_id = self._lent_to_group_id
         self._lent_to_group_id = None
-        # Don't restore the previous state literally — the value loop will
-        # re-derive its state on the next iteration. Just leave a known-good
-        # idle marker.
-        from .play_loop import STATE_RUNNING
-
+        # Restore prior state when known, else fall back to RUNNING — the value
+        # loop re-derives state on each iteration so this is just the resume hint.
         self.state = self._pre_lend_state or STATE_RUNNING
         self._pre_lend_state = None
         self._lent_page = None
