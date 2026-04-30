@@ -31,6 +31,7 @@ from .play_loop import (
     STATE_IDLE,
     STATE_LOGIN_WAITING,
     STATE_PROVIDER_OPENING,
+    STATE_READY_TO_RUN,
     STATE_SETTLING,
     UNCAPPED_PROVIDERS,
     UNLIMITED_PROVIDERS,
@@ -135,6 +136,14 @@ class ArbRunner:
         self.last_idle_reason: str | None = None
         self.last_skip_counts: dict[str, int] = {}
 
+        # Run-gate. Cleared by default — arb runner reaches STATE_READY_TO_RUN
+        # and awaits this event before entering the arb bet loop. Counter-bet
+        # routing via on_counter_bet_intercepted is unaffected: a yellow
+        # (Ready) provider can still serve as a counter when another provider's
+        # anchor (whose Run was pressed) fires.
+        self._run_event: asyncio.Event = asyncio.Event()
+        self._ready_sync_task: asyncio.Task | None = None
+
     # ----- public surface -----
 
     def start(self) -> None:
@@ -155,6 +164,9 @@ class ArbRunner:
         if self._top_opp_watcher_task and not self._top_opp_watcher_task.done():
             self._top_opp_watcher_task.cancel()
         self._top_opp_watcher_task = None
+        if self._ready_sync_task and not self._ready_sync_task.done():
+            self._ready_sync_task.cancel()
+        self._ready_sync_task = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -201,6 +213,19 @@ class ArbRunner:
                 f"[Arb:{self.provider_id}] Counter intercept for {counter_provider_id} but no event registered"
             )
 
+    def set_run(self, run: bool) -> bool:
+        """Toggle the run gate. See ProviderRunner.set_run."""
+        if run:
+            if self._run_event.is_set():
+                return False
+            self._run_event.set()
+            return True
+        else:
+            if not self._run_event.is_set():
+                return False
+            self._run_event.clear()
+            return True
+
     def get_status(self) -> dict:
         return {
             "provider_id": self.provider_id,
@@ -213,6 +238,77 @@ class ArbRunner:
             "last_idle_reason": self.last_idle_reason,
             "last_skip_counts": dict(self.last_skip_counts),
         }
+
+    # ----- run gate -----
+
+    async def _await_run_gate(self, workflow: Any, page: Any) -> None:
+        """Park at STATE_READY_TO_RUN until the user opens the run gate."""
+        self.state = STATE_READY_TO_RUN
+        self._broadcaster.publish(
+            "provider_ready",
+            {
+                "provider_id": self.provider_id,
+                "state": STATE_READY_TO_RUN,
+                "mode": "arb",
+                "placed_today": self._placed_today.get(self.provider_id, 0),
+                "daily_cap": DAILY_BET_CAP,
+            },
+        )
+        self._ready_sync_task = asyncio.create_task(
+            self._ready_sync_loop(workflow, page),
+            name=f"ready_sync_arb_{self.provider_id}",
+        )
+        try:
+            await self._run_event.wait()
+        finally:
+            if self._ready_sync_task and not self._ready_sync_task.done():
+                self._ready_sync_task.cancel()
+                try:
+                    await self._ready_sync_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._ready_sync_task = None
+        self._broadcaster.publish(
+            "provider_running",
+            {"provider_id": self.provider_id, "mode": "arb"},
+        )
+
+    async def _ready_sync_loop(self, workflow: Any, page: Any) -> None:
+        """Mirror of ProviderRunner._ready_sync_loop — slow balance + pending
+        re-sync while the arb runner sits at STATE_READY_TO_RUN."""
+        import time
+
+        from .provider_runner import (
+            READY_BALANCE_SYNC_INTERVAL_S,
+            READY_PENDING_SYNC_INTERVAL_S,
+        )
+
+        pid = self.provider_id
+        last_balance = 0.0
+        last_pending = 0.0
+        while True:
+            now = time.monotonic()
+            try:
+                if now - last_balance >= READY_BALANCE_SYNC_INTERVAL_S:
+                    if hasattr(workflow, "fetch_balance"):
+                        try:
+                            await workflow.fetch_balance(page)
+                        except Exception as e:
+                            logger.debug(f"[Arb:{pid}] ready balance sync failed: {e!r}")
+                    last_balance = now
+                if now - last_pending >= READY_PENDING_SYNC_INTERVAL_S:
+                    try:
+                        await self._detect_pending(pid, workflow, page)
+                        if not self._run_event.is_set():
+                            self.state = STATE_READY_TO_RUN
+                    except Exception as e:
+                        logger.debug(f"[Arb:{pid}] ready pending sync failed: {e!r}")
+                    last_pending = now
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(5.0)
 
     # ----- main loop -----
 
@@ -278,10 +374,17 @@ class ArbRunner:
                     )
                     return
 
-            # 5. Arb bet loop
+            # 5. Wait at READY_TO_RUN for the user to press Run.
+            await self._await_run_gate(workflow, page)
+
+            # 6. Arb bet loop
             logger.info(f"[Arb:{pid}] Entering arb bet loop (v2)")
             skip_counts: dict[str, int] = {}
             while True:
+                # If the user paused, drop back to ready and await the gate.
+                if not self._run_event.is_set():
+                    await self._await_run_gate(workflow, page)
+
                 if pid not in UNCAPPED_PROVIDERS:
                     placed = self._placed_today.get(pid, 0)
                     if placed >= DAILY_BET_CAP:
