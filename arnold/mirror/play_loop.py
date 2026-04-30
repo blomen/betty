@@ -65,6 +65,7 @@ STATE_RUNNING = "running"
 STATE_PROVIDER_OPENING = "provider_opening"
 STATE_LOGIN_WAITING = "login_waiting"
 STATE_SETTLING = "settling"
+STATE_READY_TO_RUN = "ready_to_run"  # gated: settled, awaiting user Run press
 STATE_NAVIGATING = "navigating"
 STATE_READY = "ready"
 STATE_PLACING = "placing"
@@ -226,6 +227,17 @@ class PlayLoop:
         runner = self._find_runner(provider_id, state=STATE_READY)
         if runner:
             runner.skip()
+
+    def set_run(self, provider_id: str, run: bool) -> bool:
+        """Toggle the run gate for a provider runner. Returns True if the runner
+        was found and the gate was toggled; False otherwise (no runner / runner
+        in a state where toggling is a no-op)."""
+        runner = self._runners.get(provider_id)
+        if runner is None:
+            return False
+        if not hasattr(runner, "set_run"):
+            return False
+        return runner.set_run(run)
 
     def on_bet_intercepted(self, provider_id: str, body: dict, request_body: dict | None = None) -> None:
         """Route intercepted bet to the correct runner, or record directly as fallback."""
