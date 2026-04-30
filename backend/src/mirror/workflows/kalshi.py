@@ -147,7 +147,11 @@ class KalshiWorkflow(ProviderWorkflow):
     # ---------- Login / balance ----------
 
     async def check_login(self, page: Page) -> bool:
-        # API auth is independent of web session; presence of a client is enough.
+        # API auth is independent of web session. If the SDK isn't wired up
+        # yet, retry init in case creds + SDK became available after first
+        # construction (e.g. .env loaded after import order).
+        if not self.has_api:
+            self._init_client()
         return self.has_api
 
     async def sync_balance(self, page: Page) -> float:
