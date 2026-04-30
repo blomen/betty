@@ -54,7 +54,11 @@ _LEVEL_FAMILY: dict[LevelType, str] = {
     # Prior session (PDH/PDL)
     LevelType.PDH: "prior_session",
     LevelType.PDL: "prior_session",
-    # Asian/European session H-L
+    # Asian/European session H-L. London H/L share the TOKYO_HIGH/LOW
+    # LevelType (aliased in level_type_map) — both are session-extreme
+    # references and contribute identically to the "sessions" family. Doing
+    # it as an alias avoids growing LevelType, which would break the
+    # observation vector shape and the trained DQN checkpoint.
     LevelType.TOKYO_HIGH: "sessions",
     LevelType.TOKYO_LOW: "sessions",
     # NY Initial Balance

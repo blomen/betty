@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class LevelType(str, Enum):
-    """All level types the agent can encounter (31 total)."""
+    """All level types the agent can encounter."""
 
     # Volume profile — daily
     DAILY_POC = "daily_poc"

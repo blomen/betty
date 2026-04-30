@@ -484,6 +484,12 @@ class LevelMonitor:
 
         for lv in levels_list:
             name = lv.get("type", "unknown")
+            # The DB-fed `ib_high` / `ib_low` are duplicates of the session
+            # dict's `ib_high/low` (which we emit below as `nyib_high/low`).
+            # Skip the DB version so the same physical level doesn't appear
+            # as two zone members, inflating member counts and `members_detail`.
+            if name in ("ib_high", "ib_low"):
+                continue
             # FVGs and order blocks are price ranges — feed their midpoint
             # as the zone-clustering anchor so a zone that happens to sit
             # inside the range picks them up as a member. price_low alone
@@ -554,6 +560,39 @@ class LevelMonitor:
                             category="band",
                         )
                     )
+
+        # Weekly + monthly volume profile POC/VAH/VAL. market_service already
+        # computes these into expanded_session["profiles"][tf] = {poc, vah, val}
+        # but they were never being lifted into _levels, so zone clustering
+        # ignored them and the FRVP study lines floated outside any zone.
+        # Names mirror daily VP (poc/vah/val) with the `weekly_` / `monthly_`
+        # prefix so level_type_map can resolve them into the right LevelType
+        # and thus the right _LEVEL_FAMILY (weekly_vp / monthly_vp).
+        profiles = expanded_session.get("profiles", {}) or {}
+        for tf in ("weekly", "monthly"):
+            tf_profile = profiles.get(tf) or {}
+            for key, name in (("poc", f"{tf}_poc"), ("vah", f"{tf}_vah"), ("val", f"{tf}_val")):
+                val = tf_profile.get(key)
+                if val is None:
+                    continue
+                if any(l.name == name and abs(l.price - float(val)) < TICK_SIZE for l in self._levels):
+                    continue
+                self._levels.append(MonitoredLevel(name=name, price=float(val), category="session"))
+
+        # Naked POCs — prior-session POCs that price has never revisited.
+        # Highest-weight family in _HIERARCHY_WEIGHTS (1.0, same as daily POC).
+        # market_service.detect_naked_pocs lands them as [{"date", "price"}]
+        # in profiles["naked_pocs"]; same drop-on-the-floor bug that hit
+        # weekly/monthly VP. Each naked POC becomes its own MonitoredLevel —
+        # multiple at distinct prices is the normal case.
+        for npoc in profiles.get("naked_pocs") or []:
+            try:
+                price = float(npoc.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if any(l.name == "naked_poc" and abs(l.price - price) < TICK_SIZE for l in self._levels):
+                continue
+            self._levels.append(MonitoredLevel(name="naked_poc", price=price, category="prior"))
 
         logger.info(
             "LevelMonitor loaded %d levels (from session: %d structural + %d bands, from DB: %d)",
@@ -671,12 +710,55 @@ class LevelMonitor:
             "fvg_bearish": RLLevelType.FVG_BEAR,
             "order_block_bullish": RLLevelType.ORDER_BLOCK_BULL,
             "order_block_bearish": RLLevelType.ORDER_BLOCK_BEAR,
+            # Weekly + monthly VP — emitted by load_levels from
+            # expanded_session["profiles"][tf]. Without these entries the
+            # names fell through to the VWAP default and the levels merged
+            # into the wrong cluster (and the wrong family for strength math).
+            "weekly_poc": RLLevelType.WEEKLY_POC,
+            "weekly_vah": RLLevelType.WEEKLY_VAH,
+            "weekly_val": RLLevelType.WEEKLY_VAL,
+            "monthly_poc": RLLevelType.MONTHLY_POC,
+            "monthly_vah": RLLevelType.MONTHLY_VAH,
+            "monthly_val": RLLevelType.MONTHLY_VAL,
+            # London session H/L — aliased to TOKYO_HIGH/LOW so they share
+            # the "sessions" family + 0.5 weight without growing LevelType
+            # (which would invalidate the trained DQN's input shape).
+            # Before this alias, london_high was silently classifying as
+            # VWAP via the fallback, polluting the wrong family — so this
+            # is strictly better than production for the model.
+            "london_high": RLLevelType.TOKYO_HIGH,
+            "london_low": RLLevelType.TOKYO_LOW,
+            # `ib_high` / `ib_low` from the DB levels list refer to the same
+            # level as the session-dict-derived `nyib_high/low`. Alias them
+            # so the duplicate dedup in load_levels can collapse them into
+            # one zone member instead of double-counting.
+            "ib_high": RLLevelType.NYIB_HIGH,
+            "ib_low": RLLevelType.NYIB_LOW,
+            # TPO IB — latent today (TIBH/TIBL aren't currently emitted by
+            # the session-expansion code) but pre-mapped so adding them
+            # upstream doesn't regress into the VWAP fallback.
+            "tibh": RLLevelType.TIBH,
+            "tibl": RLLevelType.TIBL,
         }
         level_tuples = []
+        unmapped: dict[str, int] = {}
         for lv in self._levels:
             name_key = lv.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
-            lt = level_type_map.get(name_key, RLLevelType.VWAP)
+            lt = level_type_map.get(name_key)
+            if lt is None:
+                # Loud + skip. Silently defaulting to VWAP poisoned the
+                # `vwap` family's per-family-max calc and corrupted both the
+                # rendered zone strength and the model observation.
+                unmapped[lv.name] = unmapped.get(lv.name, 0) + 1
+                continue
             level_tuples.append((lv.name, lt, lv.price))
+        if unmapped:
+            logger.warning(
+                "LevelMonitor: %d level(s) skipped due to unmapped names: %s. "
+                "Add these to level_type_map in _rebuild_zones to include them in zones.",
+                sum(unmapped.values()),
+                unmapped,
+            )
         self._zones = build_zones(level_tuples, self._session_atr)
         if reset_debounce:
             self._zone_debounce.clear()
