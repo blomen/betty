@@ -871,6 +871,64 @@ def parse_placement_response(body: dict) -> str | None:
     return str(bid) if bid else None
 
 
+# ------------------------------------------------------------------
+# Slip helpers — read odds + update stake without re-navigating.
+# Called by SlipOddsStream and ArbRunner.
+# ------------------------------------------------------------------
+
+
+async def _read_slip_odds(page: Page, intel: dict | None) -> float | None:
+    """Read American price from localStorage['Main:Betslip'].Selections[0],
+    convert to decimal. Returns None when slip empty or storage missing.
+
+    Polled ~1Hz by SlipOddsStream while a counter slip is loaded — must be
+    fast and exception-safe.
+    """
+    try:
+        price = await page.evaluate(
+            r"""() => {
+                const raw = localStorage.getItem("Main:Betslip");
+                if (!raw) return null;
+                try {
+                    const data = JSON.parse(raw);
+                    const sels = data?.Selections ?? [];
+                    if (sels.length === 0) return null;
+                    return sels[0].price;
+                } catch { return null; }
+            }"""
+        )
+        if price is None:
+            return None
+        return _american_to_decimal(float(price))
+    except Exception:
+        return None
+
+
+async def _update_slip_stake(page: Page, stake: float, intel: dict | None) -> bool:
+    """Write stake to Pinnacle's React-controlled input via the hidden-setter
+    pattern. Used by ArbRunner to keep counter slips in sync with anchor
+    placements. Returns True iff the React onChange handler fired.
+    """
+    try:
+        result = await page.evaluate(
+            """((stake) => {
+                const el = document.querySelector('input[placeholder="Stake"]');
+                if (!el) return false;
+                const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype, 'value'
+                ).set;
+                setter.call(el, String(stake));
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            })""",
+            stake,
+        )
+        return bool(result)
+    except Exception:
+        return False
+
+
 strategy = Strategy(
     check_login=_check_login,
     sync_balance=_sync_balance,
