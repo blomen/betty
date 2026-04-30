@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -657,102 +656,6 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 
 
 # ------------------------------------------------------------------
-# Place bet — full API automation
-# ------------------------------------------------------------------
-
-
-async def _place_bet(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
-    """Place bet via Pinnacle API: fetch markets → slippage check → place."""
-    api = _api_base(intel)
-    matchup_id = getattr(bet, "matchup_id", None)
-    if not matchup_id:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason="no_matchup_id")
-
-    outcome = getattr(bet, "outcome", "")
-    market = getattr(bet, "market", "")
-    point = getattr(bet, "point", None)
-    designation = _designation_map(intel).get(outcome)
-    if not designation:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"unknown_outcome:{outcome}")
-
-    # Fetch markets
-    markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
-    if not markets or (isinstance(markets, dict) and "__error" in markets):
-        logger.warning(f"[pinnacle] markets_fetch_failed for matchup={matchup_id}: {markets}")
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
-
-    # Find matching market
-    target = _find_market(markets, market, point, intel)
-    if not target:
-        keys = [m.get("key") for m in markets[:10]] if isinstance(markets, list) else "?"
-        logger.warning(f"[pinnacle] market_not_found market={market} point={point} available_keys={keys}")
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"market_not_found:{market}")
-    if target.get("status") != "open":
-        return PlacementResult(status="skipped", bet_id=bet.bet_id, reason=f"market_closed:{target.get('status')}")
-
-    # Find price for our designation
-    price_entry = next((p for p in target.get("prices", []) if p.get("designation") == designation), None)
-    if not price_entry:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"designation_not_found:{designation}")
-
-    decimal_odds = _american_to_decimal(price_entry["price"])
-
-    # Slippage check
-    threshold = (intel or {}).get("placement", {}).get("slippage_threshold", 0.05)
-    if bet.odds > 0 and decimal_odds < bet.odds * (1 - threshold):
-        return PlacementResult(
-            status="skipped",
-            bet_id=bet.bet_id,
-            actual_odds=round(decimal_odds, 3),
-            reason=f"slippage:{decimal_odds:.2f}_vs_{bet.odds:.2f}",
-        )
-
-    # Place
-    body = {
-        "oddsFormat": "decimal",
-        "requestId": str(uuid.uuid4()),
-        "acceptBetterPrices": True,
-        "acceptBetterPrice": True,
-        "class": "Straight",
-        "selections": [
-            {
-                "marketId": target["version"],
-                "matchupId": int(matchup_id),
-                "marketKey": target["key"],
-                "designation": designation,
-                "price": round(decimal_odds, 2),
-            }
-        ],
-        "stake": round(stake, 2),
-        "originTag": "ps:bsd",
-    }
-
-    result = await _post_api(page, f"{api}/bets/straight", body)
-    if result is None:
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason="api_call_failed")
-
-    if not result or "__error" in result:
-        detail = (result or {}).get("detail", (result or {}).get("title", str((result or {}).get("__error", ""))))
-        return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"api_error:{detail}")
-
-    confirmed_price = float(result.get("price", decimal_odds))
-    confirmed_stake = float(result.get("stake", stake))
-
-    logger.info(
-        f"[pinnacle] PLACED bet {result.get('id')}: "
-        f"{getattr(bet, 'display_home', '')} vs {getattr(bet, 'display_away', '')} "
-        f"{market} {outcome} @ {confirmed_price} stake={confirmed_stake}"
-    )
-    return PlacementResult(
-        status="placed",
-        bet_id=bet.bet_id,
-        actual_odds=confirmed_price,
-        actual_stake=confirmed_stake,
-        raw_response=result,
-    )
-
-
-# ------------------------------------------------------------------
 # Live price
 # ------------------------------------------------------------------
 
@@ -1102,7 +1005,16 @@ strategy = Strategy(
     check_login=_check_login,
     sync_balance=_sync_balance,
     sync_history=_sync_history,
-    place_bet=_place_bet,
-    check_live_price=_check_live_price,
     navigate_to_event=_navigate_to_event,
+    prep_betslip=_prep_betslip,
+    check_live_price=_check_live_price,
+    scan=_scan,
+    settle_all=_settle_all,
+    read_slip_odds=_read_slip_odds,
+    update_slip_stake=_update_slip_stake,
+    parse_placement_response=parse_placement_response,
+    parse_placement_status=parse_placement_status,
 )
+# place_bet intentionally omitted: GenericWorkflow.place_bet falls back to
+# manual mode without autonomous_placement, and provider_runner only invokes
+# place_bet when workflow.autonomous_placement is True.
