@@ -490,6 +490,7 @@ class ArbRunner:
             for s in self._streams.values():
                 s.stop()
             self._streams.clear()
+            self._release_pinnacle_if_held()
             return False
 
         # Register counter events

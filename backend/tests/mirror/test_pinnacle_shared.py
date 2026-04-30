@@ -239,3 +239,79 @@ async def test_arb_runner_calls_lend_then_release(monkeypatch):
 
     arb._release_pinnacle_if_held()
     assert shared.state != STATE_LENT_TO_ARB
+
+
+@pytest.mark.asyncio
+async def test_lend_pinnacle_if_needed_recovers_on_lend_exception(monkeypatch):
+    """If lend_to_arb raises, the helper must call release_to_value to clean up."""
+    from arnold.mirror.arb_runner import ArbRunner
+    from arnold.mirror.pinnacle_shared import PinnacleSharedRunner
+
+    bc = _RecordingBroadcaster()
+    shared = PinnacleSharedRunner(
+        provider_id="pinnacle",
+        browser=_FakeBrowser(),
+        broadcaster=bc,
+        proxy_url="http://x",
+        pop_bet=lambda: None,
+        block_event_market=lambda _b: None,
+        is_blocked=lambda _b: False,
+        placed_today={},
+    )
+
+    release_calls: list[bool] = []
+    original_release = shared.release_to_value
+
+    def _spy_release():
+        release_calls.append(True)
+        original_release()
+
+    shared.release_to_value = _spy_release  # type: ignore
+
+    # Force lend_to_arb to raise after state mutation: stub get_workflow with a
+    # workflow whose find_tab returns a real-looking page (so state mutates),
+    # but make the broadcaster.publish raise.
+    class _FakeWorkflow:
+        async def find_tab(self, _ctx):
+            class _Page:
+                url = "https://www.pinnacle.se/en/"
+
+            return _Page()
+
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
+
+    raise_count = {"n": 0}
+
+    def _exploding_publish(event, payload):
+        if event == "pinnacle_lent":
+            raise_count["n"] += 1
+            raise RuntimeError("simulated broadcaster failure")
+        bc.events.append((event, payload))
+
+    shared._broadcaster.publish = _exploding_publish  # type: ignore
+
+    arb = ArbRunner(
+        provider_id="betinia",
+        browser=_FakeBrowser(),
+        broadcaster=bc,
+        proxy_url="http://x",
+        block_event_market=lambda _b: None,
+        is_blocked=lambda _b: False,
+        placed_today={},
+        active_providers=["betinia", "pinnacle"],
+        stake_caps={},
+        pinnacle_shared=shared,
+    )
+
+    page = await arb._lend_pinnacle_if_needed("group-explode")
+
+    # Lend raised → helper returns None
+    assert page is None
+    # Recovery release was invoked
+    assert release_calls == [True]
+    # State is back to free (not lent)
+    assert shared.state != "lent_to_arb"
+    assert shared._lent_to_group_id is None
