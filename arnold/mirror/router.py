@@ -566,6 +566,30 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         play_loop.skip(provider_id=pid)
         return play_loop.get_status()
 
+    @router.post("/play/run/{provider_id}")
+    async def play_run(provider_id: str):
+        """Release the Run gate for a provider runner: yellow → green.
+        409 if no runner exists for this provider."""
+        ok = play_loop.set_run(provider_id, True)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No runner for {provider_id} or gate already open",
+            )
+        return play_loop.get_status()
+
+    @router.post("/play/pause/{provider_id}")
+    async def play_pause(provider_id: str):
+        """Clear the Run gate for a provider runner: green → yellow.
+        409 if no runner exists or gate already closed."""
+        ok = play_loop.set_run(provider_id, False)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No runner for {provider_id} or gate already closed",
+            )
+        return play_loop.get_status()
+
     @router.post("/play/stop")
     async def play_stop():
         """Stop the play loop."""
