@@ -409,12 +409,12 @@ class GenericWorkflow(ProviderWorkflow):
     # Slip read/write — consumed by ArbRunner + SlipOddsStream
     # ------------------------------------------------------------------
 
-    async def read_slip_odds(self, page) -> float | None:
+    async def read_slip_odds(self, page: Page) -> float | None:
         if self.strategy and self.strategy.read_slip_odds:
             return await self.strategy.read_slip_odds(page, self.intel)
         return await super().read_slip_odds(page)
 
-    async def update_slip_stake(self, page, stake: float) -> bool:
+    async def update_slip_stake(self, page: Page, stake: float) -> bool:
         if self.strategy and self.strategy.update_slip_stake:
             return await self.strategy.update_slip_stake(page, stake, self.intel)
         return await super().update_slip_stake(page, stake)
