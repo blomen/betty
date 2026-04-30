@@ -145,11 +145,19 @@ class TopstepXClient:
         """Convert 'Buy'/'Sell' to TopstepX side integer."""
         return SIDE_BUY if action == "Buy" else SIDE_SELL
 
-    # Stamped on every Order/place so arnold's own orders are
-    # distinguishable from any concurrent session on the account. Exposed
-    # via Order/search results — used by _recover_via_broker_truth and
-    # future on_stream_fill fingerprinting to reject foreign fills cleanly.
-    _ORDER_TAG = "arnold-prod"
+    # Prefix stamped on every Order/place so arnold's own orders are
+    # distinguishable from any concurrent session on the account.
+    # TopstepX rejects duplicate customTag values (account permanent
+    # violation), so each order gets a unique suffix while preserving the
+    # arnold-prod prefix for fingerprinting in Order/search results.
+    _ORDER_TAG_PREFIX = "arnold-prod"
+
+    @classmethod
+    def _new_order_tag(cls) -> str:
+        # nanosecond epoch is monotonically increasing within a process and
+        # across container restarts; collisions across two arnold instances
+        # on the same account would still be vanishingly rare.
+        return f"{cls._ORDER_TAG_PREFIX}-{time.time_ns()}"
 
     async def place_market_order(self, action: str, quantity: int) -> dict:
         """Place a market order. action: 'Buy' or 'Sell'."""
@@ -159,7 +167,7 @@ class TopstepXClient:
             "type": ORDER_TYPE_MARKET,
             "side": self._side(action),
             "size": quantity,
-            "customTag": self._ORDER_TAG,
+            "customTag": self._new_order_tag(),
         }
         result = await self._post("/api/Order/place", payload)
         log.info("Market order placed: %s %d %s → %s", action, quantity, self._config.contract_id, result)
@@ -174,7 +182,7 @@ class TopstepXClient:
             "side": self._side(action),
             "size": quantity,
             "stopPrice": stop_price,
-            "customTag": self._ORDER_TAG,
+            "customTag": self._new_order_tag(),
         }
         result = await self._post("/api/Order/place", payload)
         log.info("Stop order placed: %s %d @ %.2f → %s", action, quantity, stop_price, result)
@@ -189,7 +197,7 @@ class TopstepXClient:
             "side": self._side(action),
             "size": quantity,
             "limitPrice": limit_price,
-            "customTag": self._ORDER_TAG,
+            "customTag": self._new_order_tag(),
         }
         result = await self._post("/api/Order/place", payload)
         log.info("Limit order placed: %s %d @ %.2f → %s", action, quantity, limit_price, result)
