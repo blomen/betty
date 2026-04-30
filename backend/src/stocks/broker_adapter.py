@@ -569,8 +569,6 @@ class TopstepXBrokerAdapter:
 
         size = pt.get("size") or max(self.tracker.size or size_filled or 1, 1)
         direction = 1.0 if side == "long" else -1.0
-        pnl_pts = direction * (weighted_px - entry_px)
-        pnl_dollars = round(gross_pnl, 2) if abs(gross_pnl) > 1e-6 else round(pnl_pts * _NQ_POINT_VALUE * size, 2)
         stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
         _MIN_RISK_PTS = MIN_STOP_TICKS * 0.25
         initial_stop_ticks = pt.get("stop_ticks") or 0
@@ -581,6 +579,25 @@ class TopstepXBrokerAdapter:
         else:
             raw_risk = DEFAULT_STOP_TICKS * 0.25
         risk_pts = max(raw_risk, _MIN_RISK_PTS)
+
+        # Broker's gross_pnl is the source of truth — it accounts for partial
+        # fills, multi-leg closes, and any size-mismatch quirks the tracker
+        # missed. When it's available, derive pnl_pts (and the displayed
+        # exit_price) BACKWARDS from it so the row reflects real economics
+        # instead of a phantom break-even. Without this, reversal_signals
+        # closes that happen near the entry price produced rows like
+        # entry==exit but pnl_dollars=$150 and pnl_r=0 — the trainer would
+        # learn "this short had 0R reward" which is flat-out wrong.
+        if abs(gross_pnl) > 1e-6:
+            pnl_dollars = round(gross_pnl, 2)
+            pnl_pts = gross_pnl / (_NQ_POINT_VALUE * max(size, 1))
+            # Reconstruct exit_price so the DB row's prices reflect actual
+            # economics. Round to NQ tick grid.
+            weighted_px = round((entry_px + direction * pnl_pts) * 4) / 4
+            pnl_pts = direction * (weighted_px - entry_px)
+        else:
+            pnl_pts = direction * (weighted_px - entry_px)
+            pnl_dollars = round(pnl_pts * _NQ_POINT_VALUE * size, 2)
         pnl_r = round(pnl_pts / risk_pts, 3)
 
         try:
