@@ -162,9 +162,13 @@ def aggregate_to_timeframe(
 
 
 _TF_RECENCY = {"daily": 5, "weekly": 3, "monthly": 2}
-# Max input bars per timeframe — limits how far back we look for structure.
-# Prevents the engine from getting stuck on decade-old swings.
-_TF_MAX_BARS = {"daily": 120, "weekly": 200, "monthly": 400}
+# Max HIGHER-TF candles per timeframe (after aggregation), not 1m bars.
+# The previous version sliced bars_1m to N — but N=120 1m bars = 2 hours
+# = 1 daily candle, well below the engine's 5-candle minimum, which made
+# every daily/weekly/monthly result come back empty. Cap by candles so
+# the input semantics match the engine's needs while still bounding how
+# far back we look (a year of dailies is plenty for swing structure).
+_TF_MAX_CANDLES = {"daily": 90, "weekly": 52, "monthly": 24}
 
 
 def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
@@ -195,11 +199,12 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
 
     results: dict[str, TimeframeSwings] = {}
     for tf in ("daily", "weekly", "monthly"):
-        # Limit input bars to avoid processing decade-old data
-        max_bars = _TF_MAX_BARS[tf]
-        tf_bars = bars_1m[-max_bars:] if len(bars_1m) > max_bars else bars_1m
-        candles = aggregate_to_timeframe(tf_bars, tf)
-        logger.info("Swing %s: %d candles (from %d bars)", tf, len(candles), len(tf_bars))
+        # Aggregate first, then cap by candle count — order matters because
+        # _TF_MAX_CANDLES is in the timeframe's natural unit, not 1m bars.
+        all_candles = aggregate_to_timeframe(bars_1m, tf)
+        max_n = _TF_MAX_CANDLES[tf]
+        candles = all_candles[-max_n:] if len(all_candles) > max_n else all_candles
+        logger.info("Swing %s: %d candles (from %d 1m bars)", tf, len(candles), len(bars_1m))
 
         if len(candles) < 5:
             results[tf] = empty_tf(tf)

@@ -977,10 +977,12 @@ class MarketService:
             _CET = _ZI("Europe/Stockholm")
             now_utc = datetime.now(timezone.utc)
             today_cet_date = now_utc.astimezone(_CET).date()
-            # 60 days back gives the monthly engine enough completed candles
-            # while keeping the query bounded.
+            # 240 days (~8 months) back. compute_multi_tf_swings needs ≥5
+            # monthly candles, so we need at least ~5 months of 1m bars.
+            # 240 days gives 8 monthly candles = comfortable margin without
+            # querying the full year-plus archive on every refresh.
             start_dt = datetime(today_cet_date.year, today_cet_date.month, 1, tzinfo=_CET).astimezone(timezone.utc)
-            start_dt = start_dt - _td(days=30)
+            start_dt = start_dt - _td(days=240)
             rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start_dt, now_utc))
             swing_bars = [{"ts": r.ts, "high": r.h, "low": r.l, "open": r.o, "close": r.c} for r in rows]
             if swing_bars:
