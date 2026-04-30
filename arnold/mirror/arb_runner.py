@@ -69,6 +69,13 @@ LEG_DRIFT_TOL_PCT = 0.01  # 1% drift tolerance below planned odds → red
 RERANK_INTERVAL_S = 5.0
 DETHRONE_HYSTERESIS_PCT = 0.5
 
+# Maximum time to wait for the user to click Place on every counter tab after
+# the anchor placement has been intercepted. If the user closes the counter tab
+# or never clicks, we give up on the missing legs and emit arb_hedge_failed
+# rather than blocking the runner forever. Anchor is already on the site by
+# this point — surfacing the failure lets the user manually hedge or absorb.
+COUNTER_HEDGE_TIMEOUT_S = 180.0
+
 
 class ArbRunner:
     """Runs the semi-auto arbitrage play loop for a single soft book.
@@ -665,8 +672,33 @@ class ArbRunner:
 
         await asyncio.gather(*[_push_stake(l, s) for l, s in zip(self._counter_legs, new_stakes)])
 
-        # Wait for every counter event
-        await asyncio.gather(*(ev.wait() for ev in self._counter_events.values()))
+        # Wait for every counter event up to COUNTER_HEDGE_TIMEOUT_S; counters
+        # that don't fire in time are treated as user_timeout (anchor stays
+        # un-hedged from the system's perspective; user must hedge manually).
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(ev.wait() for ev in self._counter_events.values())),
+                timeout=COUNTER_HEDGE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            for leg in self._counter_legs:
+                pid = leg["provider"]
+                if pid in self._counter_intercepted:
+                    continue
+                self._broadcaster.publish(
+                    "arb_hedge_failed",
+                    {
+                        "arb_group_id": self.current_arb_group_id,
+                        "counter_provider": pid,
+                        "outcome": leg.get("outcome"),
+                        "reason": "user_timeout",
+                        "max_stake": None,
+                    },
+                )
+            logger.warning(
+                f"[Arb:{self.provider_id}] Counter hedge wait timed out after "
+                f"{COUNTER_HEDGE_TIMEOUT_S}s — {len(self._counter_legs) - len(self._counter_intercepted)} unfired"
+            )
 
         # Inspect each counter placement: emit arb_hedge_failed on rejection,
         # arb_hedge_placed + _record_bet on success (per spec §6).
