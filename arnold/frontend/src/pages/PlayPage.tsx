@@ -636,11 +636,32 @@ export default function PlayPage() {
     }
     if (type === 'bet_skipped' || type === 'bet_failed') {
       setCurrentBetReady(null)
-      setLoopStatus(null)
+      // Show a brief reason in loopStatus so the user can SEE the runner is
+      // alive and what's failing — without this, a stream of hard-fails on
+      // stale event slugs looks identical to a stuck runner.
+      const bet = data?.bet || {}
+      const home = bet.display_home || bet.home_team || ''
+      const away = bet.display_away || bet.away_team || ''
+      const evt = home && away ? `${home} v ${away}` : (bet.event_name || '?')
+      const reason = data?.reason || 'unknown'
+      setLoopStatus(`Skipped: ${evt} — ${reason}`)
       setArbLegs(null)
       setArbAllGreen(false)
       setArbProfitPct(null)
       setArbGroupId(null)
+    }
+    if (type === 'bet_navigating') {
+      const bet = data?.bet || {}
+      const home = bet.display_home || bet.home_team || ''
+      const away = bet.display_away || bet.away_team || ''
+      const evt = home && away ? `${home} v ${away}` : (bet.event_name || '?')
+      const skipped = data?.skipped_so_far ?? 0
+      const fails = data?.consecutive_hard_fails ?? 0
+      const tail = fails > 0 ? ` (${fails} consecutive hard-fails)` : (skipped > 0 ? ` (${skipped} skipped this session)` : '')
+      setLoopStatus(`Navigating: ${evt} on ${data?.provider_id}${tail}`)
+    }
+    if (type === 'runner_stale_intel') {
+      setLoopStatus(`⚠️ ${data?.provider_id}: ${data?.consecutive_hard_fails ?? '?'} consecutive hard-fails — ${data?.hint || 'cached event intel may be stale'}`)
     }
     if (type === 'arb_legs_loaded') {
       setArbGroupId(data.arb_group_id ?? null)

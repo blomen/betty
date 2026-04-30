@@ -96,6 +96,12 @@ def is_hard_fail_reason(reason: str | None) -> bool:
 # docs/superpowers/specs/2026-04-30-polymarket-top-edge-convergence-design.md.
 CONVERGENCE_MAX_ITER = 5
 
+# After this many consecutive hard-fail bets, broadcast a `runner_stale_intel`
+# alert. Heuristic: if 5 bets in a row all redirect / have no cent buttons /
+# are closed events, the cached batch's event slugs are likely stale (e.g.,
+# polymarket changed slug format). User should refresh batch or restart.
+CONSECUTIVE_HARD_FAIL_ALERT = 5
+
 
 def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None) -> bool:
     """Zero-hysteresis convergence check.
@@ -173,6 +179,13 @@ class ProviderRunner:
         # successfully reach READY. Used as a hard cap so a flapping queue
         # can't cause infinite re-navigation. See should_redirect_to_top.
         self._convergence_iter = 0
+        # Count of consecutive hard-fail bets (navigation_redirected,
+        # no_cent_button_matched, event_closed, click_failed). Surfaces as a
+        # `runner_stale_intel` event after CONSECUTIVE_HARD_FAIL_ALERT so the
+        # frontend can warn the user that the cached event slugs are likely
+        # stale and a batch refresh / restart is needed. Reset on first
+        # successful prep.
+        self._consecutive_hard_fails = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -300,6 +313,24 @@ class ProviderRunner:
     # ------------------------------------------------------------------
     # Main loop — extracted from PlayLoop._run()
     # ------------------------------------------------------------------
+
+    def _track_hard_fail(self, pid: str) -> None:
+        """Increment the consecutive-hard-fail counter; emit a stale-intel alert
+        if we cross CONSECUTIVE_HARD_FAIL_ALERT. Reset elsewhere on success."""
+        self._consecutive_hard_fails = getattr(self, "_consecutive_hard_fails", 0) + 1
+        if self._consecutive_hard_fails == CONSECUTIVE_HARD_FAIL_ALERT:
+            logger.warning(
+                f"[Runner:{pid}] {self._consecutive_hard_fails} consecutive hard-fail bets — "
+                f"cached event intel is likely stale (polymarket may have rotated slugs)"
+            )
+            self._broadcaster.publish(
+                "runner_stale_intel",
+                {
+                    "provider_id": pid,
+                    "consecutive_hard_fails": self._consecutive_hard_fails,
+                    "hint": "Cached event slugs appear stale. Stop play, wait for next batch refresh, then restart.",
+                },
+            )
 
     async def _prep_and_read_live_edge(
         self, bet: dict, pid: str, workflow, page
@@ -473,6 +504,18 @@ class ProviderRunner:
                     f"gecko_eid={getattr(bet_ns, 'gecko_event_id', '')} "
                     f"meta={bet.get('provider_meta')}"
                 )
+                # Broadcast so the frontend can show "Navigating to X..." instead of
+                # silent dead-air during long hard-fail churns. Without this the user
+                # sees the queue but no indication the runner is actually working.
+                self._broadcaster.publish(
+                    "bet_navigating",
+                    {
+                        "provider_id": pid,
+                        "bet": bet,
+                        "skipped_so_far": self.stats["skipped"],
+                        "consecutive_hard_fails": getattr(self, "_consecutive_hard_fails", 0),
+                    },
+                )
 
                 workflow = get_workflow(pid)
                 page = await workflow.find_tab(self._browser.context) if self._browser.context else None
@@ -487,6 +530,7 @@ class ProviderRunner:
                     logger.warning(f"[Runner:{pid}] Navigation failed — skipping bet")
                     self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "navigation_failed"})
                     self.stats["skipped"] += 1
+                    self._track_hard_fail(pid)
                     continue
 
                 if await self._is_event_closed(page):
@@ -495,6 +539,7 @@ class ProviderRunner:
                     # Closed events go through the same 60s TTL as prep hard-fails
                     # so they don't immediately re-pop on the next _refresh_batch.
                     self._mark_recently_skipped(bet)
+                    self._track_hard_fail(pid)
                     continue
 
                 # Prep + live-edge read. For polymarket, wrap in a convergence
@@ -513,8 +558,11 @@ class ProviderRunner:
                     self.stats["skipped"] += 1
                     if is_hard_fail_reason(prep_result.reason):
                         self._mark_recently_skipped(bet)
+                        self._track_hard_fail(pid)
                     self._convergence_iter = 0
                     continue
+                # Bet prepped successfully — reset the consecutive-fail counter.
+                self._consecutive_hard_fails = 0
 
                 # Polymarket-only convergence loop.
                 if pid == "polymarket":
