@@ -435,22 +435,38 @@
   // does NOT currently produce TPO (tpoc/tvah/tval/tibh/tibl), naked_poc,
   // or daily_swing_* — those are missing upstream and need to be added in
   // session expansion before they can render here.
+  // Architectural rule (per user directive 2026-04-30): every Arnold visual
+  // dim lives inside a zone. Chart-spanning horizontal_line variants of any
+  // level let the line escape the zone's time window vertically (zones span
+  // 30min back / 2h forward — chart-wide lines extend infinitely). To
+  // guarantee "every level is inside a zone," ALL non-rectangle level types
+  // are now zone-member-only (drawn as 1px brushes confined to the zone's
+  // time window in drawZone). FVG/OB rectangles are kept because they
+  // visualize a price RANGE, not a price line, and they have their own
+  // distribution-box semantics far-right of price.
+  // Any chart-spanning yellow lines you still see come from TradingView
+  // studies (FRVP's POC/VAH/VAL, VWAP indicator, LuxAlgo Sessions) — disable
+  // those study draws if you want a single source of truth.
   const _LEVEL_META = {
-    // Covered by Anchored VWAP study + 3 FRVPs — skip our redraw.
     vwap: { skip: true }, vwap_sd1: { skip: true }, vwap_sd2: { skip: true }, vwap_sd3: { skip: true },
     poc: { skip: true }, vah: { skip: true }, val: { skip: true },
-    // Sessions covered by LuxAlgo Sessions study + TV native — skip.
     pdh: { skip: true }, pdl: { skip: true },
     tokyo_high: { skip: true }, tokyo_low: { skip: true },
     london_high: { skip: true }, london_low: { skip: true },
     ib_high: { skip: true }, ib_low: { skip: true },
-    // Swings render as zone members only — every level must live inside a
-    // zone, and the chart-wide horizontal_line variant escaped the 30min/2h
-    // zone time-window visually so the swing looked "naked". The zone's
-    // per-member brush stroke already paints these at the same color.
     monthly_high: { skip: true }, monthly_low: { skip: true },
     weekly_high: { skip: true }, weekly_low: { skip: true },
+    monthly_poc: { skip: true }, monthly_vah: { skip: true }, monthly_val: { skip: true },
+    weekly_poc: { skip: true }, weekly_vah: { skip: true }, weekly_val: { skip: true },
+    naked_poc: { skip: true },
+    tpoc: { skip: true }, tvah: { skip: true }, tval: { skip: true }, tibh: { skip: true }, tibl: { skip: true },
+    nyib_high: { skip: true }, nyib_low: { skip: true },
+    daily_swing_high: { skip: true }, daily_swing_low: { skip: true },
+    weekly_swing_high: { skip: true }, weekly_swing_low: { skip: true },
+    monthly_swing_high: { skip: true }, monthly_swing_low: { skip: true },
     // SMC ranges — drawn as distribution rectangles far right of price.
+    // These are price-range visualizations, not point-prices, so they live
+    // alongside zones rather than as zone members.
     fvg_bullish: { family: 'FVG', color: PALETTE[3], shape: 'rectangle' },
     fvg_bearish: { family: 'FVG', color: PALETTE[0], shape: 'rectangle' },
     order_block_bullish: { family: 'Order Blocks', color: PALETTE[3], shape: 'rectangle' },
