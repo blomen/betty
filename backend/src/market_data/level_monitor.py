@@ -1558,7 +1558,10 @@ class LevelMonitor:
         of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
         reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
         conf_floor_default = 0.05 if reckless else 0.15
-        of_floor = 0.15 if reckless else 0.30
+        # Must mirror the broker-path + relay-path floors below — frontend
+        # displays this value, and a stale 0.15 here gives a "BLOCKED orderflow
+        # 0.02 ≥ 0.15" gate row even though the actual broker dispatch uses 0.0.
+        of_floor = 0.0 if reckless else 0.30
         halted = _trading_paused()
         conf_floor = 0.99 if halted else conf_floor_default
         is_flat = bool(broker is None or broker.tracker.is_flat)
