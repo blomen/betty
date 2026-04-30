@@ -120,6 +120,31 @@ _PINNACLE_HEADERS = {
     "X-Api-Key": "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R",
 }
 
+# ------------------------------------------------------------------
+# DOM-click constants — Pinnacle event page market-btn layout.
+# ------------------------------------------------------------------
+
+# Market label text (lower-cased) → canonical market type.
+_MARKET_LABEL_MAP = {
+    "money line": "moneyline",
+    "moneyline": "moneyline",
+    "1x2": "1x2",
+    "spread": "spread",
+    "handicap": "spread",
+    "total": "total",
+    "total points": "total",
+    "over/under": "total",
+}
+
+# Visual button order within a market section → outcome.
+# Pinnacle renders home → (draw) → away. Totals: over → under.
+_OUTCOME_POSITION: dict[str, dict[str, int]] = {
+    "1x2": {"home": 0, "draw": 1, "away": 2},
+    "moneyline": {"home": 0, "away": 1},
+    "spread": {"home": 0, "away": 1},
+    "total": {"over": 0, "under": 1},
+}
+
 
 async def _build_headers(page: Page) -> dict:
     """Harvest X-Device-UUID + X-Session from localStorage['Main:User']. Pinnacle sets
@@ -927,6 +952,150 @@ async def _update_slip_stake(page: Page, stake: float, intel: dict | None) -> bo
         return bool(result)
     except Exception:
         return False
+
+
+# ------------------------------------------------------------------
+# Betslip prep — DOM click to select outcome, then fill stake.
+# ------------------------------------------------------------------
+
+
+async def _click_market_btn(page: Page, market: str, outcome: str) -> bool:
+    """Click the button.market-btn matching market + outcome.
+
+    Strategy: scan button.market-btn elements, group by parent market section
+    label (e.g. "Money Line"), pick by visual position (home=0, draw=1, away=2
+    for 1x2; over=0, under=1 for totals). Returns True iff a click was dispatched.
+    """
+    try:
+        canon_market = _MARKET_LABEL_MAP.get(market, market)
+        position_map = _OUTCOME_POSITION.get(canon_market) or _OUTCOME_POSITION.get("moneyline", {})
+        target_pos = position_map.get(outcome)
+        if target_pos is None:
+            logger.warning(f"[pinnacle] _click_market_btn: unknown outcome {outcome!r} for market {canon_market!r}")
+            return False
+
+        js = """
+        (([market, outcome, pos]) => {
+            const allBtns = Array.from(document.querySelectorAll('button.market-btn'));
+            if (!allBtns.length) return -1;
+
+            const groups = [];
+            let currentGroup = null;
+            let currentHeader = null;
+
+            for (const btn of allBtns) {
+                let el = btn.parentElement;
+                let foundHeader = null;
+                for (let i = 0; i < 10 && el; i++) {
+                    const t = el.textContent || "";
+                    const lower = t.toLowerCase();
+                    if (lower.includes("money line") || lower.includes("1x2") ||
+                        lower.includes("spread") || lower.includes("handicap") ||
+                        lower.includes("total") || lower.includes("over/under")) {
+                        foundHeader = t.toLowerCase();
+                        break;
+                    }
+                    el = el.parentElement;
+                }
+                if (foundHeader !== currentHeader) {
+                    currentGroup = { header: foundHeader, btns: [] };
+                    groups.push(currentGroup);
+                    currentHeader = foundHeader;
+                }
+                if (currentGroup) {
+                    currentGroup.btns.push(btn);
+                }
+            }
+
+            const marketLower = market.toLowerCase();
+            let targetGroup = null;
+            for (const g of groups) {
+                const h = g.header || "";
+                if (h.includes(marketLower) ||
+                    (marketLower === "moneyline" && h.includes("money line")) ||
+                    (marketLower === "1x2" && h.includes("1x2")) ||
+                    (marketLower === "spread" && (h.includes("spread") || h.includes("handicap"))) ||
+                    (marketLower === "total" && (h.includes("total") || h.includes("over")))) {
+                    targetGroup = g;
+                    break;
+                }
+            }
+
+            if (!targetGroup) return -2;
+            if (pos >= targetGroup.btns.length) return -3;
+            return allBtns.indexOf(targetGroup.btns[pos]);
+        })
+        """
+
+        idx = await page.evaluate(js, [market, outcome, target_pos])
+        if idx is None or idx < 0:
+            logger.warning(
+                f"[pinnacle] _click_market_btn: btn lookup returned {idx} "
+                f"(market={market!r} outcome={outcome!r} pos={target_pos})"
+            )
+            return False
+
+        await page.evaluate(f"() => document.querySelectorAll('button.market-btn')[{idx}].click()")
+        logger.info(f"[pinnacle] Clicked market-btn[{idx}] for {market}/{outcome}")
+        return True
+    except Exception as e:
+        logger.warning(f"[pinnacle] _click_market_btn failed: {e}")
+        return False
+
+
+async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
+    """Click the correct outcome → wait for slip → write stake.
+
+    Steps:
+      1. Resolve market + outcome from bet (dict or attr).
+      2. Call _click_market_btn.
+      3. Poll localStorage["Main:Betslip"].Selections.length > 0 (5s, 250ms).
+      4. Call _update_slip_stake.
+
+    Returns PlacementResult(prepped) on success, (failed, reason) on either gate.
+    """
+    import asyncio
+
+    def _g(obj, k, default=None):
+        if isinstance(obj, dict):
+            return obj.get(k, default)
+        return getattr(obj, k, default)
+
+    market = (_g(bet, "market") or "moneyline").lower()
+    outcome = (_g(bet, "outcome") or "home").lower()
+    bet_id = _g(bet, "bet_id", 0) or 0
+
+    clicked = await _click_market_btn(page, market, outcome)
+    if not clicked:
+        logger.warning(f"[pinnacle] prep_betslip: outcome click failed market={market!r} outcome={outcome!r}")
+        return PlacementResult(status="failed", bet_id=bet_id, reason="outcome_btn_not_found")
+
+    slip_populated = False
+    for _ in range(20):
+        try:
+            count = await page.evaluate(
+                """() => {
+                    const raw = localStorage.getItem("Main:Betslip");
+                    if (!raw) return 0;
+                    try {
+                        const d = JSON.parse(raw);
+                        return (d?.Selections ?? []).length;
+                    } catch { return 0; }
+                }"""
+            )
+            if count and int(count) > 0:
+                slip_populated = True
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(0.25)
+
+    if not slip_populated:
+        logger.warning("[pinnacle] prep_betslip: slip not populated within 5s")
+        return PlacementResult(status="failed", bet_id=bet_id, reason="slip_not_populated")
+
+    await _update_slip_stake(page, stake, intel)
+    return PlacementResult(status="prepped", bet_id=bet_id)
 
 
 strategy = Strategy(
