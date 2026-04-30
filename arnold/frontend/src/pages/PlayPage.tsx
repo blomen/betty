@@ -468,12 +468,14 @@ export default function PlayPage() {
       for (const pid of members) softPids.add(pid)
     }
     for (const pid of SOFT_STANDALONES) softPids.add(pid)
-    for (const pid of Object.keys(providerBalances)) {
-      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
-    }
-    for (const pid of Object.keys(pendingByProvider)) {
-      if (!UNLIMITED_PROVIDERS.has(pid)) softPids.add(pid)
-    }
+    // Include UNLIMITED providers (polymarket, pinnacle, cloudbet, kalshi) too —
+    // their loggedInProviders state used to depend ENTIRELY on SSE events
+    // (login_detected / balance_intercepted), so a missed/race'd event left
+    // the green badge stuck off even when the balance was clearly visible.
+    // The /mirror/browser/provider/{pid} endpoint reads the same browser
+    // interceptor state, so polling here is a safe fallback.
+    for (const pid of Object.keys(providerBalances)) softPids.add(pid)
+    for (const pid of Object.keys(pendingByProvider)) softPids.add(pid)
     if (softPids.size === 0) return
     let cancelled = false
     const missCount: Record<string, number> = {}
