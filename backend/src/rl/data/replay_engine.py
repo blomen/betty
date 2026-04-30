@@ -610,20 +610,20 @@ class ReplayEngine:
             _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
             _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
 
-            # Swing levels (most recent pivot per timeframe)
+            # Swing levels — emit ALL retained swings (engine caps at 3 per side)
+            # so zones see prior pivots needed to identify HH/HL/LH/LL structure.
+            # Must mirror market_service emission for live/training parity.
             swing = self._precomputed.get("swing_structure")
             if swing is not None:
                 for tf_swings in [swing.daily, swing.weekly, swing.monthly]:
-                    if tf_swings.swing_highs:
-                        sh = tf_swings.swing_highs[0]
-                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_HIGH", None)
-                        if lt:
-                            levels.append((f"{tf_swings.timeframe}_swing_high", lt, sh.price))
-                    if tf_swings.swing_lows:
-                        sl = tf_swings.swing_lows[0]
-                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_LOW", None)
-                        if lt:
-                            levels.append((f"{tf_swings.timeframe}_swing_low", lt, sl.price))
+                    lt_high = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_HIGH", None)
+                    if lt_high:
+                        for sh in tf_swings.swing_highs:
+                            levels.append((f"{tf_swings.timeframe}_swing_high", lt_high, sh.price))
+                    lt_low = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_LOW", None)
+                    if lt_low:
+                        for sl in tf_swings.swing_lows:
+                            levels.append((f"{tf_swings.timeframe}_swing_low", lt_low, sl.price))
 
         self._active_levels = levels
 

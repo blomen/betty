@@ -788,29 +788,32 @@ class MarketService:
 
             if swing_struct is not None:
                 swing_structure_data = _serialize_swing_structure(swing_struct)
+                # Emit ALL retained swings (engine caps at 3 per side) so chart +
+                # zones can show prior pivots — needed to visually identify HH/HL
+                # /LH/LL structure. Model dims already had access to all 3.
                 for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
-                    if tf_swings.swing_highs:
-                        sh_price = tf_swings.swing_highs[0].price
+                    for sh in tf_swings.swing_highs:
                         levels_list.append(
                             {
                                 "type": f"{tf_swings.timeframe}_swing_high",
-                                "price_low": sh_price,
-                                "price_high": sh_price,
+                                "price_low": sh.price,
+                                "price_high": sh.price,
                                 "direction": "resistance",
                                 "session": tf_swings.timeframe,
                                 "is_filled": False,
+                                "ts": sh.timestamp,
                             }
                         )
-                    if tf_swings.swing_lows:
-                        sl_price = tf_swings.swing_lows[0].price
+                    for sl in tf_swings.swing_lows:
                         levels_list.append(
                             {
                                 "type": f"{tf_swings.timeframe}_swing_low",
-                                "price_low": sl_price,
-                                "price_high": sl_price,
+                                "price_low": sl.price,
+                                "price_high": sl.price,
                                 "direction": "support",
                                 "session": tf_swings.timeframe,
                                 "is_filled": False,
+                                "ts": sl.timestamp,
                             }
                         )
         except Exception as e:
