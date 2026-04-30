@@ -143,6 +143,28 @@
     try { chart.removeEntity(entityId); } catch (_) {}
   }
 
+  // Remove every drawn entity whose registry key starts with `prefix`. Used
+  // to wipe a zone's per-member brush lines (keyed `${zone.key}:member:...`)
+  // before redrawing or on zone_remove.
+  async function safeRemovePrefix(prefix) {
+    const keys = [];
+    for (const k of drawn.keys()) {
+      if (k.startsWith(prefix)) keys.push(k);
+    }
+    for (const k of keys) {
+      const id = await _resolve(drawn.get(k));
+      drawn.delete(k);
+      if (id != null && chart) {
+        try { chart.removeEntity(id); } catch (_) {}
+      }
+    }
+  }
+
+  // Every member family paints its own line inside the zone — that's the
+  // whole point of the per-member render. The standalone level_upsert
+  // rectangles for FVG/OB are a different visualization (distribution
+  // boxes far right of price) and shouldn't preempt the in-zone lines.
+
   // Recognizable text marker on every shape we draw so cleanupStaleShapes
   // can find and remove them on extension reload, without touching the
   // user's manual drawings (LuxAlgo session boxes, hand-drawn levels, etc).
@@ -200,6 +222,7 @@
     };
 
     // Try mutate-in-place first.
+    let rectOk = false;
     const existingId = await _resolve(drawn.get(p.key));
     if (existingId != null && typeof chart.getShapeById === 'function') {
       try {
@@ -218,40 +241,85 @@
               mutated = true;
             } catch (_) {}
           }
-          if (mutated) return true;
+          if (mutated) rectOk = true;
         }
       } catch (_) { /* fall through to recreate */ }
     }
 
-    // No existing shape → create a fresh rectangle.
-    try {
-      const id = await _resolve(chart.createMultipointShape(
-        [
-          { time: tStart, price: top },
-          { time: tEnd,   price: bottom },
-        ],
-        {
-          shape: 'rectangle',
-          disableSave: true,
-          overrides: rectOverrides,
+    if (!rectOk) {
+      // No existing shape (or mutation unavailable) → create a fresh rectangle.
+      try {
+        const id = await _resolve(chart.createMultipointShape(
+          [
+            { time: tStart, price: top },
+            { time: tEnd,   price: bottom },
+          ],
+          {
+            shape: 'rectangle',
+            disableSave: true,
+            overrides: rectOverrides,
+          }
+        ));
+        if (id != null) {
+          // Replace any prior id we might have under this key (if mutate path
+          // failed and we landed here) before storing the fresh one.
+          const prior = drawn.get(p.key);
+          if (prior != null && prior !== id) {
+            try { chart.removeEntity(await _resolve(prior)); } catch (_) {}
+          }
+          drawn.set(p.key, id);
+          _ensureGroupAndAdd('Arnold • Zones', id);
+          rectOk = true;
         }
-      ));
-      if (id != null) {
-        // Replace any prior id we might have under this key (if mutate path
-        // failed and we landed here) before storing the fresh one.
-        const prior = drawn.get(p.key);
-        if (prior != null && prior !== id) {
-          try { chart.removeEntity(await _resolve(prior)); } catch (_) {}
-        }
-        drawn.set(p.key, id);
-        _ensureGroupAndAdd('Arnold • Zones', id);
-        return true;
+      } catch (e) {
+        sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
       }
-      return false;
-    } catch (e) {
-      sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
     }
+    if (!rectOk) return false;
+
+    // Per-member brush lines. Each member draws a 1px brush stroke as a
+    // horizontal segment confined to the zone's time window so it visually
+    // "lives inside" the rectangle. Color via _paletteFor(weight) — same
+    // RED→PINK hierarchy palette as the zone fill, applied to each member's
+    // own hierarchy weight, so strong dims (POC, monthly swings ≈ 1.0) burn
+    // red and weak bands (VWAP σ3 ≈ 0.3) sit purple inside the same zone.
+    // Recreated on every upsert: cheap because broadcaster diff-gating keeps
+    // upsert rate low and members are quantized server-side.
+    await safeRemovePrefix(`${p.key}:member:`);
+    for (const m of (p.members_detail || [])) {
+      const family = m.family || 'unknown';
+      const weight = typeof m.weight === 'number' ? m.weight : 0.5;
+      const linecolor = _paletteFor(weight);
+      const memberKey = `${p.key}:member:${family}:${Number(m.price).toFixed(2)}`;
+      try {
+        const mid = await _resolve(chart.createMultipointShape(
+          [
+            { time: tStart, price: m.price },
+            { time: tEnd,   price: m.price },
+          ],
+          {
+            shape: 'brush',
+            disableSave: true,
+            overrides: {
+              linecolor,
+              linewidth: 1,
+              showLabel: false,
+              extendLeft: false,
+              extendRight: false,
+            },
+          },
+        ));
+        if (mid != null) {
+          drawn.set(memberKey, mid);
+          _ensureGroupAndAdd('Arnold • Zones', mid);
+        }
+      } catch (e) {
+        // Per-member failure shouldn't kill the zone draw — skip and continue.
+        sendError(`drawZone member failed (${m.name}): ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return true;
   }
 
   // Cleanup any stale arnold-tagged or legacy shapes left over from previous
@@ -902,7 +970,10 @@
           break;
         }
         case 'zone_remove': {
-          await withZoneLock(msg.key, () => safeRemove(msg.key));
+          await withZoneLock(msg.key, async () => {
+            await safeRemove(msg.key);
+            await safeRemovePrefix(`${msg.key}:member:`);
+          });
           sendAck(1);
           break;
         }

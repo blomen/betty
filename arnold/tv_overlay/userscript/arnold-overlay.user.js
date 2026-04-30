@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.3.0
-// @description  Draws Arnold zones (with per-member thin lines) and open positions on TradingView charts via WebSocket from local Arnold server.
+// @version      0.3.1
+// @description  Draws Arnold zones (with per-member 1px brush lines colored by hierarchy weight) and open positions on TradingView charts via WebSocket from local Arnold server.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -37,24 +37,6 @@
     if (s < 0.7)  return '#d946ef';
     if (s < 0.9)  return '#f97316';
     return '#ef4444';
-  };
-
-  // Family palette — picks the thin-line color for each zone member.
-  // Mirrors the families defined in `backend/src/rl/zone_builder.py:_LEVEL_FAMILY`.
-  // Distinct from the strength heatmap so member lines stand out against the zone fill.
-  const FAMILY_PALETTE = {
-    daily_vp:       '#ef4444', // red    — today's POC/VAH/VAL
-    weekly_vp:      '#f97316', // orange — rolling 7d POC/VAH/VAL
-    monthly_vp:     '#eab308', // amber  — rolling 30d POC/VAH/VAL
-    vwap:           '#06b6d4', // cyan   — VWAP center + σ bands
-    prior_session:  '#a855f7', // violet — PDH/PDL
-    sessions:       '#94a3b8', // gray   — Tokyo H/L
-    nyib:           '#94a3b8', // gray   — NY initial balance
-    tpo:            '#0ea5e9', // sky    — TPO POC/VAH/VAL/IBH/IBL
-    daily_swing:    '#64748b', // slate  — daily swing H/L
-    weekly_swing:   '#3b82f6', // blue   — weekly swing H/L
-    monthly_swing:  '#6366f1', // indigo — monthly swing H/L
-    naked_poc:      '#dc2626', // crimson— untested POC
   };
 
   // Families that contribute to a zone's strength score server-side but
@@ -172,19 +154,19 @@
       return false;
     }
 
-    // Per-member thin lines. Each member draws one short horizontal line
-    // confined to the zone's time window so it visually "lives inside" the
-    // rectangle. Color from FAMILY_PALETTE; line width keyed off weight so
-    // structural anchors (POC ~1.0, monthly swings ~1.0) stand out from
-    // filler bands (VWAP σ3 ~0.3). Dashed style for σ-bands and VAH/VAL
-    // to keep the eye on POC/VWAP/swing anchors when picking stops.
+    // Per-member thin lines. Each member draws a 1px brush stroke as a
+    // horizontal segment confined to the zone's time window so it visually
+    // "lives inside" the rectangle. Color via COLOR_BY_STRENGTH(weight) so
+    // each dim is pinpointed by its own hierarchy weight — strong anchors
+    // (POC, monthly swings ~1.0) burn red, weak bands (VWAP σ3 ~0.3) sit
+    // slate. Dashed style for σ-bands and VAH/VAL keeps POC/VWAP/swing
+    // anchors visually dominant when picking stops.
     if (PAGE.arnoldOverlay && PAGE.arnoldOverlay.showMembers) {
       for (const m of (p.members_detail || [])) {
         const family = m.family || 'unknown';
         if (SKIP_MEMBER_DRAW_FAMILIES.has(family)) continue;
-        const linecolor = FAMILY_PALETTE[family] || '#cbd5e1';
         const weight = typeof m.weight === 'number' ? m.weight : 0.5;
-        const linewidth = weight >= 1.0 ? 3 : (weight >= 0.7 ? 2 : 1);
+        const linecolor = COLOR_BY_STRENGTH(weight);
         const linestyle = DASHED_TYPES.has(m.type) ? 1 : 0; // 0=solid, 1=dashed
         const memberKey = `${p.key}:member:${family}:${m.price.toFixed(2)}`;
         try {
@@ -194,11 +176,11 @@
               { time: tEnd,   price: m.price },
             ],
             {
-              shape: 'trend_line',
+              shape: 'brush',
               text: '',
               overrides: {
                 linecolor,
-                linewidth,
+                linewidth: 1,
                 linestyle,
                 showLabel: false,
                 extendLeft: false,
