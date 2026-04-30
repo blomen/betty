@@ -27,10 +27,24 @@ _opp_cache: dict[tuple, tuple] = {}
 _OPP_CACHE_TTL = 120  # seconds — data only changes on extraction (every 5 min)
 
 # arb-workflow is expensive (1-3min for soft providers with thousands of events)
-# and gets hammered by ArbRunner every 10s. Cache aggressively to keep one slow
-# scan from holding a DB connection per request and exhausting the pool.
+# and gets hammered by ArbRunner every 10s + the PlayPage Arbitrage subtab
+# polling. Cache aggressively to keep one slow scan from holding a DB connection
+# per request and exhausting the pool. 300s matches the frontend's 5min poll
+# cadence and the extraction tier (api_soft @ 2min cooldown means real changes
+# arrive every ~5min).
 _arb_workflow_cache: dict[tuple, tuple] = {}  # key → (response_dict, expiry_time)
-_ARB_WORKFLOW_CACHE_TTL = 60  # seconds
+_ARB_WORKFLOW_CACHE_TTL = 300  # seconds
+
+# In-flight request coalescing: when a scan is already running for the same
+# cache_key, additional requests block on the same future instead of kicking
+# off a parallel scan. Without this, 4 concurrent /arb-workflow calls (one per
+# funded soft cluster) all miss the cold cache simultaneously and start 4
+# parallel slow scans that each hold a DB connection — the exact pool-exhaust
+# the route docstring warns about.
+import threading
+
+_arb_workflow_inflight: dict[tuple, threading.Event] = {}
+_arb_workflow_inflight_lock = threading.Lock()
 
 
 def _get_service(db: Session = Depends(get_db)) -> OpportunityService:
@@ -154,14 +168,39 @@ def arb_workflow(
     if cached and now < cached[1]:
         return cached[0]
 
-    result = service.scan_arb_workflow(
-        anchor_providers=provider_list,
-        major_only=major_only,
-        counterpart_providers=counterpart_list,
-        limit=capped_limit,
-    )
-    _arb_workflow_cache[cache_key] = (result, now + _ARB_WORKFLOW_CACHE_TTL)
-    return result
+    # In-flight coalescing — if another request is already running this exact
+    # scan, block on its event and return the cached result it produced.
+    with _arb_workflow_inflight_lock:
+        inflight = _arb_workflow_inflight.get(cache_key)
+        if inflight is None:
+            inflight = threading.Event()
+            _arb_workflow_inflight[cache_key] = inflight
+            we_run = True
+        else:
+            we_run = False
+
+    if not we_run:
+        # Wait up to 4 minutes for the scan that's already running. After that,
+        # fall through to do our own scan rather than 504 forever.
+        inflight.wait(timeout=240)
+        cached = _arb_workflow_cache.get(cache_key)
+        if cached and _time.time() < cached[1]:
+            return cached[0]
+        # Fall-through: cache still empty after the wait; run our own scan.
+
+    try:
+        result = service.scan_arb_workflow(
+            anchor_providers=provider_list,
+            major_only=major_only,
+            counterpart_providers=counterpart_list,
+            limit=capped_limit,
+        )
+        _arb_workflow_cache[cache_key] = (result, _time.time() + _ARB_WORKFLOW_CACHE_TTL)
+        return result
+    finally:
+        with _arb_workflow_inflight_lock:
+            _arb_workflow_inflight.pop(cache_key, None)
+        inflight.set()
 
 
 @router.get("/bonus/scan")

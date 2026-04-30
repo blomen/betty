@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
@@ -260,10 +260,49 @@ export default function PlayPage() {
   // Fetch top 10 arb opps per cluster of funded soft providers.
   // One fetch per cluster (siblings share odds). Counter pool excludes same-cluster
   // providers (zero edge) and drained providers (no balance to place anchor leg).
+  //
+  // Bottleneck note: arb-workflow is a 1-3min server-side scan with a 60s cache.
+  // We polled at 30s with deps that retriggered on every balance tick — net effect
+  // was perpetual cache miss + concurrent scans hammering the DB pool. Fixes:
+  //   1. Stable dep `fundedClustersKey` so balance ticks don't re-fire the scan.
+  //   2. 5min poll interval (matches server cache + extraction cadence).
+  //   3. AbortController cancels in-flight scans on dep change so stale results
+  //      don't overwrite fresh ones.
+  //   4. Sequential cluster iteration (not Promise.all) so one slow scan doesn't
+  //      block the DB pool for all clusters.
+
+  // Stable derived key from the SET of funded soft clusters. Re-computed on
+  // every render but its STRING identity only changes when membership shifts —
+  // useCallback below depends on it (not on providerBalances) so we don't
+  // re-create loadArbOpps on every balance tick.
+  const fundedClustersKey = useMemo(() => {
+    const reps: string[] = []
+    for (const pid of Object.keys(providerBalances)) {
+      if (UNLIMITED_PROVIDERS.has(pid)) continue
+      if (getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK) {
+        reps.push(resolveSoftCluster(pid))
+      }
+    }
+    return [...new Set(reps)].sort().join('|')
+  }, [providerBalances])
+
+  // Snapshot the latest providerBalances inside a ref so the (stable) loadArbOpps
+  // can read up-to-date values without listing providerBalances as a dep.
+  const balancesRef = useRef(providerBalances)
+  balancesRef.current = providerBalances
+
+  const arbAbortRef = useRef<AbortController | null>(null)
+
   const loadArbOpps = useCallback(async () => {
+    // Cancel any in-flight scan so a stale result can't overwrite fresh state.
+    if (arbAbortRef.current) arbAbortRef.current.abort()
+    const controller = new AbortController()
+    arbAbortRef.current = controller
+
+    const balances = balancesRef.current
     // Group all known soft providers by cluster
     const softByCluster: Record<string, string[]> = {}
-    for (const pid of Object.keys(providerBalances)) {
+    for (const pid of Object.keys(balances)) {
       if (UNLIMITED_PROVIDERS.has(pid)) continue
       const cluster = resolveSoftCluster(pid)
       ;(softByCluster[cluster] ??= []).push(pid)
@@ -273,7 +312,7 @@ export default function PlayPage() {
     const reps: Array<{ cluster: string; rep: string }> = []
     const fundedAll: string[] = []
     for (const [cluster, members] of Object.entries(softByCluster)) {
-      const funded = members.filter(pid => getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK)
+      const funded = members.filter(pid => getBalance(balances[pid]) >= DRAIN_THRESHOLD_SEK)
       if (funded.length > 0) {
         reps.push({ cluster, rep: funded[0] })
         fundedAll.push(...funded)
@@ -290,30 +329,49 @@ export default function PlayPage() {
 
     try {
       setArbLoading(true)
-      const results = await Promise.all(
-        reps.map(async ({ cluster, rep }) => {
-          // Exclude same-cluster siblings from counter pool (zero edge)
-          const counters = pool.filter(p => resolveSoftCluster(p) !== cluster)
-          try {
-            const res = await api.getArbOpps([rep], counters, 10)
-            const opps = ((res?.opportunities ?? []) as any[])
-              .sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
-            return [cluster, opps] as const
-          } catch {
-            return [cluster, [] as any[]] as const
-          }
-        })
-      )
-      setOppsByCluster(Object.fromEntries(results))
+      // Sequential — each scan is 1-3min server-side. Running them serially
+      // keeps DB connection pool happy and avoids piling up concurrent slow
+      // queries that starve the FastAPI event loop.
+      const results: Array<readonly [string, any[]]> = []
+      for (const { cluster, rep } of reps) {
+        if (controller.signal.aborted) return
+        const counters = pool.filter(p => resolveSoftCluster(p) !== cluster)
+        try {
+          const res = await api.getArbOpps([rep], counters, 10)
+          if (controller.signal.aborted) return
+          const opps = ((res?.opportunities ?? []) as any[]).sort(
+            (a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0),
+          )
+          results.push([cluster, opps] as const)
+          // Push partial results as each cluster lands so the UI fills in
+          // progressively rather than all-or-nothing after the slowest scan.
+          setOppsByCluster(prev => ({ ...prev, [cluster]: opps }))
+        } catch {
+          results.push([cluster, [] as any[]] as const)
+        }
+      }
+      if (!controller.signal.aborted) {
+        setOppsByCluster(Object.fromEntries(results))
+      }
     } finally {
-      setArbLoading(false)
+      if (!controller.signal.aborted) setArbLoading(false)
     }
-  }, [providerBalances])
+    // Note: providerBalances is read via balancesRef.current — NOT in the deps
+    // list — so balance ticks don't re-trigger the scan. fundedClustersKey
+    // changes only when the SET of funded clusters changes, which is when we
+    // genuinely need a fresh scan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fundedClustersKey])
 
   useEffect(() => {
     loadArbOpps()
-    const id = setInterval(loadArbOpps, 30_000)
-    return () => clearInterval(id)
+    // 5min interval matches the 60s server cache + extraction cadence. Polling
+    // faster than this just thrashes the cache (every cache miss = 1-3min scan).
+    const id = setInterval(loadArbOpps, 300_000)
+    return () => {
+      clearInterval(id)
+      if (arbAbortRef.current) arbAbortRef.current.abort()
+    }
   }, [loadArbOpps])
 
   // Continuously poll login state for every UNLIMITED provider — whenever one is
@@ -324,7 +382,30 @@ export default function PlayPage() {
     let cancelled = false
     const missCount: Record<string, number> = {}
     const activated: Set<string> = new Set()
+    // Per-tick caches so we don't fetch /mirror/play/status and
+    // /api/opportunities/play/batch ONCE PER PROVIDER. Previous code did
+    // 4 redundant batch fetches per 5s tick (one per unlimited provider)
+    // even though the response is identical for all of them.
     const check = async () => {
+      let tickStatus: any = null
+      let tickBatch: any = null
+      const getStatus = async () => {
+        if (tickStatus !== null) return tickStatus
+        try {
+          tickStatus = await (await fetch('/mirror/play/status')).json()
+        } catch { tickStatus = {} }
+        return tickStatus
+      }
+      const getBatch = async () => {
+        if (tickBatch !== null) return tickBatch
+        try {
+          tickBatch = await (await fetch('/api/opportunities/play/batch', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+          })).json()
+        } catch { tickBatch = { batch: [], provider_balances: {} } }
+        return tickBatch
+      }
+
       for (const pid of UNLIMITED_PROVIDERS) {
         try {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
@@ -333,26 +414,15 @@ export default function PlayPage() {
           if (d.logged_in) {
             missCount[pid] = 0
             setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            // Auto-activate when logged in + funded + has +EV bets AND the
-            // play loop is NOT currently running for this provider. Re-fires
-            // whenever the runner exits (queue drained, manual stop, etc.)
-            // so the loop is "always on" while the React UI is open. The
-            // server.py background task provides the same guarantee when the
-            // UI is closed — belt-and-suspenders.
             if ((d.balance ?? 0) > 0) {
               try {
-                // Probe play status: skip if a runner is already active.
-                const psResp = await fetch('/mirror/play/status')
-                const ps = await psResp.json()
+                const ps = await getStatus()
                 const runnerState = ps?.providers?.[pid]?.state
                 if (runnerState && runnerState !== 'idle' && runnerState !== 'none') {
                   activated.add(pid)
-                  continue  // already running, nothing to do
+                  continue
                 }
-                const bResp = await fetch('/api/opportunities/play/batch', {
-                  method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
-                })
-                const bData = await bResp.json()
+                const bData = await getBatch()
                 const full: any[] = bData.batch || []
                 const myBets = full.filter((b: any) => b.provider_id === pid && (b.edge_pct ?? 0) > 0)
                 if (myBets.length === 0) continue
@@ -378,7 +448,10 @@ export default function PlayPage() {
       }
     }
     check()
-    const id = setInterval(check, 5000)
+    // 10s tick (was 5s) — login state rarely changes that fast, and this
+    // loop hits ~6 endpoints per tick (1 per unlimited provider + 1 batch +
+    // 1 status). Halving cadence cuts polling load to ~3 req/s steady-state.
+    const id = setInterval(check, 10000)
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
@@ -442,7 +515,10 @@ export default function PlayPage() {
       }
     }
     check()
-    const id = setInterval(check, 5000)
+    // 10s (was 5s) — soft providers don't auto-activate so this is purely a
+    // login-state badge poll; halving cadence cuts ~20 sequential per-provider
+    // fetches per tick down to one batch every 10s.
+    const id = setInterval(check, 10000)
     return () => { cancelled = true; clearInterval(id) }
   }, [providerBalances, pendingByProvider])
 
@@ -1411,7 +1487,7 @@ export default function PlayPage() {
           if (totalSek <= 0) return null
           return (
             <div className="px-3 py-2 bg-amber-950/25 border-b border-amber-800/30 text-[11px] flex items-center gap-3 flex-wrap">
-              <span className="text-amber-300 font-semibold uppercase tracking-wider">Deposit to play all</span>
+              <span className="text-amber-300 font-semibold uppercase tracking-wider">Total stake</span>
               <span className="text-amber-200 font-mono font-semibold">{Math.round(totalSek)} kr</span>
               <span className="text-zinc-500">·</span>
               {Object.entries(stakeByProvider).sort(([,a],[,b]) => b - a).map(([pid, stakeSek]) => {
@@ -1430,7 +1506,7 @@ export default function PlayPage() {
               })}
               {additionalTotal > 0 && (
                 <span className="ml-auto text-orange-300 font-mono">
-                  + {Math.round(additionalTotal)} kr to top up
+                  {Math.round(additionalTotal)} kr to deposit
                 </span>
               )}
               <span className="text-zinc-500 text-[10px]" title="Kelly stakes scale with total bankroll. Re-check this number after depositing.">
