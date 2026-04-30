@@ -694,9 +694,14 @@ class MarketService:
         if isinstance(sj, str):
             sj = json.loads(sj)
 
-        # DB-only data (fast, never blocks)
+        # DB-only data (fast, never blocks).
+        # Use the session row's own date for the levels lookup so the
+        # weekend / pre-pipeline-fill fallback (session_row from yesterday)
+        # also gets yesterday's swing/FVG/OB levels — otherwise levels
+        # silently come back empty and the chart is missing structure.
         cot_data = self._get_cot_summary()
-        levels = self.repo.get_levels(symbol, today)
+        levels_date = session_row.date or today
+        levels = self.repo.get_levels(symbol, levels_date)
         levels_list = [
             {
                 "type": lv.level_type,
