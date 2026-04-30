@@ -46,17 +46,55 @@ class ServerStocksRuntime:
         log.info("ServerStocksRuntime shutting down (flatten=%s)", flatten_positions)
 
         if flatten_positions:
+            # tracker.is_flat alone is not enough — the SignalR-vs-HTTP race
+            # means an entry order can be filled on TopstepX after we've
+            # placed it but before the fill notification reaches the
+            # tracker. If shutdown begins in that window, tracker says
+            # "flat" but broker has a real position → orphan position
+            # inherited by the next container with no protective stop
+            # (today's trades 128 / 136 / the just-flattened orphan).
+            # Always cross-check with Position/searchOpen.
             try:
-                if not self.adapter.tracker.is_flat:
+                broker_positions: list = []
+                try:
+                    broker_positions = await self.client.search_open_positions()
+                except Exception:
+                    log.warning("shutdown: search_open_positions failed; falling back to tracker", exc_info=True)
+                contract_id = getattr(self.client, "_config", None)
+                contract_id = getattr(contract_id, "contract_id", None) if contract_id else None
+                broker_size = sum(
+                    int(p.get("size") or 0)
+                    for p in broker_positions
+                    if not contract_id or p.get("contractId") == contract_id
+                )
+                tracker_flat = self.adapter.tracker.is_flat
+                if not tracker_flat:
                     log.warning(
-                        "position open at shutdown (side=%s size=%s entry=%.2f) — flattening",
+                        "position open at shutdown (tracker side=%s size=%s entry=%.2f, broker_size=%d) — flattening",
                         self.adapter.tracker.side,
                         self.adapter.tracker.size,
                         self.adapter.tracker.entry_price,
+                        broker_size,
                     )
                     await self.adapter.flatten("server_shutdown")
+                elif broker_size > 0:
+                    # Tracker says flat but broker has a position → orphan
+                    # we never finished tracking. Hit the broker directly
+                    # via liquidate_position; can't go through adapter.flatten
+                    # because it gates on tracker.is_flat.
+                    log.error(
+                        "shutdown: tracker says flat but broker has size=%d (contract=%s) — "
+                        "orphan position; calling liquidate_position directly",
+                        broker_size,
+                        contract_id,
+                    )
+                    try:
+                        await self.client.liquidate_position()
+                        log.info("shutdown: orphan position liquidated")
+                    except Exception:
+                        log.exception("shutdown: orphan liquidate failed — POSITION WILL BE INHERITED NAKED")
                 else:
-                    log.info("position already flat")
+                    log.info("position already flat (tracker + broker confirm)")
             except Exception:
                 log.exception("flatten-on-shutdown failed — position may be open")
 
