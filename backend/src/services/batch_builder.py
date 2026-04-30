@@ -91,6 +91,7 @@ class BatchBet:
     # Funding status
     funded: bool = True  # False = needs deposit to play
     skip_reason: str | None = None
+    bankroll_needed: float = 0.0
 
     # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
     provider_meta: dict | None = None
@@ -466,14 +467,19 @@ class BatchBuilder:
             min_stake=min_stake,
             max_kelly=OPTIMAL_MAX_KELLY,
         )
-        if result.skip_reason:
+        # "low EV" = no real edge after Kelly + caps; drop. Other skip_reasons
+        # ("Kelly too small" / "add Xkr to play") indicate a legitimate +EV bet
+        # the user could play after a deposit — surface them with stake=0 and
+        # bankroll_needed populated so the UI can render a deposit hint.
+        skip_reason = result.skip_reason
+        if skip_reason == "low EV":
             return None
         stake = result.stake
-        if stake <= 0:
+        if stake <= 0 and not skip_reason:
             return None
 
         # Convert SEK stake to USDC for Polymarket
-        if provider_id == "polymarket":
+        if provider_id == "polymarket" and stake > 0:
             from ..config import get_exchange_rate
 
             exchange_rate = get_exchange_rate("polymarket")
@@ -514,7 +520,9 @@ class BatchBuilder:
             odds_age_minutes=opp.odds_age_minutes,
             lifecycle="available",
             cluster=cluster,
-            funded=False,  # allocation will flip to True
+            funded=False,  # allocation will flip to True if there's balance
+            skip_reason=skip_reason,
+            bankroll_needed=getattr(result, "bankroll_needed", 0.0) or 0.0,
         )
 
     def _populate_odds_age(self, batch: list[BatchBet]) -> None:
@@ -687,6 +695,15 @@ class BatchBuilder:
 
         for bet in candidates:
             cluster = bet.cluster
+
+            # Deposit-hint candidate: stake=0 + skip_reason set means the
+            # calculator already decided the user can't fund this bet.
+            # Append as-is (unfunded) so the UI can render it with the
+            # bankroll_needed deposit hint instead of silently dropping it.
+            if bet.stake <= 0 and bet.skip_reason:
+                bet.funded = False
+                batch.append(bet)
+                continue
 
             if bet.tier in ("polymarket", "pinnacle") or bet.provider_id == "cloudbet":
                 # Sharp/signal: no cap, stays on own provider
@@ -921,6 +938,7 @@ class BatchBuilder:
             "cluster": bet.cluster,
             "funded": bet.funded,
             "skip_reason": bet.skip_reason,
+            "bankroll_needed": round(bet.bankroll_needed, 2) if bet.bankroll_needed else 0.0,
             "provider_meta": bet.provider_meta,
         }
 
