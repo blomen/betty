@@ -248,3 +248,26 @@ def test_convergence_iter_attribute_exists():
         push_bet=lambda b: None,
     )
     assert runner._convergence_iter == 0
+
+
+def test_should_dethrone_at_ready_uses_2pt_hysteresis():
+    """At-READY dethrone uses DETHRONE_HYSTERESIS_PCT (2pts) — strict
+    convergence is only on initial entry."""
+    from arnold.mirror.provider_runner import (
+        DETHRONE_HYSTERESIS_PCT,
+        should_dethrone_at_ready,
+    )
+
+    assert DETHRONE_HYSTERESIS_PCT == 2.0
+    # Below hysteresis — do not dethrone.
+    assert should_dethrone_at_ready(live_edge=20.0, queue_top_edge=21.5) is False
+    assert should_dethrone_at_ready(live_edge=20.0, queue_top_edge=22.0) is True  # exactly +2
+    assert should_dethrone_at_ready(live_edge=20.0, queue_top_edge=23.0) is True
+
+
+def test_should_dethrone_at_ready_handles_missing_inputs():
+    """Missing live_edge OR queue_top_edge → False (don't dethrone)."""
+    from arnold.mirror.provider_runner import should_dethrone_at_ready
+
+    assert should_dethrone_at_ready(live_edge=None, queue_top_edge=23.0) is False
+    assert should_dethrone_at_ready(live_edge=20.0, queue_top_edge=None) is False

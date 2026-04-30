@@ -113,6 +113,18 @@ def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None
     return queue_top_edge > live_edge
 
 
+def should_dethrone_at_ready(live_edge: float | None, queue_top_edge: float | None) -> bool:
+    """At-READY dethrone with DETHRONE_HYSTERESIS_PCT buffer.
+
+    Returns True iff queue_top_edge >= live_edge + hysteresis. Used by
+    _watch_for_better while the runner is sitting at READY waiting for the
+    user. The hysteresis prevents thrashing on small edge fluctuations.
+    """
+    if live_edge is None or queue_top_edge is None:
+        return False
+    return queue_top_edge >= live_edge + DETHRONE_HYSTERESIS_PCT
+
+
 class ProviderRunner:
     """Runs the play loop for a single provider as an asyncio task."""
 
@@ -633,6 +645,7 @@ class ProviderRunner:
                 _last_live_odds = live_odds
                 _last_live_edge = live_edge
                 _auto_skip_reason: str | None = None
+                _dethrone_reinsert: bool = False
 
                 def _on_slip_change(odds: float) -> None:
                     nonlocal _last_live_odds, _last_live_edge, _auto_skip_reason
@@ -703,7 +716,7 @@ class ProviderRunner:
                 _active_key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
 
                 async def _watch_for_better() -> None:
-                    nonlocal _dethrone_reason, _auto_skip_reason
+                    nonlocal _dethrone_reason, _auto_skip_reason, _dethrone_reinsert
                     while True:
                         try:
                             await asyncio.sleep(DETHRONE_POLL_S)
@@ -725,23 +738,33 @@ class ProviderRunner:
                         compare_edge = live_edge_holder[0]
                         if compare_edge is None:
                             compare_edge = _intent_edge
-                        if top_edge >= compare_edge + DETHRONE_HYSTERESIS_PCT:
-                            _dethrone_reason = (
-                                f"dethroned by +{top_edge:.1f}% bet "
-                                f"(current live +{compare_edge:.1f}%, hysteresis {DETHRONE_HYSTERESIS_PCT:.1f}pts)"
-                            )
-                            _auto_skip_reason = _dethrone_reason
-                            self._broadcaster.publish(
-                                "bet_dethroned",
-                                {
-                                    "bet": bet,
-                                    "provider_id": pid,
-                                    "old_edge": compare_edge,
-                                    "new_top_edge": top_edge,
-                                },
-                            )
-                            self._skip_event.set()
-                            return
+                        if not should_dethrone_at_ready(compare_edge, top_edge):
+                            continue
+                        # Dethrone fires — push active bet back at its live edge
+                        # and exit the wait so the runner pops the new top.
+                        bet["edge_pct"] = compare_edge if compare_edge is not None else _intent_edge
+                        self._push_bet(bet)
+                        _dethrone_reason = (
+                            f"reinserted at +{compare_edge:.1f}% "
+                            f"(queue top +{top_edge:.1f}%, hysteresis {DETHRONE_HYSTERESIS_PCT:.1f}pts)"
+                        )
+                        # Mark this as a re-insert so the post-wait code
+                        # broadcasts bet_reinserted (already done here) instead
+                        # of bet_skipped, and stats["skipped"] is NOT bumped.
+                        _auto_skip_reason = _dethrone_reason
+                        _dethrone_reinsert = True
+                        self._broadcaster.publish(
+                            "bet_reinserted",
+                            {
+                                "provider_id": pid,
+                                "bet": bet,
+                                "old_cached_edge": _intent_edge,
+                                "new_live_edge": compare_edge,
+                                "queue_top": top_edge,
+                            },
+                        )
+                        self._skip_event.set()
+                        return
 
                 self._slip_stream = SlipOddsStream(
                     provider_id=pid,
@@ -859,17 +882,23 @@ class ProviderRunner:
                 # If auto-skip fired during streaming, broadcast bet_skipped here
                 # (the wait above completed because _skip_event was set)
                 if _auto_skip_reason is not None and not self._bet_intercepted_event.is_set():
-                    logger.info(f"[Runner:{pid}] Auto-skip: {_auto_skip_reason}")
-                    self._broadcaster.publish(
-                        "bet_skipped",
-                        {
-                            "bet": bet,
-                            "reason": _auto_skip_reason,
-                            "live_odds": live_odds,
-                            "live_edge": live_edge,
-                        },
-                    )
-                    self.stats["skipped"] += 1
+                    if _dethrone_reinsert:
+                        # bet_reinserted was already broadcast inside _watch_for_better.
+                        # Don't double-broadcast as a skip and don't bump stats["skipped"]
+                        # — re-insert is internal queue-rebalance, not a skip.
+                        logger.info(f"[Runner:{pid}] Re-insert: {_auto_skip_reason}")
+                    else:
+                        logger.info(f"[Runner:{pid}] Auto-skip: {_auto_skip_reason}")
+                        self._broadcaster.publish(
+                            "bet_skipped",
+                            {
+                                "bet": bet,
+                                "reason": _auto_skip_reason,
+                                "live_odds": live_odds,
+                                "live_edge": live_edge,
+                            },
+                        )
+                        self.stats["skipped"] += 1
                     # Auto-skip path (dethrone / READY-timeout / edge<0).
                     # Do NOT mark recently_skipped — auto-skipped bets must be
                     # allowed back into the queue immediately so the runner
