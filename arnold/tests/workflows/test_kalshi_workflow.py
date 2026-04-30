@@ -309,3 +309,92 @@ class TestPlaceBet:
         assert result.reason == "no_order_id_trusting_create"
         workflow._portfolio.get_order.assert_not_called()
         workflow._portfolio.cancel_order.assert_not_called()
+
+
+class TestSyncHistory:
+    @pytest.mark.asyncio
+    async def test_open_position_stays_pending(self, workflow):
+        # Position exists but no result field (market not closed).
+        position = SimpleNamespace(market_ticker="T1", result=None)
+        workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
+        fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
+
+        entries = await workflow.sync_history(page=None)
+        assert len(entries) == 1
+        assert entries[0].status == "pending"
+        assert entries[0].payout is None
+
+    @pytest.mark.asyncio
+    async def test_settled_yes_result_marks_won(self, workflow):
+        position = SimpleNamespace(market_ticker="T1", result="yes", total_count=10)
+        workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
+        fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
+
+        entries = await workflow.sync_history(page=None)
+        assert entries[0].status == "won"
+        # 10 contracts * $1 (YES wins payout = $1/contract) = $10
+        assert entries[0].payout == pytest.approx(10.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_settled_no_result_marks_lost(self, workflow):
+        position = SimpleNamespace(market_ticker="T1", result="no", total_count=10)
+        workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
+        fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
+
+        entries = await workflow.sync_history(page=None)
+        assert entries[0].status == "lost"
+        assert entries[0].payout == pytest.approx(0.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_void_result_marks_void_with_stake_refund(self, workflow):
+        position = SimpleNamespace(market_ticker="T1", result="void", total_count=10)
+        workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
+        fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
+
+        entries = await workflow.sync_history(page=None)
+        assert entries[0].status == "void"
+        # Stake refund: 10 * 0.5 = $5.00
+        assert entries[0].payout == pytest.approx(5.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_positions_call_failure_falls_back_to_pending_only(self, workflow):
+        workflow._portfolio.get_positions.side_effect = RuntimeError("offline")
+        fill = SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1")
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=[fill])
+
+        entries = await workflow.sync_history(page=None)
+        assert len(entries) == 1
+        assert entries[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_fills_call_failure_returns_empty_list(self, workflow):
+        workflow._portfolio.get_fills.side_effect = RuntimeError("offline")
+        entries = await workflow.sync_history(page=None)
+        assert entries == []
+
+    @pytest.mark.asyncio
+    async def test_no_api_returns_empty(self, workflow):
+        workflow._portfolio = None
+        entries = await workflow.sync_history(page=None)
+        assert entries == []
+
+    @pytest.mark.asyncio
+    async def test_multiple_fills_one_position(self, workflow):
+        # User bought twice on the same ticker; both fills, one position.
+        position = SimpleNamespace(market_ticker="T1", result="yes", total_count=20)
+        workflow._portfolio.get_positions.return_value = SimpleNamespace(positions=[position])
+        fills = [
+            SimpleNamespace(ticker="T1", side="yes", count=10, price=50, order_id="o-1"),
+            SimpleNamespace(ticker="T1", side="yes", count=10, price=55, order_id="o-2"),
+        ]
+        workflow._portfolio.get_fills.return_value = SimpleNamespace(fills=fills)
+
+        entries = await workflow.sync_history(page=None)
+        assert len(entries) == 2
+        assert all(e.status == "won" for e in entries)
+        # Each fill payout = its own count * $1 (YES wins are $1/contract)
+        assert all(e.payout == pytest.approx(10.0, abs=0.01) for e in entries)

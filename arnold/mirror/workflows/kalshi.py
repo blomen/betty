@@ -172,11 +172,26 @@ class KalshiWorkflow(ProviderWorkflow):
         if not self.has_api:
             return []
         try:
-            resp = self._portfolio.get_fills(limit=200)
-            fills = getattr(resp, "fills", None) or []
+            fills_resp = self._portfolio.get_fills(limit=200)
+            fills = getattr(fills_resp, "fills", None) or []
         except Exception as e:
             logger.warning(f"[kalshi] get_fills failed: {e}")
             return []
+
+        # Best-effort: fetch settled positions to merge result into history.
+        # If positions fails, every entry stays pending — matching old behavior.
+        positions_by_ticker: dict[str, str] = {}
+        try:
+            pos_resp = self._portfolio.get_positions()
+            positions = getattr(pos_resp, "positions", None) or []
+            for p in positions:
+                ticker = getattr(p, "market_ticker", "") or getattr(p, "ticker", "") or ""
+                result = (getattr(p, "result", "") or "").lower()
+                if ticker and result in {"yes", "no", "void"}:
+                    positions_by_ticker[ticker] = result
+        except Exception as e:
+            logger.warning(f"[kalshi] get_positions failed (settlement merge skipped): {e}")
+
         out: list[HistoryEntry] = []
         for f in fills:
             ticker = getattr(f, "ticker", "") or ""
@@ -186,9 +201,17 @@ class KalshiWorkflow(ProviderWorkflow):
             order_id = getattr(f, "order_id", None) or getattr(f, "fill_id", None) or ""
             odds = round(100.0 / max(price_cents, 1), 4) if price_cents else 0.0
             stake = round(count * price_cents / 100.0, 2)
-            # The Fill model carries no settlement flag — settlement comes from
-            # the Market/result endpoint, not Fills. Mark all as pending and let
-            # a future pass reconcile via market settlement status.
+
+            status = "pending"
+            payout: float | None = None
+            settled = positions_by_ticker.get(ticker)
+            if settled == "yes":
+                status, payout = "won", round(count * 1.0, 2)
+            elif settled == "no":
+                status, payout = "lost", 0.0
+            elif settled == "void":
+                status, payout = "void", stake
+
             out.append(
                 HistoryEntry(
                     provider_bet_id=str(order_id),
@@ -197,8 +220,8 @@ class KalshiWorkflow(ProviderWorkflow):
                     outcome=side,
                     odds=odds,
                     stake=stake,
-                    status="pending",
-                    payout=None,
+                    status=status,
+                    payout=payout,
                 )
             )
         return out
