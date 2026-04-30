@@ -382,7 +382,12 @@ class PlayLoop:
         # ArbRunner needs the full active-provider set to know its counter pool
         active = list(provider_ids)
 
-        for pid in provider_ids:
+        # Spawn unlimited providers first so soft-anchor ArbRunners can pick up
+        # the shared Pinnacle reference. Without this, ArbRunner constructed
+        # before PinnacleSharedRunner gets a None reference and falls back to
+        # workflow.find_tab (which is fine but loses the lend/release benefit).
+        ordered = sorted(provider_ids, key=lambda p: 0 if p in UNLIMITED_PROVIDERS else 1)
+        for pid in ordered:
             if pid in self._runners and self._runners[pid].running:
                 continue  # Already has an active runner
 
@@ -424,6 +429,15 @@ class PlayLoop:
                         mark_recently_skipped=self._mark_recently_skipped,
                     )
             else:
+                pinnacle_shared = self._runners.get("pinnacle")
+                # Only pass it through if it is actually the shared variant.
+                # Pure-unlimited sessions spawn a plain ProviderRunner for
+                # pinnacle (no lend/release surface); pass None so ArbRunner
+                # falls back to the workflow.find_tab path.
+                from .pinnacle_shared import PinnacleSharedRunner
+
+                if not isinstance(pinnacle_shared, PinnacleSharedRunner):
+                    pinnacle_shared = None
                 runner = ArbRunner(
                     provider_id=pid,
                     browser=self._browser,
@@ -434,6 +448,7 @@ class PlayLoop:
                     placed_today=self._placed_today,
                     active_providers=active,
                     stake_caps=self._stake_caps,
+                    pinnacle_shared=pinnacle_shared,
                 )
             self._runners[pid] = runner
             runner.start()

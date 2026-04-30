@@ -97,6 +97,7 @@ class ArbRunner:
         placed_today: dict[str, int],
         active_providers: list[str] | None = None,
         stake_caps: dict[str, float] | None = None,
+        pinnacle_shared: object | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -107,6 +108,7 @@ class ArbRunner:
         self._placed_today = placed_today
         self._active_providers = list(active_providers or [])
         self._stake_caps = stake_caps if stake_caps is not None else {}
+        self._pinnacle_shared = pinnacle_shared
 
         self.state: str = STATE_IDLE
         self.current_opp: dict | None = None
@@ -151,6 +153,7 @@ class ArbRunner:
         for s in self._streams.values():
             s.stop()
         self._streams.clear()
+        self._release_pinnacle_if_held()
         self._counter_events.clear()
         self._counter_intercepted.clear()
         for t in list(self._update_tasks):
@@ -323,6 +326,8 @@ class ArbRunner:
                         self._streams.clear()
                         self._counter_events.clear()
                         self._counter_intercepted.clear()
+                        # Reset the lend so the next _load_all_legs can re-lend cleanly
+                        self._release_pinnacle_if_held()
                         if self._dethroned_to is not None:
                             new_opp = self._dethroned_to
                             self._dethroned_to = None
@@ -372,6 +377,7 @@ class ArbRunner:
                     self._streams.clear()
                     self._counter_events.clear()
                     self._counter_intercepted.clear()
+                    self._release_pinnacle_if_held()
 
                     placed_any = True
                     break  # Re-fetch fresh opps after each placement
@@ -395,6 +401,7 @@ class ArbRunner:
             for s in self._streams.values():
                 s.stop()
             self._streams.clear()
+            self._release_pinnacle_if_held()
             self.state = STATE_IDLE
             self.current_opp = None
 
@@ -435,6 +442,11 @@ class ArbRunner:
         self._current_recomputed_profit_pct = None
         self.current_opp = opp
         self.current_arb_group_id = uuid.uuid4().hex[:12]
+
+        # If pinnacle is one of the counters, borrow the shared tab so the
+        # value-bet PinnacleSharedRunner pauses while we own the slip.
+        if any(l.get("provider") == "pinnacle" for l in counter_legs):
+            await self._lend_pinnacle_if_needed(self.current_arb_group_id or "")
 
         # Navigate + prep all legs in parallel
         async def _prep_leg(leg: dict, planned_stake: float) -> tuple[str, bool]:
@@ -901,6 +913,36 @@ class ArbRunner:
             "is_bonus": False,
             "provider_meta": dict(leg.get("provider_meta") or {}),  # From leg (matchup_id etc.)
         }
+
+    async def _lend_pinnacle_if_needed(self, arb_group_id: str):
+        """Borrow the Pinnacle tab from the shared runner if one is wired.
+
+        Returns the Page on success, None if no shared runner is configured
+        (in which case the caller falls back to workflow.find_tab) or if the
+        lend itself raises. On exception we proactively call release_to_value
+        so a half-mutated lent state doesn't leak — defense in depth against
+        lend_to_arb raising after its state mutation block.
+        """
+        if self._pinnacle_shared is None:
+            return None
+        try:
+            return await self._pinnacle_shared.lend_to_arb(arb_group_id)
+        except Exception:
+            logger.exception(f"[Arb:{self.provider_id}] lend_to_arb failed; releasing to recover")
+            try:
+                self._pinnacle_shared.release_to_value()
+            except Exception:
+                logger.exception(f"[Arb:{self.provider_id}] release_to_value during recovery failed")
+            return None
+
+    def _release_pinnacle_if_held(self) -> None:
+        """Release the Pinnacle tab back to the shared runner. No-op if none."""
+        if self._pinnacle_shared is None:
+            return
+        try:
+            self._pinnacle_shared.release_to_value()
+        except Exception:
+            logger.exception(f"[Arb:{self.provider_id}] release_to_value failed")
 
     async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
         """Record a bet to the server DB with arb group linkage."""

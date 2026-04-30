@@ -191,3 +191,51 @@ async def test_coordinator_uses_plain_provider_runner_when_only_unlimited(monkey
     assert not isinstance(runner, PinnacleSharedRunner)
     for r in pl._runners.values():
         r.stop()
+
+
+@pytest.mark.asyncio
+async def test_arb_runner_calls_lend_then_release(monkeypatch):
+    """ArbRunner must lend the Pinnacle tab when it loads counters and release on cleanup."""
+    from arnold.mirror.arb_runner import ArbRunner
+    from arnold.mirror.pinnacle_shared import STATE_LENT_TO_ARB, PinnacleSharedRunner
+
+    bc = _RecordingBroadcaster()
+    shared = PinnacleSharedRunner(
+        provider_id="pinnacle",
+        browser=_FakeBrowser(),
+        broadcaster=bc,
+        proxy_url="http://x",
+        pop_bet=lambda: None,
+        block_event_market=lambda _b: None,
+        is_blocked=lambda _b: False,
+        placed_today={},
+    )
+
+    class _FakeWorkflow:
+        async def find_tab(self, _ctx):
+            return _FakePage()
+
+    monkeypatch.setattr(
+        "arnold.mirror.pinnacle_shared.get_workflow",
+        lambda _pid: _FakeWorkflow(),
+    )
+
+    arb = ArbRunner(
+        provider_id="betinia",
+        browser=_FakeBrowser(),
+        broadcaster=bc,
+        proxy_url="http://x",
+        block_event_market=lambda _b: None,
+        is_blocked=lambda _b: False,
+        placed_today={},
+        active_providers=["betinia", "pinnacle"],
+        stake_caps={},
+        pinnacle_shared=shared,
+    )
+
+    page = await arb._lend_pinnacle_if_needed("group-xyz")
+    assert page is not None
+    assert shared.state == STATE_LENT_TO_ARB
+
+    arb._release_pinnacle_if_held()
+    assert shared.state != STATE_LENT_TO_ARB
