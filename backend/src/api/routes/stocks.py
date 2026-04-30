@@ -94,6 +94,31 @@ def runtime_diagnostic(request: Request):
     return diag
 
 
+@router.get("/zones-dump")
+def zones_dump(request: Request):
+    """Debug: dump every zone the level_monitor knows about so we can see
+    whether the current price range is covered. Returns price-sorted list
+    with bounds and member count.
+    """
+    lm = getattr(request.app.state, "level_monitor", None)
+    if lm is None:
+        return {"zones": [], "level_monitor_present": False}
+    zones = []
+    for z in getattr(lm, "_zones", []) or []:
+        zones.append(
+            {
+                "center": round(getattr(z, "center_price", 0), 2),
+                "upper": round(getattr(z, "upper_bound", 0), 2),
+                "lower": round(getattr(z, "lower_bound", 0), 2),
+                "members": getattr(z, "member_count", 0),
+                "hierarchy": round(getattr(z, "hierarchy_score", 0), 3),
+            }
+        )
+    zones.sort(key=lambda z: z["center"])
+    last_price = getattr(lm, "_last_price", None)
+    return {"zones": zones, "count": len(zones), "last_tick_price": last_price}
+
+
 @router.get("/runtime-status")
 def runtime_status(request: Request):
     """Is the autonomous server-side broker alive, what's the current
