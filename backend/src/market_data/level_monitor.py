@@ -456,6 +456,12 @@ class LevelMonitor:
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
         self._session_atr: float = 40.0
+        # Diagnostic counters — exposed via /api/stocks/runtime-diagnostic so
+        # we can verify the on_tick → zone-touch → emit pipeline without
+        # depending on docker logs (which die with the container).
+        self._tick_count: int = 0
+        self._zone_in_range_count: int = 0
+        self._zone_fire_count: int = 0
         self._amt_tracker = AMTDynamicsTracker()
         # Throttle: skip level checks when price hasn't moved
         self._last_price: float = 0.0
@@ -877,6 +883,7 @@ class LevelMonitor:
         Args:
             ts: Exchange timestamp as epoch seconds (from Databento ts_event / 1e9).
         """
+        self._tick_count += 1
         now = ts  # Use exchange timestamp for consistency and replay-ability
 
         # Skip level/zone checks when price hasn't changed — many ticks hit the
@@ -962,9 +969,17 @@ class LevelMonitor:
                         newly_entered_zones.append(zone)
         self._zone_debounce &= still_in_zones
 
+        # Track every tick where price overlaps any zone — even if the
+        # debounce/cooldown gate suppresses the emit. Lets the diagnostic
+        # endpoint distinguish "zones never touched" (bad zones) from
+        # "zones touched but not firing" (gate bug).
+        if still_in_zones:
+            self._zone_in_range_count += 1
+
         # Only fire inference for the BEST zone (highest confluence) per tick
         if newly_entered_zones:
             best_zone = max(newly_entered_zones, key=lambda z: (z.member_count, z.hierarchy_score))
+            self._zone_fire_count += 1
             logger.info(
                 "Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
                 price,
@@ -1780,7 +1795,11 @@ class LevelMonitor:
                 # 4/4; need bigger sample to confirm).
                 _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _conf_floor_default = 0.05 if _reckless else 0.15
-                _of_floor = 0.15 if _reckless else 0.30
+                # In reckless paper-trading mode every blocked signal is lost
+                # training data. Drop the OF floor to 0 so the trainer gets
+                # the full distribution of (obs, action, realized_R) tuples;
+                # raise back to 0.30 once we go live with real money.
+                _of_floor = 0.0 if _reckless else 0.30
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default

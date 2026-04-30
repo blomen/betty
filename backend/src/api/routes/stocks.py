@@ -62,6 +62,12 @@ def runtime_diagnostic(request: Request):
         diag["level_count"] = len(getattr(lm, "_levels", []))
         diag["zone_count"] = len(getattr(lm, "_zones", []))
         diag["signal_callback_count"] = len(getattr(lm, "_signal_callbacks", set()))
+        # Pipeline-flow counters — answers "are zone-touches firing?" without
+        # depending on docker logs that die with the container.
+        diag["lm_tick_count"] = getattr(lm, "_tick_count", 0)
+        diag["lm_zone_in_range_count"] = getattr(lm, "_zone_in_range_count", 0)
+        diag["lm_zone_fire_count"] = getattr(lm, "_zone_fire_count", 0)
+        diag["lm_last_price"] = getattr(lm, "_last_price", None)
         # Breakdown of raw_levels by `type` so the TV overlay debug can
         # confirm TPO/swing/FVG/etc levels are actually being broadcast.
         try:
