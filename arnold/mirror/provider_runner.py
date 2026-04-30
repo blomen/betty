@@ -94,6 +94,12 @@ def is_hard_fail_reason(reason: str | None) -> bool:
 # docs/superpowers/specs/2026-04-30-polymarket-top-edge-convergence-design.md.
 CONVERGENCE_MAX_ITER = 5
 
+# Providers that run the prep-time convergence loop. Volatile prices + lots of
+# bets in queue means a single-pass prep often lands on a stale sub-top bet
+# while the actual top has shifted. Capped at CONVERGENCE_MAX_ITER navigations
+# per bet pop. Single-pass providers (cloudbet/kalshi) don't have this churn.
+CONVERGING_PROVIDERS = frozenset({"polymarket", "pinnacle"})
+
 # After this many consecutive hard-fail bets, broadcast a `runner_stale_intel`
 # alert. Heuristic: if 5 bets in a row all redirect / have no cent buttons /
 # are closed events, the cached batch's event slugs are likely stale (e.g.,
@@ -540,10 +546,10 @@ class ProviderRunner:
                     self._track_hard_fail(pid)
                     continue
 
-                # Prep + live-edge read. For polymarket, wrap in a convergence
-                # loop: re-pop the queue's new top whenever live edge drops
-                # below it. Cap iterations at CONVERGENCE_MAX_ITER. Other
-                # providers (pinnacle/cloudbet/kalshi) use the single-pass path.
+                # Prep + live-edge read. Providers in CONVERGING_PROVIDERS wrap
+                # this in a convergence loop: re-pop the queue's new top whenever
+                # live edge drops below it. Cap iterations at CONVERGENCE_MAX_ITER.
+                # Single-pass providers (cloudbet/kalshi) skip the loop.
                 prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(bet, pid, workflow, page)
 
                 # Hard-fail handling (any provider).
@@ -562,8 +568,8 @@ class ProviderRunner:
                 # Bet prepped successfully — reset the consecutive-fail counter.
                 self._consecutive_hard_fails = 0
 
-                # Polymarket-only convergence loop.
-                if pid == "polymarket":
+                # Convergence loop (polymarket + pinnacle) — see CONVERGING_PROVIDERS.
+                if pid in CONVERGING_PROVIDERS:
                     redirected = False
                     while self._convergence_iter < CONVERGENCE_MAX_ITER:
                         try:
