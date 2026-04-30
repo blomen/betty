@@ -21,7 +21,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
     from .interwetten import InterwettenWorkflow
-    from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
     from .pinnacle import PinnacleWorkflow
     from .polymarket import PolymarketWorkflow
@@ -40,7 +39,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
-        "kalshi": KalshiWorkflow,
     }
 
 

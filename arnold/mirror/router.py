@@ -261,6 +261,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 out[attr] = str(type(v).__name__) if v is not None else None
             except Exception as e:
                 out[attr] = f"err:{e}"
+        out["last_init_error"] = getattr(workflow, "_last_init_error", "<attr_missing>")
         out["env_KALSHI_API_KEY_ID_set"] = bool(_os.getenv("KALSHI_API_KEY_ID"))
         out["env_KALSHI_PRIVATE_KEY_PEM_set"] = bool(_os.getenv("KALSHI_PRIVATE_KEY_PEM"))
         # Trigger check_login retry path explicitly
