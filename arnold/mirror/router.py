@@ -149,17 +149,26 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         # Start browser if not running
         if not browser.running:
             await browser.start()
-        # Check if tab already open
+        # Check if tab already open — focus it so the click brings it forward
+        # in the Chromium window (otherwise the user sees no visible response).
         workflow = get_workflow(pid)
         if browser.context:
             for page in browser.context.pages:
                 if workflow.domain and workflow.domain in page.url:
+                    try:
+                        await page.bring_to_front()
+                    except Exception:
+                        pass
                     return {"status": "already_open", "url": page.url, "provider_id": pid}
         # Open new tab
         domain = workflow.domain
         if not domain:
             raise HTTPException(400, f"No domain for provider {pid}")
         page = await browser.open_tab(workflow.home_url)
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
         return {"status": "opened", "url": page.url, "provider_id": pid}
 
     @router.get("/browser/tabs")
