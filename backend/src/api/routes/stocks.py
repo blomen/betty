@@ -301,6 +301,36 @@ def resume_trading():
     return {"paused": False, "removed": False, "note": "flag was not set"}
 
 
+@router.post("/recover")
+async def recover_trading(request: Request):
+    """Self-heal a stuck-tracker halt without a container restart.
+
+    When the reconcile loop fires `size_mismatch` because the local tracker
+    believes a position is open that the broker has already closed, the
+    `flatten()` path now (a) writes the missed broker_trades row from
+    Trade/search history, and (b) clears the tracker. This endpoint runs
+    that flow on demand and additionally clears `_halted` so trading can
+    resume in the same container.
+    """
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    if rt is None:
+        raise HTTPException(status_code=503, detail="stocks runtime not initialized")
+    adapter = rt.adapter
+    flatten_result = await adapter.flatten("manual_recover")
+    cleared_halt = False
+    if adapter._halted:
+        adapter._halted = False
+        adapter._halt_reason = ""
+        cleared_halt = True
+    return {
+        "halt_cleared": cleared_halt,
+        "tracker_flat": adapter.tracker.is_flat,
+        "halted": adapter._halted,
+        "halt_reason": adapter._halt_reason,
+        "flatten_result": flatten_result,
+    }
+
+
 def _parse_ts(v: str | float | None) -> datetime | None:
     if v is None:
         return None

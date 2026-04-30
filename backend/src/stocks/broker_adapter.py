@@ -411,7 +411,10 @@ class TopstepXBrokerAdapter:
         return await self._execute_entry(signal)
 
     async def flatten(self, reason: str = "manual") -> dict:
-        """Cancel stop order and liquidate position."""
+        """Cancel stop order and liquidate position. Always reconciles with
+        broker truth at the end so a stuck local tracker (broker is flat
+        but we think we're not) self-heals and the trade is recorded.
+        """
         if self.tracker.stop_order_id:
             try:
                 await self.client.cancel_order(self.tracker.stop_order_id)
@@ -427,8 +430,225 @@ class TopstepXBrokerAdapter:
                 self.tracker.on_exit(0.0)
                 self._set_pending_trade(None)
 
+        recovery = await self._recover_via_broker_truth(reason)
+
         log.info("Flatten requested (%s): session=$%.2f", reason, self.tracker.session_pnl)
-        return {"action": "flatten", "reason": reason, "session_pnl": self.tracker.session_pnl}
+        return {
+            "action": "flatten",
+            "reason": reason,
+            "session_pnl": self.tracker.session_pnl,
+            "recovery": recovery,
+        }
+
+    async def _recover_via_broker_truth(self, reason: str) -> dict | None:
+        """Backstop for stuck-tracker bug: if broker shows no position but
+        the local tracker thinks it has one, query Trade/search for the
+        actual closing fills, compute realized PnL, and write the
+        broker_trades row that on_stream_fill never wrote.
+
+        Returns an audit dict on successful recovery, None when nothing
+        was reconciled (already in sync) or the recovery itself failed.
+        """
+
+        try:
+            positions = await self.client.search_open_positions()
+        except Exception:
+            log.warning("recovery: Position/searchOpen failed; skipping", exc_info=True)
+            return None
+
+        contract_id = getattr(self.config, "contract_id", None)
+        broker_size = sum(
+            int(p.get("size") or 0) for p in positions if not contract_id or p.get("contractId") == contract_id
+        )
+        if broker_size > 0:
+            return None
+
+        if self.tracker.is_flat and not self._pending_trade:
+            return None
+
+        entry_px = self.tracker.entry_price
+        pt = self._pending_trade or _load_pending_trade_from_disk() or {}
+        if not entry_px:
+            entry_px = pt.get("entry_price") or 0.0
+
+        if not entry_px:
+            log.warning(
+                "recovery (%s): broker is flat and tracker has no confirmed entry — "
+                "clearing tracker state without writing broker_trades row",
+                reason,
+            )
+            self.tracker.on_exit(0.0)
+            self._set_pending_trade(None)
+            return {"reconciled": True, "wrote_trade_row": False, "reason": "no_entry_fill"}
+
+        side = pt.get("side") or self.tracker.side
+        if not side:
+            log.warning("recovery (%s): missing side; aborting", reason)
+            return None
+
+        entry_ts = pt.get("entry_fill_ts") or pt.get("ts")
+        if isinstance(entry_ts, str):
+            try:
+                entry_ts = datetime.fromisoformat(entry_ts)
+            except Exception:
+                entry_ts = None
+        if not isinstance(entry_ts, datetime):
+            entry_ts = datetime.fromtimestamp(time.time() - 30 * 60, tz=timezone.utc)
+        if entry_ts.tzinfo is None:
+            entry_ts = entry_ts.replace(tzinfo=timezone.utc)
+        start_ts = datetime.fromtimestamp(entry_ts.timestamp() - 5, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_ts = datetime.fromtimestamp(time.time() + 60, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        account_id = getattr(self.client, "_account_id", None)
+        try:
+            resp = await self.client._post(
+                "/api/Trade/search",
+                {
+                    "accountId": account_id,
+                    "startTimestamp": start_ts,
+                    "endTimestamp": end_ts,
+                },
+            )
+        except Exception:
+            log.exception("recovery (%s): Trade/search failed", reason)
+            return None
+
+        trades = resp.get("trades") if isinstance(resp, dict) else None
+        if not trades:
+            log.warning("recovery (%s): no trade records returned from Trade/search", reason)
+            return None
+
+        entry_order_id = self.tracker.entry_order_id or pt.get("entry_order_id")
+        exit_side = 1 if side == "long" else 0
+        closing_fills: list[dict] = []
+        gross_pnl = 0.0
+        for t in trades:
+            if contract_id and t.get("contractId") != contract_id:
+                continue
+            if t.get("voided"):
+                continue
+            if entry_order_id and t.get("orderId") == entry_order_id:
+                continue
+            if t.get("side") != exit_side:
+                continue
+            pnl_field = t.get("profitAndLoss")
+            if pnl_field is None:
+                continue
+            closing_fills.append(t)
+            try:
+                gross_pnl += float(pnl_field)
+            except (TypeError, ValueError):
+                pass
+
+        if not closing_fills:
+            log.warning(
+                "recovery (%s): broker flat but no closing fills found in Trade/search; "
+                "clearing tracker without writing broker_trades row",
+                reason,
+            )
+            self.tracker.on_exit(0.0)
+            self._set_pending_trade(None)
+            return {"reconciled": True, "wrote_trade_row": False, "reason": "no_closing_fills"}
+
+        size_filled = sum(int(t.get("size") or 0) for t in closing_fills)
+        weighted_px = (
+            sum(float(t.get("price") or 0) * int(t.get("size") or 0) for t in closing_fills) / size_filled
+            if size_filled
+            else float(closing_fills[-1].get("price") or 0)
+        )
+        last_close_ts = max(
+            (t.get("creationTimestamp") for t in closing_fills if t.get("creationTimestamp")),
+            default=None,
+        )
+        closed_at = datetime.now(timezone.utc)
+        if last_close_ts:
+            try:
+                closed_at = datetime.fromisoformat(str(last_close_ts).replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+        size = pt.get("size") or max(self.tracker.size or size_filled or 1, 1)
+        direction = 1.0 if side == "long" else -1.0
+        pnl_pts = direction * (weighted_px - entry_px)
+        pnl_dollars = round(gross_pnl, 2) if abs(gross_pnl) > 1e-6 else round(pnl_pts * _NQ_POINT_VALUE * size, 2)
+        stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
+        _MIN_RISK_PTS = MIN_STOP_TICKS * 0.25
+        initial_stop_ticks = pt.get("stop_ticks") or 0
+        if initial_stop_ticks > 0:
+            raw_risk = initial_stop_ticks * 0.25
+        elif stop_price:
+            raw_risk = abs(entry_px - stop_price)
+        else:
+            raw_risk = DEFAULT_STOP_TICKS * 0.25
+        risk_pts = max(raw_risk, _MIN_RISK_PTS)
+        pnl_r = round(pnl_pts / risk_pts, 3)
+
+        try:
+            self.tracker.on_exit(weighted_px)
+        except Exception:
+            log.exception("recovery (%s): tracker.on_exit raised; continuing to record", reason)
+
+        reasoning = pt.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning = dict(reasoning)
+            reasoning.setdefault("recovered_via_broker_truth", True)
+            reasoning.setdefault("recovery_reason", reason)
+        else:
+            reasoning = {"recovered_via_broker_truth": True, "recovery_reason": reason}
+
+        now_utc = datetime.now(timezone.utc)
+        _log_broker_trade(
+            session_pnl=round(self.tracker.session_pnl, 2),
+            ts=pt.get("ts") or entry_ts or now_utc,
+            session_date=pt.get("session_date") or (entry_ts or now_utc).strftime("%Y-%m-%d"),
+            symbol=pt.get("symbol") or "NQ",
+            side=side,
+            size=size,
+            entry_price=entry_px,
+            stop_price=stop_price,
+            tp_price=pt.get("tp_price"),
+            exit_price=weighted_px,
+            pnl_dollars=pnl_dollars,
+            pnl_r=pnl_r,
+            fill_latency_ms=None,
+            slippage_ticks=None,
+            was_stop=False,
+            trail_count=pt.get("trail_count", 0),
+            stop_ticks=pt.get("stop_ticks"),
+            signal_action=pt.get("signal_action"),
+            signal_confidence=pt.get("signal_confidence"),
+            signal_zone=pt.get("signal_zone"),
+            signal_trigger=pt.get("signal_trigger") or "recovered",
+            signal_cont_p=pt.get("signal_cont_p"),
+            signal_rev_p=pt.get("signal_rev_p"),
+            orderflow_score=pt.get("orderflow_score"),
+            reasoning=reasoning,
+            closed_at=closed_at,
+            topstepx_account_id=account_id,
+        )
+        self._set_pending_trade(None)
+
+        log.warning(
+            "recovery (%s): broker_trades row WRITTEN from Trade/search — "
+            "side=%s entry=%.2f exit=%.2f pnl=$%.2f pnl_r=%.3f closing_fills=%d",
+            reason,
+            side,
+            entry_px,
+            weighted_px,
+            pnl_dollars,
+            pnl_r,
+            len(closing_fills),
+        )
+        return {
+            "reconciled": True,
+            "wrote_trade_row": True,
+            "side": side,
+            "entry_price": entry_px,
+            "exit_price": weighted_px,
+            "pnl_dollars": pnl_dollars,
+            "pnl_r": pnl_r,
+            "closing_fills": len(closing_fills),
+        }
 
     async def add_to_position(self, add_contracts: int, price: float) -> dict | None:
         """Pyramid add — submit a market order in the same direction as the
