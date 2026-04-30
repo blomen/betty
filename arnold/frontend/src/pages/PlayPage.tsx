@@ -65,7 +65,7 @@ const RUNNER_STATE_TO_CARD: Record<string, CardState> = {
   awaiting_hedges: 'running', // arb runner state
 }
 
-function deriveCardState(pid: string, isSelected: boolean, runnerState: string | undefined): CardState {
+function deriveCardState(isSelected: boolean, runnerState: string | undefined): CardState {
   if (!isSelected) return 'idle'
   if (!runnerState) return 'tab_open'
   return RUNNER_STATE_TO_CARD[runnerState] ?? 'tab_open'
@@ -241,7 +241,7 @@ export default function PlayPage() {
   const handleCardClick = async (pid: string) => {
     const isSelected = activeProviders.has(pid)
     const runnerState = loopProviderStatus?.[pid]?.state
-    const cardState = deriveCardState(pid, isSelected, runnerState)
+    const cardState = deriveCardState(isSelected, runnerState)
     if (cardState === 'idle') return startSkin(pid)
     if (cardState === 'tab_open' || cardState === 'logged_in_syncing') {
       // Click during opening/syncing → deselect the provider entirely.
@@ -1361,7 +1361,7 @@ export default function PlayPage() {
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
-                          const cardState = deriveCardState(pid, activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
+                          const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
@@ -1644,7 +1644,7 @@ export default function PlayPage() {
                     const isLoggedIn = loggedInProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
-                    const cardState = deriveCardState(pid, activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
+                    const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
                     return (
                       <button key={pid}
                         onClick={() => !disabled && handleCardClick(pid)}
