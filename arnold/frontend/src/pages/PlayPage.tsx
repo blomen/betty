@@ -71,11 +71,18 @@ function deriveCardState(isSelected: boolean, runnerState: string | undefined): 
   return RUNNER_STATE_TO_CARD[runnerState] ?? 'tab_open'
 }
 
+// Three-color UX (2026-04-30 rev 3):
+//   IDLE    — zinc       (unselected — existing styling)
+//   RED     — tab open, NOT logged in (waiting for user to log in on the site)
+//   AMBER   — tab open + logged in, await user Run press
+//             (covers BOTH the auto-syncing window and the ready-to-run gate;
+//              pill text disambiguates "Syncing..." vs "Press to run")
+//   GREEN   — full workflow active (navigating, prepping, placing bets)
 const CARD_STATE_CLASSES: Record<CardState, string> = {
-  idle: '',  // existing styling applied elsewhere
-  tab_open: 'bg-blue-500/40 text-blue-100 border border-blue-400/60',
-  logged_in_syncing: 'bg-cyan-500/40 text-cyan-100 border border-cyan-400/60',
-  ready_to_run: 'bg-yellow-500/50 text-yellow-100 border border-yellow-400/70',
+  idle: '',
+  tab_open: 'bg-red-500/45 text-red-100 border border-red-400/70',
+  logged_in_syncing: 'bg-amber-500/45 text-amber-100 border border-amber-400/70',
+  ready_to_run: 'bg-amber-500/55 text-amber-50 border border-amber-300/80 font-semibold',
   running: 'bg-emerald-600/50 text-emerald-100 border border-emerald-500/70',
 }
 
@@ -1405,22 +1412,22 @@ export default function PlayPage() {
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
                                   {cardState === 'tab_open' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-blue-400/20 text-blue-200">
-                                      Awaiting login
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
+                                      Log in to continue
                                     </span>
                                   )}
                                   {cardState === 'logged_in_syncing' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-cyan-400/20 text-cyan-100 font-semibold">
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/25 text-amber-100 font-semibold">
                                       Logged in · syncing
                                     </span>
                                   )}
                                   {cardState === 'ready_to_run' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/30 text-yellow-200 font-semibold">
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/40 text-amber-50 font-semibold">
                                       Logged in — press to run
                                     </span>
                                   )}
                                   {cardState === 'running' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-300">
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
                                       Running
                                     </span>
                                   )}

@@ -28,54 +28,56 @@ The **mirror** is a headed Playwright Chromium browser that runs locally on your
 
 ---
 
-## 2. The five card states (user-facing)
+## 2. The card states (user-facing)
 
-Each provider card on the Play page advances through five visual states. The card itself is the click region — no separate Run button.
+Each provider card on the Play page is a one-way forward-only flow. Three colors signal what the runner is doing; the card click only opens the workflow forward — there is no toggle-off, no pause, no deselect once started.
 
 ```
-                  user clicks idle card
-   ┌─── IDLE ─────────────────────────────────────┐
-   │                                              ▼
-   │                                          TAB_OPEN  (blue)
-   │  user re-clicks                           tab opened, awaiting login on
-   │  ◀───────────────────────────────────       provider site
-   │                                          ▼
-   │                                    LOGGED_IN_SYNCING  (cyan)
-   │                                          login detected; balance +
-   │                                          pending settlement running
-   │  user re-clicks                          ▼
-   │  ◀───────────────────────────────────  READY_TO_RUN  (yellow + "Press to run" pill)
-   │                                          settled, daily-cap OK,
-   │                                          gate closed; passive sync
-   │                                          continues every 60s/300s
-   │  user clicks (toggle)                    ▼ user clicks
-   │           ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─►  RUNNING  (green + "Running" pill)
-   │           ◄─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ bet placement loop active
-   ▼                                            ▼ stop / queue empty
-  STOP / DESELECT  ──────────────────────────────┘
+                  user clicks idle card                  (1st press = open tab)
+   ┌─── IDLE (zinc, unselected) ───────────────────────┐
+   │                                                   ▼
+   │                                       RED  "Log in to continue"
+   │                                            tab open, login NOT detected
+   │                                       ▼  (login auto-detected)
+   │                                       AMBER  "Logged in · syncing"
+   │                                            balance + pending settlement
+   │                                            running automatically
+   │                                       ▼  (settle complete)
+   │                                       AMBER  "Logged in — press to run"
+   │                                            settled, gate closed, passive
+   │                                            sync continues every 60s/300s
+   │                                       ▼  user clicks       (2nd press = run)
+   │                                       GREEN  "Running"
+   │                                            bet placement loop active
+   ▼                                                   ▼ queue empty
+  STOP / SESSION ENDS  ────────────────────────────────┘
 ```
 
 ### Click semantics
 
 | Card state | Click → |
 |---|---|
-| IDLE (unselected) | Open tab + start runner; advance to TAB_OPEN |
-| TAB_OPEN | Deselect / close session |
-| LOGGED_IN_SYNCING | Deselect / close session |
-| READY_TO_RUN | Toggle gate open → RUNNING (`POST /mirror/play/run/{pid}`) |
-| RUNNING | Toggle gate closed → READY_TO_RUN (`POST /mirror/play/pause/{pid}`); active bet auto-skips with `reason: "paused"` |
+| IDLE (unselected) | **1st press** — open tab + start runner; advance to RED |
+| RED (tab open, not logged in) | no-op (waiting for user to log in on the provider site) |
+| AMBER (logged in, syncing) | no-op (settlement running; can't run bets yet) |
+| AMBER (logged in, ready) | **2nd press** — open the gate (`POST /mirror/play/run/{pid}`); advance to GREEN |
+| GREEN (running) | no-op (no pause, no toggle-off) |
+
+There is no path back from AMBER or GREEN to IDLE without ending the arnold session.
 
 ### Color palette
 
-Tailwind utilities, sole owner of the active-state appearance (legacy `isLoggedIn → bg-green-700/50` was retired 2026-04-30):
+Tailwind utilities, sole owner of the active-state appearance:
 
-| State | Class |
+| Card state | Class |
 |---|---|
 | IDLE | (existing zinc styling) |
-| TAB_OPEN | `bg-blue-500/40 text-blue-100 border border-blue-400/60` |
-| LOGGED_IN_SYNCING | `bg-cyan-500/40 text-cyan-100 border border-cyan-400/60` |
-| READY_TO_RUN | `bg-yellow-500/50 text-yellow-100 border border-yellow-400/70` |
-| RUNNING | `bg-emerald-600/50 text-emerald-100 border border-emerald-500/70` |
+| RED — tab open, not logged in | `bg-red-500/45 text-red-100 border border-red-400/70` |
+| AMBER — logged in, syncing | `bg-amber-500/45 text-amber-100 border border-amber-400/70` |
+| AMBER — logged in, ready (run gate) | `bg-amber-500/55 text-amber-50 border border-amber-300/80 font-semibold` |
+| GREEN — running | `bg-emerald-600/50 text-emerald-100 border border-emerald-500/70` |
+
+Both AMBER variants share the same hue; the "ready" variant has a slightly stronger background and bold border so the user can tell at a glance "this one is ready for the second press".
 
 Source of truth: `arnold/frontend/src/pages/PlayPage.tsx` `CARD_STATE_CLASSES`.
 
