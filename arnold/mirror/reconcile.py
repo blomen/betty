@@ -110,11 +110,20 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
             if score < _FUZZY_NAME_THRESHOLD:
                 continue
             h_odds = float(entry.get("odds", 0) or 0)
+            h_status = (entry.get("status") or "").lower()
+            # Polymarket Loss rows (and other providers' closed-out entries)
+            # report odds=0 — the bet was liquidated, no payout, original odds
+            # not recoverable from the row. Trust the strong name match alone
+            # for terminal statuses; non-terminal h_odds=0 still gets skipped
+            # because matching an open bet by name without odds is meaningless.
+            is_terminal = h_status in ("won", "lost", "void", "cashout")
             if h_odds <= 0:
-                continue
-            odds_drift = abs(h_odds - bet_odds) / bet_odds * 100.0
-            if odds_drift > _FUZZY_ODDS_TOL_PCT:
-                continue
+                if not is_terminal:
+                    continue
+            else:
+                odds_drift = abs(h_odds - bet_odds) / bet_odds * 100.0
+                if odds_drift > _FUZZY_ODDS_TOL_PCT:
+                    continue
             if best is None or score > best[2]:
                 best = (idx, entry, score)
 

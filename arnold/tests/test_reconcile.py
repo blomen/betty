@@ -145,6 +145,42 @@ def test_fallback_finds_bet_in_targeted_window():
     assert d.changes.get("provider_bet_id") == "ALT-123"
 
 
+def test_fuzzy_match_terminal_status_with_zero_odds():
+    """Polymarket Loss rows carry odds=0 (no payout, position liquidated). The
+    name match alone must be sufficient when h_status is terminal — otherwise
+    lost polymarket bets stay pending forever."""
+    bet = {
+        "id": 416,
+        "provider_bet_id": None,
+        "stake": 9.52,
+        "odds": 11.549,
+        "home_team": "Vitality",
+        "away_team": "FUT",
+    }
+    history = [
+        {
+            "status": "lost",
+            "stake": 0.0,
+            "odds": 0.0,
+            "payout": 0.0,
+            "event_name": "Counter-Strike: Vitality vs FUT Esports (BO3) - BLAST Rivals Group A",
+            "provider_bet_id": "",
+        }
+    ]
+    deltas = reconcile_from_history([bet], history)
+    assert len(deltas) == 1
+    assert deltas[0].changes["result"] == "lost"
+
+
+def test_fuzzy_match_skips_open_entry_with_zero_odds():
+    """Non-terminal entries with odds=0 still get skipped — matching an open
+    bet by name without odds confirmation is meaningless."""
+    bet = {"id": 500, "stake": 10, "odds": 2.0, "home_team": "X", "away_team": "Y"}
+    history = [{"status": "pending", "stake": 0, "odds": 0, "event_name": "X v Y"}]
+    deltas = reconcile_from_history([bet], history)
+    assert deltas == []
+
+
 def test_fallback_no_match_when_window_empty():
     bet = {
         "id": 1000,
