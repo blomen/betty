@@ -201,7 +201,19 @@
     const tStart = now - 30 * 60;
     const tEnd = now + 2 * 3600;
     if (!zoneFirstSeenAt.has(p.key)) zoneFirstSeenAt.set(p.key, true);
-    const { color, transparency } = strengthStyle(p.strength);
+    let { color, transparency } = strengthStyle(p.strength);
+
+    // Swing-family override — daily/weekly/monthly swing pivots are
+    // structurally important even when they form 1-member zones (which
+    // would otherwise paint as faint slate-purple thin bands lost between
+    // candles). When ANY zone member is from a swing family, force a
+    // bright amber fill + much higher opacity so swing pivots pop out
+    // visually regardless of hierarchy strength.
+    const hasSwing = (p.members_detail || []).some(m => /swing/.test(m.family || ''));
+    if (hasSwing) {
+      color = '#fbbf24'; // tailwind amber-400
+      transparency = 50; // forced 50% — overrides the strength-based fade
+    }
 
     // Rectangle primitive — Y axis is price-anchored, so zone height
     // stays locked to actual `top`/`bottom` regardless of zoom level.
