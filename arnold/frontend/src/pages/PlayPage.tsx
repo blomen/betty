@@ -40,6 +40,45 @@ for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
 // Resolve a soft provider's cluster (fallback to pid for standalones).
 const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
 
+// Card visual states. Derived from loopProviderStatus[pid].state plus whether
+// the provider is currently selected. `idle` is the unselected default —
+// existing styling applies. The other four are the active-session palette:
+// blue (tab open) → cyan (logged in, syncing) → yellow (ready, paused)
+// → green (running). Yellow ↔ green is a toggle via the same card click.
+type CardState =
+  | 'idle'
+  | 'tab_open'         // tab opened, awaiting login
+  | 'logged_in_syncing' // login detected, balance/pending sync running
+  | 'ready_to_run'     // settled, gate closed, awaiting Run press
+  | 'running'          // bet loop active
+
+const RUNNER_STATE_TO_CARD: Record<string, CardState> = {
+  provider_opening: 'tab_open',
+  login_waiting: 'tab_open',
+  settling: 'logged_in_syncing',
+  ready_to_run: 'ready_to_run',
+  navigating: 'running',
+  ready: 'running',
+  placing: 'running',
+  loading_legs: 'running',  // arb runner state
+  standby: 'running',       // arb runner state
+  awaiting_hedges: 'running', // arb runner state
+}
+
+function deriveCardState(pid: string, isSelected: boolean, runnerState: string | undefined): CardState {
+  if (!isSelected) return 'idle'
+  if (!runnerState) return 'tab_open'
+  return RUNNER_STATE_TO_CARD[runnerState] ?? 'tab_open'
+}
+
+const CARD_STATE_CLASSES: Record<CardState, string> = {
+  idle: '',  // existing styling applied elsewhere
+  tab_open: 'ring-2 ring-blue-500/70 bg-blue-500/10',
+  logged_in_syncing: 'ring-2 ring-cyan-400/70 bg-cyan-400/10',
+  ready_to_run: 'ring-2 ring-yellow-400/80 bg-yellow-400/15',
+  running: 'ring-2 ring-emerald-500/80 bg-emerald-500/15',
+}
+
 type ProviderBalanceInfo = {
   balance: number
   bonus_trigger?: number
@@ -197,6 +236,26 @@ export default function PlayPage() {
     setLoopRunning(true)
     const numericBalances = Object.fromEntries(Object.entries(providerBalances).map(([k, v]) => [k, getBalance(v)]))
     await api.startPlayLoop(allBets, numericBalances, allPids)
+  }
+
+  const handleCardClick = async (pid: string) => {
+    const isSelected = activeProviders.has(pid)
+    const runnerState = loopProviderStatus?.[pid]?.state
+    const cardState = deriveCardState(pid, isSelected, runnerState)
+    if (cardState === 'idle') return startSkin(pid)
+    if (cardState === 'tab_open' || cardState === 'logged_in_syncing') {
+      // Click during opening/syncing → deselect the provider entirely.
+      // Reuse startSkin's own deselect path.
+      return startSkin(pid)
+    }
+    if (cardState === 'ready_to_run') {
+      try { await api.runProvider(pid) } catch (e) { console.error('runProvider failed', e) }
+      return
+    }
+    if (cardState === 'running') {
+      try { await api.pauseProvider(pid) } catch (e) { console.error('pauseProvider failed', e) }
+      return
+    }
   }
 
   const load = useCallback(async () => {
@@ -1302,21 +1361,32 @@ export default function PlayPage() {
                           const pending = pendingByProvider[pid]?.length ?? 0
                           const isSkinActive = activeProviders.has(pid)
                           const isLoggedIn = loggedInProviders.has(pid)
+                          const cardState = deriveCardState(pid, activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
                               <div className="flex items-center gap-2 px-6 py-1.5 bg-zinc-900/20">
                                 <button
-                                  onClick={() => startSkin(pid)}
+                                  onClick={() => handleCardClick(pid)}
                                   className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                                     isSkinActive
                                       ? (isLoggedIn
                                           ? 'bg-green-700/50 text-green-200 border border-green-600/50'
                                           : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
                                       : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                                  }`}
+                                  } ${CARD_STATE_CLASSES[cardState]}`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
+                                  {cardState === 'ready_to_run' && (
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/20 text-yellow-300">
+                                      Press to run
+                                    </span>
+                                  )}
+                                  {cardState === 'running' && (
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-300">
+                                      Running
+                                    </span>
+                                  )}
                                   <span className="ml-1 text-green-400 font-mono">
                                     <BalanceCell pid={pid} balances={providerBalances} />
                                   </span>
@@ -1574,9 +1644,10 @@ export default function PlayPage() {
                     const isLoggedIn = loggedInProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
+                    const cardState = deriveCardState(pid, activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
                     return (
                       <button key={pid}
-                        onClick={() => !disabled && startSkin(pid)}
+                        onClick={() => !disabled && handleCardClick(pid)}
                         disabled={disabled}
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
@@ -1586,9 +1657,19 @@ export default function PlayPage() {
                                   ? 'bg-green-700/50 text-green-200 border border-green-600/50'
                                   : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
                               : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                        }`}
+                        } ${CARD_STATE_CLASSES[cardState]}`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
+                        {cardState === 'ready_to_run' && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/20 text-yellow-300">
+                            Press to run
+                          </span>
+                        )}
+                        {cardState === 'running' && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-300">
+                            Running
+                          </span>
+                        )}
                         {balDisplay > 0 && (
                           <span className="ml-1 text-green-400 font-mono">
                             {pid === 'polymarket' ? '$' : ''}{balDisplay.toFixed(2)}{pid !== 'polymarket' ? ' kr' : ''}
