@@ -80,6 +80,44 @@ record_deploy_time() {
     date +%s > "$DEPLOY_COOLDOWN_FILE"
 }
 
+# Pre-swap broker flatten — calls /api/stocks/halt?flatten=true on the
+# running backend so any in-flight entry from the outgoing container
+# is closed before SIGTERM. Belt-and-suspenders with the shutdown
+# handler's flatten path (which queries broker directly post-2026-04-30
+# commit 8a1a27f8). Skipped silently if backend isn't running yet
+# (first-time deploy) or the API is unreachable. Never fails the deploy.
+preswap_flatten_backend() {
+    if ! docker compose ps backend --format json 2>/dev/null | grep -q '"State":"running"'; then
+        echo ">>> pre-swap flatten: backend not running, skipping"
+        return 0
+    fi
+    if [ ! -f "$DEPLOY_DIR/.env.docker" ]; then
+        echo ">>> pre-swap flatten: .env.docker missing, skipping"
+        return 0
+    fi
+    local api_key
+    api_key=$(grep -E '^ARNOLD_API_KEY=' "$DEPLOY_DIR/.env.docker" | cut -d= -f2- | tr -d '\r\n')
+    if [ -z "$api_key" ]; then
+        echo ">>> pre-swap flatten: ARNOLD_API_KEY not found, skipping"
+        return 0
+    fi
+    echo ">>> pre-swap flatten: calling /api/stocks/halt?flatten=true"
+    local resp
+    resp=$(curl -s --max-time 10 -X POST -H "X-API-Key: $api_key" \
+        "http://localhost:8000/api/stocks/halt?flatten=true" 2>/dev/null || echo '{"flattened":"unknown"}')
+    echo ">>> pre-swap flatten response: $resp"
+    # Brief wait so any closing fill can persist via the broker_trades
+    # write path before container shutdown begins.
+    sleep 2
+    # Clear the trading_paused flag we just set — the next container
+    # boots with a clean slate. (halt sets _TRADING_PAUSED_FLAG which
+    # is a file in /app/data/rl/trading_paused; surviving across the
+    # restart would mute every signal at conf=0.99.)
+    docker compose exec -T backend bash -c \
+        'rm -f /app/data/rl/trading_paused 2>/dev/null && echo "trading_paused flag cleared"' \
+        || true
+}
+
 # Open-trade protection — abort deploy if a TopstepX position is live, unless
 # the operator passes ALLOW_OPEN_POSITION_DEPLOY=1. Every rebuild/restart kills
 # the broker subprocess; the shutdown handler then flattens the live trade —
@@ -235,6 +273,16 @@ case "$action" in
         docker compose build "$service"
         # Wait for RL training before swapping container
         wait_for_rl_training
+        # Pre-swap broker flatten: ensures any in-flight entry from the
+        # outgoing container is closed before SIGTERM. The shutdown handler
+        # flattens too (and queries broker directly post-2026-04-30 commit
+        # 8a1a27f8), but doing it BEFORE container kill avoids relying on
+        # the shutdown's grace period and the race where a fill arrives
+        # mid-shutdown. Trades 128 / 136 today were inherited orphans
+        # because the prior container died with an order in flight.
+        if [ "$service" = "backend" ]; then
+            preswap_flatten_backend
+        fi
         docker compose up -d "$service"
         echo ">>> Pruning unused images and build cache..."
         # -a removes ALL unused images, not just dangling. Running containers
@@ -259,6 +307,9 @@ case "$action" in
         echo ">>> git pull + restart $service"
         git pull
         wait_for_rl_training
+        if [ "$service" = "backend" ]; then
+            preswap_flatten_backend
+        fi
         docker compose restart "$service"
         record_deploy_time
         if ! wait_for_health "$service"; then
