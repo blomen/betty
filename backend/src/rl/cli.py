@@ -1630,6 +1630,21 @@ def merge_live() -> None:
         np.concatenate([np.load(f) for f in live_trig_chunks]) if all(f.exists() for f in live_trig_chunks) else None
     )
 
+    # Tier-1 enrichment arrays from ingest-live-trades (LT* chunks). All
+    # optional — simulator chunks won't have them, so default to zeros.
+    def _load_optional(name: str):
+        paths = [live_dir / f"{name}_{cid}.npy" for cid in chunk_ids]
+        if not all(p.exists() for p in paths):
+            return None
+        return np.concatenate([np.load(p) for p in paths])
+
+    live_pk_c = _load_optional("pk_c")
+    live_pk_r = _load_optional("pk_r")
+    live_ws = _load_optional("ws")
+    live_tc = _load_optional("tc")
+    live_sl = _load_optional("sl")
+    live_placed_st = _load_optional("placed_st")
+
     typer.echo(
         f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim, trig={'yes' if live_trig is not None else 'no'})"
     )
@@ -1682,6 +1697,29 @@ def merge_live() -> None:
                 typer.echo(
                     f"Trigger dim mismatch: main={main_trig.shape[1]} vs live={live_trig.shape[1]}, skipping trigger merge."
                 )
+
+        # Tier-1 enrichment merge — all optional, default-zero on the side
+        # that lacks the array. Existing pipeline reads peak_R_cont/_rev
+        # (used by early_exit_model); the other arrays land alongside main
+        # pool so future training steps can pick them up.
+        def _merge_aux(name: str, live_arr, default_dtype=np.float32):
+            existing_path = episodes_dir / f"{name}.npy"
+            existing = np.load(existing_path) if existing_path.exists() else None
+            if live_arr is None and existing is None:
+                return
+            m = existing if existing is not None else np.zeros(n_main, dtype=default_dtype)
+            l = live_arr if live_arr is not None else np.zeros(n_live, dtype=default_dtype)
+            if len(m) != n_main:
+                # Shape drift — pad with zeros to match current pool length
+                m = np.zeros(n_main, dtype=default_dtype)
+            np.save(existing_path, np.concatenate([m, l]))
+
+        _merge_aux("peak_R_cont", live_pk_c)
+        _merge_aux("peak_R_rev", live_pk_r)
+        _merge_aux("was_stop", live_ws, default_dtype=np.int32)
+        _merge_aux("trail_count", live_tc, default_dtype=np.int32)
+        _merge_aux("slippage_ticks", live_sl)
+        _merge_aux("placed_stop_ticks", live_placed_st)
     else:
         merged_obs = live_obs
         merged_rc = live_rc
@@ -1694,6 +1732,18 @@ def merge_live() -> None:
             np.save(episodes_dir / "levels_captured.npy", live_lc)
         if live_trig is not None:
             np.save(episodes_dir / "trigger_observations.npy", live_trig)
+        if live_pk_c is not None:
+            np.save(episodes_dir / "peak_R_cont.npy", live_pk_c)
+        if live_pk_r is not None:
+            np.save(episodes_dir / "peak_R_rev.npy", live_pk_r)
+        if live_ws is not None:
+            np.save(episodes_dir / "was_stop.npy", live_ws)
+        if live_tc is not None:
+            np.save(episodes_dir / "trail_count.npy", live_tc)
+        if live_sl is not None:
+            np.save(episodes_dir / "slippage_ticks.npy", live_sl)
+        if live_placed_st is not None:
+            np.save(episodes_dir / "placed_stop_ticks.npy", live_placed_st)
 
     # Save merged core arrays
     np.save(episodes_dir / "observations.npy", merged_obs)
@@ -1757,9 +1807,10 @@ def ingest_live_trades() -> None:
 
     sql = text(
         "SELECT s.id AS sid, s.action, s.confidence, s.cont_p, s.rev_p,"
-        "       s.observation_b64, s.observation_dim, s.stop_ticks,"
+        "       s.observation_b64, s.observation_dim, s.stop_ticks AS placed_stop_ticks,"
         "       t.id AS tid, t.pnl_dollars, t.pnl_r, t.exit_price, t.entry_price,"
-        "       t.was_stop "
+        "       t.was_stop, t.trail_count, t.slippage_ticks, t.stop_ticks AS trade_stop_ticks,"
+        "       t.ts AS trade_ts, t.closed_at, t.side AS trade_side "
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
         "WHERE s.observation_b64 IS NOT NULL "
@@ -1767,6 +1818,38 @@ def ingest_live_trades() -> None:
     )
     with engine.connect() as conn:
         rows = conn.execute(sql).fetchall()
+
+    # Helper: query market_trades for the trade's lifetime to compute
+    # MFE (max favorable excursion) and MAE (max adverse excursion).
+    # Used to label peak_R (favourable extreme reached) and the
+    # retrospective optimal stop distance (just past MAE).
+    market_url = f"postgresql://arnold:{pw}@postgres:5432/market"
+    market_engine = create_engine(market_url)
+    mfe_mae_sql = text(
+        "SELECT MIN(price) AS lo, MAX(price) AS hi "
+        "FROM market_trades "
+        "WHERE symbol = 'NQ' AND ts >= :start_ts AND ts <= :end_ts"
+    )
+
+    def _excursion(start_ts, end_ts, side: str, entry: float) -> tuple[float, float]:
+        """Returns (mfe_pts, mae_pts) — both POSITIVE values measured
+        relative to entry in the favourable / adverse direction."""
+        if not start_ts or not end_ts or not entry:
+            return 0.0, 0.0
+        try:
+            with market_engine.connect() as mconn:
+                row = mconn.execute(mfe_mae_sql, {"start_ts": start_ts, "end_ts": end_ts}).fetchone()
+        except Exception:
+            return 0.0, 0.0
+        if not row or row.lo is None or row.hi is None:
+            return 0.0, 0.0
+        if side == "long":
+            mfe = max(0.0, float(row.hi) - float(entry))
+            mae = max(0.0, float(entry) - float(row.lo))
+        else:
+            mfe = max(0.0, float(entry) - float(row.lo))
+            mae = max(0.0, float(row.hi) - float(entry))
+        return mfe, mae
 
     new_rows = [r for r in rows if r.tid not in seen]
     typer.echo(f"Found {len(rows)} labelled pairs total ({len(new_rows)} new since last ingest).")
@@ -1788,6 +1871,19 @@ def ingest_live_trades() -> None:
     rr_list: list[float] = []
     lt_list: list[int] = []
     st_list: list[float] = []
+    # Tier-1 enrichment arrays: ground-truth signals from broker_trades +
+    # market_trades excursion analysis. Lets the trainer learn:
+    # - was_stop      → did the placed stop actually get hit?
+    # - peak_R        → favourable extreme reached during the trade
+    # - placed_st     → stop the model actually placed
+    # - trail_count   → did the trade get trailed, how many times?
+    # - slippage_ticks→ adverse fill slip on entry
+    pk_c_list: list[float] = []
+    pk_r_list: list[float] = []
+    ws_list: list[int] = []  # was_stop, 0/1
+    tc_list: list[int] = []  # trail_count
+    sl_list: list[float] = []  # slippage_ticks
+    placed_st_list: list[float] = []
     skipped_dim = 0
 
     for r in new_rows:
@@ -1801,14 +1897,17 @@ def ingest_live_trades() -> None:
         except Exception:
             continue
 
+        # stop_ticks resolution: signal-time placed value (s) takes
+        # precedence; broker-side placed value (t) is the fallback.
+        placed_stop_ticks = float(r.placed_stop_ticks or r.trade_stop_ticks or 25)
+        risk_pts = max(placed_stop_ticks * 0.25, 0.25)
+
         # Reward: realized R-multiple if available, else derived from $ + stop_ticks.
         if r.pnl_r is not None:
             reward_r = float(r.pnl_r)
-        elif r.stop_ticks and r.stop_ticks > 0:
-            stop_dollars = r.stop_ticks * 5.0  # $5/tick NQ
-            reward_r = float(r.pnl_dollars) / max(stop_dollars, 1.0)
         else:
-            reward_r = float(r.pnl_dollars) / 500.0  # rough normalization
+            stop_dollars = placed_stop_ticks * 5.0  # $5/tick NQ
+            reward_r = float(r.pnl_dollars) / max(stop_dollars, 1.0)
 
         # Action label: pick CONT (0) vs REV (1) from the model's own
         # cont_p / rev_p at signal time — that's the decision the model
@@ -1826,13 +1925,41 @@ def ingest_live_trades() -> None:
         # picks were profitable / unprofitable distinctly from CONT.
         rc = reward_r if action_label == 0 else 0.0
         rr = reward_r if action_label == 1 else 0.0
-        stop_target = float(r.stop_ticks or 25)
+
+        # Excursion analysis from market_trades — gives us peak_R + the
+        # retrospective optimal stop distance (just past MAE). Falls back
+        # to the realized R when market data is unavailable.
+        side = r.trade_side or ("long" if action_label == 0 else "short")
+        mfe_pts, mae_pts = _excursion(r.trade_ts, r.closed_at, side, float(r.entry_price or 0))
+        peak_r_realized = mfe_pts / risk_pts if mfe_pts > 0 else max(reward_r, 0.0)
+        # Optimal stop = MAE + 1-tick buffer, clamped to [10, 60] ticks so
+        # one weird tick can't poison the label. Default = placed value when
+        # no market data is available.
+        if mae_pts > 0:
+            optimal_stop_ticks = float(np.clip(round(mae_pts / 0.25) + 1, 10, 60))
+        else:
+            optimal_stop_ticks = placed_stop_ticks
+        # Stop-target label that the trainer learns: optimal (truth)
+        # rather than placed (what we did).
+        stop_target = optimal_stop_ticks
+
+        # peak_R per-side mirrors the simulator path's peak_R_cont /
+        # peak_R_rev arrays so early_exit_model picks them up
+        # automatically via merge-live.
+        pk_c = peak_r_realized if action_label == 0 else 0.0
+        pk_r = peak_r_realized if action_label == 1 else 0.0
 
         obs_list.append(arr.astype(np.float32))
         rc_list.append(np.float32(rc))
         rr_list.append(np.float32(rr))
         lt_list.append(int(action_label))
         st_list.append(np.float32(stop_target))
+        pk_c_list.append(np.float32(pk_c))
+        pk_r_list.append(np.float32(pk_r))
+        ws_list.append(1 if r.was_stop else 0)
+        tc_list.append(int(r.trail_count or 0))
+        sl_list.append(np.float32(float(r.slippage_ticks or 0.0)))
+        placed_st_list.append(np.float32(placed_stop_ticks))
 
     if skipped_dim:
         typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
@@ -1852,6 +1979,16 @@ def ingest_live_trades() -> None:
     np.save(live_dir / f"rr_{chunk_id}.npy", np.array(rr_list, dtype=np.float32))
     np.save(live_dir / f"lt_{chunk_id}.npy", np.array(lt_list, dtype=np.int32))
     np.save(live_dir / f"st_{chunk_id}.npy", np.array(st_list, dtype=np.float32))
+    # Tier-1 enrichment: peak_R goes through the existing peak_R_cont /
+    # peak_R_rev pipeline (used by early_exit_model). The other arrays are
+    # auxiliary — merge-live writes them alongside the main pool so a
+    # future training step can pick them up without re-ingesting.
+    np.save(live_dir / f"pk_c_{chunk_id}.npy", np.array(pk_c_list, dtype=np.float32))
+    np.save(live_dir / f"pk_r_{chunk_id}.npy", np.array(pk_r_list, dtype=np.float32))
+    np.save(live_dir / f"ws_{chunk_id}.npy", np.array(ws_list, dtype=np.int32))
+    np.save(live_dir / f"tc_{chunk_id}.npy", np.array(tc_list, dtype=np.int32))
+    np.save(live_dir / f"sl_{chunk_id}.npy", np.array(sl_list, dtype=np.float32))
+    np.save(live_dir / f"placed_st_{chunk_id}.npy", np.array(placed_st_list, dtype=np.float32))
 
     # Update seen set
     seen.update(r.tid for r in new_rows)
@@ -1860,7 +1997,8 @@ def ingest_live_trades() -> None:
 
     typer.echo(
         f"Wrote chunk {chunk_id}: {len(obs_list)} live-trade examples "
-        f"(realized rewards). merge-live + train will pick them up."
+        f"(realized rewards + Tier-1 enrichment: was_stop, peak_R, trail_count, "
+        f"slippage_ticks, optimal_stop). merge-live + train will pick them up."
     )
 
 
