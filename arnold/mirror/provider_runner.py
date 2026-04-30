@@ -291,11 +291,14 @@ class ProviderRunner:
 
     async def _prep_and_read_live_edge(
         self, bet: dict, pid: str, workflow, page
-    ) -> tuple[Any, float | None, float | None]:
+    ) -> tuple[PlacementResult | None, float | None, float | None]:
         """One iteration of: navigate-already-done → prep_betslip → check_live_price.
 
         Returns (prep_result, live_odds, live_edge). Caller handles failure
         modes (prep_result.status == "failed") and convergence decisions.
+
+        Side effects: mutates bet["stake"] (caps to balance and provider stake_caps)
+        and constructs a fresh bet_ns each call.
         """
         bet_ns = _bet_ns(bet)
         stake = bet.get("stake", 0.0)
@@ -540,6 +543,11 @@ class ProviderRunner:
                         # to READY on the current (still-pushed-back) bet.
                         new_bet = self._pop_bet()
                         if new_bet is None:
+                            # Queue drained between push and pop (race with batch refresh).
+                            # The pushed-back bet is now the only candidate — fall through to
+                            # READY on it. Duplicate-in-queue is OK: the dethrone watcher
+                            # excludes the active bet's own _active_key, and _refresh_batch
+                            # dedups by (event_id, market, outcome) on the next 10s tick.
                             logger.warning(f"[Runner:{pid}] Queue empty mid-convergence — falling through")
                             break
                         bet = new_bet
