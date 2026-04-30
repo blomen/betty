@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 class Strategy:
     """Optional per-provider method overrides.
 
-    Each field is an async callable(page, intel) -> result, or None to use generic.
+    Most fields are async callables (page, intel) -> result. Slip/placement hooks
+    (read_slip_odds, update_slip_stake, parse_placement_*) have custom signatures
+    — see field comments for details. None to use generic.
     """
 
     check_login: Callable | None = None
@@ -38,6 +40,13 @@ class Strategy:
     # Without these fields the dataclass would AttributeError on access.
     scan: Callable | None = None  # (page, intel) -> dict read-only account preview
     settle_all: Callable | None = None  # (page, intel) -> dict full settlement run
+    # Slip + placement-XHR hooks consumed by ArbRunner / SlipOddsStream / provider_runner
+    # placement interceptor. Async for read/write of slip state, sync for parsing
+    # placement response bodies (no I/O).
+    read_slip_odds: Callable | None = None  # async (page, intel) -> float | None
+    update_slip_stake: Callable | None = None  # async (page, stake, intel) -> bool
+    parse_placement_response: Callable | None = None  # sync (body) -> str | None
+    parse_placement_status: Callable | None = None  # sync (body) -> dict
 
 
 def load_strategy(provider_id: str) -> Strategy | None:
