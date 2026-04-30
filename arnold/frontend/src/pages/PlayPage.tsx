@@ -189,6 +189,18 @@ export default function PlayPage() {
   const [tabOpenProviders, setTabOpenProviders] = useState<Set<string>>(new Set())
   const [loopStatus, setLoopStatus] = useState<string | null>(null)
   const [loopProviderStatus, setLoopProviderStatus] = useState<Record<string, any> | null>(null)
+  // Per-provider status line — rendered under the provider's own row instead
+  // of in the global header banner. Provider-scoped SSE events (login_waiting,
+  // settling_pending, provider_skipped, bet_navigating, etc.) write here
+  // keyed by data.provider_id so each provider only sees its own status.
+  const [providerStatus, setProviderStatus] = useState<Record<string, string | null>>({})
+  const setProviderStatusFor = useCallback((pid: string | undefined | null, msg: string | null) => {
+    if (!pid) return
+    setProviderStatus(prev => {
+      if (prev[pid] === msg) return prev
+      return { ...prev, [pid]: msg }
+    })
+  }, [])
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
@@ -590,9 +602,14 @@ export default function PlayPage() {
   useEffect(() => {
     if (!mirror.lastEvent) return
     const { type, data } = mirror.lastEvent
-    if (type === 'login_waiting') setLoopStatus(`Waiting for login on ${data.provider_id}... (${Math.round(data.elapsed)}/${data.timeout}s)`)
+    if (type === 'login_waiting') {
+      setProviderStatusFor(
+        data.provider_id,
+        `waiting for login (${Math.round(data.elapsed)}/${data.timeout}s)`,
+      )
+    }
     if (type === 'login_detected') {
-      setLoopStatus(`Logged in to ${data.provider_id}`)
+      setProviderStatusFor(data.provider_id, null)
       setLoggedInProviders(prev => new Set(prev).add(data.provider_id))
     }
     if (type === 'balance_intercepted' && data.provider_id && data.balance != null && data.balance >= 0) {
@@ -605,7 +622,7 @@ export default function PlayPage() {
         return next
       })
     }
-    if (type === 'settling_pending') setLoopStatus(`Scanning pending on ${data.provider_id}...`)
+    if (type === 'settling_pending') setProviderStatusFor(data.provider_id, 'scanning pending…')
     if (type === 'settling_done') {
       if (data.settlements?.length > 0) {
         const newToasts: SettleToast[] = data.settlements.map((s: any) => {
@@ -644,7 +661,18 @@ export default function PlayPage() {
       setDetectedSettlements(prev => ({ ...prev, ...map }))
     }
     if (type === 'settlements_confirmed') { setToasts([]); setSettleWaiting(false); setDetectedSettlements({}); setLoopStatus(null); load() }
-    if (type === 'provider_skipped') setLoopStatus(`Skipped ${data.provider_id}: ${data.reason}`)
+    if (type === 'provider_skipped') setProviderStatusFor(data.provider_id, `skipped: ${data.reason}`)
+    if (type === 'arb_runner_idle') {
+      const reason = data?.reason || 'idle'
+      const skips = data?.details?.skip_counts
+      const tail = skips && Object.keys(skips).length
+        ? ` (${Object.entries(skips).map(([k, v]) => `${k}×${v}`).join(', ')})`
+        : ''
+      setProviderStatusFor(data.provider_id, `idle: ${reason}${tail}`)
+    }
+    if (type === 'provider_complete') {
+      setProviderStatusFor(data.provider_id, data?.reason ? `done — ${data.reason}` : 'done')
+    }
     if (type === 'bet_ready') {
       const bet = data.bet ?? data
       setCurrentBetReady({ ...bet, prep_ok: data.prep_ok, live_odds: data.live_odds, live_edge: data.live_edge, prep_reason: data.prep_reason })
@@ -708,7 +736,9 @@ export default function PlayPage() {
       const away = bet.display_away || bet.away_team || ''
       const evt = home && away ? `${home} v ${away}` : (bet.event_name || '?')
       const reason = data?.reason || 'unknown'
-      setLoopStatus(`Skipped: ${evt} — ${reason}`)
+      const pid = data?.provider_id || bet.provider_id
+      if (pid) setProviderStatusFor(pid, `skipped: ${evt} — ${reason}`)
+      else setLoopStatus(`Skipped: ${evt} — ${reason}`)
       setArbLegs(null)
       setArbAllGreen(false)
       setArbProfitPct(null)
@@ -721,11 +751,14 @@ export default function PlayPage() {
       const evt = home && away ? `${home} v ${away}` : (bet.event_name || '?')
       const skipped = data?.skipped_so_far ?? 0
       const fails = data?.consecutive_hard_fails ?? 0
-      const tail = fails > 0 ? ` (${fails} consecutive hard-fails)` : (skipped > 0 ? ` (${skipped} skipped this session)` : '')
-      setLoopStatus(`Navigating: ${evt} on ${data?.provider_id}${tail}`)
+      const tail = fails > 0 ? ` (${fails} hard-fails)` : (skipped > 0 ? ` (${skipped} skipped)` : '')
+      setProviderStatusFor(data?.provider_id, `navigating: ${evt}${tail}`)
     }
     if (type === 'runner_stale_intel') {
-      setLoopStatus(`⚠️ ${data?.provider_id}: ${data?.consecutive_hard_fails ?? '?'} consecutive hard-fails — ${data?.hint || 'cached event intel may be stale'}`)
+      setProviderStatusFor(
+        data?.provider_id,
+        `⚠️ ${data?.consecutive_hard_fails ?? '?'} hard-fails — ${data?.hint || 'cached event intel may be stale'}`,
+      )
     }
     if (type === 'arb_legs_loaded') {
       setArbGroupId(data.arb_group_id ?? null)
@@ -1067,6 +1100,9 @@ export default function PlayPage() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           {mirror.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {/* Per-provider status renders under each provider row (not here).
+             Global banner kept for non-scoped events only — most live status
+             is now scoped per provider via providerStatus[pid]. */}
           {loopStatus && <span className="text-amber-400">{loopStatus}</span>}
         </div>
         {error && (
@@ -1404,6 +1440,11 @@ export default function PlayPage() {
                                     ≤{Math.round(stakeCaps[pid])}
                                   </span>
                                 )}
+                                {providerStatus[pid] && (
+                                  <span className="text-[10px] text-amber-400 truncate" title={providerStatus[pid] || ''}>
+                                    {providerStatus[pid]}
+                                  </span>
+                                )}
                               </div>
 
                               {/* Per-provider pending list */}
@@ -1565,24 +1606,29 @@ export default function PlayPage() {
             Stakes ramp with bankroll (Kelly is bankroll-fraction), so this is the
             "fund all NOW at current Kelly" number; depositing more lets stakes grow. */}
         {bets.length > 0 && (() => {
-          const stakeByProvider: Record<string, number> = {}
+          const stakeNativeByProvider: Record<string, number> = {}
+          const stakeSekByProvider: Record<string, number> = {}
           let totalSek = 0
           for (const b of bets) {
             if (!b.stake || b.stake <= 0) continue
-            const stakeSek = b.tier === 'polymarket' ? b.stake * 10.5 : b.stake
-            stakeByProvider[b.provider_id] = (stakeByProvider[b.provider_id] || 0) + stakeSek
+            const isPoly = b.tier === 'polymarket'
+            const stakeSek = isPoly ? b.stake * 10.5 : b.stake
+            stakeNativeByProvider[b.provider_id] = (stakeNativeByProvider[b.provider_id] || 0) + b.stake
+            stakeSekByProvider[b.provider_id] = (stakeSekByProvider[b.provider_id] || 0) + stakeSek
             totalSek += stakeSek
           }
-          const need: Record<string, number> = {}
-          let additionalTotal = 0
-          for (const [pid, stakeSek] of Object.entries(stakeByProvider)) {
+          const needNative: Record<string, number> = {}
+          let additionalSek = 0
+          for (const [pid, stakeSek] of Object.entries(stakeSekByProvider)) {
+            const isPoly = pid === 'polymarket'
             const balRaw = providerBalances[pid]
-            const balSek = typeof balRaw === 'object' && balRaw?.balance != null
-              ? balRaw.balance * (pid === 'polymarket' ? 10.5 : 1)
-              : (typeof balRaw === 'number' ? balRaw * (pid === 'polymarket' ? 10.5 : 1) : 0)
-            const gap = Math.max(0, stakeSek - balSek)
-            if (gap > 0) need[pid] = gap
-            additionalTotal += gap
+            const balNative = typeof balRaw === 'object' && balRaw?.balance != null
+              ? balRaw.balance
+              : (typeof balRaw === 'number' ? balRaw : 0)
+            const stakeNative = stakeNativeByProvider[pid] || 0
+            const gapNative = Math.max(0, stakeNative - balNative)
+            if (gapNative > 0) needNative[pid] = gapNative
+            additionalSek += gapNative * (isPoly ? 10.5 : 1)
           }
           if (totalSek <= 0) return null
           return (
@@ -1590,23 +1636,28 @@ export default function PlayPage() {
               <span className="text-amber-300 font-semibold uppercase tracking-wider">Total stake</span>
               <span className="text-amber-200 font-mono font-semibold">{Math.round(totalSek)} kr</span>
               <span className="text-zinc-500">·</span>
-              {Object.entries(stakeByProvider).sort(([,a],[,b]) => b - a).map(([pid, stakeSek]) => {
-                const gap = need[pid] || 0
+              {Object.entries(stakeSekByProvider).sort(([,a],[,b]) => b - a).map(([pid]) => {
+                const isPoly = pid === 'polymarket'
+                const stakeNative = stakeNativeByProvider[pid] || 0
+                const gapNative = needNative[pid] || 0
+                const unit = isPoly ? '$' : 'kr'
                 return (
                   <span key={pid} className="flex items-center gap-1">
                     <span className="text-zinc-400 uppercase">{pid}</span>
-                    <span className="text-amber-200/90 font-mono">{Math.round(stakeSek)} kr</span>
-                    {gap > 0 && (
+                    <span className="text-amber-200/90 font-mono">
+                      {isPoly ? `$${stakeNative.toFixed(0)}` : `${Math.round(stakeNative)} ${unit}`}
+                    </span>
+                    {gapNative > 0 && (
                       <span className="text-orange-400 font-mono" title="Additional deposit needed at this provider given current balance">
-                        (+{Math.round(gap)})
+                        (+{isPoly ? `$${gapNative.toFixed(0)}` : `${Math.round(gapNative)}`})
                       </span>
                     )}
                   </span>
                 )
               })}
-              {additionalTotal > 0 && (
+              {additionalSek > 0 && (
                 <span className="ml-auto text-orange-300 font-mono">
-                  {Math.round(additionalTotal)} kr to deposit
+                  {Math.round(additionalSek)} kr to deposit
                 </span>
               )}
               <span className="text-zinc-500 text-[10px]" title="Kelly stakes scale with total bankroll. Re-check this number after depositing.">
@@ -1680,6 +1731,11 @@ export default function PlayPage() {
                         )}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
                         {stakeCaps[pid] && <span className="ml-1 px-1 py-px text-[8px] font-bold bg-orange-900/50 text-orange-400 border border-orange-700/50 rounded" title={`Provider limit: max ${Math.round(stakeCaps[pid])} kr per bet`}>≤{Math.round(stakeCaps[pid])}</span>}
+                        {providerStatus[pid] && (
+                          <span className="ml-1 text-amber-400 text-[10px] truncate max-w-[180px]" title={providerStatus[pid] || ''}>
+                            {providerStatus[pid]}
+                          </span>
+                        )}
                       </button>
                     )
                   })}
