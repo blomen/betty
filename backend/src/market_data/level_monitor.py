@@ -1967,10 +1967,11 @@ class LevelMonitor:
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
-                # PAPER-TRADING: relay OF gate matches Path-1 reckless floor
-                # (0.15) so trainer keeps getting labelled live trades. Both
-                # paths share the same threshold so we can't leak again.
-                _RELAY_OF_FLOOR = 0.15 if _reckless_relay else 0.30
+                # PAPER-TRADING: drop relay OF floor to 0 in reckless mode so
+                # every signal also gets persisted (stock_signals + live
+                # collector). Mirrors the broker-path floor — both paths must
+                # agree or signals fire on broker but never reach the trainer.
+                _RELAY_OF_FLOOR = 0.0 if _reckless_relay else 0.30
                 relay_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
 
                 if action in ("SKIP", "skip"):
