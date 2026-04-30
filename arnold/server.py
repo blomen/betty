@@ -193,7 +193,7 @@ async def _auto_start_play_loop() -> None:
     Survives transient errors (tunnel hiccups, batch fetch failures) and
     retries on the next 30s tick.
     """
-    import httpx
+    from arnold.http_client import local_client, tunnel_client
 
     POLL_INTERVAL = 30.0
     while True:
@@ -208,43 +208,39 @@ async def _auto_start_play_loop() -> None:
             balance = poly_data.get("balance") or 0.0
             if balance <= 0:
                 continue
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # Skip if a polymarket runner is already active. /play/status
-                # returns providers.polymarket.state == 'navigating'/'ready'/
-                # 'placing'/etc. when a runner is alive.
-                pstatus = await client.get("http://127.0.0.1:8000/mirror/play/status")
-                if pstatus.status_code == 200:
-                    pdata = pstatus.json()
-                    poly_runner = (pdata.get("providers") or {}).get("polymarket") or {}
-                    if poly_runner.get("state") and poly_runner.get("state") not in ("idle", "none", None):
-                        continue  # already running
-                # Fetch fresh batch (same path React uses).
-                bresp = await client.post(
-                    "http://127.0.0.1:8000/api/opportunities/play/batch",
-                    json={},
+            local = local_client()
+            tunnel = tunnel_client()
+            # Skip if a polymarket runner is already active. /play/status
+            # returns providers.polymarket.state == 'navigating'/'ready'/
+            # 'placing'/etc. when a runner is alive.
+            pstatus = await local.get("/mirror/play/status", timeout=10.0)
+            if pstatus.status_code == 200:
+                pdata = pstatus.json()
+                poly_runner = (pdata.get("providers") or {}).get("polymarket") or {}
+                if poly_runner.get("state") and poly_runner.get("state") not in ("idle", "none", None):
+                    continue  # already running
+            # Fetch fresh batch directly through the tunnel — skip the
+            # local /api proxy hop.
+            bresp = await tunnel.post("/api/opportunities/play/batch", json={}, timeout=10.0)
+            if bresp.status_code != 200:
+                continue
+            bdata = bresp.json()
+            full_batch = bdata.get("batch") or []
+            poly_bets = [b for b in full_batch if b.get("provider_id") == "polymarket"]
+            if not poly_bets:
+                continue
+            start_payload = {
+                "provider_ids": ["polymarket"],
+                "batch": poly_bets,
+                "balances": {"polymarket": balance},
+            }
+            sresp = await local.post("/mirror/play/start", json=start_payload, timeout=10.0)
+            if sresp.status_code == 200:
+                print(
+                    f"[play-autostart] kicked off polymarket runner — "
+                    f"{len(poly_bets)} bets queued, balance ${balance:.2f}",
+                    flush=True,
                 )
-                if bresp.status_code != 200:
-                    continue
-                bdata = bresp.json()
-                full_batch = bdata.get("batch") or []
-                poly_bets = [b for b in full_batch if b.get("provider_id") == "polymarket"]
-                if not poly_bets:
-                    continue
-                start_payload = {
-                    "provider_ids": ["polymarket"],
-                    "batch": poly_bets,
-                    "balances": {"polymarket": balance},
-                }
-                sresp = await client.post(
-                    "http://127.0.0.1:8000/mirror/play/start",
-                    json=start_payload,
-                )
-                if sresp.status_code == 200:
-                    print(
-                        f"[play-autostart] kicked off polymarket runner — "
-                        f"{len(poly_bets)} bets queued, balance ${balance:.2f}",
-                        flush=True,
-                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -271,4 +267,15 @@ async def shutdown():
         await browser.stop()
     except Exception:
         logger.exception("Mirror browser stop raised")
+
+    # Close pooled httpx clients (tunnel + local self-call + proxy pool).
+    try:
+        from proxy import close_proxy_clients
+
+        from arnold.http_client import close_all as _close_clients
+
+        await _close_clients()
+        await close_proxy_clients()
+    except Exception:
+        logger.exception("HTTP client shutdown raised")
     logger.info("Arnold stopped")

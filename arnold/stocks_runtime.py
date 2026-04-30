@@ -131,23 +131,31 @@ class _AdapterShim:
 
 
 async def _passive_position_poller() -> None:
-    """Mirror server-side position state into local `dash_state` so the TV
-    overlay broadcaster emits `position_upsert`/`position_remove`.
+    """Safety-net poller for position state. The primary path is the
+    `/ws/signals` push handled in `_passive_dashboard_listener` —
+    `position_update` messages mirror the same fields (entry_price, size,
+    side, entry_time, stop_price, tp_price) into dash_state instantly.
 
-    Polls /api/stocks/runtime-status via the local /api proxy every 2s.
-    Cheap — static-route handler returns a small JSON dict.
+    This poller exists for one specific server-side bug: tracker.entry_price
+    can stay at 0.0 even when a position is open, which would draw the
+    position shape at price 0 (off-chart). When that happens the poller
+    substitutes the last tick price so the chart still renders.
+
+    Used to run at 2s — that produced 30 round-trips/min through the SSH
+    tunnel for state the WS push already delivers. 30s is enough for the
+    entry_price=0 fallback because positions are slow-changing and the
+    fallback only kicks when the WS push has already failed to populate
+    entry_price.
     """
     import json
 
     import httpx
 
+    from arnold.http_client import tunnel_client
     from src.stocks.dashboard import _state as dash_state
     from src.stocks.dashboard import update_positions
 
-    # Self-call through the local /api proxy — it injects the upstream API
-    # key for us, so the poller doesn't need its own credentials. One extra
-    # in-process hop is negligible at 0.5 Hz.
-    url = "http://127.0.0.1:8000/api/stocks/runtime-status"
+    url = "/api/stocks/runtime-status"
 
     # Track flat ↔ open transitions so we can stamp entry_time when the
     # position first opens. Server-side tracker doesn't expose this — the
@@ -159,72 +167,70 @@ async def _passive_position_poller() -> None:
     entry_time: float | None = None
     fallback_entry: float | None = None
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        while True:
-            try:
-                r = await client.get(url)
-                data = r.json() if r.status_code == 200 else {}
-                pos = (data or {}).get("position") or {}
-                if pos and not pos.get("flat"):
-                    side_raw = pos.get("side", "long")
-                    side = "long" if str(side_raw).lower() == "long" else "short"
-                    size = int(pos.get("size", 0))
-                    entry = float(pos.get("entry_price") or 0.0)
-                    stop = pos.get("stop_price")
-                    tp = pos.get("tp_price")
-                    if size > 0:
-                        if last_was_flat:
-                            entry_time = time.time()
-                            fallback_entry = None
-                        last_was_flat = False
-                        # Keep refreshing fallback from the latest tick while
-                        # tracker.entry_price stays 0 — server tracker often
-                        # never populates entry_price at all in autonomous
-                        # mode. Once we have a real entry from the tracker,
-                        # we lock it; otherwise we follow the live price so
-                        # the shape at least appears at a sensible spot.
-                        if entry <= 0:
-                            ticks = dash_state.get("ticks") or []
-                            if ticks:
-                                try:
-                                    last = list(ticks)[-1]
-                                    px = float(last.get("p") or 0.0)
-                                    if px > 0:
-                                        fallback_entry = px
-                                except Exception:
-                                    pass
-                        effective_entry = entry if entry > 0 else (fallback_entry or 0.0)
-                        update_positions(
-                            [
-                                {
-                                    "price": effective_entry,
-                                    "size": size,
-                                    "side": side,
-                                    "entry_time": entry_time,
-                                    "tp_price": float(tp) if tp else None,
-                                }
-                            ]
-                        )
-                        dash_state["adapter"] = _AdapterShim(
-                            _TrackerShim(effective_entry, float(stop) if stop else None)
-                        )
-                    else:
-                        last_was_flat = True
-                        entry_time = None
+    client = tunnel_client()
+    while True:
+        try:
+            r = await client.get(url, timeout=5.0)
+            data = r.json() if r.status_code == 200 else {}
+            pos = (data or {}).get("position") or {}
+            if pos and not pos.get("flat"):
+                side_raw = pos.get("side", "long")
+                side = "long" if str(side_raw).lower() == "long" else "short"
+                size = int(pos.get("size", 0))
+                entry = float(pos.get("entry_price") or 0.0)
+                stop = pos.get("stop_price")
+                tp = pos.get("tp_price")
+                if size > 0:
+                    if last_was_flat:
+                        entry_time = time.time()
                         fallback_entry = None
-                        update_positions([])
-                        dash_state.pop("adapter", None)
+                    last_was_flat = False
+                    # Keep refreshing fallback from the latest tick while
+                    # tracker.entry_price stays 0 — server tracker often
+                    # never populates entry_price at all in autonomous
+                    # mode. Once we have a real entry from the tracker,
+                    # we lock it; otherwise we follow the live price so
+                    # the shape at least appears at a sensible spot.
+                    if entry <= 0:
+                        ticks = dash_state.get("ticks") or []
+                        if ticks:
+                            try:
+                                last = list(ticks)[-1]
+                                px = float(last.get("p") or 0.0)
+                                if px > 0:
+                                    fallback_entry = px
+                            except Exception:
+                                pass
+                    effective_entry = entry if entry > 0 else (fallback_entry or 0.0)
+                    update_positions(
+                        [
+                            {
+                                "price": effective_entry,
+                                "size": size,
+                                "side": side,
+                                "entry_time": entry_time,
+                                "tp_price": float(tp) if tp else None,
+                            }
+                        ]
+                    )
+                    dash_state["adapter"] = _AdapterShim(_TrackerShim(effective_entry, float(stop) if stop else None))
                 else:
                     last_was_flat = True
                     entry_time = None
                     fallback_entry = None
                     update_positions([])
                     dash_state.pop("adapter", None)
-            except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
-                log.debug("position poller: %s", exc)
-            except Exception:
-                log.exception("position poller iteration failed")
-            await asyncio.sleep(2.0)
+            else:
+                last_was_flat = True
+                entry_time = None
+                fallback_entry = None
+                update_positions([])
+                dash_state.pop("adapter", None)
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+            log.debug("position poller: %s", exc)
+        except Exception:
+            log.exception("position poller iteration failed")
+        await asyncio.sleep(30.0)
 
 
 async def _passive_trades_poller() -> None:
@@ -239,23 +245,23 @@ async def _passive_trades_poller() -> None:
 
     import httpx
 
+    from arnold.http_client import tunnel_client
     from src.stocks.dashboard import _state as dash_state
 
-    url = "http://127.0.0.1:8000/api/stocks/broker-trades?days=7"
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        while True:
-            try:
-                r = await client.get(url)
-                if r.status_code == 200:
-                    data = r.json() or {}
-                    trades = data.get("trades") or []
-                    dash_state["trades"] = trades
-            except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
-                log.debug("trades poller: %s", exc)
-            except Exception:
-                log.exception("trades poller iteration failed")
-            await asyncio.sleep(30.0)
+    url = "/api/stocks/broker-trades"
+    client = tunnel_client()
+    while True:
+        try:
+            r = await client.get(url, params={"days": 7}, timeout=10.0)
+            if r.status_code == 200:
+                data = r.json() or {}
+                trades = data.get("trades") or []
+                dash_state["trades"] = trades
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+            log.debug("trades poller: %s", exc)
+        except Exception:
+            log.exception("trades poller iteration failed")
+        await asyncio.sleep(30.0)
 
 
 async def _passive_dashboard_listener() -> None:
@@ -405,8 +411,6 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     """
     import os
 
-    import httpx
-
     if os.environ.get("STOCKS_AUTONOMOUS", "").lower() == "true":
         log.info(
             "STOCKS_AUTONOMOUS=true — server handles TopstepX. Starting passive "
@@ -426,6 +430,7 @@ async def bootstrap_stocks() -> StocksRuntime | None:
         asyncio.create_task(_passive_trades_poller(), name="passive-trades-poller")
         return None
 
+    from arnold.http_client import tunnel_client
     from src.broker.flatten_scheduler import FlattenScheduler
     from src.stocks import broker_adapter as _broker_adapter_mod
     from src.stocks.broker_adapter import TopstepXBrokerAdapter
@@ -481,22 +486,16 @@ async def bootstrap_stocks() -> StocksRuntime | None:
     # --- broker_trade persistence: POST every closed round-trip to the server.
     # The server endpoint dedupes on (closed_at, symbol, side, entry_price, size)
     # so retries are safe. Fire-and-forget — failures only show in local logs.
-    _api_base = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get(
-        "ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000"
-    )
-    _api_key = os.environ.get("ARNOLD_API_KEY", "")
+    # Uses the singleton tunnel client (auth headers preset) so we don't open
+    # a fresh TCP connection on every closed trade.
     _persist_loop = asyncio.get_running_loop()
 
     async def _post_trade(payload: dict) -> None:
         try:
-            async with httpx.AsyncClient(timeout=15.0) as hc:
-                r = await hc.post(
-                    f"{_api_base}/api/stocks/broker-trades",
-                    json=payload,
-                    headers={"X-API-Key": _api_key} if _api_key else {},
-                )
-                if r.status_code >= 400:
-                    log.warning("broker-trade POST %d: %s", r.status_code, r.text[:200])
+            hc = tunnel_client()
+            r = await hc.post("/api/stocks/broker-trades", json=payload, timeout=15.0)
+            if r.status_code >= 400:
+                log.warning("broker-trade POST %d: %s", r.status_code, r.text[:200])
         except Exception:
             log.exception("broker-trade POST failed")
 

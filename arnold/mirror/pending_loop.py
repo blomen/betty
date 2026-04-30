@@ -235,12 +235,13 @@ class PendingLoop:
 
     async def _fetch_pending(self) -> dict[str, list[dict]]:
         """GET /api/opportunities/play/pending-bets → {provider_id: [bet, ...]}"""
-        url = f"{self._proxy_url}/api/opportunities/play/pending-bets"
+        from arnold.http_client import tunnel_client
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            client = tunnel_client()
+            resp = await client.get("/api/opportunities/play/pending-bets", timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
         except (httpx.ReadTimeout, httpx.ReadError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
             # Tunnel/server transient — already logged elsewhere by the
             # tunnel watchdog. Single-line at debug level instead of a
@@ -358,7 +359,8 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _record_settlements(self, pid: str, settlements: list[dict]) -> None:
-        url = f"{self._proxy_url}/api/opportunities/play/settle-batch"
+        from arnold.http_client import tunnel_client
+
         batch = [
             {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
         ]
@@ -366,14 +368,10 @@ class PendingLoop:
             logger.info(f"[PendingLoop] no valid settlements to record for {pid}")
             return
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    url,
-                    json=batch,
-                    headers={_AUTH_HEADER: _AUTH_VALUE},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            client = tunnel_client()
+            resp = await client.post("/api/opportunities/play/settle-batch", json=batch, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
             logger.info(
                 f"[PendingLoop] settlements recorded for {pid}: {data.get('settled', 0)}/{data.get('total', 0)}"
             )
@@ -381,15 +379,12 @@ class PendingLoop:
             logger.exception(f"[PendingLoop] failed to record settlements for {pid}")
 
     async def _post_balance(self, pid: str, balance: float) -> None:
-        url = f"{self._proxy_url}/api/bankroll/set/{pid}"
+        from arnold.http_client import tunnel_client
+
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    url,
-                    json={"balance": balance},
-                    headers={_AUTH_HEADER: _AUTH_VALUE},
-                )
-                resp.raise_for_status()
+            client = tunnel_client()
+            resp = await client.post(f"/api/bankroll/set/{pid}", json={"balance": balance}, timeout=15.0)
+            resp.raise_for_status()
             logger.info(f"[PendingLoop] balance posted for {pid}: {balance}")
         except Exception:
             logger.warning(f"[PendingLoop] failed to post balance for {pid}")

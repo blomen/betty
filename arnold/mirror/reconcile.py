@@ -197,53 +197,52 @@ async def _fallback_reconcile_unmatched(
     """For each DB-pending bet not matched by paginated sync_history, attempt a
     targeted date-range query. PATCH + broadcast bet_reconciled per match.
     Returns the count of bets reconciled by the fallback path."""
-    import httpx
+    from arnold.http_client import tunnel_client as _tc
 
     if not hasattr(workflow, "fetch_history_for_bet"):
         return 0
     n = 0
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for bet in db_pending_unmatched:
-            entries = await workflow.fetch_history_for_bet(page, bet)
-            if not entries:
+    client = _tc()
+    for bet in db_pending_unmatched:
+        entries = await workflow.fetch_history_for_bet(page, bet)
+        if not entries:
+            continue
+        # Convert HistoryEntry dataclasses to dicts shaped like sync_history output
+        history = [
+            {
+                "odds": e.odds,
+                "stake": e.stake,
+                "status": e.status,
+                "payout": e.payout,
+                "provider_bet_id": e.provider_bet_id,
+                "event_name": e.event_name,
+                "market": e.market,
+                "outcome": e.outcome,
+            }
+            for e in entries
+        ]
+        deltas = reconcile_from_history([bet], history)
+        if not deltas:
+            continue
+        for delta in deltas:
+            try:
+                resp = await client.patch(f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0)
+                resp.raise_for_status()
+            except Exception:
+                logger.exception(f"[reconcile-fallback] PATCH bet {delta.bet_id} failed")
                 continue
-            # Convert HistoryEntry dataclasses to dicts shaped like sync_history output
-            history = [
+            n += 1
+            broadcaster.publish(
+                "bet_reconciled",
                 {
-                    "odds": e.odds,
-                    "stake": e.stake,
-                    "status": e.status,
-                    "payout": e.payout,
-                    "provider_bet_id": e.provider_bet_id,
-                    "event_name": e.event_name,
-                    "market": e.market,
-                    "outcome": e.outcome,
-                }
-                for e in entries
-            ]
-            deltas = reconcile_from_history([bet], history)
-            if not deltas:
-                continue
-            for delta in deltas:
-                url = f"{proxy_url.rstrip('/')}/api/bets/{delta.bet_id}"
-                try:
-                    resp = await client.patch(url, json=delta.changes, headers={auth_header: auth_value})
-                    resp.raise_for_status()
-                except Exception:
-                    logger.exception(f"[reconcile-fallback] PATCH bet {delta.bet_id} failed")
-                    continue
-                n += 1
-                broadcaster.publish(
-                    "bet_reconciled",
-                    {
-                        "provider_id": provider_id,
-                        "bet_id": delta.bet_id,
-                        "match_method": f"fallback_{delta.match_method}",
-                        "confidence": delta.confidence,
-                        "changes": delta.changes,
-                        "event_name": delta.history_entry.get("event_name"),
-                    },
-                )
+                    "provider_id": provider_id,
+                    "bet_id": delta.bet_id,
+                    "match_method": f"fallback_{delta.match_method}",
+                    "confidence": delta.confidence,
+                    "changes": delta.changes,
+                    "event_name": delta.history_entry.get("event_name"),
+                },
+            )
     return n
 
 
@@ -266,34 +265,33 @@ async def reconcile_and_publish(
     any DB-pending bet not matched by the main paginated history pass is
     re-queried via workflow.fetch_history_for_bet (if the workflow implements it).
     """
-    import httpx
+    from arnold.http_client import tunnel_client as _tc
 
     deltas = reconcile_from_history(db_pending, history)
 
     matched_ids: set = set()
     n = 0
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for delta in deltas:
-            url = f"{proxy_url.rstrip('/')}/api/bets/{delta.bet_id}"
-            try:
-                resp = await client.patch(url, json=delta.changes, headers={auth_header: auth_value})
-                resp.raise_for_status()
-            except Exception:
-                logger.exception(f"[reconcile] PATCH bet {delta.bet_id} failed")
-                continue
-            n += 1
-            matched_ids.add(delta.bet_id)
-            broadcaster.publish(
-                "bet_reconciled",
-                {
-                    "provider_id": provider_id,
-                    "bet_id": delta.bet_id,
-                    "match_method": delta.match_method,
-                    "confidence": delta.confidence,
-                    "changes": delta.changes,
-                    "event_name": delta.history_entry.get("event_name"),
-                },
-            )
+    client = _tc()
+    for delta in deltas:
+        try:
+            resp = await client.patch(f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0)
+            resp.raise_for_status()
+        except Exception:
+            logger.exception(f"[reconcile] PATCH bet {delta.bet_id} failed")
+            continue
+        n += 1
+        matched_ids.add(delta.bet_id)
+        broadcaster.publish(
+            "bet_reconciled",
+            {
+                "provider_id": provider_id,
+                "bet_id": delta.bet_id,
+                "match_method": delta.match_method,
+                "confidence": delta.confidence,
+                "changes": delta.changes,
+                "event_name": delta.history_entry.get("event_name"),
+            },
+        )
 
     # Fallback for unmatched stale bets (requires page + workflow from caller)
     if page is not None and workflow is not None:

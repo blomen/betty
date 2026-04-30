@@ -280,48 +280,44 @@ class PlayLoop:
         popped without replenishment.
         """
         try:
-            import httpx
+            from arnold.http_client import tunnel_client
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{self._proxy_url}/api/opportunities/play/batch",
-                    headers={_AUTH_HEADER: _AUTH_VALUE, "Content-Type": "application/json"},
-                    json={},
+            client = tunnel_client()
+            resp = await client.post("/api/opportunities/play/batch", json={}, timeout=10.0)
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            fresh_bets = data.get("batch") or data.get("bets") or []
+            if not fresh_bets:
+                return
+
+            added = 0
+            touched_clusters: set[str] = set()
+            for bet in fresh_bets:
+                pid = bet.get("provider_id", "")
+                cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
+                if cluster not in self._cluster_queues:
+                    continue
+                queue = self._cluster_queues[cluster]
+                key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
+                existing = {(b.get("event_id"), b.get("market"), b.get("outcome")) for b in queue}
+                if key not in existing and not self._is_blocked(bet) and not self._is_recently_skipped(bet):
+                    queue.append(bet)
+                    touched_clusters.add(cluster)
+                    added += 1
+
+            # Re-sort queues by descending edge so the top-edge bet is always at
+            # the front. Without this, newly-added bets land at the tail and the
+            # runner could pop a stale lower-edge bet next.
+            for cluster in touched_clusters:
+                self._cluster_queues[cluster].sort(
+                    key=lambda b: float(b.get("edge_pct") or 0),
+                    reverse=True,
                 )
-                if resp.status_code != 200:
-                    return
-                data = resp.json()
-                fresh_bets = data.get("batch") or data.get("bets") or []
-                if not fresh_bets:
-                    return
 
-                added = 0
-                touched_clusters: set[str] = set()
-                for bet in fresh_bets:
-                    pid = bet.get("provider_id", "")
-                    cluster = _PROVIDER_TO_CLUSTER.get(pid, pid)
-                    if cluster not in self._cluster_queues:
-                        continue
-                    queue = self._cluster_queues[cluster]
-                    key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
-                    existing = {(b.get("event_id"), b.get("market"), b.get("outcome")) for b in queue}
-                    if key not in existing and not self._is_blocked(bet) and not self._is_recently_skipped(bet):
-                        queue.append(bet)
-                        touched_clusters.add(cluster)
-                        added += 1
-
-                # Re-sort queues by descending edge so the top-edge bet is always at
-                # the front. Without this, newly-added bets land at the tail and the
-                # runner could pop a stale lower-edge bet next.
-                for cluster in touched_clusters:
-                    self._cluster_queues[cluster].sort(
-                        key=lambda b: float(b.get("edge_pct") or 0),
-                        reverse=True,
-                    )
-
-                if added:
-                    self._queue_total = sum(len(q) for q in self._cluster_queues.values())
-                    logger.info(f"[PlayCoordinator] Batch refresh: added {added} new bets (total={self._queue_total})")
+            if added:
+                self._queue_total = sum(len(q) for q in self._cluster_queues.values())
+                logger.info(f"[PlayCoordinator] Batch refresh: added {added} new bets (total={self._queue_total})")
         except Exception as e:
             logger.debug(f"[PlayCoordinator] Batch refresh failed: {e}")
 

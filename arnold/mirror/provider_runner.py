@@ -11,8 +11,6 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from .slip_odds_stream import SlipOddsStream
 from .workflows import get_workflow
 from .workflows.base import PlacementResult
@@ -869,7 +867,7 @@ class ProviderRunner:
                 _poly_watch_task: asyncio.Task | None = None
 
                 async def _watch_polymarket() -> None:
-                    # Two responsibilities, every 1s:
+                    # Two responsibilities, every 1.5s:
                     #   (a) Amount-keeper: re-fill betslip if React clobbered it.
                     #   (b) Live edge poll: read cents → compute edge → publish
                     #       to live_edge_holder[0] so the dethrone watcher can
@@ -880,13 +878,23 @@ class ProviderRunner:
                     # version did via _on_slip_change and was firing spurious
                     # skips. Skipping is now ONLY the dethrone watcher's job
                     # (live vs queue comparison) or user Skip click.
+                    #
+                    # Initial 0.5s offset so this watcher's Playwright calls
+                    # don't collide with SlipOddsStream's 1.0s tick (also on
+                    # the same page). Without the stagger both would fire
+                    # near-simultaneously every second and serialize through
+                    # one Chromium IPC pipe; with the stagger they alternate.
                     bet_ns = _bet_ns(bet)
                     fair = bet.get("fair_odds")
                     strat = getattr(workflow, "strategy", None)
                     restore = getattr(strat, "restore_amount_if_cleared", None) if strat else None
+                    try:
+                        await asyncio.sleep(0.5)
+                    except asyncio.CancelledError:
+                        raise
                     while True:
                         try:
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(1.5)
                         except asyncio.CancelledError:
                             raise
                         # Live edge read
@@ -1538,20 +1546,17 @@ class ProviderRunner:
                 "provider_bet_id": entry.get("provider_bet_id") or None,
             }
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(
-                        f"{self._proxy_url}/api/bets",
-                        json=payload,
-                        headers={_AUTH_HEADER: _AUTH_VALUE},
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    logger.info(
-                        f"[Runner:{provider_id}] Recorded unknown open bet: "
-                        f"{entry.get('event_name')} {entry.get('outcome')} "
-                        f"@ {entry.get('odds')} stake={entry.get('stake')} → bet #{data.get('bet_id', '?')}"
-                    )
-                    recorded += 1
+                from arnold.http_client import tunnel_client as _tc
+
+                resp = await _tc().post("/api/bets", json=payload, timeout=10.0)
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(
+                    f"[Runner:{provider_id}] Recorded unknown open bet: "
+                    f"{entry.get('event_name')} {entry.get('outcome')} "
+                    f"@ {entry.get('odds')} stake={entry.get('stake')} → bet #{data.get('bet_id', '?')}"
+                )
+                recorded += 1
             except Exception:
                 logger.warning(
                     f"[Runner:{provider_id}] Failed to record unknown bet: "
@@ -1565,12 +1570,12 @@ class ProviderRunner:
             )
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
-        url = f"{self._proxy_url}/api/opportunities/play/pending-bets"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await _tc().get("/api/opportunities/play/pending-bets", timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
         except Exception:
             return []
         for prov in data.get("providers", []):
@@ -1579,42 +1584,43 @@ class ProviderRunner:
         return []
 
     async def _fetch_placed_today(self, provider_id: str) -> None:
-        url = f"{self._proxy_url}/api/opportunities/play/batch"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json={}, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
             placed = data.get("placed_today", {})
             self._placed_today.update(placed)
         except Exception:
             logger.warning(f"[Runner:{provider_id}] failed to fetch placed_today")
 
     async def _record_settlements(self, provider_id: str, settlements: list[dict]) -> None:
-        url = f"{self._proxy_url}/api/opportunities/play/settle-batch"
+        from arnold.http_client import tunnel_client as _tc
+
         batch = [
             {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
         ]
         if not batch:
             return
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json=batch, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
+            resp = await _tc().post("/api/opportunities/play/settle-batch", json=batch, timeout=30.0)
+            resp.raise_for_status()
         except Exception:
             logger.exception(f"[Runner:{provider_id}] Failed to record settlements")
 
     async def _post_balance(self, provider_id: str, balance: float) -> None:
-        url = f"{self._proxy_url}/api/bankroll/set/{provider_id}"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, json={"balance": balance}, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
+            resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)
+            resp.raise_for_status()
         except Exception:
             pass
 
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
-        url = f"{self._proxy_url}/api/bets"
+        from arnold.http_client import tunnel_client as _tc
+
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         # Capture analytics-critical fields from the queued bet so post-settlement
         # CLV / edge / kelly drift can be computed against the placement-time fair odds.
@@ -1641,14 +1647,14 @@ class ProviderRunner:
             "utility_score": edge_pct,
             "bet_type": bet.get("bet_type") or bet.get("tier") or "value",
         }
+        client = _tc()
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=payload, headers={_AUTH_HEADER: _AUTH_VALUE})
-                    resp.raise_for_status()
-                    data = resp.json()
-                    logger.info(f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}")
-                    return
+                resp = await client.post("/api/bets", json=payload, timeout=10.0)
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}")
+                return
             except Exception:
                 logger.exception(f"[Runner:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
                 if attempt < 2:

@@ -265,22 +265,14 @@ class TestFetchArbOppsPostFilter:
 
     @pytest.mark.asyncio
     async def test_keeps_opp_when_all_legs_in_pool(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
 
         runner = self._make_runner()
 
         class FakeClient:
-            def __init__(self, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def get(self, url, headers=None):
+            async def get(self, url, params=None, headers=None, timeout=None):
+                providers = (params or {}).get("providers")
                 assert "counterpart_providers" not in url, "URL must not include counterpart filter (backend bug)"
+                assert providers == "betinia"
 
                 class R:
                     status_code = 200
@@ -303,7 +295,9 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+        from arnold import http_client as _hc
+
+        monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 
         result = await runner._fetch_arb_opps()
         assert len(result) == 1
@@ -311,22 +305,12 @@ class TestFetchArbOppsPostFilter:
 
     @pytest.mark.asyncio
     async def test_drops_opp_when_a_leg_is_outside_pool(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
 
         # betsson not in active list and not UNLIMITED → should be rejected
         runner = self._make_runner(active=["betinia", "pinnacle"])
 
         class FakeClient:
-            def __init__(self, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def get(self, url, headers=None):
+            async def get(self, url, params=None, headers=None, timeout=None):
                 class R:
                     status_code = 200
 
@@ -348,28 +332,20 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+        from arnold import http_client as _hc
+
+        monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 
         result = await runner._fetch_arb_opps()
         assert result == []  # betsson not in active list and not in UNLIMITED, opp gets dropped
 
     @pytest.mark.asyncio
     async def test_drops_opp_with_no_legs(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
 
         runner = self._make_runner()
 
         class FakeClient:
-            def __init__(self, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                pass
-
-            async def get(self, url, headers=None):
+            async def get(self, url, params=None, headers=None, timeout=None):
                 class R:
                     status_code = 200
 
@@ -381,7 +357,9 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        monkeypatch.setattr(ar.httpx, "AsyncClient", FakeClient)
+        from arnold import http_client as _hc
+
+        monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 
         result = await runner._fetch_arb_opps()
         assert result == []

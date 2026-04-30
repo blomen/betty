@@ -7,7 +7,6 @@ import json
 import logging
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.requests import Request
@@ -74,13 +73,15 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     _prev_callback = browser._on_event
 
     async def _post_balance_async(provider_id: str, balance: float):
+        from arnold.http_client import tunnel_client
+
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(
-                    f"{proxy_url}/api/bankroll/set/{provider_id}",
-                    json={"balance": balance},
-                    headers={"X-Nginx-Authenticated": "arnoldsports"},
-                )
+            client = tunnel_client()
+            await client.post(
+                f"/api/bankroll/set/{provider_id}",
+                json={"balance": balance},
+                timeout=10.0,
+            )
         except Exception:
             pass
 
@@ -242,6 +243,33 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "balance": balance,
             "domain": workflow.domain,
         }
+
+    @router.get("/browser/diag/{provider_id}")
+    async def diag(provider_id: str):
+        """Debug: surface workflow internals so we can tell stale-code from init-failure."""
+        import os as _os
+
+        workflow = get_workflow(provider_id)
+        out: dict[str, Any] = {
+            "class": type(workflow).__name__,
+            "module": type(workflow).__module__,
+            "autonomous_placement": getattr(workflow, "autonomous_placement", None),
+        }
+        for attr in ("has_api", "_portfolio", "_markets", "_client", "_balance_cache", "_pending_ticker"):
+            try:
+                v = getattr(workflow, attr, None)
+                out[attr] = str(type(v).__name__) if v is not None else None
+            except Exception as e:
+                out[attr] = f"err:{e}"
+        out["env_KALSHI_API_KEY_ID_set"] = bool(_os.getenv("KALSHI_API_KEY_ID"))
+        out["env_KALSHI_PRIVATE_KEY_PEM_set"] = bool(_os.getenv("KALSHI_PRIVATE_KEY_PEM"))
+        # Trigger check_login retry path explicitly
+        try:
+            out["check_login"] = await workflow.check_login(None)
+        except Exception as e:
+            out["check_login_error"] = str(e)
+        out["has_api_after_check_login"] = getattr(workflow, "has_api", None)
+        return out
 
     @router.get("/browser/test-settle/{provider_id}")
     async def test_settle(provider_id: str):

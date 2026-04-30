@@ -478,18 +478,25 @@ def create_dashboard_router() -> APIRouter:
 
 
 async def broadcast(event: dict) -> None:
-    """Push event to all connected dashboard clients."""
+    """Push event to all connected dashboard clients.
+
+    Sends to all clients concurrently via asyncio.gather so one slow / backed-up
+    client can't block the event loop on a serial chain of awaits. The previous
+    serial loop is the documented mechanism behind the SignalRelay keepalive
+    timeouts (~1/min) — a stalled WS send would freeze the FastAPI loop past
+    the keepalive timeout, the server's reply ping wouldn't return in time,
+    and uvicorn would close the relay socket.
+    """
     if not _dashboard_clients:
         return
     msg = json.dumps(event, default=str)
-    dead = []
-    for ws in _dashboard_clients:
-        try:
-            await ws.send_text(msg)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        if ws in _dashboard_clients:
+    clients = list(_dashboard_clients)
+    results = await asyncio.gather(
+        *(ws.send_text(msg) for ws in clients),
+        return_exceptions=True,
+    )
+    for ws, result in zip(clients, results, strict=False):
+        if isinstance(result, BaseException) and ws in _dashboard_clients:
             _dashboard_clients.remove(ws)
 
 

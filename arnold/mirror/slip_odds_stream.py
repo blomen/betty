@@ -24,6 +24,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level shared client for the optional log-endpoint POST path.
+# Lazy-initialized — stays unused unless a stream is constructed with a
+# log_endpoint, which neither production caller does today. This avoids
+# a fresh TCP+TLS handshake per tick if the path is ever turned on.
+_log_client: httpx.AsyncClient | None = None
+
+
+def _get_log_client() -> httpx.AsyncClient:
+    global _log_client
+    if _log_client is None or _log_client.is_closed:
+        _log_client = httpx.AsyncClient(
+            timeout=2.0,
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        )
+    return _log_client
+
 
 class SlipOddsStream:
     def __init__(
@@ -95,17 +111,17 @@ class SlipOddsStream:
 
     async def _post_tick(self, odds: float) -> None:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                await client.post(
-                    self._log_endpoint,
-                    json={
-                        "provider_id": self.provider_id,
-                        "event_id": self._bet_context.get("event_id", ""),
-                        "market": self._bet_context.get("market", ""),
-                        "outcome": self._bet_context.get("outcome", ""),
-                        "scraped_odds": odds,
-                        "scanner_odds": self._bet_context.get("scanner_odds"),
-                    },
-                )
+            client = _get_log_client()
+            await client.post(
+                self._log_endpoint,
+                json={
+                    "provider_id": self.provider_id,
+                    "event_id": self._bet_context.get("event_id", ""),
+                    "market": self._bet_context.get("market", ""),
+                    "outcome": self._bet_context.get("outcome", ""),
+                    "scraped_odds": odds,
+                    "scanner_odds": self._bet_context.get("scanner_odds"),
+                },
+            )
         except Exception:
             logger.debug(f"[SlipStream:{self.provider_id}] log post failed", exc_info=True)

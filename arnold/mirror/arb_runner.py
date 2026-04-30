@@ -15,8 +15,6 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from .arb_math import (
     is_valid_arb_shape,
     recalc_counter_stakes,
@@ -814,14 +812,18 @@ class ArbRunner:
         a member of self._counter_pool() (active providers + UNLIMITED, minus self
         and same-cluster siblings).
         """
+        from arnold.http_client import tunnel_client as _tc
+
         pool = set(self._counter_pool())
         pool.add(self.provider_id)  # anchor provider is always allowed
-        url = f"{self._proxy_url}/api/opportunities/arb-workflow?providers={self.provider_id}"
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await _tc().get(
+                "/api/opportunities/arb-workflow",
+                params={"providers": self.provider_id},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
             opps = data.get("opportunities", [])
             # Post-filter: keep only opps whose legs all live in the allowed set
             filtered = []
@@ -923,7 +925,8 @@ class ArbRunner:
 
     async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
         """Record a bet to the server DB with arb group linkage."""
-        url = f"{self._proxy_url}/api/bets"
+        from arnold.http_client import tunnel_client as _tc
+
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         payload = {
             "event_id": bet.get("event_id", ""),
@@ -938,16 +941,14 @@ class ArbRunner:
             "provider_bet_id": provider_bet_id,
             "notes": f"arb_group:{arb_group_id}",
         }
+        client = _tc()
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=payload, headers={_AUTH_HEADER: _AUTH_VALUE})
-                    resp.raise_for_status()
-                    data = resp.json()
-                    logger.info(
-                        f"[Arb:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={arb_group_id})"
-                    )
-                    return
+                resp = await client.post("/api/bets", json=payload, timeout=10.0)
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(f"[Arb:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={arb_group_id})")
+                return
             except Exception:
                 logger.exception(f"[Arb:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
                 if attempt < 2:
@@ -1057,12 +1058,12 @@ class ArbRunner:
                 logger.info(f"[Arb:{pid}] reconciled {n} bets")
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
-        url = f"{self._proxy_url}/api/opportunities/play/pending-bets"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await _tc().get("/api/opportunities/play/pending-bets", timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
         except Exception:
             return []
         for prov in data.get("providers", []):
@@ -1071,22 +1072,22 @@ class ArbRunner:
         return []
 
     async def _fetch_placed_today(self, provider_id: str) -> None:
-        url = f"{self._proxy_url}/api/opportunities/play/batch"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json={}, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
             placed = data.get("placed_today", {})
             self._placed_today.update(placed)
         except Exception:
             logger.warning(f"[Arb:{provider_id}] failed to fetch placed_today")
 
     async def _post_balance(self, provider_id: str, balance: float) -> None:
-        url = f"{self._proxy_url}/api/bankroll/set/{provider_id}"
+        from arnold.http_client import tunnel_client as _tc
+
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, json={"balance": balance}, headers={_AUTH_HEADER: _AUTH_VALUE})
-                resp.raise_for_status()
+            resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)
+            resp.raise_for_status()
         except Exception:
             pass

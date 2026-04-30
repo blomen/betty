@@ -436,27 +436,38 @@ class MirrorBrowser:
 
     @staticmethod
     async def _kill_orphaned_chromium():
-        """Kill Chromium processes from previous sessions holding the profile lock."""
-        import subprocess
+        """Kill Chromium processes from previous sessions holding the profile lock.
+
+        wmic + taskkill are blocking subprocesses (wmic alone takes 1-3s on
+        Windows). Running them on the asyncio loop freezes every other task
+        for the duration — including Playwright IPC, the dashboard WS server,
+        and the SignalRelay sender. Offloaded to a thread.
+        """
         import sys
 
         if sys.platform != "win32":
             return
-        try:
-            result = subprocess.run(
-                [
-                    "wmic",
-                    "process",
-                    "where",
-                    "name='chromium.exe' or name='chrome.exe'",
-                    "get",
-                    "processid,commandline",
-                    "/format:csv",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+
+        def _do_kill() -> int:
+            import subprocess
+
+            try:
+                result = subprocess.run(
+                    [
+                        "wmic",
+                        "process",
+                        "where",
+                        "name='chromium.exe' or name='chrome.exe'",
+                        "get",
+                        "processid,commandline",
+                        "/format:csv",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception:
+                return 0
             profile_str = str(_USER_DATA_DIR).replace("\\", "/")
             profile_str_win = str(_USER_DATA_DIR)
             killed = 0
@@ -468,8 +479,15 @@ class MirrorBrowser:
                     if parts:
                         pid = parts[-1].strip()
                         if pid.isdigit():
-                            subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
-                            killed += 1
+                            try:
+                                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                                killed += 1
+                            except Exception:
+                                pass
+            return killed
+
+        try:
+            killed = await asyncio.to_thread(_do_kill)
             if killed:
                 print(f"[browser] Killed {killed} orphaned Chromium process(es)", flush=True)
                 await asyncio.sleep(1)
