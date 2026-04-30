@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.3.1
-// @description  Draws Arnold zones (with per-member 1px brush lines colored by hierarchy weight) and open positions on TradingView charts via WebSocket from local Arnold server.
+// @version      0.3.2
+// @description  Draws Arnold zones (with per-member 1px brush lines @ 50% opacity colored by hierarchy weight) and open positions on TradingView charts via WebSocket from local Arnold server.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -182,6 +182,7 @@
                 linecolor,
                 linewidth: 1,
                 linestyle,
+                transparency: 50,
                 showLabel: false,
                 extendLeft: false,
                 extendRight: false,

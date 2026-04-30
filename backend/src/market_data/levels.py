@@ -693,6 +693,21 @@ def compute_session_levels(
                 levels.pdl = l
                 levels.pdl_time = bar_epoch
 
+        # Weekly H/L (current week, all sessions 00:00-22:00 CET).
+        # MUST run before the `today only` filter below — otherwise prior days
+        # in the current week never count and weekly_high collapses to today's
+        # high. Same for monthly. Caller must pass at least 1 month of bars
+        # for these to be meaningful.
+        week_start = today_cet - timedelta(days=today_cet.weekday())
+        if week_start <= bar_date <= today_cet and bar_time < _NY_END:
+            levels.weekly_high = max(levels.weekly_high or h, h)
+            levels.weekly_low = min(levels.weekly_low or l, l)
+
+        # Monthly H/L (current month, all sessions 00:00-22:00 CET)
+        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and bar_time < _NY_END:
+            levels.monthly_high = max(levels.monthly_high or h, h)
+            levels.monthly_low = min(levels.monthly_low or l, l)
+
         # Today's sessions
         if bar_date != today_cet:
             continue
@@ -716,17 +731,6 @@ def compute_session_levels(
         if _NY_START <= bar_time < _NY_END:
             levels.ny_high = max(levels.ny_high or h, h)
             levels.ny_low = min(levels.ny_low or l, l)
-
-        # Weekly H/L (current week, all sessions 00:00-22:00 CET)
-        week_start = today_cet - timedelta(days=today_cet.weekday())
-        if week_start <= bar_date <= today_cet and bar_time < _NY_END:
-            levels.weekly_high = max(levels.weekly_high or h, h)
-            levels.weekly_low = min(levels.weekly_low or l, l)
-
-        # Monthly H/L (current month, all sessions 00:00-22:00 CET)
-        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and bar_time < _NY_END:
-            levels.monthly_high = max(levels.monthly_high or h, h)
-            levels.monthly_low = min(levels.monthly_low or l, l)
 
     return levels
 

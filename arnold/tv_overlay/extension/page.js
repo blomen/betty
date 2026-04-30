@@ -304,6 +304,7 @@
             overrides: {
               linecolor,
               linewidth: 1,
+              transparency: 50,
               showLabel: false,
               extendLeft: false,
               extendRight: false,
@@ -433,12 +434,12 @@
     tokyo_high: { skip: true }, tokyo_low: { skip: true },
     london_high: { skip: true }, london_low: { skip: true },
     ib_high: { skip: true }, ib_low: { skip: true },
-    // Swings (server emits as <tf>_high/low, NOT <tf>_swing_<dir>).
-    // monthly = RED (strongest), weekly = ORANGE.
-    monthly_high: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
-    monthly_low: { family: 'Swings', color: PALETTE[0], shape: 'horizontal_line' },
-    weekly_high: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
-    weekly_low: { family: 'Swings', color: PALETTE[1], shape: 'horizontal_line' },
+    // Swings render as zone members only — every level must live inside a
+    // zone, and the chart-wide horizontal_line variant escaped the 30min/2h
+    // zone time-window visually so the swing looked "naked". The zone's
+    // per-member brush stroke already paints these at the same color.
+    monthly_high: { skip: true }, monthly_low: { skip: true },
+    weekly_high: { skip: true }, weekly_low: { skip: true },
     // SMC ranges — drawn as distribution rectangles far right of price.
     fvg_bullish: { family: 'FVG', color: PALETTE[3], shape: 'rectangle' },
     fvg_bearish: { family: 'FVG', color: PALETTE[0], shape: 'rectangle' },

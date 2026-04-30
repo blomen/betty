@@ -885,8 +885,19 @@ class MarketService:
         }
 
     async def _enrich_with_bars(self, symbol: str, today: str, session_row, sj: dict) -> tuple[dict, dict, object]:
-        """Fetch bars and compute analytics. Returns (structure, profiles). May be slow/fail."""
-        from ..market_data.levels import compute_developing_poc, detect_naked_pocs, detect_swing_points
+        """Fetch bars and compute analytics. Returns (structure, profiles, swing_struct).
+
+        swing_struct comes from compute_multi_tf_swings on a multi-week bar
+        history; previously this returned None and the live levels list lost
+        all real <tf>_swing_<dir> rows, so the chart fell back to the broken
+        weekly_high/monthly_high period extremes (which collapsed to today's
+        high/low under another bug). Both fixed together.
+        """
+        from ..market_data.levels import (
+            compute_developing_poc,
+            detect_naked_pocs,
+            detect_swing_points,
+        )
 
         bars = await self._get_session_bars(symbol)
 
@@ -954,7 +965,37 @@ class MarketService:
         else:
             profiles["naked_pocs"] = []
 
-        return structure, profiles, None
+        # Multi-timeframe swing pivots (daily / weekly / monthly). Needs ts on
+        # each bar so aggregate_to_timeframe can bucket correctly. Use stored
+        # 1m candles directly (volume not needed for swings).
+        swing_struct = None
+        try:
+            from datetime import timedelta as _td
+            from zoneinfo import ZoneInfo as _ZI
+
+            _CET = _ZI("Europe/Stockholm")
+            now_utc = datetime.now(timezone.utc)
+            today_cet_date = now_utc.astimezone(_CET).date()
+            # 60 days back gives the monthly engine enough completed candles
+            # while keeping the query bounded.
+            start_dt = datetime(today_cet_date.year, today_cet_date.month, 1, tzinfo=_CET).astimezone(timezone.utc)
+            start_dt = start_dt - _td(days=30)
+            rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start_dt, now_utc))
+            swing_bars = [{"ts": r.ts, "high": r.h, "low": r.l, "open": r.o, "close": r.c} for r in rows]
+            if swing_bars:
+                swing_struct = compute_multi_tf_swings(swing_bars)
+                logger.info(
+                    "compute_multi_tf_swings: %d bars → daily=%s weekly=%s monthly=%s",
+                    len(swing_bars),
+                    swing_struct.daily.structure,
+                    swing_struct.weekly.structure,
+                    swing_struct.monthly.structure,
+                )
+        except Exception as e:
+            logger.warning("Swing structure computation failed: %s", e)
+            swing_struct = None
+
+        return structure, profiles, swing_struct
 
     async def run_scan(self, threshold: float | None = None) -> list[dict]:
         """Run scanner on current session → persist signals → return."""

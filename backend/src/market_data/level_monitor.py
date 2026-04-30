@@ -691,15 +691,16 @@ class LevelMonitor:
             "weekly_swing_low": RLLevelType.WEEKLY_SWING_LOW,
             "monthly_swing_high": RLLevelType.MONTHLY_SWING_HIGH,
             "monthly_swing_low": RLLevelType.MONTHLY_SWING_LOW,
-            # Source-data aliases — expanded_session["levels"] emits these
-            # short names; without aliases they fell through to the VWAP
-            # default and lost their swing identity in zone clustering.
-            "weekly_high": RLLevelType.WEEKLY_SWING_HIGH,
-            "weekly_low": RLLevelType.WEEKLY_SWING_LOW,
-            "monthly_high": RLLevelType.MONTHLY_SWING_HIGH,
-            "monthly_low": RLLevelType.MONTHLY_SWING_LOW,
-            "daily_high": RLLevelType.DAILY_SWING_HIGH,
-            "daily_low": RLLevelType.DAILY_SWING_LOW,
+            # NOTE: weekly_high/low and monthly_high/low are PERIOD EXTREMES
+            # (max/min over current week/month), NOT structural swing pivots.
+            # They were incorrectly aliased to *_SWING_* level types here,
+            # which both polluted swing zone families with non-swing data and
+            # produced visually-wrong "swing" lines (often equal to today's
+            # high/low). Real swings now flow as <tf>_swing_<dir> rows from
+            # compute_multi_tf_swings; period extremes are intentionally
+            # dropped from zone clustering — they are still emitted as DB
+            # rows for setups (break_from_balance, ib_break, news_directional)
+            # but should not appear as chart structure.
             # Normalized VWAP SD names — `_rebuild_zones` strips spaces+
             # signs from "VWAP +1SD" → "vwap_1sd"; map key was `vwap +1sd`
             # so the lookup missed and SD bands collapsed onto VWAP.
@@ -740,10 +741,26 @@ class LevelMonitor:
             "tibh": RLLevelType.TIBH,
             "tibl": RLLevelType.TIBL,
         }
+        # Known non-zone level names — silently dropped from clustering.
+        # Period extremes are kept in DB rows for setups (target_3 in
+        # break_from_balance / ib_break / news_directional) but must NOT
+        # be classified as swings on the chart.
+        _SKIP_FROM_ZONES = {
+            "weekly_high",
+            "weekly_low",
+            "monthly_high",
+            "monthly_low",
+            "daily_high",
+            "daily_low",
+            "ny_high",
+            "ny_low",
+        }
         level_tuples = []
         unmapped: dict[str, int] = {}
         for lv in self._levels:
             name_key = lv.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
+            if name_key in _SKIP_FROM_ZONES:
+                continue
             lt = level_type_map.get(name_key)
             if lt is None:
                 # Loud + skip. Silently defaulting to VWAP poisoned the
