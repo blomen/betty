@@ -136,11 +136,9 @@ class ArbRunner:
         self.last_idle_reason: str | None = None
         self.last_skip_counts: dict[str, int] = {}
 
-        # Run-gate. Default-OPEN as of 2026-04-30 (rev 2) — see ProviderRunner
-        # for rationale. The arb runner now flows from settle directly into
-        # the arb bet loop with no user-facing pause.
+        # Run-gate. Default-CLOSED — see ProviderRunner. Login + settle
+        # auto-run; arb bet loop waits on user Run press.
         self._run_event: asyncio.Event = asyncio.Event()
-        self._run_event.set()
         self._ready_sync_task: asyncio.Task | None = None
 
     # ----- public surface -----

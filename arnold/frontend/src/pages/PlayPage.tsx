@@ -237,12 +237,21 @@ export default function PlayPage() {
     await api.startPlayLoop(allBets, numericBalances, allPids)
   }
 
-  const handleCardClick = (pid: string) => {
-    // The card is a one-way START button. Click while idle → opens tab and
-    // begins the auto-progression (login → settle → bet loop). Clicks in
-    // any other state are no-ops: no toggle-off, no pause, no manual gate.
-    if (activeProviders.has(pid)) return
-    return startSkin(pid)
+  const handleCardClick = async (pid: string) => {
+    const isSelected = activeProviders.has(pid)
+    const runnerState = loopProviderStatus?.[pid]?.state
+    const cardState = deriveCardState(isSelected, runnerState)
+    // Two-click forward-only flow:
+    //   idle (zinc)            → click opens tab + starts watcher.
+    //   tab_open / syncing      → click is a no-op (no toggle-off).
+    //   ready_to_run (yellow)   → click → starts bet loop.
+    //   running (green)         → click is a no-op (no pause).
+    if (cardState === 'idle') return startSkin(pid)
+    if (cardState === 'ready_to_run') {
+      try { await api.runProvider(pid) } catch (e) { console.error('runProvider failed', e) }
+      return
+    }
+    return
   }
 
   const load = useCallback(async () => {
@@ -1395,9 +1404,19 @@ export default function PlayPage() {
                                   }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
+                                  {cardState === 'tab_open' && (
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-blue-400/20 text-blue-200">
+                                      Awaiting login
+                                    </span>
+                                  )}
+                                  {cardState === 'logged_in_syncing' && (
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-cyan-400/20 text-cyan-100 font-semibold">
+                                      Logged in · syncing
+                                    </span>
+                                  )}
                                   {cardState === 'ready_to_run' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/20 text-yellow-300">
-                                      Starting...
+                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/30 text-yellow-200 font-semibold">
+                                      Logged in — press to run
                                     </span>
                                   )}
                                   {cardState === 'running' && (
@@ -1597,8 +1616,11 @@ export default function PlayPage() {
           for (const [pid, stakeSek] of Object.entries(stakeSekByProvider)) {
             const isPoly = pid === 'polymarket'
             const balRaw = providerBalances[pid]
-            const balNative = typeof balRaw === 'object' && balRaw?.balance != null
-              ? balRaw.balance
+            // Use balance_native so the gap is computed in the same currency
+            // as stakeNative — for poly that's USDC, for everyone else SEK.
+            // `balance` alone is SEK-normalized and would zero the poly gap.
+            const balNative = typeof balRaw === 'object' && balRaw != null
+              ? (balRaw.balance_native ?? balRaw.balance ?? 0)
               : (typeof balRaw === 'number' ? balRaw : 0)
             const stakeNative = stakeNativeByProvider[pid] || 0
             const gapNative = Math.max(0, stakeNative - balNative)
