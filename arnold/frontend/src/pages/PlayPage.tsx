@@ -824,13 +824,21 @@ export default function PlayPage() {
     // Update per-provider status from individual events
     if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
         type === 'settling_pending' || type === 'settling_done' ||
+        type === 'provider_ready' || type === 'provider_running' ||
         type === 'bet_ready' || type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed') {
       const epid = data.provider_id || data.bet?.provider_id
       if (epid) {
+        // bet_skipped with reason='paused' means the runner is unwinding to
+        // the gate after the user clicked Pause — don't stamp a 'navigating'
+        // state that would flap the card green between pause and the
+        // following provider_ready event.
+        if (type === 'bet_skipped' && data.reason === 'paused') return
         setLoopProviderStatus(prev => ({
           ...prev,
           [epid]: {
-            state: type === 'bet_ready' ? 'ready' :
+            state: type === 'provider_ready' ? 'ready_to_run' :
+                   type === 'provider_running' ? 'running' :
+                   type === 'bet_ready' ? 'ready' :
                    type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed' ? 'navigating' :
                    type.includes('login') ? 'login_waiting' :
                    type.includes('settl') ? 'settling' : 'opening',

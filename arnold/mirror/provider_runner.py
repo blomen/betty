@@ -440,6 +440,18 @@ class ProviderRunner:
                         # transitioning to the bet loop — don't stomp state.
                         if not self._run_event.is_set():
                             self.state = STATE_READY_TO_RUN
+                            # _detect_pending broadcast settling_* SSE which
+                            # demoted the card to cyan; re-emit provider_ready
+                            # so the frontend snaps back to yellow.
+                            self._broadcaster.publish(
+                                "provider_ready",
+                                {
+                                    "provider_id": pid,
+                                    "state": STATE_READY_TO_RUN,
+                                    "placed_today": self._placed_today.get(pid, 0),
+                                    "daily_cap": DAILY_BET_CAP,
+                                },
+                            )
                     except Exception as e:
                         logger.debug(f"[Runner:{pid}] ready pending sync failed: {e!r}")
                     last_pending = now

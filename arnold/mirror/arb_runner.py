@@ -301,6 +301,16 @@ class ArbRunner:
                         await self._detect_pending(pid, workflow, page)
                         if not self._run_event.is_set():
                             self.state = STATE_READY_TO_RUN
+                            self._broadcaster.publish(
+                                "provider_ready",
+                                {
+                                    "provider_id": pid,
+                                    "state": STATE_READY_TO_RUN,
+                                    "mode": "arb",
+                                    "placed_today": self._placed_today.get(pid, 0),
+                                    "daily_cap": DAILY_BET_CAP,
+                                },
+                            )
                     except Exception as e:
                         logger.debug(f"[Arb:{pid}] ready pending sync failed: {e!r}")
                     last_pending = now
