@@ -86,6 +86,7 @@ class ProviderRunner:
         peek_top_edge: Callable[[], float | None] | None = None,
         stake_caps: dict[str, float] | None = None,
         mark_recently_skipped: Callable[[dict], None] | None = None,
+        push_bet: Callable[[dict], None] | None = None,
     ):
         self.provider_id = provider_id
         self._browser = browser
@@ -98,6 +99,7 @@ class ProviderRunner:
         self._peek_top_edge = peek_top_edge
         self._stake_caps = stake_caps if stake_caps is not None else {}
         self._mark_recently_skipped = mark_recently_skipped or (lambda _b: None)
+        self._push_bet = push_bet or (lambda _b: None)
 
         # Per-runner state
         self.state: str = STATE_IDLE

@@ -404,6 +404,7 @@ class PlayLoop:
                     peek_top_edge=self._make_peek_top_edge(cluster),
                     stake_caps=self._stake_caps,
                     mark_recently_skipped=self._mark_recently_skipped,
+                    push_bet=self._make_push_bet(cluster),
                 )
             else:
                 runner = ArbRunner(

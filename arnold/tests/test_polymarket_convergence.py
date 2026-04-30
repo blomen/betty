@@ -70,3 +70,28 @@ def test_make_push_bet_no_total_bump_on_replace():
     push = loop._make_push_bet("polymarket")
     push(_bet("a", 5.0))
     assert loop._queue_total == 1
+
+
+def test_provider_runner_accepts_push_bet_param():
+    """ProviderRunner constructor accepts push_bet callable."""
+    from arnold.mirror.provider_runner import ProviderRunner
+
+    push_calls = []
+
+    def push(bet: dict) -> None:
+        push_calls.append(bet)
+
+    runner = ProviderRunner(
+        provider_id="polymarket",
+        browser=MagicMock(running=True, context=MagicMock(pages=[]), provider_data={}),
+        broadcaster=MagicMock(),
+        proxy_url="https://x.test",
+        pop_bet=lambda: None,
+        block_event_market=lambda b: None,
+        is_blocked=lambda b: False,
+        placed_today={},
+        push_bet=push,
+    )
+    assert runner._push_bet is push
+    runner._push_bet({"event_id": "x", "edge_pct": 5.0})
+    assert push_calls == [{"event_id": "x", "edge_pct": 5.0}]
