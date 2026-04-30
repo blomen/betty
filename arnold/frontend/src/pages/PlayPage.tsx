@@ -73,10 +73,10 @@ function deriveCardState(isSelected: boolean, runnerState: string | undefined): 
 
 const CARD_STATE_CLASSES: Record<CardState, string> = {
   idle: '',  // existing styling applied elsewhere
-  tab_open: 'ring-2 ring-blue-500/70 bg-blue-500/10',
-  logged_in_syncing: 'ring-2 ring-cyan-400/70 bg-cyan-400/10',
-  ready_to_run: 'ring-2 ring-yellow-400/80 bg-yellow-400/15',
-  running: 'ring-2 ring-emerald-500/80 bg-emerald-500/15',
+  tab_open: 'bg-blue-500/40 text-blue-100 border border-blue-400/60',
+  logged_in_syncing: 'bg-cyan-500/40 text-cyan-100 border border-cyan-400/60',
+  ready_to_run: 'bg-yellow-500/50 text-yellow-100 border border-yellow-400/70',
+  running: 'bg-emerald-600/50 text-emerald-100 border border-emerald-500/70',
 }
 
 type ProviderBalanceInfo = {
@@ -1367,8 +1367,6 @@ export default function PlayPage() {
                         {funded.map(pid => {
                           const bal = getBalance(providerBalances[pid])
                           const pending = pendingByProvider[pid]?.length ?? 0
-                          const isSkinActive = activeProviders.has(pid)
-                          const isLoggedIn = loggedInProviders.has(pid)
                           const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
@@ -1377,12 +1375,10 @@ export default function PlayPage() {
                                 <button
                                   onClick={() => handleCardClick(pid)}
                                   className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                    isSkinActive
-                                      ? (isLoggedIn
-                                          ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                          : 'bg-purple-700/50 text-purple-200 border border-purple-600/50')
-                                      : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                                  } ${CARD_STATE_CLASSES[cardState]}`}
+                                    cardState === 'idle'
+                                      ? 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                                      : `${CARD_STATE_CLASSES[cardState]} cursor-pointer`
+                                  }`}
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
                                   {cardState === 'ready_to_run' && (
@@ -1648,8 +1644,6 @@ export default function PlayPage() {
                     const balRaw = providerBalances[pid]
                     const balDisplay = (typeof balRaw === 'object' && balRaw?.balance_native != null) ? balRaw.balance_native : bal
                     const pending = pendingByProvider[pid]?.length ?? 0
-                    const isSkinActive = activeProviders.has(pid)
-                    const isLoggedIn = loggedInProviders.has(pid)
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
                     const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
@@ -1660,12 +1654,10 @@ export default function PlayPage() {
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
-                            : isSkinActive
-                              ? (isLoggedIn
-                                  ? 'bg-green-700/50 text-green-200 border border-green-600/50'
-                                  : 'bg-amber-700/50 text-amber-300 border border-amber-600/50')
-                              : 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                        } ${CARD_STATE_CLASSES[cardState]}`}
+                            : cardState === 'idle'
+                              ? 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
+                              : `${CARD_STATE_CLASSES[cardState]} cursor-pointer`
+                        }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
                         {cardState === 'ready_to_run' && (
