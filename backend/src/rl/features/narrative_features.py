@@ -129,10 +129,23 @@ def extract_narrative_features(state: dict) -> np.ndarray:
             "reversing_down": -0.5,
             "downtrend": -1.0,
         }
+
+        # swing is sometimes a SwingStructure object, sometimes a dict
+        # (depends on upstream construction path). Accept both — every
+        # caller is on the hot DQN inference path and a single AttributeError
+        # silently kills the entire signal pipeline (today: 200pt move
+        # produced 0 signals because every infer() raised here).
+        def _attr(o, k, d=None):
+            if o is None:
+                return d
+            if isinstance(o, dict):
+                return o.get(k, d)
+            return getattr(o, k, d)
+
         # Weight daily more than weekly, weekly more than monthly
-        d = trend_map.get(swing.daily.structure, 0.0)
-        w = trend_map.get(swing.weekly.structure, 0.0)
-        m = trend_map.get(swing.monthly.structure, 0.0)
+        d = trend_map.get(_attr(_attr(swing, "daily"), "structure"), 0.0)
+        w = trend_map.get(_attr(_attr(swing, "weekly"), "structure"), 0.0)
+        m = trend_map.get(_attr(_attr(swing, "monthly"), "structure"), 0.0)
         htf = (3.0 * d + 2.0 * w + 1.0 * m) / 6.0
         out[1] = float(np.clip(htf, -1.0, 1.0))
 
@@ -276,7 +289,9 @@ def extract_narrative_features(state: dict) -> np.ndarray:
     # 13: trend_alignment — directly from SwingStructure.trend_alignment [-1, 1]
     # -------------------------------------------------------------------------
     if swing is not None:
-        out[13] = float(np.clip(swing.trend_alignment, -1.0, 1.0))
+        # swing may be SwingStructure or dict — same dual-shape issue as above
+        ta = swing.get("trend_alignment", 0.0) if isinstance(swing, dict) else getattr(swing, "trend_alignment", 0.0)
+        out[13] = float(np.clip(ta, -1.0, 1.0))
 
     # -------------------------------------------------------------------------
     # 14: excess_nearby — is price near a single-print/excess zone?
