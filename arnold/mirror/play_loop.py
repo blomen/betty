@@ -461,6 +461,29 @@ class PlayLoop:
 
         return peek
 
+    def _make_push_bet(self, cluster: str) -> callable:
+        """Return a function that re-inserts a bet into the cluster queue and re-sorts.
+
+        Idempotent on (event_id, market, outcome): if the bet is already present,
+        its edge_pct is updated in place rather than appended. Used by the
+        polymarket convergence loop to re-insert a bet at its just-measured live
+        edge.
+        """
+        queue = self._cluster_queues[cluster]
+
+        def push(bet: dict) -> None:
+            key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
+            for existing in queue:
+                if (existing.get("event_id"), existing.get("market"), existing.get("outcome")) == key:
+                    existing["edge_pct"] = bet.get("edge_pct", existing.get("edge_pct"))
+                    queue.sort(key=lambda b: -float(b.get("edge_pct") or 0))
+                    return
+            queue.append(bet)
+            queue.sort(key=lambda b: -float(b.get("edge_pct") or 0))
+            self._queue_total = sum(len(q) for q in self._cluster_queues.values())
+
+        return push
+
     def _block_event_market(self, bet: dict) -> None:
         """Block event+market across all cluster queues after placement."""
         event_id = bet.get("event_id", "")
