@@ -132,12 +132,12 @@ class PinnacleSharedRunner(ProviderRunner):
         self._broadcaster.publish("pinnacle_released", {"arb_group_id": group_id})
 
     async def _await_unlent_or_done(self) -> None:
-        """Block until lent_event is set OR runner is being torn down.
+        """Public hook that blocks until the runner is free.
 
-        The value loop in ProviderRunner._run is a tight loop; rather than
-        rewriting it here we expose this method and call it before each
-        navigation step. The patch in _run is small enough that we override
-        only the helper, not the entire loop.
+        Production blocking happens via the popper-gate in `_run` — that's
+        the only mechanism that actually pauses the value loop today. This
+        method exists so external callers and tests can wait on the same
+        condition without poking at `_lent_event` directly.
         """
         await self._lent_event.wait()
 
