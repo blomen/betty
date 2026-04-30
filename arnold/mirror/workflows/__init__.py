@@ -25,11 +25,9 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .interwetten import InterwettenWorkflow
     from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
-    from .pinnacle import PinnacleMirrorWorkflow
 
     return {
         "altenar": AltenarWorkflow,
-        "pinnacle_mirror": PinnacleMirrorWorkflow,
         "gecko_v2": GeckoWorkflow,
         "kambi": KambiWorkflow,
         "spectate": GenericWorkflow,
@@ -63,8 +61,6 @@ _RETRIEVER_TO_PLATFORM = {
 
 # Fallback: provider_id → platform (when config.loader is unavailable in arnoldsports)
 _PROVIDER_TO_PLATFORM: dict[str, str] = {
-    # Pinnacle mirror
-    "pinnacle": "pinnacle_mirror",
     # Altenar
     "betinia": "altenar",
     "campobet": "altenar",
@@ -143,9 +139,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     from .generic import GenericWorkflow, load_intel
 
     # Providers with an explicit dedicated class in _PROVIDER_TO_PLATFORM take
-    # precedence over the intel-JSON → GenericWorkflow shortcut.  This lets us
-    # register a purpose-built mirror workflow (e.g. PinnacleMirrorWorkflow)
-    # even when a mirror_intel JSON also exists for that provider.
+    # precedence over the intel-JSON → GenericWorkflow shortcut. Lets us
+    # register a purpose-built workflow even when a mirror_intel JSON also
+    # exists for that provider.
     _explicit_platform = _PROVIDER_TO_PLATFORM.get(provider_id)
     if _explicit_platform and _explicit_platform in _PLATFORM_MAP:
         domain = _FALLBACK_DOMAINS.get(provider_id, "")
