@@ -196,3 +196,35 @@ def test_is_hard_fail_reason_matches_click_eval_failed():
 
     assert is_hard_fail_reason("click_eval_failed:js_eval_returned_none") is True
     assert is_hard_fail_reason("click_eval_failed: ReferenceError: foo is undefined") is True
+
+
+def test_convergence_should_redirect_returns_true_when_top_above_live():
+    """should_redirect_to_top: queue top edge > live edge → True."""
+    from arnold.mirror.provider_runner import should_redirect_to_top
+
+    assert should_redirect_to_top(live_edge=19.9, queue_top_edge=23.0) is True
+    assert should_redirect_to_top(live_edge=10.0, queue_top_edge=10.0001) is True
+
+
+def test_convergence_should_redirect_returns_false_when_at_or_above_top():
+    """should_redirect_to_top: live edge >= queue top → False (we're top)."""
+    from arnold.mirror.provider_runner import should_redirect_to_top
+
+    assert should_redirect_to_top(live_edge=23.0, queue_top_edge=23.0) is False
+    assert should_redirect_to_top(live_edge=25.0, queue_top_edge=23.0) is False
+
+
+def test_convergence_should_redirect_handles_missing_inputs():
+    """Missing live_edge OR missing queue_top_edge → False (assume top)."""
+    from arnold.mirror.provider_runner import should_redirect_to_top
+
+    assert should_redirect_to_top(live_edge=None, queue_top_edge=23.0) is False
+    assert should_redirect_to_top(live_edge=19.9, queue_top_edge=None) is False
+    assert should_redirect_to_top(live_edge=None, queue_top_edge=None) is False
+
+
+def test_convergence_max_iter_constant():
+    """CONVERGENCE_MAX_ITER caps the convergence loop at 5."""
+    from arnold.mirror.provider_runner import CONVERGENCE_MAX_ITER
+
+    assert CONVERGENCE_MAX_ITER == 5

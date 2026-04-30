@@ -89,6 +89,30 @@ def is_hard_fail_reason(reason: str | None) -> bool:
     return any(token in reason for token in HARD_FAIL_PREP_REASONS)
 
 
+# Convergence loop: after prep_betslip, the polymarket runner re-pops the queue
+# top until the bet on screen genuinely has the top live edge. Capped to
+# prevent infinite churn on a flapping queue. Each iteration costs ~3-5s of
+# navigation; 5 iterations = ~25s worst case. See
+# docs/superpowers/specs/2026-04-30-polymarket-top-edge-convergence-design.md.
+CONVERGENCE_MAX_ITER = 5
+
+
+def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None) -> bool:
+    """Zero-hysteresis convergence check.
+
+    Returns True iff live_edge < queue_top_edge AND both values are present.
+    Used by the polymarket convergence loop after prep_betslip to decide
+    whether to push the active bet back and pop the new top.
+
+    Returning False on any-None inputs is intentional: if we can't measure
+    live edge or there's nothing in the queue, assume the active bet is OK
+    and proceed to READY rather than churning.
+    """
+    if live_edge is None or queue_top_edge is None:
+        return False
+    return queue_top_edge > live_edge
+
+
 class ProviderRunner:
     """Runs the play loop for a single provider as an asyncio task."""
 
