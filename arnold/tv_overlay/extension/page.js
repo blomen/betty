@@ -755,15 +755,13 @@
 
   async function drawPosition(p) {
     if (!chart) return false;
-    const isLong = p.side === 'long';
     const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
 
-    // Anchor + end timestamp. For closed trades (the vast majority of
-    // chart shapes), we ALWAYS sync to the latest entry_time/end_time —
-    // never cache an anchor that could go stale relative to the broker's
-    // authoritative timestamps. positionAnchors is reserved for the
-    // active trade only, where stop/tp updates would otherwise scrub the
-    // entry handle each tick.
+    // Anchor + end timestamp. For closed trades we ALWAYS sync to the
+    // latest entry_time/end_time — never cache an anchor that could go
+    // stale relative to the broker's authoritative timestamps.
+    // positionAnchors is reserved for the active trade only, where
+    // stop/tp updates would otherwise scrub the entry handle each tick.
     const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
     const now = Math.floor(Date.now() / 1000);
     let anchor;
@@ -776,20 +774,43 @@
     let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
     if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
-    // Both active and closed trades render as TV's long_position /
-    // short_position shape. Difference is purely the time bounds:
-    //   • Active → end_time tracks "now" so the shape extends to the live edge.
-    //   • Closed → end_time is the exit timestamp and stop/tp bands reflect
-    //     where the trade actually exited.
-    // The position tool gives you native auto-Stop / Open P&L / Target labels
-    // and a real R:R box, which is what the user wants on every trade — not
-    // a flat green/red rectangle.
+    if (isActive) {
+      return _drawActivePositionShape(p, anchor, endEpoch);
+    }
+    return _drawClosedPositionWidget(p, anchor, endEpoch);
+  }
+
+  // Active trade — TV's native long_position / short_position widget for
+  // the entry handle + target band + Open P&L label. Once the stop trails
+  // into profit (BE-lock at 2R, then cont-trail at zone advances), the
+  // widget's `stopLevel` is unsigned and the band would render on the
+  // wrong side of entry, so we hide it via stopLevel=0 and draw a
+  // separate dashed horizontal_line at the trailed stop's price for the
+  // duration of the trade. The auxiliary line is keyed off the position
+  // key + ":trail" so mutate-in-place keeps it pinned at the live stop
+  // price as cont-trail walks it further into profit.
+  //
+  // Halt cue: when p.halted is truthy, recolor the widget's lines amber
+  // so the user can spot a halted-but-not-flat session at a glance.
+  async function _drawActivePositionShape(p, anchor, endEpoch) {
+    const isLong = p.side === 'long';
     const shapeName = isLong ? 'long_position' : 'short_position';
     const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
     const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
     const NQ_TICK = 0.25;
-    const stopOffsetTicks = Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
-    const tpOffsetTicks   = Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK);
+
+    // Is the stop in profit territory? Long → stop > entry; short → stop < entry.
+    const stopInProfit = isLong ? stopPrice > p.entry : stopPrice < p.entry;
+    const stopOffsetTicks = stopInProfit ? 0 : Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
+    const tpOffsetTicks   = Math.round(Math.abs(tpPrice - p.entry) / NQ_TICK);
+
+    // Custom header: side + size only (PnL is live via Open P&L). Pyramid
+    // adds change `p.size`; we surface it here because TV's qty infoBlock
+    // is auto-derived from accountSize and is wrong.
+    const sideLabel = isLong ? 'L' : 'S';
+    const sizeStr = (p.size && p.size > 0) ? `×${p.size}` : '';
+    const headerText = `${sideLabel}${sizeStr}`;
+
     const points = [
       { time: anchor, price: p.entry },
       { time: endEpoch, price: p.entry },
@@ -798,15 +819,21 @@
       stopLevel: stopOffsetTicks,
       profitLevel: tpOffsetTicks,
       showPriceLabels: false,
+      // Halt visual cue. Falls back to TV defaults when not halted.
+      ...(p.halted ? { linecolor: '#f59e0b', textcolor: '#f59e0b' } : {}),
     };
 
     const existing = drawnPositions.get(p.key);
-    if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
+    if (existing && existing.shapeId != null && existing.kind === 'long_position' && typeof chart.getShapeById === 'function') {
       try {
         const obj = chart.getShapeById(existing.shapeId);
         if (obj) {
           if (typeof obj.setPoints === 'function') obj.setPoints(points);
-          if (typeof obj.setProperties === 'function') obj.setProperties(positionOverrides);
+          if (typeof obj.setProperties === 'function') {
+            obj.setProperties(positionOverrides);
+            try { obj.setProperties({ text: headerText }); } catch (_) {}
+          }
+          _syncTrailLine(p, anchor, endEpoch, stopPrice, stopInProfit);
           return true;
         }
       } catch (_) {}
@@ -815,6 +842,7 @@
     try {
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
+        text: headerText,
         disableSave: true,
         overrides: positionOverrides,
       }));
@@ -825,11 +853,214 @@
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
-      drawnPositions.set(p.key, { shapeId });
-      _ensureGroupAndAdd(isActive ? 'Arnold • Active Trade' : 'Arnold • Closed Trades', shapeId);
+      drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
+      _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
+      _syncTrailLine(p, anchor, endEpoch, stopPrice, stopInProfit);
       return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  // Auxiliary trail line for the active trade. Drawn only when the stop
+  // is on the profit side of entry (BE-lock fired or cont-trail walked
+  // further). Mutated in place so trail steps don't flicker; removed
+  // automatically when the trade closes via finalizePosition's cleanup.
+  // Stored at drawnPositions.get(`${p.key}:trail`) so the parent close
+  // sweep finds it.
+  async function _syncTrailLine(p, anchor, endEpoch, stopPrice, stopInProfit) {
+    const trailKey = `${p.key}:trail`;
+    const existing = drawnPositions.get(trailKey);
+    if (!stopInProfit) {
+      if (existing && existing.shapeId != null && chart) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
+        drawnPositions.delete(trailKey);
+      }
+      return;
+    }
+    const points = [
+      { time: anchor, price: stopPrice },
+      { time: endEpoch, price: stopPrice },
+    ];
+    const overrides = {
+      linecolor: '#10b981',
+      linewidth: 1,
+      linestyle: 1, // dashed
+      showLabel: true,
+      textColor: '#10b981',
+      fontSize: 11,
+    };
+    const labelText = `Trail ${stopPrice.toFixed(2)}`;
+    if (existing && existing.shapeId != null && existing.kind === 'trail' && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existing.shapeId);
+        if (obj) {
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') obj.setProperties({ ...overrides, text: labelText });
+          return;
+        }
+      } catch (_) {}
+    }
+    try {
+      const shapeId = await _resolve(chart.createMultipointShape(points, {
+        shape: 'trend_line',
+        text: labelText,
+        disableSave: true,
+        overrides,
+      }));
+      if (shapeId == null) return;
+      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      }
+      drawnPositions.set(trailKey, { shapeId, kind: 'trail' });
+      _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
+    } catch (e) {
+      sendError(`_syncTrailLine failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Closed trade — TV's long_position / short_position widget configured
+  // to bracket realized outcome per user spec 2026-05-05:
+  //   X = entry_time → exit_time
+  //   LOSS: y-anchor at real entry. Bands span entry → tp (would-have-
+  //         been 2R, GREEN target band) and entry → stop (where stopped
+  //         out, RED stop band). Standard widget rendering.
+  //   WIN:  y-anchor at the trailed stop-on-profit. Target band spans
+  //         trailed_stop → exit_price (realized profit zone). Stop band
+  //         hidden via stopLevel=0 (the original loss-side stop is
+  //         "removed visually" per spec). Entry handle visually sits at
+  //         trailed_stop, not real entry — acceptable tradeoff for
+  //         showing the realized profit interval geometrically.
+  //
+  // infoBlocks tuned to hide labels TV computes wrong for a closed trade:
+  //   • openClosePL — uses live chart price, not exit_price
+  //   • qty / tpAmount / slAmount — use TV's per-account auto-sizing,
+  //     not the actual fill qty (`qty` is read-only, computed)
+  //   • riskRewardRatio — the configured ratio, not the realized one;
+  //     also div-by-zero on wins (stopLevel=0)
+  //   Visible: tpPriceOffset, tpTickOffset, slPriceOffset, slTickOffset
+  //   These show distance from the y-anchor to each band edge, which IS
+  //   meaningful for both loss (offset to original target/stop) and win
+  //   (offset from trailed_stop to exit). Custom shape `text` injects
+  //   "L +$310 1.45R" / "S -$170 -0.81R" so the realized PnL is visible.
+  async function _drawClosedPositionWidget(p, anchor, endEpoch) {
+    const isLong = p.side === 'long';
+    const pnl = (typeof p.pnl_dollars === 'number') ? p.pnl_dollars : 0;
+    const isWin = pnl >= 0;
+    const stop = (typeof p.stop === 'number' && p.stop > 0) ? p.stop : null;
+    const tp = (typeof p.tp === 'number' && p.tp > 0) ? p.tp : null;
+    const exit = (typeof p.exit_price === 'number' && p.exit_price > 0) ? p.exit_price : null;
+    const entry = Number(p.entry);
+    if (!Number.isFinite(entry) || entry <= 0) return false;
+
+    const NQ_TICK = 0.25;
+    let yAnchor, stopLevel, profitLevel;
+    if (isWin) {
+      // Anchor at the trailed stop. Target band reaches up (long) / down
+      // (short) to exit_price. No stop band.
+      const trailed = stop ?? entry;
+      const exitPx = exit ?? entry;
+      yAnchor = trailed;
+      stopLevel = 0;
+      profitLevel = Math.max(1, Math.round(Math.abs(exitPx - trailed) / NQ_TICK));
+    } else {
+      // Anchor at real entry. Target band = original tp (2R), stop band
+      // = where we actually stopped out.
+      const tpPx = tp ?? (isLong ? entry + 1 : entry - 1);
+      const stopPx = stop ?? (isLong ? entry - 1 : entry + 1);
+      yAnchor = entry;
+      stopLevel = Math.max(1, Math.round(Math.abs(yAnchor - stopPx) / NQ_TICK));
+      profitLevel = Math.max(1, Math.round(Math.abs(tpPx - yAnchor) / NQ_TICK));
+    }
+
+    const shapeName = isLong ? 'long_position' : 'short_position';
+    const points = [
+      { time: anchor, price: yAnchor },
+      { time: endEpoch, price: yAnchor },
+    ];
+    // Label injected into the widget header. setProperties may or may
+    // not honor `text` for native position widgets (shape doesn't expose
+    // it via getProperties), but if it does it surfaces realized PnL.
+    // Reason suffix distinguishes STOP / EE_LOCK / FLIP / MANUAL / etc.
+    // so the user can scan a session and tell which trades got stopped
+    // vs. which got flattened by signal/policy.
+    const sideLabel = isLong ? 'L' : 'S';
+    const sizeSuffix = (p.size && p.size > 1) ? `×${p.size}` : '';
+    const dollarStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(Math.round(pnl));
+    const rStr = (typeof p.pnl_r === 'number') ? ` ${p.pnl_r >= 0 ? '+' : ''}${p.pnl_r.toFixed(2)}R` : '';
+    const reasonStr = (typeof p.exit_reason === 'string' && p.exit_reason) ? ` [${p.exit_reason}]` : '';
+    const headerText = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}${reasonStr}`;
+
+    // Discovered via tv-eval probe: setProperties accepts `infoBlocks`
+    // as a NESTED object (dotted-path form silently no-ops). The
+    // dynamic / wrong labels listed here go invisible per shape; the
+    // raw price/tick offsets stay because they reflect the actual
+    // band geometry we configured.
+    const widgetProps = {
+      stopLevel,
+      profitLevel,
+      showPriceLabels: false,
+      compact: true,
+      alwaysShowStats: false,
+      infoBlocks: {
+        openClosePL: { visible: false },
+        qty: { visible: false },
+        tpAmount: { visible: false },
+        slAmount: { visible: false },
+        riskRewardRatio: { visible: false },
+        tpPriceOffset: { visible: true },
+        tpTickOffset: { visible: true },
+        tpPercentOffset: { visible: false },
+        tpPL: { visible: false },
+        slPriceOffset: { visible: !isWin }, // wins hide the stop band entirely
+        slTickOffset: { visible: !isWin },
+        slPercentOffset: { visible: false },
+        slPL: { visible: false },
+      },
+      // Override band colors per outcome — for wins the target band is
+      // the realized profit zone (always green); for losses keep TV's
+      // default red stop / green target so the bet is visually obvious.
+      profitBackground: isWin ? 'rgba(16, 185, 129, 0.25)' : 'rgba(8, 153, 129, 0.20)',
+    };
+
+    const existing = drawnPositions.get(p.key);
+    if (existing && existing.shapeId != null && existing.kind === shapeName && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existing.shapeId);
+        if (obj) {
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') {
+            obj.setProperties(widgetProps);
+            // Best-effort header text — silently ignored if the shape
+            // doesn't accept it (long_position has its own auto-title
+            // we can't override on every TV build).
+            try { obj.setProperties({ text: headerText }); } catch (_) {}
+          }
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    try {
+      const shapeId = await _resolve(chart.createMultipointShape(points, {
+        shape: shapeName,
+        text: headerText,
+        disableSave: true,
+        overrides: widgetProps,
+      }));
+      if (shapeId == null) {
+        sendError(`_drawClosedPositionWidget: createMultipointShape returned null for ${shapeName}`);
+        return false;
+      }
+      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      }
+      drawnPositions.set(p.key, { shapeId, kind: shapeName });
+      _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
+      return true;
+    } catch (e) {
+      sendError(`_drawClosedPositionWidget failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   }
@@ -838,7 +1069,10 @@
   // (the real broker_trade row is about to take over with a different id;
   // preserving would double-render). For real trade ids, move the shape
   // to the closed registry so it persists on chart.
+  // Always sweeps the auxiliary `:trail` line first — that horizontal_line
+  // belongs to the active rendering and never persists into closed.
   async function finalizePosition(key) {
+    _removeTrailLine(key);
     const entry = drawnPositions.get(key);
     if (!entry) return;
     drawnPositions.delete(key);
@@ -860,6 +1094,7 @@
 
   // Hard-remove (only used by force_cleanup nuke). Walks both registries.
   async function removePosition(key) {
+    _removeTrailLine(key);
     const entry = drawnPositions.get(key);
     if (entry) {
       drawnPositions.delete(key);
@@ -871,6 +1106,16 @@
         const studyId = await entry.avpStudyId;
         if (studyId != null && chart) try { chart.removeEntity(studyId); } catch (_) {}
       } catch (_) {}
+    }
+  }
+
+  function _removeTrailLine(key) {
+    const trailKey = `${key}:trail`;
+    const entry = drawnPositions.get(trailKey);
+    if (!entry) return;
+    drawnPositions.delete(trailKey);
+    if (entry.shapeId != null && chart) {
+      try { chart.removeEntity(entry.shapeId); } catch (_) {}
     }
   }
 

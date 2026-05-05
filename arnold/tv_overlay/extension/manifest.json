@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.3.2",
-  "description": "Closed trades: drop the 12h cutoff so all trades the poller pulls (last 7 days) are emitted, and floor zero-duration fills to entry+60s instead of dropping them. Server now waits for the userscript's force_cleanup ack before replaying state on WS connect, eliminating the race where replay shapes were drawn during cleanup and then wiped by the trailing removeAllShapes — closed trades stay on chart across reconnects.",
+  "version": "0.3.6",
+  "description": "Full model-behavior visualization on the active trade: trailed stop renders as a separate dashed-green horizontal_line when stop crosses into profit (TV's widget stopLevel is unsigned and would otherwise paint the band on the wrong side after BE-lock / cont-trail). Pyramid size shows in the widget's text header (L×3 / S×2). Halt state recolors active widget amber when runtime-status.halted=true. Closed-trade label gains [STOP]/[EE_LOCK]/[FLIP]/[MANUAL] suffix from broker_trades.exit_reason.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

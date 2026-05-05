@@ -245,6 +245,16 @@ class OverlayBroadcaster:
                 "closed": close_time is not None,
                 "exit_price": float(t.get("exit_price")) if t.get("exit_price") is not None else None,
                 "pnl_dollars": t.get("pnl_dollars"),
+                # Closed rectangles render their own text label (TV's native
+                # long_position labels are gone on closed shapes), so the
+                # client needs pnl_r + exit_reason to compose
+                # "L +$310 1.45R [STOP]" / "[EE_LOCK]" / "[FLIP]" etc.
+                "pnl_r": t.get("pnl_r"),
+                "exit_reason": t.get("exit_reason"),
+                # Active-trade halt cue — page.js recolors the widget amber.
+                # Only set on the synthetic id="active" entry; closed trades
+                # leave it None.
+                "halted": bool(t.get("halted")) if t.get("halted") is not None else False,
             }
             seen[key] = payload
 
@@ -454,6 +464,7 @@ class OverlayBroadcaster:
                                     "exit_price": None,
                                     "closed_at": None,
                                     "pnl_dollars": None,
+                                    "halted": bool(first.get("halted", False)),
                                 },
                             )
                     levels: list[dict] = list(dash_state.get("levels") or [])

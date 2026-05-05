@@ -79,9 +79,24 @@ def set_persist_callback(cb) -> None:
 def _log_broker_trade(**kwargs) -> None:
     """Log completed trade with full context and persist to dashboard."""
     result = "WIN" if kwargs.get("pnl_dollars", 0) > 0 else "LOSS"
-    exit_reason = "STOP" if kwargs.get("was_stop") else "SIGNAL"
-    if kwargs.get("trail_count", 0) > 0:
-        exit_reason = f"TRAILED({kwargs['trail_count']})"
+    # exit_reason precedence:
+    #   1. STOP when was_stop=true (broker stop-order filled)
+    #   2. caller-provided flatten_reason (early_exit_lock, flip,
+    #      manual, eod_flatten, etc.) — captured by adapter at flatten()
+    #   3. SIGNAL fallback for unknown non-stop exits (orphan recovery)
+    #   trail_count > 0 → annotate the existing reason
+    flatten_reason = kwargs.get("flatten_reason")
+    if kwargs.get("was_stop"):
+        exit_reason = "STOP"
+    elif flatten_reason:
+        exit_reason = flatten_reason.upper()
+    else:
+        exit_reason = "SIGNAL"
+    if kwargs.get("trail_count", 0) > 0 and exit_reason in ("STOP", "SIGNAL"):
+        exit_reason = f"{exit_reason}/TRAIL{kwargs['trail_count']}"
+    # Stamp the canonical exit_reason into kwargs so the persist callback
+    # writes it to broker_trades.exit_reason (downstream chart label).
+    kwargs["exit_reason"] = exit_reason
 
     log.info(
         "=== TRADE %s === %s %s %dx | entry=%.2f exit=%.2f stop=%.2f | "
@@ -206,6 +221,12 @@ class TopstepXBrokerAdapter:
             )
         self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
         self._trail_count = 0  # how many times we've trailed the stop
+        # Flatten reason captured at the moment flatten() is called so the
+        # exit fill that lands a moment later (or the recovery path that
+        # reconstructs the trade) can attribute the close. Cleared after
+        # persist so the next stop-hit (was_stop path) doesn't inherit a
+        # stale reason. None → was_stop=true is the only known label.
+        self._last_flatten_reason: str | None = None
 
     def update_mark_and_check_be_lock(self, price: float) -> None:
         """Per-tick: update peak_R AND fire BE-lock at +2R if not yet locked.
@@ -421,6 +442,11 @@ class TopstepXBrokerAdapter:
         broker truth at the end so a stuck local tracker (broker is flat
         but we think we're not) self-heals and the trade is recorded.
         """
+        # Capture the reason BEFORE we touch the broker so the exit-fill
+        # handler (or recovery) can read it and attribute the close. The
+        # next stop-hit path overwrites was_stop logic; this only matters
+        # for non-stop exits.
+        self._last_flatten_reason = reason
         if self.tracker.stop_order_id:
             try:
                 await self.client.cancel_order(self.tracker.stop_order_id)
@@ -1068,8 +1094,12 @@ class TopstepXBrokerAdapter:
                 reasoning=pt.get("reasoning"),
                 closed_at=now_utc,
                 topstepx_account_id=tsx_account_id,
+                flatten_reason=self._last_flatten_reason,
             )
             self._set_pending_trade(None)
+            # Reason is consumed by exit_reason — drop it so the next stop-
+            # hit doesn't inherit a stale label.
+            self._last_flatten_reason = None
 
     def reset_session(self) -> None:
         """Daily midnight reset."""

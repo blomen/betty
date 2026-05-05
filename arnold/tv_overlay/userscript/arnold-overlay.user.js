@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.4.3
-// @description  Standalone level rendering (level_upsert/level_remove): swings render as chart-spanning horizontal lines and FVG/OB as translucent rectangles, mirroring the extension path. Userscript users were missing structural pivots when scrolled away from a zone's time window. Closed-trade rectangles still carry side+$+R labels.
+// @version      0.4.4
+// @description  Closed-trade rectangles append broker_trades.exit_reason in brackets ([STOP]/[EE_LOCK]/[FLIP]/[MANUAL]/etc) — broadcaster forwards exit_reason from the BrokerTrade row. (Standalone swing/FVG/OB level rendering from 0.4.3 retained.) Active trade rendering still lives in the extension only.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -338,7 +338,8 @@
     const sizeSuffix = (p.size && p.size > 1) ? `×${p.size}` : '';
     const dollarStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(Math.round(pnl));
     const rStr = (typeof p.pnl_r === 'number') ? ` ${p.pnl_r >= 0 ? '+' : ''}${p.pnl_r.toFixed(2)}R` : '';
-    const label = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}`;
+    const reasonStr = (typeof p.exit_reason === 'string' && p.exit_reason) ? ` [${p.exit_reason}]` : '';
+    const label = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}${reasonStr}`;
     const overrides = {
       color: fillColor,
       backgroundColor: fillColor,

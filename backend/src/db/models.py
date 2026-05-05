@@ -2269,6 +2269,11 @@ def _run_pg_migrations(engine) -> None:
         # bankroll are scoped per-profile (forward-compat for multi-profile).
         ("broker_trades", "profile_id", "INTEGER"),
         ("profiles", "topstepx_account_id", "INTEGER"),
+        # 2026-05-05 — exit_reason for closed-trade chart labels. Distinguishes
+        # STOP / EE_LOCK / FLIP / EOD / MANUAL / etc. — was_stop alone covers
+        # the binary STOP-vs-not but the user wants chart-side visibility into
+        # which non-stop pathway closed the trade.
+        ("broker_trades", "exit_reason", "VARCHAR"),
     ]
     with engine.begin() as conn:
         for table, col, col_type in additions:
@@ -2457,6 +2462,10 @@ class BrokerTrade(Base):
     pnl_r = Column(Float, nullable=True)
     fill_latency_ms = Column(Float, nullable=True)
     slippage_ticks = Column(Float, nullable=True)
+    # STOP / EE_LOCK / FLIP / FLIP_REVERSAL / EOD / MANUAL / SHUTDOWN /
+    # ADVERSE_SLIP / SIZE_MISMATCH / etc. Captured from broker_adapter's
+    # last flatten() reason at close time, or "STOP" when was_stop=true.
+    exit_reason = Column(String, nullable=True)
 
     # Signal context at entry
     signal_action = Column(String, nullable=True)

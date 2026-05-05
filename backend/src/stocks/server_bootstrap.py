@@ -237,6 +237,7 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                     orderflow_score=p.get("orderflow_score"),
                     reasoning=p.get("reasoning") if isinstance(p.get("reasoning"), dict) else None,
                     closed_at=closed_at,
+                    exit_reason=p.get("exit_reason"),
                 )
                 db.add(row)
                 db.commit()
@@ -281,6 +282,9 @@ def _trade_payload_to_dict(p: dict) -> dict:
         "exit_price": p.get("exit_price"),
         "pnl_dollars": p.get("pnl_dollars"),
         "pnl_r": p.get("pnl_r"),
+        "was_stop": p.get("was_stop"),
+        "trail_count": p.get("trail_count"),
+        "exit_reason": p.get("exit_reason"),
         "closed_at": _iso(p.get("closed_at")),
     }
 
@@ -397,6 +401,10 @@ async def _position_watcher_loop(adapter: Any) -> None:
                     "stop_price": float(stop) if stop else 0.0,
                     "tp_price": float(tp) if tp else None,
                     "entry_time": entry_time,
+                    # Halt cue for the chart: the active widget recolors
+                    # amber when this is true (DD limit, max-stops, manual
+                    # halt). Sourced from the adapter's _halted flag.
+                    "halted": bool(getattr(adapter, "_halted", False)),
                 }
                 # Shape expected by tv_overlay/broadcaster.py:loop — it reads
                 # `price`, `side`, `size`, `entry_time`, `tp_price` and pulls

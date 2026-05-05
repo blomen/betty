@@ -348,6 +348,7 @@ async def _passive_dashboard_listener() -> None:
                                         "side": msg.get("side"),
                                         "entry_time": msg.get("entry_time"),
                                         "tp_price": msg.get("tp_price"),
+                                        "halted": bool(msg.get("halted", False)),
                                     }
                                 ]
                             )
