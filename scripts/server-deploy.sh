@@ -173,11 +173,23 @@ PY
 RL_PROGRESS="/opt/arnold/data/rl/pipeline_progress"
 RL_MAX_WAIT=7200  # 2 hours max wait
 
+# Count rl_train_pipeline processes inside the container.
+# `grep -c` returns exit 1 when count=0, which made the outer
+# `|| echo "0"` fire and APPEND a second "0" to the already-correct
+# stdout — the resulting "0\n0" then failed every `[ ... -eq 0 ]`
+# integer comparison and the deploy spun in wait_for_rl_training
+# until the 7200s timeout (observed 2026-05-05). Using `pgrep -fc`
+# inside `bash -c '...; true'` ensures the inner command exits 0
+# regardless of count, so the outer fallback never fires.
+_rl_pipeline_count() {
+    docker compose exec -T backend bash -c 'pgrep -fc rl_train_pipeline 2>/dev/null || echo 0' 2>/dev/null | tr -d '[:space:]' || echo "0"
+}
+
 wait_for_rl_training() {
     # Check if RL pipeline is running inside the container
     local rl_running
-    rl_running=$(docker compose exec -T backend bash -c 'ps aux | grep -c "[r]l_train_pipeline"' 2>/dev/null || echo "0")
-    if [ "$rl_running" -gt 0 ]; then
+    rl_running=$(_rl_pipeline_count)
+    if [ "${rl_running:-0}" -gt 0 ]; then
         echo ""
         echo ">>> RL TRAINING ACTIVE — waiting for pipeline to finish before restart."
         echo "    (The RL pipeline has never completed in 12 days due to deploy interruptions.)"
@@ -185,8 +197,8 @@ wait_for_rl_training() {
         echo ""
         local elapsed=0
         while [ "$elapsed" -lt "$RL_MAX_WAIT" ]; do
-            rl_running=$(docker compose exec -T backend bash -c 'ps aux | grep -c "[r]l_train_pipeline"' 2>/dev/null || echo "0")
-            if [ "$rl_running" -eq 0 ]; then
+            rl_running=$(_rl_pipeline_count)
+            if [ "${rl_running:-0}" -eq 0 ]; then
                 echo ">>> RL pipeline finished. Proceeding with deploy."
                 return 0
             fi
