@@ -50,7 +50,7 @@ class BetRepo:
         if status:
             query = query.filter(Bet.result == status)
         if exclude_bonus:
-            query = query.filter(not Bet.is_bonus)
+            query = query.filter(~Bet.is_bonus)
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     def create(self, **kwargs) -> Bet:
