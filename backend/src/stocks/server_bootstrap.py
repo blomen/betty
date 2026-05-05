@@ -536,8 +536,6 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
     while True:
         try:
             await asyncio.sleep(60)
-            if adapter.tracker.is_flat:
-                continue
             try:
                 positions = await client.search_open_positions()
             except Exception:
@@ -546,6 +544,28 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
             matching = [p for p in positions if p.get("contractId") == contract_id]
             broker_size = sum(int(p.get("size") or 0) for p in matching)
             local_size = int(adapter.tracker.size or 0)
+            # Orphan-while-flat: tracker says flat but broker has a position.
+            # 2026-05-05 saw a zombie BUY-STOP fire 47s after trade 377 closed,
+            # opening an unprotected LONG that arnold never noticed (broker had
+            # to be flattened manually for +$715). The loop previously skipped
+            # this branch when is_flat=True. Now: if broker has size and we
+            # don't, halt + liquidate via the broker directly (adapter.flatten
+            # gates on tracker.is_flat so it would no-op).
+            if adapter.tracker.is_flat:
+                if broker_size > 0:
+                    log.error(
+                        "reconcile loop: ORPHAN POSITION — tracker flat but broker has size=%d "
+                        "(contract=%s); halting + liquidating",
+                        broker_size,
+                        contract_id,
+                    )
+                    adapter._halt("orphan_position")
+                    try:
+                        await client.liquidate_position()
+                        log.info("reconcile loop: orphan position liquidated")
+                    except Exception:
+                        log.exception("reconcile loop: orphan liquidate failed — manual intervention required")
+                continue
             if broker_size != local_size:
                 log.error(
                     "reconcile loop: SIZE MISMATCH — broker=%d local=%d; halting + flattening",

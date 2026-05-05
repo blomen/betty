@@ -36,7 +36,13 @@ MIN_CONFIDENCE = 0.05 if _RECKLESS else 0.30
 ZONE_COOLDOWN_S = 30.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
 DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
 MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
-MAX_STOP_TICKS = 40  # maximum stop distance
+# 2026-05-05: raised from 40→80. Backtest emits stop_ticks up to 50
+# unclamped; live was clipping every output >40 to a 10pt stop. On
+# 05-04 the avg 1m bar was 12-26pt, so 10pt stops sat inside noise →
+# 30/109 stopouts, -$3,140. Backtest 67% WR / live 35% WR mismatch
+# was largely this clip. 80 ticks (20pt) gives the model headroom
+# without exposing >$400/contract on NQ ($20/pt × 20pt = $400).
+MAX_STOP_TICKS = 80  # maximum stop distance
 
 # NQ tick value: $5 per tick (0.25 point), $20 per point
 _NQ_TICK_VALUE = 5.0
@@ -721,6 +727,20 @@ class TopstepXBrokerAdapter:
         short stops only move down. A misordered trail call that tried to
         widen risk would otherwise quietly increase exposure.
         """
+        # 2026-05-05: orphan-position guard. Trade 377's stop filled at
+        # 11:46:38 → tracker went flat → 3s later signal 2058 routed through
+        # trail logic and called modify_stop with stop_order_id cleared,
+        # which placed a brand-new BUY-STOP @ 27945. That zombie stop
+        # triggered 47s later and opened an untracked LONG that arnold never
+        # noticed (broker had to be flattened manually for +$715). Same bug
+        # class as the trade 124 phantom-fill. If we're flat, we have
+        # nothing to protect — refuse to place or modify a stop.
+        if self.tracker.is_flat:
+            log.warning(
+                "modify_stop called while flat (new=%.2f) — refusing to place orphan stop",
+                new_stop_price,
+            )
+            return {"action": "reject", "reason": "flat", "stop_price": 0.0}
         new_stop_price = _round_tick(new_stop_price)
         side = self.tracker.side
         cur_stop = self.tracker.stop_price
