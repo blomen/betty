@@ -192,26 +192,17 @@ class OverlayBroadcaster:
 
         now = int(datetime.now(tz=timezone.utc).timestamp())
         seen: dict[str, dict] = {}
-        # Cap visible trade history aggressively. The full 7-day history
-        # remains in the Stats tab (`/api/stocks/broker-trades`); the chart
-        # is a *current-session* visualization. Two reasons:
-        #   1. 30+ overlapping long_position shapes produce visual soup —
-        #      stop/tp bands stack vertically across the same time window
-        #      and the chart becomes unreadable.
-        #   2. Trades > 24h old anchor to past timestamps, but on a tight
-        #      intraday chart range (1m / 5m) those anchors fall off-screen,
-        #      and TV may auto-shift the camera to fit them.
-        # Filter: only trades opened in the last 12h (covers a full Globex
-        # session start-to-now); cap to 12 most recent by ts.
+        # Emit every closed trade the poller pulls (currently last 7 days
+        # via stocks_runtime._passive_trades_poller). Each trade is its own
+        # time-bounded long_position shape anchored at the real entry→exit
+        # window, so they don't stack vertically the way the old fixed-time
+        # rendering did. Off-screen trades are fine — the user can scroll.
         active = [t for t in trades if t.get("id") == "active"]
         closed = [t for t in trades if t.get("id") != "active"]
-        cutoff_iso = (datetime.now(tz=timezone.utc) - timedelta(hours=12)).replace(tzinfo=None).isoformat()
-        closed = [t for t in closed if (t.get("ts") or "") >= cutoff_iso]
-        # Drop zero-duration trades (closed_at == ts) — instant stops or
-        # broken fills produce 1-point shapes that auto-extend forever.
-        closed = [t for t in closed if not t.get("closed_at") or not t.get("ts") or t["closed_at"] > t["ts"]]
+        # Floor zero-duration trades (closed_at <= ts) up to entry+60s in the
+        # payload below — keeps instant-stop fills visible as a 1-min shape
+        # instead of dropping them. Sort newest-first for stable iteration.
         closed.sort(key=lambda t: t.get("ts") or "", reverse=True)
-        closed = closed[:12]
         trades = active + closed
         for t in trades:
             tid = t.get("id")
@@ -234,16 +225,12 @@ class OverlayBroadcaster:
             effective_end = close_time if close_time else now
             if close_time is not None and effective_end <= entry_time:
                 effective_end = entry_time + 60
-            # Hard cap shape duration on chart at 30 min. A trade that ran
-            # for 4 hours doesn't need to render as a 4-hour band — that
-            # creates visual overlap with every other trade in that window.
-            # 30 min is enough to read direction + outcome at a glance.
-            # Active trade is exempt (its end tracks "now" and naturally
-            # grows; we want to see where it currently lives on the time
-            # axis).
-            MAX_DRAW_DURATION_S = 30 * 60
-            if tid != "active" and (effective_end - entry_time) > MAX_DRAW_DURATION_S:
-                effective_end = entry_time + MAX_DRAW_DURATION_S
+            # No artificial duration cap — TV's long_position widget
+            # spans the trade's TRUE entry→exit window, so a 90-min trade
+            # renders as a 90-min shape, not a misleading 30-min stub.
+            # Visual overlap is acceptable; truncating timestamps so the
+            # right edge doesn't match `closed_at` is what made the user
+            # call the chart "off".
             payload = {
                 "key": key,
                 "side": side,
@@ -470,6 +457,30 @@ class OverlayBroadcaster:
                                 },
                             )
                     levels: list[dict] = list(dash_state.get("levels") or [])
+                    # Inject swing pivots as standalone levels so the extension
+                    # renders chart-spanning horizontal lines + right-edge price
+                    # tags for each pivot, on top of the zone-member visual.
+                    # Source of truth is the zones we already received — no new
+                    # server-side wire format needed. Dedup by (name, quantized
+                    # price) so the same swing across overlapping zones only
+                    # contributes one level row.
+                    swing_seen: set[tuple[str, float]] = set()
+                    for z in zones:
+                        for m in z.get("members_detail") or []:
+                            fam = str(m.get("family") or "")
+                            if "swing" not in fam:
+                                continue
+                            name = str(m.get("name") or "")
+                            try:
+                                price = float(m.get("price"))
+                            except (TypeError, ValueError):
+                                continue
+                            qp = round(price / 0.25) * 0.25
+                            dedup = (name, qp)
+                            if dedup in swing_seen:
+                                continue
+                            swing_seen.add(dedup)
+                            levels.append({"name": name, "price": price})
                     await self.reconcile_zones(zones)
                     # reconcile_position emits a separate `pos:current` shape
                     # which would visually duplicate the synthetic active

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.2.5",
-  "description": "Closed-trade rendering switched from TV long_position/short_position to simple green/red rectangles entry→exit (eliminates stacked stop/tp band soup); active trade still uses long_position for live R:R. Broadcaster caps closed trades to last 12 most recent within 12h and clamps each shape's chart duration to 30 min so long-running trades don't span the whole window.",
+  "version": "0.3.2",
+  "description": "Closed trades: drop the 12h cutoff so all trades the poller pulls (last 7 days) are emitted, and floor zero-duration fills to entry+60s instead of dropping them. Server now waits for the userscript's force_cleanup ack before replaying state on WS connect, eliminating the race where replay shapes were drawn during cleanup and then wiped by the trailing removeAllShapes — closed trades stay on chart across reconnects.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

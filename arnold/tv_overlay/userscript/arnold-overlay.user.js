@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.3.2
-// @description  Draws Arnold zones (with per-member 1px brush lines @ 50% opacity colored by hierarchy weight) and open positions on TradingView charts via WebSocket from local Arnold server.
+// @version      0.4.0
+// @description  Draws Arnold zones AND every closed trade as a time-bounded long_position / short_position shape anchored at the real entry→exit window (was: horizontal lines at "now" that stacked invisibly). Closed trades persist on chart across reconnects via finalizePosition.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
 // @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
+// @updateURL    http://127.0.0.1:8000/stocks/api/tv-overlay/userscript
+// @downloadURL  http://127.0.0.1:8000/stocks/api/tv-overlay/userscript
 // ==/UserScript==
 
 // Why @grant unsafeWindow + @connect: TradingView's CSP blocks ws:// from
@@ -126,7 +128,21 @@
     const now = Math.floor(Date.now() / 1000);
     const tStart = now - 8 * 60 * 60; // 8h back
     const tEnd = now;
-    const color = COLOR_BY_STRENGTH(p.strength);
+    let color = COLOR_BY_STRENGTH(p.strength);
+    let transparency = Math.max(20, 80 - Math.round(p.strength * 60));
+
+    // Swing-family override — daily/weekly/monthly swing pivots are
+    // structurally important even when they form 1-member zones (which
+    // would otherwise paint the same hue as any other zone of the same
+    // strength and disappear into the cluster). When ANY zone member is
+    // from a swing family, force bright amber + higher opacity so swing
+    // pivots pop out regardless of hierarchy strength.
+    const hasSwing = (p.members_detail || []).some(m => /swing/.test(m.family || ''));
+    if (hasSwing) {
+      color = '#fbbf24'; // tailwind amber-400
+      transparency = 50;
+    }
+
     try {
       const id = chart.createMultipointShape(
         [
@@ -139,7 +155,7 @@
           overrides: {
             color: color,
             backgroundColor: color,
-            transparency: Math.max(20, 80 - Math.round(p.strength * 60)),
+            transparency: transparency,
             showLabel: true,
           },
         }
@@ -200,55 +216,88 @@
     return true;
   }
 
+  // Per-position registry. Each trade gets a single TV long_position /
+  // short_position shape anchored at the real entry→exit window the
+  // broadcaster sends. Mutate-in-place via setPoints / setProperties so
+  // trail-stop updates on the active trade don't flicker.
+  const drawnPositions = new Map(); // key → shapeId
+  // Active trade caches its entry-time anchor so stop/tp updates don't
+  // scrub the entry handle each tick. Closed trades sync to broker
+  // timestamps every render.
+  const positionAnchors = new Map();
+
   function drawPosition(p) {
     if (!chart) return false;
-    const baseKey = p.key;
-    safeRemove(baseKey + ':entry');
-    safeRemove(baseKey + ':stop');
-    safeRemove(baseKey + ':tp');
+    const isLong = p.side === 'long';
+    const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
 
-    const sideColor = p.side === 'long' ? '#10b981' : '#ef4444';
+    const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
     const now = Math.floor(Date.now() / 1000);
+    let anchor;
+    if (isActive) {
+      if (!positionAnchors.has(p.key)) positionAnchors.set(p.key, fillEpoch != null ? fillEpoch : now);
+      anchor = positionAnchors.get(p.key);
+    } else {
+      anchor = fillEpoch != null ? fillEpoch : now;
+    }
+    let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
+    if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
-    let entryDrawn = false;
+    const shapeName = isLong ? 'long_position' : 'short_position';
+    const NQ_TICK = 0.25;
+    const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
+    const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
+    const stopOffsetTicks = Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
+    const tpOffsetTicks   = Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK);
+    const points = [
+      { time: anchor, price: p.entry },
+      { time: endEpoch, price: p.entry },
+    ];
+    const positionOverrides = {
+      stopLevel: stopOffsetTicks,
+      profitLevel: tpOffsetTicks,
+      showPriceLabels: false,
+    };
+
+    const existingId = drawnPositions.get(p.key);
+    if (existingId != null && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existingId);
+        if (obj) {
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') obj.setProperties(positionOverrides);
+          return true;
+        }
+      } catch (_) { /* fall through to recreate */ }
+    }
+
     try {
-      const entryId = chart.createMultipointShape(
-        [{ time: now, price: p.entry }],
-        { shape: 'horizontal_line', text: `${p.side.toUpperCase()} entry ${p.entry.toFixed(2)}`,
-          overrides: { linecolor: sideColor, showLabel: true } }
-      );
-      if (entryId != null) {
-        drawn.set(baseKey + ':entry', entryId);
-        entryDrawn = true;
+      const shapeId = chart.createMultipointShape(points, {
+        shape: shapeName,
+        overrides: positionOverrides,
+      });
+      if (shapeId == null) {
+        sendError(`drawPosition: createMultipointShape returned null for ${shapeName}`);
+        return false;
       }
-
-      if (p.stop != null) {
-        const stopId = chart.createMultipointShape(
-          [{ time: now, price: p.stop }],
-          { shape: 'horizontal_line', text: `stop ${p.stop.toFixed(2)}`,
-            overrides: { linecolor: '#dc2626', showLabel: true } }
-        );
-        if (stopId != null) drawn.set(baseKey + ':stop', stopId);
+      if (existingId != null && existingId !== shapeId) {
+        try { chart.removeEntity(existingId); } catch (_) {}
       }
-      if (p.tp != null) {
-        const tpId = chart.createMultipointShape(
-          [{ time: now, price: p.tp }],
-          { shape: 'horizontal_line', text: `tp ${p.tp.toFixed(2)}`,
-            overrides: { linecolor: '#22c55e', showLabel: true } }
-        );
-        if (tpId != null) drawn.set(baseKey + ':tp', tpId);
-      }
+      drawnPositions.set(p.key, shapeId);
+      return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
-      return entryDrawn;
+      return false;
     }
-    return entryDrawn;
   }
 
   function removePosition(key) {
-    safeRemove(key + ':entry');
-    safeRemove(key + ':stop');
-    safeRemove(key + ':tp');
+    const shapeId = drawnPositions.get(key);
+    drawnPositions.delete(key);
+    positionAnchors.delete(key);
+    if (shapeId != null && chart) {
+      try { chart.removeEntity(shapeId); } catch (_) {}
+    }
   }
 
   // --- WebSocket loop ---
