@@ -247,29 +247,25 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     @router.get("/browser/diag/{provider_id}")
     async def diag(provider_id: str):
         """Debug: surface workflow internals so we can tell stale-code from init-failure."""
-        import os as _os
-
         workflow = get_workflow(provider_id)
         out: dict[str, Any] = {
             "class": type(workflow).__name__,
             "module": type(workflow).__module__,
             "autonomous_placement": getattr(workflow, "autonomous_placement", None),
         }
-        for attr in ("has_api", "_portfolio", "_markets", "_client", "_balance_cache", "_pending_ticker"):
+        # Find a live page for this provider; check_login needs one (no SDK fallback any more).
+        page = None
+        if browser.running and browser.context:
             try:
-                v = getattr(workflow, attr, None)
-                out[attr] = str(type(v).__name__) if v is not None else None
+                page = await workflow.find_tab(browser.context)
             except Exception as e:
-                out[attr] = f"err:{e}"
-        out["last_init_error"] = getattr(workflow, "_last_init_error", "<attr_missing>")
-        out["env_KALSHI_API_KEY_ID_set"] = bool(_os.getenv("KALSHI_API_KEY_ID"))
-        out["env_KALSHI_PRIVATE_KEY_PEM_set"] = bool(_os.getenv("KALSHI_PRIVATE_KEY_PEM"))
-        # Trigger check_login retry path explicitly
-        try:
-            out["check_login"] = await workflow.check_login(None)
-        except Exception as e:
-            out["check_login_error"] = str(e)
-        out["has_api_after_check_login"] = getattr(workflow, "has_api", None)
+                out["find_tab_error"] = str(e)
+        out["page_url"] = page.url if page else None
+        if page is not None:
+            try:
+                out["check_login"] = await workflow.check_login(page)
+            except Exception as e:
+                out["check_login_error"] = str(e)
         return out
 
     @router.get("/browser/test-settle/{provider_id}")
@@ -429,12 +425,44 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 workflow = get_workflow(pid)
                 if not workflow.domain:
                     continue
-                if browser.context:
-                    already = any(workflow.domain in (p.url or "") for p in browser.context.pages)
-                    if already:
+                if not browser.context:
+                    continue
+                # An "already open" tab must be (a) not closed, (b) on a real
+                # http(s) URL containing the domain — not about:blank, not a
+                # chrome:// page, not a closed page object lingering in
+                # context.pages. Without these guards a half-loaded stale tab
+                # silently blocks the re-open and the provider never appears
+                # (the cloudbet symptom we kept hitting).
+                already = False
+                for p in browser.context.pages:
+                    try:
+                        if p.is_closed():
+                            continue
+                        url = (p.url or "").lower()
+                        if not url.startswith(("http://", "https://")):
+                            continue
+                        if workflow.domain in url:
+                            already = True
+                            break
+                    except Exception:
                         continue
+                if already:
+                    continue
+                try:
                     await browser.open_tab(workflow.home_url)
-            except Exception:
+                except Exception as exc:
+                    # Surface the failure in cmd output instead of swallowing
+                    # — silent failure here is what makes "cloudbet didn't
+                    # open" invisible until the user notices the missing tab.
+                    print(
+                        f"[mirror/start] open_tab({pid}) failed: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[mirror/start] provider {pid} setup failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
                 continue
         return browser.get_status()
 

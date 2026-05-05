@@ -135,7 +135,7 @@ exit (provider_complete)
 - The pause path during NAVIGATING/PLACING is critical: when the runner transitions to `STATE_READY` waiting for user Place/Skip, it FIRST checks `_run_event`. If cleared, it auto-skips with `reason="paused"` and `continue`s — the next iteration's gate-check then parks the runner. **Without this check the runner sits forever on Place/Skip after a pause.**
 - `stop()` calls `_task.cancel()` only — it does NOT set `_run_event`. Cancellation propagates through `await self._run_event.wait()` cleanly. Setting `_run_event` in `stop()` would create a race where the runner briefly proceeds past the gate before cancellation lands.
 - The `_ready_sync_task` MUST be cancelled in a `finally` block on every gate exit, including `stop()`, to avoid leaked tasks.
-- `_detect_pending` writes `state = STATE_SETTLING` and broadcasts settling SSE events. While at READY_TO_RUN, the passive sync task must restore `state = STATE_READY_TO_RUN` AND **re-broadcast `provider_ready`** after the periodic refresh, so the card snaps back to yellow instead of getting stuck on cyan.
+- `_detect_pending` writes `state = STATE_SETTLING` and broadcasts settling SSE events **only when DB has pending bets**. With zero pending it short-circuits, emits `settling_done` with `skipped_no_pending: true`, and never enters cyan. While at READY_TO_RUN, the passive sync task must restore `state = STATE_READY_TO_RUN` AND **re-broadcast `provider_ready`** after the periodic refresh, so the card snaps back to yellow instead of getting stuck on cyan.
 - `set_run(False)` while at `STATE_READY` ALSO sets `_skip_event` (in `ProviderRunner` only) so the wait on Place/Skip wakes up. ArbRunner's anchor wait is `_anchor_event`; pause-mid-anchor is intentionally handled at the next iteration boundary, not the current anchor wait.
 
 ### Code references
@@ -156,7 +156,7 @@ The runner emits these events. The frontend's `mirror.lastEvent` handler in `Pla
 | `provider_opening` | `{provider_id}` | `tab_open` (blue) |
 | `login_waiting` | `{provider_id}` | `tab_open` (blue) |
 | `login_detected` | `{provider_id}` | `tab_open` (still blue until settling kicks in) |
-| `settling_pending` / `settling_done` | `{provider_id, …}` | `logged_in_syncing` (cyan) |
+| `settling_pending` / `settling_done` | `{provider_id, …}` | `logged_in_syncing` (cyan) — `settling_pending` is **skipped** when DB has zero pending bets; the runner emits only `settling_done` with `skipped_no_pending: true` and the card stays out of cyan |
 | `provider_ready` | `{provider_id, state: "ready_to_run", placed_today, daily_cap, [mode: "arb"]}` | `ready_to_run` (yellow) |
 | `provider_running` | `{provider_id, [mode: "arb"]}` | `running` (green) |
 | `bet_navigating` / `bet_ready` / `bet_placed` / `bet_skipped` / `bet_failed` | `{provider_id, bet, …}` | `running` (green) |
@@ -248,8 +248,9 @@ Soft books cluster: siblings share an odds engine and produce identical odds, so
 | Arb role | Counter only (sharp source — used to hedge soft anchors) |
 | Gate semantics | Standard |
 | Counter while yellow | YES — yellow Pinnacle still hedges other providers' anchors |
+| Placement type | **Two-phase guided** (G) — `prep_betslip` clicks the outcome + writes stake, user clicks Place on `pinnacle.se`, interceptor catches `bets/straight` |
 
-Pinnacle is in `UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}` because daily caps don't apply, but its placement role is value-bet-only (sharp odds means edge against itself is always zero).
+Pinnacle is in `UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}` because daily caps don't apply, but its placement role is value-bet-only (sharp odds means edge against itself is always zero). It is **not** autonomous — `place_bet` is intentionally omitted from the strategy and `autonomous_placement` is left False so a human reviews every Pinnacle stake before submission.
 
 ### Unlimited / playable sharp-adjacent (Polymarket, Cloudbet, Kalshi)
 
@@ -462,8 +463,8 @@ User clicks the provider's "Place Bet" button. The interceptor catches it.
 
 | Type | Providers | How |
 |------|-----------|-----|
-| **Autonomous API** | Pinnacle, Polymarket | `workflow.place_bet()` calls API directly on user confirm |
-| **Two-phase semi-auto** | Altenar, Kambi, Interwetten | `prep_betslip()` selects outcome, user clicks confirm on site |
+| **Autonomous API** | Polymarket | `workflow.place_bet()` calls API directly on user confirm |
+| **Two-phase semi-auto** | Pinnacle, Altenar, Kambi, Interwetten | `prep_betslip()` selects outcome + fills stake, user clicks Place on the provider site, interceptor catches the placement XHR |
 | **Manual** | Gecko V2, Generic | User navigates + fills betslip entirely; interceptor catches |
 
 **Interception patterns:**
@@ -594,7 +595,7 @@ Current wiring status as of 2026-04-30. **Legend:** ✅ working, ⚠️ partial/
 
 | # | Provider | Platform | Mode | Login | Balance | History | Navigate | Prep | Place | Live Price |
 |---|----------|----------|:----:|:-----:|:-------:|:-------:|:--------:|:----:|:-----:|:----------:|
-| 1 | pinnacle | Pinnacle | A | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| 1 | pinnacle | Pinnacle | G | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 2 | polymarket | Polymarket | A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 3 | betinia | Altenar | G | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 4 | campobet | Altenar | G | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ |

@@ -1548,8 +1548,19 @@ class ProviderRunner:
                 logger.exception(f"[Runner:{provider_id}] DOM settlement failed")
             return
 
-        # Always sync history — provider is source of truth.
-        # DB may have fewer bets (manual bets, bets placed before mirror existed).
+        # No pending bets in DB → skip settling entirely. No history round-trip,
+        # no cyan "scanning pending…" flash. pending_loop catches any drift that
+        # lands later. Mirrors the Polymarket fast-path above and the same
+        # short-circuit in ArbRunner._detect_pending.
+        if not pending_bets:
+            logger.info(f"[Runner:{provider_id}] No DB pending bets — skipping startup settlement")
+            self._broadcaster.publish(
+                "settling_done",
+                {"provider_id": provider_id, "pending_count": 0, "settled_count": 0, "skipped_no_pending": True},
+            )
+            return
+
+        # DB has pending — provider history is source of truth, sync it.
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
 
@@ -1579,28 +1590,32 @@ class ProviderRunner:
             for e in raw_history
         ]
 
-        # Reconcile DB against provider truth (autonomous — DB self-heals)
-        if pending_bets:
-            from .reconcile import reconcile_and_publish
+        # Reconcile DB against provider truth (autonomous — DB self-heals).
+        # Short-circuit above guarantees pending_bets is non-empty here.
+        from .reconcile import reconcile_and_publish
 
-            n = await reconcile_and_publish(
-                self._proxy_url,
-                _AUTH_HEADER,
-                _AUTH_VALUE,
-                provider_id,
-                pending_bets,
-                history,
-                self._broadcaster,
-                page=page,
-                workflow=workflow,
-            )
-            if n:
-                logger.info(f"[Runner:{provider_id}] reconciled {n} bets")
-            else:
-                logger.info(f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open")
+        n = await reconcile_and_publish(
+            self._proxy_url,
+            _AUTH_HEADER,
+            _AUTH_VALUE,
+            provider_id,
+            pending_bets,
+            history,
+            self._broadcaster,
+            page=page,
+            workflow=workflow,
+        )
+        if n:
+            logger.info(f"[Runner:{provider_id}] reconciled {n} bets")
+        else:
+            logger.info(f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open")
 
-        # Record unknown open bets from provider that aren't in DB
         await self._record_unknown_open_bets(provider_id, history, pending_bets)
+
+        self._broadcaster.publish(
+            "settling_done",
+            {"provider_id": provider_id, "pending_count": len(pending_bets), "settled_count": n or 0},
+        )
 
     @staticmethod
     def _match_polymarket_settlements(pending_bets: list[dict], positions: list[dict]) -> list[dict]:

@@ -40,6 +40,15 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
     ns.gecko_event_id = meta.get("event_id", "")
     # Interwetten fields
     ns.interwetten_event_id = meta.get("event_id", "")
+    # Altenar fields — provider_meta stores routing IDs unprefixed (event_id,
+    # sport_id, category_id, championship_id) but _navigate_to_event reads
+    # altenar_*-prefixed names. Without this, top-level event_id (canonical
+    # UUID) blocks the meta event_id from being flattened, and BETINIA /
+    # QUICKCASINO / CAMPOBET / SWIPER nav silently no-ops on the arb path.
+    ns.altenar_event_id = meta.get("event_id", "")
+    ns.altenar_sport_id = meta.get("sport_id", "")
+    ns.altenar_category_id = meta.get("category_id", "")
+    ns.altenar_championship_id = meta.get("championship_id", "")
     return ns
 
 

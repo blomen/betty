@@ -27,7 +27,12 @@ _BALANCE_KEYWORDS = (
     "wallet/balance",
     "payment-stats",
     "/cashier/balance",
+    "iam-balances",  # Cloudbet POST /iam-balances
     "clob.polymarket.com/balance-allowance",  # Polymarket CLOB SDK (fires only at order time)
+    # Kalshi web API: api.elections.kalshi.com/v1/users/<UUID>/balance (singular).
+    # Subaccount /balances variant returns a different shape — _extract_balance
+    # handles both via the {balance: int_cents} fallback path.
+    "api.elections.kalshi.com/v1/users/",
     # NOTE: data-api.polymarket.com/value returns POSITION value, NOT cash. Don't add it.
     # NOTE: data-api.polymarket.com/positions also doesn't carry cash.
     # Polymarket cash USDC balance is currently DOM-scraped only (see strategies/polymarket.py).
@@ -42,6 +47,9 @@ _HISTORY_KEYWORDS = (
     "widgetbethistory",
     "coupon-history",
     "data-api.polymarket.com/trades",  # Polymarket trade history
+    "arcadia.pinnacle.se/0.1/bets",  # Pinnacle bet list (?status=settled|unsettled)
+    "sports-betting/v4/bets/positions",  # Cloudbet positions (ACCEPTED + COMPLETED)
+    "event_positions",  # Kalshi: /v1/users/<UUID>/event_positions?position_status=...
 )
 _BET_PLACEMENT_KEYWORDS = (
     "placewidget",
@@ -52,6 +60,11 @@ _BET_PLACEMENT_KEYWORDS = (
     "bets/parlay",
     "bets/place",
     "clob.polymarket.com/order",
+    # Kalshi: POST api.elections.kalshi.com/v1/users/<UUID>/orders
+    # Both the bare /orders POST (placement) and /orders?status=resting GET
+    # match this substring — the placement handler gates on
+    # response.request.method == "POST" so reads aren't mistaken for placements.
+    "api.elections.kalshi.com/v1/users/",
 )
 # Third-party tracker / analytics hosts. Their URLs often embed the provider's
 # page URL (containing "bethistory" / "balance" / etc.) as a query param,
@@ -121,6 +134,12 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "vbet.com": "vbet",
     "10bet.com": "10bet",
     "polymarket.com": "polymarket",
+    "cloudbet.com": "cloudbet",
+    # Kalshi: kalshi.com is the page host; api.elections.kalshi.com is the
+    # cross-origin web API. Both classify as kalshi so interceptor + tab
+    # detection work whether we look at page URL or request URL.
+    "kalshi.com": "kalshi",
+    "api.elections.kalshi.com": "kalshi",
     "tipwin.se": "tipwin",
     "mrgreen.com": "mrgreen",
     "888sport.com": "888sport",
@@ -369,14 +388,26 @@ class MirrorBrowser:
 
         async def _check_and_close() -> None:
             try:
-                # Wait briefly for the page to settle on a real URL (initial
-                # opens often start at about:blank then navigate).
-                await asyncio.sleep(1.5)
-                url = (page.url or "").lower()
-                if self._is_tab_allowed(url):
+                # Poll quickly so the dbet ghost-tab flash is closed within
+                # ~200-400ms of materialization instead of waiting 1.5s.
+                # Initial about:blank → real URL transition typically completes
+                # within the first few polls; we keep polling up to ~2s total
+                # so a slow async-restored navigation still gets caught.
+                deadline = 0.0
+                while deadline < 2.0:
+                    await asyncio.sleep(0.2)
+                    deadline += 0.2
+                    if page.is_closed():
+                        return
+                    url = (page.url or "").lower()
+                    if not url or url == "about:blank":
+                        continue  # still navigating — keep polling
+                    if self._is_tab_allowed(url):
+                        return
+                    await page.close()
+                    print(f"[browser] Closed stray restored tab: {url[:80]}", flush=True)
                     return
-                await page.close()
-                print(f"[browser] Closed stray restored tab: {url[:80]}", flush=True)
+                # Final settle — page never navigated away from blank, leave it.
             except Exception:
                 pass
 
@@ -701,6 +732,12 @@ class MirrorBrowser:
                 # Polymarket balance-allowance returns USDC in raw wei (6 decimals)
                 if provider_id == "polymarket" and balance > 1_000_000:
                     balance = balance / 1e6
+                # Kalshi /balance returns int cents — scale to dollars.
+                # /balance only (we filter out /balances + /event_positions etc.
+                # via the URL keyword check above; only the singular /balance
+                # endpoint reaches here as a {balance: int} payload).
+                if provider_id == "kalshi" and "/balance" in url_lower and not url_lower.endswith("/balances"):
+                    balance = balance / 100.0
                 if provider_id not in self.provider_data:
                     self.provider_data[provider_id] = {}
                 self.provider_data[provider_id]["logged_in"] = True
@@ -793,6 +830,16 @@ class MirrorBrowser:
 
         # Bet placement
         if any(kw in url_lower for kw in _BET_PLACEMENT_KEYWORDS):
+            # Method gate — only POST/PUT count as placement. Some keyword
+            # patterns (e.g. Kalshi's /v1/users/<U>/orders) match GET reads
+            # too (resting orders, fills) which would otherwise be misclassified
+            # as placements and broadcast bet_intercepted.
+            try:
+                request_method = (response.request.method or "GET").upper()
+            except Exception:
+                request_method = "GET"
+            if request_method not in ("POST", "PUT"):
+                return
             try:
                 # Capture request body — contains the actual stake submitted by the browser
                 # (may differ from requested stake if WSDK/site capped it)

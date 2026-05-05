@@ -26,6 +26,7 @@ class Strategy:
 
     check_login: Callable | None = None
     sync_balance: Callable | None = None
+    fetch_balance: Callable | None = None  # async (page, intel) -> float | None — passive ready-state refresh
     sync_history: Callable | None = None
     navigate_to_event: Callable | None = None
     prep_betslip: Callable | None = None

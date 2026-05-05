@@ -1157,12 +1157,22 @@ class ArbRunner:
 
     async def _detect_pending(self, pid: str, workflow: Any, page: Any) -> None:
         """Reconcile DB against provider truth and broadcast bet_reconciled events."""
+        pending_bets = await self._fetch_pending(pid)
+
+        # Nothing in DB to scan — skip the whole settling phase. No history
+        # round-trip, no cyan "scanning pending…" flash. pending_loop covers
+        # any drift that lands later.
+        if not pending_bets:
+            self._broadcaster.publish(
+                "settling_done",
+                {"provider_id": pid, "pending_count": 0, "settled_count": 0, "skipped_no_pending": True},
+            )
+            return
+
         from .reconcile import reconcile_and_publish
 
         self.state = STATE_SETTLING
         self._broadcaster.publish("settling_pending", {"provider_id": pid})
-
-        pending_bets = await self._fetch_pending(pid)
 
         from . import stream_registry
 
@@ -1190,20 +1200,23 @@ class ArbRunner:
             for e in raw_history
         ]
 
-        if pending_bets:
-            n = await reconcile_and_publish(
-                self._proxy_url,
-                _AUTH_HEADER,
-                _AUTH_VALUE,
-                pid,
-                pending_bets,
-                history,
-                self._broadcaster,
-                page=page,
-                workflow=workflow,
-            )
-            if n:
-                logger.info(f"[Arb:{pid}] reconciled {n} bets")
+        n = await reconcile_and_publish(
+            self._proxy_url,
+            _AUTH_HEADER,
+            _AUTH_VALUE,
+            pid,
+            pending_bets,
+            history,
+            self._broadcaster,
+            page=page,
+            workflow=workflow,
+        )
+        if n:
+            logger.info(f"[Arb:{pid}] reconciled {n} bets")
+        self._broadcaster.publish(
+            "settling_done",
+            {"provider_id": pid, "pending_count": len(pending_bets), "settled_count": n or 0},
+        )
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
         from arnold.http_client import tunnel_client as _tc

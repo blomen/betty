@@ -291,19 +291,12 @@ async def _scan(page: Page, intel: dict | None) -> dict:
     api = _api_base(intel)
     start, end = _date_range()
 
-    # Evaluate API helper (inherits page cookies)
+    # Authenticated request via Playwright request context — sends X-Api-Key,
+    # X-Device-UUID, X-Session, and Cookie. Matches the auth surface used by
+    # _check_live_price / _sync_history's API fallback so all Pinnacle calls
+    # behave identically (was: in-page fetch with cookies-only).
     async def fetch_api(url: str) -> Any:
-        try:
-            return await page.evaluate(f"""
-                async () => {{
-                    const resp = await fetch("{url}", {{credentials: "include"}});
-                    if (!resp.ok) return {{ __error: resp.status }};
-                    return await resp.json();
-                }}
-            """)
-        except Exception as e:
-            logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
-            return None
+        return await _evaluate_api(page, url)
 
     # Balance
     bal_data = await fetch_api(f"{api}/wallet/balance")
@@ -413,17 +406,7 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
     start, end = _date_range()
 
     async def fetch_api(url: str) -> Any:
-        try:
-            return await page.evaluate(f"""
-                async () => {{
-                    const resp = await fetch("{url}", {{credentials: "include"}});
-                    if (!resp.ok) return {{ __error: resp.status }};
-                    return await resp.json();
-                }}
-            """)
-        except Exception as e:
-            logger.warning(f"[pinnacle] API fetch failed: {url} — {e}")
-            return None
+        return await _evaluate_api(page, url)
 
     # Step 1: Scrape pending bets
     unsettled = await fetch_api(f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
@@ -1025,9 +1008,21 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> Pl
     return PlacementResult(status="prepped", bet_id=bet_id)
 
 
+async def _fetch_balance(page: Page, intel: dict | None) -> float | None:
+    """Lightweight balance refresh used by the ready-state passive sync loop.
+
+    Same localStorage read as _sync_balance — the source of truth Pinnacle
+    keeps fresh on every authenticated XHR. Returns None on failure so the
+    runner just skips this tick instead of broadcasting a -1 sentinel.
+    """
+    val = await _sync_balance(page, intel)
+    return val if val >= 0 else None
+
+
 strategy = Strategy(
     check_login=_check_login,
     sync_balance=_sync_balance,
+    fetch_balance=_fetch_balance,
     sync_history=_sync_history,
     navigate_to_event=_navigate_to_event,
     prep_betslip=_prep_betslip,

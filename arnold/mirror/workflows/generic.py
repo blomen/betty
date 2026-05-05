@@ -89,6 +89,30 @@ class GenericWorkflow(ProviderWorkflow):
         # Intel JSON may declare this provider as autonomous (API-based place_bet
         # called on user confirm instead of waiting for a placement interception).
         self.autonomous_placement = bool((self.intel or {}).get("autonomous_placement", False))
+        # fetch_balance is OPTIONAL on the workflow surface — provider_runner /
+        # arb_runner gate the ready-state passive refresh on
+        # hasattr(workflow, "fetch_balance"), so we only expose it when the
+        # strategy actually defines it. Keeps the no-op fallback off for
+        # workflows that don't want a 60s background refresh.
+        if self.strategy and self.strategy.fetch_balance:
+            self.fetch_balance = self._fetch_balance  # type: ignore[method-assign]
+
+    @property
+    def home_url(self) -> str:
+        """Intel JSON `home_url` overrides the default `https://{domain}`.
+
+        Generic providers like Kalshi land on /portfolio (not /) so balance +
+        positions calls fire on tab open without an extra navigation.
+        """
+        url = (self.intel or {}).get("home_url")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+        return super().home_url
+
+    async def _fetch_balance(self, page: Page) -> float | None:
+        if self.strategy and self.strategy.fetch_balance:
+            return await self.strategy.fetch_balance(page, self.intel)
+        return None
 
     # ------------------------------------------------------------------
     # Login

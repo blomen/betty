@@ -1,0 +1,10 @@
+{
+  "provider_id": "cloudbet",
+  "domain": "cloudbet.com",
+  "login": {
+    "method": "api"
+  },
+  "navigation": {
+    "history_path": "/en/sports/bet-history"
+  }
+}

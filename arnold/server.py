@@ -139,46 +139,59 @@ async def startup():
 
 async def _auto_open_tradingview() -> None:
     """Ensure a TradingView NQ chart tab is open in the mirror. Idempotent:
-    if a TV tab already exists (from a previous launch's persistent profile
-    or from a prior auto-open), no new tab is created.
+    if a TV tab already exists (live, http(s), and not closed), no new tab
+    is created.
 
     Print to stdout with flush=True so arnold.bat's cmd window surfaces
-    failures (uvicorn's log_level=warning swallows logger.info). Long
-    backoff schedule because Chrome profile-lock takes 30-60s to clear
-    when a previous arnold session crashed.
+    failures (uvicorn's log_level=warning swallows logger.info). Persistent
+    retry: a finite backoff schedule was giving up before the Chromium
+    profile lock cleared, leaving the chart silently absent until the user
+    noticed. Now we keep retrying with a capped backoff until the tab is
+    open or the lifespan teardown cancels us.
     """
     url = "https://www.tradingview.com/chart/?symbol=CME_MINI%3ANQ1!"
-    delays = [3, 6, 12, 30, 60]  # extended backoff
-    for attempt, delay in enumerate(delays, 1):
+    backoff = [3, 6, 12, 30, 60]
+    attempt = 0
+    while True:
+        attempt += 1
+        delay = backoff[min(attempt - 1, len(backoff) - 1)]
         try:
             await asyncio.sleep(delay)
-            print(f"[tv-overlay] auto-open attempt {attempt}/{len(delays)}", flush=True)
+            print(f"[tv-overlay] auto-open attempt {attempt}", flush=True)
             if not browser.running:
                 await browser.start()
                 print("[tv-overlay] mirror browser started", flush=True)
-            # Idempotency check — reuse existing TV tab if any.
+            # Idempotency check — reuse existing TV tab only if it's a real
+            # live page. A closed or about:blank page lingering in
+            # context.pages must NOT short-circuit re-open (same class of
+            # bug as the cloudbet "already" check in /mirror/start).
+            already_url: str | None = None
             if browser.context:
                 for p in browser.context.pages:
                     try:
-                        if "tradingview.com" in (p.url or ""):
-                            print(f"[tv-overlay] TV tab already open: {p.url}", flush=True)
-                            return
+                        if p.is_closed():
+                            continue
+                        purl = (p.url or "").lower()
+                        if not purl.startswith(("http://", "https://")):
+                            continue
+                        if "tradingview.com" in purl:
+                            already_url = p.url
+                            break
                     except Exception:
                         continue
+            if already_url:
+                print(f"[tv-overlay] TV tab already open: {already_url}", flush=True)
+                return
             page = await browser.open_tab(url)
             print(f"[tv-overlay] opened TV tab: {page.url}", flush=True)
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             print(
                 f"[tv-overlay] auto-open attempt {attempt} failed: {type(exc).__name__}: {exc}",
                 flush=True,
             )
-            if attempt == len(delays):
-                logger.exception("Auto-open TradingView failed after %d attempts", len(delays))
-                print(
-                    "[tv-overlay] auto-open giving up. POST /mirror/tv-open or click 'Open TV in mirror' to retry.",
-                    flush=True,
-                )
 
 
 async def _auto_start_play_loop() -> None:
