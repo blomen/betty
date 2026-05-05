@@ -588,6 +588,13 @@ def update_positions(positions: list) -> None:
     _emit({"type": "positions", "positions": positions})
 
 
+def register_adapter(adapter) -> None:
+    """Stash the live broker adapter so consumers (TV overlay broadcaster,
+    debug endpoints) can read tracker.stop_price / tp_price without holding
+    a separate reference. Called once at server bootstrap."""
+    _state["adapter"] = adapter
+
+
 def update_status(relay_connected: bool, stream_running: bool) -> None:
     """Called from health-check loop to update connection status."""
     _state["stats"]["relay_connected"] = relay_connected

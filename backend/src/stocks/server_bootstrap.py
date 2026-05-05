@@ -348,18 +348,29 @@ async def _position_watcher_loop(adapter: Any) -> None:
     of /api/stocks/runtime-status — flat→open, stop trail, tp set, and
     flat transitions all push live.
 
+    Also mirrors position state into dashboard._state["positions"] so the
+    TV overlay broadcaster (which reads dash_state every 2s, not /ws/signals)
+    can emit position_upsert shapes onto the chart. 2026-05-05: the local
+    UI's TradeTicket shows the position via this loop's /ws/signals path,
+    but TV stayed empty because update_positions() was defined and never
+    called — wiring it now keeps both surfaces in sync.
+
     1Hz tick is plenty: stops typically trail in chunks of seconds, not
     sub-second, and entry/tp move only at trade open/close.
     """
     import time as _time
 
+    from . import dashboard as _dashboard
+
     last_payload: dict | None = None
+    last_dash_positions: list[dict] | None = None
     while True:
         try:
             tracker = adapter.tracker
             pending = getattr(adapter, "_pending_trade", None) or {}
             if tracker.is_flat:
                 payload = {"type": "position_update", "flat": True}
+                dash_positions: list[dict] = []
             else:
                 entry = (
                     tracker.entry_price
@@ -387,9 +398,28 @@ async def _position_watcher_loop(adapter: Any) -> None:
                     "tp_price": float(tp) if tp else None,
                     "entry_time": entry_time,
                 }
+                # Shape expected by tv_overlay/broadcaster.py:loop — it reads
+                # `price`, `side`, `size`, `entry_time`, `tp_price` and pulls
+                # stop_price separately from dash_state["adapter"].tracker.
+                dash_positions = [
+                    {
+                        "side": tracker.side,
+                        "size": int(tracker.size),
+                        "price": float(entry) if entry else 0.0,
+                        "stop_price": float(stop) if stop else 0.0,
+                        "tp_price": float(tp) if tp else None,
+                        "entry_time": entry_time,
+                    }
+                ]
             if payload != last_payload:
                 _broadcast_via_signal_callbacks(payload)
                 last_payload = payload
+            if dash_positions != last_dash_positions:
+                try:
+                    _dashboard.update_positions(dash_positions)
+                except Exception:
+                    log.exception("update_positions failed")
+                last_dash_positions = dash_positions
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -660,6 +690,16 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     # local relay → adapter round trip with a direct in-process call.
     level_monitor.set_broker_adapter(adapter)
     app.state.broker_adapter = adapter
+
+    # Register the adapter with the dashboard state so the TV overlay
+    # broadcaster (tv_overlay/broadcaster.py:loop) can read tracker stop/tp
+    # without a separate reference. Without this, dash_state["adapter"] stays
+    # None and the TV overlay's model_status block never resolves a stop
+    # price → the active-trade shape on TV ends up with stop=None and the
+    # long/short widget can't render the R:R bands.
+    from . import dashboard as _dashboard
+
+    _dashboard.register_adapter(adapter)
 
     # Wire LevelMonitor zone broadcasts into the dashboard state so the
     # in-container Stocks chart renders zones. Without this, only the
