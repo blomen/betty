@@ -73,18 +73,48 @@ def compute_regime_scale(risk_modulation: float) -> float:
 # --- Structural anchor -----------------------------------------------------
 # Level types that constitute strong structural invalidation — a stop beyond
 # these levels means the setup really did fail, not just noise.
+# 2026-05-05: broadened from the swing/PDH/NYIB-only set. Empirical analysis
+# of 247 trades since 05-01 showed only 47/247 got the structural-anchor
+# widening (the +0.557R bucket); the rest sat at raw 27-32t GBT predictions
+# (-0.30 avg R) because most live zones are composed of session highs/lows
+# and TPO levels — not the narrow original set. Adding session/IB/TPO levels
+# lets the anchor fire on the zones the model actually trades from.
 _STRUCTURAL_LEVEL_TYPES: set[LevelType] = {
+    # Swings — original structural set
     LevelType.DAILY_SWING_HIGH,
     LevelType.DAILY_SWING_LOW,
     LevelType.WEEKLY_SWING_HIGH,
     LevelType.WEEKLY_SWING_LOW,
     LevelType.MONTHLY_SWING_HIGH,
     LevelType.MONTHLY_SWING_LOW,
+    # Prior-day + naked POC — original
     LevelType.PDH,
     LevelType.PDL,
     LevelType.NAKED_POC,
+    # Initial balance — both NY and Tokyo session opens
     LevelType.NYIB_HIGH,
     LevelType.NYIB_LOW,
+    LevelType.TIBH,
+    LevelType.TIBL,
+    # Session highs/lows — these are where real flow defends/attacks
+    LevelType.TOKYO_HIGH,
+    LevelType.TOKYO_LOW,
+    # TPO POC + value-area edges — TPO POC is the day's volume mean,
+    # VAH/VAL bound the 70% acceptance range
+    LevelType.TPOC,
+    LevelType.TVAH,
+    LevelType.TVAL,
+    # Volume-profile POCs across timeframes — when present in a zone they
+    # mark structural acceptance, worth anchoring beyond
+    LevelType.DAILY_POC,
+    LevelType.WEEKLY_POC,
+    LevelType.MONTHLY_POC,
+    # SMC delivery — if a fresh OB/FVG anchors the zone, stop must sit
+    # beyond the OB low (long) / OB high (short)
+    LevelType.ORDER_BLOCK_BULL,
+    LevelType.ORDER_BLOCK_BEAR,
+    LevelType.FVG_BULL,
+    LevelType.FVG_BEAR,
 }
 
 

@@ -27,13 +27,23 @@ import os as _os
 
 _RECKLESS = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
 
-MIN_TRADE_INTERVAL_S = 10.0 if _RECKLESS else 30.0
+# 2026-05-05: full-reckless tuning. Learning data shows the model has
+# only ~113 correlated samples since 05-01. The conservative gates were
+# silently filtering out the very signals the trainer needs to learn from.
+# Loosened to maximize labeled (obs, action, realized_pnl_r) tuples per day:
+# - MIN_TRADE_INTERVAL_S 10→3: zone-touch density is sub-second; the 10s
+#   floor was rejecting back-to-back signals at the same level
+# - ZONE_COOLDOWN_S 30→5: same reasoning — 30s blocks ~30 signals per zone
+#   when price oscillates; 5s still prevents same-tick re-entries
+# - MIN_CONFIDENCE stays at 0.05 (already at floor)
+# Risk caps (daily_loss, trailing_dd) untouched — those are account survival.
+MIN_TRADE_INTERVAL_S = 3.0 if _RECKLESS else 30.0
 # In reckless paper-trading mode this MUST match level_monitor's broker
 # conf floor (0.05) — otherwise this filter silently rejects pivot
 # signals the upstream gate already approved. Today's 12:31 pivot
 # fired 4 signals with OF=0.40 but conf=0.078, all silently dropped.
 MIN_CONFIDENCE = 0.05 if _RECKLESS else 0.30
-ZONE_COOLDOWN_S = 30.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
+ZONE_COOLDOWN_S = 5.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
 DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
 MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
 # 2026-05-05: raised from 40→80. Backtest emits stop_ticks up to 50
@@ -1120,8 +1130,17 @@ class TopstepXBrokerAdapter:
             self._halt(f"trailing DD limit ${self.config.max_trailing_dd}")
             return {"rejected": True, "reason": self._halt_reason}
 
-        if self.tracker.consecutive_stops >= 3:
-            self._halt("3 consecutive stops")
+        # 2026-05-05: 3-consecutive-stops halt blocks learning velocity in
+        # reckless paper mode — on 05-05 it halted from 11:46 to 12:55 (a full
+        # hour of A+ setups untraded, including the 27926.5 6-member zone
+        # that ran 80pt). This isn't a risk cap; it's a "stop the bleeding"
+        # pause that's only useful when each stop is real money. In reckless
+        # mode (paper account, learning phase), we WANT the trades that
+        # follow stops — they're signal whether the model can recover from a
+        # losing streak. Account-survival caps (daily_loss, trailing_dd)
+        # above still fire. Cap the halt at 10 stops as a safety net.
+        if self.tracker.consecutive_stops >= (10 if _RECKLESS else 3):
+            self._halt(f"{self.tracker.consecutive_stops} consecutive stops")
             return {"rejected": True, "reason": self._halt_reason}
 
         if time.time() - self.tracker.last_trade_ts < MIN_TRADE_INTERVAL_S:
@@ -1163,17 +1182,27 @@ class TopstepXBrokerAdapter:
         )
 
         # SizeModel multiplier — defaults to 1.0 if absent (legacy signal
-        # source) so existing callers behave identically. Tier 0 (0.0x) means
-        # the model voted skip; honor it by rejecting the entry.
+        # source) so existing callers behave identically.
+        # 2026-05-05: in reckless mode, floor 0.0 → 0.5. Tier 0 used to mean
+        # "skip" (rejecting entry entirely) — but on a paper account every
+        # skipped touch is a missing training sample. Floor at 0.5 keeps the
+        # entry flowing while preserving the model's "low conviction" signal
+        # via reduced size. Strict mode (real money) still rejects on 0.
         size_mult = float(signal.get("size", 1.0) or 1.0)
-        scaled = base_size * size_mult
         if size_mult <= 0.0:
-            log.info(
-                "SizeModel skip: base=%d × mult=%.2f → 0 contracts; rejecting entry",
-                base_size,
-                size_mult,
-            )
-            return {"rejected": True, "reason": "size_model_skip"}
+            if _RECKLESS:
+                log.info(
+                    "SizeModel returned 0 — flooring to 0.5x in reckless mode (was skip)",
+                )
+                size_mult = 0.5
+            else:
+                log.info(
+                    "SizeModel skip: base=%d × mult=%.2f → 0 contracts; rejecting entry",
+                    base_size,
+                    size_mult,
+                )
+                return {"rejected": True, "reason": "size_model_skip"}
+        scaled = base_size * size_mult
         # Round half-up so 0.3-0.49 rounds to 0 (then floors to 1), 0.5+ to 1,
         # 1.5 with base=1 to 2. Clamp to [1, max_position].
         size = max(1, min(int(scaled + 0.5), self.config.max_position))

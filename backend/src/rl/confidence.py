@@ -187,19 +187,29 @@ def compute_composite_confidence(
 def size_multiplier(composite: float) -> float:
     """Map composite confidence to a position sizing multiplier.
 
-    Tiers:
+    Tiers (RECKLESS_LEARNING_MODE=1, paper-phase floor at 0.5):
         0.85-1.00 → 1.5  (A+ setup, full conviction)
         0.70-0.85 → 1.0  (A setup, standard)
         0.50-0.70 → 0.6  (B setup, reduced)
         0.30-0.50 → 0.3  (C setup, minimum)
-        <0.30     → 0.0  (skip — below confidence threshold)
+        <0.30     → 0.5 reckless / 0.0 strict  (paper: take it for the data;
+                                                strict: skip below threshold)
+
+    The 0.0 floor in strict mode rejects the entry outright in
+    broker_adapter (size_model_skip). In reckless mode that loses the
+    training sample — every skipped touch is a missing labeled outcome
+    the trainer needed. Floor at 0.5 keeps entries flowing while honoring
+    the model's "low confidence" signal via reduced size.
 
     Args:
         composite: Composite confidence score in [0, 1].
 
     Returns:
-        Size multiplier (0.0 = skip, 1.5 = max size).
+        Size multiplier (0.0 = skip in strict mode; reckless floors at 0.5).
     """
+    import os as _os
+
+    _reckless = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
     if composite >= 0.85:
         return 1.5
     elif composite >= 0.70:
@@ -209,4 +219,4 @@ def size_multiplier(composite: float) -> float:
     elif composite >= 0.30:
         return 0.3
     else:
-        return 0.0
+        return 0.5 if _reckless else 0.0
