@@ -128,6 +128,14 @@
   // each op through this map serializes them per-key.
   const zoneOps = new Map();
 
+  // Per-zone-key prior swing-membership marker. Used to detect when a zone's
+  // amber-override flips between upserts. TV's setProperties silently fails
+  // to refresh `backgroundColor` on existing rectangles in some builds, so
+  // mutate-in-place leaves a zone painted with its OLD color even after the
+  // server now sends new swing members. Tracking this lets drawZone
+  // force-recreate on a flip instead of trusting the no-op mutation.
+  const zonePriorAmber = new Map();
+
   function up(payload) {
     document.dispatchEvent(new CustomEvent('arnold:up', { detail: JSON.stringify(payload) }));
   }
@@ -232,6 +240,19 @@
       linewidth: 1,
       showLabel: false,
     };
+
+    // Force-recreate when swing-membership flips. setProperties below is a
+    // no-op for backgroundColor on some TV builds, so a zone that gained or
+    // lost a swing member would otherwise stay painted with its old color.
+    // Drop the cached id so the mutate-in-place branch is skipped and the
+    // create branch runs fresh with the new amber/non-amber overrides.
+    const priorAmber = zonePriorAmber.get(p.key);
+    if (priorAmber !== undefined && priorAmber !== hasSwing) {
+      const staleId = await _resolve(drawn.get(p.key));
+      drawn.delete(p.key);
+      if (staleId != null) { try { chart.removeEntity(staleId); } catch (_) {} }
+    }
+    zonePriorAmber.set(p.key, hasSwing);
 
     // Try mutate-in-place first.
     let rectOk = false;
@@ -397,13 +418,21 @@
         // session boxes (Tokyo/London/New York) always carry a label, as
         // do user-typed levels. Empty-label rectangles are arnold zones
         // from before the ARNOLD_TAG marker existed.
+        // Match both the create-time shape name (`long_position`) and TV's
+        // internal class names (`LineToolRiskRewardLong` / `LineToolPositionLong`
+        // and Short variants) — getAllShapes() sometimes reports the latter
+        // depending on TV build. Without the alias check, persisted long_position
+        // entry-handles from before the closed-trade rectangle switch survive
+        // the sweep and cluster on chart inside "Arnold • Closed Trades".
+        const n = String(name || '');
         if (
-          name === 'rectangle' ||
-          name === 'horizontal_line' ||
-          name === 'horizontal_ray' ||
-          name === 'highlighter' ||
-          name === 'long_position' ||
-          name === 'short_position'
+          n === 'rectangle' ||
+          n === 'horizontal_line' ||
+          n === 'horizontal_ray' ||
+          n === 'highlighter' ||
+          n === 'long_position' ||
+          n === 'short_position' ||
+          /^LineTool(RiskReward|Position)(Long|Short)$/.test(n)
         ) return true;
       }
       return false;
@@ -473,9 +502,17 @@
     naked_poc: { skip: true },
     tpoc: { skip: true }, tvah: { skip: true }, tval: { skip: true }, tibh: { skip: true }, tibl: { skip: true },
     nyib_high: { skip: true }, nyib_low: { skip: true },
-    daily_swing_high: { skip: true }, daily_swing_low: { skip: true },
-    weekly_swing_high: { skip: true }, weekly_swing_low: { skip: true },
-    monthly_swing_high: { skip: true }, monthly_swing_low: { skip: true },
+    // Swings render BOTH inside zones (amber fill) AND as standalone
+    // chart-spanning horizontal lines with right-edge price tags, so the
+    // user can see structural pivots even when scrolled away from the zone
+    // time window. Tier-graded color: daily=amber-400, weekly=amber-500,
+    // monthly=red-600 — burnier hue for higher-TF pivots.
+    daily_swing_high:   { family: 'Swings', color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    daily_swing_low:    { family: 'Swings', color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_high:  { family: 'Swings', color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_low:   { family: 'Swings', color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_high: { family: 'Swings', color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_low:  { family: 'Swings', color: '#dc2626', shape: 'horizontal_line', showPrice: true },
     // SMC ranges — drawn as distribution rectangles far right of price.
     // These are price-range visualizations, not point-prices, so they live
     // alongside zones rather than as zone members.
@@ -526,7 +563,7 @@
         id = await _resolve(chart.createMultipointShape(
           [{ time: now, price: p.price }],
           { shape: meta.shape, disableSave: true,
-            overrides: { linecolor, linewidth: 1, showPrice: false, showLabel: false } },
+            overrides: { linecolor, linewidth: 1, showPrice: !!meta.showPrice, showLabel: false } },
         ));
       }
       if (id == null) return false;
@@ -739,67 +776,14 @@
     let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
     if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
-    // Closed trades render as a SIMPLE rectangle from entry-time to
-    // exit-time bounded vertically between entry and exit price, colored
-    // green (profit) or red (loss). This is dramatically cleaner than
-    // long_position / short_position TV shapes for historical records:
-    //   • No vertical stop/tp band that stacks across overlapping trades.
-    //   • The fill color directly encodes win/loss.
-    //   • The rectangle's height = realized P&L on the price axis.
-    // long_position / short_position primitive is reserved for the ACTIVE
-    // trade (its risk-reward bands + Open P&L label have value LIVE but
-    // are visual noise on closed trades).
-    if (!isActive) {
-      const exitPrice = (typeof p.exit_price === 'number') ? p.exit_price : p.entry;
-      const pnlPositive = isLong ? exitPrice >= p.entry : exitPrice <= p.entry;
-      const fillColor = pnlPositive ? '#10b981' /* emerald */ : '#ef4444' /* red */;
-      const top = Math.max(p.entry, exitPrice);
-      const bottom = Math.min(p.entry, exitPrice);
-      const rectPoints = [
-        { time: anchor, price: top },
-        { time: endEpoch, price: bottom },
-      ];
-      const rectOverrides = {
-        color: fillColor,
-        backgroundColor: fillColor,
-        transparency: 70,
-        linewidth: 1,
-        showLabel: false,
-      };
-
-      // Mutate-in-place if a shape already exists for this key.
-      const existing = drawnPositions.get(p.key);
-      if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
-        try {
-          const obj = chart.getShapeById(existing.shapeId);
-          if (obj) {
-            if (typeof obj.setPoints === 'function') obj.setPoints(rectPoints);
-            if (typeof obj.setProperties === 'function') obj.setProperties(rectOverrides);
-            return true;
-          }
-        } catch (_) {}
-      }
-
-      try {
-        const shapeId = await _resolve(chart.createMultipointShape(rectPoints, {
-          shape: 'rectangle',
-          disableSave: true,
-          overrides: rectOverrides,
-        }));
-        if (shapeId == null) return false;
-        if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
-          try { chart.removeEntity(existing.shapeId); } catch (_) {}
-        }
-        drawnPositions.set(p.key, { shapeId });
-        _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
-        return true;
-      } catch (e) {
-        sendError(`drawPosition (closed-rect) failed: ${e instanceof Error ? e.message : String(e)}`);
-        return false;
-      }
-    }
-
-    // ---- Active trade: keep TV's long_position / short_position shape ----
+    // Both active and closed trades render as TV's long_position /
+    // short_position shape. Difference is purely the time bounds:
+    //   • Active → end_time tracks "now" so the shape extends to the live edge.
+    //   • Closed → end_time is the exit timestamp and stop/tp bands reflect
+    //     where the trade actually exited.
+    // The position tool gives you native auto-Stop / Open P&L / Target labels
+    // and a real R:R box, which is what the user wants on every trade — not
+    // a flat green/red rectangle.
     const shapeName = isLong ? 'long_position' : 'short_position';
     const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
     const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
@@ -842,7 +826,7 @@
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
       drawnPositions.set(p.key, { shapeId });
-      _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
+      _ensureGroupAndAdd(isActive ? 'Arnold • Active Trade' : 'Arnold • Closed Trades', shapeId);
       return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1027,6 +1011,7 @@
           await withZoneLock(msg.key, async () => {
             await safeRemove(msg.key);
             await safeRemovePrefix(`${msg.key}:member:`);
+            zonePriorAmber.delete(msg.key);
           });
           sendAck(1);
           break;

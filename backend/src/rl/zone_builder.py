@@ -105,6 +105,24 @@ _SYNERGY_BONUS: dict[tuple[str, str], float] = {
     ("daily_vp", "prior_session"): 0.10,
     ("daily_swing", "fvg"): 0.10,
     ("daily_swing", "order_block"): 0.10,
+    # Cross-TF swing confluence — when two timeframes agree on a pivot,
+    # that is a textbook Dow Theory bias signal (weekly HL aligned with
+    # daily HL). Keys are alphabetically sorted per the lookup convention
+    # in _compute_strength.
+    ("daily_swing", "weekly_swing"): 0.20,
+    ("monthly_swing", "weekly_swing"): 0.20,
+    ("daily_swing", "monthly_swing"): 0.15,
+    # Higher-TF swings against their volume nodes — same logic as
+    # daily_swing+daily_vp but for weekly/monthly structure aligned with
+    # the corresponding VP.
+    ("weekly_swing", "weekly_vp"): 0.15,
+    ("monthly_swing", "monthly_vp"): 0.15,
+    # Higher-TF swing + SMC delivery (FVG/OB at a weekly/monthly pivot is
+    # institutional confirmation of the structural read).
+    ("fvg", "weekly_swing"): 0.10,
+    ("order_block", "weekly_swing"): 0.10,
+    ("fvg", "monthly_swing"): 0.10,
+    ("monthly_swing", "order_block"): 0.10,
 }
 
 # Saturation constant — raw strength 1.5 maps to ~0.63 heat, 3.0 to ~0.86,
