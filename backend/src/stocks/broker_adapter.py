@@ -882,6 +882,36 @@ class TopstepXBrokerAdapter:
             is_entry = self.tracker.entry_price == 0.0
             is_stop = not is_entry and self.tracker.stop_price > 0 and abs(price - self.tracker.stop_price) < 1.0
 
+        # 2026-05-05: was_stop price-fallback. Audit of 247 trades since 05-01
+        # showed 30 stops with `exit_price == stop_price` exactly but
+        # `was_stop=false`. Root cause: orderId-based detection misses when
+        # modify_stop replaces the stop order (new orderId) and the new id
+        # isn't tracked, OR when the stop fill arrives with stop_order_id
+        # cleared by a prior race. The price-fallback only fires in the
+        # unknown-orderId branch above, so a known-but-stale id missed it.
+        # Now: regardless of orderId path, if this is an exit AND the price
+        # is within 1 tick of the live stop_price AND the fill direction
+        # would actually close the position, force was_stop=true. Same-tick
+        # tolerance covers stop slippage; direction check (long stop = sell,
+        # short stop = buy) prevents pyramid-add fills from being labeled
+        # stops by accident.
+        if not is_entry and not is_stop and self.tracker.stop_price > 0:
+            stop_tol = abs(price - self.tracker.stop_price)
+            fill_side = data.get("side")  # 0=BUY, 1=SELL per TopstepX
+            tracker_side = self.tracker.side  # "long" / "short"
+            close_dir_matches = (tracker_side == "long" and fill_side == 1) or (
+                tracker_side == "short" and fill_side == 0
+            )
+            if stop_tol <= 0.25 and close_dir_matches:
+                log.info(
+                    "was_stop price-fallback: exit %.2f within 0.25t of stop %.2f "
+                    "(close_dir=%s) — forcing was_stop=True",
+                    price,
+                    self.tracker.stop_price,
+                    close_dir_matches,
+                )
+                is_stop = True
+
         if is_entry:
             # Idempotent: a duplicate entry fill with the same orderId must not double-set.
             if self.tracker.entry_price == 0.0:
