@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.4.0
-// @description  Draws Arnold zones AND every closed trade as a time-bounded long_position / short_position shape anchored at the real entry→exit window (was: horizontal lines at "now" that stacked invisibly). Closed trades persist on chart across reconnects via finalizePosition.
+// @version      0.4.3
+// @description  Standalone level rendering (level_upsert/level_remove): swings render as chart-spanning horizontal lines and FVG/OB as translucent rectangles, mirroring the extension path. Userscript users were missing structural pivots when scrolled away from a zone's time window. Closed-trade rectangles still carry side+$+R labels.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -216,11 +216,12 @@
     return true;
   }
 
-  // Per-position registry. Each trade gets a single TV long_position /
-  // short_position shape anchored at the real entry→exit window the
-  // broadcaster sends. Mutate-in-place via setPoints / setProperties so
-  // trail-stop updates on the active trade don't flicker.
-  const drawnPositions = new Map(); // key → shapeId
+  // Per-position registry. Active trade gets TV's long_position widget
+  // (live R:R bands, Open P&L); closed trades get a simple time-bounded
+  // rectangle (no auto-drawn stop/tp bands — those stack into visual soup
+  // when 8+ trades cluster in a tight window). Tracking shape kind so
+  // mutate-in-place doesn't try to setProperties across primitive types.
+  const drawnPositions = new Map(); // key → { shapeId, kind }
   // Active trade caches its entry-time anchor so stop/tp updates don't
   // scrub the entry handle each tick. Closed trades sync to broker
   // timestamps every render.
@@ -228,7 +229,6 @@
 
   function drawPosition(p) {
     if (!chart) return false;
-    const isLong = p.side === 'long';
     const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
 
     const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
@@ -243,6 +243,12 @@
     let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
     if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
+    if (isActive) return _drawActiveShape(p, anchor, endEpoch);
+    return _drawClosedRect(p, anchor, endEpoch);
+  }
+
+  function _drawActiveShape(p, anchor, endEpoch) {
+    const isLong = p.side === 'long';
     const shapeName = isLong ? 'long_position' : 'short_position';
     const NQ_TICK = 0.25;
     const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
@@ -259,10 +265,10 @@
       showPriceLabels: false,
     };
 
-    const existingId = drawnPositions.get(p.key);
-    if (existingId != null && typeof chart.getShapeById === 'function') {
+    const existing = drawnPositions.get(p.key);
+    if (existing && existing.shapeId != null && existing.kind === 'long_position' && typeof chart.getShapeById === 'function') {
       try {
-        const obj = chart.getShapeById(existingId);
+        const obj = chart.getShapeById(existing.shapeId);
         if (obj) {
           if (typeof obj.setPoints === 'function') obj.setPoints(points);
           if (typeof obj.setProperties === 'function') obj.setProperties(positionOverrides);
@@ -277,26 +283,198 @@
         overrides: positionOverrides,
       });
       if (shapeId == null) {
-        sendError(`drawPosition: createMultipointShape returned null for ${shapeName}`);
+        sendError(`_drawActiveShape: createMultipointShape returned null for ${shapeName}`);
         return false;
       }
-      if (existingId != null && existingId !== shapeId) {
-        try { chart.removeEntity(existingId); } catch (_) {}
+      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
-      drawnPositions.set(p.key, shapeId);
+      drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
       return true;
     } catch (e) {
-      sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
+      sendError(`_drawActiveShape failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  // Closed trade rectangle. Per user spec 2026-05-05:
+  //   X = entry_time → exit_time
+  //   Loss → rect from tp_price (would-have-been 2R) to stop_price
+  //          (where we got stopped out). Spans entry; RED fill.
+  //   Win  → rect from exit_price (where we got out) to stop_price
+  //          (the trailed stop-on-profit, in profit by close). No
+  //          original stoploss line. GREEN fill.
+  function _drawClosedRect(p, anchor, endEpoch) {
+    const pnl = (typeof p.pnl_dollars === 'number') ? p.pnl_dollars : 0;
+    const isWin = pnl >= 0;
+    const stop = (typeof p.stop === 'number' && p.stop > 0) ? p.stop : null;
+    const tp = (typeof p.tp === 'number' && p.tp > 0) ? p.tp : null;
+    const exit = (typeof p.exit_price === 'number' && p.exit_price > 0) ? p.exit_price : null;
+    const entry = Number(p.entry);
+    if (!Number.isFinite(entry) || entry <= 0) return false;
+
+    let y1, y2;
+    if (isWin) {
+      y1 = exit != null ? exit : entry;
+      y2 = stop != null ? stop : entry;
+    } else {
+      y1 = tp != null ? tp : entry;
+      y2 = stop != null ? stop : entry;
+    }
+    if (!Number.isFinite(y1) || !Number.isFinite(y2) || y1 === y2) {
+      const fallback = 0.25;
+      y1 = entry + fallback;
+      y2 = entry - fallback;
+    }
+    const top = Math.max(y1, y2);
+    const bottom = Math.min(y1, y2);
+
+    const fillColor = isWin ? '#10b981' : '#ef4444';
+    const points = [
+      { time: anchor, price: top },
+      { time: endEpoch, price: bottom },
+    ];
+    const sideLabel = (p.side === 'long') ? 'L' : 'S';
+    const sizeSuffix = (p.size && p.size > 1) ? `×${p.size}` : '';
+    const dollarStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(Math.round(pnl));
+    const rStr = (typeof p.pnl_r === 'number') ? ` ${p.pnl_r >= 0 ? '+' : ''}${p.pnl_r.toFixed(2)}R` : '';
+    const label = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}`;
+    const overrides = {
+      color: fillColor,
+      backgroundColor: fillColor,
+      transparency: 70,
+      linewidth: 1,
+      showLabel: true,
+      textColor: '#f8fafc',
+      fontSize: 11,
+    };
+
+    const existing = drawnPositions.get(p.key);
+    if (existing && existing.shapeId != null && existing.kind === 'rectangle' && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existing.shapeId);
+        if (obj) {
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') obj.setProperties({ ...overrides, text: label });
+          return true;
+        }
+      } catch (_) { /* fall through to recreate */ }
+    }
+
+    try {
+      const shapeId = chart.createMultipointShape(points, {
+        shape: 'rectangle',
+        text: label,
+        overrides,
+      });
+      if (shapeId == null) {
+        sendError(`_drawClosedRect: createMultipointShape returned null`);
+        return false;
+      }
+      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      }
+      drawnPositions.set(p.key, { shapeId, kind: 'rectangle' });
+      return true;
+    } catch (e) {
+      sendError(`_drawClosedRect failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   }
 
   function removePosition(key) {
-    const shapeId = drawnPositions.get(key);
+    const entry = drawnPositions.get(key);
     drawnPositions.delete(key);
     positionAnchors.delete(key);
+    const shapeId = entry && entry.shapeId;
     if (shapeId != null && chart) {
       try { chart.removeEntity(shapeId); } catch (_) {}
+    }
+  }
+
+  // --- Standalone level rendering (level_upsert / level_remove) ---
+  // Mirrors arnold/tv_overlay/extension/page.js applyLevel. The userscript
+  // path was missing this handler — server emits level_upsert for swings +
+  // FVG/OB but the messages were silently dropped on the userscript path,
+  // leaving the chart with zone shapes only. Swings in particular need a
+  // chart-spanning horizontal line so structural pivots stay visible when
+  // scrolled away from the zone's time window.
+  const drawnLevels = new Map();
+  const _LEVEL_META = {
+    // Swings — chart-spanning horizontal lines, tier-graded amber→red.
+    daily_swing_high:   { color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    daily_swing_low:    { color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_high:  { color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_low:   { color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_high: { color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_low:  { color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    // FVG / Order Block — translucent rectangles spanning a price range.
+    fvg_bullish:         { color: '#34d399', shape: 'rectangle' },
+    fvg_bearish:         { color: '#f87171', shape: 'rectangle' },
+    order_block_bullish: { color: '#34d399', shape: 'rectangle' },
+    order_block_bearish: { color: '#f87171', shape: 'rectangle' },
+  };
+
+  function applyLevel(p) {
+    if (!chart) return false;
+    const meta = _LEVEL_META[p.name];
+    if (!meta) return false;  // unknown / skipped level type — silently ignore
+
+    const now = Math.floor(Date.now() / 1000);
+    const tStart = now - 6 * 3600;
+    const tEnd = now + 6 * 3600;
+
+    const existing = drawnLevels.get(p.key);
+    if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existing.shapeId);
+        if (obj && typeof obj.setPoints === 'function') {
+          if (meta.shape === 'rectangle' && p.top != null && p.bottom != null) {
+            obj.setPoints([{ time: tStart, price: p.top }, { time: tEnd, price: p.bottom }]);
+          } else {
+            obj.setPoints([{ time: now, price: p.price }]);
+          }
+          return true;
+        }
+      } catch (_) { /* fall through to recreate */ }
+    }
+
+    try {
+      let id = null;
+      if (meta.shape === 'rectangle' && p.top != null && p.bottom != null) {
+        id = chart.createMultipointShape(
+          [{ time: tStart, price: p.top }, { time: tEnd, price: p.bottom }],
+          {
+            shape: 'rectangle',
+            disableSave: true,
+            overrides: { color: meta.color, backgroundColor: meta.color, transparency: 92, linewidth: 1 },
+          }
+        );
+      } else {
+        id = chart.createMultipointShape(
+          [{ time: now, price: p.price }],
+          {
+            shape: meta.shape,
+            disableSave: true,
+            overrides: { linecolor: meta.color, linewidth: 1, showPrice: !!meta.showPrice, showLabel: false },
+          }
+        );
+      }
+      if (id == null) return false;
+      drawnLevels.set(p.key, { shapeId: id });
+      return true;
+    } catch (e) {
+      sendError(`level draw failed for ${p.name}: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  function removeLevel(key) {
+    const entry = drawnLevels.get(key);
+    if (!entry) return;
+    drawnLevels.delete(key);
+    if (entry.shapeId != null && chart) {
+      try { chart.removeEntity(entry.shapeId); } catch (_) {}
     }
   }
 
@@ -330,6 +508,8 @@
         case 'zone_remove':     safeRemove(msg.key); safeRemovePrefix(`${msg.key}:member:`); sendAck(1); break;
         case 'position_upsert': if (drawPosition(msg)) sendAck(1); break;
         case 'position_remove': removePosition(msg.key); sendAck(1); break;
+        case 'level_upsert':    if (applyLevel(msg)) sendAck(1); break;
+        case 'level_remove':    removeLevel(msg.key); sendAck(1); break;
         case 'ping_zone': {
           // Flash-ping a zone — bring camera to it (best effort).
           try {
