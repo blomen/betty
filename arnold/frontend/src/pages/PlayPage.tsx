@@ -248,16 +248,24 @@ export default function PlayPage() {
     const isSelected = activeProviders.has(pid)
     const runnerState = loopProviderStatus?.[pid]?.state
     const cardState = deriveCardState(isSelected, runnerState)
+    console.log(`[card-click] pid=${pid} state=${cardState} runnerState=${runnerState ?? 'none'} selected=${isSelected}`)
     // Two-click forward-only flow:
-    //   idle (zinc)            → click opens tab + starts watcher.
-    //   tab_open / syncing      → click is a no-op (no toggle-off).
-    //   ready_to_run (yellow)   → click → starts bet loop.
-    //   running (green)         → click is a no-op (no pause).
+    //   idle (zinc)             → click opens tab + starts watcher.
+    //   tab_open (red)          → click is a no-op (waiting for login).
+    //   logged_in_syncing       → click is a no-op (settling running).
+    //   ready_to_run (amber)    → click → starts bet loop.
+    //   running (green)         → click is a no-op (no pause, no toggle-off).
     if (cardState === 'idle') return startSkin(pid)
     if (cardState === 'ready_to_run') {
-      try { await api.runProvider(pid) } catch (e) { console.error('runProvider failed', e) }
+      try {
+        const resp = await api.runProvider(pid)
+        console.log(`[card-click] runProvider(${pid}) ok`, resp)
+      } catch (e) {
+        console.error(`[card-click] runProvider(${pid}) failed`, e)
+      }
       return
     }
+    console.log(`[card-click] no-op for state=${cardState}`)
     return
   }
 
@@ -1718,13 +1726,23 @@ export default function PlayPage() {
                         }`}
                       >
                         <span className="uppercase font-semibold">{pid}</span>
+                        {cardState === 'tab_open' && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
+                            Log in to continue
+                          </span>
+                        )}
+                        {cardState === 'logged_in_syncing' && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/25 text-amber-100 font-semibold">
+                            Logged in · syncing
+                          </span>
+                        )}
                         {cardState === 'ready_to_run' && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-yellow-400/20 text-yellow-300">
-                            Press to run
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/40 text-amber-50 font-semibold">
+                            Logged in — press to run
                           </span>
                         )}
                         {cardState === 'running' && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-300">
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
                             Running
                           </span>
                         )}
