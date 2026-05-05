@@ -1,11 +1,12 @@
 {
   "provider_id": "kalshi",
   "domain": "kalshi.com",
+  "home_url": "https://kalshi.com/portfolio",
   "autonomous_placement": true,
   "login": {
     "method": "balance_api"
   },
   "navigation": {
-    "event_url_template": "/markets/{provider_market_ticker}"
+    "event_url_template": "/markets/x/x/{provider_event_id}"
   }
 }

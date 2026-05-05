@@ -75,9 +75,6 @@ scrape = [
 poly = [
     "py-clob-client>=0.18.0",
 ]
-kalshi = [
-    "kalshi-python>=2.1.4",
-]
 ml = [
     "torch>=2.0.0",
 ]
