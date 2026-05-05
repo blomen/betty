@@ -221,6 +221,53 @@ async def signal_relay(ws: WebSocket):
 
     level_monitor.add_signal_callback(_on_signal)
 
+    # Replay current position to the new client. _position_watcher_loop only
+    # emits on payload changes, so a client connecting mid-trade would
+    # otherwise sit blank until the next stop-trail / tp move / flat
+    # transition. Two surfaces consume position_update — the local
+    # TradeTicket UI and the local TV overlay broadcaster (via the passive
+    # listener mirroring into dash_state). Without this replay, a backend
+    # rebuild during an open trade leaves both surfaces blind to the live
+    # position until the trade closes.
+    adapter_for_replay = getattr(ws.app.state, "broker_adapter", None)
+    if adapter_for_replay is not None:
+        try:
+            tracker = adapter_for_replay.tracker
+            pending = getattr(adapter_for_replay, "_pending_trade", None) or {}
+            if tracker.is_flat:
+                await ws.send_json({"type": "position_update", "flat": True})
+            else:
+                entry = (
+                    tracker.entry_price
+                    or float(pending.get("entry_price") or 0.0)
+                    or float(pending.get("signal_price") or 0.0)
+                )
+                stop = tracker.stop_price or pending.get("stop_price")
+                tp = pending.get("tp_price")
+                entry_ts = pending.get("entry_fill_ts") or pending.get("entry_submit_ts") or pending.get("ts")
+                if isinstance(entry_ts, datetime):
+                    entry_time = entry_ts.timestamp()
+                elif isinstance(entry_ts, (int, float)):
+                    entry_time = float(entry_ts)
+                else:
+                    import time as _time
+
+                    entry_time = _time.time()
+                await ws.send_json(
+                    {
+                        "type": "position_update",
+                        "flat": False,
+                        "side": tracker.side,
+                        "size": int(tracker.size),
+                        "entry_price": float(entry) if entry else 0.0,
+                        "stop_price": float(stop) if stop else 0.0,
+                        "tp_price": float(tp) if tp else None,
+                        "entry_time": entry_time,
+                    }
+                )
+        except Exception:
+            log.exception("position replay on connect failed (non-fatal)")
+
     # Running VWAP tracker — anchored midnight CET, updated on every 1m candle close.
     # Seed from DB so reconnects start with correct accumulated VWAP, not zero.
     # Runs in a thread so the blocking psycopg2 call can't freeze the event loop:
