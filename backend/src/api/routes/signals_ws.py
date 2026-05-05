@@ -221,6 +221,60 @@ async def signal_relay(ws: WebSocket):
 
     level_monitor.add_signal_callback(_on_signal)
 
+    # Replay current zones to the new client. `_broadcast_zones` only
+    # fires on `_rebuild_zones` (1-min candle close + initial level load).
+    # A client that reconnects between rebuilds — every WS heartbeat
+    # blip, every backend rebuild, every local arnold restart — would
+    # otherwise sit with an empty zone overlay until the next minute
+    # closes. The local TV overlay broadcaster's chart goes blank and
+    # the user has to wait. Send the current zone snapshot inline on
+    # connect; same payload shape as the periodic broadcast so the
+    # passive listener's `zone_update` handler treats it identically.
+    try:
+        zones = getattr(level_monitor, "_zones", None) or []
+        if zones:
+            from src.rl.zone_builder import _LEVEL_FAMILY, _weight
+
+            def _stable_members(zone) -> list[dict]:
+                seen: set[tuple[str, float]] = set()
+                out: list[dict] = []
+                for m in zone.members:
+                    family = _LEVEL_FAMILY.get(m.level_type, m.level_type.value)
+                    price = round(m.price / 0.25) * 0.25
+                    if (family, price) in seen:
+                        continue
+                    seen.add((family, price))
+                    out.append(
+                        {
+                            "name": m.name,
+                            "type": m.level_type.value,
+                            "family": family,
+                            "price": price,
+                            "weight": round(_weight(m.level_type), 3),
+                        }
+                    )
+                out.sort(key=lambda d: d["price"])
+                return out
+
+            await ws.send_json(
+                {
+                    "type": "zone_update",
+                    "zones": [
+                        {
+                            "price": round(z.center_price, 2),
+                            "members": z.member_count,
+                            "upper": round(z.upper_bound, 2),
+                            "lower": round(z.lower_bound, 2),
+                            "hierarchy": round(z.hierarchy_score, 3),
+                            "members_detail": _stable_members(z),
+                        }
+                        for z in zones
+                    ],
+                }
+            )
+    except Exception:
+        log.exception("zone replay on connect failed (non-fatal)")
+
     # Replay current position to the new client. _position_watcher_loop only
     # emits on payload changes, so a client connecting mid-trade would
     # otherwise sit blank until the next stop-trail / tp move / flat
