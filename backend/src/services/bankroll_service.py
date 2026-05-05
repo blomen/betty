@@ -26,6 +26,12 @@ class BankrollService:
         self.profile_repo = ProfileRepo(db)
         self.bet_repo = BetRepo(db)
 
+    def _load_balances_map(self, profile_id: int) -> dict[str, float]:
+        from ..db.models import ProfileProviderBalance
+
+        records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
+        return {r.provider_id: r.balance for r in records}
+
     def get_bankroll(self) -> dict:
         """Get provider balances and total bankroll for active profile."""
         from ..api.routes.providers import load_provider_bonuses
@@ -38,11 +44,12 @@ class BankrollService:
             b.provider_id: b
             for b in self.db.query(ProfileProviderBonus).filter(ProfileProviderBonus.profile_id == profile.id).all()
         }
+        balances = self._load_balances_map(profile.id)
 
         provider_data = []
         total_sek = 0.0
         for p in providers:
-            balance = self.profile_repo.get_balance(profile.id, p.id)
+            balance = balances.get(p.id, 0.0)
             currency = get_provider_currency(p.id)
             rate = get_exchange_rate(p.id)
             total_sek += balance * rate
@@ -129,6 +136,8 @@ class BankrollService:
 
     def get_exposure(self) -> dict:
         """Get bankroll with exposure breakdown per provider."""
+        from ..db.models import Bet
+
         profile = self.profile_repo.get_active()
         providers = self.db.query(Provider).filter(Provider.is_enabled).all()
 
@@ -143,18 +152,30 @@ class BankrollService:
         )
         bonus_map = {b.provider_id: b for b in active_bonuses}
 
+        balances = self._load_balances_map(profile.id)
+
+        # Single query: all pending bets for the profile, grouped in Python
+        pending_rows = (
+            self.db.query(Bet)
+            .filter(Bet.profile_id == profile.id, Bet.result == "pending")
+            .all()
+        )
+        pending_by_provider: dict[str, list] = {}
+        for b in pending_rows:
+            pending_by_provider.setdefault(b.provider_id, []).append(b)
+
         exposure_data = []
         total_balance_sek = 0.0
         total_locked_sek = 0.0
         total_free_sek = 0.0
         for provider in providers:
-            balance = self.profile_repo.get_balance(profile.id, provider.id)
+            balance = balances.get(provider.id, 0.0)
             currency = get_provider_currency(provider.id)
             rate = get_exchange_rate(provider.id)
             balance_sek = balance * rate
             total_balance_sek += balance_sek
 
-            pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
+            pending_bets = pending_by_provider.get(provider.id, [])
             # Convert non-SEK stakes (e.g. Polymarket USDC) to SEK
             pending_exposure = sum(
                 (b.stake * rate if getattr(b, "currency", "SEK") != "SEK" else b.stake)

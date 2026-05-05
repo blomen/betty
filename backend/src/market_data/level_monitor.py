@@ -980,15 +980,27 @@ class LevelMonitor:
         if newly_entered_zones:
             best_zone = max(newly_entered_zones, key=lambda z: (z.member_count, z.hierarchy_score))
             self._zone_fire_count += 1
+            # Approach direction from actual trajectory, not current overshoot.
+            # If prior tick was outside the zone, that side is the approach
+            # source. Falls back to center heuristic only when last_price is
+            # missing or already inside the zone (zone rebuild mid-touch).
+            prior = self._last_price
+            if prior and prior > best_zone.upper_bound:
+                approach_dir = "down"
+            elif prior and prior < best_zone.lower_bound:
+                approach_dir = "up"
+            else:
+                approach_dir = "up" if price < best_zone.center_price else "down"
             logger.info(
-                "Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d",
+                "Zone touch: price=%.2f zone=%.2f (%.2f-%.2f) members=%d approach=%s",
                 price,
                 best_zone.center_price,
                 best_zone.lower_bound,
                 best_zone.upper_bound,
                 best_zone.member_count,
+                approach_dir,
             )
-            self._emit_zone_dqn_inference(best_zone, price)
+            self._emit_zone_dqn_inference(best_zone, price, approach_dir)
 
         self._check_positions(price)
 
@@ -1098,6 +1110,27 @@ class LevelMonitor:
         broker = getattr(self, "_broker_adapter", None)
         if broker is not None and not broker.tracker.is_flat:
             broker.update_mark_and_check_be_lock(price)
+            # Pair the BE-lock with a tp_price advance: at first 2R cross
+            # we want the chart to read "we're riding to the next zone, not
+            # exiting at 2R." Same single-shot trigger as locked_BE — gated
+            # by pending["tp_advanced"] so we only move tp once. tp_price
+            # is metadata only (no broker order is placed/modified), so the
+            # cost is one in-memory dict mutation + the next 1Hz position
+            # _watcher tick republishing the new value over /ws/signals.
+            pending = getattr(broker, "_pending_trade", None) or {}
+            if getattr(broker.tracker, "locked_BE", False) and pending and not pending.get("tp_advanced", False):
+                new_tp = self._next_zone_beyond_tp(broker.tracker, pending.get("tp_price"))
+                if new_tp is not None:
+                    logger.info(
+                        "TP advance at peak_R=%.2f side=%s: tp %.2f → %.2f (next zone)",
+                        broker.tracker.peak_R,
+                        broker.tracker.side,
+                        float(pending.get("tp_price") or 0.0),
+                        new_tp,
+                    )
+                    pending["tp_price"] = new_tp
+                    pending["tp_advanced"] = True
+                    broker._set_pending_trade(pending)
 
         for pos in self._open_positions:
             for target in pos["targets"]:
@@ -1118,6 +1151,35 @@ class LevelMonitor:
                             "orderflow": snapshot,
                         }
                     )
+
+    def _next_zone_beyond_tp(self, tracker, current_tp: float | None) -> float | None:
+        """Smallest zone center beyond current_tp in trade direction.
+
+        Long  → smallest zone center > current_tp (next zone above).
+        Short → largest zone center < current_tp (next zone below).
+        Returns None if no qualifying zone exists; caller leaves tp unchanged.
+        Quantized to NQ tick size so the chart's R:R band sits on a tick boundary.
+        """
+        if not self._zones or current_tp is None or float(current_tp) <= 0:
+            return None
+        side = getattr(tracker, "side", None)
+        try:
+            tp = float(current_tp)
+        except (TypeError, ValueError):
+            return None
+        if side == "long":
+            beyond = [z for z in self._zones if z.center_price > tp]
+            if not beyond:
+                return None
+            target = min(beyond, key=lambda z: z.center_price)
+        elif side == "short":
+            beyond = [z for z in self._zones if z.center_price < tp]
+            if not beyond:
+                return None
+            target = max(beyond, key=lambda z: z.center_price)
+        else:
+            return None
+        return round(target.center_price / TICK_SIZE) * TICK_SIZE
 
     # --- SSE event emitters ---
 
@@ -1602,14 +1664,14 @@ class LevelMonitor:
             "reckless": reckless,
         }
 
-    def _emit_zone_dqn_inference(self, zone: Zone, price: float) -> None:
+    def _emit_zone_dqn_inference(self, zone: Zone, price: float, approach: str = "up") -> None:
         try:
             from src.rl.live_inference import get_dqn_inference
 
             dqn = get_dqn_inference()
             if not dqn.is_loaded:
                 return
-            rl_state = self._build_rl_state_zone(zone, price)
+            rl_state = self._build_rl_state_zone(zone, price, approach)
             # Snapshot the observation vector now so we can persist it on the
             # eventual signal row. Same builder dqn.infer uses internally —
             # exposed here so we capture the exact 279-dim state the model
@@ -1669,7 +1731,6 @@ class LevelMonitor:
                 try:
                     from src.rl.signal_log import log_signal
 
-                    approach = "up" if price < zone.center_price else "down"
                     log_signal(
                         price=price,
                         zone_center=zone.center_price,
@@ -1685,7 +1746,6 @@ class LevelMonitor:
             try:
                 from src.rl.live_collector import get_live_collector
 
-                approach = "up" if price < zone.center_price else "down"
                 get_live_collector().on_zone_touch(
                     rl_state,
                     price,
@@ -1862,8 +1922,10 @@ class LevelMonitor:
                     import asyncio
 
                     try:
-                        approach = "up" if price < zone.center_price else "down"
-                        sig_action = "enter_short" if approach == "up" else "enter_long"
+                        if action in ("CONTINUATION", "continuation"):
+                            sig_action = "enter_long" if approach == "up" else "enter_short"
+                        else:  # REVERSAL — fade the approach
+                            sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
                         stop_ticks = int(max(6, min(50, result.get("stop_ticks") or 25)))
                         # Weak-but-passing orderflow → widen stop (more room)
@@ -2021,7 +2083,6 @@ class LevelMonitor:
                         confidence,
                     )
                 else:
-                    approach = "up" if price < zone.center_price else "down"
                     if action == "CONTINUATION":
                         sig_action = "enter_long" if approach == "up" else "enter_short"
                     else:  # REVERSAL
@@ -2219,12 +2280,13 @@ class LevelMonitor:
             }
         return result
 
-    def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
+    def _build_rl_state_zone(self, zone: Zone, price: float, approach: str | None = None) -> dict:
         import time as _time
 
         candles = self._candle_flow_fn() if self._candle_flow_fn else []
         ctx = self._session_context or {}
-        approach = "up" if price < zone.center_price else "down"
+        if approach is None:
+            approach = "up" if price < zone.center_price else "down"
         recent_ticks = []
         if self._tick_buffer:
             with contextlib.suppress(Exception):

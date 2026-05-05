@@ -34,6 +34,19 @@ def get_bankroll(service: BankrollService = Depends(_get_service)):
     return service.get_bankroll()
 
 
+@router.get("/full")
+def get_bankroll_full(service: BankrollService = Depends(_get_service)):
+    """Combined info + exposure + stats in a single round-trip.
+
+    Frontend uses this on the Bankroll page to avoid 3 sequential tunnel hops.
+    """
+    return {
+        "info": service.get_bankroll(),
+        "exposure": service.get_exposure(),
+        "stats": service.get_stats(),
+    }
+
+
 @router.get("/bonuses")
 def get_provider_bonuses():
     """Get bonus configurations for all providers from providers.yaml."""
