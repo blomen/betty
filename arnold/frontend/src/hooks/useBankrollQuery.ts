@@ -7,54 +7,60 @@ export function useBankrollQuery() {
   const queryClient = useQueryClient();
 
   // ─── Queries ───
-  const { data: bankroll, isLoading: infoLoading, error: infoError } = useQuery({
-    queryKey: ['bankroll', 'info'],
-    queryFn: () => api.getBankroll(),
+  // Single combined fetch — one tunnel round-trip instead of three.
+  // Per-card loading flags below derive from the same query so the page can
+  // render Total Capital the moment the response lands.
+  const { data: full, isLoading: fullLoading, error: infoError } = useQuery({
+    queryKey: ['bankroll', 'full'],
+    queryFn: () => api.getBankrollFull(),
     staleTime: 30_000,
   });
 
-  const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ['bankroll', 'stats'],
-    queryFn: () => api.getBankrollStats(),
-    staleTime: 60_000,
-  });
+  const bankroll = full?.info;
+  const stats = full?.stats;
+  const exposure = full?.exposure;
+  const infoLoading = fullLoading;
+  const statsLoading = fullLoading;
+  const exposureLoading = fullLoading;
 
-  const { data: exposure, isLoading: exposureLoading } = useQuery({
-    queryKey: ['bankroll', 'exposure'],
-    queryFn: () => api.getBankrollExposure(),
-    staleTime: 30_000,
-  });
+  type FullPayload = { info: BankrollInfo; exposure: BankrollExposure; stats: BankrollStats };
+  const FULL_KEY = ['bankroll', 'full'] as const;
 
-  // ─── Helper: optimistic balance update for info + exposure ───
+  // ─── Helper: optimistic balance update on the combined payload ───
   const optimisticBalanceUpdate = (
     providerId: string,
     transform: (balance: number) => number,
   ) => {
-    queryClient.setQueryData<BankrollInfo>(['bankroll', 'info'], (old) => {
+    queryClient.setQueryData<FullPayload>(FULL_KEY, (old) => {
       if (!old) return old;
-      let newTotal = 0;
-      const providers = old.providers.map((p) => {
+      let infoTotal = 0;
+      const infoProviders = old.info.providers.map((p) => {
         const newBalance = p.id === providerId ? transform(p.balance) : p.balance;
-        newTotal += newBalance;
+        infoTotal += newBalance;
         return { ...p, balance: newBalance };
       });
-      return { ...old, total: newTotal, providers };
-    });
-    queryClient.setQueryData<BankrollExposure>(['bankroll', 'exposure'], (old) => {
-      if (!old) return old;
-      let totalBalance = 0;
-      const providers = old.providers.map((p) => {
+      let exposureTotal = 0;
+      const exposureProviders = old.exposure.providers.map((p) => {
         if (p.provider_id !== providerId) {
-          totalBalance += p.total_balance;
+          exposureTotal += p.total_balance;
           return p;
         }
         const newBalance = transform(p.total_balance);
         const newAvailable = newBalance - p.pending_exposure;
-        totalBalance += newBalance;
+        exposureTotal += newBalance;
         return { ...p, total_balance: newBalance, available: newAvailable };
       });
-      const totalAvailable = providers.reduce((s, p) => s + p.available, 0);
-      return { ...old, total_balance: totalBalance, total_available: totalAvailable, providers };
+      const totalAvailable = exposureProviders.reduce((s, p) => s + p.available, 0);
+      return {
+        ...old,
+        info: { ...old.info, total: infoTotal, providers: infoProviders },
+        exposure: {
+          ...old.exposure,
+          total_balance: exposureTotal,
+          total_available: totalAvailable,
+          providers: exposureProviders,
+        },
+      };
     });
   };
 
@@ -79,14 +85,12 @@ export function useBankrollQuery() {
     retry: false,
     onMutate: async ({ providerId, balance }) => {
       await queryClient.cancelQueries({ queryKey: ['bankroll'] });
-      const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
-      const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
+      const prevFull = queryClient.getQueryData<FullPayload>(FULL_KEY);
       optimisticBalanceUpdate(providerId, () => balance);
-      return { prevInfo, prevExposure };
+      return { prevFull };
     },
     onError: (_err, _vars, context) => {
-      if (context?.prevInfo) queryClient.setQueryData(['bankroll', 'info'], context.prevInfo);
-      if (context?.prevExposure) queryClient.setQueryData(['bankroll', 'exposure'], context.prevExposure);
+      if (context?.prevFull) queryClient.setQueryData(FULL_KEY, context.prevFull);
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
@@ -100,21 +104,26 @@ export function useBankrollQuery() {
     retry: false,
     onMutate: async ({ balance, providerIds }) => {
       await queryClient.cancelQueries({ queryKey: ['bankroll'] });
-      const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
-      const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
-      queryClient.setQueryData<BankrollInfo>(['bankroll', 'info'], (old) => {
+      const prevFull = queryClient.getQueryData<FullPayload>(FULL_KEY);
+      queryClient.setQueryData<FullPayload>(FULL_KEY, (old) => {
         if (!old) return old;
-        const providers = old.providers.map((p) => {
+        const infoProviders = old.info.providers.map((p) => {
           if (providerIds && !providerIds.includes(p.id)) return p;
           return { ...p, balance };
         });
-        return { ...old, total: providers.reduce((s, p) => s + p.balance, 0), providers };
+        return {
+          ...old,
+          info: {
+            ...old.info,
+            total: infoProviders.reduce((s, p) => s + p.balance, 0),
+            providers: infoProviders,
+          },
+        };
       });
-      return { prevInfo, prevExposure };
+      return { prevFull };
     },
     onError: (_err, _vars, context) => {
-      if (context?.prevInfo) queryClient.setQueryData(['bankroll', 'info'], context.prevInfo);
-      if (context?.prevExposure) queryClient.setQueryData(['bankroll', 'exposure'], context.prevExposure);
+      if (context?.prevFull) queryClient.setQueryData(FULL_KEY, context.prevFull);
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
@@ -127,17 +136,18 @@ export function useBankrollQuery() {
     retry: false,
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['bankroll'] });
-      const prevInfo = queryClient.getQueryData<BankrollInfo>(['bankroll', 'info']);
-      const prevExposure = queryClient.getQueryData<BankrollExposure>(['bankroll', 'exposure']);
-      queryClient.setQueryData<BankrollInfo>(['bankroll', 'info'], (old) => {
+      const prevFull = queryClient.getQueryData<FullPayload>(FULL_KEY);
+      queryClient.setQueryData<FullPayload>(FULL_KEY, (old) => {
         if (!old) return old;
-        return { ...old, total: 0, providers: old.providers.map((p) => ({ ...p, balance: 0 })) };
+        return {
+          ...old,
+          info: { ...old.info, total: 0, providers: old.info.providers.map((p) => ({ ...p, balance: 0 })) },
+        };
       });
-      return { prevInfo, prevExposure };
+      return { prevFull };
     },
     onError: (_err, _vars, context) => {
-      if (context?.prevInfo) queryClient.setQueryData(['bankroll', 'info'], context.prevInfo);
-      if (context?.prevExposure) queryClient.setQueryData(['bankroll', 'exposure'], context.prevExposure);
+      if (context?.prevFull) queryClient.setQueryData(FULL_KEY, context.prevFull);
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
@@ -173,7 +183,10 @@ export function useBankrollQuery() {
       total_balance: 0, total_pending: 0, total_available: 0,
       total_free: 0, total_locked: 0, providers: [],
     } as BankrollExposure,
-    isLoading: infoLoading || statsLoading || exposureLoading,
+    isLoading: fullLoading,
+    isInfoLoading: infoLoading,
+    isStatsLoading: statsLoading,
+    isExposureLoading: exposureLoading,
     error: infoError ? (infoError instanceof Error ? infoError.message : 'Failed to load bankroll data') : null,
     allocate: allocateMutation,
     liquidBalance: liquidData?.liquid_balance ?? 0,

@@ -60,18 +60,6 @@ export function BankrollPage() {
   const { sorted: sortedProviders, sort: provSort, toggle: toggleProvSort } =
     useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'balance', direction: 'desc' }, 'bbq_bankroll_sort');
 
-  if (isLoading) {
-    return (
-      <div className="flex-1 min-h-0 space-y-4 overflow-y-auto">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabBankroll" />
-          Bankroll
-        </h2>
-        <div className="text-muted text-sm py-4 text-center">Loading...</div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 min-h-0 space-y-4 overflow-y-auto">
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -81,17 +69,27 @@ export function BankrollPage() {
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {exposure && (
-        <div className="border-l-2 border-tabBankroll">
-          <Card title="Total Capital">
-            <div className="text-text text-3xl font-semibold">{exposure.total_balance.toFixed(0)} kr</div>
-          </Card>
-        </div>
-      )}
+      <div className="border-l-2 border-tabBankroll">
+        <Card title="Total Capital">
+          {isLoading && !exposure ? (
+            <div className="text-muted text-sm">Loading...</div>
+          ) : (
+            <div className="text-text text-3xl font-semibold">
+              {(exposure?.total_balance ?? 0).toFixed(0)} kr
+            </div>
+          )}
+        </Card>
+      </div>
 
-      {exposure && (
-        <div className="border-l-2 border-tabBankroll">
-          <Card title="Provider Balances">
+      <div className="border-l-2 border-tabBankroll">
+        <Card title="Provider Balances">
+          {isLoading && !exposure ? (
+            <div className="text-muted text-sm py-4 text-center">Loading...</div>
+          ) : sortedProviders.length === 0 ? (
+            <div className="text-muted text-sm py-4 text-center">
+              No balances set. Open the Sports tab and click <span className="text-text">Set</span> on a provider, or place a bet to populate this table.
+            </div>
+          ) : (
             <table className="sq">
               <thead>
                 <tr>
@@ -156,9 +154,9 @@ export function BankrollPage() {
                 })}
               </tbody>
             </table>
-          </Card>
-        </div>
-      )}
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

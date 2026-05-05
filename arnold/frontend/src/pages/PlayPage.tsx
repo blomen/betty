@@ -868,6 +868,12 @@ export default function PlayPage() {
         // state that would flap the card green between pause and the
         // following provider_ready event.
         if (type === 'bet_skipped' && data.reason === 'paused') return
+        // settling_done is a transient signal — the runner immediately fires
+        // provider_running / bet_ready next. Don't stamp 'settling' on
+        // settling_done (would leave the card stuck in "Logged in · syncing"
+        // when the no-pending fast-path emits settling_done without a prior
+        // settling_pending). Let the next event set the state.
+        if (type === 'settling_done') return
         setLoopProviderStatus(prev => ({
           ...prev,
           [epid]: {
@@ -876,7 +882,7 @@ export default function PlayPage() {
                    type === 'bet_ready' ? 'ready' :
                    type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed' ? 'navigating' :
                    type.includes('login') ? 'login_waiting' :
-                   type.includes('settl') ? 'settling' : 'opening',
+                   type === 'settling_pending' ? 'settling' : 'opening',
             current_bet: data.bet || null,
           }
         }))
@@ -1167,13 +1173,18 @@ export default function PlayPage() {
       )}
 
       {/* Per-provider status rows.
+          Only rendered for state='ready' — the only state that needs the
+          global banner because it carries current-bet context + the Skip
+          button. All other states (login_waiting, settling, navigating,
+          placing, running) are duplicated by the per-provider card badge
+          inside each cluster, so showing them here is redundant noise.
           Polymarket is rendered inline inside its own cluster header below
           (search for "POLYMARKET inline status") — keeps the ready/Skip
-          control next to the polymarket bets list, not in the global header. */}
+          control next to the polymarket bets list. */}
       {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
         <div className="border-b border-zinc-800">
           {Object.entries(loopProviderStatus)
-            .filter(([pid]) => pid !== 'polymarket')
+            .filter(([pid, status]: [string, any]) => pid !== 'polymarket' && status?.state === 'ready')
             .map(([pid, status]: [string, any]) => (
             <div key={pid} className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
               <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">{pid}</span>

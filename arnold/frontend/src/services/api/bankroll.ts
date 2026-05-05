@@ -78,6 +78,27 @@ export const bankrollApi = {
     return fetchJson<BankrollExposure>('/bankroll/exposure');
   },
 
+  async getBankrollFull(): Promise<{
+    info: BankrollInfo;
+    exposure: BankrollExposure;
+    stats: BankrollStats;
+  }> {
+    // Try the combined endpoint; fall back to 3 parallel calls if the deployed
+    // backend doesn't have /full yet (404).
+    try {
+      return await fetchJson('/bankroll/full');
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status !== 404) throw err;
+      const [info, exposure, stats] = await Promise.all([
+        fetchJson<BankrollInfo>('/bankroll'),
+        fetchJson<BankrollExposure>('/bankroll/exposure'),
+        fetchJson<BankrollStats>('/bankroll/stats'),
+      ]);
+      return { info, exposure, stats };
+    }
+  },
+
   async depositWithBonus(
     providerId: string,
     amount: number

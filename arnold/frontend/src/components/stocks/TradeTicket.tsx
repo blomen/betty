@@ -314,8 +314,25 @@ export function TradeTicket({
   const revEv = inference?.rev_ev ?? null
   const sizeMult = inference?.size_multiplier ?? inference?.sizing_signal ?? null
 
+  // Best-effort current price: prefer the live tick, fall back to the quote
+  // midpoint (still updates outside RTH ticks), then to the entry snapshot
+  // so the ladder/header always have *something* to render against.
+  const quoteMid =
+    quote && typeof quote.bid === 'number' && typeof quote.ask === 'number'
+      ? (quote.bid + quote.ask) / 2
+      : null
+  const livePrice = lastPrice ?? quoteMid ?? entryPrice ?? null
+  const livePriceSource: 'tick' | 'quote' | 'entry' | null =
+    lastPrice !== null
+      ? 'tick'
+      : quoteMid !== null
+        ? 'quote'
+        : entryPrice !== null
+          ? 'entry'
+          : null
+
   // Live deviation from entry on the user's "what if I take this NOW" view.
-  const liveDeltaPts = entryPrice !== null && lastPrice !== null ? lastPrice - entryPrice : null
+  const liveDeltaPts = entryPrice !== null && livePrice !== null ? livePrice - entryPrice : null
   const liveDeltaTicks = liveDeltaPts !== null ? liveDeltaPts / TICK_SIZE : null
   const slippageBad =
     liveDeltaTicks !== null &&
@@ -684,11 +701,20 @@ export function TradeTicket({
         <div className="lg:col-span-1">
           <div className="mb-2 flex items-baseline justify-between">
             <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-              Now {lastPrice === null && '(no tick)'}
+              Now
+              {livePriceSource === 'quote' && (
+                <span className="ml-1 text-zinc-600 normal-case tracking-normal">(mid)</span>
+              )}
+              {livePriceSource === 'entry' && (
+                <span className="ml-1 text-amber-500 normal-case tracking-normal">(no tick · entry)</span>
+              )}
+              {livePriceSource === null && (
+                <span className="ml-1 text-zinc-600 normal-case tracking-normal">(no tick)</span>
+              )}
             </span>
             <span
               className={`text-2xl font-bold tabular-nums ${
-                lastPrice === null
+                livePrice === null
                   ? 'text-zinc-600'
                   : liveDeltaTicks === null
                     ? 'text-zinc-200'
@@ -699,14 +725,22 @@ export function TradeTicket({
                         : 'text-zinc-200'
               }`}
             >
-              {lastPrice !== null ? lastPrice.toFixed(2) : '—'}
+              {livePrice !== null ? livePrice.toFixed(2) : '—'}
             </span>
           </div>
+          {liveDeltaTicks !== null && entryPrice !== null && (
+            <div className="mb-2 text-right text-[11px] tabular-nums text-zinc-500">
+              {liveDeltaTicks > 0 ? '+' : ''}
+              {liveDeltaTicks.toFixed(1)}t vs entry
+              {' · '}
+              {(liveDeltaTicks * TICK_SIZE).toFixed(2)}pt
+            </div>
+          )}
           {entryPrice !== null && stopPrice !== null ? (
             <PriceLadder
               entry={entryPrice}
               stop={stopPrice}
-              last={lastPrice}
+              last={livePrice}
               isLong={isLong}
               tp={tpPrice}
               tpMembers={tpMembers}

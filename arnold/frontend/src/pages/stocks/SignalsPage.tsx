@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import { LivePositionPanel } from '@/components/stocks/LivePositionPanel'
 import { TradeTicket } from '@/components/stocks/TradeTicket'
 import { DecisionFlow } from '@/components/stocks/DecisionFlow'
 import { DimsBreakdownCard } from '@/components/stocks/DimsBreakdownCard'
-import { TVOverlayStatus } from '@/components/stocks/TVOverlayStatus'
 import { api } from '@/hooks/useStocksApi'
 import type { DashboardState } from '@/hooks/useDashboardWS'
 import type { ModelStatus } from '@/types/stocks'
@@ -40,15 +38,6 @@ export default function SignalsPage({ ws }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 p-3 gap-3 overflow-y-auto bg-zinc-950">
-      <TVOverlayStatus />
-      <LivePositionPanel
-        positions={ws.positions}
-        lastPrice={ws.lastPrice}
-        fills={ws.fills}
-        exits={ws.exits}
-        quote={ws.quote}
-        modelStatus={modelStatus}
-      />
       <TradeTicket
         inference={inference}
         inferenceAt={inferenceAt}
@@ -56,6 +45,7 @@ export default function SignalsPage({ ws }: Props) {
         lastPrice={ws.lastPrice}
         quote={ws.quote}
         modelStatus={modelStatus}
+        zones={ws.zones}
       />
       <DecisionFlow inference={inference} schema={ws.observationSchema} />
       <DimsBreakdownCard inference={inference} schema={ws.observationSchema} />
