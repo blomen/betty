@@ -5,6 +5,7 @@ import type {
   ModelStatus,
   ObservationSchema,
   Quote,
+  Zone,
 } from '@/types/stocks'
 
 interface Props {
@@ -14,10 +15,16 @@ interface Props {
   lastPrice: number | null
   quote: Quote | null
   modelStatus: ModelStatus | null
+  zones: Zone[]
 }
 
 const TICK_SIZE = 0.25
 const NQ_DOLLARS_PER_TICK = 5  // NQ futures: $5 per tick per contract.
+// TP1 is anchored at 2R because that's also where the broker locks the
+// stop to BE+ (broker_adapter.py: peak_R >= 2.0). So 2R is both a natural
+// take-profit and the moment the trade becomes risk-free. Keep in sync.
+const TP1_R = 2.0
+const TP2_R_FALLBACK = 4.0  // Used when no next zone exists in trade direction.
 
 const BLOCKER_DETAIL: Record<NonNullable<GateBlocker>, string> = {
   halted: 'trading halted',
@@ -58,95 +65,164 @@ function PriceLadder({
   entry,
   stop,
   last,
-  zoneCenter,
-  zoneUpper,
-  zoneLower,
   isLong,
+  tp,
+  tpMembers,
 }: {
   entry: number
   stop: number
   last: number | null
-  zoneCenter: number | null
-  zoneUpper: number | null
-  zoneLower: number | null
   isLong: boolean
+  tp: number | null
+  tpMembers: number | null
 }) {
-  // Vertical ladder: top of canvas = highest price; for long, stop is below entry.
-  const W = 240
-  const H = 200
-  const lo = Math.min(entry, stop, last ?? entry, zoneLower ?? entry)
-  const hi = Math.max(entry, stop, last ?? entry, zoneUpper ?? entry)
-  const pad = (hi - lo) * 0.15 || TICK_SIZE * 4
+  const stopDist = Math.abs(entry - stop)
+  // TP1 = 2R (also the broker's BE-lock trigger).
+  const tp1 = isLong
+    ? entry + stopDist * TP1_R
+    : entry - stopDist * TP1_R
+  // TP2 = next-zone-in-direction if it sits beyond TP1, else fallback to 4R.
+  const tpInDirection = tp !== null && (isLong ? tp > entry : tp < entry)
+  const tp2 =
+    tpInDirection && (isLong ? tp! > tp1 : tp! < tp1)
+      ? tp!
+      : isLong
+        ? entry + stopDist * TP2_R_FALLBACK
+        : entry - stopDist * TP2_R_FALLBACK
+  const tp2IsZone = tp2 === tp
+
+  const W = 280
+  const H = 280
+  const lo = Math.min(entry, stop, last ?? entry, tp1, tp2)
+  const hi = Math.max(entry, stop, last ?? entry, tp1, tp2)
+  const pad = stopDist * 0.4 || TICK_SIZE * 4
   const range = hi - lo + pad * 2
   const top = hi + pad
   const yOf = (p: number) => ((top - p) / range) * H
 
+  const inProfit =
+    last !== null && (isLong ? last > entry : last < entry)
+  const lastColor = last === null ? '#fafafa' : inProfit ? '#34d399' : '#f87171'
+  const lastDeltaT = last !== null ? Math.round(((last - entry) / TICK_SIZE) * (isLong ? 1 : -1)) : null
+  const tp2DistTicks = Math.round(Math.abs(tp2 - entry) / TICK_SIZE)
+  const tp2RMultiple = stopDist > 0 ? Math.abs(tp2 - entry) / stopDist : null
+
+  const LABEL_X = W - 8
+  const PRICE_X = 8
+  const LINE_X1 = 60
+  const LINE_X2 = W - 70
+
+  const Row = ({
+    p,
+    color,
+    label,
+    bold = false,
+    dashed = false,
+  }: {
+    p: number
+    color: string
+    label: string
+    bold?: boolean
+    dashed?: boolean
+  }) => (
+    <g>
+      <line
+        x1={LINE_X1}
+        x2={LINE_X2}
+        y1={yOf(p)}
+        y2={yOf(p)}
+        stroke={color}
+        strokeWidth={bold ? 2 : 1.2}
+        strokeDasharray={dashed ? '4 3' : undefined}
+      />
+      <text x={PRICE_X} y={yOf(p) + 3.5} fill={color} fontSize="10" fontWeight={bold ? 700 : 500}>
+        {p.toFixed(2)}
+      </text>
+      <text x={LABEL_X} y={yOf(p) + 3.5} textAnchor="end" fill={color} fontSize="9" letterSpacing="1">
+        {label}
+      </text>
+    </g>
+  )
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" style={{ maxHeight: 220 }}>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" style={{ maxHeight: 320 }}>
       <rect width={W} height={H} fill="#09090b" rx="4" />
-      {zoneUpper !== null && zoneLower !== null && (
-        <rect
-          x={20}
-          y={yOf(zoneUpper)}
-          width={W - 40}
-          height={Math.max(2, yOf(zoneLower) - yOf(zoneUpper))}
-          fill="#a78bfa"
-          opacity="0.18"
-        />
-      )}
-      {zoneCenter !== null && (
-        <line
-          x1={20}
-          x2={W - 20}
-          y1={yOf(zoneCenter)}
-          y2={yOf(zoneCenter)}
-          stroke="#a78bfa"
-          strokeWidth={0.6}
-          strokeDasharray="4 3"
-          opacity="0.7"
-        />
-      )}
-      {/* Stop */}
-      <line
-        x1={20}
-        x2={W - 20}
-        y1={yOf(stop)}
-        y2={yOf(stop)}
-        stroke="#ef4444"
-        strokeWidth={1.5}
+      {/* Profit-direction shading from entry toward TP2 (the further target) */}
+      <rect
+        x={LINE_X1}
+        y={yOf(isLong ? tp2 : entry)}
+        width={LINE_X2 - LINE_X1}
+        height={Math.abs(yOf(entry) - yOf(tp2))}
+        fill="#10b981"
+        opacity="0.06"
       />
-      <text x={W - 24} y={yOf(stop) - 3} textAnchor="end" fill="#fca5a5" fontSize="10">
-        STOP {stop.toFixed(2)}
-      </text>
-      {/* Entry */}
-      <line
-        x1={20}
-        x2={W - 20}
-        y1={yOf(entry)}
-        y2={yOf(entry)}
-        stroke="#fbbf24"
-        strokeWidth={2}
+      {/* Loss-direction shading from entry toward stop */}
+      <rect
+        x={LINE_X1}
+        y={yOf(isLong ? entry : stop)}
+        width={LINE_X2 - LINE_X1}
+        height={Math.abs(yOf(entry) - yOf(stop))}
+        fill="#ef4444"
+        opacity="0.06"
       />
-      <text x={W - 24} y={yOf(entry) - 3} textAnchor="end" fill="#fde68a" fontSize="10">
-        ENTRY {entry.toFixed(2)}
-      </text>
-      {/* Last */}
+
+      <Row p={stop} color="#ef4444" label="STOP" bold />
+      <Row p={entry} color="#fbbf24" label="ENTRY" bold />
+      <Row p={tp1} color="#34d399" label="TP1 · 2R" bold />
+      <Row
+        p={tp2}
+        color="#34d399"
+        label={
+          tp2IsZone
+            ? `TP2 · next zone${tpMembers ? ` ×${tpMembers}` : ''} · ${tp2RMultiple?.toFixed(1) ?? '?'}R`
+            : `TP2 · ${TP2_R_FALLBACK}R · ${tp2DistTicks}t`
+        }
+      />
+
+      {/* Last price — drawn on top so the marker is always visible */}
       {last !== null && (
-        <>
+        <g>
           <line
-            x1={20}
-            x2={W - 20}
+            x1={LINE_X1}
+            x2={LINE_X2}
             y1={yOf(last)}
             y2={yOf(last)}
-            stroke={isLong === (last >= entry) ? '#34d399' : '#f87171'}
-            strokeWidth={1.2}
-            strokeDasharray="2 2"
+            stroke={lastColor}
+            strokeWidth={1.5}
+            strokeDasharray="3 2"
           />
-          <circle cx={W - 30} cy={yOf(last)} r={4} fill="#fafafa" />
-          <text x={24} y={yOf(last) - 3} fill="#fafafa" fontSize="10">
-            LAST {last.toFixed(2)}
+          <circle cx={LINE_X2 + 6} cy={yOf(last)} r={4} fill={lastColor} />
+          <rect
+            x={LINE_X2 + 12}
+            y={yOf(last) - 9}
+            width={56}
+            height={18}
+            fill={lastColor}
+            rx={2}
+          />
+          <text
+            x={LINE_X2 + 40}
+            y={yOf(last) + 4}
+            textAnchor="middle"
+            fill="#09090b"
+            fontSize="10"
+            fontWeight={700}
+          >
+            {last.toFixed(2)}
           </text>
-        </>
+          {lastDeltaT !== null && (
+            <text
+              x={PRICE_X}
+              y={yOf(last) + 3.5}
+              fill={lastColor}
+              fontSize="10"
+              fontWeight={600}
+            >
+              {lastDeltaT >= 0 ? '+' : ''}
+              {lastDeltaT}t
+            </text>
+          )}
+        </g>
       )}
     </svg>
   )
@@ -187,6 +263,7 @@ export function TradeTicket({
   lastPrice,
   quote,
   modelStatus,
+  zones,
 }: Props) {
   const [now, setNow] = useState(Date.now())
   const [copied, setCopied] = useState(false)
@@ -247,11 +324,24 @@ export function TradeTicket({
     liveDeltaTicks !== null &&
     ((isLong && liveDeltaTicks < -1) || (isShort && liveDeltaTicks > 1))
 
-  // Zone band (best-effort — not directly in inference, derive from zone center).
-  // The actual band came from the zone update broadcast; we don't have it here.
-  // For the ladder we use ±10 ticks as a placeholder if we have center but no band.
-  const zoneUpper = zoneCenter !== null ? zoneCenter + TICK_SIZE * 8 : null
-  const zoneLower = zoneCenter !== null ? zoneCenter - TICK_SIZE * 8 : null
+  // Next zone in trade direction beyond entry — that's where the model
+  // re-evaluates hold-vs-flatten via pyramid / reversal-exit / cont-trail.
+  // Skip the entry's own zone (any zone whose band straddles entry).
+  const nextZone = useMemo<Zone | null>(() => {
+    if (entryPrice === null || zones.length === 0 || isSkip) return null
+    const candidates = zones.filter((z) => {
+      const upper = z.upper ?? z.price
+      const lower = z.lower ?? z.price
+      // Drop the active zone (entry inside its band).
+      if (entryPrice >= lower && entryPrice <= upper) return false
+      return isLong ? z.price > entryPrice : z.price < entryPrice
+    })
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => Math.abs(a.price - entryPrice) - Math.abs(b.price - entryPrice))
+    return candidates[0]
+  }, [zones, entryPrice, isLong, isSkip])
+  const tpPrice = nextZone?.price ?? null
+  const tpMembers = nextZone?.members ?? null
 
   // Pre-trade gates from server.
   const gates = inference?.gates ?? null
@@ -512,18 +602,22 @@ export function TradeTicket({
                   label="Order flow"
                   detail={`${gates.of_score.toFixed(2)} ≥ ${gates.of_floor.toFixed(2)}`}
                 />
-                <GateRow
-                  pass={gates.is_flat}
-                  blocker={gates.blocker === 'in_position'}
-                  label="Flat"
-                  detail={gates.is_flat ? 'flat' : 'in position'}
-                />
-                <GateRow
-                  pass={!gates.halted}
-                  blocker={gates.blocker === 'halted'}
-                  label="Not halted"
-                  detail={gates.halted ? 'paused' : 'live'}
-                />
+                {gates.blocker === 'in_position' && (
+                  <GateRow
+                    pass={false}
+                    blocker
+                    label="Flat"
+                    detail="in position"
+                  />
+                )}
+                {gates.blocker === 'halted' && (
+                  <GateRow
+                    pass={false}
+                    blocker
+                    label="Not halted"
+                    detail="paused"
+                  />
+                )}
               </ul>
               {!dispatched && (
                 <div className="mt-2 text-[10px] text-amber-400">
@@ -588,18 +682,34 @@ export function TradeTicket({
 
         {/* Right column: live ladder */}
         <div className="lg:col-span-1">
-          <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">
-            Price ladder
+          <div className="mb-2 flex items-baseline justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+              Now {lastPrice === null && '(no tick)'}
+            </span>
+            <span
+              className={`text-2xl font-bold tabular-nums ${
+                lastPrice === null
+                  ? 'text-zinc-600'
+                  : liveDeltaTicks === null
+                    ? 'text-zinc-200'
+                    : (isLong && liveDeltaTicks > 0) || (isShort && liveDeltaTicks < 0)
+                      ? 'text-emerald-400'
+                      : (isLong && liveDeltaTicks < 0) || (isShort && liveDeltaTicks > 0)
+                        ? 'text-red-400'
+                        : 'text-zinc-200'
+              }`}
+            >
+              {lastPrice !== null ? lastPrice.toFixed(2) : '—'}
+            </span>
           </div>
           {entryPrice !== null && stopPrice !== null ? (
             <PriceLadder
               entry={entryPrice}
               stop={stopPrice}
               last={lastPrice}
-              zoneCenter={zoneCenter}
-              zoneUpper={zoneUpper}
-              zoneLower={zoneLower}
               isLong={isLong}
+              tp={tpPrice}
+              tpMembers={tpMembers}
             />
           ) : (
             <div className="text-zinc-500 text-[11px]">no entry/stop yet</div>
