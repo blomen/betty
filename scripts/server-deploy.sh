@@ -181,8 +181,19 @@ RL_MAX_WAIT=7200  # 2 hours max wait
 # until the 7200s timeout (observed 2026-05-05). Using `pgrep -fc`
 # inside `bash -c '...; true'` ensures the inner command exits 0
 # regardless of count, so the outer fallback never fires.
+#
+# 2026-05-07: pgrep self-match wedge. `bash -c 'pgrep -fc rl_train_pipeline'`
+# spawns a bash whose argv contains the literal string "rl_train_pipeline"
+# (in the -c argument). pgrep -f matches against full command line, so it
+# matches the wrapping bash. _rl_pipeline_count always returned ≥1, even
+# when no real pipeline was running, and every deploy spun the full 7200s.
+# Fix: use the `[r]l_train_pipeline` regex-bracket trick — bash's argv
+# contains the literal `[r]l_train_pipeline` (with brackets), but pgrep's
+# regex evaluates `[r]l_train_pipeline` as "char-class matching r" + the
+# rest, which doesn't match the bracketed string in argv. The actual
+# rl_train_pipeline.sh process (no brackets in its name) still matches.
 _rl_pipeline_count() {
-    docker compose exec -T backend bash -c 'pgrep -fc rl_train_pipeline 2>/dev/null || echo 0' 2>/dev/null | tr -d '[:space:]' || echo "0"
+    docker compose exec -T backend bash -c 'pgrep -fc "[r]l_train_pipeline" 2>/dev/null || echo 0' 2>/dev/null | tr -d '[:space:]' || echo "0"
 }
 
 wait_for_rl_training() {
