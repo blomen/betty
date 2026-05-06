@@ -638,56 +638,56 @@ class ProfileRepo:
             weeks_remaining = days_remaining / 7
             required_weekly_wagering = remaining / weeks_remaining if weeks_remaining > 0 else remaining
 
-        # --- Per-provider qualifying bets ---
-        recent_bets = (
-            self.db.query(Bet)
-            .filter(
+        # --- Aggregate per-provider qualifying + total in two single-row SQL queries
+        # instead of materializing both bet lists in Python. The function only
+        # needs (count, sum(stake), min(placed_at)) per group — `func.*` does
+        # exactly that and avoids two full table scans.
+        from sqlalchemy import func
+
+        def _agg_stats(filters: list, *, total_remaining: float):
+            """Run ONE aggregate query and return (bets_per_week, avg_stake, weekly_wagering, est_weeks)."""
+            row = (
+                self.db.query(
+                    func.count(Bet.id),
+                    func.sum(Bet.stake),
+                    func.min(Bet.placed_at),
+                )
+                .filter(*filters)
+                .one()
+            )
+            count, stake_sum, earliest = row
+            if not count:
+                return 0.0, 0.0, 0.0, None
+            if earliest.tzinfo is None:
+                earliest = earliest.replace(tzinfo=timezone.utc)
+            days_span = max(1, (datetime.now(timezone.utc) - earliest).days)
+            bets_per_week = count / (days_span / 7) if days_span > 0 else 0
+            avg_stake = float(stake_sum) / count
+            weekly_wagering = bets_per_week * avg_stake
+            est_weeks = total_remaining / weekly_wagering if weekly_wagering > 0 else None
+            return bets_per_week, avg_stake, weekly_wagering, est_weeks
+
+        # Per-provider qualifying bets
+        bets_per_week, avg_stake, weekly_wagering, est_weeks = _agg_stats(
+            [
                 Bet.profile_id == profile_id,
                 Bet.provider_id == provider_id,
                 Bet.placed_at >= cutoff,
                 Bet.odds >= min_odds,
-            )
-            .all()
+            ],
+            total_remaining=remaining,
         )
 
-        bets_per_week = 0.0
-        avg_stake = 0.0
-        weekly_wagering = 0.0
-        est_weeks = None
-
-        if recent_bets:
-            earliest = min(b.placed_at for b in recent_bets)
-            if earliest.tzinfo is None:
-                earliest = earliest.replace(tzinfo=timezone.utc)
-            days_span = max(1, (datetime.now(timezone.utc) - earliest).days)
-            bets_per_week = len(recent_bets) / (days_span / 7) if days_span > 0 else 0
-            avg_stake = sum(b.stake for b in recent_bets) / len(recent_bets)
-            weekly_wagering = bets_per_week * avg_stake
-            est_weeks = remaining / weekly_wagering if weekly_wagering > 0 else None
-
-        # --- Total across ALL providers (overall betting pace + bankroll context) ---
-        total_bets = (
-            self.db.query(Bet)
-            .filter(
+        # Total across ALL providers (overall betting pace + bankroll context)
+        total_bets_per_week, total_avg_stake, total_weekly_wagering, _ = _agg_stats(
+            [
                 Bet.profile_id == profile_id,
                 Bet.placed_at >= cutoff,
-            )
-            .all()
+            ],
+            total_remaining=remaining,
         )
 
-        total_bets_per_week = 0.0
-        total_avg_stake = 0.0
-        total_weekly_wagering = 0.0
         bankroll = self.get_total_bankroll(profile_id)
-
-        if total_bets:
-            total_earliest = min(b.placed_at for b in total_bets)
-            if total_earliest.tzinfo is None:
-                total_earliest = total_earliest.replace(tzinfo=timezone.utc)
-            total_days_span = max(1, (datetime.now(timezone.utc) - total_earliest).days)
-            total_bets_per_week = len(total_bets) / (total_days_span / 7) if total_days_span > 0 else 0
-            total_avg_stake = sum(b.stake for b in total_bets) / len(total_bets)
-            total_weekly_wagering = total_bets_per_week * total_avg_stake
 
         # Cap actual pace to bankroll (can't wager more than you have)
         effective_weekly_wagering = min(total_weekly_wagering, bankroll) if bankroll > 0 else total_weekly_wagering
