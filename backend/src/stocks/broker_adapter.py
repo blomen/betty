@@ -354,6 +354,23 @@ class TopstepXBrokerAdapter:
 
         # --- FLAT: enter new position ---
         if self.tracker.is_flat:
+            # 2026-05-06: pending-trade guard. Bug A: rapid trades fired
+            # within the broker round-trip flush window corrupted tracker
+            # price state — DB rows had entry/exit shifted from broker truth
+            # because the new entry overwrote tracker fields before the
+            # previous trade's persist callback finished reading them.
+            # tracker.is_flat goes True the moment exit_price is set in
+            # on_exit, but _pending_trade is only cleared after the persist
+            # row is written. Refuse new entry while _pending_trade is
+            # still populated — that means a close-flush is in flight.
+            if self._pending_trade is not None:
+                log.warning(
+                    "Signal rejected — prior trade still flushing (_pending_trade not yet cleared, side=%s entry=%.2f)",
+                    self._pending_trade.get("side"),
+                    self._pending_trade.get("entry_price", 0) or 0,
+                )
+                return {"rejected": True, "reason": "prior_trade_flushing"}
+
             # Zone cooldown only applies to new entries
             if zone_price > 0:
                 last_entry = self._zone_last_entry.get(zone_price, 0)

@@ -121,6 +121,18 @@ class ServerStocksRuntime:
         log.info("ServerStocksRuntime stopped")
 
 
+# 2026-05-06: dedupe lock for _persist_broker_trade_direct. The persist
+# callback spawns a thread per close event; if two close events for the same
+# trade fire close in time (stop-hit replay + signal flatten arriving back-
+# to-back), both threads run the dedupe SELECT before either has committed,
+# both see no match, both INSERT — producing duplicate broker_trades rows
+# (#430/#431 today: identical ts/prices/PnL written twice). Serializing the
+# check-then-insert under a single lock kills the race deterministically.
+# Trade execution itself stays async — only the DB write path serializes,
+# which is sub-ms work.
+_PERSIST_LOCK = threading.Lock()
+
+
 def _persist_broker_trade_direct(payload: dict) -> None:
     """Threaded direct DB insert for closed broker_trades — no HTTP.
 
@@ -148,6 +160,11 @@ def _persist_broker_trade_direct(payload: dict) -> None:
             ts_open = _ts(p.get("ts")) or datetime.utcnow()
 
             db = get_session()
+            # Hold the global persist lock across the dedupe SELECT + INSERT
+            # so two threads writing the same close event can't both pass
+            # the dedupe lookup before either commits. See _PERSIST_LOCK
+            # comment for the failure mode this prevents.
+            _PERSIST_LOCK.acquire()
             try:
                 # Dedupe within a ±2s window on (symbol, side, entry_price, size).
                 # Two close events can fire for the same logical trade (signal
@@ -243,6 +260,7 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                 db.commit()
             finally:
                 db.close()
+                _PERSIST_LOCK.release()
         except Exception:
             log.warning("broker_trades direct persist failed", exc_info=True)
 
