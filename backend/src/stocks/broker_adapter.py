@@ -231,6 +231,19 @@ class TopstepXBrokerAdapter:
             )
         self._zone_last_entry: dict[float, float] = {}  # zone_price → last_entry_ts
         self._trail_count = 0  # how many times we've trailed the stop
+        # 2026-05-06: per-orderId fill classification cache. TopstepX splits
+        # any market order with size > 1 into multiple size-1 GatewayUserTrade
+        # fills, all carrying the same orderId. Without this cache the second
+        # leg of a size-2 entry was reclassified as "exit" (because tracker
+        # entry_price is no longer 0), which a) silently flattened the
+        # tracker, b) caused arnold to drop the real close fills as
+        # "arrived while flat", c) the next genuine entry became an orphan
+        # that the reconcile loop had to liquidate (yesterday +$1,775,
+        # today +$100/-$275). Map: orderId -> "entry" | "exit" | "stop".
+        # First fill with a given orderId classifies the event; subsequent
+        # fills with the same orderId update size in place via on_add or
+        # are dropped idempotently (close already happened).
+        self._fill_orderid_class: dict[int, str] = {}
         # Flatten reason captured at the moment flatten() is called so the
         # exit fill that lands a moment later (or the recovery path that
         # reconstructs the trade) can attribute the close. Cleared after
@@ -851,6 +864,45 @@ class TopstepXBrokerAdapter:
             order_id,
         )
 
+        # Split-fill aggregation: if we've already classified this orderId,
+        # this is a sibling leg (TopstepX split a size>1 order into multiple
+        # size-1 fill events). Don't re-run the entry/exit decision tree —
+        # that's what flipped tracker state and produced today's orphans.
+        size = int(data.get("size") or 1)
+        prior = self._fill_orderid_class.get(order_id) if order_id is not None else None
+        if prior == "entry":
+            # Sibling entry fill — grow the position via on_add, which handles
+            # the volume-weighted average entry price correctly.
+            if not self.tracker.is_flat:
+                old_size = self.tracker.size
+                self.tracker.on_add(price=price, add_size=size)
+                log.info(
+                    "Split-fill: order_id=%s same-orderId entry leg, size %d → %d (avg entry %.2f)",
+                    order_id,
+                    old_size,
+                    self.tracker.size,
+                    self.tracker.entry_price,
+                )
+                if self._pending_trade is not None:
+                    self._pending_trade["size"] = self.tracker.size
+                    self._pending_trade["entry_price"] = self.tracker.entry_price
+                    self._set_pending_trade(self._pending_trade)
+            else:
+                log.warning(
+                    "Split-fill: order_id=%s entry sibling but tracker is flat — dropping (race)",
+                    order_id,
+                )
+            return
+        if prior in ("exit", "stop"):
+            # Sibling close fill — position already going flat from leg 1.
+            # Drop idempotently; tracker state is already correct.
+            log.info(
+                "Split-fill: order_id=%s same-orderId %s sibling — already processed, dropping",
+                order_id,
+                prior,
+            )
+            return
+
         if self.tracker.is_flat:
             log.warning("Stream fill (%.2f, order_id=%s) arrived while flat — dropping", price, order_id)
             return
@@ -911,6 +963,17 @@ class TopstepXBrokerAdapter:
                     close_dir_matches,
                 )
                 is_stop = True
+
+        # Stamp the classification for this orderId so subsequent split-fill
+        # legs (same orderId) hit the aggregation branch above instead of
+        # being reclassified as the opposite event.
+        if order_id is not None:
+            if is_entry:
+                self._fill_orderid_class[order_id] = "entry"
+            elif is_stop:
+                self._fill_orderid_class[order_id] = "stop"
+            else:
+                self._fill_orderid_class[order_id] = "exit"
 
         if is_entry:
             # Idempotent: a duplicate entry fill with the same orderId must not double-set.
