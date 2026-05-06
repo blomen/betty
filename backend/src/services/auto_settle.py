@@ -23,7 +23,11 @@ async def scan_settlements() -> list[dict]:
     """
     db = get_session()
     try:
-        now = datetime.now(timezone.utc)
+        # Bet.start_time column is `DateTime` (naive). Compare against a naive
+        # UTC `now` so the filter works identically on SQLite and Postgres
+        # without relying on driver-level tz coercion. Pending the schema-wide
+        # migration to timezone-aware columns.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         pending = (
             db.query(Bet)
             .filter(
