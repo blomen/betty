@@ -1108,6 +1108,25 @@ class LevelMonitor:
         # trading_service subprocess (whichever process owns the live
         # position will fire BE-lock when peak_R crosses 2.0).
         broker = getattr(self, "_broker_adapter", None)
+        # 2026-05-06 DIAGNOSTIC: trace _check_positions entry. Throttled.
+        import time as _time_diag
+
+        if not hasattr(self, "_last_check_pos_log_ts"):
+            self._last_check_pos_log_ts = 0.0
+        if _time_diag.time() - self._last_check_pos_log_ts > 10.0:
+            broker_present = broker is not None
+            tracker_flat = broker.tracker.is_flat if broker_present else None
+            tracker_entry = broker.tracker.entry_price if broker_present else None
+            tracker_peak = broker.tracker.peak_R if broker_present else None
+            logger.info(
+                "_check_positions tick: price=%.2f broker=%s flat=%s entry=%.2f peak_R=%.2f",
+                price,
+                broker_present,
+                tracker_flat,
+                tracker_entry or 0.0,
+                tracker_peak or 0.0,
+            )
+            self._last_check_pos_log_ts = _time_diag.time()
         if broker is not None and not broker.tracker.is_flat:
             broker.update_mark_and_check_be_lock(price)
             # Pair the BE-lock with a tp_price advance: at first 2R cross

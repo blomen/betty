@@ -264,9 +264,34 @@ class TopstepXBrokerAdapter:
         actual production trades. This makes BE-lock work on whichever
         process owns the live position.
         """
+        # 2026-05-06 DIAGNOSTIC: peak_R was stuck at 0.0 on a +$425 winner
+        # despite price moving 2.5R above entry for 17 minutes. Log gates
+        # to pinpoint where the chain breaks. Throttled to avoid flooding.
+        prev_peak_R = float(getattr(self.tracker, "peak_R", 0.0) or 0.0)
         if self.tracker.is_flat or self.tracker.entry_price <= 0:
+            if not hasattr(self, "_last_mark_skip_log_ts"):
+                self._last_mark_skip_log_ts = 0.0
+            if time.time() - self._last_mark_skip_log_ts > 5.0:
+                log.warning(
+                    "update_mark SKIP: is_flat=%s entry_price=%.2f side=%s — peak_R won't update",
+                    self.tracker.is_flat,
+                    self.tracker.entry_price,
+                    self.tracker.side,
+                )
+                self._last_mark_skip_log_ts = time.time()
             return
-        self.tracker.update_mark(price)
+        new_r = self.tracker.update_mark(price)
+        if new_r > prev_peak_R + 0.1 or (new_r >= 1.5 and prev_peak_R < 1.5):
+            log.info(
+                "update_mark: price=%.2f entry=%.2f stop=%.2f side=%s prev_peak=%.2f new_r=%.2f new_peak=%.2f",
+                price,
+                self.tracker.entry_price,
+                self.tracker.stop_price,
+                self.tracker.side,
+                prev_peak_R,
+                new_r,
+                self.tracker.peak_R,
+            )
 
         # +2R BE-lock: lock a small profit (entry ± 2 ticks = $10) so the
         # trade can never give back below break-even. Single-shot via
@@ -282,6 +307,24 @@ class TopstepXBrokerAdapter:
             target_stop = self.tracker.entry_price - buffer_pts
         target_stop = _round_tick(target_stop)
         self.tracker.locked_BE = True
+        # Synchronously reflect the BE-lock in the tracker AND _pending_trade
+        # BEFORE awaiting the async modify_stop. Without this, a trade that
+        # closes via reversal-signals or EE_LOCK between this tick and the
+        # broker acknowledging the modify_stop call ends up persisting with
+        # the original loss-side stop_price (the persist callback reads
+        # _pending_trade at flatten-time). All of today's >2R trades closed
+        # this way — pnl_r 3.83 (#427), 1.69 (#432) etc. all show stop_price
+        # = entry-1R despite peak_R clearly clearing 2.0. Local mutation is
+        # safe because the only consumer of stop_price downstream is the
+        # broker_trades persist (chart label) and the position_watcher
+        # broadcast (chart visualization) — neither sends new orders. The
+        # async modify_stop still runs and updates the BROKER's stop order,
+        # so a real stop hit would land at BE+; if the broker rejects, our
+        # local view is optimistic but the next reconcile catches the drift.
+        self.tracker.stop_price = target_stop
+        if self._pending_trade is not None:
+            self._pending_trade["stop_price"] = target_stop
+            self._set_pending_trade(self._pending_trade)
         log.info(
             "BE-lock at peak_R=%.2f: stop → %.2f (entry %s %d ticks, side=%s)",
             self.tracker.peak_R,
