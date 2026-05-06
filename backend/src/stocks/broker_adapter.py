@@ -321,10 +321,20 @@ class TopstepXBrokerAdapter:
         # async modify_stop still runs and updates the BROKER's stop order,
         # so a real stop hit would land at BE+; if the broker rejects, our
         # local view is optimistic but the next reconcile catches the drift.
-        self.tracker.stop_price = target_stop
-        if self._pending_trade is not None:
-            self._pending_trade["stop_price"] = target_stop
-            self._set_pending_trade(self._pending_trade)
+        #
+        # Relax-guard: if cont-trail already moved the stop tighter (long:
+        # higher / short: lower), don't relax it locally. Mirror the same
+        # rule modify_stop enforces server-side.
+        cur_stop = self.tracker.stop_price
+        is_long_side = self.tracker.side == "long"
+        would_relax = (cur_stop > 0) and (
+            (is_long_side and target_stop < cur_stop) or (not is_long_side and target_stop > cur_stop)
+        )
+        if not would_relax:
+            self.tracker.stop_price = target_stop
+            if self._pending_trade is not None:
+                self._pending_trade["stop_price"] = target_stop
+                self._set_pending_trade(self._pending_trade)
         log.info(
             "BE-lock at peak_R=%.2f: stop → %.2f (entry %s %d ticks, side=%s)",
             self.tracker.peak_R,
