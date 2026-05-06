@@ -1182,6 +1182,39 @@ class TopstepXBrokerAdapter:
             direction = 1.0 if side == "long" else -1.0
             pnl_pts = direction * (price - entry_px)
             pnl_dollars = pnl_pts * _NQ_POINT_VALUE * size
+
+            # 2026-05-07: trust broker's profitAndLoss when present. Bug
+            # surfaced today: trade #440 had DB entry/exit swapped from
+            # tracker corruption, causing the price-derived pnl to come out
+            # +$80 when broker reality was -$80 (sign inverted). Since the
+            # exit fill carries the broker's authoritative pnl, use it to
+            # cross-check + override price-derived math when they disagree.
+            broker_pnl = data.get("profitAndLoss")
+            if broker_pnl is not None:
+                try:
+                    broker_pnl = float(broker_pnl)
+                    # Allow $1 tolerance for rounding; flag anything bigger as
+                    # a corruption-event so the trainer doesn't see fake R.
+                    if abs(broker_pnl - pnl_dollars) > 1.0:
+                        log.warning(
+                            "pnl mismatch: tracker computed $%.2f but broker reports $%.2f "
+                            "(side=%s entry=%.2f exit=%.2f size=%d). Using broker truth.",
+                            pnl_dollars,
+                            broker_pnl,
+                            side,
+                            entry_px,
+                            price,
+                            size,
+                        )
+                        pnl_dollars = broker_pnl
+                        # Back-derive points + reconstruct exit_price so DB
+                        # row's prices reflect what the broker actually saw.
+                        pnl_pts = broker_pnl / (_NQ_POINT_VALUE * max(size, 1))
+                        # exit = entry + direction * pts. For shorts, direction
+                        # is -1, so a profit (pnl_pts > 0) means exit < entry.
+                        price = round((entry_px + direction * pnl_pts) * 4) / 4
+                except (TypeError, ValueError):
+                    pass
             stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
             # R is realized-pnl-vs-INITIAL-risk, never against the trailed stop.
             # When a stop trails close before TP, entry−current_stop shrinks
