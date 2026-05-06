@@ -1508,19 +1508,51 @@ class TopstepXBrokerAdapter:
                 open_orders = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
                 live_ids = {int(o.get("id")) for o in (open_orders.get("orders") or []) if o.get("id")}
                 if int(stop_order_id) not in live_ids:
-                    log.error(
-                        "Stop verify FAILED: orderId %s not in Order/searchOpen (%d open) — "
-                        "flattening to avoid naked position",
-                        stop_order_id,
-                        len(live_ids),
-                    )
+                    # 2026-05-07: false-positive guard. If the stop fills FAST
+                    # (entry → stop within sub-second), by the time this verify
+                    # runs the stop is gone from Order/searchOpen because it's
+                    # already filled, AND broker shows no open position. The
+                    # halt that fired here yesterday on a -$70 close was a
+                    # legitimate stop-hit, not a naked-position event. Cross-
+                    # check broker truth: if Position/searchOpen shows zero
+                    # contracts, the stop already did its job — log and
+                    # continue, don't halt.
                     try:
-                        await self.client.liquidate_position()
+                        broker_positions = await self.client.search_open_positions()
+                        contract_id = getattr(self.client, "_config", None)
+                        contract_id = getattr(contract_id, "contract_id", None) if contract_id else None
+                        broker_size = sum(
+                            int(p.get("size") or 0)
+                            for p in broker_positions
+                            if not contract_id or p.get("contractId") == contract_id
+                        )
                     except Exception:
-                        log.exception("Emergency liquidate after stop-verify failure also failed")
-                    self._halt("stop_verify_failed")
-                    return {"rejected": True, "reason": "stop_verify_failed"}
-                log.info("Stop verified live: orderId=%s @ %.2f", stop_order_id, current_stop)
+                        broker_size = -1  # unknown — fail-safe to halt
+                    if broker_size == 0:
+                        log.info(
+                            "Stop verify NO-OP: orderId %s not in Order/searchOpen but "
+                            "Position/searchOpen also shows zero contracts — stop fired "
+                            "before verify ran, position closed cleanly. Continuing.",
+                            stop_order_id,
+                        )
+                        # The stop already filled; tracker should converge via
+                        # the close fill or reconcile loop. Don't halt.
+                    else:
+                        log.error(
+                            "Stop verify FAILED: orderId %s not in Order/searchOpen (%d open) "
+                            "AND broker has size=%d — naked position, flattening",
+                            stop_order_id,
+                            len(live_ids),
+                            broker_size,
+                        )
+                        try:
+                            await self.client.liquidate_position()
+                        except Exception:
+                            log.exception("Emergency liquidate after stop-verify failure also failed")
+                        self._halt("stop_verify_failed")
+                        return {"rejected": True, "reason": "stop_verify_failed"}
+                else:
+                    log.info("Stop verified live: orderId=%s @ %.2f", stop_order_id, current_stop)
             except Exception:
                 # Verification call itself failed — don't block trade on a
                 # transient REST error. The reconcile loop will catch any
