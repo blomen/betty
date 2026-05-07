@@ -1644,6 +1644,19 @@ def merge_live() -> None:
     live_tc = _load_optional("tc")
     live_sl = _load_optional("sl")
     live_placed_st = _load_optional("placed_st")
+    # 2026-05-07: Day 1-3 audit additions. Trainer can opt in by reading
+    # exit_reason.npy etc. — for now we just persist them.
+    live_er = _load_optional("er")  # exit_reason int code
+    live_tg = _load_optional("tg")  # signal_trigger int code
+    live_fam = _load_optional("fam")  # zone families multi-hot (n×14)
+    live_reg = _load_optional("reg")  # regime_score
+    live_phs = _load_optional("phs")  # session_phase int code
+    live_tnd = _load_optional("tnd")  # trend_context per TF (n×3)
+    live_sz = _load_optional("sz")  # trade size
+    live_tp = _load_optional("tp")  # tp_price
+    live_sp = _load_optional("sp")  # stop_price
+    live_of = _load_optional("of")  # broker-side orderflow_score
+    live_lat = _load_optional("lat")  # fill_latency_ms
 
     typer.echo(
         f"Live episodes: {len(live_obs)} ({live_obs.shape[1]}-dim, trig={'yes' if live_trig is not None else 'no'})"
@@ -1720,6 +1733,33 @@ def merge_live() -> None:
         _merge_aux("trail_count", live_tc, default_dtype=np.int32)
         _merge_aux("slippage_ticks", live_sl)
         _merge_aux("placed_stop_ticks", live_placed_st)
+
+        # Day 1-3 audit auxiliaries. Sentinel 99 (unknown) for ints, 0.0
+        # for floats — same convention as the encoders. The 2D arrays
+        # (families 14-dim, trend_context 3-dim) use a separate helper.
+        _merge_aux("exit_reason", live_er, default_dtype=np.int32)
+        _merge_aux("signal_trigger", live_tg, default_dtype=np.int32)
+        _merge_aux("regime_score_live", live_reg)
+        _merge_aux("session_phase", live_phs, default_dtype=np.int32)
+        _merge_aux("trade_size", live_sz, default_dtype=np.int32)
+        _merge_aux("tp_price", live_tp)
+        _merge_aux("stop_price_live", live_sp)
+        _merge_aux("orderflow_score_live", live_of)
+        _merge_aux("fill_latency_ms", live_lat)
+
+        def _merge_aux_2d(name: str, live_arr, n_cols: int, default_dtype=np.float32):
+            existing_path = episodes_dir / f"{name}.npy"
+            existing = np.load(existing_path) if existing_path.exists() else None
+            if live_arr is None and existing is None:
+                return
+            m = existing if existing is not None else np.zeros((n_main, n_cols), dtype=default_dtype)
+            l = live_arr if live_arr is not None else np.zeros((n_live, n_cols), dtype=default_dtype)
+            if m.shape[0] != n_main or m.shape[1] != n_cols:
+                m = np.zeros((n_main, n_cols), dtype=default_dtype)
+            np.save(existing_path, np.concatenate([m, l], axis=0))
+
+        _merge_aux_2d("zone_families_live", live_fam, n_cols=14, default_dtype=np.float32)
+        _merge_aux_2d("trend_context_live", live_tnd, n_cols=3, default_dtype=np.int32)
     else:
         merged_obs = live_obs
         merged_rc = live_rc
@@ -1744,6 +1784,29 @@ def merge_live() -> None:
             np.save(episodes_dir / "slippage_ticks.npy", live_sl)
         if live_placed_st is not None:
             np.save(episodes_dir / "placed_stop_ticks.npy", live_placed_st)
+        # Day 1-3 audit auxiliaries — cold-start branch
+        if live_er is not None:
+            np.save(episodes_dir / "exit_reason.npy", live_er)
+        if live_tg is not None:
+            np.save(episodes_dir / "signal_trigger.npy", live_tg)
+        if live_reg is not None:
+            np.save(episodes_dir / "regime_score_live.npy", live_reg)
+        if live_phs is not None:
+            np.save(episodes_dir / "session_phase.npy", live_phs)
+        if live_sz is not None:
+            np.save(episodes_dir / "trade_size.npy", live_sz)
+        if live_tp is not None:
+            np.save(episodes_dir / "tp_price.npy", live_tp)
+        if live_sp is not None:
+            np.save(episodes_dir / "stop_price_live.npy", live_sp)
+        if live_of is not None:
+            np.save(episodes_dir / "orderflow_score_live.npy", live_of)
+        if live_lat is not None:
+            np.save(episodes_dir / "fill_latency_ms.npy", live_lat)
+        if live_fam is not None:
+            np.save(episodes_dir / "zone_families_live.npy", live_fam)
+        if live_tnd is not None:
+            np.save(episodes_dir / "trend_context_live.npy", live_tnd)
 
     # Save merged core arrays
     np.save(episodes_dir / "observations.npy", merged_obs)
