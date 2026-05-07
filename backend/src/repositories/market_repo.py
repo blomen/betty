@@ -238,45 +238,42 @@ class MarketRepo:
         self.market_db.commit()
 
     def bulk_insert_candles(self, symbol: str, interval: str, bars: list) -> int:
-        """Insert bars from Databento backfill, skipping timestamps that already exist.
+        """Insert bars from Databento backfill, skipping rows that already exist.
 
-        bars: list of BarData objects with .timestamp, .open, .high, .low, .close, .volume
-        Returns number of rows inserted.
+        Uses INSERT ... ON CONFLICT DO NOTHING against uq_market_candle so two
+        concurrent backfills can't race the SELECT-then-INSERT window. The old
+        path queried existing timestamps then inserted the diff — if a second
+        writer landed between the SELECT and INSERT, both saw the same
+        "missing" set, the second hit the UNIQUE constraint and aborted its
+        whole transaction (rolling back any earlier progress). Returns the
+        number of rows actually inserted.
         """
         if not bars:
             return 0
-        start, end = bars[0].timestamp, bars[-1].timestamp
-        # Normalize existing timestamps to naive UTC for comparison
-        # (SQLite stores naive, Databento returns tz-aware UTC)
-        existing = {
-            row.ts.replace(tzinfo=None) if row.ts.tzinfo else row.ts
-            for row in self.market_db.query(MarketCandle.ts)
-            .filter(
-                MarketCandle.symbol == symbol,
-                MarketCandle.interval == interval,
-                MarketCandle.ts >= start,
-                MarketCandle.ts <= end,
-            )
-            .all()
-        }
-        new_rows = [
-            MarketCandle(
-                symbol=symbol,
-                interval=interval,
-                ts=b.timestamp,
-                o=float(b.open),
-                h=float(b.high),
-                l=float(b.low),
-                c=float(b.close),
-                v=int(b.volume),
-            )
+        rows = [
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "ts": b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp,
+                "o": float(b.open),
+                "h": float(b.high),
+                "l": float(b.low),
+                "c": float(b.close),
+                "v": int(b.volume),
+            }
             for b in bars
-            if (b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp) not in existing
         ]
-        if new_rows:
-            self.market_db.bulk_save_objects(new_rows)
-            self.market_db.commit()
-        return len(new_rows)
+        dialect = self.market_db.bind.dialect.name
+        if dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as _insert
+        elif dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as _insert
+        else:
+            raise NotImplementedError(f"bulk_insert_candles: unsupported dialect {dialect!r}")
+        stmt = _insert(MarketCandle).values(rows).on_conflict_do_nothing(index_elements=["symbol", "interval", "ts"])
+        result = self.market_db.execute(stmt)
+        self.market_db.commit()
+        return result.rowcount or 0
 
     # ---- MarketLevel ----
 
