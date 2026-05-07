@@ -2480,22 +2480,28 @@ def train(
     steps_per_epoch = max(1, agent.buffer.size // BATCH_SIZE)
     total_steps = epochs * steps_per_epoch
 
-    # Set up cosine annealing LR scheduler
+    # Set up cosine annealing LR scheduler — fresh per cycle. Sized to THIS
+    # cycle's epoch budget so warm-start cycles get a full cosine ramp instead
+    # of immediately pinning to eta_min.
     from torch.optim.lr_scheduler import CosineAnnealingLR
 
     scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=3e-5)
-    # Fast-forward scheduler if resuming
-    if start_epoch > 1:
-        for _ in range((start_epoch - 1) * steps_per_epoch):
-            scheduler.step()
+
+    # 2026-05-07: --epochs is now INCREMENTAL — number of epochs to train THIS
+    # cycle on top of the warm-start checkpoint. Was "absolute target", which
+    # silently froze the DQN: the daemon's `--epochs 30` plus a warm-start
+    # checkpoint at epoch 30 → start_epoch=31, range(31, 31) = empty, 0 epochs
+    # ran. Each 4h cycle deployed an "updated" model that hadn't actually
+    # consumed the new episodes. Incremental semantics keep training every
+    # cycle regardless of how deep the warm-start goes.
+    end_epoch = start_epoch + epochs - 1
 
     # Training loop with per-epoch val accuracy tracking + best-by-val checkpoint
-    remaining = epochs - start_epoch + 1
-    typer.echo(f"\nTraining for {remaining} epochs ({start_epoch}-{epochs}) x {steps_per_epoch} steps/epoch ...")
+    typer.echo(f"\nTraining for {epochs} epochs ({start_epoch}-{end_epoch}) x {steps_per_epoch} steps/epoch ...")
     typer.echo(f"LR: {scheduler.get_last_lr()[0]:.2e} -> 1e-5 cosine | Epsilon: {agent.epsilon:.2f} -> 0.05")
     best_val_acc = -1.0
     best_path = models_dir / f"dqn_{checkpoint}_best.pt"
-    for epoch in range(start_epoch, epochs + 1):
+    for epoch in range(start_epoch, end_epoch + 1):
         epoch_loss = 0.0
         for _step in range(steps_per_epoch):
             loss = agent.train_step()
@@ -2541,9 +2547,10 @@ def train(
     val_accuracy = correct / max(len(val_obs), 1)
     typer.echo(f"  Validation accuracy (CONT vs REV): {val_accuracy:.1%} ({correct}/{len(val_obs)})")
 
-    # Save model
+    # Save model — use end_epoch (cumulative across warm-starts) so the next
+    # cycle's `start_epoch = ckpt.epoch + 1` lands on the right offset.
     model_path = models_dir / f"dqn_{checkpoint}.pt"
-    agent.save(model_path, epoch=epochs)
+    agent.save(model_path, epoch=end_epoch)
     typer.echo(f"\nModel saved to: {model_path}")
 
     # Persist feature schema alongside model for compatibility checks.
