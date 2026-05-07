@@ -1819,7 +1819,19 @@ def ingest_live_trades() -> None:
         # Day 2 audit fix: also pull reasoning JSONB. Contains zone.families,
         # macro.regime_score, session_phase, trend_context per timeframe —
         # all valuable training signal currently being thrown away.
-        "       t.exit_reason, t.signal_trigger, t.reasoning "
+        "       t.exit_reason, t.signal_trigger, t.reasoning, "
+        # Day 3: execution + size + price labels.
+        # size: most trades are 1 contract, but multi-contract aggregations
+        #       (split-fill consolidations) need the right normalizer for
+        #       per-contract R math.
+        # tp/stop: explicit absolute prices for stop-distance + R:R analysis
+        #          beyond what stop_ticks alone gives.
+        # orderflow_score: broker-side OF at entry time; may differ from
+        #                  signal-time s.cont_p path.
+        # fill_latency_ms: execution-quality label — when latency is high,
+        #                  slippage tends to follow.
+        "       t.size AS trade_size, t.tp_price, t.stop_price AS trade_stop_price,"
+        "       t.orderflow_score AS trade_of, t.fill_latency_ms "
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
         "WHERE s.observation_b64 IS NOT NULL "
@@ -1900,6 +1912,12 @@ def ingest_live_trades() -> None:
     reg_list: list[float] = []  # macro.regime_score
     phs_list: list[int] = []  # session_phase int code
     tnd_list: list[np.ndarray] = []  # 3 ints: daily/weekly/monthly trend
+    # Day 3: execution + size + price labels
+    sz_list: list[int] = []  # trade size (contracts)
+    tp_list: list[float] = []  # absolute tp_price (0.0 if absent)
+    sp_list: list[float] = []  # absolute stop_price (0.0 if absent)
+    of_list: list[float] = []  # broker-side orderflow_score (0.0 if absent)
+    lat_list: list[float] = []  # fill_latency_ms (0.0 if absent)
     skipped_dim = 0
     skipped_recovery = 0
 
@@ -2116,6 +2134,12 @@ def ingest_live_trades() -> None:
         reg_list.append(np.float32(_encode_regime_score(reasoning_dict)))
         phs_list.append(_encode_phase(reasoning_dict))
         tnd_list.append(_encode_trend(reasoning_dict))
+        # Day 3: execution + size + price labels (0.0 when null/missing)
+        sz_list.append(int(getattr(r, "trade_size", None) or 1))
+        tp_list.append(np.float32(float(getattr(r, "tp_price", None) or 0.0)))
+        sp_list.append(np.float32(float(getattr(r, "trade_stop_price", None) or 0.0)))
+        of_list.append(np.float32(float(getattr(r, "trade_of", None) or 0.0)))
+        lat_list.append(np.float32(float(getattr(r, "fill_latency_ms", None) or 0.0)))
 
     if skipped_dim:
         typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
@@ -2161,6 +2185,12 @@ def ingest_live_trades() -> None:
     np.save(live_dir / f"reg_{chunk_id}.npy", np.array(reg_list, dtype=np.float32))
     np.save(live_dir / f"phs_{chunk_id}.npy", np.array(phs_list, dtype=np.int32))
     np.save(live_dir / f"tnd_{chunk_id}.npy", np.stack(tnd_list) if tnd_list else np.zeros((0, 3), dtype=np.int32))
+    # Day 3: execution + size + price labels
+    np.save(live_dir / f"sz_{chunk_id}.npy", np.array(sz_list, dtype=np.int32))
+    np.save(live_dir / f"tp_{chunk_id}.npy", np.array(tp_list, dtype=np.float32))
+    np.save(live_dir / f"sp_{chunk_id}.npy", np.array(sp_list, dtype=np.float32))
+    np.save(live_dir / f"of_{chunk_id}.npy", np.array(of_list, dtype=np.float32))
+    np.save(live_dir / f"lat_{chunk_id}.npy", np.array(lat_list, dtype=np.float32))
 
     # Update seen set — include filtered-out recovery rows so they don't
     # requeue forever if more come in (the SQL filter is by trade_id, not
@@ -2173,7 +2203,8 @@ def ingest_live_trades() -> None:
         f"Wrote chunk {chunk_id}: {len(obs_list)} live-trade examples "
         f"(realized rewards + Tier-1 enrichment: was_stop, peak_R, trail_count, "
         f"slippage_ticks, optimal_stop, exit_reason, signal_trigger; "
-        f"reasoning: families, regime_score, session_phase, trend_context). "
+        f"reasoning: families, regime_score, session_phase, trend_context; "
+        f"execution: size, tp_price, stop_price, orderflow_score, fill_latency). "
         f"Skipped {skipped_recovery} orphan_recovery row(s). "
         f"merge-live + train will pick them up."
     )
