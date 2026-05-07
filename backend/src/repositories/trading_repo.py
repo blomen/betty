@@ -1,6 +1,6 @@
 """Trading repository - data access for trading models."""
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ..db.models import DailyRoutine, Trade, TradeEvent, TradeReview, TradingAccount
 
@@ -36,17 +36,29 @@ class TradingRepo:
 
     # ---- Trades ----
 
-    def get_trade(self, trade_id: int) -> Trade | None:
-        return (
-            self.db.query(Trade)
-            .options(
-                joinedload(Trade.events),
-                joinedload(Trade.review),
+    def get_trade(self, trade_id: int, *, with_relationships: bool = False) -> Trade | None:
+        """Fetch a Trade by id.
+
+        By default returns just the Trade row — relationships lazy-load on
+        access. The 7 trading_service callers only mutate scalar columns and
+        never touch events/review/account on the returned object, so the
+        prior unconditional `joinedload(events)` produced a cartesian
+        fan-out (`trade × N events`) for every state transition.
+
+        Pass `with_relationships=True` for callers that serialize the trade
+        (e.g. the GET /api/trades/{id} route via `trade_dict`). That path
+        uses joinedload for the to-one relationships (account, review) and
+        selectinload for the to-many (events) — one extra round-trip per
+        relationship instead of multiplying rows.
+        """
+        q = self.db.query(Trade)
+        if with_relationships:
+            q = q.options(
                 joinedload(Trade.account),
+                joinedload(Trade.review),
+                selectinload(Trade.events),
             )
-            .filter(Trade.id == trade_id)
-            .first()
-        )
+        return q.filter(Trade.id == trade_id).first()
 
     def list_trades(
         self,

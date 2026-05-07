@@ -126,7 +126,9 @@ def get_unreviewed(svc: TradingService = Depends(_svc)):
 
 @router.get("/trades/{trade_id}")
 def get_trade(trade_id: int, svc: TradingService = Depends(_svc)):
-    trade = svc.repo.get_trade(trade_id)
+    # `trade_dict` reads t.account.name, t.events, t.review — request the
+    # eager load so the serialiser doesn't trigger 3 lazy round-trips.
+    trade = svc.repo.get_trade(trade_id, with_relationships=True)
     if not trade:
         return {"error": "Trade not found"}
     return svc.trade_dict(trade)
