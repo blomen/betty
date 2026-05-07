@@ -143,6 +143,17 @@
       transparency = 50;
     }
 
+    // Hide low-strength single-family zones — see page.js for rationale.
+    // Kept in sync between extension and userscript so the chart looks
+    // identical regardless of which renderer is active. Server still emits
+    // every zone; the DQN observation is unaffected. The safeRemove +
+    // safeRemovePrefix at the top of drawZone already cleared any prior
+    // shape for this key, so we just return without redrawing.
+    const ZONE_PAINT_MIN_STRENGTH = 0.5;
+    if (!hasSwing && Number(p.strength) < ZONE_PAINT_MIN_STRENGTH) {
+      return false;
+    }
+
     try {
       const id = chart.createMultipointShape(
         [
