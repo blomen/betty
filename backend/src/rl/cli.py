@@ -1816,7 +1816,10 @@ def ingest_live_trades() -> None:
         # slip kill) and filter recovery rows that aren't real model
         # decisions (orphan_recovery_winner/loss are SQL-inserted reconciliation
         # rows when bookkeeping bugs leave a broker fill unaccounted for).
-        "       t.exit_reason, t.signal_trigger "
+        # Day 2 audit fix: also pull reasoning JSONB. Contains zone.families,
+        # macro.regime_score, session_phase, trend_context per timeframe —
+        # all valuable training signal currently being thrown away.
+        "       t.exit_reason, t.signal_trigger, t.reasoning "
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
         "WHERE s.observation_b64 IS NOT NULL "
@@ -1892,6 +1895,11 @@ def ingest_live_trades() -> None:
     placed_st_list: list[float] = []
     er_list: list[int] = []  # exit_reason int code (Day 1 audit fix)
     tg_list: list[int] = []  # signal_trigger int code
+    # Day 2 audit fix: reasoning JSONB → structured arrays
+    fam_list: list[np.ndarray] = []  # multi-hot zone families (13 dims)
+    reg_list: list[float] = []  # macro.regime_score
+    phs_list: list[int] = []  # session_phase int code
+    tnd_list: list[np.ndarray] = []  # 3 ints: daily/weekly/monthly trend
     skipped_dim = 0
     skipped_recovery = 0
 
@@ -1933,6 +1941,82 @@ def ingest_live_trades() -> None:
         if not s:
             return 99
         return _SIGNAL_TRIGGER_CODES.get(s.lower().strip(), 99)
+
+    # Day 2: zone family multi-hot. The 13 distinct families in
+    # zone_builder._LEVEL_FAMILY mapped to fixed indices.
+    _ZONE_FAMILY_INDEX = {
+        "daily_vp": 0,
+        "weekly_vp": 1,
+        "monthly_vp": 2,
+        "vwap_band": 3,
+        "prior_session": 4,
+        "tokyo": 5,
+        "nyib": 6,
+        "tpo": 7,
+        "naked_poc": 8,
+        "daily_swing": 9,
+        "weekly_swing": 10,
+        "monthly_swing": 11,
+        "fvg": 12,
+        "order_block": 13,
+    }
+    _N_FAMILIES = 14
+
+    def _encode_families(reasoning: dict | None) -> np.ndarray:
+        out = np.zeros(_N_FAMILIES, dtype=np.float32)
+        if not isinstance(reasoning, dict):
+            return out
+        zone = reasoning.get("zone") or {}
+        families = zone.get("families") or []
+        for fam in families:
+            idx = _ZONE_FAMILY_INDEX.get(str(fam).lower().strip())
+            if idx is not None:
+                out[idx] = 1.0
+        return out
+
+    # Six session_phase buckets per _classify_session_phase in level_monitor.
+    _SESSION_PHASE_CODES = {
+        "tokyo": 0,
+        "eu": 1,
+        "rth_open": 2,
+        "rth_mid": 3,
+        "rth_close": 4,
+        "post_close": 5,
+    }
+
+    def _encode_phase(reasoning: dict | None) -> int:
+        if not isinstance(reasoning, dict):
+            return 99
+        return _SESSION_PHASE_CODES.get(str(reasoning.get("session_phase") or "").lower().strip(), 99)
+
+    def _encode_regime_score(reasoning: dict | None) -> float:
+        if not isinstance(reasoning, dict):
+            return 0.0
+        macro = reasoning.get("macro") or {}
+        try:
+            return float(macro.get("regime_score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Trend per timeframe: ranging=0, trending_up=1, trending_down=2,
+    # reversing_up=3, reversing_down=4. Unknown=99.
+    _TREND_CODES = {
+        "ranging": 0,
+        "trending_up": 1,
+        "trending_down": 2,
+        "reversing_up": 3,
+        "reversing_down": 4,
+    }
+
+    def _encode_trend(reasoning: dict | None) -> np.ndarray:
+        out = np.full(3, 99, dtype=np.int32)
+        if not isinstance(reasoning, dict):
+            return out
+        tc = reasoning.get("trend_context") or {}
+        for i, key in enumerate(("daily", "weekly", "monthly")):
+            v = str(tc.get(key) or "").lower().strip()
+            out[i] = _TREND_CODES.get(v, 99)
+        return out
 
     for r in new_rows:
         # 2026-05-07: filter out orphan_recovery rows. These were inserted
@@ -2019,6 +2103,19 @@ def ingest_live_trades() -> None:
         placed_st_list.append(np.float32(placed_stop_ticks))
         er_list.append(_encode_exit_reason(getattr(r, "exit_reason", None)))
         tg_list.append(_encode_signal_trigger(getattr(r, "signal_trigger", None)))
+        # Day 2: structured features from reasoning JSONB
+        reasoning_dict = getattr(r, "reasoning", None)
+        if isinstance(reasoning_dict, str):
+            try:
+                import json as _json
+
+                reasoning_dict = _json.loads(reasoning_dict)
+            except Exception:
+                reasoning_dict = None
+        fam_list.append(_encode_families(reasoning_dict))
+        reg_list.append(np.float32(_encode_regime_score(reasoning_dict)))
+        phs_list.append(_encode_phase(reasoning_dict))
+        tnd_list.append(_encode_trend(reasoning_dict))
 
     if skipped_dim:
         typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
@@ -2056,6 +2153,14 @@ def ingest_live_trades() -> None:
     # opt in to using them.
     np.save(live_dir / f"er_{chunk_id}.npy", np.array(er_list, dtype=np.int32))
     np.save(live_dir / f"tg_{chunk_id}.npy", np.array(tg_list, dtype=np.int32))
+    # Day 2: reasoning JSONB → structured arrays
+    np.save(
+        live_dir / f"fam_{chunk_id}.npy",
+        np.stack(fam_list) if fam_list else np.zeros((0, _N_FAMILIES), dtype=np.float32),
+    )
+    np.save(live_dir / f"reg_{chunk_id}.npy", np.array(reg_list, dtype=np.float32))
+    np.save(live_dir / f"phs_{chunk_id}.npy", np.array(phs_list, dtype=np.int32))
+    np.save(live_dir / f"tnd_{chunk_id}.npy", np.stack(tnd_list) if tnd_list else np.zeros((0, 3), dtype=np.int32))
 
     # Update seen set — include filtered-out recovery rows so they don't
     # requeue forever if more come in (the SQL filter is by trade_id, not
@@ -2067,7 +2172,8 @@ def ingest_live_trades() -> None:
     typer.echo(
         f"Wrote chunk {chunk_id}: {len(obs_list)} live-trade examples "
         f"(realized rewards + Tier-1 enrichment: was_stop, peak_R, trail_count, "
-        f"slippage_ticks, optimal_stop, exit_reason, signal_trigger). "
+        f"slippage_ticks, optimal_stop, exit_reason, signal_trigger; "
+        f"reasoning: families, regime_score, session_phase, trend_context). "
         f"Skipped {skipped_recovery} orphan_recovery row(s). "
         f"merge-live + train will pick them up."
     )
