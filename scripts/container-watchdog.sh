@@ -56,6 +56,19 @@ for line in sys.stdin:
         exit 0
     fi
 
+    # 2026-05-07: trust Docker's healthcheck. If Docker says `healthy` but
+    # our curl timed out, that's event-loop starvation under load — typically
+    # the RL pipeline's CPU-bound steps (label-zone-outcomes, tick replay,
+    # DQN training) hogging the loop for 30+ seconds at a time. Restarting
+    # mid-pipeline killed every cycle: 5 attempts in 21min today, none
+    # reaching step 6. Docker's healthcheck has its own grace + retry
+    # built in; if IT says healthy, the container is fine and the loop
+    # will recover when the heavy step finishes.
+    if [ "$health" = "healthy" ]; then
+        echo "$LOG_PREFIX Curl timed out but Docker reports healthy — assuming event-loop starvation under load (RL pipeline?), skipping restart"
+        exit 0
+    fi
+
     echo "$LOG_PREFIX WARNING: Backend running but unhealthy (health: $health)"
     echo "$LOG_PREFIX Restarting backend..."
     docker compose restart backend
