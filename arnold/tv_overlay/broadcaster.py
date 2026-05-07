@@ -422,12 +422,56 @@ class OverlayBroadcaster:
             self._has_position = True
 
     async def loop(self, *, interval_s: float = 2.0) -> None:
+        import os
+
         from src.stocks.dashboard import _state as dash_state
+
+        # Clip zones to a price window around the live tick before painting.
+        # The model observation pulls from level_monitor._levels, NOT from
+        # dash_state["zones"], so this is purely cosmetic — far-away naked
+        # POCs / weekly swings still flow into the DQN. Default 1000 points
+        # excludes 25-27k zones (3000+ pts from a 28.6k NQ) without clipping
+        # any structurally relevant level (session ATR ~150-300pt, prior week
+        # range ~600pt). Set to 0 to disable.
+        try:
+            zone_window = float(os.environ.get("TV_OVERLAY_ZONE_PRICE_WINDOW", "1000"))
+        except ValueError:
+            zone_window = 1000.0
 
         try:
             while True:
                 try:
                     zones: list[dict] = dash_state.get("zones") or []
+                    # Clip to ±zone_window around the live price. Without
+                    # this, 16+ off-chart naked-POC zones (25-27k range when
+                    # NQ is at 28.6k) bloat the TV object panel and slow
+                    # chart redraws. Purely cosmetic — model observation is
+                    # built from level_monitor._levels server-side, not
+                    # from dash_state["zones"].
+                    #
+                    # Price source priority: most recent broker trade's
+                    # entry_price (always present once trading has started).
+                    # Falls back to median of zone centroids so a fresh
+                    # process before any trade still gets a sensible clip.
+                    # `dash_state["ticks"]` is empty when STOCKS_AUTONOMOUS=true
+                    # (server keeps ticks), so we don't read it here.
+                    if zone_window > 0 and zones:
+                        last_price: float | None = None
+                        trades_for_price = dash_state.get("trades") or []
+                        try:
+                            if trades_for_price:
+                                last_price = float(trades_for_price[0].get("entry_price") or 0) or None
+                        except (AttributeError, TypeError, ValueError):
+                            last_price = None
+                        if last_price is None:
+                            try:
+                                centers = sorted(float(z.get("price") or 0) for z in zones)
+                                last_price = centers[len(centers) // 2] if centers else None
+                            except (TypeError, ValueError):
+                                last_price = None
+                        if last_price is not None and last_price > 0:
+                            lo, hi = last_price - zone_window, last_price + zone_window
+                            zones = [z for z in zones if lo <= float(z.get("price") or 0) <= hi]
                     positions: list[dict] = dash_state.get("positions") or []
                     adapter_obj = dash_state.get("adapter")
                     model_status: dict[str, Any] = {}
