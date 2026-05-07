@@ -1,4 +1,5 @@
 """Test that new ML-related ORM models create valid tables."""
+
 from sqlalchemy import inspect
 
 
@@ -38,8 +39,22 @@ def test_ml_model_registry_table_exists(db_session):
     assert "ml_model_registry" in inspector.get_table_names()
 
 
+def test_level_touch_outcomes_has_indexes(db_session):
+    inspector = inspect(db_session.bind)
+    idx = {i["name"] for i in inspector.get_indexes("level_touch_outcomes")}
+    assert "ix_level_touch_outcomes_symbol_ts" in idx
+    assert "ix_level_touch_outcomes_touch_ts" in idx
+
+
+def test_level_touch_features_has_fk_index(db_session):
+    inspector = inspect(db_session.bind)
+    idx = {i["name"] for i in inspector.get_indexes("level_touch_features")}
+    assert "ix_level_touch_features_outcome_id" in idx
+
+
 def test_ml_feature_insert_and_read(db_session):
     from src.db.models import MlFeature
+
     row = MlFeature(
         domain="betting",
         source_id="opp-123",
@@ -58,6 +73,7 @@ def test_ml_feature_insert_and_read(db_session):
 
 def test_candle_snapshot_insert(db_session):
     from src.db.models import CandleSnapshot
+
     row = CandleSnapshot(
         signal_id=None,
         candles=[{"ts": "2026-03-12T15:30:00Z", "delta": 380, "volume": 4250}],
@@ -71,7 +87,8 @@ def test_candle_snapshot_insert(db_session):
 
 
 def test_opportunity_ml_columns(db_session):
-    from src.db.models import Opportunity, Event, Provider
+    from src.db.models import Event, Opportunity, Provider
+
     db_session.add(Event(id="evt-1", sport="football", league="Test", home_team="X", away_team="Y"))
     db_session.add(Provider(id="betsson", name="Betsson"))
     db_session.flush()

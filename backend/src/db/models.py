@@ -27,6 +27,7 @@ def _utcnow():
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -2218,6 +2219,11 @@ class LevelTouchOutcome(Base):
     prediction = Column(Text)
     prediction_confidence = Column(Float)
 
+    __table_args__ = (
+        Index("ix_level_touch_outcomes_symbol_ts", "symbol", "touch_ts"),
+        Index("ix_level_touch_outcomes_touch_ts", "touch_ts"),
+    )
+
 
 class LevelTouchFeature(Base):
     __tablename__ = "level_touch_features"
@@ -2227,6 +2233,8 @@ class LevelTouchFeature(Base):
     features = Column(Text, nullable=False)
     feature_version = Column(Integer, default=1)
     created_at = Column(Float)
+
+    __table_args__ = (Index("ix_level_touch_features_outcome_id", "touch_outcome_id"),)
 
 
 def _run_pg_migrations(engine) -> None:
@@ -2274,25 +2282,65 @@ def _run_pg_migrations(engine) -> None:
         # the binary STOP-vs-not but the user wants chart-side visibility into
         # which non-stop pathway closed the trade.
         ("broker_trades", "exit_reason", "VARCHAR"),
+        # 2026-05-07 — TopstepX broker order ids for the entry + closing
+        # legs. Stored as the unambiguous join key against /api/Trade/search
+        # so backfill / realignment scripts can pin a broker_trade row to
+        # exact broker fill records (price+side+size matching is too
+        # ambiguous when trades cluster). NULL on legacy rows.
+        ("broker_trades", "entry_order_id", "BIGINT"),
+        ("broker_trades", "exit_order_id", "BIGINT"),
     ]
     with engine.begin() as conn:
+        # Each ALTER runs inside its own SAVEPOINT so a single failure
+        # doesn't put the outer transaction into a broken state. Without
+        # this, one bad ALTER would silently abort every subsequent
+        # statement with Postgres "current transaction is aborted,
+        # commands ignored until end of transaction block" — the failure
+        # mode that ate the realign_broker_trade_timestamps script's
+        # session init on 2026-05-07.
         for table, col, col_type in additions:
+            sp = conn.begin_nested()
             try:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
+                sp.commit()
             except Exception:
+                sp.rollback()
                 logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
 
         # Index for provider_bet_id lookups during settlement reconciliation
+        sp = conn.begin_nested()
         try:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_bets_provider_bet_id ON bets(provider_bet_id)"))
+            sp.commit()
         except Exception:
+            sp.rollback()
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
 
         # Index for per-profile broker-trades lookups (stats + bankroll filter)
+        sp = conn.begin_nested()
         try:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_broker_trades_profile ON broker_trades(profile_id)"))
+            sp.commit()
         except Exception:
+            sp.rollback()
             logger.warning("pg migration: broker_trades.profile_id index failed", exc_info=True)
+
+        # 2026-05-07 — level_touch_outcomes/features had zero indexes despite
+        # symbol/touch_ts filters, ORDER BY touch_ts, and the FK join on
+        # touch_outcome_id. Audit item #14. Sequential scans on a growing
+        # training table are O(n) per query.
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS ix_level_touch_outcomes_symbol_ts ON level_touch_outcomes(symbol, touch_ts)",
+            "CREATE INDEX IF NOT EXISTS ix_level_touch_outcomes_touch_ts ON level_touch_outcomes(touch_ts)",
+            "CREATE INDEX IF NOT EXISTS ix_level_touch_features_outcome_id ON level_touch_features(touch_outcome_id)",
+        ):
+            sp = conn.begin_nested()
+            try:
+                conn.execute(text(idx_sql))
+                sp.commit()
+            except Exception:
+                sp.rollback()
+                logger.warning("pg migration: %s failed", idx_sql, exc_info=True)
 
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(
@@ -2480,6 +2528,13 @@ class BrokerTrade(Base):
     reasoning = Column(JSON, nullable=True)
 
     closed_at = Column(DateTime, nullable=True)
+
+    # TopstepX broker order ids for the entry leg and the closing leg.
+    # Stored so the backfill / realignment script can join unambiguously
+    # against /api/Trade/search records (price+side+size matching is too
+    # ambiguous when trades cluster). NULL on legacy rows pre-2026-05-07.
+    entry_order_id = Column(BigInteger, nullable=True, index=True)
+    exit_order_id = Column(BigInteger, nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_broker_trades_session", "session_date"),
