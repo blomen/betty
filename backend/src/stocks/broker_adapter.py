@@ -11,6 +11,7 @@ hold, tighten, or exit.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -250,6 +251,15 @@ class TopstepXBrokerAdapter:
         # persist so the next stop-hit (was_stop path) doesn't inherit a
         # stale reason. None → was_stop=true is the only known label.
         self._last_flatten_reason: str | None = None
+        # 2026-05-07: serialize on_signal handling. Two opposite-side signals
+        # (enter_long + enter_short) can fire on the same tick when zones
+        # cluster on both sides; without this lock, both pass the
+        # `is_flat and _pending_trade is None` guard and both call
+        # _execute_entry → both place market+stop orders → stop A fires
+        # before entry A confirms → "out-of-order exit fill" → tracker stuck
+        # in side=X / entry=0.00 corruption. Lock blocks the second signal
+        # until the first either commits _pending_trade or rejects.
+        self._signal_lock: asyncio.Lock | None = None
 
     def update_mark_and_check_be_lock(self, price: float) -> None:
         """Per-tick: update peak_R AND fire BE-lock at +2R if not yet locked.
@@ -368,6 +378,16 @@ class TopstepXBrokerAdapter:
         action = signal.get("action", "")
         if action.lower() in ("skip", "hold", ""):
             return None
+
+        # Lazy-init the asyncio.Lock so it binds to the running event loop
+        # (the adapter is constructed in module init, before the loop exists).
+        if self._signal_lock is None:
+            self._signal_lock = asyncio.Lock()
+        async with self._signal_lock:
+            return await self._on_signal_locked(signal)
+
+    async def _on_signal_locked(self, signal: dict) -> dict | None:
+        action = signal.get("action", "")
 
         if self._halted:
             log.warning("Signal rejected — halted: %s", self._halt_reason)
