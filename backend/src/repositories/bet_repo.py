@@ -1,5 +1,6 @@
 """Bet repository - bet data access."""
 
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ..db.models import Bet
@@ -23,6 +24,48 @@ class BetRepo:
                 Bet.result != "pending",
                 Bet.profile_id == profile_id,
             )
+            .all()
+        )
+
+    def get_settled_aggregates(self, profile_id: int) -> list:
+        """Aggregate settled bets by (provider_id, currency, result, is_bonus).
+
+        Used by `BankrollService.get_stats` to avoid materialising every
+        settled bet just to recompute totals/counts. The (provider_id,
+        currency) tuple is the natural grain for currency-conversion since
+        `get_exchange_rate(provider_id)` returns the same rate for all bets
+        at one provider.
+
+        Returns Row objects with attributes:
+        - provider_id, currency, result, is_bonus (group keys)
+        - cnt: COUNT(id)
+        - sum_stake, sum_payout: SUM of money columns
+        - clv_count: COUNT(clv_pct)  (non-null)
+        - clv_sum: SUM(clv_pct)
+        - clv_positive_count: COUNT(WHERE clv_pct > 0)
+
+        At ~16 providers × ~3 currencies × 3 results × 2 bonus_flags this
+        returns at most ~288 rows regardless of bet history depth, vs the
+        prior approach which loaded every settled bet (thousands+).
+        """
+        return (
+            self.db.query(
+                Bet.provider_id.label("provider_id"),
+                Bet.currency.label("currency"),
+                Bet.result.label("result"),
+                Bet.is_bonus.label("is_bonus"),
+                func.count(Bet.id).label("cnt"),
+                func.coalesce(func.sum(Bet.stake), 0.0).label("sum_stake"),
+                func.coalesce(func.sum(Bet.payout), 0.0).label("sum_payout"),
+                func.count(Bet.clv_pct).label("clv_count"),
+                func.coalesce(func.sum(Bet.clv_pct), 0.0).label("clv_sum"),
+                func.coalesce(func.sum(case((Bet.clv_pct > 0, 1), else_=0)), 0).label("clv_positive_count"),
+            )
+            .filter(
+                Bet.result != "pending",
+                Bet.profile_id == profile_id,
+            )
+            .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus)
             .all()
         )
 

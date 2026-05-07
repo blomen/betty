@@ -85,37 +85,63 @@ class BankrollService:
         from ..config import get_exchange_rate
 
         profile = self.profile_repo.get_active()
-        bets = self.bet_repo.get_settled(profile.id)
+        # Replaced the prior `bet_repo.get_settled(profile.id)` full scan +
+        # 5-pass Python iteration with a SQL GROUP BY aggregate keyed on
+        # (provider_id, currency, result, is_bonus). The (provider_id,
+        # currency) grain matches `get_exchange_rate` so currency conversion
+        # applies cleanly per group.
+        rows = self.bet_repo.get_settled_aggregates(profile.id)
 
-        def to_sek(amount: float, bet) -> float:
-            """Convert bet amount to SEK using provider exchange rate."""
-            currency = getattr(bet, "currency", None) or "SEK"
-            if currency == "SEK":
+        def to_sek(amount: float, provider_id: str, currency: str | None) -> float:
+            """Convert per-group amount to SEK using provider exchange rate."""
+            curr = currency or "SEK"
+            if curr == "SEK":
                 return amount
-            return amount * get_exchange_rate(bet.provider_id)
+            return amount * get_exchange_rate(provider_id)
+
+        def row_profit(row) -> float:
+            """Mirror Bet.profit semantics, applied to per-group sums.
+
+            Bet.profit:
+              won + bonus       -> payout              (stake was free)
+              won + not_bonus   -> payout - stake
+              lost + not_bonus  -> -stake
+              lost + bonus      -> 0                   (free bets don't lose stake)
+              void              -> 0
+            """
+            if row.result == "won":
+                return row.sum_payout - (0.0 if row.is_bonus else row.sum_stake)
+            elif row.result == "lost":
+                return 0.0 if row.is_bonus else -row.sum_stake
+            return 0.0
 
         total_deposited = profile.total_deposited or 0.0
         total_withdrawn = profile.total_withdrawn or 0.0
         net_deposited = total_deposited - total_withdrawn
+
         # Only count real-money bets for profit/ROI — bonus capital is already
         # reflected in the bankroll total, so we don't double-count it as profit.
-        regular_bets = [b for b in bets if not b.is_bonus]
-        bet_profit = sum(to_sek(b.profit, b) for b in regular_bets)
-        total_staked = sum(to_sek(b.stake, b) for b in regular_bets)
-        win_count = len([b for b in regular_bets if b.result == "won"])
-        loss_count = len([b for b in regular_bets if b.result == "lost"])
-        void_count = len([b for b in regular_bets if b.result == "void"])
+        real_rows = [r for r in rows if not r.is_bonus]
+
+        bet_profit = sum(to_sek(row_profit(r), r.provider_id, r.currency) for r in real_rows)
+        total_staked = sum(to_sek(r.sum_stake, r.provider_id, r.currency) for r in real_rows)
+
+        regular_count = sum(r.cnt for r in real_rows)
+        win_count = sum(r.cnt for r in real_rows if r.result == "won")
+        loss_count = sum(r.cnt for r in real_rows if r.result == "lost")
+        void_count = sum(r.cnt for r in real_rows if r.result == "void")
 
         # CLV metrics (regular bets only)
-        clv_values = [b.clv_pct for b in regular_bets if b.clv_pct is not None]
-        clv_count = len(clv_values)
-        avg_clv = round(sum(clv_values) / clv_count, 2) if clv_count > 0 else 0
-        clv_positive_pct = round(len([v for v in clv_values if v > 0]) / clv_count * 100, 1) if clv_count > 0 else 0
+        clv_count = sum(r.clv_count for r in real_rows)
+        clv_sum_total = sum((r.clv_sum or 0.0) for r in real_rows)
+        clv_pos_count = sum(r.clv_positive_count for r in real_rows)
+        avg_clv = round(clv_sum_total / clv_count, 2) if clv_count > 0 else 0
+        clv_positive_pct = round(clv_pos_count / clv_count * 100, 1) if clv_count > 0 else 0
 
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
-            "total_bets": len(regular_bets),
+            "total_bets": regular_count,
             "wins": win_count,
             "losses": loss_count,
             "voids": void_count,
@@ -128,7 +154,7 @@ class BankrollService:
             "freebet_profit": 0,
             "bonus_profit": 0,
             "roi_pct": round(bet_profit / total_staked * 100, 2) if total_staked > 0 else 0,
-            "win_rate": round(win_count / len(regular_bets) * 100, 2) if len(regular_bets) > 0 else 0,
+            "win_rate": round(win_count / regular_count * 100, 2) if regular_count > 0 else 0,
             "avg_clv": avg_clv,
             "clv_positive_pct": clv_positive_pct,
             "clv_count": clv_count,
@@ -155,11 +181,7 @@ class BankrollService:
         balances = self._load_balances_map(profile.id)
 
         # Single query: all pending bets for the profile, grouped in Python
-        pending_rows = (
-            self.db.query(Bet)
-            .filter(Bet.profile_id == profile.id, Bet.result == "pending")
-            .all()
-        )
+        pending_rows = self.db.query(Bet).filter(Bet.profile_id == profile.id, Bet.result == "pending").all()
         pending_by_provider: dict[str, list] = {}
         for b in pending_rows:
             pending_by_provider.setdefault(b.provider_id, []).append(b)
