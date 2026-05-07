@@ -1810,7 +1810,13 @@ def ingest_live_trades() -> None:
         "       s.observation_b64, s.observation_dim, s.stop_ticks AS placed_stop_ticks,"
         "       t.id AS tid, t.pnl_dollars, t.pnl_r, t.exit_price, t.entry_price,"
         "       t.was_stop, t.trail_count, t.slippage_ticks, t.stop_ticks AS trade_stop_ticks,"
-        "       t.ts AS trade_ts, t.closed_at, t.side AS trade_side "
+        "       t.ts AS trade_ts, t.closed_at, t.side AS trade_side, "
+        # 2026-05-07: pull exit_reason + signal_trigger so the trainer can
+        # distinguish how a trade closed (stop vs reversal-signal vs adverse-
+        # slip kill) and filter recovery rows that aren't real model
+        # decisions (orphan_recovery_winner/loss are SQL-inserted reconciliation
+        # rows when bookkeeping bugs leave a broker fill unaccounted for).
+        "       t.exit_reason, t.signal_trigger "
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
         "WHERE s.observation_b64 IS NOT NULL "
@@ -1884,9 +1890,60 @@ def ingest_live_trades() -> None:
     tc_list: list[int] = []  # trail_count
     sl_list: list[float] = []  # slippage_ticks
     placed_st_list: list[float] = []
+    er_list: list[int] = []  # exit_reason int code (Day 1 audit fix)
+    tg_list: list[int] = []  # signal_trigger int code
     skipped_dim = 0
+    skipped_recovery = 0
+
+    # 2026-05-07: encode exit_reason + signal_trigger as int codes so the
+    # trainer can use them as auxiliary labels alongside the realized R.
+    # A row with exit_reason=STOP is a fundamentally different training
+    # signal than one that exited via REVERSAL_SIGNALS even when both have
+    # R≈-1; the trainer should be able to distinguish "got stopped on
+    # noise" from "model correctly faded the level."
+    _EXIT_REASON_CODES = {
+        "SIGNAL": 0,
+        "STOP": 1,
+        "REVERSAL_SIGNALS": 2,
+        "FLIP_ON_REVERSAL": 3,
+        "MANUAL": 4,
+        "EOD_FLATTEN": 5,
+        "ADVERSE_SLIP_KILL": 6,
+        "SIZE_MISMATCH_RECOVERY": 7,
+        "ORPHAN_POSITION": 8,
+        "EARLY_EXIT_LOCK": 9,
+        "MANUAL_RECOVER": 10,
+    }
+    _SIGNAL_TRIGGER_CODES = {
+        "zone_entry": 0,
+        "orphan_recovery_winner": 1,
+        "orphan_recovery_loss": 2,
+        "orphan_recovery": 3,  # generic
+        "recovered": 4,
+    }
+
+    def _encode_exit_reason(s: str | None) -> int:
+        if not s:
+            return 99
+        # Strip trail-suffix annotations like "STOP/TRAIL2"
+        base = s.split("/")[0].upper().strip()
+        return _EXIT_REASON_CODES.get(base, 99)
+
+    def _encode_signal_trigger(s: str | None) -> int:
+        if not s:
+            return 99
+        return _SIGNAL_TRIGGER_CODES.get(s.lower().strip(), 99)
 
     for r in new_rows:
+        # 2026-05-07: filter out orphan_recovery rows. These were inserted
+        # via SQL when a broker fill was missed by on_stream_fill — they
+        # represent reconciliation, not real model decisions. The trainer
+        # would learn from them as if they were normal entries, which
+        # corrupts calibration.
+        if r.signal_trigger and "orphan_recovery" in str(r.signal_trigger).lower():
+            skipped_recovery += 1
+            continue
+
         try:
             arr = np.frombuffer(base64.b64decode(r.observation_b64), dtype=np.float32)
             if r.observation_dim and r.observation_dim > 0 and arr.size != r.observation_dim:
@@ -1960,6 +2017,8 @@ def ingest_live_trades() -> None:
         tc_list.append(int(r.trail_count or 0))
         sl_list.append(np.float32(float(r.slippage_ticks or 0.0)))
         placed_st_list.append(np.float32(placed_stop_ticks))
+        er_list.append(_encode_exit_reason(getattr(r, "exit_reason", None)))
+        tg_list.append(_encode_signal_trigger(getattr(r, "signal_trigger", None)))
 
     if skipped_dim:
         typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
@@ -1989,8 +2048,18 @@ def ingest_live_trades() -> None:
     np.save(live_dir / f"tc_{chunk_id}.npy", np.array(tc_list, dtype=np.int32))
     np.save(live_dir / f"sl_{chunk_id}.npy", np.array(sl_list, dtype=np.float32))
     np.save(live_dir / f"placed_st_{chunk_id}.npy", np.array(placed_st_list, dtype=np.float32))
+    # 2026-05-07: exit_reason + signal_trigger as auxiliary training labels.
+    # Trainer can use these to weight loss differently per outcome class
+    # (e.g. STOP exits get full -1R signal, ADVERSE_SLIP_KILL gets reduced
+    # weight because the kill was a safety mechanism not a strategy
+    # decision). For now we just persist them; the next training step can
+    # opt in to using them.
+    np.save(live_dir / f"er_{chunk_id}.npy", np.array(er_list, dtype=np.int32))
+    np.save(live_dir / f"tg_{chunk_id}.npy", np.array(tg_list, dtype=np.int32))
 
-    # Update seen set
+    # Update seen set — include filtered-out recovery rows so they don't
+    # requeue forever if more come in (the SQL filter is by trade_id, not
+    # by signal_trigger).
     seen.update(r.tid for r in new_rows)
     with seen_path.open("w") as f:
         f.write(" ".join(str(x) for x in sorted(seen)))
@@ -1998,7 +2067,9 @@ def ingest_live_trades() -> None:
     typer.echo(
         f"Wrote chunk {chunk_id}: {len(obs_list)} live-trade examples "
         f"(realized rewards + Tier-1 enrichment: was_stop, peak_R, trail_count, "
-        f"slippage_ticks, optimal_stop). merge-live + train will pick them up."
+        f"slippage_ticks, optimal_stop, exit_reason, signal_trigger). "
+        f"Skipped {skipped_recovery} orphan_recovery row(s). "
+        f"merge-live + train will pick them up."
     )
 
 
