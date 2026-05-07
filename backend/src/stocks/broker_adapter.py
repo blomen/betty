@@ -660,8 +660,37 @@ class TopstepXBrokerAdapter:
 
         trades = resp.get("trades") if isinstance(resp, dict) else None
         if not trades:
-            log.warning("recovery (%s): no trade records returned from Trade/search", reason)
-            return None
+            # 2026-05-07: stuck-tracker rescue. Without this branch the
+            # reconcile loop loops forever — every 60s it sees broker=0
+            # local=1, halts, calls flatten → here Trade/search comes back
+            # empty, recovery aborts, tracker still says short@28912 →
+            # next reconcile, repeat. Today's incident: stuck at peak_R=130
+            # (BE-locked stop made risk_unit ~0) for 8+ minutes, all
+            # signals rejected due to halt.
+            #
+            # Broker is flat (already verified above) but Trade/search has
+            # nothing — we missed the close fill and cannot reconstruct.
+            # Reset tracker to flat WITHOUT calling on_exit (which would
+            # compute huge phantom P&L from entry_price - 0). Lost trade
+            # row is unrecoverable; staying halted is strictly worse.
+            log.warning(
+                "recovery (%s): no trade records returned from Trade/search — "
+                "force-clearing tracker (side=%s entry=%.2f); lost trade row unrecoverable",
+                reason,
+                self.tracker.side,
+                self.tracker.entry_price or 0.0,
+            )
+            self.tracker.side = None
+            self.tracker.entry_price = 0.0
+            self.tracker.stop_price = 0.0
+            self.tracker.size = 0
+            self.tracker.entry_order_id = None
+            self.tracker.stop_order_id = None
+            self.tracker.peak_R = 0.0
+            self.tracker.locked_half_R = False
+            self.tracker.locked_BE = False
+            self._set_pending_trade(None)
+            return {"reconciled": True, "wrote_trade_row": False, "reason": "no_trade_records"}
 
         entry_order_id = self.tracker.entry_order_id or pt.get("entry_order_id")
         exit_side = 1 if side == "long" else 0
