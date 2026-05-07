@@ -255,6 +255,8 @@ def _persist_broker_trade_direct(payload: dict) -> None:
                     reasoning=p.get("reasoning") if isinstance(p.get("reasoning"), dict) else None,
                     closed_at=closed_at,
                     exit_reason=p.get("exit_reason"),
+                    entry_order_id=p.get("entry_order_id"),
+                    exit_order_id=p.get("exit_order_id"),
                 )
                 db.add(row)
                 db.commit()

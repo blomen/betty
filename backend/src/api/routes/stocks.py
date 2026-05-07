@@ -522,6 +522,8 @@ def list_broker_trades(
             "signal_confidence": r.signal_confidence,
             "signal_zone": r.signal_zone,
             "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+            "entry_order_id": r.entry_order_id,
+            "exit_order_id": r.exit_order_id,
         }
 
     return {"trades": [_row_dict(r) for r in rows], "count": len(rows)}
