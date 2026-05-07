@@ -790,7 +790,11 @@ class TopstepXBrokerAdapter:
         now_utc = datetime.now(timezone.utc)
         _log_broker_trade(
             session_pnl=round(self.tracker.session_pnl, 2),
-            ts=pt.get("ts") or entry_ts or now_utc,
+            # Prefer entry_fill_ts (actual broker fill) over pt["ts"]
+            # (signal/submit moment). entry_ts (Trade/search authoritative
+            # ts) wins when present, otherwise pt["entry_fill_ts"] from
+            # the on_stream_fill capture, then fall back to submit ts.
+            ts=entry_ts or pt.get("entry_fill_ts") or pt.get("ts") or now_utc,
             session_date=pt.get("session_date") or (entry_ts or now_utc).strftime("%Y-%m-%d"),
             symbol=pt.get("symbol") or "NQ",
             side=side,
@@ -975,6 +979,22 @@ class TopstepXBrokerAdapter:
             return
         # TopstepX has used both camelCase and snake_case in the past — accept either.
         order_id = data.get("orderId") or data.get("order_id") or data.get("OrderId")
+        # Broker-authoritative fill timestamp. Prefer this over
+        # datetime.now() since the stream message can lag the actual
+        # match by 100ms-seconds; using the broker's own ts keeps the
+        # widget anchored to the bar where the fill really happened.
+        _broker_fill_ts: datetime | None = None
+        for key in ("creationTimestamp", "creation_timestamp", "CreationTimestamp", "timestamp"):
+            v = data.get(key)
+            if not v:
+                continue
+            try:
+                _broker_fill_ts = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+                if _broker_fill_ts.tzinfo is None:
+                    _broker_fill_ts = _broker_fill_ts.replace(tzinfo=timezone.utc)
+                break
+            except Exception:
+                continue
         log.info(
             "Fill processing: price=%.2f side=%s size=%s order_id=%s",
             price,
@@ -1100,7 +1120,10 @@ class TopstepXBrokerAdapter:
                 self.tracker.entry_price = price
                 if self._pending_trade:
                     self._pending_trade["entry_price"] = price
-                    self._pending_trade["entry_fill_ts"] = datetime.now(timezone.utc)
+                    # Prefer the broker's creationTimestamp from the stream
+                    # frame; falls back to local arrival time when the
+                    # broker didn't include one.
+                    self._pending_trade["entry_fill_ts"] = _broker_fill_ts or datetime.now(timezone.utc)
                     self._set_pending_trade(self._pending_trade)
                 log.info("Stream fill (entry confirmed): %.2f order_id=%s", price, order_id)
 
@@ -1225,7 +1248,12 @@ class TopstepXBrokerAdapter:
                         pt.get("signal_trigger", ""),
                     )
             pt = pt or {}
-            now_utc = datetime.now(timezone.utc)
+            # Broker's authoritative exit-fill timestamp from the stream
+            # frame (creationTimestamp). Falls back to local arrival time
+            # — same pattern as entry_fill_ts. closed_at = now_utc anchors
+            # the widget's right edge, so the broker timestamp is what
+            # makes the closed widget land on the actual exit candle.
+            now_utc = _broker_fill_ts or datetime.now(timezone.utc)
             side = pt.get("side") or self.tracker.side or ("long" if price > entry_px else "short")
             size = pt.get("size") or max(self.tracker.size or 1, 1)
             direction = 1.0 if side == "long" else -1.0
@@ -1321,9 +1349,15 @@ class TopstepXBrokerAdapter:
             # profiles.topstepx_account_id (forward-compat for multi-profile).
             tsx_account_id = getattr(self.client, "_account_id", None)
 
+            # ts column = actual ENTRY FILL time. pt["ts"] is the order-submit
+            # moment which can lead the fill by minutes for limit / stop-
+            # limit entries — the chart widget anchors to ts, so using
+            # submit time made widgets visually appear 5-10 min before the
+            # candle where the trade actually filled. entry_fill_ts is set
+            # in on_stream_fill at the broker confirmation moment.
             _log_broker_trade(
                 session_pnl=round(self.tracker.session_pnl, 2),
-                ts=pt.get("ts") or now_utc,
+                ts=pt.get("entry_fill_ts") or pt.get("ts") or now_utc,
                 session_date=pt.get("session_date") or now_utc.strftime("%Y-%m-%d"),
                 symbol=pt.get("symbol") or "NQ",
                 side=side,
