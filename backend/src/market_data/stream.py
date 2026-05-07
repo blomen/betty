@@ -145,9 +145,16 @@ class TickWriter:
         self._batch: list[dict] = []
         self._flush_task: asyncio.Task | None = None
         self._running = False
+        # Captured at start() so add() can schedule flushes onto the right
+        # loop even when called from a worker thread (e.g. a future
+        # Databento sync-callback adapter). Without this, the prior
+        # `asyncio.create_task` call would raise RuntimeError("no running
+        # event loop") on the worker thread and lose the batch silently.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self):
         self._running = True
+        self._loop = asyncio.get_running_loop()
         self._flush_task = asyncio.create_task(self._periodic_flush())
 
     async def stop(self):
@@ -168,7 +175,23 @@ class TickWriter:
             }
         )
         if len(self._batch) >= TICK_BATCH_SIZE:
-            asyncio.create_task(self._flush())
+            self._schedule_flush_threadsafe()
+
+    def _schedule_flush_threadsafe(self) -> None:
+        """Schedule a flush onto the event loop from any thread.
+
+        `call_soon_threadsafe` is safe both from the loop's own thread and
+        from worker threads; from the loop thread it just enqueues a normal
+        callback, from elsewhere it wakes the loop and schedules. The
+        periodic-flush timer remains as a safety net for batches that don't
+        hit the size threshold.
+        """
+        loop = self._loop
+        if loop is None:
+            # add() called before start() — batch will land on next periodic
+            # flush once start() has been awaited. Don't crash.
+            return
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._flush()))
 
     async def _periodic_flush(self):
         while self._running:
