@@ -93,9 +93,19 @@ services:
     # Default 10s causes force-kill every time. 30s lets graceful shutdown work.
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # 2026-05-07 triage: probe /health/live (a trivial async endpoint that
+      # only returns {"status":"alive", uptime}) instead of /health (which
+      # also reads market_data_poller.get_status). Both run on the same
+      # asyncio event loop, but /health/live is the smallest possible
+      # request — if THIS times out, the loop is genuinely starved (item
+      # #37 in the architecture audit: tick-path runs DQN inference + DB
+      # writes synchronously on the SignalR receive coroutine). Until
+      # that root cause is fixed, switching to /health/live + a 30s
+      # timeout reduces watchdog false-positives that were auto-restarting
+      # the container on every minor stall during RTH.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 30s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 30s
     logging:

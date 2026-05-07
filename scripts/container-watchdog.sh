@@ -32,7 +32,13 @@ for line in sys.stdin:
 
 if [ "$backend_status" = "running" ]; then
     # Container is running — check health endpoint
-    if docker compose exec -T backend curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+    # 2026-05-07: probe /health/live (trivial async endpoint) instead of
+    # /health, matching the docker-compose.yml healthcheck change. Until
+    # the tick-path event-loop blocker is fixed, /health was timing out
+    # often enough to trigger this watchdog into restart-looping the
+    # container during RTH. /health/live is the smallest possible probe
+    # — if it times out, the loop is genuinely starved.
+    if docker compose exec -T backend curl -sf -m 30 http://localhost:8000/health/live >/dev/null 2>&1; then
         exit 0  # Healthy, nothing to do
     fi
 
