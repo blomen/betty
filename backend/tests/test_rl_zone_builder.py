@@ -44,6 +44,36 @@ class TestBuildZonesMerging:
         assert len(zones) == 2
 
 
+class TestChainMergeCap:
+    """Regression for the unbounded chain-merge bug observed live 2026-05-07.
+
+    Before the fix, the merge predicate compared each new level against the
+    LAST member's price, so consecutive levels each within `radius` of the
+    prior would chain into one zone with span >> radius. A 15-member,
+    37-point z0 was produced from order blocks at 28704...28736 with radius
+    = 5pt. Anchoring against the FIRST member caps cluster span at radius.
+    """
+
+    def test_chain_does_not_merge_beyond_radius(self):
+        """ATR=200 -> radius clamped to 5 points. Eight levels spaced 1
+        point apart span 7 points total, which exceeds the 5pt radius.
+        With first-member anchoring this must produce >=2 zones."""
+        levels = [("lvl", LevelType.DAILY_POC, 4500.0 + i) for i in range(8)]
+        zones = build_zones(levels, session_atr=200.0)
+        assert len(zones) >= 2
+        for z in zones:
+            prices = [m.price for m in z.members]
+            assert max(prices) - min(prices) <= 5.0 + 1e-6
+
+    def test_zone_width_capped_at_two_radius(self):
+        """Span of any single zone is bounded by `radius`; total rectangle
+        width (with radius/2 padding on each side) is bounded by 2*radius."""
+        levels = [("lvl", LevelType.DAILY_POC, 4500.0 + 0.5 * i) for i in range(20)]
+        zones = build_zones(levels, session_atr=200.0)  # radius = 5pt
+        for z in zones:
+            assert z.upper_bound - z.lower_bound <= 2 * 5.0 + 1e-6
+
+
 class TestRadiusClamping:
     def test_radius_clamped_to_min(self):
         """ATR=1.0 -> raw radius = 0.05*1 = 0.05 points = 0.2 ticks.

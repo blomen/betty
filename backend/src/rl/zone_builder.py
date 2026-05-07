@@ -326,9 +326,19 @@ def build_zones(
     Algorithm:
     1. Compute radius = clamp(ATR_FRACTION * session_atr, min_radius, max_radius)
     2. Sort levels by price ascending
-    3. Walk sorted: if next level within radius of current zone's last member -> merge
-    4. Else finalize current zone and start new one
-    5. Return zones sorted by center_price ascending
+    3. Walk sorted: if next level within `radius` of the cluster's FIRST member,
+       merge into current cluster; otherwise close it and start a new one.
+    4. Return zones sorted by center_price ascending
+
+    Anchoring against the first member (not the last) caps each zone's span
+    at `radius`, so total rectangle width is at most `2 * radius` after the
+    radius/2 padding in `_build_zone`. Anchoring against the last member
+    allows unbounded chain-merge: levels at +radius, +2·radius, +3·radius
+    would all merge into one zone with a span of 3·radius. That produced
+    the 37-point z0 monster zone observed live (15 chained order blocks +
+    PDH + VWAP + swing) on 2026-05-07, well beyond the 5-point cap implied
+    by MAX_ZONE_RADIUS_TICKS=20. Splitting the chain into local clusters
+    aligns zone width with the documented radius semantics.
     """
     if not levels:
         return []
@@ -342,7 +352,7 @@ def build_zones(
 
     for name, level_type, price in sorted_levels:
         member = ZoneMember(name=name, level_type=level_type, price=price)
-        if not current_members or abs(price - current_members[-1].price) <= radius:
+        if not current_members or abs(price - current_members[0].price) <= radius:
             current_members.append(member)
         else:
             zones.append(_build_zone(current_members, radius))
