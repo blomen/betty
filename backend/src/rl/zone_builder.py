@@ -177,6 +177,77 @@ _HIERARCHY_WEIGHTS: dict[LevelType, float] = {
 
 _DEFAULT_WEIGHT = 0.3
 
+# --- Pre-merge: dense same-type levels -----------------------------------
+# SMC detectors (FVG, order block) fire on candle-pattern triggers and
+# emit one level per qualifying candle. In active sessions a single
+# institutional footprint commonly produces 3-5 nearby OB/FVG events
+# within a few points of each other. Clustering them at the zone level
+# (radius ~5pt) eventually merges them into a single zone via build_zones,
+# but until they cross another family they show up as multiple lone-OB
+# zones at the same hierarchy score, polluting both the chart (visual
+# stack of identical-color rectangles) and the DQN observation (a chain
+# of "lone OB at price X" features that should really be one signal).
+#
+# Pre-merge collapses dense same-LevelType clusters into one representative
+# at the median price BEFORE the normal radius-based zone clustering. Bull
+# and bear stay separate so the directional information survives in the
+# composition vector.
+_PREMERGE_LEVEL_TYPES: frozenset[LevelType] = frozenset(
+    {
+        LevelType.FVG_BULL,
+        LevelType.FVG_BEAR,
+        LevelType.ORDER_BLOCK_BULL,
+        LevelType.ORDER_BLOCK_BEAR,
+    }
+)
+
+
+def _premerge_dense_levels(
+    levels: list[tuple[str, LevelType, float]],
+    merge_radius: float,
+) -> list[tuple[str, LevelType, float]]:
+    """Collapse same-LevelType FVG/OB clusters within `merge_radius` of
+    each other into one representative at the median price. Other level
+    types pass through unchanged.
+
+    Algorithm: bucket by LevelType, sort each pre-merge bucket by price,
+    chain-merge with first-anchor (same predicate as zone-level clustering)
+    at the given radius, output one (name, level_type, median_price) per
+    cluster. The first name in the cluster is preserved; the median price
+    is robust against detector micro-jitter at the cluster edges.
+    """
+    if not levels:
+        return []
+
+    by_type: dict[LevelType, list[tuple[str, LevelType, float]]] = {}
+    for entry in levels:
+        by_type.setdefault(entry[1], []).append(entry)
+
+    out: list[tuple[str, LevelType, float]] = []
+    for lt, bucket in by_type.items():
+        if lt not in _PREMERGE_LEVEL_TYPES or len(bucket) <= 1:
+            out.extend(bucket)
+            continue
+
+        bucket.sort(key=lambda e: e[2])
+        cluster: list[tuple[str, LevelType, float]] = []
+        clusters: list[list[tuple[str, LevelType, float]]] = []
+        for entry in bucket:
+            if not cluster or abs(entry[2] - cluster[0][2]) <= merge_radius:
+                cluster.append(entry)
+            else:
+                clusters.append(cluster)
+                cluster = [entry]
+        if cluster:
+            clusters.append(cluster)
+
+        for c in clusters:
+            prices = sorted(e[2] for e in c)
+            median_price = prices[len(prices) // 2]
+            out.append((c[0][0], lt, median_price))
+
+    return out
+
 
 def _load_empirical_weights() -> dict[LevelType, float]:
     """Load empirical level weights from YAML. Returns {} if unavailable."""
@@ -344,6 +415,12 @@ def build_zones(
         return []
 
     radius = _compute_radius(session_atr)
+
+    # SMC-detector dedup: collapse dense same-LevelType FVG/OB clusters at
+    # half-radius before the main clustering pass. See _premerge_dense_levels
+    # for the rationale (one institutional footprint per representative,
+    # not 3-5 detector hits at slightly different prices).
+    levels = _premerge_dense_levels(levels, merge_radius=radius / 2)
 
     sorted_levels = sorted(levels, key=lambda x: x[2])
 

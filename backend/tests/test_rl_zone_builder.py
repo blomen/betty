@@ -74,6 +74,61 @@ class TestChainMergeCap:
             assert z.upper_bound - z.lower_bound <= 2 * 5.0 + 1e-6
 
 
+class TestDenseFamilyPremerge:
+    """SMC detector dedup — FVG/OB clusters within half-radius collapse to
+    one representative before normal clustering. Other level types are
+    unaffected.
+    """
+
+    def test_three_obs_within_half_radius_collapse(self):
+        """ATR=200 -> radius=5 -> half-radius=2.5. Three OBs at 4500.0,
+        4500.5, 4501.0 (max gap 1.0) collapse to a single representative
+        at the median price 4500.5."""
+        levels = [
+            ("ob_a", LevelType.ORDER_BLOCK_BULL, 4500.0),
+            ("ob_b", LevelType.ORDER_BLOCK_BULL, 4500.5),
+            ("ob_c", LevelType.ORDER_BLOCK_BULL, 4501.0),
+        ]
+        zones = build_zones(levels, session_atr=200.0)
+        assert len(zones) == 1
+        assert zones[0].member_count == 1
+        assert zones[0].center_price == pytest.approx(4500.5)
+
+    def test_bull_and_bear_stay_separate(self):
+        """Directional info preserved: bull and bear at the same price
+        survive as two distinct members."""
+        levels = [
+            ("bull", LevelType.ORDER_BLOCK_BULL, 4500.0),
+            ("bear", LevelType.ORDER_BLOCK_BEAR, 4500.0),
+        ]
+        zones = build_zones(levels, session_atr=200.0)
+        assert len(zones) == 1
+        assert zones[0].member_count == 2
+
+    def test_obs_beyond_half_radius_survive(self):
+        """ATR=200 -> half-radius=2.5. Two OBs 3pt apart exceed half-radius
+        and both survive as members of one zone (still within full radius=5)."""
+        levels = [
+            ("ob_a", LevelType.ORDER_BLOCK_BULL, 4500.0),
+            ("ob_b", LevelType.ORDER_BLOCK_BULL, 4503.0),
+        ]
+        zones = build_zones(levels, session_atr=200.0)
+        assert len(zones) == 1
+        assert zones[0].member_count == 2
+
+    def test_non_premerge_types_unaffected(self):
+        """VWAP, daily_poc, etc. are not in the pre-merge set — the
+        function passes them through verbatim."""
+        levels = [
+            ("vwap_a", LevelType.VWAP, 4500.0),
+            ("vwap_b", LevelType.VWAP, 4500.5),
+        ]
+        zones = build_zones(levels, session_atr=200.0)
+        # Both VWAP entries survive (single zone, two members).
+        assert len(zones) == 1
+        assert zones[0].member_count == 2
+
+
 class TestRadiusClamping:
     def test_radius_clamped_to_min(self):
         """ATR=1.0 -> raw radius = 0.05*1 = 0.05 points = 0.2 ticks.
