@@ -820,6 +820,8 @@ class TopstepXBrokerAdapter:
             reasoning=reasoning,
             closed_at=closed_at,
             topstepx_account_id=account_id,
+            entry_order_id=pt.get("entry_order_id") or self.tracker.entry_order_id,
+            exit_order_id=pt.get("exit_order_id"),
         )
         self._set_pending_trade(None)
 
@@ -1229,6 +1231,13 @@ class TopstepXBrokerAdapter:
             self.tracker.session_pnl,
         )
 
+        # Capture the closing leg's TopstepX orderId on the pending dict
+        # before it gets cleared in _log_broker_trade. Used downstream to
+        # join the broker_trades row to the exact /api/Trade/search fill.
+        if self._pending_trade is not None and order_id is not None:
+            self._pending_trade["exit_order_id"] = order_id
+            self._set_pending_trade(self._pending_trade)
+
         if entry_px:
             # Normal close: full _pending_trade context available.
             # Orphan close: position survived a process restart so we have
@@ -1384,6 +1393,8 @@ class TopstepXBrokerAdapter:
                 closed_at=now_utc,
                 topstepx_account_id=tsx_account_id,
                 flatten_reason=self._last_flatten_reason,
+                entry_order_id=pt.get("entry_order_id"),
+                exit_order_id=pt.get("exit_order_id") or order_id,
             )
             self._set_pending_trade(None)
             # Reason is consumed by exit_reason — drop it so the next stop-
@@ -1544,8 +1555,47 @@ class TopstepXBrokerAdapter:
             err = result.get("errorMessage", "order_rejected")
             err_code = result.get("errorCode")
             log.warning("Market order rejected (errorCode=%s): %s", err_code, err)
-            if err_code == 2 or "permanent violation" in str(err).lower():
-                self._halt(f"account permanent violation: {err}")
+            # 2026-05-07: don't halt on session/instrument-level rejections.
+            # TopstepX errorCode 2 covers many things including transient
+            # "instrument is not in an active trading status" messages
+            # emitted between sessions / during settlement windows. Halting
+            # on that froze the broker after every regular-session close
+            # at 21:00 UTC — when the next session reopened, signals fired
+            # but everything was rejected with `halted: account permanent
+            # violation`. Only halt when the message actually indicates an
+            # account-level issue (drawdown breach, daily loss limit hit,
+            # position cap, account locked) — those are sticky conditions
+            # that won't clear without intervention.
+            err_lower = str(err).lower()
+            session_signals = (
+                "not in an active trading status",
+                "instrument not tradeable",
+                "market closed",
+                "outside trading hours",
+                "trading is currently unavailable",
+            )
+            account_signals = (
+                "permanent violation",
+                "daily loss",
+                "maximum loss",
+                "trailing drawdown",
+                "max position",
+                "account locked",
+                "account has been",
+                "violated",
+            )
+            is_session_error = any(s in err_lower for s in session_signals)
+            is_account_error = any(s in err_lower for s in account_signals)
+            if is_account_error and not is_session_error:
+                self._halt(f"account violation: {err}")
+            elif err_code == 2 and not is_session_error and not is_account_error:
+                # Unknown code-2 message that doesn't match either bucket —
+                # log loudly so we can refine the lists, but don't halt.
+                log.warning(
+                    "Order rejected with errorCode=2 but message doesn't match "
+                    "session/account patterns; not halting: %s",
+                    err,
+                )
             return {"rejected": True, "reason": err}
 
         entry_order_id = result.get("orderId") if isinstance(result, dict) else None
@@ -1695,6 +1745,12 @@ class TopstepXBrokerAdapter:
             "signal_price": price,
             "entry_submit_ts": entry_submit_ts,
             "entry_fill_ts": None,
+            # TopstepX broker order ids — persisted into broker_trades
+            # at close time so backfill/realignment can join unambiguously
+            # against /api/Trade/search (single source of truth, no
+            # price-cluster ambiguity).
+            "entry_order_id": entry_order_id,
+            "exit_order_id": None,  # set in on_stream_fill exit path
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),
             "signal_zone": float(signal.get("zone", signal.get("zone_price", 0)) or 0),
