@@ -28,12 +28,17 @@ def extract_macro_features(macro: dict | None) -> np.ndarray:
     if macro is None:
         return np.zeros(_N_FEATURES, dtype=np.float32)
 
-    vix = float(macro.get("vix", 20.0))
-    vix_change = float(macro.get("vix_change", 0.0))
-    regime_score = float(macro.get("regime_score", 0.5))
-    dxy_change = float(macro.get("dxy_change", 0.0))
-    us10y_change = float(macro.get("us10y_change", 0.0))
-    us2y_change = float(macro.get("us2y_change", 0.0))
+    # 2026-05-07: accept both fetcher and trainer naming conventions.
+    # MacroSnapshot.to_dict() emits *_pct / *_bps suffixed keys (vix_change_pct,
+    # dxy_change_pct, us10y_change_bps); the trainer's older simulator data uses
+    # plain change keys. Without this fallback, 4 of 11 macro dims silently
+    # zero out even though Yahoo Finance was fetching the data correctly.
+    vix = float(macro.get("vix", 0.0) or 20.0)
+    vix_change = float(macro.get("vix_change") or macro.get("vix_change_pct") or 0.0)
+    regime_score = float(macro.get("regime_score") or 0.5)
+    dxy_change = float(macro.get("dxy_change") or macro.get("dxy_change_pct") or 0.0)
+    us10y_change = float(macro.get("us10y_change") or macro.get("us10y_change_bps") or 0.0)
+    us2y_change = float(macro.get("us2y_change") or macro.get("us2y_change_bps") or 0.0)
 
     yield_curve = (
         float(macro.get("us10y", 0.0)) - float(macro.get("us2y", 0.0))
