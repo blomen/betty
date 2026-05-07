@@ -99,6 +99,7 @@ class MacroSnapshot:
     us10y: float | None = None
     us10y_change_bps: float | None = None  # Basis points change
     us2y: float | None = None
+    us2y_change_bps: float | None = None  # Basis points change
     yield_curve_spread: float | None = None  # 10y - 2y
     regime: str = "unknown"  # "risk_on", "risk_off", "mixed"
     regime_score: float = 0.0  # -1.0 (max risk-off) to +1.0 (max risk-on)
@@ -203,6 +204,8 @@ class SessionAnalysis:
                 "dxy_change_pct": self.macro.dxy_change_pct,
                 "us10y": self.macro.us10y,
                 "us10y_change_bps": self.macro.us10y_change_bps,
+                "us2y": self.macro.us2y,
+                "us2y_change_bps": self.macro.us2y_change_bps,
                 "yield_curve_spread": self.macro.yield_curve_spread,
                 "regime": self.macro.regime,
                 "regime_score": self.macro.regime_score,

@@ -93,6 +93,10 @@ def _fetch_macro_sync() -> MacroSnapshot:
             two = yf.download("2YY=F", start=start, end=end, progress=False, auto_adjust=True)
             if not two.empty and len(two) >= 1:
                 snapshot.us2y = round(_scalar(two, "Close", -1), 3)
+                # Day-over-day change in basis points (matches us10y semantics)
+                if len(two) >= 2:
+                    prev_2y = _scalar(two, "Close", -2)
+                    snapshot.us2y_change_bps = round((snapshot.us2y - prev_2y) * 100, 1)
         except Exception as e:
             logger.debug("US2Y fetch failed: %s", e)
 
