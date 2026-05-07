@@ -743,16 +743,30 @@ class TopstepXBrokerAdapter:
 
         size = pt.get("size") or max(self.tracker.size or size_filled or 1, 1)
         direction = 1.0 if side == "long" else -1.0
-        stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
         _MIN_RISK_PTS = MIN_STOP_TICKS * 0.25
         initial_stop_ticks = pt.get("stop_ticks") or 0
         if initial_stop_ticks > 0:
             raw_risk = initial_stop_ticks * 0.25
-        elif stop_price:
-            raw_risk = abs(entry_px - stop_price)
         else:
-            raw_risk = DEFAULT_STOP_TICKS * 0.25
+            stale_stop = pt.get("stop_price", 0) or self.tracker.stop_price or 0
+            raw_risk = abs(entry_px - stale_stop) if stale_stop else DEFAULT_STOP_TICKS * 0.25
         risk_pts = max(raw_risk, _MIN_RISK_PTS)
+        # Canonical recompute: when stop_ticks is the authoritative R
+        # basis (set at signal time, immutable through trail walks),
+        # derive stop_price and tp_price from it so the row's columns
+        # stay internally consistent. Without this, recovery wrote
+        # stale stop_price values from pt/tracker that didn't match
+        # stop_ticks — producing rows like trade 522 where stop_ticks=27
+        # but stop_price implied 166 ticks, making the chart widget
+        # display a 41.5pt stop and 0.51 R:R for a trade that was
+        # actually intended as a clean 6.75pt 1R stop with 4.7R realized.
+        if initial_stop_ticks > 0:
+            intended_pts = initial_stop_ticks * 0.25
+            stop_price = _round_tick(entry_px - intended_pts if side == "long" else entry_px + intended_pts)
+            recomputed_tp = _round_tick(entry_px + 2 * intended_pts if side == "long" else entry_px - 2 * intended_pts)
+            pt["tp_price"] = recomputed_tp
+        else:
+            stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
 
         # Broker's gross_pnl is the source of truth — it accounts for partial
         # fills, multi-leg closes, and any size-mismatch quirks the tracker
