@@ -2382,6 +2382,11 @@ def _run_pg_migrations(engine) -> None:
         # 2026-05-08 — DQN raw action q-values, persisted at signal time so we
         # can analyze action margin and calibration without re-running inference.
         ("stock_signals", "q_values", "JSONB"),
+        # 2026-05-08 — actual placed stop at exit time (BE-lock + cont-trail
+        # walks). Used by the chart widget to draw a trail line at the
+        # final stop while keeping the original stop_price band visible
+        # for the R:R label. NULL on legacy rows.
+        ("broker_trades", "final_stop_price", "DOUBLE PRECISION"),
     ]
     with engine.begin() as conn:
         # Each ALTER runs inside its own SAVEPOINT so a single failure
@@ -2632,6 +2637,9 @@ class BrokerTrade(Base):
     # Trade mechanics
     entry_price = Column(Float, nullable=False)
     stop_price = Column(Float, nullable=True)
+    # Actual placed stop at exit time — captures BE-lock + cont-trail walks.
+    # NULL on rows pre-2026-05-08 migration; widget falls back to "no trail line".
+    final_stop_price = Column(Float, nullable=True)
     tp_price = Column(Float, nullable=True)
     exit_price = Column(Float, nullable=True)
     stop_ticks = Column(Integer, nullable=True)
