@@ -1067,24 +1067,19 @@
     if (!Number.isFinite(entry) || entry <= 0) return false;
 
     const NQ_TICK = 0.25;
-    let yAnchor, stopLevel, profitLevel;
-    if (isWin) {
-      // Anchor at the trailed stop. Target band reaches up (long) / down
-      // (short) to exit_price. No stop band.
-      const trailed = stop ?? entry;
-      const exitPx = exit ?? entry;
-      yAnchor = trailed;
-      stopLevel = 0;
-      profitLevel = Math.max(1, Math.round(Math.abs(exitPx - trailed) / NQ_TICK));
-    } else {
-      // Anchor at real entry. Target band = original tp (2R), stop band
-      // = where we actually stopped out.
-      const tpPx = tp ?? (isLong ? entry + 1 : entry - 1);
-      const stopPx = stop ?? (isLong ? entry - 1 : entry + 1);
-      yAnchor = entry;
-      stopLevel = Math.max(1, Math.round(Math.abs(yAnchor - stopPx) / NQ_TICK));
-      profitLevel = Math.max(1, Math.round(Math.abs(tpPx - yAnchor) / NQ_TICK));
-    }
+    // Unified geometry for both wins and losses: anchor at entry, stopLevel
+    // from original 1R, profitLevel from planned 2R tp. Same shape as the
+    // active widget so TV's R:R = 2 label stays correct, and the realized
+    // exit + the BE-locked/trailed stop are surfaced via the auxiliary trail
+    // line (_drawTrailLineIfMoved) and the headerText label, not via the
+    // widget bands. Removed the old win-mode `stopLevel = 0` branch — newer
+    // TV builds reject the long_position widget with "Value is undefined"
+    // when stopLevel is 0, which was killing every win since 2026-05-08.
+    const tpPx = tp ?? (isLong ? entry + 1 : entry - 1);
+    const stopPx = stop ?? (isLong ? entry - 1 : entry + 1);
+    const yAnchor = entry;
+    const stopLevel = Math.max(1, Math.round(Math.abs(yAnchor - stopPx) / NQ_TICK));
+    const profitLevel = Math.max(1, Math.round(Math.abs(tpPx - yAnchor) / NQ_TICK));
 
     const shapeName = isLong ? 'long_position' : 'short_position';
     const points = [
@@ -1104,15 +1099,22 @@
     const reasonStr = (typeof p.exit_reason === 'string' && p.exit_reason) ? ` [${p.exit_reason}]` : '';
     const headerText = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}${reasonStr}`;
 
-    // Discovered via tv-eval probe: setProperties accepts `infoBlocks`
-    // as a NESTED object (dotted-path form silently no-ops). The
-    // dynamic / wrong labels listed here go invisible per shape; the
-    // raw price/tick offsets stay because they reflect the actual
-    // band geometry we configured.
-    const widgetProps = {
+    // Minimal create-time overrides — matches the active widget shape that's
+    // known to work. The fancy infoBlocks/compact/profitBackground props
+    // get applied post-create via setProperties (best-effort, silently
+    // ignored if newer TV builds reject them). Keeping the create call
+    // small avoids "Value is undefined" rejections from TV's stricter
+    // widget validators.
+    const widgetCreateOverrides = {
       stopLevel,
       profitLevel,
       showPriceLabels: false,
+    };
+    // Applied via setProperties after the shape exists. infoBlocks toggles
+    // info visibility; profitBackground tints the target band; compact +
+    // alwaysShowStats trim the widget header. None are required for the
+    // widget to render — failure to apply them just means a default look.
+    const widgetExtraProps = {
       compact: true,
       alwaysShowStats: false,
       infoBlocks: {
@@ -1125,14 +1127,11 @@
         tpTickOffset: { visible: true },
         tpPercentOffset: { visible: false },
         tpPL: { visible: false },
-        slPriceOffset: { visible: !isWin }, // wins hide the stop band entirely
-        slTickOffset: { visible: !isWin },
+        slPriceOffset: { visible: true },
+        slTickOffset: { visible: true },
         slPercentOffset: { visible: false },
         slPL: { visible: false },
       },
-      // Override band colors per outcome — for wins the target band is
-      // the realized profit zone (always green); for losses keep TV's
-      // default red stop / green target so the bet is visually obvious.
       profitBackground: isWin ? 'rgba(16, 185, 129, 0.25)' : 'rgba(8, 153, 129, 0.20)',
     };
 
@@ -1143,15 +1142,13 @@
         if (obj) {
           if (typeof obj.setPoints === 'function') obj.setPoints(points);
           if (typeof obj.setProperties === 'function') {
-            obj.setProperties(widgetProps);
-            // Best-effort header text — silently ignored if the shape
-            // doesn't accept it (long_position has its own auto-title
-            // we can't override on every TV build).
+            // Apply create-time overrides (always accepted) first, then the
+            // fancy props (best-effort) separately so a single rejected
+            // field doesn't drop the whole properties update.
+            try { obj.setProperties(widgetCreateOverrides); } catch (_) {}
+            try { obj.setProperties(widgetExtraProps); } catch (_) {}
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
-          // Trail line for closed trades — same helper as active. Draws iff
-          // the placed stop at exit differs from the entry-time stop. Bounded
-          // to the trade's exit time (anchor → endEpoch).
           _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
           return true;
         }
@@ -1159,13 +1156,14 @@
     }
 
     try {
-      // disableSave dropped — see comment in _drawActivePositionShape.
-      // Newer TV builds reject the long_position widget with "Value is
-      // undefined" when disableSave is present.
+      // Minimal create-time overrides — passing the full widgetExtraProps
+      // here was causing TV to reject the widget with "Value is undefined"
+      // since the 2026-05-08 build update. Apply the extras via
+      // setProperties below (best-effort, silently ignored on rejection).
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
         text: headerText,
-        overrides: widgetProps,
+        overrides: widgetCreateOverrides,
       }), `closed-${shapeName}`);
       if (shapeId == null) {
         sendError(`_drawClosedPositionWidget: createMultipointShape returned null for ${shapeName}`);
@@ -1176,9 +1174,14 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: shapeName });
       _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
-      // Trail line for closed trades — same helper as active. Draws iff
-      // the placed stop at exit differs from the entry-time stop. Bounded
-      // to the trade's exit time (anchor → endEpoch).
+      // Apply fancy props post-create. Each call is independently try/catch'd
+      // so a single rejected field doesn't tear down the others.
+      try {
+        const obj = chart.getShapeById(shapeId);
+        if (obj && typeof obj.setProperties === 'function') {
+          try { obj.setProperties(widgetExtraProps); } catch (_) {}
+        }
+      } catch (_) {}
       _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
       return true;
     } catch (e) {
