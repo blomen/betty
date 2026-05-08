@@ -260,6 +260,48 @@
     try { return chart.getVisibleRange(); } catch (_) { return null; }
   }
 
+  // Walk the closed-trade buffer and bring drawn shapes in sync with the
+  // current visible range: draw newly-overlapping ones, remove newly-off-
+  // range ones. Active trades are untouched (their shape lives in
+  // drawnPositions under key 'trade:active' but isn't in
+  // closedTradePayloads, so this loop never sees them).
+  function reconcileClosedTradeVisibility() {
+    if (!chart) return;
+    const range = _currentVisibleRange();
+    for (const [key, p] of closedTradePayloads) {
+      const overlap = _closedTradeOverlapsRange(p, range);
+      const isDrawn = drawnPositions.has(key);
+      if (overlap && !isDrawn) {
+        const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
+        const now = Math.floor(Date.now() / 1000);
+        const anchor = fillEpoch != null ? fillEpoch : now;
+        let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
+        if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
+        _drawClosedRect(p, anchor, endEpoch);
+      } else if (!overlap && isDrawn) {
+        const existing = drawnPositions.get(key);
+        if (existing && existing.shapeId != null) {
+          try { chart.removeEntity(existing.shapeId); } catch (_) {}
+        }
+        drawnPositions.delete(key);
+        positionAnchors.delete(key);
+      }
+    }
+  }
+
+  // Trailing-edge debounce — coalesces drag/scroll/zoom storms into one
+  // reconcile pass. 200 ms keeps the chart responsive without spamming
+  // shape redraws.
+  let _rangeChangeTimer = null;
+  function _scheduleReconcile() {
+    if (_rangeChangeTimer != null) clearTimeout(_rangeChangeTimer);
+    _rangeChangeTimer = setTimeout(() => {
+      _rangeChangeTimer = null;
+      try { reconcileClosedTradeVisibility(); }
+      catch (e) { sendError(`reconcileClosedTradeVisibility failed: ${e instanceof Error ? e.message : String(e)}`); }
+    }, 200);
+  }
+
   function drawPosition(p) {
     if (!chart) return false;
     const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
@@ -593,6 +635,19 @@
       return;
     }
     console.log('[arnold-overlay] attached to chart', c);
+    // Reconcile closed-trade visibility on scroll/zoom. Wrapped in
+    // try/catch in case onVisibleRangeChanged is unavailable on this TV
+    // build — we still get correct first-paint behavior from the
+    // drawPosition filter, just no auto-redraw on scroll.
+    try {
+      if (typeof c.onVisibleRangeChanged === 'function') {
+        c.onVisibleRangeChanged().subscribe(null, _scheduleReconcile);
+      } else {
+        console.warn('[arnold-overlay] chart.onVisibleRangeChanged unavailable — closed-trade auto-redraw disabled');
+      }
+    } catch (e) {
+      console.warn('[arnold-overlay] visible-range subscribe failed:', e);
+    }
     connect();
   });
 })();
