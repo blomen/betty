@@ -1797,28 +1797,26 @@ class LevelMonitor:
                         tr = broker.tracker
                         rev = result.get("reversal_signals") or {}
                         pyr = result.get("pyramid_decision") or {}
-                        ee_prob = float(result.get("early_exit_prob") or 0.0)
-                        ee_thresh = float(result.get("early_exit_threshold") or 0.70)
 
-                        if rev.get("should_exit"):
+                        # Phase 1 (peak_R < 2.0): trade plays out untouched —
+                        # only the original SL or the natural +2R inflection
+                        # moves it. Reversal-signals and early-exit-lock used
+                        # to fire here too, but the 2026-05-08 counterfactual
+                        # showed they were chopping budding winners: 81/151
+                        # reversal-exits would have hit TP if held (54%), and
+                        # most fired when peak_R was still ~0. Strategy now:
+                        # don't intervene in undeveloped trades; let win/loss
+                        # resolve cleanly against the original SL/2R bracket.
+                        # Phase 2 (peak_R >= 2.0): complex exit/trail kicks in.
+                        if tr.peak_R >= 2.0 and rev.get("should_exit"):
                             logger.info(
-                                "Reversal-signals exit: %d fired — flattening %s @ %.2f",
+                                "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
                                 rev.get("fired_count", 0),
+                                tr.peak_R,
                                 tr.side,
                                 price,
                             )
                             asyncio.create_task(broker.flatten("reversal_signals"))
-                        elif not tr.locked_half_R and tr.peak_R >= 0.5 and ee_prob >= ee_thresh:
-                            logger.info(
-                                "EarlyExit lock: peak_R=%.2f ee_prob=%.3f>=%.2f — flattening %s @ %.2f",
-                                tr.peak_R,
-                                ee_prob,
-                                ee_thresh,
-                                tr.side,
-                                price,
-                            )
-                            tr.locked_half_R = True
-                            asyncio.create_task(broker.flatten("early_exit_lock"))
                         elif tr.peak_R >= 2.0:
                             # 4. Cont-trail: at a new zone in trade direction past entry,
                             # trail stop to the previously-broken zone's edge. Idempotent
