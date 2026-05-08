@@ -554,9 +554,14 @@ async def lifespan(app: FastAPI):
                 _recompute_task.add_done_callback(_background_tasks.discard)
 
                 # Start news impact recorder (measures NQ price after economic events)
+                from ..core.asyncio_supervision import supervise_task
                 from ..ml.macro.news_impact_recorder import news_impact_loop
 
-                asyncio.create_task(news_impact_loop(_get_db_session, _databento_stream))
+                supervise_task(
+                    news_impact_loop(_get_db_session, _databento_stream),
+                    name="news-impact-recorder",
+                    keepalive=_background_tasks,
+                )
 
             except Exception as e:
                 logger.error("Trading features startup failed: %s", e, exc_info=True)

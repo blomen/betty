@@ -552,7 +552,10 @@ class ExtractionScheduler:
                 logger.info(
                     f"[Watchdog] Scheduling revival #{schedule.revival_attempts + 1} for '{provider_id}' in {backoff}s"
                 )
-                asyncio.create_task(self._attempt_revival(schedule, backoff))
+                supervise_task(
+                    self._attempt_revival(schedule, backoff),
+                    name=f"revival:{provider_id}",
+                )
                 continue
 
             # ── EXISTING (modified): Mark permanently failed after 3+ consecutive failures ──
