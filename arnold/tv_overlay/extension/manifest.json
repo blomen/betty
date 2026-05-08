@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.3.6",
-  "description": "Full model-behavior visualization on the active trade: trailed stop renders as a separate dashed-green horizontal_line when stop crosses into profit (TV's widget stopLevel is unsigned and would otherwise paint the band on the wrong side after BE-lock / cont-trail). Pyramid size shows in the widget's text header (L×3 / S×2). Halt state recolors active widget amber when runtime-status.halted=true. Closed-trade label gains [STOP]/[EE_LOCK]/[FLIP]/[MANUAL] suffix from broker_trades.exit_reason.",
+  "version": "0.4.0",
+  "description": "5-step heatmap zone palette (slate→indigo→fuchsia→orange→red) matching CLAUDE.md, paint threshold hides hierarchy<0.5 single-family zones, rectangle fallback when long_position widget creation fails (so trades stay visible even when TV refuses the native widget), promise-rejection labels surface in /api/tv-overlay/debug error field. Earlier: trailed stop separate dashed-green horizontal_line when stop crosses into profit, pyramid size in header, halt amber recolor, exit_reason suffix.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

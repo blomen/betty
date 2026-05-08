@@ -191,9 +191,18 @@
   // chart.createMultipointShape and createStudy can return either a sync
   // entity-id or a Promise<entity-id> depending on TV build. Always resolve
   // before storing so removeEntity gets the real id, not "[object Promise]".
-  async function _resolve(maybePromise) {
+  // Promise rejections used to be silently swallowed, which masked the real
+  // reason long_position widget creation was failing. Now we surface the
+  // rejection reason via sendError so /api/tv-overlay/debug carries it.
+  async function _resolve(maybePromise, label) {
     if (maybePromise && typeof maybePromise.then === 'function') {
-      try { return await maybePromise; } catch (_) { return null; }
+      try {
+        return await maybePromise;
+      } catch (e) {
+        const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        if (label) sendError(`_resolve(${label}) rejected: ${msg}`);
+        return null;
+      }
     }
     return maybePromise;
   }
@@ -870,7 +879,7 @@
         text: headerText,
         disableSave: true,
         overrides: positionOverrides,
-      }));
+      }), `active-${shapeName}`);
       if (shapeId == null) {
         // Fallback: TV refused the long_position widget — paint a thin
         // colored rectangle at entry price so the trade is at least
@@ -1202,7 +1211,7 @@
         text: headerText,
         disableSave: true,
         overrides: widgetProps,
-      }));
+      }), `closed-${shapeName}`);
       if (shapeId == null) {
         // Fallback path: TV occasionally rejects long_position creation
         // (returns null) — observed live 2026-05-08 with no clear cause
