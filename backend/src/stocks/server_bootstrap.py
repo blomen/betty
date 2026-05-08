@@ -865,6 +865,21 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     stream.on_fill = adapter.on_stream_fill
     stream.on_depth = _build_server_depth_handler(level_monitor)
 
+    # 2026-05-08: post-reconnect tracker sync. TopstepX SignalR drops + reconnects
+    # roughly every ~15 minutes (idle hub timeout). Any GatewayUserTrade event
+    # that arrived during the disconnect window is permanently lost — TopstepX
+    # does NOT replay missed events. Without this hook, a fill landing in that
+    # gap leaves tracker.entry_price=0 (the dropped-fill bug we already wrote
+    # the watchdog for). The watchdog catches it but takes 30-60s. Reconciling
+    # immediately on reconnect closes that gap to seconds.
+    def _on_user_reconnect() -> None:
+        try:
+            asyncio.create_task(reconcile_tracker_from_broker(adapter, client, config.contract_id))
+        except Exception:
+            log.exception("on_user_reconnect: failed to schedule reconcile")
+
+    stream.on_user_reconnect = _on_user_reconnect
+
     log.info("Starting TopstepX stream (server-side)...")
     await stream.start()
 

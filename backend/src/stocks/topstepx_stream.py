@@ -68,6 +68,14 @@ class TopstepXStream:
         self.on_fill: Callable[[dict], None] | None = None
         self.on_depth: Callable[[dict], None] | None = None
         self.on_quote: Callable[[dict], None] | None = None
+        # 2026-05-08: fired ONCE per successful (re)connect of the user hub.
+        # TopstepX doesn't replay missed events on reconnect, so a fill that
+        # arrived during the disconnect window is permanently lost from the
+        # stream. Wire this to reconcile_tracker_from_broker so the adapter
+        # syncs its tracker from REST after every reconnect — caught lost
+        # entry fills land within seconds instead of waiting for the
+        # update_mark watchdog (10s + 60s cooldown).
+        self.on_user_reconnect: Callable[[], None] | None = None
 
         self._market_ws = None
         self._user_ws = None
@@ -131,6 +139,16 @@ class TopstepXStream:
                         self._market_ws = ws
                     else:
                         self._user_ws = ws
+                        # Fire reconnect hook on the USER hub so the adapter can
+                        # sync its tracker from REST. Missed-fills during the
+                        # disconnect window are not replayed by TopstepX, so
+                        # post-reconnect-without-reconcile leaves us with a
+                        # stale local tracker until the next 60s reconcile tick.
+                        if self.on_user_reconnect is not None:
+                            try:
+                                self.on_user_reconnect()
+                            except Exception:
+                                log.exception("TopstepXStream [user]: on_user_reconnect raised")
 
                     # Subscribe
                     await subscribe_fn(ws)
