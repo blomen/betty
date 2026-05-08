@@ -261,6 +261,23 @@ class TopstepXBrokerAdapter:
         # until the first either commits _pending_trade or rejects.
         self._signal_lock: asyncio.Lock | None = None
 
+    def _reset_tracker_for_rollback(self) -> None:
+        """Reset tracker to flat state on entry-flow rollback (stop-placement
+        or stop-verify failure after we've pre-populated tracker.side from the
+        successful entry order). Mirrors the tail of close_position so on_stream_fill
+        cleanly drops the upcoming close fill via the "while flat" guard.
+        """
+        self.tracker.side = None
+        self.tracker.entry_price = 0.0
+        self.tracker.stop_price = 0.0
+        self.tracker.size = 0
+        self.tracker.entry_order_id = None
+        self.tracker.stop_order_id = None
+        self.tracker.peak_R = 0.0
+        self.tracker.locked_half_R = False
+        self.tracker.locked_BE = False
+        self._set_pending_trade(None)
+
     def update_mark_and_check_be_lock(self, price: float) -> None:
         """Per-tick: update peak_R AND fire BE-lock at +2R if not yet locked.
 
@@ -1618,6 +1635,21 @@ class TopstepXBrokerAdapter:
 
         entry_order_id = result.get("orderId") if isinstance(result, dict) else None
 
+        # 2026-05-08 FIX: pre-populate tracker IMMEDIATELY after entry-order
+        # submission, BEFORE stop placement. Stop placement + verification
+        # take hundreds of ms (multiple REST calls), but TopstepX entry fills
+        # arrive in <100ms — without this, the fill loses the race and gets
+        # dropped by on_stream_fill's "while flat" guard at line 1062. That
+        # left the tracker stuck at `side=long entry_price=0` for the entire
+        # trade lifetime, which made update_mark_and_check_be_lock no-op
+        # (peak_R never updated, BE-lock never fired, cont-trail never fired).
+        # Setting side + entry_order_id here makes the tracker NOT flat by the
+        # time the fill arrives, so on_stream_fill matches by orderId and
+        # writes the real fill price into entry_price.
+        side = "long" if is_long else "short"
+        self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
+        self.tracker.entry_order_id = entry_order_id
+
         stop_order_id = None
         if stop_price > 0:
             current_stop = stop_price
@@ -1675,6 +1707,13 @@ class TopstepXBrokerAdapter:
                 log.error(
                     "Stop placement failed twice — flattening entry to avoid unhedged position",
                 )
+                # Roll back the pre-populated tracker (set right after order
+                # submission). Without this, the close fill from liquidate
+                # would land while side="long" entry_price=0, triggering the
+                # unknown-orderId sentinel which would misclassify it as an
+                # entry. Resetting to flat means the close fill cleanly drops
+                # via the "while flat" guard or the reconcile loop catches it.
+                self._reset_tracker_for_rollback()
                 try:
                     await self.client.liquidate_position()
                 except Exception:
@@ -1729,6 +1768,10 @@ class TopstepXBrokerAdapter:
                             len(live_ids),
                             broker_size,
                         )
+                        # Roll back the pre-populated tracker before liquidate
+                        # so the close fill is cleanly dropped (see comment
+                        # in stop_placement_failed branch above).
+                        self._reset_tracker_for_rollback()
                         try:
                             await self.client.liquidate_position()
                         except Exception:
@@ -1743,9 +1786,11 @@ class TopstepXBrokerAdapter:
                 # genuine naked-position state within 60s.
                 log.warning("Stop verification REST call failed; continuing", exc_info=True)
 
-        side = "long" if is_long else "short"
-        self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
-        self.tracker.entry_order_id = entry_order_id
+        # tracker.on_fill + entry_order_id were already set above (right after
+        # place_market_order returned) so the entry fill could be processed
+        # without being dropped as "while flat". Calling on_fill again here
+        # would overwrite the real fill price back to 0. Just sync stop_order_id
+        # which is only known after stop placement.
         self.tracker.stop_order_id = stop_order_id
 
         now = datetime.now(timezone.utc)
