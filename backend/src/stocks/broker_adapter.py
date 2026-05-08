@@ -295,6 +295,36 @@ class TopstepXBrokerAdapter:
         # despite price moving 2.5R above entry for 17 minutes. Log gates
         # to pinpoint where the chain breaks. Throttled to avoid flooding.
         prev_peak_R = float(getattr(self.tracker, "peak_R", 0.0) or 0.0)
+
+        # 2026-05-08 watchdog: detect the dropped-fill bug signature
+        # (side set but entry_price=0). The pre-populate fix in on_signal
+        # prevents the original race, but defense-in-depth — if we ever
+        # land back in this state for >10s, force a reconcile from broker
+        # truth so trail logic can resume mid-trade rather than the trade
+        # running stop-only with no BE-lock or cont-trail.
+        if not self.tracker.is_flat and self.tracker.entry_price <= 0:
+            if getattr(self, "_corruption_first_seen", None) is None:
+                self._corruption_first_seen = time.time()
+            elif time.time() - self._corruption_first_seen > 10:
+                log.error(
+                    "TRACKER CORRUPTION: side=%s entry_price=0 for >10s — forcing reconcile from broker",
+                    self.tracker.side,
+                )
+                # Cooldown: skip re-trigger for 60s so the async reconcile
+                # has time to land before we evaluate again.
+                self._corruption_first_seen = time.time() + 60
+                try:
+                    import asyncio as _arec
+
+                    from .tracker_reconciler import reconcile_tracker_from_broker
+
+                    contract_id = getattr(self.config, "contract_id", None)
+                    _arec.create_task(reconcile_tracker_from_broker(self, self.client, contract_id))
+                except Exception:
+                    log.exception("TRACKER CORRUPTION: failed to schedule reconcile")
+        elif hasattr(self, "_corruption_first_seen"):
+            self._corruption_first_seen = None
+
         if self.tracker.is_flat or self.tracker.entry_price <= 0:
             if not hasattr(self, "_last_mark_skip_log_ts"):
                 self._last_mark_skip_log_ts = 0.0
@@ -1572,6 +1602,21 @@ class TopstepXBrokerAdapter:
             float(signal.get("zone", 0) or 0),
         )
 
+        # 2026-05-08: pre-claim tracker state BEFORE submitting the entry order.
+        # The dropped-fill bug recurs because TopstepX fills can arrive before
+        # `await place_market_order` even returns — i.e. during the await. If
+        # tracker.is_flat is still True at that moment, on_stream_fill's "while
+        # flat" guard drops the fill, and entry_price stays at 0 forever.
+        # Setting `side` here makes is_flat=False BEFORE the await, so any fill
+        # that arrives during the await is correctly classified as our entry.
+        # entry_price stays at 0 until the fill writes the real price. If the
+        # order is rejected we _reset_tracker_for_rollback().
+        side = "long" if is_long else "short"
+        self.tracker.side = side
+        self.tracker.size = size
+        self.tracker.stop_price = stop_price
+        log.info("Position opening: %s %d stop=%.2f (waiting for entry fill)", side, size, stop_price)
+
         # Network flakiness to api.topstepx.com surfaces as ConnectTimeout.
         # Retry once before failing so a single dropped connection doesn't
         # cost an entire setup. Two attempts is the cap — beyond that we
@@ -1592,6 +1637,7 @@ class TopstepXBrokerAdapter:
                 )
         if result is None:
             log.error("Market order failed after 2 attempts: %s", last_exc)
+            self._reset_tracker_for_rollback()
             return {"rejected": True, "reason": "order_failed"}
 
         if isinstance(result, dict) and not result.get("success", True):
@@ -1639,23 +1685,12 @@ class TopstepXBrokerAdapter:
                     "session/account patterns; not halting: %s",
                     err,
                 )
+            self._reset_tracker_for_rollback()
             return {"rejected": True, "reason": err}
 
         entry_order_id = result.get("orderId") if isinstance(result, dict) else None
-
-        # 2026-05-08 FIX: pre-populate tracker IMMEDIATELY after entry-order
-        # submission, BEFORE stop placement. Stop placement + verification
-        # take hundreds of ms (multiple REST calls), but TopstepX entry fills
-        # arrive in <100ms — without this, the fill loses the race and gets
-        # dropped by on_stream_fill's "while flat" guard at line 1062. That
-        # left the tracker stuck at `side=long entry_price=0` for the entire
-        # trade lifetime, which made update_mark_and_check_be_lock no-op
-        # (peak_R never updated, BE-lock never fired, cont-trail never fired).
-        # Setting side + entry_order_id here makes the tracker NOT flat by the
-        # time the fill arrives, so on_stream_fill matches by orderId and
-        # writes the real fill price into entry_price.
-        side = "long" if is_long else "short"
-        self.tracker.on_fill(side, price=0.0, size=size, stop_price=stop_price)
+        # tracker.side / size / stop_price were already set BEFORE the order
+        # submission to avoid the dropped-fill race. Just sync entry_order_id.
         self.tracker.entry_order_id = entry_order_id
 
         stop_order_id = None
