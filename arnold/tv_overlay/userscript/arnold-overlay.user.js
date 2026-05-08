@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.4.4
-// @description  Closed-trade rectangles append broker_trades.exit_reason in brackets ([STOP]/[EE_LOCK]/[FLIP]/[MANUAL]/etc) — broadcaster forwards exit_reason from the BrokerTrade row. (Standalone swing/FVG/OB level rendering from 0.4.3 retained.) Active trade rendering still lives in the extension only.
+// @version      0.5.0
+// @description  Closed-trade rectangles are filtered against TV's visible range — off-screen trades no longer pile up at the chart's left edge. Auto-redraw on scroll/zoom (debounced 200ms). Active trade rendering unchanged.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
