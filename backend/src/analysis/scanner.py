@@ -811,9 +811,22 @@ class OpportunityScanner:
                 "is_sharp": is_sharp,
             }
 
-        # In constrained-provider mode: reject market if any leg needed a Pinnacle fallback.
-        # The user asked to only see results between their selected providers.
-        if counterpart_providers and any(d["is_sharp"] for d in best_per_outcome.values()):
+        # In constrained-provider mode: reject market if any leg fell back to
+        # Pinnacle AND pinnacle is NOT in the user's counterpart_providers list.
+        # is_sharp=True is only set when the leg was demoted to Pinnacle's fair
+        # odds (lines 791-792, 796-797 above) — so when pinnacle is explicitly
+        # included as an allowed counterpart, the fallback is the desired
+        # behavior, not a violation. Bug-fix 2026-05-08: previous check was
+        # `if counterpart_providers and any(is_sharp)` which rejected every
+        # arb that used pinnacle as counter, even when the user had requested
+        # pinnacle. Symptom: GET /api/opportunities/arb-workflow with
+        # counterpart_providers=pinnacle,polymarket,... returned 0 results
+        # (scanner found arbs, then this check zeroed them out). The
+        # arb_runner had a Python-side workaround that dropped the URL filter;
+        # the frontend's loadArbOpps did the same. Both can now drop the
+        # workaround once this fix deploys.
+        pinnacle_excluded = counterpart_providers and "pinnacle" not in counterpart_providers
+        if pinnacle_excluded and any(d["is_sharp"] for d in best_per_outcome.values()):
             return None
 
         # ── Enforce max 1 soft outcome per canonical platform ──
@@ -823,7 +836,7 @@ class OpportunityScanner:
         self._resolve_platform_conflicts(best_per_outcome, soft_candidates, fair_odds_map, anchor_provider)
 
         # Check again after conflict resolution (a demotion may have assigned Pinnacle)
-        if counterpart_providers and any(d["is_sharp"] for d in best_per_outcome.values()):
+        if pinnacle_excluded and any(d["is_sharp"] for d in best_per_outcome.values()):
             return None
 
         # Need all outcomes covered
