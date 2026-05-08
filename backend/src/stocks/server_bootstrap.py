@@ -627,6 +627,23 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
                         log.exception("reconcile loop: orphan liquidate failed — manual intervention required")
                 continue
             if broker_size != local_size:
+                # 2026-05-08: skip the halt during the pre-claim window
+                # (on_signal sets tracker.side + size BEFORE awaiting
+                # place_market_order so fills aren't dropped, but during that
+                # await the broker hasn't filled yet — local=1 broker=0 is
+                # transient, not a desync). Detection: side set but
+                # entry_price still 0 means we're waiting for the entry
+                # fill to confirm. The watchdog at update_mark_and_check_be_lock
+                # handles the case where the fill never arrives.
+                if not adapter.tracker.is_flat and adapter.tracker.entry_price <= 0:
+                    log.info(
+                        "reconcile loop: size mismatch (broker=%d local=%d) ignored — "
+                        "entry fill pending (side=%s entry_price=0)",
+                        broker_size,
+                        local_size,
+                        adapter.tracker.side,
+                    )
+                    continue
                 log.error(
                     "reconcile loop: SIZE MISMATCH — broker=%d local=%d; halting + flattening",
                     broker_size,
