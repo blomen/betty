@@ -179,6 +179,7 @@ async def _passive_position_poller() -> None:
                 size = int(pos.get("size", 0))
                 entry = float(pos.get("entry_price") or 0.0)
                 stop = pos.get("stop_price")
+                original_stop = pos.get("original_stop_price")
                 tp = pos.get("tp_price")
                 if size > 0:
                     if last_was_flat:
@@ -210,6 +211,7 @@ async def _passive_position_poller() -> None:
                                 "side": side,
                                 "entry_time": entry_time,
                                 "tp_price": float(tp) if tp else None,
+                                "original_stop_price": float(original_stop) if original_stop else None,
                             }
                         ]
                     )
