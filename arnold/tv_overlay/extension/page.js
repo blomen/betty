@@ -881,20 +881,7 @@
         overrides: positionOverrides,
       }), `active-${shapeName}`);
       if (shapeId == null) {
-        // Fallback: TV refused the long_position widget — paint a thin
-        // colored rectangle at entry price so the trade is at least
-        // visible. Open P&L isn't shown but runtime-status carries it.
-        const fbId = await _drawActiveRectFallback(p, anchor, endEpoch, headerText, stopPrice, tpPrice);
-        if (fbId != null) {
-          if (existing && existing.shapeId != null && existing.shapeId !== fbId) {
-            try { chart.removeEntity(existing.shapeId); } catch (_) {}
-          }
-          drawnPositions.set(p.key, { shapeId: fbId, kind: 'rectangle' });
-          _ensureGroupAndAdd('Arnold • Active Trade', fbId);
-          _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, stopPrice);
-          return true;
-        }
-        sendError(`drawPosition: createMultipointShape returned null for ${shapeName} (fallback also failed)`);
+        sendError(`drawPosition: createMultipointShape returned null for ${shapeName}`);
         return false;
       }
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
@@ -907,45 +894,6 @@
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
-    }
-  }
-
-  // Active-trade fallback. Paints a thin band from stop → tp at entry
-  // anchor, side-colored. Mirrors the userscript's _drawClosedRect math
-  // but uses planned stop/tp instead of realized exit. Used only when
-  // TV refuses long_position widget creation.
-  async function _drawActiveRectFallback(p, anchor, endEpoch, headerText, stopPrice, tpPrice) {
-    const isLong = p.side === 'long';
-    const entry = Number(p.entry);
-    if (!Number.isFinite(entry) || entry <= 0) return null;
-    const top = Math.max(stopPrice, tpPrice, entry);
-    const bottom = Math.min(stopPrice, tpPrice, entry);
-    const fillColor = p.halted ? '#f59e0b' : (isLong ? '#10b981' : '#ef4444');
-    try {
-      const id = await _resolve(chart.createMultipointShape(
-        [
-          { time: anchor, price: top },
-          { time: endEpoch, price: bottom },
-        ],
-        {
-          shape: 'rectangle',
-          text: headerText,
-          disableSave: true,
-          overrides: {
-            color: fillColor,
-            backgroundColor: fillColor,
-            transparency: 80,
-            linewidth: 1,
-            showLabel: true,
-            textColor: '#f8fafc',
-            fontSize: 11,
-          },
-        }
-      ));
-      return id;
-    } catch (e) {
-      sendError(`_drawActiveRectFallback failed: ${e instanceof Error ? e.message : String(e)}`);
-      return null;
     }
   }
 
@@ -1213,24 +1161,7 @@
         overrides: widgetProps,
       }), `closed-${shapeName}`);
       if (shapeId == null) {
-        // Fallback path: TV occasionally rejects long_position creation
-        // (returns null) — observed live 2026-05-08 with no clear cause
-        // (entry/exit/stop all valid floats; entry_time within chart's bar
-        // range). Without this fallback the closed trade silently never
-        // paints. Render a simple emerald/red rectangle from entry-time →
-        // exit-time bounded by entry/exit prices instead — matches the
-        // userscript's _drawClosedRect output, which is robust across TV
-        // builds.
-        const fbShapeId = await _drawClosedRectFallback(p, anchor, endEpoch, headerText);
-        if (fbShapeId != null) {
-          if (existing && existing.shapeId != null && existing.shapeId !== fbShapeId) {
-            try { chart.removeEntity(existing.shapeId); } catch (_) {}
-          }
-          drawnPositions.set(p.key, { shapeId: fbShapeId, kind: 'rectangle' });
-          _ensureGroupAndAdd('Arnold • Closed Trades', fbShapeId);
-          return true;
-        }
-        sendError(`_drawClosedPositionWidget: createMultipointShape returned null for ${shapeName} (fallback also failed)`);
+        sendError(`_drawClosedPositionWidget: createMultipointShape returned null for ${shapeName}`);
         return false;
       }
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
@@ -1246,63 +1177,6 @@
     } catch (e) {
       sendError(`_drawClosedPositionWidget failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
-    }
-  }
-
-  // Rectangle fallback for closed trades — used when TV refuses to create
-  // the long_position / short_position widget. Mirrors the userscript's
-  // _drawClosedRect logic so the visual output is consistent across the
-  // two renderers. Returns the shape id on success, null on failure.
-  async function _drawClosedRectFallback(p, anchor, endEpoch, headerText) {
-    const pnl = (typeof p.pnl_dollars === 'number') ? p.pnl_dollars : 0;
-    const isWin = pnl >= 0;
-    const entry = Number(p.entry);
-    const exit = (typeof p.exit_price === 'number' && p.exit_price > 0) ? p.exit_price : entry;
-    const stop = (typeof p.stop === 'number' && p.stop > 0) ? p.stop : null;
-    const tp = (typeof p.tp === 'number' && p.tp > 0) ? p.tp : null;
-    if (!Number.isFinite(entry) || entry <= 0) return null;
-
-    let y1, y2;
-    if (isWin) {
-      y1 = exit;
-      y2 = stop != null ? stop : entry;
-    } else {
-      y1 = tp != null ? tp : entry;
-      y2 = stop != null ? stop : entry;
-    }
-    if (!Number.isFinite(y1) || !Number.isFinite(y2) || y1 === y2) {
-      const fallback = 0.25;
-      y1 = entry + fallback;
-      y2 = entry - fallback;
-    }
-    const top = Math.max(y1, y2);
-    const bottom = Math.min(y1, y2);
-    const fillColor = isWin ? '#10b981' : '#ef4444';
-    try {
-      const id = await _resolve(chart.createMultipointShape(
-        [
-          { time: anchor, price: top },
-          { time: endEpoch, price: bottom },
-        ],
-        {
-          shape: 'rectangle',
-          text: headerText,
-          disableSave: true,
-          overrides: {
-            color: fillColor,
-            backgroundColor: fillColor,
-            transparency: 70,
-            linewidth: 1,
-            showLabel: true,
-            textColor: '#f8fafc',
-            fontSize: 11,
-          },
-        }
-      ));
-      return id;
-    } catch (e) {
-      sendError(`_drawClosedRectFallback failed: ${e instanceof Error ? e.message : String(e)}`);
-      return null;
     }
   }
 
