@@ -878,8 +878,12 @@
   async function _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, placedStop) {
     const trailKey = `${p.key}:trail`;
     const NQ_TICK = 0.25;
-    const orig = Number(originalStop);
-    const placed = Number(placedStop);
+    // Number(null) is 0 which is finite — explicitly map null/undefined to NaN
+    // so the isFinite guard catches missing fields and prevents drawing a
+    // phantom trail line at price 0 for legacy rows where final_stop_price
+    // is NULL.
+    const orig = (originalStop == null) ? NaN : Number(originalStop);
+    const placed = (placedStop == null) ? NaN : Number(placedStop);
     const entry = Number(p.entry);
     if (!Number.isFinite(orig) || !Number.isFinite(placed) || !Number.isFinite(entry)) {
       _safeRemoveTrail(trailKey);

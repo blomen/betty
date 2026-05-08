@@ -236,8 +236,21 @@ class OverlayBroadcaster:
                 "side": side,
                 "entry": float(entry_price),
                 "stop": float(t.get("stop_price")) if t.get("stop_price") is not None else None,
-                "original_stop_price": float(t["stop_price"]) if t.get("stop_price") is not None else None,
-                "placed_stop_price": float(t["final_stop_price"]) if t.get("final_stop_price") is not None else None,
+                # Prefer the unified-name keys (set explicitly by the active-trade
+                # synthesis dict to carry semantic meaning regardless of DB schema).
+                # Fall back to the DB column names for closed trades polled from
+                # /api/stocks/broker-trades, where post-Task-2 stop_price=original
+                # and final_stop_price=placed-at-exit.
+                "original_stop_price": (
+                    float(t["original_stop_price"])
+                    if t.get("original_stop_price") is not None
+                    else (float(t["stop_price"]) if t.get("stop_price") is not None else None)
+                ),
+                "placed_stop_price": (
+                    float(t["placed_stop_price"])
+                    if t.get("placed_stop_price") is not None
+                    else (float(t["final_stop_price"]) if t.get("final_stop_price") is not None else None)
+                ),
                 "tp": float(t.get("tp_price")) if t.get("tp_price") is not None else None,
                 "size": int(t.get("size") or 1),
                 "entry_time": entry_time,
