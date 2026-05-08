@@ -151,6 +151,10 @@ def runtime_status(request: Request):
     entry = tracker.entry_price or float(pending.get("entry_price") or 0.0) or float(pending.get("signal_price") or 0.0)
     stop = tracker.stop_price or pending.get("stop_price")
     tp = pending.get("tp_price")
+    # Original entry-time stop, captured once on _pending_trade and never
+    # mutated by modify_stop. Used by the chart widget to render the
+    # planned-1R band (so R:R = 2 stays correct after trail walks).
+    original_stop = pending.get("original_stop_price")
     return {
         "running": True,
         "paused": paused,
@@ -163,6 +167,7 @@ def runtime_status(request: Request):
             "size": tracker.size,
             "entry_price": entry,
             "stop_price": float(stop) if stop is not None else 0.0,
+            "original_stop_price": float(original_stop) if original_stop is not None else None,
             "tp_price": float(tp) if tp is not None else None,
             "peak_R": tracker.peak_R,
             "locked_half_R": tracker.locked_half_R,
@@ -511,6 +516,7 @@ def list_broker_trades(
             "size": r.size,
             "entry_price": r.entry_price,
             "stop_price": r.stop_price,
+            "final_stop_price": r.final_stop_price,
             "tp_price": r.tp_price,
             "exit_price": r.exit_price,
             "pnl_dollars": r.pnl_dollars,
