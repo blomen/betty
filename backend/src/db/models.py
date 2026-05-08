@@ -400,6 +400,96 @@ class BalanceLog(Base):
     __table_args__ = (Index("ix_balance_log_provider_created", "provider_id", "created_at"),)
 
 
+class MirrorProviderState(Base):
+    """Authoritative per-provider state from the local mirror.
+
+    Phase 2 of the platform rebuild (2026-05-08). Local mirror writes on
+    every login/balance/tab change so the frontend reads from the DB
+    instead of trying to reconstruct state from in-memory + ephemeral SSE
+    + React state. Survives `arnold.bat` restart, browser hard-refresh,
+    SSH tunnel wedges. Replaces the brittle state-seeding effects.
+    """
+
+    __tablename__ = "mirror_provider_state"
+
+    provider_id = Column(String, primary_key=True)
+    logged_in = Column(Boolean, default=False, nullable=False)
+    balance = Column(Float, nullable=True)
+    balance_currency = Column(String(8), nullable=True)
+    tab_url = Column(String, nullable=True)
+    tab_open = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class MirrorRunnerState(Base):
+    """Per-provider runner state (login_waiting / settling / ready_to_run / etc).
+
+    See MirrorProviderState — same Phase 2 motivation. Mirror writes on
+    every state transition so the frontend's card state derives from the
+    DB rather than racing against SSE.
+    """
+
+    __tablename__ = "mirror_runner_state"
+
+    provider_id = Column(String, primary_key=True)
+    state = Column(String, nullable=True)
+    mode = Column(String, nullable=True)  # 'arb' | 'value'
+    current_arb_group_id = Column(String, nullable=True)
+    current_opp_id = Column(Integer, nullable=True)
+    last_idle_reason = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class MirrorEventLog(Base):
+    """Append-only log of every mirror SSE event for replay + debugging.
+
+    Frontend can fetch events since a timestamp on reconnect to fill the
+    gap that the ephemeral SSE broadcaster misses. Operator can also
+    grep this log post-mortem to reconstruct what happened in any
+    session.
+    """
+
+    __tablename__ = "mirror_event_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    provider_id = Column(String, nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    data = Column(JSON, nullable=True)
+    ts = Column(DateTime, default=_utcnow, nullable=False, index=True)
+
+    __table_args__ = (Index("ix_mirror_event_log_pid_ts", "provider_id", "ts"),)
+
+
+class MirrorProviderHealth(Base):
+    """Per-provider health snapshot — Phase 4 of the platform rebuild (2026-05-08).
+
+    Derived periodically from `mirror_event_log` + reachability probes against
+    the provider's home_url. Each row is the latest snapshot for one provider;
+    the daily smoke-test cron rewrites it. The frontend §9 capability matrix
+    reads from this table (replaces the static markdown that "lied" — i.e.
+    showed ✅ for capabilities that broke without anyone noticing).
+
+    Status fields are nullable strings ('green' | 'amber' | 'red' | None) so
+    the UI can render mixed states. last_* timestamps come from event_log
+    aggregation.
+    """
+
+    __tablename__ = "mirror_provider_health"
+
+    provider_id = Column(String, primary_key=True)
+    home_url_status = Column(String, nullable=True)  # 'green' | 'amber' | 'red'
+    home_url_http_code = Column(Integer, nullable=True)
+    last_login_detected_at = Column(DateTime, nullable=True)
+    last_balance_intercept_at = Column(DateTime, nullable=True)
+    last_placement_at = Column(DateTime, nullable=True)
+    last_settled_at = Column(DateTime, nullable=True)
+    last_provider_skipped_at = Column(DateTime, nullable=True)
+    last_provider_skipped_reason = Column(String, nullable=True)
+    overall = Column(String, nullable=True)  # rolled-up 'green' | 'amber' | 'red'
+    notes = Column(String, nullable=True)
+    checked_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
 class SettlementQueue(Base):
     """Persistent settlement queue — survives restarts, user confirms before bankroll update."""
 
@@ -2289,6 +2379,9 @@ def _run_pg_migrations(engine) -> None:
         # ambiguous when trades cluster). NULL on legacy rows.
         ("broker_trades", "entry_order_id", "BIGINT"),
         ("broker_trades", "exit_order_id", "BIGINT"),
+        # 2026-05-08 — DQN raw action q-values, persisted at signal time so we
+        # can analyze action margin and calibration without re-running inference.
+        ("stock_signals", "q_values", "JSONB"),
     ]
     with engine.begin() as conn:
         # Each ALTER runs inside its own SAVEPOINT so a single failure
@@ -2579,8 +2672,32 @@ class StockSignal(Base):
     trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
     # Why we emitted the signal — same shape as broker_trades.reasoning.
     reasoning = Column(JSON, nullable=True)
+    # Raw DQN action q-values [q_continuation, q_reversal, q_skip] (or 2-elem
+    # [q_cont, q_rev] for legacy GBT-only paths). Lets us analyze action margin
+    # and calibration drift across model versions without re-running inference.
+    q_values = Column(JSON, nullable=True)
 
     __table_args__ = (Index("ix_stock_signals_ts_price", "ts", "price"),)
+
+
+class AccountSnapshot(Base):
+    """Time-series of TopstepX account state. Written by the snapshot_account.py
+    cron every 5 minutes so we can reconstruct equity curves, drawdown profiles,
+    and overlay account state with trade outcomes."""
+
+    __tablename__ = "account_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    ts = Column(DateTime, nullable=False, default=_utcnow, index=True)
+    account_id = Column(BigInteger, nullable=False)
+    balance = Column(Float, nullable=True)
+    equity = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, nullable=True)
+    daily_pnl = Column(Float, nullable=True)
+    open_position_size = Column(Integer, nullable=True)
+    source = Column(String, nullable=False, default="topstepx_account_search")
+
+    __table_args__ = (Index("ix_account_snapshots_account_ts", "account_id", "ts"),)
 
 
 if __name__ == "__main__":

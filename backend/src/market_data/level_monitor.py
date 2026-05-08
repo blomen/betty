@@ -63,6 +63,9 @@ def _persist_stock_signal_async(payload: dict) -> None:
                 reasoning = p.get("reasoning")
                 if not isinstance(reasoning, dict):
                     reasoning = None
+                q_values = p.get("q_values")
+                if q_values is not None and not isinstance(q_values, (list, tuple)):
+                    q_values = None
                 row = StockSignal(
                     ts=ts,
                     symbol="NQ",
@@ -79,6 +82,7 @@ def _persist_stock_signal_async(payload: dict) -> None:
                     observation_b64=obs_b64,
                     observation_dim=obs_dim,
                     reasoning=reasoning,
+                    q_values=list(q_values) if q_values is not None else None,
                 )
                 db.add(row)
                 db.commit()
@@ -2082,8 +2086,39 @@ class LevelMonitor:
                 _RELAY_OF_FLOOR = 0.0 if _reckless_relay else 0.30
                 relay_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
 
+                # Persist EVERY zone touch — including skips and gated rejections —
+                # so the trainer has labelled negative examples (touch where the
+                # model decided not to trade, then we observe the post-touch
+                # market reaction). Without this, stock_signals only contains
+                # fired trades and the dataset is biased toward executed actions.
+                def _persist_skip(reason: str) -> None:
+                    sk_payload = {
+                        "type": "signal",
+                        "action": "skip",
+                        "price": price,
+                        "confidence": confidence,
+                        "cont_p": result.get("cont_p"),
+                        "rev_p": result.get("rev_p"),
+                        "model_type": result.get("model_type"),
+                        "zone": zone.center_price,
+                        "zone_members": zone.member_count,
+                        "trigger": "zone_entry",
+                        "orderflow_score": relay_of_score,
+                        "q_values": result.get("q_values"),
+                        "reasoning": {
+                            "skip_reason": reason,
+                            "model_action": action,
+                            "approach": approach,
+                        },
+                        "ts": time.time(),
+                    }
+                    if captured_obs is not None:
+                        sk_payload["_observation"] = captured_obs
+                    _persist_stock_signal_async(sk_payload)
+
                 if action in ("SKIP", "skip"):
                     logger.debug("SKIP for zone %.2f (conf=%.3f)", zone.center_price, confidence)
+                    _persist_skip("model_skip")
                 elif confidence < MIN_SIGNAL_CONFIDENCE:
                     logger.info(
                         "Signal filtered: %s conf=%.3f < %.2f at zone %.2f",
@@ -2092,6 +2127,7 @@ class LevelMonitor:
                         MIN_SIGNAL_CONFIDENCE,
                         zone.center_price,
                     )
+                    _persist_skip("low_confidence")
                 elif relay_of_score < _RELAY_OF_FLOOR:
                     logger.info(
                         "Signal filtered (relay OF gate): %s of=%.3f < %.2f at zone %.2f conf=%.3f",
@@ -2101,6 +2137,7 @@ class LevelMonitor:
                         zone.center_price,
                         confidence,
                     )
+                    _persist_skip("low_orderflow")
                 else:
                     if action == "CONTINUATION":
                         sig_action = "enter_long" if approach == "up" else "enter_short"
@@ -2177,6 +2214,7 @@ class LevelMonitor:
                         # exactly what showed up on broker_trade #54.
                         "trigger": "zone_entry",
                         "orderflow_score": cb_of_score,
+                        "q_values": result.get("q_values"),
                         "reasoning": cb_reasoning,
                         "ts": time.time(),
                     }
