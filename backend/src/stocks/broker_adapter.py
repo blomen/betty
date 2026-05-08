@@ -350,10 +350,21 @@ class TopstepXBrokerAdapter:
                 self.tracker.peak_R,
             )
 
-        # +2R BE-lock: lock a small profit (entry ± 2 ticks = $10) so the
+        # +1.5R BE-lock: lock a small profit (entry ± 2 ticks = $10) so the
         # trade can never give back below break-even. Single-shot via
         # locked_BE flag on the tracker.
-        if getattr(self.tracker, "locked_BE", False) or self.tracker.peak_R < 2.0 or self.tracker.entry_price <= 0:
+        # 2026-05-08: lowered from 2R to 1.5R based on 472-trade analysis —
+        # only 3 trades (0.6%) ever crossed 2R while 19 (4.0%) crossed 1.5R,
+        # and 84% of trades that hit 1.5R reversed before reaching 2R. With
+        # BE-lock at 2R the feature was effectively dead; at 1.5R it triggers
+        # ~6× more often, locking small profits on the trades that peak in
+        # the 1.5–2R zone before reverting.
+        BE_LOCK_R = 1.5
+        if (
+            getattr(self.tracker, "locked_BE", False)
+            or self.tracker.peak_R < BE_LOCK_R
+            or self.tracker.entry_price <= 0
+        ):
             return
 
         BE_BUFFER_TICKS = 2
