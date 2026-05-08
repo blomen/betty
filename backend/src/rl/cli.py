@@ -1838,10 +1838,15 @@ def merge_live() -> None:
         f"Merged: {len(merged_obs)} total episodes ({len(live_obs)} live + {len(merged_obs) - len(live_obs)} historical)"
     )
 
-    # Clean up live chunks (already merged)
-    for f in live_dir.glob("*.npy"):
-        f.unlink()
-    typer.echo("Live episode chunks cleaned up.")
+    # Clean up only the chunks we actually merged. Globbing live_dir/*.npy
+    # was racy — chunks landing AFTER `live_chunks = sorted(...)` snapshot
+    # but BEFORE this cleanup got deleted before being merged (audit #21).
+    deleted = 0
+    for cid in chunk_ids:
+        for f in live_dir.glob(f"*_{cid}.npy"):
+            f.unlink()
+            deleted += 1
+    typer.echo(f"Cleaned up {deleted} live episode files for {len(chunk_ids)} merged chunks.")
 
 
 # ---------------------------------------------------------------------------

@@ -104,14 +104,20 @@ class LiveEpisodeCollector:
         self.total_collected = 0
         self.total_flushed = 0
 
-        # Load existing count
-        self._chunk_idx = len(list(self._live_dir.glob("obs_*.npy")))
+        # Per-process flush counter (suffix to ensure uniqueness within the
+        # same millisecond). Audit #21: the previous len(glob) scheme could
+        # collide when the live_dir had gaps (e.g. merge-live deleted some
+        # chunks), and the next flush would overwrite an existing chunk file.
+        # Switching to a timestamp-based id matches the LT*/ZONE* writers in
+        # cli.py.
+        self._chunk_seq = 0
 
         # Lazy-load trigger GBT for trigger observation building (Phase 3b)
         self._trigger_gbt = None
         self._models_loaded = False
 
-        log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d", self._live_dir, self._chunk_idx)
+        existing = len(list(self._live_dir.glob("obs_*.npy")))
+        log.info("LiveEpisodeCollector initialized: dir=%s, existing_chunks=%d", self._live_dir, existing)
 
     def _ensure_models(self) -> None:
         """Lazy-load TriggerGBT for building trigger observations."""
@@ -372,28 +378,28 @@ class LiveEpisodeCollector:
         # block of session_memory features falls back to zeros (audit #19).
         te = np.array([e.touch_ts for e in episodes], dtype=np.float64)
 
-        idx = self._chunk_idx
-        np.save(self._live_dir / f"obs_{idx:04d}.npy", obs)
-        np.save(self._live_dir / f"rc_{idx:04d}.npy", rc)
-        np.save(self._live_dir / f"rr_{idx:04d}.npy", rr)
-        np.save(self._live_dir / f"lt_{idx:04d}.npy", lt)
-        np.save(self._live_dir / f"st_{idx:04d}.npy", st)
-        np.save(self._live_dir / f"be_{idx:04d}.npy", be)
-        np.save(self._live_dir / f"lc_{idx:04d}.npy", lc)
-        np.save(self._live_dir / f"te_{idx:04d}.npy", te)
+        chunk_id = f"LV{int(time.time() * 1000)}{self._chunk_seq:03d}"
+        self._chunk_seq += 1
+        np.save(self._live_dir / f"obs_{chunk_id}.npy", obs)
+        np.save(self._live_dir / f"rc_{chunk_id}.npy", rc)
+        np.save(self._live_dir / f"rr_{chunk_id}.npy", rr)
+        np.save(self._live_dir / f"lt_{chunk_id}.npy", lt)
+        np.save(self._live_dir / f"st_{chunk_id}.npy", st)
+        np.save(self._live_dir / f"be_{chunk_id}.npy", be)
+        np.save(self._live_dir / f"lc_{chunk_id}.npy", lc)
+        np.save(self._live_dir / f"te_{chunk_id}.npy", te)
 
         # Save trigger observations if available
         has_trig = all(e.trigger_observation is not None for e in episodes)
         if has_trig:
             trig = np.array([e.trigger_observation for e in episodes], dtype=np.float32)
-            np.save(self._live_dir / f"trig_{idx:04d}.npy", trig)
+            np.save(self._live_dir / f"trig_{chunk_id}.npy", trig)
 
-        self._chunk_idx += 1
         self.total_flushed += len(episodes)
         log.info(
-            "Flushed %d live episodes to chunk %04d (trig=%s, total: %d)",
+            "Flushed %d live episodes to chunk %s (trig=%s, total: %d)",
             len(episodes),
-            idx,
+            chunk_id,
             "yes" if has_trig else "no",
             self.total_flushed,
         )
@@ -410,7 +416,7 @@ class LiveEpisodeCollector:
                 "buffered": len(self._completed),
                 "total_collected": self.total_collected,
                 "total_flushed": self.total_flushed,
-                "chunks": self._chunk_idx,
+                "chunks": len(list(self._live_dir.glob("obs_*.npy"))),
             }
 
 
