@@ -367,6 +367,10 @@ class LiveEpisodeCollector:
         st = np.array([e.optimal_stop_ticks for e in episodes], dtype=np.float32)
         be = np.array([float(e.breakeven_reached) for e in episodes], dtype=np.float32)
         lc = np.array([float(e.levels_captured) for e in episodes], dtype=np.float32)
+        # touch_epochs feeds the chronological session-memory features; without
+        # these chunks merge-live can't extend touch_epochs.npy and the live
+        # block of session_memory features falls back to zeros (audit #19).
+        te = np.array([e.touch_ts for e in episodes], dtype=np.float64)
 
         idx = self._chunk_idx
         np.save(self._live_dir / f"obs_{idx:04d}.npy", obs)
@@ -376,6 +380,7 @@ class LiveEpisodeCollector:
         np.save(self._live_dir / f"st_{idx:04d}.npy", st)
         np.save(self._live_dir / f"be_{idx:04d}.npy", be)
         np.save(self._live_dir / f"lc_{idx:04d}.npy", lc)
+        np.save(self._live_dir / f"te_{idx:04d}.npy", te)
 
         # Save trigger observations if available
         has_trig = all(e.trigger_observation is not None for e in episodes)

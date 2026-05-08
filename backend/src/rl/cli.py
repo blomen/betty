@@ -1629,6 +1629,11 @@ def merge_live() -> None:
     live_trig = (
         np.concatenate([np.load(f) for f in live_trig_chunks]) if all(f.exists() for f in live_trig_chunks) else None
     )
+    # touch_epochs from each writer (live_collector / ingest-live-trades / zone
+    # labeller). Optional because legacy chunks predate the te_*.npy save —
+    # default-zero pad in the merge so old chunks don't bork the run (audit #19).
+    live_te_chunks = [live_dir / f"te_{cid}.npy" for cid in chunk_ids]
+    live_te = np.concatenate([np.load(f) for f in live_te_chunks]) if all(f.exists() for f in live_te_chunks) else None
 
     # Tier-1 enrichment arrays from ingest-live-trades (LT* chunks). All
     # optional — simulator chunks won't have them, so default to zeros.
@@ -1729,6 +1734,10 @@ def merge_live() -> None:
 
         _merge_aux("peak_R_cont", live_pk_c)
         _merge_aux("peak_R_rev", live_pk_r)
+        # touch_epochs feeds session_memory chronological sims (audit #19).
+        # Without this merge the live block lands with t=0 and the simulator
+        # treats every live row as the session-start, starving the feature.
+        _merge_aux("touch_epochs", live_te, default_dtype=np.float64)
         _merge_aux("was_stop", live_ws, default_dtype=np.int32)
         _merge_aux("trail_count", live_tc, default_dtype=np.int32)
         _merge_aux("slippage_ticks", live_sl)
@@ -1776,6 +1785,8 @@ def merge_live() -> None:
             np.save(episodes_dir / "peak_R_cont.npy", live_pk_c)
         if live_pk_r is not None:
             np.save(episodes_dir / "peak_R_rev.npy", live_pk_r)
+        if live_te is not None:
+            np.save(episodes_dir / "touch_epochs.npy", live_te)
         if live_ws is not None:
             np.save(episodes_dir / "was_stop.npy", live_ws)
         if live_tc is not None:
@@ -1981,6 +1992,9 @@ def ingest_live_trades() -> None:
     sp_list: list[float] = []  # absolute stop_price (0.0 if absent)
     of_list: list[float] = []  # broker-side orderflow_score (0.0 if absent)
     lat_list: list[float] = []  # fill_latency_ms (0.0 if absent)
+    # touch_epochs feeds session_memory features in train. Without these
+    # entries merge-live can't extend touch_epochs.npy (audit #19).
+    te_list: list[float] = []
     skipped_dim = 0
     skipped_recovery = 0
 
@@ -2203,6 +2217,7 @@ def ingest_live_trades() -> None:
         sp_list.append(np.float32(float(getattr(r, "trade_stop_price", None) or 0.0)))
         of_list.append(np.float32(float(getattr(r, "trade_of", None) or 0.0)))
         lat_list.append(np.float32(float(getattr(r, "fill_latency_ms", None) or 0.0)))
+        te_list.append(float(r.trade_ts.timestamp()) if r.trade_ts else 0.0)
 
     if skipped_dim:
         typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
@@ -2254,6 +2269,7 @@ def ingest_live_trades() -> None:
     np.save(live_dir / f"sp_{chunk_id}.npy", np.array(sp_list, dtype=np.float32))
     np.save(live_dir / f"of_{chunk_id}.npy", np.array(of_list, dtype=np.float32))
     np.save(live_dir / f"lat_{chunk_id}.npy", np.array(lat_list, dtype=np.float32))
+    np.save(live_dir / f"te_{chunk_id}.npy", np.array(te_list, dtype=np.float64))
 
     # Update seen set — include filtered-out recovery rows so they don't
     # requeue forever if more come in (the SQL filter is by trade_id, not
@@ -5261,6 +5277,7 @@ def label_zone_outcomes(
     rr_list: list[float] = []
     lt_list: list[int] = []
     st_list: list[float] = []
+    te_list: list[float] = []  # touch_epochs (audit #19)
 
     rev_wins = cont_wins = skips = errors = skipped_dim = 0
     rev_R_sum = cont_R_sum = 0.0
@@ -5331,6 +5348,7 @@ def label_zone_outcomes(
             rr_list.append(np.float32(rr))
             lt_list.append(int(action_label))
             st_list.append(np.float32(stop_ticks))
+            te_list.append(float(s.ts.timestamp()) if s.ts else 0.0)
 
         except Exception:
             errors += 1
@@ -5357,5 +5375,6 @@ def label_zone_outcomes(
     np.save(live_dir / f"rr_{chunk_id}.npy", np.array(rr_list, dtype=np.float32))
     np.save(live_dir / f"lt_{chunk_id}.npy", np.array(lt_list, dtype=np.int32))
     np.save(live_dir / f"st_{chunk_id}.npy", np.array(st_list, dtype=np.float32))
+    np.save(live_dir / f"te_{chunk_id}.npy", np.array(te_list, dtype=np.float64))
     typer.echo(f"\nWrote chunk {chunk_id}: {len(obs_list)} labelled tuples → live_episodes/")
     typer.echo("Next pipeline cycle (merge-live) will fold these into the training pool.")
