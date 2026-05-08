@@ -874,10 +874,15 @@
     }
 
     try {
+      // TV rejects long_position widget creation with "Value is undefined"
+      // when disableSave is set. Newer TV builds appear to validate widget
+      // overrides more strictly than drawing primitives — disableSave is
+      // accepted on rectangle/horizontal_line but not on position widgets.
+      // Drop it; cleanupStaleShapes still sweeps orphan position widgets
+      // by their tag/empty-text fingerprint on next boot.
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
         text: headerText,
-        disableSave: true,
         overrides: positionOverrides,
       }), `active-${shapeName}`);
       if (shapeId == null) {
@@ -1154,10 +1159,12 @@
     }
 
     try {
+      // disableSave dropped — see comment in _drawActivePositionShape.
+      // Newer TV builds reject the long_position widget with "Value is
+      // undefined" when disableSave is present.
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
         text: headerText,
-        disableSave: true,
         overrides: widgetProps,
       }), `closed-${shapeName}`);
       if (shapeId == null) {
