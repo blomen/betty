@@ -2435,6 +2435,41 @@ def _run_pg_migrations(engine) -> None:
                 sp.rollback()
                 logger.warning("pg migration: %s failed", idx_sql, exc_info=True)
 
+        # 2026-05-08 — broker_trades.profile_id and stock_signals.trade_id
+        # have always been plain Integer columns (no FK constraint). Audit
+        # item #50. ON DELETE SET NULL so deleting a profile or a broker
+        # trade row doesn't error out callers that still hold the reference;
+        # they just see NULL on the next read. Idempotent: skip if the
+        # constraint already exists. Each ALTER runs in a SAVEPOINT so a
+        # surprise orphan row doesn't abort the rest of the migration.
+        fk_migrations = [
+            (
+                "fk_broker_trades_profile",
+                "ALTER TABLE broker_trades ADD CONSTRAINT fk_broker_trades_profile "
+                "FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL",
+            ),
+            (
+                "fk_stock_signals_trade",
+                "ALTER TABLE stock_signals ADD CONSTRAINT fk_stock_signals_trade "
+                "FOREIGN KEY (trade_id) REFERENCES broker_trades(id) ON DELETE SET NULL",
+            ),
+        ]
+        for cname, ddl in fk_migrations:
+            sp = conn.begin_nested()
+            try:
+                exists = conn.execute(
+                    text("SELECT 1 FROM pg_constraint WHERE conname = :n"),
+                    {"n": cname},
+                ).first()
+                if exists:
+                    sp.commit()
+                    continue
+                conn.execute(text(ddl))
+                sp.commit()
+            except Exception:
+                sp.rollback()
+                logger.warning("pg migration: %s failed", cname, exc_info=True)
+
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(
             text(
@@ -2583,7 +2618,12 @@ class BrokerTrade(Base):
     # curve to the active profile so two profiles trading different
     # TopstepX accounts don't see each other's trades. NULL only for
     # legacy rows pre-migration (backfilled to the rasmus profile).
-    profile_id = Column(Integer, nullable=True, index=True)
+    profile_id = Column(
+        Integer,
+        ForeignKey("profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     session_date = Column(String, nullable=False)
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)
@@ -2669,7 +2709,12 @@ class StockSignal(Base):
     observation_b64 = Column(Text, nullable=True)
     observation_dim = Column(Integer, nullable=True)
     # Outcome linkage (filled by the correlate step when a matching trade closes)
-    trade_id = Column(Integer, nullable=True, index=True)  # broker_trades.id
+    trade_id = Column(
+        Integer,
+        ForeignKey("broker_trades.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Why we emitted the signal — same shape as broker_trades.reasoning.
     reasoning = Column(JSON, nullable=True)
     # Raw DQN action q-values [q_continuation, q_reversal, q_skip] (or 2-elem
