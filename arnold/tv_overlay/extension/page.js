@@ -8,12 +8,12 @@
   const ATTACH_POLL_MS = 1000;
   const ATTACH_MAX_TRIES = 60;
 
-  // Global color hierarchy — TradingView's swatch palette, left-to-right:
-  // RED → ORANGE → YELLOW → GREEN → TEAL → CYAN → BLUE → INDIGO → PURPLE → PINK.
-  // RED = strongest / highest priority; PINK = weakest. Used for both zone
-  // strength gradients and VP window hierarchy (monthly > weekly > daily).
+  // TradingView's swatch palette — used for non-strength color semantics
+  // (FVG/OB direction: green=bullish, red=bearish; VP timeframe hierarchy:
+  // monthly=red > weekly=orange > daily=yellow). Strength heatmap is a
+  // separate function below — do NOT use PALETTE for zone strength.
   const PALETTE = [
-    '#f23645', // 0 RED      — strongest
+    '#f23645', // 0 RED
     '#ff9800', // 1 ORANGE
     '#ffeb3b', // 2 YELLOW
     '#22ab94', // 3 GREEN
@@ -22,14 +22,20 @@
     '#2962ff', // 6 BLUE
     '#673ab7', // 7 INDIGO
     '#9c27b0', // 8 PURPLE
-    '#e91e63', // 9 PINK     — weakest
+    '#e91e63', // 9 PINK
   ];
 
-  // Map strength [0..1] → palette index where 1.0 = RED, 0.0 = PINK.
+  // 5-step heatmap matching CLAUDE.md and arnold-overlay.user.js:
+  // slate-blue → indigo → fuchsia → orange → red. Cool→warm is monotonic
+  // in strength so a viewer reads "warmer = stronger" without learning a
+  // rainbow legend. Kept in sync with userscript COLOR_BY_STRENGTH.
   function _paletteFor(strength) {
     const s = Math.max(0, Math.min(1, strength));
-    const idx = Math.round((1 - s) * (PALETTE.length - 1));
-    return PALETTE[idx];
+    if (s < 0.25) return '#475569'; // slate
+    if (s < 0.5)  return '#6366f1'; // indigo
+    if (s < 0.7)  return '#d946ef'; // fuchsia
+    if (s < 0.9)  return '#f97316'; // orange
+    return '#ef4444';                // red
   }
   // Hex `#rrggbb` → `rgba(r, g, b, alpha)`. Default alpha 0.4 so even
   // before the highlighter's `transparency` property kicks in, the stroke
@@ -42,7 +48,6 @@
 
   function strengthStyle(s) {
     const clamped = Math.max(0, Math.min(1, s));
-    // Hierarchy from PALETTE: RED=strongest → PINK=weakest.
     const color = _paletteFor(clamped);
     // Truly faint. Range 97-99 — strong zone 3% visible per shape, weak 1%.
     // With 6+ zones stacking at a price band this still sums to ~15-20%
@@ -221,6 +226,21 @@
     if (hasSwing) {
       color = '#fbbf24'; // tailwind amber-400
       transparency = 50; // forced 50% — overrides the strength-based fade
+    }
+
+    // Hide low-strength single-family zones (lone OBs at 0.413, naked POCs
+    // at 0.425, lone FVGs at 0.330, lone TPO/sessions ~0.45-0.48). These
+    // pollute the chart visually without adding much edge — without an
+    // additional family they're just "OB at price X", which the trader can
+    // already see from the candle. Swings always paint regardless of
+    // strength via the override above. Server still emits all zones, so
+    // the DQN observation is unaffected — purely a rendering filter.
+    const ZONE_PAINT_MIN_STRENGTH = 0.5;
+    if (!hasSwing && Number(p.strength) < ZONE_PAINT_MIN_STRENGTH) {
+      await safeRemove(p.key);
+      await safeRemovePrefix(`${p.key}:member:`);
+      zonePriorAmber.delete(p.key);
+      return false;
     }
 
     // Rectangle primitive — Y axis is price-anchored, so zone height
