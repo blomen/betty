@@ -236,6 +236,8 @@ class OverlayBroadcaster:
                 "side": side,
                 "entry": float(entry_price),
                 "stop": float(t.get("stop_price")) if t.get("stop_price") is not None else None,
+                "original_stop_price": float(t["stop_price"]) if t.get("stop_price") is not None else None,
+                "placed_stop_price": float(t["final_stop_price"]) if t.get("final_stop_price") is not None else None,
                 "tp": float(t.get("tp_price")) if t.get("tp_price") is not None else None,
                 "size": int(t.get("size") or 1),
                 "entry_time": entry_time,
@@ -504,6 +506,9 @@ class OverlayBroadcaster:
                                     "size": first.get("size", 1),
                                     "entry_price": entry,
                                     "stop_price": model_status.get("stop_price"),
+                                    "original_stop_price": first.get("original_stop_price")
+                                    or model_status.get("stop_price"),
+                                    "placed_stop_price": model_status.get("stop_price"),
                                     "tp_price": first.get("tp_price") or model_status.get("tp_price"),
                                     "exit_price": None,
                                     "closed_at": None,
