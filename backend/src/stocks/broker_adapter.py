@@ -1298,7 +1298,8 @@ class TopstepXBrokerAdapter:
                     if abs(broker_pnl - pnl_dollars) > 1.0:
                         log.warning(
                             "pnl mismatch: tracker computed $%.2f but broker reports $%.2f "
-                            "(side=%s entry=%.2f exit=%.2f size=%d). Using broker truth.",
+                            "(side=%s tracker_entry=%.2f close=%.2f size=%d). "
+                            "Back-deriving entry_px from broker truth.",
                             pnl_dollars,
                             broker_pnl,
                             side,
@@ -1307,12 +1308,15 @@ class TopstepXBrokerAdapter:
                             size,
                         )
                         pnl_dollars = broker_pnl
-                        # Back-derive points + reconstruct exit_price so DB
-                        # row's prices reflect what the broker actually saw.
+                        # The CLOSE price (`price` arg) is authoritative — it's
+                        # from the broker's stream frame. The stale value is
+                        # `entry_px` from the in-memory tracker (can desync over
+                        # long-lived positions or SSE reconnects). Mutate
+                        # entry_px, NOT price — the previous logic back-derived
+                        # exit_price into a phantom value that no candle ever
+                        # traded at (trades 530 + 534 on 2026-05-08).
                         pnl_pts = broker_pnl / (_NQ_POINT_VALUE * max(size, 1))
-                        # exit = entry + direction * pts. For shorts, direction
-                        # is -1, so a profit (pnl_pts > 0) means exit < entry.
-                        price = round((entry_px + direction * pnl_pts) * 4) / 4
+                        entry_px = round((price - direction * pnl_pts) * 4) / 4
                 except (TypeError, ValueError):
                     pass
             stop_price = pt.get("stop_price", 0) or self.tracker.stop_price or 0
