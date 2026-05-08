@@ -43,6 +43,7 @@ from .routes import (
     market_router,
     metrics_router,
     mirror_router,
+    mirror_state_router,
     mirror_stream_router,
     monitoring_router,
     opportunities_router,
@@ -559,6 +560,19 @@ async def lifespan(app: FastAPI):
 
             except Exception as e:
                 logger.error("Trading features startup failed: %s", e, exc_info=True)
+
+            # Phase 4 (2026-05-08): mirror health smoke-test loop. Runs every
+            # MIRROR_SMOKE_INTERVAL_S (default 24h), HTTP-probes each provider's
+            # home_url + recomputes event-derived health from `mirror_event_log`,
+            # writes one row per provider into `mirror_provider_health`. Replaces
+            # the static §9 capability matrix that "lied". Cancellation-safe.
+            try:
+                from ..jobs.mirror_smoke import smoke_loop
+
+                asyncio.create_task(smoke_loop(), name="mirror_smoke_loop")
+                logger.info("[lifespan] mirror_smoke_loop scheduled")
+            except Exception as e:
+                logger.error("mirror_smoke startup failed: %s", e, exc_info=True)
 
             # Backfill market_candles in a background thread (lowest priority).
             import threading
@@ -1405,6 +1419,7 @@ app.include_router(settings_router)
 app.include_router(limits_router)
 app.include_router(postmortem_router)
 app.include_router(mirror_router)
+app.include_router(mirror_state_router)
 app.include_router(mirror_stream_router)
 app.include_router(fire_window_router)
 app.include_router(slip_odds_router)

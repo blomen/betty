@@ -10,6 +10,7 @@ from .limits import router as limits_router
 from .market import router as market_router
 from .metrics import router as metrics_router
 from .mirror import router as mirror_router
+from .mirror_state import router as mirror_state_router
 from .mirror_stream import router as mirror_stream_router
 from .monitoring import router as monitoring_router
 from .opportunities import router as opportunities_router
@@ -45,6 +46,7 @@ __all__ = [
     "limits_router",
     "postmortem_router",
     "mirror_router",
+    "mirror_state_router",
     "mirror_stream_router",
     "fire_window_router",
     "signals_ws_router",
