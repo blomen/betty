@@ -237,6 +237,28 @@
   // scrub the entry handle each tick. Closed trades sync to broker
   // timestamps every render.
   const positionAnchors = new Map();
+  // Every closed-trade payload received from the WS, keyed by payload.key.
+  // Never evicted by drawPosition — entries persist across visible-range
+  // changes so reconcileClosedTradeVisibility can redraw a previously-
+  // undrawn trade when the user scrolls to its time window.
+  const closedTradePayloads = new Map(); // key → payload
+
+  // True iff the closed trade's [entry_time, end_time] window overlaps
+  // the chart's visible range. Both ranges are epoch seconds. Returns
+  // true if the range is unavailable (fail-open during early boot before
+  // chart.onChartReady fires).
+  function _closedTradeOverlapsRange(payload, range) {
+    if (!range || range.from == null || range.to == null) return true;
+    const start = Number(payload.entry_time);
+    const end = Number(payload.end_time);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    return !(end < range.from || start > range.to);
+  }
+
+  function _currentVisibleRange() {
+    if (!chart || typeof chart.getVisibleRange !== 'function') return null;
+    try { return chart.getVisibleRange(); } catch (_) { return null; }
+  }
 
   function drawPosition(p) {
     if (!chart) return false;
@@ -255,7 +277,26 @@
     if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
     if (isActive) return _drawActiveShape(p, anchor, endEpoch);
-    return _drawClosedRect(p, anchor, endEpoch);
+
+    // Closed trade — always buffer, then draw only if it overlaps the
+    // current visible range. Off-range trades stay in the buffer so the
+    // range-change reconciler can draw them when scrolled into view.
+    closedTradePayloads.set(p.key, p);
+    const range = _currentVisibleRange();
+    if (_closedTradeOverlapsRange(p, range)) {
+      return _drawClosedRect(p, anchor, endEpoch);
+    }
+    // Out of range: ensure no stale shape lingers from a prior in-range emit.
+    // Inline the shape-only cleanup — do NOT call removePosition here (that
+    // would also clear closedTradePayloads, which we explicitly want to keep
+    // so the range-change reconciler can redraw this trade later).
+    const existing = drawnPositions.get(p.key);
+    if (existing && existing.shapeId != null) {
+      try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      drawnPositions.delete(p.key);
+      positionAnchors.delete(p.key);
+    }
+    return true; // accepted (buffered), so the WS sender still gets an ack.
   }
 
   function _drawActiveShape(p, anchor, endEpoch) {
@@ -398,6 +439,7 @@
     const entry = drawnPositions.get(key);
     drawnPositions.delete(key);
     positionAnchors.delete(key);
+    closedTradePayloads.delete(key);
     const shapeId = entry && entry.shapeId;
     if (shapeId != null && chart) {
       try { chart.removeEntity(shapeId); } catch (_) {}
