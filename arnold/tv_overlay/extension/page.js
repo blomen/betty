@@ -799,9 +799,14 @@
     const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
     const NQ_TICK = 0.25;
 
-    // Is the stop in profit territory? Long → stop > entry; short → stop < entry.
-    const stopInProfit = isLong ? stopPrice > p.entry : stopPrice < p.entry;
-    const stopOffsetTicks = stopInProfit ? 0 : Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
+    // stopOffsetTicks is always derived from the ORIGINAL entry-time stop,
+    // so TV's auto R:R label stays "2" through the whole trade lifecycle.
+    // The trail line drawn by _drawTrailLineIfMoved shows the actually-
+    // placed stop after BE-lock / cont-trail walks.
+    const originalStop = (typeof p.original_stop_price === 'number' && p.original_stop_price > 0)
+      ? Number(p.original_stop_price)
+      : stopPrice;
+    const stopOffsetTicks = Math.max(1, Math.round(Math.abs(originalStop - p.entry) / NQ_TICK));
     const tpOffsetTicks   = Math.round(Math.abs(tpPrice - p.entry) / NQ_TICK);
 
     // Custom header: side + size only (PnL is live via Open P&L). Pyramid
@@ -833,7 +838,7 @@
             obj.setProperties(positionOverrides);
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
-          _syncTrailLine(p, anchor, endEpoch, stopPrice, stopInProfit);
+          _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, stopPrice);
           return true;
         }
       } catch (_) {}
@@ -855,12 +860,81 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
       _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
-      _syncTrailLine(p, anchor, endEpoch, stopPrice, stopInProfit);
+      _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, stopPrice);
       return true;
     } catch (e) {
       sendError(`drawPosition failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
+  }
+
+  // Shared trail-line drawer. Called by both active and closed widgets.
+  // Draws a horizontal_line at `placedStop` when it differs from
+  // `originalStop` by ≥ 1 NQ tick. Removes any prior trail line for the
+  // position key when the stops match (so legacy / unmoved trades show
+  // no extra line). Color: green when stop is in profit (long: above
+  // entry; short: below), amber when walked but still on the loss side
+  // (rare — defensive trail tightening on an underwater trade).
+  async function _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, placedStop) {
+    const trailKey = `${p.key}:trail`;
+    const NQ_TICK = 0.25;
+    const orig = Number(originalStop);
+    const placed = Number(placedStop);
+    const entry = Number(p.entry);
+    if (!Number.isFinite(orig) || !Number.isFinite(placed) || !Number.isFinite(entry)) {
+      _safeRemoveTrail(trailKey);
+      return;
+    }
+    if (Math.abs(orig - placed) < NQ_TICK) {
+      _safeRemoveTrail(trailKey);
+      return;
+    }
+    const isLong = p.side === 'long';
+    const inProfit = isLong ? placed > entry : placed < entry;
+    const color = inProfit ? '#10b981' : '#f59e0b';
+    const points = [
+      { time: anchor, price: placed },
+      { time: endEpoch, price: placed },
+    ];
+    const overrides = {
+      linecolor: color,
+      linestyle: 2,        // dashed
+      linewidth: 1,
+      showLabel: false,
+    };
+    const existing = drawnLevels.get(trailKey);
+    if (existing && existing.shapeId != null && typeof chart.getShapeById === 'function') {
+      try {
+        const obj = chart.getShapeById(existing.shapeId);
+        if (obj) {
+          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setProperties === 'function') obj.setProperties(overrides);
+          return;
+        }
+      } catch (_) {}
+    }
+    try {
+      const shapeId = await _resolve(chart.createMultipointShape(points, {
+        shape: 'horizontal_line',
+        disableSave: true,
+        overrides,
+      }));
+      if (shapeId == null) return;
+      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
+        try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      }
+      drawnLevels.set(trailKey, { shapeId, kind: 'horizontal_line' });
+    } catch (e) {
+      sendError(`_drawTrailLineIfMoved failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function _safeRemoveTrail(trailKey) {
+    const existing = drawnLevels.get(trailKey);
+    if (existing && existing.shapeId != null && chart) {
+      try { chart.removeEntity(existing.shapeId); } catch (_) {}
+    }
+    drawnLevels.delete(trailKey);
   }
 
   // Auxiliary trail line for the active trade. Drawn only when the stop
@@ -1037,6 +1111,10 @@
             // we can't override on every TV build).
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
+          // Trail line for closed trades — same helper as active. Draws iff
+          // the placed stop at exit differs from the entry-time stop. Bounded
+          // to the trade's exit time (anchor → endEpoch).
+          _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
           return true;
         }
       } catch (_) {}
@@ -1058,6 +1136,10 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: shapeName });
       _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
+      // Trail line for closed trades — same helper as active. Draws iff
+      // the placed stop at exit differs from the entry-time stop. Bounded
+      // to the trade's exit time (anchor → endEpoch).
+      _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
       return true;
     } catch (e) {
       sendError(`_drawClosedPositionWidget failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1073,6 +1155,7 @@
   // belongs to the active rendering and never persists into closed.
   async function finalizePosition(key) {
     _removeTrailLine(key);
+    _safeRemoveTrail(`${key}:trail`);
     const entry = drawnPositions.get(key);
     if (!entry) return;
     drawnPositions.delete(key);
@@ -1107,6 +1190,7 @@
         if (studyId != null && chart) try { chart.removeEntity(studyId); } catch (_) {}
       } catch (_) {}
     }
+    _safeRemoveTrail(`${key}:trail`);
   }
 
   function _removeTrailLine(key) {
