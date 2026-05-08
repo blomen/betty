@@ -81,19 +81,20 @@ def test_merge_live_zero_pads_when_main_lacks_touch_epochs(tmp_pools):
     assert out[3:].tolist() == [1700.0, 1800.0]
 
 
-def test_merge_live_skips_touch_epochs_when_no_chunks_have_it(tmp_pools):
-    """Legacy live chunks (no te_*.npy yet) must not crash — pre-existing
-    main touch_epochs.npy is preserved as-is."""
+def test_merge_live_zero_pads_legacy_chunks(tmp_pools):
+    """Legacy live chunks (no te_*.npy yet) must not crash. Their block lands
+    as zeros so touch_epochs.npy stays length-parity with observations.npy —
+    no worse than the pre-fix behaviour, and NEW writes will carry real te."""
     from src.rl.cli import merge_live
 
     episodes, live = tmp_pools
     _seed_main(episodes, n_main=3)
-    _seed_live_chunk(live, "0001", n_live=2, te=None)  # no te chunk
+    _seed_live_chunk(live, "0001", n_live=2, te=None)  # legacy: no te chunk
 
     merge_live()
 
     out = np.load(episodes / "touch_epochs.npy")
-    assert out.tolist() == [100.0, 200.0, 300.0]  # unchanged
+    assert out.tolist() == [100.0, 200.0, 300.0, 0.0, 0.0]
 
 
 def test_merge_live_cold_start_writes_touch_epochs(tmp_pools):
