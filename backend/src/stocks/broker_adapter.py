@@ -279,7 +279,7 @@ class TopstepXBrokerAdapter:
         self._set_pending_trade(None)
 
     def update_mark_and_check_be_lock(self, price: float) -> None:
-        """Per-tick: update peak_R AND fire BE-lock at +2R if not yet locked.
+        """Per-tick: update peak_R AND fire BE-lock at +1.5R if not yet locked.
 
         Called from BOTH paths:
           - FastAPI level_monitor._check_positions (autonomous broker tick)

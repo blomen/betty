@@ -782,7 +782,7 @@
 
   // Active trade — TV's native long_position / short_position widget for
   // the entry handle + target band + Open P&L label. Once the stop trails
-  // into profit (BE-lock at 2R, then cont-trail at zone advances), the
+  // into profit (BE-lock at 1.5R, then cont-trail at zone advances), the
   // widget's `stopLevel` is unsigned and the band would render on the
   // wrong side of entry, so we hide it via stopLevel=0 and draw a
   // separate dashed horizontal_line at the trailed stop's price for the
