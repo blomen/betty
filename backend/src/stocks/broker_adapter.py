@@ -831,7 +831,8 @@ class TopstepXBrokerAdapter:
             side=side,
             size=size,
             entry_price=entry_px,
-            stop_price=stop_price,
+            stop_price=pt.get("original_stop_price") or stop_price,
+            final_stop_price=pt.get("stop_price") or self.tracker.stop_price or stop_price,
             tp_price=pt.get("tp_price"),
             exit_price=weighted_px,
             pnl_dollars=pnl_dollars,
@@ -851,6 +852,12 @@ class TopstepXBrokerAdapter:
             reasoning=reasoning,
             closed_at=closed_at,
             topstepx_account_id=account_id,
+            # Forward the close reason so exit_reason in broker_trades
+            # matches reasoning.recovery_reason. Without this every
+            # recovery-written row collapses to the "SIGNAL" fallback,
+            # hiding the real cause (reversal_signals, size_mismatch,
+            # adverse_slip_kill, etc.) behind a generic label.
+            flatten_reason=reason,
             entry_order_id=pt.get("entry_order_id") or self.tracker.entry_order_id,
             exit_order_id=pt.get("exit_order_id"),
         )
@@ -1407,7 +1414,8 @@ class TopstepXBrokerAdapter:
                 side=side,
                 size=size,
                 entry_price=entry_px,
-                stop_price=stop_price,
+                stop_price=pt.get("original_stop_price") or stop_price,
+                final_stop_price=self.tracker.stop_price or pt.get("stop_price") or stop_price,
                 tp_price=pt.get("tp_price"),
                 exit_price=price,
                 pnl_dollars=round(pnl_dollars, 2),
@@ -1803,6 +1811,10 @@ class TopstepXBrokerAdapter:
             "side": side,
             "size": size,
             "stop_price": stop_price,
+            # Captured once at entry, never mutated by modify_stop.
+            # The widget reads this to draw the planned-1R band so R:R
+            # stays correct after BE-lock / cont-trail walks shift stop_price.
+            "original_stop_price": stop_price,
             "tp_price": tp_price,
             "stop_ticks": stop_dist_ticks,
             "signal_price": price,
