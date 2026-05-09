@@ -98,6 +98,7 @@ def test_pyramid_size_low_conf_floors_at_one(monkeypatch):
 
 
 def test_pyramid_size_mid_conf(monkeypatch):
+    """Pyramid add at mid-conf → 1 contract (size_multiplier 0.6 rounds to 1)."""
     monkeypatch.setenv("RECKLESS_LEARNING_MODE", "1")
     from src.market_data.level_monitor import _pyramid_add_size
 

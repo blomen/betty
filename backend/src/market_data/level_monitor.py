@@ -1939,6 +1939,15 @@ class LevelMonitor:
                         # Spec: pyramid size is confidence-scaled, NOT from the DQN pyramid head.
                         # CONT action from the action head + zone touch in trade direction is
                         # sufficient — no extra should_add gate.
+                        #
+                        # Note: this gate is `action == "CONT"` alone — the old should_add
+                        # guard's `unrealized_R >= 0.3` profit cushion is dropped. That looks
+                        # unsafe in isolation but is structurally fine because Task 12's
+                        # `_should_run_phase2_handlers` wraps this whole in-position handler:
+                        # pyramid only fires when locked_BE=True (peak_R has crossed 1.5R AND
+                        # stop sits at entry+2t locked-profit), so the position is profitable
+                        # by construction. Without Task 12, this branch could fire underwater
+                        # in Phase 1, but Task 12 is a hard prerequisite for deploy.
                         elif result.get("action") == "CONT":
                             confidence = float(result.get("confidence", 0) or 0)
                             add_size = _pyramid_add_size(confidence)
