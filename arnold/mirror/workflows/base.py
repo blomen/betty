@@ -81,11 +81,13 @@ class ProviderWorkflow(ABC):
 
         Prefers the page with the longest URL (most likely logged in / deepest page).
         """
+        from .._urls import hostname_matches
+
         best = None
         best_len = 0
         for page in context.pages:
             url = page.url or ""
-            if self.domain and self.domain in url:
+            if self.domain and hostname_matches(self.domain, url):
                 if len(url) > best_len:
                     best = page
                     best_len = len(url)

@@ -408,13 +408,15 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "127.0.0.1",
             "localhost",
         )
+        from ._urls import hostname_matches as _hm
+
         if browser.context:
             for page in list(browser.context.pages):
                 try:
                     url = (page.url or "").lower()
                     if not url or url == "about:blank" or url.startswith("chrome:"):
                         continue
-                    if any(d in url for d in _ALLOWED):
+                    if any(_hm(d, url) for d in _ALLOWED):
                         continue
                     await page.close()
                     print(f"[mirror/start] Closed stray tab: {url[:80]}", flush=True)
@@ -433,6 +435,8 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 # context.pages. Without these guards a half-loaded stale tab
                 # silently blocks the re-open and the provider never appears
                 # (the cloudbet symptom we kept hitting).
+                from ._urls import hostname_matches
+
                 already = False
                 for p in browser.context.pages:
                     try:
@@ -441,7 +445,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         url = (p.url or "").lower()
                         if not url.startswith(("http://", "https://")):
                             continue
-                        if workflow.domain in url:
+                        if workflow.domain and hostname_matches(workflow.domain, url):
                             already = True
                             break
                     except Exception:
@@ -464,6 +468,29 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     flush=True,
                 )
                 continue
+        # Close the boot keeper (and any other lingering about:blank tab) now
+        # that real tabs exist. The keeper served its purpose holding the
+        # context alive during startup cleanup; leaving it visible just
+        # clutters the tab strip. Only close if there's at least one real
+        # http(s) tab so we never end up with zero pages (which can let
+        # Chromium decide to quit).
+        if browser.context:
+            real_tabs = sum(
+                1
+                for p in browser.context.pages
+                if not p.is_closed() and (p.url or "").startswith(("http://", "https://"))
+            )
+            if real_tabs >= 1:
+                for p in list(browser.context.pages):
+                    try:
+                        if p.is_closed():
+                            continue
+                        url = p.url or ""
+                        if url == "about:blank" or url == "chrome://newtab/":
+                            await p.close()
+                            print(f"[mirror/start] Closed keeper tab: {url}", flush=True)
+                    except Exception:
+                        pass
         return browser.get_status()
 
     @router.post("/stop")
