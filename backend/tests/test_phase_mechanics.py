@@ -79,3 +79,26 @@ def test_early_exit_lock_active_default_disabled(monkeypatch):
     from src.market_data.level_monitor import _early_exit_lock_active
 
     assert _early_exit_lock_active() is False
+
+
+def test_pyramid_size_high_conf(monkeypatch):
+    """Pyramid add at conf>=0.85 → 2 contracts."""
+    monkeypatch.setenv("RECKLESS_LEARNING_MODE", "1")
+    from src.market_data.level_monitor import _pyramid_add_size
+
+    assert _pyramid_add_size(confidence=0.90) == 2
+
+
+def test_pyramid_size_low_conf_floors_at_one(monkeypatch):
+    """Pyramid add at low conf rounds up to 1 contract floor."""
+    monkeypatch.setenv("RECKLESS_LEARNING_MODE", "1")
+    from src.market_data.level_monitor import _pyramid_add_size
+
+    assert _pyramid_add_size(confidence=0.10) == 1
+
+
+def test_pyramid_size_mid_conf(monkeypatch):
+    monkeypatch.setenv("RECKLESS_LEARNING_MODE", "1")
+    from src.market_data.level_monitor import _pyramid_add_size
+
+    assert _pyramid_add_size(confidence=0.65) == 1

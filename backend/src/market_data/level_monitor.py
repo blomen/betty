@@ -78,6 +78,16 @@ def _stop_ticks_in_bounds(stop_ticks: float) -> bool:
     return MIN_ENTRY_STOP_TICKS <= float(stop_ticks) <= MAX_ENTRY_STOP_TICKS
 
 
+PHASE_2_BASE_SIZE = 1
+
+
+def _pyramid_add_size(confidence: float) -> int:
+    """Phase 2 pyramid add size — confidence-scaled via size_multiplier."""
+    from src.rl.confidence import size_multiplier
+
+    return max(1, round(PHASE_2_BASE_SIZE * size_multiplier(float(confidence))))
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1926,8 +1936,12 @@ class LevelMonitor:
                                     if pending:
                                         pending["current_zone_R"] = advance_zone_R
                                         broker._set_pending_trade(pending)
-                        elif pyr.get("should_add"):
-                            add_size = int(max(1, round(float(pyr.get("add_size") or 0))))
+                        # Spec: pyramid size is confidence-scaled, NOT from the DQN pyramid head.
+                        # CONT action from the action head + zone touch in trade direction is
+                        # sufficient — no extra should_add gate.
+                        elif result.get("action") == "CONT":
+                            confidence = float(result.get("confidence", 0) or 0)
+                            add_size = _pyramid_add_size(confidence)
                             logger.info(
                                 "Pyramid add (%s): +%d @ %.2f (%s)",
                                 tr.side,
