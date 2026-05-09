@@ -30,6 +30,14 @@ def _conf_floor() -> float:
     return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.15
 
 
+def _of_floor() -> float:
+    """Orderflow score floor for entry dispatch.
+    Reckless (paper) = 0.0 — collect labeled outcomes for all OF regimes.
+    Strict (real money) = 0.30 — early audit showed OF>=0.30 wins 4/4.
+    """
+    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.30
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1650,12 +1658,11 @@ class LevelMonitor:
         action = result.get("action", "SKIP")
         confidence = float(result.get("confidence", 0.0) or 0.0)
         of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
-        reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
         conf_floor_default = _conf_floor()
         # Must mirror the broker-path + relay-path floors below — frontend
         # displays this value, and a stale 0.15 here gives a "BLOCKED orderflow
         # 0.02 ≥ 0.15" gate row even though the actual broker dispatch uses 0.0.
-        of_floor = 0.0 if reckless else 0.30
+        of_floor = _of_floor()
         halted = _trading_paused()
         conf_floor = 0.99 if halted else conf_floor_default
         is_flat = bool(broker is None or broker.tracker.is_flat)
@@ -1693,7 +1700,7 @@ class LevelMonitor:
             "halted": halted,
             "decision": "DISPATCHED" if blocker is None else "BLOCKED",
             "blocker": blocker,
-            "reckless": reckless,
+            "reckless": os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0",
         }
 
     def _emit_zone_dqn_inference(self, zone: Zone, price: float, approach: str = "up") -> None:
@@ -1910,13 +1917,8 @@ class LevelMonitor:
                 # tuples. Once we have ~200 real trades + go live, raise
                 # OF floor back to 0.30 (early audit showed OF>=0.30 was
                 # 4/4; need bigger sample to confirm).
-                _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _conf_floor_default = _conf_floor()
-                # In reckless paper-trading mode every blocked signal is lost
-                # training data. Drop the OF floor to 0 so the trainer gets
-                # the full distribution of (obs, action, realized_R) tuples;
-                # raise back to 0.30 once we go live with real money.
-                _of_floor = 0.0 if _reckless else 0.30
+                _of_floor_val = _of_floor()
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
@@ -1931,11 +1933,11 @@ class LevelMonitor:
                         _broker_conf_floor,
                         zone.center_price,
                     )
-                elif of_score < _of_floor:
+                elif of_score < _of_floor_val:
                     logger.info(
                         "broker gate: of_score %.3f < %.2f at zone %.2f (conf=%.3f, %s) — vetoed",
                         of_score,
-                        _of_floor,
+                        _of_floor_val,
                         zone.center_price,
                         confidence,
                         action,
@@ -1948,7 +1950,7 @@ class LevelMonitor:
                         action,
                         zone.center_price,
                     )
-                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= _of_floor:
+                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= _of_floor_val:
                     import asyncio
 
                     try:
