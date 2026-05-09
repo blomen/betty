@@ -41,6 +41,10 @@ def _of_floor() -> float:
 MIN_ENTRY_STOP_TICKS = 6.0
 MAX_ENTRY_STOP_TICKS = 40.0
 
+# Phase 2 transition threshold — matches BE_LOCK_R in broker_adapter.py.
+# Lowered from 2.0 to 1.5 on 2026-05-09 per phase1-phase2 spec.
+PHASE_2_THRESHOLD_R = 1.5
+
 
 def _stop_ticks_in_bounds(stop_ticks: float) -> bool:
     """Filter dim-predicted stops outside the trainable noise band.
@@ -1836,7 +1840,7 @@ class LevelMonitor:
                         rev = result.get("reversal_signals") or {}
                         pyr = result.get("pyramid_decision") or {}
 
-                        # Phase 1 (peak_R < 2.0): trade plays out untouched —
+                        # Phase 1 (peak_R < 1.5): trade plays out untouched —
                         # only the original SL or the natural +2R inflection
                         # moves it. Reversal-signals and early-exit-lock used
                         # to fire here too, but the 2026-05-08 counterfactual
@@ -1845,8 +1849,10 @@ class LevelMonitor:
                         # most fired when peak_R was still ~0. Strategy now:
                         # don't intervene in undeveloped trades; let win/loss
                         # resolve cleanly against the original SL/2R bracket.
-                        # Phase 2 (peak_R >= 2.0): complex exit/trail kicks in.
-                        if tr.peak_R >= 2.0 and rev.get("should_exit"):
+                        # Phase 2 (peak_R >= 1.5): complex exit/trail kicks in.
+                        # Threshold matches BE_LOCK_R so trail fires at the same
+                        # moment profit is locked (lowered from 2.0 on 2026-05-09).
+                        if tr.peak_R >= PHASE_2_THRESHOLD_R and rev.get("should_exit"):
                             logger.info(
                                 "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
                                 rev.get("fired_count", 0),
@@ -1855,7 +1861,7 @@ class LevelMonitor:
                                 price,
                             )
                             asyncio.create_task(broker.flatten("reversal_signals"))
-                        elif tr.peak_R >= 2.0:
+                        elif tr.peak_R >= PHASE_2_THRESHOLD_R:
                             # 4. Cont-trail: at a new zone in trade direction past entry,
                             # trail stop to the previously-broken zone's edge. Idempotent
                             # via current_zone_R (refuses to re-trail at the same level).

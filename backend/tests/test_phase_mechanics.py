@@ -48,3 +48,10 @@ def test_stop_ticks_too_wide_blocks_dispatch():
     assert _stop_ticks_in_bounds(40.0) is True
     assert _stop_ticks_in_bounds(40.01) is False
     assert _stop_ticks_in_bounds(100.0) is False
+
+
+def test_phase2_threshold_constant_is_1_5R():
+    """Phase 2 transition gate must read 1.5R to match BE-lock."""
+    from src.market_data import level_monitor
+
+    assert level_monitor.PHASE_2_THRESHOLD_R == 1.5
