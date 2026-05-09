@@ -21,6 +21,15 @@ logger = logging.getLogger(__name__)
 TICK_SIZE = 0.25  # NQ tick size
 
 
+def _conf_floor() -> float:
+    """Confidence floor for entry dispatch.
+
+    Reckless (paper) = 0.0 — every non-SKIP signal becomes a trade.
+    Strict (real money) = 0.15 — historical default.
+    """
+    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.15
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1642,7 +1651,7 @@ class LevelMonitor:
         confidence = float(result.get("confidence", 0.0) or 0.0)
         of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
         reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
-        conf_floor_default = 0.05 if reckless else 0.15
+        conf_floor_default = _conf_floor()
         # Must mirror the broker-path + relay-path floors below — frontend
         # displays this value, and a stale 0.15 here gives a "BLOCKED orderflow
         # 0.02 ≥ 0.15" gate row even though the actual broker dispatch uses 0.0.
@@ -1902,7 +1911,7 @@ class LevelMonitor:
                 # OF floor back to 0.30 (early audit showed OF>=0.30 was
                 # 4/4; need bigger sample to confirm).
                 _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
-                _conf_floor_default = 0.05 if _reckless else 0.15
+                _conf_floor_default = _conf_floor()
                 # In reckless paper-trading mode every blocked signal is lost
                 # training data. Drop the OF floor to 0 so the trainer gets
                 # the full distribution of (obs, action, realized_R) tuples;
