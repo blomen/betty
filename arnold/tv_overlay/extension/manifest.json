@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.4.2",
-  "description": "Closed-trade widgets render reliably — unified geometry (anchor at entry, stopLevel from original 1R, profitLevel from planned 2R) so TV's stricter 2026-05-08 widget validator stops rejecting wins (old win-mode set stopLevel=0 → 'Value is undefined'). Fancy infoBlocks/compact/profitBackground props are applied via setProperties post-create with try/catch so any single rejected field doesn't take down the widget. Earlier: original 1R stop band always visible + separate dashed trail line at the actually-placed stop, 5-step heatmap zone palette, hierarchy<0.5 paint threshold, promise-rejection labels in /api/tv-overlay/debug, pyramid size in header, halt amber recolor, exit_reason suffix.",
+  "version": "0.4.3",
+  "description": "Long_position widget creation now uses a bare {shape, overrides} payload — TV's 2026-05-08 build silently returns null when top-level `text:` is included alongside `shape: 'long_position'` (same class as the prior `disableSave` rejection). Header text is applied via setProperties post-create instead. Earlier: unified win/loss geometry (anchor at entry, stopLevel from original 1R, profitLevel from planned 2R), original 1R stop band always visible + dashed trail line at placed stop, 5-step heatmap zone palette, hierarchy<0.5 paint threshold, promise-rejection labels in /api/tv-overlay/debug, pyramid size in header, halt amber recolor, exit_reason suffix.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

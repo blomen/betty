@@ -874,15 +874,12 @@
     }
 
     try {
-      // TV rejects long_position widget creation with "Value is undefined"
-      // when disableSave is set. Newer TV builds appear to validate widget
-      // overrides more strictly than drawing primitives — disableSave is
-      // accepted on rectangle/horizontal_line but not on position widgets.
-      // Drop it; cleanupStaleShapes still sweeps orphan position widgets
-      // by their tag/empty-text fingerprint on next boot.
+      // Bare-minimum create call. Newer TV builds silently return null
+      // when long_position widgets get unrecognized top-level fields
+      // (`disableSave`, `text`, etc.). Apply header text + overrides via
+      // setProperties below in independent try/catch blocks.
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
-        text: headerText,
         overrides: positionOverrides,
       }), `active-${shapeName}`);
       if (shapeId == null) {
@@ -894,6 +891,12 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
       _ensureGroupAndAdd('Arnold • Active Trade', shapeId);
+      try {
+        const obj = chart.getShapeById(shapeId);
+        if (obj && typeof obj.setProperties === 'function') {
+          try { obj.setProperties({ text: headerText }); } catch (_) {}
+        }
+      } catch (_) {}
       _drawTrailLineIfMoved(p, anchor, endEpoch, originalStop, stopPrice);
       return true;
     } catch (e) {
@@ -1156,13 +1159,14 @@
     }
 
     try {
-      // Minimal create-time overrides — passing the full widgetExtraProps
-      // here was causing TV to reject the widget with "Value is undefined"
-      // since the 2026-05-08 build update. Apply the extras via
-      // setProperties below (best-effort, silently ignored on rejection).
+      // Bare-minimum create call — newer TV builds silently return null
+      // when long_position widgets get unrecognized top-level fields.
+      // `text:`, `disableSave:` were both rejection triggers in the past.
+      // Apply the header text + fancy overrides via setProperties below,
+      // each in its own try/catch so a single rejected field doesn't take
+      // down the widget itself.
       const shapeId = await _resolve(chart.createMultipointShape(points, {
         shape: shapeName,
-        text: headerText,
         overrides: widgetCreateOverrides,
       }), `closed-${shapeName}`);
       if (shapeId == null) {
@@ -1174,12 +1178,14 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: shapeName });
       _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
-      // Apply fancy props post-create. Each call is independently try/catch'd
-      // so a single rejected field doesn't tear down the others.
+      // Apply fancy props + header text post-create. Each call is
+      // independently try/catch'd so a single rejected field doesn't tear
+      // down the others.
       try {
         const obj = chart.getShapeById(shapeId);
         if (obj && typeof obj.setProperties === 'function') {
           try { obj.setProperties(widgetExtraProps); } catch (_) {}
+          try { obj.setProperties({ text: headerText }); } catch (_) {}
         }
       } catch (_) {}
       _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);

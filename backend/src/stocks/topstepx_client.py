@@ -113,7 +113,10 @@ class TopstepXClient:
             )
             if resp.status_code == 200:
                 body = resp.json()
-                new_token = body.get("token")
+                # Auth/validate response uses "newToken" (NOT "token" — Auth/loginKey uses
+                # "token"). Asymmetric per the official Swagger schema. Fetching "token"
+                # silently returned None and forced a fallback full re-auth every cycle.
+                new_token = body.get("newToken")
                 if new_token:
                     self._token = new_token
                     self._token_expiry = time.time() + self.TOKEN_LIFETIME_S - self.TOKEN_REFRESH_BUFFER_S
@@ -254,6 +257,12 @@ class TopstepXClient:
     async def search_open_orders(self) -> list[dict]:
         """Alias for get_orders — used by tracker_reconciler on bootstrap."""
         return await self.get_orders()
+
+    async def available_contracts(self, live: bool = True) -> list[dict]:
+        """List currently active contracts. Use to verify config.contract_id
+        is still the active front-month before the quarterly roll."""
+        data = await self._post("/api/Contract/available", {"live": live})
+        return data.get("contracts", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

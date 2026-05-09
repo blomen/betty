@@ -852,6 +852,28 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     _pos_task = asyncio.create_task(_position_watcher_loop(adapter), name="server-position-watcher")
     _lvl_task = asyncio.create_task(_levels_watcher_loop(level_monitor), name="server-levels-watcher")
 
+    # Verify the configured contract is still active. NQ rolls quarterly
+    # (next: M26 → U26 on 2026-06-15). Without this check, a stale
+    # contract_id silently breaks the stream — subscriptions succeed but no
+    # data flows because the contract no longer exists.
+    try:
+        contracts = await client.available_contracts(live=True)
+        contract_ids = {c.get("id") for c in contracts}
+        configured = config.contract_id
+        if configured not in contract_ids:
+            log.error(
+                "STARTUP CHECK FAILED: configured contract %s is NOT in the active list. "
+                "Active contracts (%d): %s. The contract has likely rolled — update "
+                "TOPSTEPX_CONTRACT_ID env var.",
+                configured,
+                len(contract_ids),
+                sorted(contract_ids)[:5],  # log up to 5 to confirm format
+            )
+        else:
+            log.info("Startup check: contract %s is active", configured)
+    except Exception:
+        log.exception("Startup contract check failed (non-fatal, continuing)")
+
     # Tick stream — same tick-handler as the /ws/signals path so data flow
     # is identical whether ticks come from the local relay or here.
     stream = TopstepXStream(
@@ -863,7 +885,53 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     )
     stream.on_tick = _build_server_tick_handler(app, level_monitor)
     stream.on_fill = adapter.on_stream_fill
+
+    def _on_quote_mark(quote_payload) -> None:
+        """Use GatewayQuote as the mark-to-market price source. NQ trades are
+        sparse on this feed; quotes fire reliably on every bid/ask change."""
+        try:
+            # quote_payload is the raw GatewayQuote dict (handle_quote unpacks args[1])
+            last_price = float(quote_payload.get("lastPrice") or 0)
+            if last_price <= 0:
+                bid = float(quote_payload.get("bestBid") or 0)
+                ask = float(quote_payload.get("bestAsk") or 0)
+                if bid > 0 and ask > 0:
+                    last_price = (bid + ask) / 2.0
+            if last_price > 0:
+                adapter.update_mark_and_check_be_lock(last_price)
+        except Exception:
+            log.debug("on_quote_mark error", exc_info=True)
+
+    stream.on_quote = _on_quote_mark
     stream.on_depth = _build_server_depth_handler(level_monitor)
+
+    def _on_account_event(payload: dict) -> None:
+        """Log account state changes; halt the broker if canTrade=False."""
+        can_trade = payload.get("canTrade")
+        balance = payload.get("balance")
+        log.info("Account update from stream: canTrade=%s balance=%s", can_trade, balance)
+        if can_trade is False:
+            log.error("ACCOUNT VIOLATION DETECTED — canTrade=False. Halting broker.")
+            try:
+                adapter._halt(f"account violation: canTrade=False, balance={balance}")
+            except Exception:
+                log.exception("Failed to halt broker on account violation")
+            # Flatten any open position so the violation doesn't leave a runaway
+            # trade. _halt only blocks new entries; existing positions ride until
+            # explicit flatten or stop hit.
+            if not adapter.tracker.is_flat:
+                try:
+                    log.error(
+                        "ACCOUNT VIOLATION: flattening open %s position (size=%d entry=%.2f)",
+                        adapter.tracker.side,
+                        adapter.tracker.size,
+                        adapter.tracker.entry_price,
+                    )
+                    asyncio.create_task(adapter.flatten("account_violation"))
+                except Exception:
+                    log.exception("Failed to schedule flatten on account violation")
+
+    stream.on_account = _on_account_event
 
     # 2026-05-08: post-reconnect tracker sync. TopstepX SignalR drops + reconnects
     # roughly every ~15 minutes (idle hub timeout). Any GatewayUserTrade event

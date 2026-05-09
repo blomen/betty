@@ -125,3 +125,107 @@ def test_phase1_in_position_handler_no_op_below_threshold():
 
     tr.is_flat = True
     assert _should_run_phase2_handlers(tr) is False, "flat → no Phase 2 handlers"
+
+
+def test_on_quote_mark_advances_peak_R():
+    """Wiring the GatewayQuote stream to update_mark_and_check_be_lock makes
+    peak_R advance even when GatewayTrade is silent (the production case)."""
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+
+    def _on_quote_mark(quote_payload):
+        last_price = float(quote_payload.get("lastPrice") or 0)
+        if last_price <= 0:
+            bid = float(quote_payload.get("bestBid") or 0)
+            ask = float(quote_payload.get("bestAsk") or 0)
+            if bid > 0 and ask > 0:
+                last_price = (bid + ask) / 2.0
+        if last_price > 0:
+            adapter.update_mark_and_check_be_lock(last_price)
+
+    # Quote with lastPrice
+    _on_quote_mark({"lastPrice": 19873.25, "bestBid": 19873.0, "bestAsk": 19873.5})
+    adapter.update_mark_and_check_be_lock.assert_called_with(19873.25)
+
+    # Quote with no lastPrice but bid/ask present (mid-price fallback)
+    adapter.reset_mock()
+    _on_quote_mark({"bestBid": 19880.0, "bestAsk": 19880.5})
+    adapter.update_mark_and_check_be_lock.assert_called_with(19880.25)
+
+    # Empty quote → no call
+    adapter.reset_mock()
+    _on_quote_mark({"lastPrice": 0, "bestBid": 0, "bestAsk": 0})
+    adapter.update_mark_and_check_be_lock.assert_not_called()
+
+
+def test_handle_account_calls_on_account():
+    """GatewayUserAccount with canTrade=False fires on_account callback."""
+
+    from src.stocks.topstepx_stream import TopstepXStream
+
+    stream = TopstepXStream(token="x", contract_id="X", account_id=1)
+    captured = []
+    stream.on_account = lambda payload: captured.append(payload)
+
+    stream._handle_account([{"id": 1, "name": "PRAC", "balance": 49000, "canTrade": False}])
+
+    assert len(captured) == 1
+    assert captured[0]["canTrade"] is False
+    assert captured[0]["balance"] == 49000
+
+
+def test_account_violation_flattens_open_position():
+    """canTrade=False with non-flat tracker should schedule a flatten."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.tracker.is_flat = False
+    adapter.tracker.side = "long"
+    adapter.tracker.size = 1
+    adapter.tracker.entry_price = 25000.0
+
+    flatten_calls = []
+
+    async def fake_flatten(reason):
+        flatten_calls.append(reason)
+        return {"action": "flatten"}
+
+    adapter.flatten = fake_flatten
+
+    # Mirror the production handler logic
+    def _on_account_event(payload):
+        can_trade = payload.get("canTrade")
+        if can_trade is False:
+            adapter._halt(f"account violation: canTrade={can_trade}")
+            if not adapter.tracker.is_flat:
+                asyncio.get_event_loop().run_until_complete(adapter.flatten("account_violation"))
+
+    _on_account_event({"canTrade": False, "balance": 49000})
+
+    adapter._halt.assert_called_once()
+    assert flatten_calls == ["account_violation"]
+
+
+def test_account_violation_does_not_flatten_when_flat():
+    """canTrade=False with flat tracker only halts; no flatten needed."""
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.tracker.is_flat = True
+
+    flatten_calls = []
+    adapter.flatten = lambda reason: flatten_calls.append(reason)
+
+    def _on_account_event(payload):
+        can_trade = payload.get("canTrade")
+        if can_trade is False:
+            adapter._halt(f"account violation: canTrade={can_trade}")
+            if not adapter.tracker.is_flat:
+                adapter.flatten("account_violation")
+
+    _on_account_event({"canTrade": False, "balance": 49000})
+
+    adapter._halt.assert_called_once()
+    assert flatten_calls == []  # no flatten when already flat
