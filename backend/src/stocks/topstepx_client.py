@@ -258,6 +258,12 @@ class TopstepXClient:
         """Alias for get_orders — used by tracker_reconciler on bootstrap."""
         return await self.get_orders()
 
+    async def available_contracts(self, live: bool = True) -> list[dict]:
+        """List currently active contracts. Use to verify config.contract_id
+        is still the active front-month before the quarterly roll."""
+        data = await self._post("/api/Contract/available", {"live": live})
+        return data.get("contracts", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._http.aclose()

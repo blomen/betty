@@ -852,6 +852,28 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     _pos_task = asyncio.create_task(_position_watcher_loop(adapter), name="server-position-watcher")
     _lvl_task = asyncio.create_task(_levels_watcher_loop(level_monitor), name="server-levels-watcher")
 
+    # Verify the configured contract is still active. NQ rolls quarterly
+    # (next: M26 → U26 on 2026-06-15). Without this check, a stale
+    # contract_id silently breaks the stream — subscriptions succeed but no
+    # data flows because the contract no longer exists.
+    try:
+        contracts = await client.available_contracts(live=True)
+        contract_ids = {c.get("id") for c in contracts}
+        configured = config.contract_id
+        if configured not in contract_ids:
+            log.error(
+                "STARTUP CHECK FAILED: configured contract %s is NOT in the active list. "
+                "Active contracts (%d): %s. The contract has likely rolled — update "
+                "TOPSTEPX_CONTRACT_ID env var.",
+                configured,
+                len(contract_ids),
+                sorted(contract_ids)[:5],  # log up to 5 to confirm format
+            )
+        else:
+            log.info("Startup check: contract %s is active", configured)
+    except Exception:
+        log.exception("Startup contract check failed (non-fatal, continuing)")
+
     # Tick stream — same tick-handler as the /ws/signals path so data flow
     # is identical whether ticks come from the local relay or here.
     stream = TopstepXStream(
