@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.4.4",
-  "description": "Restored lotSize/accountSize/leverage/risk on long_position widget create — without them TV defaults to fractional contract qty (~0.42) and shows wrong $-amounts/R:R. accountSize=lotSize×entry×$20 makes TV's internal qty formula resolve to qty=lotSize ($20/pt × ticks × contracts on NQ). Earlier: bare-minimum create-call payload (no top-level `text:` or `disableSave:`) to avoid silent null returns from TV's stricter 2026-05-08 widget validator; header text applied via setProperties post-create; unified win/loss geometry; trail line at placed stop; 5-step heatmap zone palette; pyramid size in header; halt amber recolor; exit_reason suffix.",
+  "version": "0.4.5",
+  "description": "Restored full info-block visibility on long_position widget — Closed P&L, Qty, R:R, $-amounts, %-offsets all visible (matches the user's expected widget shape). infoBlocks isolated in its own setProperties call so a single rejected sibling field can't drop the whole properties update. Dropped unsupported `compact`/`alwaysShowStats`/`profitBackground` from the post-create batch. Earlier: lotSize/accountSize/leverage/risk for correct qty math; bare-minimum create-call payload to avoid silent null returns; unified win/loss geometry; trail line at placed stop.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

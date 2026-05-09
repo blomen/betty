@@ -1129,29 +1129,26 @@
       risk: 1.0,
       showPriceLabels: false,
     };
-    // Applied via setProperties after the shape exists. infoBlocks toggles
-    // info visibility; profitBackground tints the target band; compact +
-    // alwaysShowStats trim the widget header. None are required for the
-    // widget to render — failure to apply them just means a default look.
-    const widgetExtraProps = {
-      compact: true,
-      alwaysShowStats: false,
+    // Applied separately via setProperties post-create. Each goes in its
+    // own setProperties call so a single rejected field can't drop the
+    // others. Show every info block — Closed P&L, Qty, R:R, $-amounts,
+    // %-offsets — same shape as the original widget the user expects.
+    const widgetInfoBlocks = {
       infoBlocks: {
-        openClosePL: { visible: false },
-        qty: { visible: false },
-        tpAmount: { visible: false },
-        slAmount: { visible: false },
-        riskRewardRatio: { visible: false },
+        openClosePL: { visible: true },
+        qty: { visible: true },
+        riskRewardRatio: { visible: true },
         tpPriceOffset: { visible: true },
         tpTickOffset: { visible: true },
-        tpPercentOffset: { visible: false },
-        tpPL: { visible: false },
+        tpPercentOffset: { visible: true },
+        tpAmount: { visible: true },
+        tpPL: { visible: true },
         slPriceOffset: { visible: true },
         slTickOffset: { visible: true },
-        slPercentOffset: { visible: false },
-        slPL: { visible: false },
+        slPercentOffset: { visible: true },
+        slAmount: { visible: true },
+        slPL: { visible: true },
       },
-      profitBackground: isWin ? 'rgba(16, 185, 129, 0.25)' : 'rgba(8, 153, 129, 0.20)',
     };
 
     const existing = drawnPositions.get(p.key);
@@ -1161,11 +1158,10 @@
         if (obj) {
           if (typeof obj.setPoints === 'function') obj.setPoints(points);
           if (typeof obj.setProperties === 'function') {
-            // Apply create-time overrides (always accepted) first, then the
-            // fancy props (best-effort) separately so a single rejected
-            // field doesn't drop the whole properties update.
+            // Each setProperties call is isolated so any single rejected
+            // field doesn't tear down the others.
             try { obj.setProperties(widgetCreateOverrides); } catch (_) {}
-            try { obj.setProperties(widgetExtraProps); } catch (_) {}
+            try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
           _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
@@ -1200,7 +1196,7 @@
       try {
         const obj = chart.getShapeById(shapeId);
         if (obj && typeof obj.setProperties === 'function') {
-          try { obj.setProperties(widgetExtraProps); } catch (_) {}
+          try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
           try { obj.setProperties({ text: headerText }); } catch (_) {}
         }
       } catch (_) {}
