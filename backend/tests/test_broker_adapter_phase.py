@@ -76,3 +76,29 @@ def test_entry_size_mid_confidence_one_contract(adapter, mock_client):
     }
     _run(adapter._execute_entry(signal))
     mock_client.place_market_order.assert_called_once_with("Buy", 1)
+
+
+def test_rev_signal_flips_position_in_phase_2(adapter, mock_client):
+    """In Phase 2 (locked_BE=True) long, REV signal closes long + opens short."""
+    adapter.tracker.on_fill(side="long", price=25000.0, size=1, stop_price=24990.0)
+    adapter.tracker.locked_BE = True
+    adapter.tracker.peak_R = 1.6
+    adapter.tracker.entry_price = 25000.0
+    # Push last_trade_ts into the past so MIN_TRADE_INTERVAL_S check passes.
+    adapter.tracker.last_trade_ts = time.time() - 60.0
+
+    rev_signal = {
+        "action": "enter_short",
+        "price": 25030.0,
+        "stop_price": 25040.0,
+        "stop_ticks": 40,
+        "confidence": 0.70,
+        "ts": time.time(),
+    }
+    _run(adapter.on_signal(rev_signal))
+
+    # Flatten was called
+    mock_client.liquidate_position.assert_called_once()
+    # Then a fresh short was placed
+    place_calls = mock_client.place_market_order.call_args_list
+    assert any(call.args[0] == "Sell" for call in place_calls), place_calls

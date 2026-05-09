@@ -88,6 +88,32 @@ def _pyramid_add_size(confidence: float) -> int:
     return max(1, round(PHASE_2_BASE_SIZE * size_multiplier(float(confidence))))
 
 
+def _is_phase2_rev_opposite(result: dict, tr, approach: str) -> bool:
+    """True when the DQN action=REVERSAL would flip the current Phase 2 position.
+
+    REVERSAL at an UP-approach zone fades the approach → wants short (opposite
+    of a long). REVERSAL at a DOWN-approach zone → wants long (opposite of a
+    short). We only allow the fall-through to broker.on_signal when ALL of:
+      - position is open (side is not None)
+      - locked_BE=True  (Phase 2 — Phase 1 stays sacred)
+      - model action is REVERSAL
+      - the implied REV direction is opposite to the current side
+    """
+    if not result:
+        return False
+    side = getattr(tr, "side", None)
+    if not side:
+        return False
+    if not getattr(tr, "locked_BE", False):
+        return False  # Only Phase 2 — Phase 1 stays sacred
+    action = result.get("action", "")
+    if action.upper() != "REVERSAL":
+        return False
+    # REVERSAL fades the approach: up-approach → short, down-approach → long
+    rev_side = "short" if approach == "up" else "long"
+    return rev_side != side
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1960,9 +1986,13 @@ class LevelMonitor:
                             )
                             asyncio.create_task(broker.add_to_position(add_size, price))
 
-                        # Suppress the entry-signal dispatch while in-position —
-                        # trail/flip is replaced by the three decisions above.
-                        result = None
+                        # Suppress the entry-signal dispatch while in-position
+                        # EXCEPT for Phase 2 REV-opposite signals — those fall
+                        # through to broker.on_signal which handles flatten+flip
+                        # via the existing REV-flip path (broker_adapter line 593+).
+                        is_rev_opposite = _is_phase2_rev_opposite(result, tr, approach)
+                        if not is_rev_opposite:
+                            result = None
                     except Exception:
                         logger.warning("In-position handling failed", exc_info=True)
 
