@@ -76,7 +76,13 @@ Otherwise, no commit; proceed to Task 2.
 
 ---
 
-### Task 2: Trail bug fix — root-cause investigation and pre-populate `entry_price`
+### Task 2: DEFERRED — trail bug root cause is NOT entry_price race
+
+**2026-05-09 finding:** Task 1 diagnostic shows pre-populate fix is already working (zero "update_mark SKIP" log lines in 3 days), but `BE-lock at peak_R` and `update_mark:` log lines have fired **zero times** in 3 days despite 5 post-fix trades exceeding +1.5R realized P&L (one closed at +6.42R). The bug is upstream in `_check_positions` either not being called, throttled, or calling `update_mark_and_check_be_lock` on a different broker_adapter instance than the one holding the trade. This requires an isolated investigation outside the scope of the original Task 2 fix. **Deferred to a separate spec/plan; Phase 2 work in Tasks 8-12 will sit dormant until this is resolved.** Tasks 3-7, 13, 14 still produce value (floors, sizing, gates) on Phase 1 trades.
+
+The text below is the original Task 2 spec, kept for reference only — DO NOT execute as written.
+
+### Task 2 (ORIGINAL — superseded by deferral above): Trail bug fix — root-cause investigation and pre-populate `entry_price`
 
 **Files:**
 - Modify: `backend/src/stocks/broker_adapter.py` (around the `_execute_entry` block at lines 1610-1700, exact location depends on root cause)

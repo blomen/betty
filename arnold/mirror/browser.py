@@ -188,6 +188,58 @@ class MirrorBrowser:
         # Domains the user/system intentionally opened — extends the static
         # allowlist used by the stray-tab watchdog. Populated by open_tab().
         self._dynamic_allowlist: set[str] = set()
+        # Pages we explicitly opened via open_tab() (or the boot keeper).
+        # The route filter trusts navigations originating from these pages —
+        # so a kalshi login redirect to auth.magic.link survives even within
+        # the ghost-block grace window.
+        self._explicit_pages: set[Page] = set()
+        # Monotonic time after which the route-level ghost-tab blocker stops
+        # filtering. Set in start(); blocker passes everything through after.
+        self._ghost_block_deadline: float = 0.0
+        # Strong refs to background tasks so they don't get GC'd. asyncio
+        # only keeps weak refs to tasks created by create_task — without an
+        # explicit anchor here, the watchdog and per-tab close-tasks vanish
+        # mid-execution. discrepancy was: dbet sat in /mirror/browser/tabs
+        # for 100s with zero "Watchdog closed" log lines because the task
+        # had been collected.
+        self._background_tasks: set[asyncio.Task] = set()
+        # Lock around the find-or-create + goto sequence in open_tab. Two
+        # concurrent open_tab calls used to scan context.pages for an
+        # about:blank tab simultaneously, both pick the same one, and the
+        # second goto would preempt the first. Real consequence: TV auto-
+        # open + /mirror/start cloudbet step ran in parallel, both took
+        # the boot keeper, cloudbet's goto aborted TV's. Lock serializes
+        # tab acquisition; the goto itself can still run concurrently after
+        # the page is securely allocated.
+        self._open_tab_lock: asyncio.Lock | None = None
+
+    def _spawn(self, coro, name: str | None = None) -> asyncio.Task:
+        """Create a background task and keep a strong reference to it.
+
+        asyncio.create_task() returns a Task that the event loop only weakly
+        references. Without an external anchor the task can be garbage-
+        collected mid-execution — observed empirically: the watchdog never
+        ran, dbet ghost tabs never got closed by the periodic sweep,
+        framenavigated close-tasks vanished. Use this helper for every
+        background task spawned from this class.
+        """
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            # Surface unexpected errors so a silently-crashed task doesn't
+            # leave the watchdog/guard dead without us noticing.
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    print(
+                        f"[browser] background task {t.get_name()!r} crashed: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+
+        task.add_done_callback(_on_done)
+        return task
 
     def set_event_callback(self, callback: Callable[[str, dict], None]):
         """Set callback for intercepted events (e.g. broadcaster.publish)."""
@@ -236,6 +288,17 @@ class MirrorBrowser:
                 profile = prefs.setdefault("profile", {})
                 profile["exit_type"] = "Normal"
                 profile["exited_cleanly"] = True
+                # Top-level `sessions.event_log` records each session's crash
+                # state. Chromium's recovery path consults this independently
+                # of profile.exit_type — clear it so the "previous run crashed"
+                # signal can't survive across a forced kill.
+                prefs.pop("sessions", None)
+                # Saved tab groups can re-pin tabs even when Sessions/ is
+                # wiped. Clear the metadata pointer; the on-disk Tab Groups
+                # files are wiped below.
+                prefs.pop("saved_tab_groups", None)
+                # Also wipe pinned_tabs in case anything ever populated it.
+                prefs["pinned_tabs"] = []
                 prefs_file.write_text(json.dumps(prefs), encoding="utf-8")
             except Exception:
                 pass
@@ -250,6 +313,12 @@ class MirrorBrowser:
         for path in (
             _USER_DATA_DIR / "Default" / "Sessions",
             _USER_DATA_DIR / "Snapshots",
+            # Modern Chromium can also resurrect tabs from saved tab groups —
+            # the user might have an "Arnold" tab group from a prior run. The
+            # data is in a few possible spots depending on Chromium build.
+            _USER_DATA_DIR / "Default" / "Tab Groups",
+            _USER_DATA_DIR / "Default" / "SavedTabGroups",
+            _USER_DATA_DIR / "Default" / "Saved Tab Groups",
         ):
             if path.exists():
                 try:
@@ -260,7 +329,13 @@ class MirrorBrowser:
         # Also remove legacy single-file session artifacts if present
         # (pre-Sessions/ Chromium versions). Belt-and-suspenders — these don't
         # exist on modern Chrome but cost nothing to check.
-        for legacy in ("Last Tabs", "Current Tabs", "Last Session", "Current Session"):
+        for legacy in (
+            "Last Tabs",
+            "Current Tabs",
+            "Last Session",
+            "Current Session",
+            "Tab Group Highlights",
+        ):
             f = _USER_DATA_DIR / "Default" / legacy
             if f.exists():
                 try:
@@ -302,6 +377,20 @@ class MirrorBrowser:
             ignore_default_args=["--enable-automation"],
         )
 
+        # Network-level ghost-tab blocker. Set up FIRST — before any other
+        # async work — so route handlers are registered with Chromium before
+        # session-restore navigations get a chance to complete. Within a
+        # bounded grace window, abort top-level document loads to non-
+        # allowlisted hosts. Subresources and subframes always pass through;
+        # in-tab login redirects (kalshi → magic.link, etc.) happen well after
+        # the grace window expires. The aborted tab still exists as a Page
+        # object but never paints — _on_page_created closes it on first
+        # navigation event.
+        import time as _time
+
+        self._ghost_block_deadline = _time.monotonic() + 8.0
+        await self._context.route("**/*", self._ghost_route_filter)
+
         # Close ALL tabs from previous sessions — only open what user clicks.
         # Persistent context restores the last session's tabs. Open a fresh
         # blank tab first so the context stays alive while we close every
@@ -309,6 +398,10 @@ class MirrorBrowser:
         # to about:blank, which silently failed leaving stale tabs visible).
         restored_pages = list(self._context.pages)
         keeper = await self._context.new_page()
+        # Mark the keeper as explicit so its about:blank page can't be
+        # mis-classified as a ghost. Cleared on close.
+        self._explicit_pages.add(keeper)
+        keeper.once("close", lambda _p=keeper: self._explicit_pages.discard(_p))
         try:
             await keeper.goto("about:blank")
         except Exception:
@@ -339,7 +432,14 @@ class MirrorBrowser:
         # + about:blank/chrome://. /mirror/start re-opens unlimited tabs
         # explicitly so this never closes a tab we wanted.
         self._context.on("page", lambda p: self._guard_stray_tab(p))
-        asyncio.create_task(self._delayed_stray_sweep(), name="delayed_stray_sweep")
+        # Initial guard for pages that already exist (the keeper, plus any
+        # async-restored pages that got created between launch_persistent_context
+        # returning and the context.on("page") registration above). Without
+        # this, a Chromium-restored ghost tab that materialized during the
+        # registration race never gets a framenavigated handler attached.
+        for p in list(self._context.pages):
+            self._guard_stray_tab(p)
+        self._spawn(self._delayed_stray_sweep(), name="delayed_stray_sweep")
 
         self._running = True
         print("[browser] Mirror browser started (persistent profile)", flush=True)
@@ -371,47 +471,138 @@ class MirrorBrowser:
         Soft-provider tabs are added to _dynamic_allowlist when the user clicks
         a provider button — see open_tab().
         """
+        from ._urls import hostname_matches
+
         u = (url or "").lower()
         if not u or u == "about:blank" or u.startswith("chrome:") or u.startswith("devtools:"):
             return True
-        if any(d in u for d in self._ALLOWED_TAB_DOMAINS):
+        if any(hostname_matches(d, u) for d in self._ALLOWED_TAB_DOMAINS):
             return True
         dyn = getattr(self, "_dynamic_allowlist", None) or ()
-        if any(d in u for d in dyn):
+        if any(hostname_matches(d, u) for d in dyn):
             return True
         return False
 
-    def _guard_stray_tab(self, page: Page) -> None:
-        """Watch a freshly-opened page; close it if it navigates to a
-        non-allowlisted URL. Allowlist is checked dynamically so user-initiated
-        soft-provider opens via open_tab() survive."""
+    # Hosts known to be Chromium ghost-restored despite our wipe. The route
+    # filter aborts top-level document loads to these hosts during the
+    # grace window. Default-allow everything else so cloudbet / TV / login
+    # redirects always work, even within the grace window.
+    _GHOST_DENYLIST: tuple[str, ...] = (
+        "dbet.com",
+        "dbet.se",
+    )
 
-        async def _check_and_close() -> None:
+    async def _ghost_route_filter(self, route) -> None:
+        """Always abort top-level document loads to known-ghost hosts.
+        Default-allow everything else.
+
+        Originally we only blocked during a startup grace window, but
+        Chromium's session-restore hijack actually fires tens of seconds
+        after launch — observed: cloudbet's tab was alive at t=33s and
+        hijacked-then-closed by t=63s. The denylist is precise (only
+        `dbet.com` / `dbet.se` main-frame docs) so we leave the filter
+        permanently armed without breaking anything legitimate. Aborting
+        at the network layer prevents Chromium from completing the
+        navigation, so the page that *would* have been hijacked stays on
+        its previous URL — cloudbet.com survives.
+        """
+        try:
+            request = route.request
+            # Subresources always pass — only top-level document loads matter.
+            if request.resource_type != "document":
+                await route.continue_()
+                return
+            # Subframe document → parent already passed.
+            frame = request.frame
+            if frame is not None and frame.parent_frame is not None:
+                await route.continue_()
+                return
+            url = request.url
+            from ._urls import hostname_matches
+
+            if not any(hostname_matches(d, url) for d in self._GHOST_DENYLIST):
+                await route.continue_()
+                return
+            # Denylist hit: abort. Even when the source page is in
+            # _explicit_pages — Chromium session restore navigates an
+            # existing (explicit) tab to a saved URL, and we want to
+            # stop that at the network layer so the original URL is
+            # preserved.
+            print(f"[browser] Blocked ghost navigation: {url[:120]}", flush=True)
+            await route.abort("aborted")
+        except Exception as e:
+            print(f"[browser] _ghost_route_filter error ({type(e).__name__}): {e}", flush=True)
             try:
-                # Poll quickly so the dbet ghost-tab flash is closed within
-                # ~200-400ms of materialization instead of waiting 1.5s.
-                # Initial about:blank → real URL transition typically completes
-                # within the first few polls; we keep polling up to ~2s total
-                # so a slow async-restored navigation still gets caught.
-                deadline = 0.0
-                while deadline < 2.0:
-                    await asyncio.sleep(0.2)
-                    deadline += 0.2
-                    if page.is_closed():
-                        return
-                    url = (page.url or "").lower()
-                    if not url or url == "about:blank":
-                        continue  # still navigating — keep polling
-                    if self._is_tab_allowed(url):
-                        return
-                    await page.close()
-                    print(f"[browser] Closed stray restored tab: {url[:80]}", flush=True)
-                    return
-                # Final settle — page never navigated away from blank, leave it.
+                await route.continue_()
             except Exception:
                 pass
 
-        asyncio.create_task(_check_and_close(), name="guard_stray_tab")
+    def _guard_stray_tab(self, page: Page) -> None:
+        """Close `page` the moment it navigates to a non-allowlisted URL.
+
+        Uses Playwright's `framenavigated` event instead of polling — fires
+        as soon as Chromium decides the destination URL, before the document
+        body has had a chance to paint. Combined with the network-level
+        route filter (which aborts the document load entirely during the
+        startup grace window), this makes the dbet ghost-tab path:
+            (a) document request aborted by route filter → empty page
+            (b) framenavigated emits with about:blank or chrome-error://
+            (c) page.close() runs synchronously
+        Net result: no visible flash, regardless of what URL Chromium tried
+        to restore.
+        """
+
+        def _on_nav(frame) -> None:
+            try:
+                if frame.parent_frame is not None:
+                    return  # subframe, not a top-level navigation
+                url = (frame.url or "").lower()
+                if not url:
+                    return
+                # Denylist trumps everything — even a page we explicitly opened
+                # (e.g. cloudbet) can be hijacked by Chromium session restore
+                # which navigates an existing tab to a saved URL instead of
+                # creating a new one. Without this, cloudbet's Page object
+                # stays in _explicit_pages while its URL silently became
+                # https://www.dbet.com/... (observed empirically).
+                from ._urls import hostname_matches as _hm
+
+                if any(_hm(d, url) for d in self._GHOST_DENYLIST):
+                    self._spawn(_close_safely(url), name="guard_stray_close")
+                    return
+                # Page was explicitly opened by us (open_tab / keeper) — trust
+                # the navigation regardless of destination. Cloudbet does geo
+                # redirects, TradingView redirects to chart subdomains, OAuth
+                # flows redirect to magic.link / SSO providers; closing those
+                # silently breaks every legitimate flow we have.
+                try:
+                    page_obj = frame.page
+                except Exception:
+                    page_obj = None
+                if page_obj is not None and page_obj in self._explicit_pages:
+                    return
+                # chrome-error://chromewebdata/ shows up when the route filter
+                # aborts a document — close the now-useless tab.
+                is_chrome_error = url.startswith("chrome-error:")
+                if not is_chrome_error and self._is_tab_allowed(url):
+                    return
+                self._spawn(_close_safely(url), name="guard_stray_close")
+            except Exception:
+                pass
+
+        async def _close_safely(url: str) -> None:
+            try:
+                if page.is_closed():
+                    return
+                await page.close()
+                print(f"[browser] Closed stray restored tab: {url[:80]}", flush=True)
+            except Exception:
+                pass
+
+        try:
+            page.on("framenavigated", _on_nav)
+        except Exception:
+            pass
 
     async def _delayed_stray_sweep(self) -> None:
         """Permanent background watchdog — runs forever while the browser is up.
@@ -429,22 +620,60 @@ class MirrorBrowser:
         before the tab navigation completes.
         """
         try:
+            print("[browser] watchdog: started", flush=True)
             await asyncio.sleep(3.0)  # initial settle
+            tick = 0
             while True:
                 if not self._context:
+                    print("[browser] watchdog: context gone, exiting", flush=True)
                     return
-                for page in list(self._context.pages):
+                tick += 1
+                pages = list(self._context.pages)
+                non_explicit = [p for p in pages if p not in self._explicit_pages]
+                if tick % 3 == 1:  # every ~30s, summarize with URLs
+                    summary_lines = [
+                        f"[browser] watchdog tick {tick}: {len(pages)} pages "
+                        f"({len(self._explicit_pages)} in _explicit_pages, "
+                        f"{len(non_explicit)} stray-candidates):"
+                    ]
+                    for p in pages:
+                        try:
+                            tag = "explicit" if p in self._explicit_pages else "STRAY"
+                            url_short = (p.url or "")[:80]
+                            summary_lines.append(f"    [{tag}] {url_short}")
+                        except Exception:
+                            summary_lines.append("    [???] <page url unreadable>")
+                    print("\n".join(summary_lines), flush=True)
+                from ._urls import hostname_matches as _hm
+
+                for page in pages:
                     try:
                         url = (page.url or "").lower()
+                        # Denylist trumps explicit_pages — same reason as in
+                        # _guard_stray_tab: Chromium session restore can
+                        # navigate an existing (explicit) tab to a saved
+                        # ghost URL like dbet.com, leaving the Page object
+                        # in our explicit set with a hijacked URL.
+                        if any(_hm(d, url) for d in self._GHOST_DENYLIST):
+                            await page.close()
+                            print(
+                                f"[browser] Watchdog closed denylisted tab: {url[:80]}",
+                                flush=True,
+                            )
+                            continue
+                        if page in self._explicit_pages:
+                            continue
                         if self._is_tab_allowed(url):
                             continue
                         await page.close()
                         print(f"[browser] Watchdog closed stray tab: {url[:80]}", flush=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[browser] watchdog inner error: {type(e).__name__}: {e}", flush=True)
                 await asyncio.sleep(10.0)
         except asyncio.CancelledError:
-            pass
+            print("[browser] watchdog: cancelled", flush=True)
+        except Exception as e:
+            print(f"[browser] watchdog: died with {type(e).__name__}: {e}", flush=True)
 
     async def stop(self):
         if not self._running:
@@ -540,21 +769,38 @@ class MirrorBrowser:
                 self._dynamic_allowlist.add(host[4:] if host.startswith("www.") else host)
         except Exception:
             pass
-        # Reuse an about:blank tab if one exists instead of creating a new one
-        page = None
-        for p in self._context.pages:
-            if p.url in ("about:blank", "chrome://newtab/"):
-                page = p
-                break
-        if page is None:
+        # Lazy-init the lock here — __init__ runs without an event loop so we
+        # can't construct asyncio.Lock there. Once created the same lock is
+        # reused for the lifetime of the browser instance.
+        if self._open_tab_lock is None:
+            self._open_tab_lock = asyncio.Lock()
+        # Atomic page acquisition: two concurrent open_tab calls used to scan
+        # context.pages for an about:blank tab and pick the same one (TV's
+        # auto-open + /mirror/start cloudbet step in parallel — cloudbet's
+        # goto preempted TV's nav). Always create a fresh page so each caller
+        # gets a distinct tab. The boot keeper persists harmlessly as one
+        # extra about:blank.
+        async with self._open_tab_lock:
             page = await self._context.new_page()
-        # Attach interceptor BEFORE navigating so we catch all responses
-        self._attach_page(page)
-        print(f"[browser] Opening tab: {url}", flush=True)
+            # Mark explicit BEFORE the goto fires so the route filter and
+            # framenavigated guard both see this page as user-opened.
+            self._explicit_pages.add(page)
+            page.once("close", lambda _p=page: self._explicit_pages.discard(_p))
+            # Attach interceptor BEFORE navigating so we catch all responses.
+            self._attach_page(page)
+            print(f"[browser] Opening tab: {url}", flush=True)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                print(f"[browser] Navigation slow/failed ({e}), tab still usable", flush=True)
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            from .state_writer import write_provider_state
+
+            pid = self._detect_provider(url)
+            if pid:
+                write_provider_state(pid, tab_open=True, tab_url=url)
         except Exception as e:
-            print(f"[browser] Navigation slow/failed ({e}), tab still usable", flush=True)
+            logger.debug(f"[browser] state_writer (open_tab) failed: {e!r}")
         return page
 
     def get_status(self) -> dict:
@@ -581,12 +827,13 @@ class MirrorBrowser:
         """Check login by scraping balance from DOM — fallback when interception misses."""
         if not self._context:
             return {"logged_in": False}
+        from ._urls import hostname_matches
         from .workflows import get_workflow
 
         workflow = get_workflow(provider_id)
         page = None
         for p in self._context.pages:
-            if workflow.domain in p.url:
+            if workflow.domain and hostname_matches(workflow.domain, p.url):
                 page = p
                 break
         if not page:
@@ -639,6 +886,12 @@ class MirrorBrowser:
                 if balance is not None:
                     self.provider_data[provider_id]["balance"] = balance
                 self.provider_data[provider_id]["source"] = "dom"
+                try:
+                    from .state_writer import write_provider_state
+
+                    write_provider_state(provider_id, logged_in=True, balance=balance)
+                except Exception as e:
+                    logger.debug(f"[browser] state_writer failed: {e!r}")
                 if self._on_event and balance is not None:
                     self._on_event(
                         "balance_intercepted",
@@ -744,6 +997,12 @@ class MirrorBrowser:
                 self.provider_data[provider_id]["balance"] = balance
                 self.provider_data[provider_id]["last_balance_url"] = url
                 logger.info(f"[browser] {provider_id} BALANCE: {balance} (from {url[:80]})")
+                try:
+                    from .state_writer import write_provider_state
+
+                    write_provider_state(provider_id, logged_in=True, balance=balance)
+                except Exception as e:
+                    logger.debug(f"[browser] state_writer failed: {e!r}")
                 if self._on_event:
                     self._on_event(
                         "balance_intercepted",
@@ -770,6 +1029,12 @@ class MirrorBrowser:
                         self.provider_data[provider_id]["logged_in"] = True
                         self.provider_data[provider_id]["balance"] = balance
                         logger.info(f"[browser] {provider_id} BALANCE (relay): {balance}")
+                        try:
+                            from .state_writer import write_provider_state
+
+                            write_provider_state(provider_id, logged_in=True, balance=balance)
+                        except Exception as e:
+                            logger.debug(f"[browser] state_writer failed: {e!r}")
                         if self._on_event:
                             self._on_event(
                                 "balance_intercepted",

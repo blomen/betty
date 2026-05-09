@@ -196,7 +196,7 @@ def size_multiplier(composite: float) -> float:
                                                 strict: skip below threshold)
 
     The 0.0 floor in strict mode rejects the entry outright in
-    broker_adapter (size_model_skip). In reckless mode that loses the
+    broker_adapter (size_multiplier_skip). In reckless mode that loses the
     training sample — every skipped touch is a missing labeled outcome
     the trainer needed. Floor at 0.5 keeps entries flowing while honoring
     the model's "low confidence" signal via reduced size.

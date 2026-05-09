@@ -1,5 +1,5 @@
 """Tests for broker position tracking."""
-import pytest
+
 from src.broker.position_tracker import PositionTracker
 
 
@@ -73,3 +73,21 @@ def test_reset_session():
     assert pt.is_flat
     assert pt.session_pnl == 0.0
     assert pt.trade_count == 0
+
+
+def test_phase_property_reflects_locked_BE():
+    """tracker.phase = 1 when locked_BE False, 2 when True."""
+    t = PositionTracker()
+    t.on_fill(side="long", price=25000.0, size=1, stop_price=24990.0)
+
+    assert t.phase == 1, "fresh entry should be Phase 1"
+    t.locked_BE = True
+    assert t.phase == 2, "locked_BE should flip phase to 2"
+    t.locked_BE = False
+    assert t.phase == 1, "phase tracks locked_BE forward and back"
+
+
+def test_phase_property_when_flat():
+    """tracker.phase = 0 when flat (no position)."""
+    t = PositionTracker()
+    assert t.phase == 0

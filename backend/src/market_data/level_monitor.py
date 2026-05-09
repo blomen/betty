@@ -21,6 +21,113 @@ logger = logging.getLogger(__name__)
 TICK_SIZE = 0.25  # NQ tick size
 
 
+def _conf_floor() -> float:
+    """Confidence floor for entry dispatch.
+
+    Reckless (paper) = 0.0 — every non-SKIP signal becomes a trade.
+    Strict (real money) = 0.15 — historical default.
+    """
+    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.15
+
+
+def _of_floor() -> float:
+    """Orderflow score floor for entry dispatch.
+    Reckless (paper) = 0.0 — collect labeled outcomes for all OF regimes.
+    Strict (real money) = 0.30 — early audit showed OF>=0.30 wins 4/4.
+    """
+    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.30
+
+
+MIN_ENTRY_STOP_TICKS = 6.0
+MAX_ENTRY_STOP_TICKS = 40.0
+
+# Phase 2 transition threshold — matches BE_LOCK_R in broker_adapter.py.
+# Lowered from 2.0 to 1.5 on 2026-05-09 per phase1-phase2 spec.
+PHASE_2_THRESHOLD_R = 1.5
+
+
+def _reversal_signals_active() -> bool:
+    """Per-tick reversal_signals exit. Default OFF per phase1-phase2 spec —
+    Phase 2 decisions driven by zone-touch DQN action=REV only.
+
+    Set ENABLE_PER_TICK_REVERSAL=1 to restore the legacy behavior for
+    diagnostics.
+    """
+    return os.environ.get("ENABLE_PER_TICK_REVERSAL", "0") == "1"
+
+
+def _early_exit_lock_active() -> bool:
+    """Per-tick early-exit lock. Default OFF per phase1-phase2 spec.
+
+    Set ENABLE_EARLY_EXIT_LOCK=1 to opt back in.
+
+    No call site yet — kept symmetric with _reversal_signals_active so that
+    when an EE_LOCK Phase 2 branch is added (e.g. by a future spec), the
+    gate is already wired and the env var contract is already established.
+    """
+    return os.environ.get("ENABLE_EARLY_EXIT_LOCK", "0") == "1"
+
+
+def _stop_ticks_in_bounds(stop_ticks: float) -> bool:
+    """Filter dim-predicted stops outside the trainable noise band.
+
+    <6 ticks (~1.5 NQ pts) → below typical noise, near-instant stop hit.
+    >40 ticks → unclear setup, stop too wide for reliable R measurement.
+    Both produce trades the model can't learn from.
+    """
+    return MIN_ENTRY_STOP_TICKS <= float(stop_ticks) <= MAX_ENTRY_STOP_TICKS
+
+
+PHASE_2_BASE_SIZE = 1
+
+
+def _pyramid_add_size(confidence: float) -> int:
+    """Phase 2 pyramid add size — confidence-scaled via size_multiplier."""
+    from src.rl.confidence import size_multiplier
+
+    return max(1, round(PHASE_2_BASE_SIZE * size_multiplier(float(confidence))))
+
+
+def _is_phase2_rev_opposite(result: dict, tr, approach: str) -> bool:
+    """True when the DQN action=REVERSAL would flip the current Phase 2 position.
+
+    REVERSAL at an UP-approach zone fades the approach → wants short (opposite
+    of a long). REVERSAL at a DOWN-approach zone → wants long (opposite of a
+    short). We only allow the fall-through to broker.on_signal when ALL of:
+      - position is open (side is not None)
+      - locked_BE=True  (Phase 2 — Phase 1 stays sacred)
+      - model action is REVERSAL
+      - the implied REV direction is opposite to the current side
+    """
+    if not result:
+        return False
+    side = getattr(tr, "side", None)
+    if not side:
+        return False
+    if not getattr(tr, "locked_BE", False):
+        return False  # Only Phase 2 — Phase 1 stays sacred
+    action = result.get("action", "")
+    if action.upper() != "REVERSAL":
+        return False
+    # REVERSAL fades the approach: up-approach → short, down-approach → long
+    rev_side = "short" if approach == "up" else "long"
+    # Mirrors the REVERSAL → enter_short/enter_long mapping in the dispatch
+    # translation at the bottom of _emit_zone_dqn_inference. Keep these in sync.
+    return rev_side != side
+
+
+def _should_run_phase2_handlers(tr) -> bool:
+    """Gate the in-position handler: skip entirely in Phase 1 (sacred bracket).
+    Phase 2 entered when peak_R first crosses 1.5 and locked_BE flips True."""
+    if getattr(tr, "is_flat", True):
+        return False
+    if not getattr(tr, "locked_BE", False):
+        return False
+    if float(getattr(tr, "peak_R", 0.0) or 0.0) < PHASE_2_THRESHOLD_R:
+        return False
+    return True
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1110,7 +1217,7 @@ class LevelMonitor:
         # Tick-rate mark update + BE-lock check via the adapter method so
         # the same logic runs in both the FastAPI process and the
         # trading_service subprocess (whichever process owns the live
-        # position will fire BE-lock when peak_R crosses 2.0).
+        # position will fire BE-lock when peak_R crosses 1.5).
         broker = getattr(self, "_broker_adapter", None)
         # 2026-05-06 DIAGNOSTIC: trace _check_positions entry. Throttled.
         import time as _time_diag
@@ -1641,12 +1748,11 @@ class LevelMonitor:
         action = result.get("action", "SKIP")
         confidence = float(result.get("confidence", 0.0) or 0.0)
         of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
-        reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
-        conf_floor_default = 0.05 if reckless else 0.15
+        conf_floor_default = _conf_floor()
         # Must mirror the broker-path + relay-path floors below — frontend
         # displays this value, and a stale 0.15 here gives a "BLOCKED orderflow
         # 0.02 ≥ 0.15" gate row even though the actual broker dispatch uses 0.0.
-        of_floor = 0.0 if reckless else 0.30
+        of_floor = _of_floor()
         halted = _trading_paused()
         conf_floor = 0.99 if halted else conf_floor_default
         is_flat = bool(broker is None or broker.tracker.is_flat)
@@ -1654,6 +1760,8 @@ class LevelMonitor:
         action_pass = action not in ("SKIP", "skip")
         conf_pass = confidence >= conf_floor
         of_pass = of_score >= of_floor
+        stop_ticks = float(result.get("stop_ticks", 0) or 0)
+        stop_pass = _stop_ticks_in_bounds(stop_ticks)
 
         # Order matters — first failing gate is the headline blocker. Halt
         # short-circuits everything else (it raises conf_floor to 0.99).
@@ -1665,6 +1773,8 @@ class LevelMonitor:
             blocker = "confidence"
         elif not of_pass:
             blocker = "orderflow"
+        elif not stop_pass:
+            blocker = "stop_bounds"
         elif not is_flat:
             # The broker path doesn't dispatch a new entry while in-position,
             # it routes to pyramid/reversal-exit/early-exit handlers instead.
@@ -1680,11 +1790,15 @@ class LevelMonitor:
             "of_score": of_score,
             "of_floor": of_floor,
             "of_pass": of_pass,
+            "stop_ticks": stop_ticks,
+            "stop_min": MIN_ENTRY_STOP_TICKS,
+            "stop_max": MAX_ENTRY_STOP_TICKS,
+            "stop_pass": stop_pass,
             "is_flat": is_flat,
             "halted": halted,
             "decision": "DISPATCHED" if blocker is None else "BLOCKED",
             "blocker": blocker,
-            "reckless": reckless,
+            "reckless": os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0",
         }
 
     def _emit_zone_dqn_inference(self, zone: Zone, price: float, approach: str = "up") -> None:
@@ -1793,89 +1907,106 @@ class LevelMonitor:
                 # "reverse exit". Skips the entry-signal dispatch entirely when
                 # the position is already open.
                 if not broker.tracker.is_flat:
-                    try:
-                        tr = broker.tracker
-                        rev = result.get("reversal_signals") or {}
-                        pyr = result.get("pyramid_decision") or {}
-
-                        # Phase 1 (peak_R < 2.0): trade plays out untouched —
-                        # only the original SL or the natural +2R inflection
-                        # moves it. Reversal-signals and early-exit-lock used
-                        # to fire here too, but the 2026-05-08 counterfactual
-                        # showed they were chopping budding winners: 81/151
-                        # reversal-exits would have hit TP if held (54%), and
-                        # most fired when peak_R was still ~0. Strategy now:
-                        # don't intervene in undeveloped trades; let win/loss
-                        # resolve cleanly against the original SL/2R bracket.
-                        # Phase 2 (peak_R >= 2.0): complex exit/trail kicks in.
-                        if tr.peak_R >= 2.0 and rev.get("should_exit"):
-                            logger.info(
-                                "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
-                                rev.get("fired_count", 0),
-                                tr.peak_R,
-                                tr.side,
-                                price,
-                            )
-                            asyncio.create_task(broker.flatten("reversal_signals"))
-                        elif tr.peak_R >= 2.0:
-                            # 4. Cont-trail: at a new zone in trade direction past entry,
-                            # trail stop to the previously-broken zone's edge. Idempotent
-                            # via current_zone_R (refuses to re-trail at the same level).
-                            pending = broker._pending_trade or {}
-                            current_zone_R = float(pending.get("current_zone_R") or 0.0)
-                            # Orderflow-aware trailing (RECKLESS_OF_TRAIL=1):
-                            #   of < 0.3 → SKIP the trail (let it run; weak conviction
-                            #              + tight zone trail = noise stops us out)
-                            #   of 0.3-0.7 → default prior-zone trail
-                            #   of >= 0.7 → TIGHTEN to touched-zone near-edge to lock
-                            # Off by default (env var not set) → behaviour unchanged.
-                            of_for_trail = None
-                            of_skip = False
-                            if os.environ.get("RECKLESS_OF_TRAIL", "1") != "0":
-                                action_for_of = result.get("action") or "CONT"
-                                of_for_trail = _compute_orderflow_score_live(rl_state, zone, price, action_for_of)
-                                if of_for_trail < 0.3:
-                                    of_skip = True
-                                    logger.info(
-                                        "Cont-trail SKIPPED: of=%.3f < 0.3 — letting position run "
-                                        "(peak_R=%.2f zone=%.2f)",
-                                        of_for_trail,
-                                        tr.peak_R,
-                                        zone.center_price,
-                                    )
-                            if not of_skip:
-                                trail = compute_zone_trail_target(
-                                    tr, zone, self._zones, current_zone_R, of_score=of_for_trail
-                                )
-                                if trail is not None:
-                                    target_stop, advance_zone_R = trail
-                                    logger.info(
-                                        "Cont-trail: peak_R=%.2f advance_zone_R=%.2f of=%s → trail stop to %.2f",
-                                        tr.peak_R,
-                                        advance_zone_R,
-                                        ("%.3f" % of_for_trail) if of_for_trail is not None else "n/a",
-                                        target_stop,
-                                    )
-                                    asyncio.create_task(broker.modify_stop(target_stop))
-                                    if pending:
-                                        pending["current_zone_R"] = advance_zone_R
-                                        broker._set_pending_trade(pending)
-                        elif pyr.get("should_add"):
-                            add_size = int(max(1, round(float(pyr.get("add_size") or 0))))
-                            logger.info(
-                                "Pyramid add (%s): +%d @ %.2f (%s)",
-                                tr.side,
-                                add_size,
-                                price,
-                                pyr.get("detail", ""),
-                            )
-                            asyncio.create_task(broker.add_to_position(add_size, price))
-
-                        # Suppress the entry-signal dispatch while in-position —
-                        # trail/flip is replaced by the three decisions above.
+                    if not _should_run_phase2_handlers(broker.tracker):
+                        # Phase 1 sacred — ignore this zone touch entirely. Trade
+                        # plays out against the original SL/TP bracket. Suppress
+                        # the broker-dispatch path so we don't accidentally enter
+                        # a new position while in one.
                         result = None
-                    except Exception:
-                        logger.warning("In-position handling failed", exc_info=True)
+                    else:
+                        try:
+                            tr = broker.tracker
+                            rev = result.get("reversal_signals") or {}
+                            pyr = result.get("pyramid_decision") or {}
+
+                            # Phase 2 (peak_R >= 1.5, locked_BE=True): complex
+                            # exit/trail kicks in. Threshold matches BE_LOCK_R so
+                            # trail fires at the same moment profit is locked
+                            # (lowered from 2.0 on 2026-05-09).
+                            # Per-tick reversal-signals exit. Default OFF — set ENABLE_PER_TICK_REVERSAL=1
+                            # to restore (see _reversal_signals_active() docstring for context).
+                            if rev.get("should_exit") and _reversal_signals_active():
+                                logger.info(
+                                    "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
+                                    rev.get("fired_count", 0),
+                                    tr.peak_R,
+                                    tr.side,
+                                    price,
+                                )
+                                asyncio.create_task(broker.flatten("reversal_signals"))
+                            else:
+                                # 4. Cont-trail: at a new zone in trade direction past
+                                # entry, trail stop to the previously-broken zone's
+                                # edge. Idempotent via current_zone_R (refuses to
+                                # re-trail at the same level).
+                                pending = broker._pending_trade or {}
+                                current_zone_R = float(pending.get("current_zone_R") or 0.0)
+                                # Orderflow-aware trailing (RECKLESS_OF_TRAIL=1):
+                                #   of < 0.3 → SKIP the trail (let it run; weak conviction
+                                #              + tight zone trail = noise stops us out)
+                                #   of 0.3-0.7 → default prior-zone trail
+                                #   of >= 0.7 → TIGHTEN to touched-zone near-edge to lock
+                                # Off by default (env var not set) → behaviour unchanged.
+                                of_for_trail = None
+                                of_skip = False
+                                if os.environ.get("RECKLESS_OF_TRAIL", "1") != "0":
+                                    action_for_of = result.get("action") or "CONT"
+                                    of_for_trail = _compute_orderflow_score_live(rl_state, zone, price, action_for_of)
+                                    if of_for_trail < 0.3:
+                                        of_skip = True
+                                        logger.info(
+                                            "Cont-trail SKIPPED: of=%.3f < 0.3 — letting position run "
+                                            "(peak_R=%.2f zone=%.2f)",
+                                            of_for_trail,
+                                            tr.peak_R,
+                                            zone.center_price,
+                                        )
+                                if not of_skip:
+                                    trail = compute_zone_trail_target(
+                                        tr, zone, self._zones, current_zone_R, of_score=of_for_trail
+                                    )
+                                    if trail is not None:
+                                        target_stop, advance_zone_R = trail
+                                        logger.info(
+                                            "Cont-trail: peak_R=%.2f advance_zone_R=%.2f of=%s → trail stop to %.2f",
+                                            tr.peak_R,
+                                            advance_zone_R,
+                                            ("%.3f" % of_for_trail) if of_for_trail is not None else "n/a",
+                                            target_stop,
+                                        )
+                                        asyncio.create_task(broker.modify_stop(target_stop))
+                                        if pending:
+                                            pending["current_zone_R"] = advance_zone_R
+                                            broker._set_pending_trade(pending)
+
+                                # Spec: pyramid size is confidence-scaled, NOT from
+                                # the DQN pyramid head. CONT action from the action
+                                # head + zone touch in trade direction is sufficient —
+                                # no extra should_add gate. Safe here because
+                                # _should_run_phase2_handlers already verified
+                                # locked_BE=True (position is profitable by
+                                # construction before this branch is reached).
+                                if result.get("action") == "CONTINUATION":
+                                    confidence = float(result.get("confidence", 0) or 0)
+                                    add_size = _pyramid_add_size(confidence)
+                                    logger.info(
+                                        "Pyramid add (%s): +%d @ %.2f (%s)",
+                                        tr.side,
+                                        add_size,
+                                        price,
+                                        pyr.get("detail", ""),
+                                    )
+                                    asyncio.create_task(broker.add_to_position(add_size, price))
+
+                            # Suppress the entry-signal dispatch while in-position
+                            # EXCEPT for Phase 2 REV-opposite signals — those fall
+                            # through to broker.on_signal which handles flatten+flip
+                            # via the existing REV-flip path (broker_adapter line 593+).
+                            is_rev_opposite = _is_phase2_rev_opposite(result, tr, approach)
+                            if not is_rev_opposite:
+                                result = None
+                        except Exception:
+                            logger.warning("In-position handling failed", exc_info=True)
 
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
@@ -1892,7 +2023,7 @@ class LevelMonitor:
                 # OF floor: data shows OF>=0.30 wins 4/4, OF<0.30 is
                 # coin-flip + drag. Reckless mode was for bootstrapping
                 # data; now we have it. Default OF floor back to 0.30.
-                # Confidence floor stays at 0.05 (reckless) until trainer
+                # Confidence floor stays at 0.0 (reckless) until trainer
                 # produces calibrated probabilities — most live signals
                 # land at 0.10-0.25 conf so a higher floor would mute
                 # everything again.
@@ -1901,18 +2032,14 @@ class LevelMonitor:
                 # tuples. Once we have ~200 real trades + go live, raise
                 # OF floor back to 0.30 (early audit showed OF>=0.30 was
                 # 4/4; need bigger sample to confirm).
-                _reckless = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
-                _conf_floor_default = 0.05 if _reckless else 0.15
-                # In reckless paper-trading mode every blocked signal is lost
-                # training data. Drop the OF floor to 0 so the trainer gets
-                # the full distribution of (obs, action, realized_R) tuples;
-                # raise back to 0.30 once we go live with real money.
-                _of_floor = 0.0 if _reckless else 0.30
+                _conf_floor_default = _conf_floor()
+                _of_floor_val = _of_floor()
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
                 # Log the gate decision so silent veto causes are visible in
                 # deploy logs without having to attach a debugger.
+                _st_ticks = float(result.get("stop_ticks") or 0)
                 if action in ("SKIP", "skip"):
                     logger.debug("broker gate: SKIP action, zone=%.2f", zone.center_price)
                 elif confidence < _broker_conf_floor:
@@ -1922,14 +2049,21 @@ class LevelMonitor:
                         _broker_conf_floor,
                         zone.center_price,
                     )
-                elif of_score < _of_floor:
+                elif of_score < _of_floor_val:
                     logger.info(
                         "broker gate: of_score %.3f < %.2f at zone %.2f (conf=%.3f, %s) — vetoed",
                         of_score,
-                        _of_floor,
+                        _of_floor_val,
                         zone.center_price,
                         confidence,
                         action,
+                    )
+                elif not _stop_ticks_in_bounds(_st_ticks):
+                    logger.info(
+                        "Dispatch BLOCKED stop_bounds: stop_ticks=%.1f outside [%d, %d]",
+                        _st_ticks,
+                        int(MIN_ENTRY_STOP_TICKS),
+                        int(MAX_ENTRY_STOP_TICKS),
                     )
                 else:
                     logger.info(
@@ -1939,7 +2073,12 @@ class LevelMonitor:
                         action,
                         zone.center_price,
                     )
-                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= _of_floor:
+                if (
+                    action not in ("SKIP", "skip")
+                    and confidence >= _broker_conf_floor
+                    and of_score >= _of_floor_val
+                    and _stop_ticks_in_bounds(_st_ticks)
+                ):
                     import asyncio
 
                     try:
@@ -1948,7 +2087,7 @@ class LevelMonitor:
                         else:  # REVERSAL — fade the approach
                             sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
-                        stop_ticks = int(max(6, min(50, result.get("stop_ticks") or 25)))
+                        stop_ticks = int(result.get("stop_ticks") or 25)
                         # Weak-but-passing orderflow → widen stop (more room)
                         if of_score < 0.70:
                             stop_ticks = max(stop_ticks, 23)
@@ -2074,6 +2213,7 @@ class LevelMonitor:
                 # this is where the gate must enforce.
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
+                # TODO(task-13-followup): unify with _of_floor() — currently a parallel relay-path implementation
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
