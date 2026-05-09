@@ -849,9 +849,19 @@
       { time: anchor, price: p.entry },
       { time: endEpoch, price: p.entry },
     ];
+    // lotSize/accountSize/leverage/risk are required for TV's qty math —
+    // without them TV defaults to fractional contract qty (~0.42) and
+    // shows wrong $-amounts on the stop/target bands.
+    const NQ_POINT_VALUE = 20;
+    const lotSize = (typeof p.size === 'number' && p.size > 0) ? Math.round(p.size) : 1;
+    const accountSize = Math.round(lotSize * p.entry * NQ_POINT_VALUE);
     const positionOverrides = {
       stopLevel: stopOffsetTicks,
       profitLevel: tpOffsetTicks,
+      lotSize,
+      leverage: 1,
+      accountSize,
+      risk: 1.0,
       showPriceLabels: false,
       // Halt visual cue. Falls back to TV defaults when not halted.
       ...(p.halted ? { linecolor: '#f59e0b', textcolor: '#f59e0b' } : {}),
@@ -1102,15 +1112,21 @@
     const reasonStr = (typeof p.exit_reason === 'string' && p.exit_reason) ? ` [${p.exit_reason}]` : '';
     const headerText = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}${reasonStr}`;
 
-    // Minimal create-time overrides — matches the active widget shape that's
-    // known to work. The fancy infoBlocks/compact/profitBackground props
-    // get applied post-create via setProperties (best-effort, silently
-    // ignored if newer TV builds reject them). Keeping the create call
-    // small avoids "Value is undefined" rejections from TV's stricter
-    // widget validators.
+    // Create-time overrides — load-bearing fields only. lotSize/accountSize/
+    // leverage/risk are required for TV's qty math: without them TV defaults
+    // to a fractional qty (~0.42 contract) and computes wrong $-amounts/R:R.
+    // accountSize = lotSize × entry × pointValue makes TV's internal qty
+    // formula resolve to qty=lotSize ($20/pt × ticks × contracts on NQ).
+    const NQ_POINT_VALUE = 20;
+    const lotSize = (typeof p.size === 'number' && p.size > 0) ? Math.round(p.size) : 1;
+    const accountSize = Math.round(lotSize * entry * NQ_POINT_VALUE);
     const widgetCreateOverrides = {
       stopLevel,
       profitLevel,
+      lotSize,
+      leverage: 1,
+      accountSize,
+      risk: 1.0,
       showPriceLabels: false,
     };
     // Applied via setProperties after the shape exists. infoBlocks toggles
