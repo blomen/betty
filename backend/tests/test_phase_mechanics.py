@@ -103,3 +103,24 @@ def test_pyramid_size_mid_conf(monkeypatch):
     from src.market_data.level_monitor import _pyramid_add_size
 
     assert _pyramid_add_size(confidence=0.65) == 1
+
+
+def test_phase1_in_position_handler_no_op_below_threshold():
+    """In-position handler must skip cont-trail/pyramid when peak_R < 1.5R."""
+    from unittest.mock import MagicMock
+
+    from src.market_data.level_monitor import _should_run_phase2_handlers
+
+    tr = MagicMock()
+    tr.is_flat = False
+    tr.peak_R = 1.0
+    tr.locked_BE = False
+
+    assert _should_run_phase2_handlers(tr) is False, "Phase 1 (peak_R<1.5) must NOT run Phase 2 handlers"
+
+    tr.peak_R = 1.5
+    tr.locked_BE = True
+    assert _should_run_phase2_handlers(tr) is True, "Phase 2 (peak_R>=1.5 + locked_BE) MUST run handlers"
+
+    tr.is_flat = True
+    assert _should_run_phase2_handlers(tr) is False, "flat → no Phase 2 handlers"

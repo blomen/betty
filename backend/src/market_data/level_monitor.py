@@ -116,6 +116,18 @@ def _is_phase2_rev_opposite(result: dict, tr, approach: str) -> bool:
     return rev_side != side
 
 
+def _should_run_phase2_handlers(tr) -> bool:
+    """Gate the in-position handler: skip entirely in Phase 1 (sacred bracket).
+    Phase 2 entered when peak_R first crosses 1.5 and locked_BE flips True."""
+    if getattr(tr, "is_flat", True):
+        return False
+    if not getattr(tr, "locked_BE", False):
+        return False
+    if float(getattr(tr, "peak_R", 0.0) or 0.0) < PHASE_2_THRESHOLD_R:
+        return False
+    return True
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1895,108 +1907,104 @@ class LevelMonitor:
                 # "reverse exit". Skips the entry-signal dispatch entirely when
                 # the position is already open.
                 if not broker.tracker.is_flat:
-                    try:
-                        tr = broker.tracker
-                        rev = result.get("reversal_signals") or {}
-                        pyr = result.get("pyramid_decision") or {}
+                    if not _should_run_phase2_handlers(broker.tracker):
+                        # Phase 1 sacred — ignore this zone touch entirely. Trade
+                        # plays out against the original SL/TP bracket. Suppress
+                        # the broker-dispatch path so we don't accidentally enter
+                        # a new position while in one.
+                        result = None
+                    else:
+                        try:
+                            tr = broker.tracker
+                            rev = result.get("reversal_signals") or {}
+                            pyr = result.get("pyramid_decision") or {}
 
-                        # Phase 1 (peak_R < 1.5): trade plays out untouched —
-                        # only the original SL or the natural +2R inflection
-                        # moves it. Reversal-signals and early-exit-lock used
-                        # to fire here too, but the 2026-05-08 counterfactual
-                        # showed they were chopping budding winners: 81/151
-                        # reversal-exits would have hit TP if held (54%), and
-                        # most fired when peak_R was still ~0. Strategy now:
-                        # don't intervene in undeveloped trades; let win/loss
-                        # resolve cleanly against the original SL/2R bracket.
-                        # Phase 2 (peak_R >= 1.5): complex exit/trail kicks in.
-                        # Threshold matches BE_LOCK_R so trail fires at the same
-                        # moment profit is locked (lowered from 2.0 on 2026-05-09).
-                        if tr.peak_R >= PHASE_2_THRESHOLD_R and rev.get("should_exit") and _reversal_signals_active():
-                            logger.info(
-                                "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
-                                rev.get("fired_count", 0),
-                                tr.peak_R,
-                                tr.side,
-                                price,
-                            )
-                            asyncio.create_task(broker.flatten("reversal_signals"))
-                        elif tr.peak_R >= PHASE_2_THRESHOLD_R:
-                            # 4. Cont-trail: at a new zone in trade direction past entry,
-                            # trail stop to the previously-broken zone's edge. Idempotent
-                            # via current_zone_R (refuses to re-trail at the same level).
-                            pending = broker._pending_trade or {}
-                            current_zone_R = float(pending.get("current_zone_R") or 0.0)
-                            # Orderflow-aware trailing (RECKLESS_OF_TRAIL=1):
-                            #   of < 0.3 → SKIP the trail (let it run; weak conviction
-                            #              + tight zone trail = noise stops us out)
-                            #   of 0.3-0.7 → default prior-zone trail
-                            #   of >= 0.7 → TIGHTEN to touched-zone near-edge to lock
-                            # Off by default (env var not set) → behaviour unchanged.
-                            of_for_trail = None
-                            of_skip = False
-                            if os.environ.get("RECKLESS_OF_TRAIL", "1") != "0":
-                                action_for_of = result.get("action") or "CONT"
-                                of_for_trail = _compute_orderflow_score_live(rl_state, zone, price, action_for_of)
-                                if of_for_trail < 0.3:
-                                    of_skip = True
-                                    logger.info(
-                                        "Cont-trail SKIPPED: of=%.3f < 0.3 — letting position run "
-                                        "(peak_R=%.2f zone=%.2f)",
-                                        of_for_trail,
-                                        tr.peak_R,
-                                        zone.center_price,
-                                    )
-                            if not of_skip:
-                                trail = compute_zone_trail_target(
-                                    tr, zone, self._zones, current_zone_R, of_score=of_for_trail
+                            # Phase 2 (peak_R >= 1.5, locked_BE=True): complex
+                            # exit/trail kicks in. Threshold matches BE_LOCK_R so
+                            # trail fires at the same moment profit is locked
+                            # (lowered from 2.0 on 2026-05-09).
+                            if rev.get("should_exit") and _reversal_signals_active():
+                                logger.info(
+                                    "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
+                                    rev.get("fired_count", 0),
+                                    tr.peak_R,
+                                    tr.side,
+                                    price,
                                 )
-                                if trail is not None:
-                                    target_stop, advance_zone_R = trail
-                                    logger.info(
-                                        "Cont-trail: peak_R=%.2f advance_zone_R=%.2f of=%s → trail stop to %.2f",
-                                        tr.peak_R,
-                                        advance_zone_R,
-                                        ("%.3f" % of_for_trail) if of_for_trail is not None else "n/a",
-                                        target_stop,
+                                asyncio.create_task(broker.flatten("reversal_signals"))
+                            else:
+                                # 4. Cont-trail: at a new zone in trade direction past
+                                # entry, trail stop to the previously-broken zone's
+                                # edge. Idempotent via current_zone_R (refuses to
+                                # re-trail at the same level).
+                                pending = broker._pending_trade or {}
+                                current_zone_R = float(pending.get("current_zone_R") or 0.0)
+                                # Orderflow-aware trailing (RECKLESS_OF_TRAIL=1):
+                                #   of < 0.3 → SKIP the trail (let it run; weak conviction
+                                #              + tight zone trail = noise stops us out)
+                                #   of 0.3-0.7 → default prior-zone trail
+                                #   of >= 0.7 → TIGHTEN to touched-zone near-edge to lock
+                                # Off by default (env var not set) → behaviour unchanged.
+                                of_for_trail = None
+                                of_skip = False
+                                if os.environ.get("RECKLESS_OF_TRAIL", "1") != "0":
+                                    action_for_of = result.get("action") or "CONT"
+                                    of_for_trail = _compute_orderflow_score_live(rl_state, zone, price, action_for_of)
+                                    if of_for_trail < 0.3:
+                                        of_skip = True
+                                        logger.info(
+                                            "Cont-trail SKIPPED: of=%.3f < 0.3 — letting position run "
+                                            "(peak_R=%.2f zone=%.2f)",
+                                            of_for_trail,
+                                            tr.peak_R,
+                                            zone.center_price,
+                                        )
+                                if not of_skip:
+                                    trail = compute_zone_trail_target(
+                                        tr, zone, self._zones, current_zone_R, of_score=of_for_trail
                                     )
-                                    asyncio.create_task(broker.modify_stop(target_stop))
-                                    if pending:
-                                        pending["current_zone_R"] = advance_zone_R
-                                        broker._set_pending_trade(pending)
-                        # Spec: pyramid size is confidence-scaled, NOT from the DQN pyramid head.
-                        # CONT action from the action head + zone touch in trade direction is
-                        # sufficient — no extra should_add gate.
-                        #
-                        # Note: this gate is `action == "CONT"` alone — the old should_add
-                        # guard's `unrealized_R >= 0.3` profit cushion is dropped. That looks
-                        # unsafe in isolation but is structurally fine because Task 12's
-                        # `_should_run_phase2_handlers` wraps this whole in-position handler:
-                        # pyramid only fires when locked_BE=True (peak_R has crossed 1.5R AND
-                        # stop sits at entry+2t locked-profit), so the position is profitable
-                        # by construction. Without Task 12, this branch could fire underwater
-                        # in Phase 1, but Task 12 is a hard prerequisite for deploy.
-                        elif result.get("action") == "CONTINUATION":
-                            confidence = float(result.get("confidence", 0) or 0)
-                            add_size = _pyramid_add_size(confidence)
-                            logger.info(
-                                "Pyramid add (%s): +%d @ %.2f (%s)",
-                                tr.side,
-                                add_size,
-                                price,
-                                pyr.get("detail", ""),
-                            )
-                            asyncio.create_task(broker.add_to_position(add_size, price))
+                                    if trail is not None:
+                                        target_stop, advance_zone_R = trail
+                                        logger.info(
+                                            "Cont-trail: peak_R=%.2f advance_zone_R=%.2f of=%s → trail stop to %.2f",
+                                            tr.peak_R,
+                                            advance_zone_R,
+                                            ("%.3f" % of_for_trail) if of_for_trail is not None else "n/a",
+                                            target_stop,
+                                        )
+                                        asyncio.create_task(broker.modify_stop(target_stop))
+                                        if pending:
+                                            pending["current_zone_R"] = advance_zone_R
+                                            broker._set_pending_trade(pending)
 
-                        # Suppress the entry-signal dispatch while in-position
-                        # EXCEPT for Phase 2 REV-opposite signals — those fall
-                        # through to broker.on_signal which handles flatten+flip
-                        # via the existing REV-flip path (broker_adapter line 593+).
-                        is_rev_opposite = _is_phase2_rev_opposite(result, tr, approach)
-                        if not is_rev_opposite:
-                            result = None
-                    except Exception:
-                        logger.warning("In-position handling failed", exc_info=True)
+                                # Spec: pyramid size is confidence-scaled, NOT from
+                                # the DQN pyramid head. CONT action from the action
+                                # head + zone touch in trade direction is sufficient —
+                                # no extra should_add gate. Safe here because
+                                # _should_run_phase2_handlers already verified
+                                # locked_BE=True (position is profitable by
+                                # construction before this branch is reached).
+                                if result.get("action") == "CONTINUATION":
+                                    confidence = float(result.get("confidence", 0) or 0)
+                                    add_size = _pyramid_add_size(confidence)
+                                    logger.info(
+                                        "Pyramid add (%s): +%d @ %.2f (%s)",
+                                        tr.side,
+                                        add_size,
+                                        price,
+                                        pyr.get("detail", ""),
+                                    )
+                                    asyncio.create_task(broker.add_to_position(add_size, price))
+
+                            # Suppress the entry-signal dispatch while in-position
+                            # EXCEPT for Phase 2 REV-opposite signals — those fall
+                            # through to broker.on_signal which handles flatten+flip
+                            # via the existing REV-flip path (broker_adapter line 593+).
+                            is_rev_opposite = _is_phase2_rev_opposite(result, tr, approach)
+                            if not is_rev_opposite:
+                                result = None
+                        except Exception:
+                            logger.warning("In-position handling failed", exc_info=True)
 
             if broker is not None and result is not None:
                 action = result.get("action", "SKIP")
