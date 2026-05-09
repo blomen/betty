@@ -782,6 +782,30 @@
   // long_position shape stays rooted where the trade actually opened).
   const positionAnchors = new Map(); // key → epoch seconds
 
+  // Buffer of every closed-trade payload received from the WS, keyed by
+  // payload.key. Never evicted by drawPosition — entries persist across
+  // visible-range changes so reconcileClosedTradeVisibility can redraw a
+  // previously-undrawn trade when the user scrolls to its time window.
+  // Without this, a 7-day window of 300+ trades would all render at once,
+  // crowding the chart even though only ~30 are in the visible range.
+  const closedTradePayloads = new Map(); // key → payload
+
+  // True iff the closed trade's [entry_time, end_time] window overlaps the
+  // chart's visible range. Both ranges in epoch seconds. Returns true when
+  // the range is unavailable so the early-boot window doesn't drop trades.
+  function _closedTradeOverlapsRange(payload, range) {
+    if (!range || range.from == null || range.to == null) return true;
+    const start = Number(payload.entry_time);
+    const end = Number(payload.end_time);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    return !(end < range.from || start > range.to);
+  }
+
+  function _currentVisibleRange() {
+    if (!chart || typeof chart.getVisibleRange !== 'function') return null;
+    try { return chart.getVisibleRange(); } catch (_) { return null; }
+  }
+
   async function drawPosition(p) {
     if (!chart) return false;
     const isActive = (p.key === 'trade:active' || p.key === 'pos:current');
@@ -806,7 +830,26 @@
     if (isActive) {
       return _drawActivePositionShape(p, anchor, endEpoch);
     }
-    return _drawClosedPositionWidget(p, anchor, endEpoch);
+
+    // Closed trade — buffer always so the range-change reconciler can find
+    // it later. Draw only when the trade's time window overlaps the chart's
+    // current visible range; off-range trades stay buffered but not drawn.
+    closedTradePayloads.set(p.key, p);
+    const range = _currentVisibleRange();
+    if (_closedTradeOverlapsRange(p, range)) {
+      return _drawClosedPositionWidget(p, anchor, endEpoch);
+    }
+    // Out of range: clean up any prior in-range shape inline. Do NOT call
+    // removePosition here — that would also evict from closedTradePayloads,
+    // which we explicitly want to keep so the reconciler can redraw on
+    // scroll.
+    const existing = drawnPositions.get(p.key);
+    if (existing && existing.shapeId != null) {
+      try { chart.removeEntity(existing.shapeId); } catch (_) {}
+      drawnPositions.delete(p.key);
+      _safeRemoveTrail(`${p.key}:trail`);
+    }
+    return true; // accepted (buffered), so the WS sender still acks.
   }
 
   // Active trade — TV's native long_position / short_position widget for
@@ -986,6 +1029,52 @@
       try { chart.removeEntity(existing.shapeId); } catch (_) {}
     }
     drawnLevels.delete(trailKey);
+  }
+
+  // Walk the closed-trade buffer and bring drawn shapes in sync with the
+  // current visible range: draw newly-overlapping ones, undraw newly-off-
+  // range ones. Active trades are untouched (their shape lives in
+  // drawnPositions under key 'trade:active' but isn't in
+  // closedTradePayloads, so this loop never sees them). Without this
+  // reconciler, a 7-day window of 300+ closed trades would all render at
+  // once even when only a handful are in the visible range.
+  async function reconcileClosedTradeVisibility() {
+    if (!chart) return;
+    const range = _currentVisibleRange();
+    for (const [key, p] of closedTradePayloads) {
+      const overlap = _closedTradeOverlapsRange(p, range);
+      const isDrawn = drawnPositions.has(key);
+      if (overlap && !isDrawn) {
+        const fillEpoch = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
+        const now = Math.floor(Date.now() / 1000);
+        const anchor = fillEpoch ?? now;
+        let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
+        if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
+        try { await _drawClosedPositionWidget(p, anchor, endEpoch); }
+        catch (e) { sendError(`reconcile draw failed: ${e instanceof Error ? e.message : String(e)}`); }
+      } else if (!overlap && isDrawn) {
+        const existing = drawnPositions.get(key);
+        if (existing && existing.shapeId != null) {
+          try { chart.removeEntity(existing.shapeId); } catch (_) {}
+        }
+        drawnPositions.delete(key);
+        _safeRemoveTrail(`${key}:trail`);
+      }
+    }
+  }
+
+  // Trailing-edge debounce — coalesces drag/scroll/zoom storms into one
+  // reconcile pass. 200 ms keeps the chart responsive without spamming
+  // shape redraws.
+  let _rangeChangeTimer = null;
+  function _scheduleClosedTradeReconcile() {
+    if (_rangeChangeTimer != null) clearTimeout(_rangeChangeTimer);
+    _rangeChangeTimer = setTimeout(() => {
+      _rangeChangeTimer = null;
+      reconcileClosedTradeVisibility().catch((e) => {
+        sendError(`reconcileClosedTradeVisibility failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }, 200);
   }
 
   // Auxiliary trail line for the active trade. Drawn only when the stop
@@ -1252,6 +1341,9 @@
       } catch (_) {}
     }
     _safeRemoveTrail(`${key}:trail`);
+    // Trade fell out of the broadcaster's 7-day window — drop from the
+    // visibility buffer too so the reconciler doesn't try to redraw it.
+    closedTradePayloads.delete(key);
   }
 
   function _removeTrailLine(key) {
@@ -1360,12 +1452,29 @@
       }
     }, 60000);
 
+    // Closed-trade visibility reconciler — redraws / undraws long_position
+    // widgets as the user scrolls, so a 7-day window of 300+ trades only
+    // shows the ~30 in the visible range. All trades stay buffered in
+    // closedTradePayloads, so scrolling to last week brings yesterday's
+    // trades back automatically. Defensive try/catch around the subscribe
+    // because some TV builds expose onVisibleRangeChanged differently.
+    try {
+      if (chart && typeof chart.onVisibleRangeChanged === 'function') {
+        chart.onVisibleRangeChanged().subscribe(null, _scheduleClosedTradeReconcile);
+      } else {
+        console.warn('[arnold-overlay/page] chart.onVisibleRangeChanged unavailable — closed-trade auto-redraw disabled');
+      }
+    } catch (e) {
+      console.warn('[arnold-overlay/page] visible-range subscribe failed:', e);
+    }
+
     // Expose internal state for diagnostic eval from /mirror/browser/tv-eval.
     // Stripped after debug stabilizes.
     try {
       window.__arnold_overlay_debug = () => ({
         drawn: Array.from(drawn.entries()).map(([k, v]) => [k, String(v)]),
         drawnPositions: Array.from(drawnPositions.keys()),
+        closedTradePayloads: closedTradePayloads.size,
         closedPositions: Array.from(closedPositions.keys()),
         positionAnchors: Array.from(positionAnchors.entries()),
         drawnStudies: Array.from(drawnStudies.keys()),
