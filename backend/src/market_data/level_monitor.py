@@ -48,12 +48,23 @@ PHASE_2_THRESHOLD_R = 1.5
 
 def _reversal_signals_active() -> bool:
     """Per-tick reversal_signals exit. Default OFF per phase1-phase2 spec —
-    Phase 2 decisions driven by zone-touch DQN action=REV only."""
+    Phase 2 decisions driven by zone-touch DQN action=REV only.
+
+    Set ENABLE_PER_TICK_REVERSAL=1 to restore the legacy behavior for
+    diagnostics.
+    """
     return os.environ.get("ENABLE_PER_TICK_REVERSAL", "0") == "1"
 
 
 def _early_exit_lock_active() -> bool:
-    """Per-tick early-exit lock. Default OFF per phase1-phase2 spec."""
+    """Per-tick early-exit lock. Default OFF per phase1-phase2 spec.
+
+    Set ENABLE_EARLY_EXIT_LOCK=1 to opt back in.
+
+    No call site yet — kept symmetric with _reversal_signals_active so that
+    when an EE_LOCK Phase 2 branch is added (e.g. by a future spec), the
+    gate is already wired and the env var contract is already established.
+    """
     return os.environ.get("ENABLE_EARLY_EXIT_LOCK", "0") == "1"
 
 
