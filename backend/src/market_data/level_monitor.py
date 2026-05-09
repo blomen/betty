@@ -1217,7 +1217,7 @@ class LevelMonitor:
         # Tick-rate mark update + BE-lock check via the adapter method so
         # the same logic runs in both the FastAPI process and the
         # trading_service subprocess (whichever process owns the live
-        # position will fire BE-lock when peak_R crosses 2.0).
+        # position will fire BE-lock when peak_R crosses 1.5).
         broker = getattr(self, "_broker_adapter", None)
         # 2026-05-06 DIAGNOSTIC: trace _check_positions entry. Throttled.
         import time as _time_diag
@@ -1923,6 +1923,8 @@ class LevelMonitor:
                             # exit/trail kicks in. Threshold matches BE_LOCK_R so
                             # trail fires at the same moment profit is locked
                             # (lowered from 2.0 on 2026-05-09).
+                            # Per-tick reversal-signals exit. Default OFF — set ENABLE_PER_TICK_REVERSAL=1
+                            # to restore (see _reversal_signals_active() docstring for context).
                             if rev.get("should_exit") and _reversal_signals_active():
                                 logger.info(
                                     "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
@@ -2037,6 +2039,7 @@ class LevelMonitor:
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
                 # Log the gate decision so silent veto causes are visible in
                 # deploy logs without having to attach a debugger.
+                _st_ticks = float(result.get("stop_ticks") or 0)
                 if action in ("SKIP", "skip"):
                     logger.debug("broker gate: SKIP action, zone=%.2f", zone.center_price)
                 elif confidence < _broker_conf_floor:
@@ -2055,10 +2058,10 @@ class LevelMonitor:
                         confidence,
                         action,
                     )
-                elif not _stop_ticks_in_bounds(result.get("stop_ticks", 0) or 0):
+                elif not _stop_ticks_in_bounds(_st_ticks):
                     logger.info(
                         "Dispatch BLOCKED stop_bounds: stop_ticks=%.1f outside [%d, %d]",
-                        result.get("stop_ticks", 0) or 0,
+                        _st_ticks,
                         int(MIN_ENTRY_STOP_TICKS),
                         int(MAX_ENTRY_STOP_TICKS),
                     )
@@ -2074,7 +2077,7 @@ class LevelMonitor:
                     action not in ("SKIP", "skip")
                     and confidence >= _broker_conf_floor
                     and of_score >= _of_floor_val
-                    and _stop_ticks_in_bounds(result.get("stop_ticks", 0) or 0)
+                    and _stop_ticks_in_bounds(_st_ticks)
                 ):
                     import asyncio
 
@@ -2084,7 +2087,7 @@ class LevelMonitor:
                         else:  # REVERSAL — fade the approach
                             sig_action = "enter_short" if approach == "up" else "enter_long"
                         is_long = "long" in sig_action
-                        stop_ticks = int(max(6, min(50, result.get("stop_ticks") or 25)))
+                        stop_ticks = int(result.get("stop_ticks") or 25)
                         # Weak-but-passing orderflow → widen stop (more room)
                         if of_score < 0.70:
                             stop_ticks = max(stop_ticks, 23)
@@ -2210,6 +2213,7 @@ class LevelMonitor:
                 # this is where the gate must enforce.
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
+                # TODO(task-13-followup): unify with _of_floor() — currently a parallel relay-path implementation
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min

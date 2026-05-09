@@ -77,8 +77,6 @@ def test_reset_session():
 
 def test_phase_property_reflects_locked_BE():
     """tracker.phase = 1 when locked_BE False, 2 when True."""
-    from src.broker.position_tracker import PositionTracker
-
     t = PositionTracker()
     t.on_fill(side="long", price=25000.0, size=1, stop_price=24990.0)
 
@@ -91,7 +89,5 @@ def test_phase_property_reflects_locked_BE():
 
 def test_phase_property_when_flat():
     """tracker.phase = 0 when flat (no position)."""
-    from src.broker.position_tracker import PositionTracker
-
     t = PositionTracker()
     assert t.phase == 0

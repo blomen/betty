@@ -16,6 +16,8 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from src.rl.confidence import size_multiplier as _size_multiplier
+
 log = logging.getLogger(__name__)
 
 # RECKLESS_LEARNING_MODE (env, default 1 = on): we have only 16 trades total,
@@ -1545,7 +1547,6 @@ class TopstepXBrokerAdapter:
         # signal.get("size") carried the size_model_v5.joblib multiplier; that
         # model is now bypassed here. size_model_v5.joblib stays in the pool
         # unused for future reference.
-        from src.rl.confidence import size_multiplier as _size_multiplier
 
         size_mult = _size_multiplier(confidence)
         if size_mult <= 0.0:

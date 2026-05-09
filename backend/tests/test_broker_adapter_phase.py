@@ -50,8 +50,9 @@ def test_entry_size_high_confidence_scales_to_two(adapter, mock_client):
     mock_client.place_market_order.assert_called_once_with("Buy", 2)
 
 
-def test_entry_size_low_confidence_floors_at_one(adapter, mock_client):
+def test_entry_size_low_confidence_floors_at_one(adapter, mock_client, monkeypatch):
     """Confidence < 0.30 → reckless multiplier 0.5 → round(1 × 0.5) = 1 (floor)."""
+    monkeypatch.setenv("RECKLESS_LEARNING_MODE", "1")
     signal = {
         "action": "enter_long",
         "price": 25000.0,
@@ -62,6 +63,23 @@ def test_entry_size_low_confidence_floors_at_one(adapter, mock_client):
     }
     _run(adapter._execute_entry(signal))
     mock_client.place_market_order.assert_called_once_with("Buy", 1)
+
+
+def test_entry_strict_mode_low_conf_rejected(adapter, mock_client, monkeypatch):
+    """Strict mode + conf < 0.30 → size_multiplier returns 0.0 → entry rejected with size_multiplier_skip."""
+    monkeypatch.setenv("RECKLESS_LEARNING_MODE", "0")
+    signal = {
+        "action": "enter_long",
+        "price": 25000.0,
+        "stop_price": 24990.0,
+        "stop_ticks": 40,
+        "confidence": 0.10,
+        "ts": time.time(),
+    }
+    result = _run(adapter._execute_entry(signal))
+    assert result is not None and result.get("rejected") is True
+    assert result.get("reason") == "size_multiplier_skip"
+    mock_client.place_market_order.assert_not_called()
 
 
 def test_entry_size_mid_confidence_one_contract(adapter, mock_client):

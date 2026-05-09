@@ -26,6 +26,7 @@ def test_of_floor_is_zero_in_reckless_mode(monkeypatch):
 
 
 def test_of_floor_strict(monkeypatch):
+    """Strict mode (real money) keeps the 0.30 OF floor."""
     monkeypatch.setenv("RECKLESS_LEARNING_MODE", "0")
     from src.market_data.level_monitor import _of_floor
 
