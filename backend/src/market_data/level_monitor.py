@@ -46,6 +46,17 @@ MAX_ENTRY_STOP_TICKS = 40.0
 PHASE_2_THRESHOLD_R = 1.5
 
 
+def _reversal_signals_active() -> bool:
+    """Per-tick reversal_signals exit. Default OFF per phase1-phase2 spec —
+    Phase 2 decisions driven by zone-touch DQN action=REV only."""
+    return os.environ.get("ENABLE_PER_TICK_REVERSAL", "0") == "1"
+
+
+def _early_exit_lock_active() -> bool:
+    """Per-tick early-exit lock. Default OFF per phase1-phase2 spec."""
+    return os.environ.get("ENABLE_EARLY_EXIT_LOCK", "0") == "1"
+
+
 def _stop_ticks_in_bounds(stop_ticks: float) -> bool:
     """Filter dim-predicted stops outside the trainable noise band.
 
@@ -1852,7 +1863,7 @@ class LevelMonitor:
                         # Phase 2 (peak_R >= 1.5): complex exit/trail kicks in.
                         # Threshold matches BE_LOCK_R so trail fires at the same
                         # moment profit is locked (lowered from 2.0 on 2026-05-09).
-                        if tr.peak_R >= PHASE_2_THRESHOLD_R and rev.get("should_exit"):
+                        if tr.peak_R >= PHASE_2_THRESHOLD_R and rev.get("should_exit") and _reversal_signals_active():
                             logger.info(
                                 "Phase-2 reversal-signals exit: %d fired peak_R=%.2f — flattening %s @ %.2f",
                                 rev.get("fired_count", 0),

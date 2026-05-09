@@ -55,3 +55,27 @@ def test_phase2_threshold_constant_is_1_5R():
     from src.market_data import level_monitor
 
     assert level_monitor.PHASE_2_THRESHOLD_R == 1.5
+
+
+def test_reversal_signals_active_default_disabled(monkeypatch):
+    """Default behavior post-spec: per-tick reversal exits OFF."""
+    monkeypatch.delenv("ENABLE_PER_TICK_REVERSAL", raising=False)
+    from src.market_data.level_monitor import _reversal_signals_active
+
+    assert _reversal_signals_active() is False, "Phase 2 must NOT use per-tick reversal_signals by default"
+
+
+def test_reversal_signals_active_when_enabled(monkeypatch):
+    """ENABLE_PER_TICK_REVERSAL=1 restores the old behavior for diagnostics."""
+    monkeypatch.setenv("ENABLE_PER_TICK_REVERSAL", "1")
+    from src.market_data.level_monitor import _reversal_signals_active
+
+    assert _reversal_signals_active() is True
+
+
+def test_early_exit_lock_active_default_disabled(monkeypatch):
+    """Default: per-tick early-exit lock OFF."""
+    monkeypatch.delenv("ENABLE_EARLY_EXIT_LOCK", raising=False)
+    from src.market_data.level_monitor import _early_exit_lock_active
+
+    assert _early_exit_lock_active() is False
