@@ -30,3 +30,21 @@ def test_of_floor_strict(monkeypatch):
     from src.market_data.level_monitor import _of_floor
 
     assert _of_floor() == 0.30
+
+
+def test_stop_ticks_too_tight_blocks_dispatch():
+    """Dim-predicted stop < 6 ticks must block entry."""
+    from src.market_data.level_monitor import _stop_ticks_in_bounds
+
+    assert _stop_ticks_in_bounds(5.0) is False
+    assert _stop_ticks_in_bounds(5.99) is False
+    assert _stop_ticks_in_bounds(6.0) is True
+
+
+def test_stop_ticks_too_wide_blocks_dispatch():
+    """Dim-predicted stop > 40 ticks must block entry."""
+    from src.market_data.level_monitor import _stop_ticks_in_bounds
+
+    assert _stop_ticks_in_bounds(40.0) is True
+    assert _stop_ticks_in_bounds(40.01) is False
+    assert _stop_ticks_in_bounds(100.0) is False

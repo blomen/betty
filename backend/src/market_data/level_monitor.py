@@ -38,6 +38,20 @@ def _of_floor() -> float:
     return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.30
 
 
+MIN_ENTRY_STOP_TICKS = 6.0
+MAX_ENTRY_STOP_TICKS = 40.0
+
+
+def _stop_ticks_in_bounds(stop_ticks: float) -> bool:
+    """Filter dim-predicted stops outside the trainable noise band.
+
+    <6 ticks (~1.5 NQ pts) → below typical noise, near-instant stop hit.
+    >40 ticks → unclear setup, stop too wide for reliable R measurement.
+    Both produce trades the model can't learn from.
+    """
+    return MIN_ENTRY_STOP_TICKS <= float(stop_ticks) <= MAX_ENTRY_STOP_TICKS
+
+
 def _persist_stock_signal_async(payload: dict) -> None:
     """Fire-and-forget insert of a dispatched signal into stock_signals.
 
@@ -1670,6 +1684,8 @@ class LevelMonitor:
         action_pass = action not in ("SKIP", "skip")
         conf_pass = confidence >= conf_floor
         of_pass = of_score >= of_floor
+        stop_ticks = float(result.get("stop_ticks", 0) or 0)
+        stop_pass = _stop_ticks_in_bounds(stop_ticks)
 
         # Order matters — first failing gate is the headline blocker. Halt
         # short-circuits everything else (it raises conf_floor to 0.99).
@@ -1681,6 +1697,8 @@ class LevelMonitor:
             blocker = "confidence"
         elif not of_pass:
             blocker = "orderflow"
+        elif not stop_pass:
+            blocker = "stop_bounds"
         elif not is_flat:
             # The broker path doesn't dispatch a new entry while in-position,
             # it routes to pyramid/reversal-exit/early-exit handlers instead.
@@ -1696,6 +1714,10 @@ class LevelMonitor:
             "of_score": of_score,
             "of_floor": of_floor,
             "of_pass": of_pass,
+            "stop_ticks": stop_ticks,
+            "stop_min": MIN_ENTRY_STOP_TICKS,
+            "stop_max": MAX_ENTRY_STOP_TICKS,
+            "stop_pass": stop_pass,
             "is_flat": is_flat,
             "halted": halted,
             "decision": "DISPATCHED" if blocker is None else "BLOCKED",
@@ -1942,6 +1964,13 @@ class LevelMonitor:
                         confidence,
                         action,
                     )
+                elif not _stop_ticks_in_bounds(result.get("stop_ticks", 0) or 0):
+                    logger.info(
+                        "Dispatch BLOCKED stop_bounds: stop_ticks=%.1f outside [%d, %d]",
+                        result.get("stop_ticks", 0) or 0,
+                        int(MIN_ENTRY_STOP_TICKS),
+                        int(MAX_ENTRY_STOP_TICKS),
+                    )
                 else:
                     logger.info(
                         "broker gate PASSED: of=%.3f conf=%.3f action=%s zone=%.2f — dispatching",
@@ -1950,7 +1979,12 @@ class LevelMonitor:
                         action,
                         zone.center_price,
                     )
-                if action not in ("SKIP", "skip") and confidence >= _broker_conf_floor and of_score >= _of_floor_val:
+                if (
+                    action not in ("SKIP", "skip")
+                    and confidence >= _broker_conf_floor
+                    and of_score >= _of_floor_val
+                    and _stop_ticks_in_bounds(result.get("stop_ticks", 0) or 0)
+                ):
                     import asyncio
 
                     try:
