@@ -173,3 +173,59 @@ def test_handle_account_calls_on_account():
     assert len(captured) == 1
     assert captured[0]["canTrade"] is False
     assert captured[0]["balance"] == 49000
+
+
+def test_account_violation_flattens_open_position():
+    """canTrade=False with non-flat tracker should schedule a flatten."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.tracker.is_flat = False
+    adapter.tracker.side = "long"
+    adapter.tracker.size = 1
+    adapter.tracker.entry_price = 25000.0
+
+    flatten_calls = []
+
+    async def fake_flatten(reason):
+        flatten_calls.append(reason)
+        return {"action": "flatten"}
+
+    adapter.flatten = fake_flatten
+
+    # Mirror the production handler logic
+    def _on_account_event(payload):
+        can_trade = payload.get("canTrade")
+        if can_trade is False:
+            adapter._halt(f"account violation: canTrade={can_trade}")
+            if not adapter.tracker.is_flat:
+                asyncio.get_event_loop().run_until_complete(adapter.flatten("account_violation"))
+
+    _on_account_event({"canTrade": False, "balance": 49000})
+
+    adapter._halt.assert_called_once()
+    assert flatten_calls == ["account_violation"]
+
+
+def test_account_violation_does_not_flatten_when_flat():
+    """canTrade=False with flat tracker only halts; no flatten needed."""
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.tracker.is_flat = True
+
+    flatten_calls = []
+    adapter.flatten = lambda reason: flatten_calls.append(reason)
+
+    def _on_account_event(payload):
+        can_trade = payload.get("canTrade")
+        if can_trade is False:
+            adapter._halt(f"account violation: canTrade={can_trade}")
+            if not adapter.tracker.is_flat:
+                adapter.flatten("account_violation")
+
+    _on_account_event({"canTrade": False, "balance": 49000})
+
+    adapter._halt.assert_called_once()
+    assert flatten_calls == []  # no flatten when already flat

@@ -916,6 +916,20 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
                 adapter._halt(f"account violation: canTrade=False, balance={balance}")
             except Exception:
                 log.exception("Failed to halt broker on account violation")
+            # Flatten any open position so the violation doesn't leave a runaway
+            # trade. _halt only blocks new entries; existing positions ride until
+            # explicit flatten or stop hit.
+            if not adapter.tracker.is_flat:
+                try:
+                    log.error(
+                        "ACCOUNT VIOLATION: flattening open %s position (size=%d entry=%.2f)",
+                        adapter.tracker.side,
+                        adapter.tracker.size,
+                        adapter.tracker.entry_price,
+                    )
+                    asyncio.create_task(adapter.flatten("account_violation"))
+                except Exception:
+                    log.exception("Failed to schedule flatten on account violation")
 
     stream.on_account = _on_account_event
 
