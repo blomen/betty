@@ -863,6 +863,24 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     )
     stream.on_tick = _build_server_tick_handler(app, level_monitor)
     stream.on_fill = adapter.on_stream_fill
+
+    def _on_quote_mark(quote_payload) -> None:
+        """Use GatewayQuote as the mark-to-market price source. NQ trades are
+        sparse on this feed; quotes fire reliably on every bid/ask change."""
+        try:
+            # quote_payload is the raw GatewayQuote dict (handle_quote unpacks args[1])
+            last_price = float(quote_payload.get("lastPrice") or 0)
+            if last_price <= 0:
+                bid = float(quote_payload.get("bestBid") or 0)
+                ask = float(quote_payload.get("bestAsk") or 0)
+                if bid > 0 and ask > 0:
+                    last_price = (bid + ask) / 2.0
+            if last_price > 0:
+                adapter.update_mark_and_check_be_lock(last_price)
+        except Exception:
+            log.debug("on_quote_mark error", exc_info=True)
+
+    stream.on_quote = _on_quote_mark
     stream.on_depth = _build_server_depth_handler(level_monitor)
 
     # 2026-05-08: post-reconnect tracker sync. TopstepX SignalR drops + reconnects

@@ -125,3 +125,35 @@ def test_phase1_in_position_handler_no_op_below_threshold():
 
     tr.is_flat = True
     assert _should_run_phase2_handlers(tr) is False, "flat → no Phase 2 handlers"
+
+
+def test_on_quote_mark_advances_peak_R():
+    """Wiring the GatewayQuote stream to update_mark_and_check_be_lock makes
+    peak_R advance even when GatewayTrade is silent (the production case)."""
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+
+    def _on_quote_mark(quote_payload):
+        last_price = float(quote_payload.get("lastPrice") or 0)
+        if last_price <= 0:
+            bid = float(quote_payload.get("bestBid") or 0)
+            ask = float(quote_payload.get("bestAsk") or 0)
+            if bid > 0 and ask > 0:
+                last_price = (bid + ask) / 2.0
+        if last_price > 0:
+            adapter.update_mark_and_check_be_lock(last_price)
+
+    # Quote with lastPrice
+    _on_quote_mark({"lastPrice": 19873.25, "bestBid": 19873.0, "bestAsk": 19873.5})
+    adapter.update_mark_and_check_be_lock.assert_called_with(19873.25)
+
+    # Quote with no lastPrice but bid/ask present (mid-price fallback)
+    adapter.reset_mock()
+    _on_quote_mark({"bestBid": 19880.0, "bestAsk": 19880.5})
+    adapter.update_mark_and_check_be_lock.assert_called_with(19880.25)
+
+    # Empty quote → no call
+    adapter.reset_mock()
+    _on_quote_mark({"lastPrice": 0, "bestBid": 0, "bestAsk": 0})
+    adapter.update_mark_and_check_be_lock.assert_not_called()
