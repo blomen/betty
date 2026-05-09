@@ -533,12 +533,16 @@ class OverlayBroadcaster:
                     # Inject swing pivots as standalone levels so the extension
                     # renders chart-spanning horizontal lines + right-edge price
                     # tags for each pivot, on top of the zone-member visual.
-                    # Source of truth is the zones we already received — no new
-                    # server-side wire format needed. Dedup by (name, quantized
-                    # price) so the same swing across overlapping zones only
-                    # contributes one level row.
+                    # Source of truth is the FULL unclipped zone list — pulling
+                    # from `zones` (post-clip) silently dropped daily/weekly/
+                    # monthly swings whose containing zone fell outside the
+                    # ±zone_window price band, leaving the chart with no
+                    # structural pivots when price was far from older swings.
+                    # Dedup by (name, quantized price) so the same swing across
+                    # overlapping zones only contributes one level row.
+                    full_zones_for_swings: list[dict] = dash_state.get("zones") or []
                     swing_seen: set[tuple[str, float]] = set()
-                    for z in zones:
+                    for z in full_zones_for_swings:
                         for m in z.get("members_detail") or []:
                             fam = str(m.get("family") or "")
                             if "swing" not in fam:
