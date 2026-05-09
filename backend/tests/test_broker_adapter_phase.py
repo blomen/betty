@@ -79,7 +79,14 @@ def test_entry_size_mid_confidence_one_contract(adapter, mock_client):
 
 
 def test_rev_signal_flips_position_in_phase_2(adapter, mock_client):
-    """In Phase 2 (locked_BE=True) long, REV signal closes long + opens short."""
+    """In Phase 2 (locked_BE=True) long, REV signal closes long + opens short.
+
+    NOTE: This test exercises broker_adapter.on_signal directly. The
+    level_monitor gate (_is_phase2_rev_opposite) that allows the result
+    to fall through is verified by code inspection, not by this test.
+    A full integration test would require setting up _emit_zone_dqn_inference
+    with a mock DQN — out of scope for the broker-side phase coverage.
+    """
     adapter.tracker.on_fill(side="long", price=25000.0, size=1, stop_price=24990.0)
     adapter.tracker.locked_BE = True
     adapter.tracker.peak_R = 1.6

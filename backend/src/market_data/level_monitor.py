@@ -111,6 +111,8 @@ def _is_phase2_rev_opposite(result: dict, tr, approach: str) -> bool:
         return False
     # REVERSAL fades the approach: up-approach → short, down-approach → long
     rev_side = "short" if approach == "up" else "long"
+    # Mirrors the REVERSAL → enter_short/enter_long mapping in the dispatch
+    # translation at the bottom of _emit_zone_dqn_inference. Keep these in sync.
     return rev_side != side
 
 
@@ -1974,7 +1976,7 @@ class LevelMonitor:
                         # stop sits at entry+2t locked-profit), so the position is profitable
                         # by construction. Without Task 12, this branch could fire underwater
                         # in Phase 1, but Task 12 is a hard prerequisite for deploy.
-                        elif result.get("action") == "CONT":
+                        elif result.get("action") == "CONTINUATION":
                             confidence = float(result.get("confidence", 0) or 0)
                             add_size = _pyramid_add_size(confidence)
                             logger.info(
