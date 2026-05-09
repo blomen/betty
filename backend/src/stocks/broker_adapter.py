@@ -62,8 +62,8 @@ _NQ_POINT_VALUE = 20.0
 # Confidence-scaled sizing: BASE_SIZE × size_multiplier(confidence)
 BASE_SIZE = 1  # base contracts; multiplied by tier from src.rl.confidence
 # Legacy risk-pct constants kept for reference; no longer used in live path
-RISK_PCT_BASE = 0.015  # 1.5% of drawdown for normal signals (conf 0.30-0.70)
-RISK_PCT_HIGH = 0.02  # 2% for high confidence (conf > 0.70)
+# Historical risk-pct sizing (1.5% base, 2% high-conf) replaced 2026-05-09 by
+# size_multiplier-driven sizing. See src/rl/confidence.py:size_multiplier.
 
 
 def _round_tick(price: float) -> float:
@@ -1555,7 +1555,7 @@ class TopstepXBrokerAdapter:
                 confidence,
                 size_mult,
             )
-            return {"rejected": True, "reason": "size_model_skip"}
+            return {"rejected": True, "reason": "size_multiplier_skip"}
         size = max(1, min(round(BASE_SIZE * size_mult), self.config.max_position))
 
         log.info(
