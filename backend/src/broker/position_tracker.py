@@ -61,6 +61,13 @@ class PositionTracker:
         return self.side is None
 
     @property
+    def phase(self) -> int:
+        """Trade phase: 0=flat, 1=sacred bracket (pre-1.5R), 2=zone-driven ride (post-1.5R)."""
+        if self.is_flat:
+            return 0
+        return 2 if self.locked_BE else 1
+
+    @property
     def trailing_dd(self) -> float:
         """Current drawdown from peak equity."""
         return max(0, self.peak_equity - self.session_pnl)
