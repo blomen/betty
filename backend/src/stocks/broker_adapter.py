@@ -59,7 +59,9 @@ MAX_STOP_TICKS = 80  # maximum stop distance
 _NQ_TICK_VALUE = 5.0
 _NQ_POINT_VALUE = 20.0
 
-# Risk-based sizing: risk 1-2% of max drawdown per trade
+# Confidence-scaled sizing: BASE_SIZE × size_multiplier(confidence)
+BASE_SIZE = 1  # base contracts; multiplied by tier from src.rl.confidence
+# Legacy risk-pct constants kept for reference; no longer used in live path
 RISK_PCT_BASE = 0.015  # 1.5% of drawdown for normal signals (conf 0.30-0.70)
 RISK_PCT_HIGH = 0.02  # 2% for high confidence (conf > 0.70)
 
@@ -1532,59 +1534,37 @@ class TopstepXBrokerAdapter:
         offset = stop_dist_ticks * 0.25
         stop_price = _round_tick(price - offset if is_long else price + offset)
 
-        # Risk-based sizing — base contracts derived from drawdown budget +
-        # stop distance, then scaled by the trained SizeModel multiplier from
-        # the signal (composite of DQN observation + narrative — tiers 0.0,
-        # 0.3, 0.6, 1.0, 1.5 per rl/agent/size_model.py:SIZE_TIERS). Without
-        # the multiplier, sizing was a binary 1.5%/2% confidence flip with
-        # the SizeModel output dropped on the floor.
-        risk_pct = RISK_PCT_HIGH if confidence > 0.70 else RISK_PCT_BASE
-        risk_dollars = self.config.max_trailing_dd * risk_pct
-        risk_per_contract = stop_dist_ticks * _NQ_TICK_VALUE
-        base_size = max(
-            1,
-            min(
-                int(risk_dollars / risk_per_contract),
-                self.config.max_position,
-            ),
-        )
+        # Confidence-scaled sizing: BASE_SIZE × size_multiplier(confidence).
+        # size_multiplier tiers (from src.rl.confidence):
+        #   conf >= 0.85 → 1.5x → 2 contracts
+        #   0.70-0.85   → 1.0x → 1 contract
+        #   0.50-0.70   → 0.6x → 1 contract (floor)
+        #   0.30-0.50   → 0.3x → 1 contract (floor)
+        #   <0.30       → 0.5x reckless / 0.0 strict
+        # Replaces the risk-pct / drawdown-budget / SizeModel path:
+        # signal.get("size") carried the size_model_v5.joblib multiplier; that
+        # model is now bypassed here. size_model_v5.joblib stays in the pool
+        # unused for future reference.
+        from src.rl.confidence import size_multiplier as _size_multiplier
 
-        # SizeModel multiplier — defaults to 1.0 if absent (legacy signal
-        # source) so existing callers behave identically.
-        # 2026-05-05: in reckless mode, floor 0.0 → 0.5. Tier 0 used to mean
-        # "skip" (rejecting entry entirely) — but on a paper account every
-        # skipped touch is a missing training sample. Floor at 0.5 keeps the
-        # entry flowing while preserving the model's "low conviction" signal
-        # via reduced size. Strict mode (real money) still rejects on 0.
-        size_mult = float(signal.get("size", 1.0) or 1.0)
+        size_mult = _size_multiplier(confidence)
         if size_mult <= 0.0:
-            if _RECKLESS:
-                log.info(
-                    "SizeModel returned 0 — flooring to 0.5x in reckless mode (was skip)",
-                )
-                size_mult = 0.5
-            else:
-                log.info(
-                    "SizeModel skip: base=%d × mult=%.2f → 0 contracts; rejecting entry",
-                    base_size,
-                    size_mult,
-                )
-                return {"rejected": True, "reason": "size_model_skip"}
-        scaled = base_size * size_mult
-        # Round half-up so 0.3-0.49 rounds to 0 (then floors to 1), 0.5+ to 1,
-        # 1.5 with base=1 to 2. Clamp to [1, max_position].
-        size = max(1, min(int(scaled + 0.5), self.config.max_position))
+            # Strict mode: below-threshold entry rejected outright.
+            log.info(
+                "size_multiplier skip: conf=%.3f → mult=%.2f; rejecting entry",
+                confidence,
+                size_mult,
+            )
+            return {"rejected": True, "reason": "size_model_skip"}
+        size = max(1, min(round(BASE_SIZE * size_mult), self.config.max_position))
 
         log.info(
-            "Sizing: risk=$%.0f (%.1f%% of $%.0f DD), stop=%d ticks ($%.0f/contract) → base=%d × size_mult=%.2f → %d contracts",
-            risk_dollars,
-            risk_pct * 100,
-            self.config.max_trailing_dd,
-            stop_dist_ticks,
-            risk_per_contract,
-            base_size,
+            "Sizing: conf=%.3f → size_mult=%.2f → %d contracts (BASE_SIZE=%d, max_pos=%d)",
+            confidence,
             size_mult,
             size,
+            BASE_SIZE,
+            self.config.max_position,
         )
 
         if not self.tracker.is_flat:
