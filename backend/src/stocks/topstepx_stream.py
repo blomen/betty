@@ -2,7 +2,7 @@
 
 Connects to two hubs via SignalR JSON protocol over websockets:
   - Market hub: live trade ticks (GatewayTrade), quotes (GatewayQuote), depth (GatewayDepth)
-  - User hub:   fills, positions, orders (GatewayUserTrade/Position/Order)
+  - User hub:   accounts, fills, positions, orders (GatewayUserAccount/Trade/Position/Order)
 
 Uses raw websockets because signalrcore drops connections on Windows/TopstepX.
 
@@ -68,6 +68,7 @@ class TopstepXStream:
         self.on_fill: Callable[[dict], None] | None = None
         self.on_depth: Callable[[dict], None] | None = None
         self.on_quote: Callable[[dict], None] | None = None
+        self.on_account: Callable[[dict], None] | None = None
         # 2026-05-08: fired ONCE per successful (re)connect of the user hub.
         # TopstepX doesn't replay missed events on reconnect, so a fill that
         # arrived during the disconnect window is permanently lost from the
@@ -210,7 +211,14 @@ class TopstepXStream:
 
     async def _user_subs(self, ws) -> None:
         """Subscribe to user event channels."""
-        for i, target in enumerate(("SubscribePositions", "SubscribeOrders", "SubscribeTrades")):
+        for i, target in enumerate(
+            (
+                "SubscribeAccounts",  # canTrade=false detection on prop firm violations
+                "SubscribePositions",
+                "SubscribeOrders",
+                "SubscribeTrades",
+            )
+        ):
             await ws.send(
                 json.dumps(
                     {
@@ -222,7 +230,10 @@ class TopstepXStream:
                 )
                 + _SEPARATOR
             )
-        log.info("TopstepXStream [user]: subscribed to positions+orders+trades for account %d", self._account_id)
+        log.info(
+            "TopstepXStream [user]: subscribed to accounts+positions+orders+trades for account %d",
+            self._account_id,
+        )
 
     # ------------------------------------------------------------------
     # Internal: message dispatch
@@ -246,7 +257,9 @@ class TopstepXStream:
                 first = args[0] if isinstance(args[0], dict) else str(args[0])[:200]
                 log.info("TopstepXStream [user] payload: %s", first)
 
-        if target in ("GatewayUserTrade", "GotUserTrade", "UserTrade"):
+        if target in ("GatewayUserAccount", "GotUserAccount"):
+            self._handle_account(args)
+        elif target in ("GatewayUserTrade", "GotUserTrade", "UserTrade"):
             self._handle_user_trade(args)
         elif target in ("GatewayUserPosition", "GotUserPosition"):
             self._handle_position(args)
@@ -328,3 +341,22 @@ class TopstepXStream:
         """Log GatewayUserOrder updates."""
         order = args[0] if args else {}
         log.debug("TopstepXStream: order update: %s", order)
+
+    def _handle_account(self, args: list) -> None:
+        """Parse GatewayUserAccount — fires on balance change or canTrade flip.
+        canTrade=false signals a prop-firm-side halt (drawdown / loss limit hit)."""
+        if not args:
+            return
+        payload = args[0] if isinstance(args[0], dict) else {}
+        can_trade = payload.get("canTrade")
+        balance = payload.get("balance")
+        log.info(
+            "TopstepXStream [user] ACCOUNT update: canTrade=%s balance=%s",
+            can_trade,
+            balance,
+        )
+        if self.on_account is not None:
+            try:
+                self.on_account(payload)
+            except Exception:
+                log.exception("on_account handler raised")

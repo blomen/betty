@@ -157,3 +157,19 @@ def test_on_quote_mark_advances_peak_R():
     adapter.reset_mock()
     _on_quote_mark({"lastPrice": 0, "bestBid": 0, "bestAsk": 0})
     adapter.update_mark_and_check_be_lock.assert_not_called()
+
+
+def test_handle_account_calls_on_account():
+    """GatewayUserAccount with canTrade=False fires on_account callback."""
+
+    from src.stocks.topstepx_stream import TopstepXStream
+
+    stream = TopstepXStream(token="x", contract_id="X", account_id=1)
+    captured = []
+    stream.on_account = lambda payload: captured.append(payload)
+
+    stream._handle_account([{"id": 1, "name": "PRAC", "balance": 49000, "canTrade": False}])
+
+    assert len(captured) == 1
+    assert captured[0]["canTrade"] is False
+    assert captured[0]["balance"] == 49000

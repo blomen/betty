@@ -883,6 +883,20 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     stream.on_quote = _on_quote_mark
     stream.on_depth = _build_server_depth_handler(level_monitor)
 
+    def _on_account_event(payload: dict) -> None:
+        """Log account state changes; halt the broker if canTrade=False."""
+        can_trade = payload.get("canTrade")
+        balance = payload.get("balance")
+        log.info("Account update from stream: canTrade=%s balance=%s", can_trade, balance)
+        if can_trade is False:
+            log.error("ACCOUNT VIOLATION DETECTED — canTrade=False. Halting broker.")
+            try:
+                adapter._halt(f"account violation: canTrade=False, balance={balance}")
+            except Exception:
+                log.exception("Failed to halt broker on account violation")
+
+    stream.on_account = _on_account_event
+
     # 2026-05-08: post-reconnect tracker sync. TopstepX SignalR drops + reconnects
     # roughly every ~15 minutes (idle hub timeout). Any GatewayUserTrade event
     # that arrived during the disconnect window is permanently lost — TopstepX
