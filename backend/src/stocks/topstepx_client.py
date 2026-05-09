@@ -113,7 +113,10 @@ class TopstepXClient:
             )
             if resp.status_code == 200:
                 body = resp.json()
-                new_token = body.get("token")
+                # Auth/validate response uses "newToken" (NOT "token" — Auth/loginKey uses
+                # "token"). Asymmetric per the official Swagger schema. Fetching "token"
+                # silently returned None and forced a fallback full re-auth every cycle.
+                new_token = body.get("newToken")
                 if new_token:
                     self._token = new_token
                     self._token_expiry = time.time() + self.TOKEN_LIFETIME_S - self.TOKEN_REFRESH_BUFFER_S

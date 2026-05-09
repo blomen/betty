@@ -1,15 +1,15 @@
 """Tests for TopstepXConfig and TopstepXClient."""
+
 from __future__ import annotations
 
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from src.stocks.config import TopstepXConfig
-from src.stocks.topstepx_client import TopstepXClient, SIDE_BUY, SIDE_SELL
-
+from src.stocks.topstepx_client import SIDE_BUY, SIDE_SELL, TopstepXClient
 
 # ---------------------------------------------------------------------------
 # TopstepXConfig tests
@@ -50,10 +50,17 @@ class TestTopstepXConfig:
     def test_from_env_defaults(self):
         """from_env falls back to defaults when env vars are absent."""
         env_keys = [
-            "TOPSTEPX_USERNAME", "TOPSTEPX_API_KEY", "TOPSTEPX_CONTRACT",
-            "TOPSTEPX_BASE_URL", "TOPSTEPX_MARKET_HUB_URL", "TOPSTEPX_USER_HUB_URL",
-            "TOPSTEPX_SERVER_WS_URL", "TOPSTEPX_MAX_POSITION",
-            "TOPSTEPX_MAX_DAILY_LOSS", "TOPSTEPX_MAX_TRAILING_DD", "TOPSTEPX_FLATTEN_ET",
+            "TOPSTEPX_USERNAME",
+            "TOPSTEPX_API_KEY",
+            "TOPSTEPX_CONTRACT",
+            "TOPSTEPX_BASE_URL",
+            "TOPSTEPX_MARKET_HUB_URL",
+            "TOPSTEPX_USER_HUB_URL",
+            "TOPSTEPX_SERVER_WS_URL",
+            "TOPSTEPX_MAX_POSITION",
+            "TOPSTEPX_MAX_DAILY_LOSS",
+            "TOPSTEPX_MAX_TRAILING_DD",
+            "TOPSTEPX_FLATTEN_ET",
         ]
         clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
         with patch.dict(os.environ, clean_env, clear=True):
@@ -181,7 +188,11 @@ class TestTopstepXClientOrders:
         assert result["orderId"] == 1001
 
         call_payload = client._http.post.call_args
-        sent = call_payload.kwargs.get("json") or call_payload.args[1] if len(call_payload.args) > 1 else call_payload.kwargs["json"]
+        sent = (
+            call_payload.kwargs.get("json") or call_payload.args[1]
+            if len(call_payload.args) > 1
+            else call_payload.kwargs["json"]
+        )
         assert sent["side"] == SIDE_BUY
         assert sent["type"] == 2
         assert sent["size"] == 1
@@ -312,3 +323,73 @@ class TestTopstepXClientSideHelper:
     def test_side_sell(self):
         client = _make_client()
         assert client._side("Sell") == SIDE_SELL
+
+
+class TestTopstepXClientEnsureToken:
+    @pytest.mark.asyncio
+    async def test_ensure_token_reads_newToken_field(self):
+        """Auth/validate response field is `newToken`, not `token` — verify we
+        read the correct field on refresh."""
+        cfg = TopstepXConfig(username="u", api_key="k", account_id=1, contract_id="X")
+        client = TopstepXClient(cfg)
+        client._token = "old"
+        client._token_expiry = 0  # force refresh
+
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={"success": True, "newToken": "fresh-token-from-validate"})
+
+        with patch.object(client._http, "post", new=AsyncMock(return_value=mock_resp)):
+            await client._ensure_token()
+
+        assert client._token == "fresh-token-from-validate", (
+            f"Expected 'fresh-token-from-validate', got '{client._token}'"
+        )
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_token_falls_back_to_full_auth_on_missing_newToken(self):
+        """If newToken is absent (e.g. validate returned empty body), fall back to full re-auth."""
+        cfg = TopstepXConfig(username="u", api_key="k", account_id=1, contract_id="X")
+        client = TopstepXClient(cfg)
+        client._token = "old"
+        client._token_expiry = 0  # force refresh
+
+        validate_resp = MagicMock(spec=httpx.Response)
+        validate_resp.status_code = 200
+        validate_resp.json = MagicMock(return_value={"success": True})  # no newToken
+
+        auth_resp = MagicMock(spec=httpx.Response)
+        auth_resp.status_code = 200
+        auth_resp.json = MagicMock(return_value={"success": True, "token": "reauth-token"})
+
+        with patch.object(client._http, "post", new=AsyncMock(side_effect=[validate_resp, auth_resp])):
+            await client._ensure_token()
+
+        assert client._token == "reauth-token"
+        await client.close()
+
+
+class TestTopstepXClientAvailableContracts:
+    @pytest.mark.asyncio
+    async def test_available_contracts_parses_dict_response(self):
+        client = _make_client()
+        fake_response = {"contracts": [{"id": "CON.F.US.ENQ.M26", "activeContract": True}]}
+        with patch.object(client, "_post", new=AsyncMock(return_value=fake_response)):
+            contracts = await client.available_contracts()
+
+        assert len(contracts) == 1
+        assert contracts[0]["id"] == "CON.F.US.ENQ.M26"
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_available_contracts_parses_list_response(self):
+        """API may return a list directly instead of wrapping in 'contracts'."""
+        client = _make_client()
+        fake_list = [{"id": "CON.F.US.ENQ.U26", "activeContract": True}]
+        with patch.object(client, "_post", new=AsyncMock(return_value=fake_list)):
+            contracts = await client.available_contracts()
+
+        assert len(contracts) == 1
+        assert contracts[0]["id"] == "CON.F.US.ENQ.U26"
+        await client.close()
