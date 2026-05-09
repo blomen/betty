@@ -1901,7 +1901,7 @@ class LevelMonitor:
                 # OF floor: data shows OF>=0.30 wins 4/4, OF<0.30 is
                 # coin-flip + drag. Reckless mode was for bootstrapping
                 # data; now we have it. Default OF floor back to 0.30.
-                # Confidence floor stays at 0.05 (reckless) until trainer
+                # Confidence floor stays at 0.0 (reckless) until trainer
                 # produces calibrated probabilities — most live signals
                 # land at 0.10-0.25 conf so a higher floor would mute
                 # everything again.
