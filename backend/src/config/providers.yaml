@@ -868,6 +868,26 @@ providers:
       - mma
       - boxing
 
+  rainbet:
+    id: rainbet
+    name: Rainbet
+    domain: rainbet.com
+    retriever_type: rainbet
+    site_url: https://rainbet.com/sportsbook
+    brand_id: "2374656571012681728"
+    theme_name: rainbet
+    sport_timeout: 600
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - boxing
+      - esports
+
   smarkets:
     id: smarkets
     name: Smarkets
@@ -1000,6 +1020,7 @@ extraction_scheduling:
     max_concurrent_browsers: 1           # Reduced from 2 — comeon alone takes 20min + 1.5GB
     providers:
       - comeon
+      - rainbet
     # Bumped 15 → 25 (2026-04-28): camoufox launches are heavy and can stall
     # under proxy contention. Camoufox subprocess teardown takes 5-10s after
     # the run ends. 25-min cadence ensures full teardown + cooldown before
@@ -1086,6 +1107,7 @@ active:
   - smarkets
   # Prediction-market exchange (playable + consensus input)
   - kalshi
+  - rainbet
 
 
 # ============================================================================
