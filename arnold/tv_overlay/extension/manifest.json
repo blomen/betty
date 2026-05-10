@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.4.9",
-  "description": "Closed widget right-edge handle now slopes to exit_price (set via post-create setPoints, since createMultipointShape coerces both points to entry on widget creation). Restores the visual cue that distinguishes closed from active and lets TV's Closed P&L info-block read the actual exit price instead of bar-close at endEpoch. Earlier: trail line dropped from closed widgets; stripped stale FRVP override keys; visible-range filter for closed widgets; full info-block visibility; correct qty math; bare-minimum create payload.",
+  "version": "0.5.0",
+  "description": "Active widget header now shows trade phase: 'L×1 [P1]' (sacred bracket, pre-1.5R, no trail/pyramid/flip) vs 'L×2 [P2]' (zone-driven ride, post-1.5R BE-lock fired). Phase forwarded from tracker.phase via /api/stocks/runtime-status → poller → broadcaster. Earlier: closed widget right-edge slopes to exit_price; halt amber cue wired (poller now reads top-level data.halted); trail line dropped from closed widgets; visible-range filter for closed widgets; full info-block visibility; correct qty math.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

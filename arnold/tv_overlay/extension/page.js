@@ -879,7 +879,12 @@
     // is auto-derived from accountSize and is wrong.
     const sideLabel = isLong ? 'L' : 'S';
     const sizeStr = (p.size && p.size > 0) ? `×${p.size}` : '';
-    const headerText = `${sideLabel}${sizeStr}`;
+    // Phase indicator: P1 = sacred bracket (pre-1.5R, no trail/pyramid/flip).
+    // P2 = zone-driven ride (post-1.5R, BE-lock fired, trail+pyramid live).
+    // Read from p.phase forwarded by the broadcaster from runtime-status.
+    // CLAUDE.md "Stocks — Trade Lifecycle" defines the state machine.
+    const phaseStr = (p.phase === 1 || p.phase === 2) ? ` [P${p.phase}]` : '';
+    const headerText = `${sideLabel}${sizeStr}${phaseStr}`;
 
     const points = [
       { time: anchor, price: p.entry },

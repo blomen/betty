@@ -171,6 +171,11 @@ def runtime_status(request: Request):
             "tp_price": float(tp) if tp is not None else None,
             "peak_R": tracker.peak_R,
             "locked_half_R": tracker.locked_half_R,
+            # 0=flat, 1=sacred bracket (pre-1.5R), 2=zone-driven ride
+            # (post-1.5R, BE-lock fired). Surfaced so the chart widget
+            # header can show "L×1 [P1]" vs "L×2 [P2]" — see CLAUDE.md
+            # "Stocks — Trade Lifecycle" section.
+            "phase": int(getattr(tracker, "phase", 0) or 0),
         },
         "session": {
             "pnl": tracker.session_pnl,

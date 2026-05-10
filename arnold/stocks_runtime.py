@@ -187,6 +187,7 @@ async def _passive_position_poller() -> None:
                 stop = pos.get("stop_price")
                 original_stop = pos.get("original_stop_price")
                 tp = pos.get("tp_price")
+                phase = int(pos.get("phase") or 0)
                 if size > 0:
                     if last_was_flat:
                         entry_time = time.time()
@@ -219,6 +220,7 @@ async def _passive_position_poller() -> None:
                                 "tp_price": float(tp) if tp else None,
                                 "original_stop_price": float(original_stop) if original_stop else None,
                                 "halted": halted,
+                                "phase": phase,
                             }
                         ]
                     )

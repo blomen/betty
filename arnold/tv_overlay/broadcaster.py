@@ -270,6 +270,10 @@ class OverlayBroadcaster:
                 # Only set on the synthetic id="active" entry; closed trades
                 # leave it None.
                 "halted": bool(t.get("halted")) if t.get("halted") is not None else False,
+                # Phase indicator (0/1/2). Active payload synthesizes this
+                # from runtime-status; closed payloads carry 0 (no longer
+                # in a phase). Widget header appends [P1] / [P2] for active.
+                "phase": int(t.get("phase") or 0),
             }
             seen[key] = payload
 
@@ -527,6 +531,10 @@ class OverlayBroadcaster:
                                     "closed_at": None,
                                     "pnl_dollars": None,
                                     "halted": bool(first.get("halted", False)),
+                                    # Trade lifecycle phase (0=flat, 1=sacred
+                                    # bracket, 2=zone-driven ride). Surfaced
+                                    # so the widget header shows P1 vs P2.
+                                    "phase": int(first.get("phase") or 0),
                                 },
                             )
                     levels: list[dict] = list(dash_state.get("levels") or [])
