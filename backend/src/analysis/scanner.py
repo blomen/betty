@@ -787,13 +787,20 @@ class OpportunityScanner:
                     best_provider = best_soft_provider
                     is_sharp = False
                 else:
-                    # Non-anchor soft below fair — use Pinnacle fair (0% edge)
-                    best_odds = fair_odds
+                    # Non-anchor soft below fair — use Pinnacle's RAW offered
+                    # price (with vig), not the devigged fair_odds. The arb
+                    # math must sum prices we can ACTUALLY bet at; using
+                    # devigged fair prices produces synthetic arbs that
+                    # vanish the moment you place because Pinnacle's actual
+                    # offer carries the vig. (Pre-2026-05-10 this used
+                    # fair_odds → every Pinnacle-fallback arb was a ghost.)
+                    best_odds = pinnacle_raw if pinnacle_raw > 1 else fair_odds
                     best_provider = "pinnacle"
                     is_sharp = True
             else:
-                # No soft book beats fair odds — use Pinnacle fair (0% edge)
-                best_odds = fair_odds
+                # No soft book beats fair odds — use Pinnacle's RAW offered
+                # price (see comment above for rationale).
+                best_odds = pinnacle_raw if pinnacle_raw > 1 else fair_odds
                 best_provider = "pinnacle"
                 is_sharp = True
 
@@ -833,7 +840,13 @@ class OpportunityScanner:
         # Placing multiple outcomes on the same bookmaker flags the account.
         # Resolve conflicts: keep the higher-edge leg, demote the other to
         # its next-best provider from a different platform (or Pinnacle).
-        self._resolve_platform_conflicts(best_per_outcome, soft_candidates, fair_odds_map, anchor_provider)
+        self._resolve_platform_conflicts(
+            best_per_outcome,
+            soft_candidates,
+            fair_odds_map,
+            anchor_provider,
+            pinnacle_market=pinnacle_market,
+        )
 
         # Check again after conflict resolution (a demotion may have assigned Pinnacle)
         if pinnacle_excluded and any(d["is_sharp"] for d in best_per_outcome.values()):
@@ -965,6 +978,7 @@ class OpportunityScanner:
         soft_candidates: dict,
         fair_odds_map: dict,
         anchor_provider: str | None,
+        pinnacle_market: dict | None = None,
     ) -> None:
         """Ensure no two soft legs share the same canonical platform.
 
@@ -1009,11 +1023,17 @@ class OpportunityScanner:
                     replaced = True
                     break
                 if not replaced:
-                    # No alternative soft — fall back to Pinnacle fair (0% edge)
+                    # No alternative soft — fall back to Pinnacle's RAW
+                    # offered price (with vig). Using devigged fair_odds
+                    # produced synthetic arbs that vanished on placement;
+                    # see the comment in find_arb_in_market for the rationale.
+                    pinn_raw = (pinnacle_market or {}).get(loser_outcome, 0.0)
+                    leg_odds = pinn_raw if pinn_raw > 1 else fair_odds
+                    leg_edge = (leg_odds / fair_odds - 1) * 100 if fair_odds > 0 else 0.0
                     best_per_outcome[loser_outcome] = {
                         "provider": "pinnacle",
-                        "odds": fair_odds,
-                        "edge_pct": 0.0,
+                        "odds": leg_odds,
+                        "edge_pct": leg_edge,
                         "fair_odds": round(fair_odds, 3),
                         "is_sharp": True,
                     }
