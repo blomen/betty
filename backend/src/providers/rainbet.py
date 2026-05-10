@@ -816,13 +816,14 @@ class RainbetRetriever(BrowserRetriever):
                 has_cookie = any(c.get("name") == "cf_clearance" for c in cookies)
             except Exception:
                 has_cookie = False
+            ts_iframe = None
             try:
                 ts_iframe = await page.query_selector(
                     "iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']"
                 )
-                widget_present = ts_iframe is not None
             except Exception:
-                widget_present = False
+                pass
+            widget_present = ts_iframe is not None
 
             if has_cookie and not widget_present:
                 if not self._turnstile_cleared:
@@ -830,10 +831,24 @@ class RainbetRetriever(BrowserRetriever):
                 self._turnstile_cleared = True
                 return
 
+            # Click the Turnstile checkbox. Primary: bbox-based — query the
+            # iframe's bounding box and click near its left edge (the checkbox
+            # sits in the leftmost ~50px of the widget). Fallback: hardcoded
+            # coord (210, 290) for the case where the iframe selector misses
+            # but the widget is still on-page.
             try:
-                await page.mouse.click(210, 290)
-            except Exception:
-                pass
+                if ts_iframe is not None:
+                    bbox = await ts_iframe.bounding_box()
+                    if bbox:
+                        cx = bbox["x"] + 30
+                        cy = bbox["y"] + bbox["height"] / 2
+                        await page.mouse.click(cx, cy)
+                    else:
+                        await page.mouse.click(*_TURNSTILE_CLICK_COORD)
+                else:
+                    await page.mouse.click(*_TURNSTILE_CLICK_COORD)
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Turnstile click failed: {e}")
             await page.wait_for_timeout(2000)
 
         raise RuntimeError(f"[{self.provider_id}] Turnstile not cleared within 60s")
