@@ -385,13 +385,14 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def start_browser():
         """Launch the mirror browser. Idempotent — safe to call when already running.
 
-        Eagerly opens tabs for the 4 unlimited counter providers (pinnacle, polymarket,
-        cloudbet, kalshi) so the user can log into each in one pass. They stay open for
-        the session and serve as on-demand counter legs for arb opps. Idempotent —
-        re-calling /start is safe; existing tabs are reused.
+        Eagerly opens tabs for the 5 unlimited counter providers (pinnacle, polymarket,
+        cloudbet, kalshi, rainbet) so the user can log into each in one pass. They stay
+        open for the session and serve as on-demand counter legs for arb opps (rainbet
+        is signal-only — tab is informational, no place button). Idempotent — re-calling
+        /start is safe; existing tabs are reused.
 
         Also performs a defensive sweep: any tab whose URL doesn't match an allowed
-        domain (the 4 unlimited + tradingview + about:blank) gets closed. Catches
+        domain (the 5 unlimited + tradingview + about:blank) gets closed. Catches
         the case where Chromium async-restored a stray tab (dbet, etc.) past the
         browser's startup grace window.
         """
@@ -404,6 +405,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "pinnacle.se",
             "cloudbet.com",
             "kalshi.com",
+            "rainbet.com",
             "tradingview.com",
             "127.0.0.1",
             "localhost",
@@ -422,7 +424,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     print(f"[mirror/start] Closed stray tab: {url[:80]}", flush=True)
                 except Exception:
                     pass
-        for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi"):
+        for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi", "rainbet"):
             try:
                 workflow = get_workflow(pid)
                 if not workflow.domain:

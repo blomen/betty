@@ -205,11 +205,14 @@ _LOCK_FILE = os.path.join(os.path.dirname(__file__), "data", ".running")
 def _start_mirror():
     """POST /mirror/start once the local server is up.
 
-    Eagerly opens the 4 unlimited counter tabs (pinnacle, polymarket, cloudbet,
-    kalshi) so the user can log in once and they stay available as arb counters
-    + value-bet sources. Idempotent — safe even if mirror already running.
+    Eagerly opens the 5 unlimited counter tabs (pinnacle, polymarket, cloudbet,
+    kalshi, rainbet) so the user can log in once and they stay available as arb
+    counters + value-bet sources. Rainbet has no play workflow yet (signal-only
+    Betby tenant), but its tab still auto-opens so the user can browse and the
+    cluster card matches the others. Idempotent — safe even if mirror already
+    running.
 
-    Retries until at least the 4 unlimited tabs are visible — covers a race
+    Retries until at least the 5 unlimited tabs are visible — covers a race
     with the tv-overlay auto-open which calls browser.start() in parallel and
     can momentarily lock out our concurrent /mirror/start call.
     """
@@ -226,13 +229,13 @@ def _start_mirror():
             tab_urls = [t.get("url", "") for t in _json.loads(tabs_resp).get("tabs", [])]
             unlimited_open = sum(
                 1
-                for d in ("pinnacle.se", "polymarket.com", "cloudbet.com", "kalshi.com")
+                for d in ("pinnacle.se", "polymarket.com", "cloudbet.com", "kalshi.com", "rainbet.com")
                 if any(d in u for u in tab_urls)
             )
-            if unlimited_open >= 4:
-                print(f"[arnold] Mirror started — {unlimited_open}/4 unlimited tabs open")
+            if unlimited_open >= 5:
+                print(f"[arnold] Mirror started — {unlimited_open}/5 unlimited tabs open")
                 return
-            last_err = f"only {unlimited_open}/4 unlimited tabs visible"
+            last_err = f"only {unlimited_open}/5 unlimited tabs visible"
         except Exception as e:
             last_err = str(e)
         time.sleep(5)

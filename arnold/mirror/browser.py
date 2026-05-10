@@ -140,6 +140,9 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     # detection work whether we look at page URL or request URL.
     "kalshi.com": "kalshi",
     "api.elections.kalshi.com": "kalshi",
+    # Rainbet: signal-only Betby tenant. Tab auto-opens for browsing but no
+    # play workflow — interceptor doesn't read balance or place bets.
+    "rainbet.com": "rainbet",
     "tipwin.se": "tipwin",
     "mrgreen.com": "mrgreen",
     "888sport.com": "888sport",

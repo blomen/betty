@@ -118,6 +118,7 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "snabbare": "snabbare.com",
     "kalshi": "kalshi.com",
     "cloudbet": "cloudbet.com",
+    "rainbet": "rainbet.com",
 }
 
 
