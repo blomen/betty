@@ -430,16 +430,26 @@ class GeckoV2Retriever(BrowserRetriever):
                         provider_id=self.provider_id,
                     )
 
-        # Get category ID from hardcoded map or dynamic slug lookup
+        # Get category ID from hardcoded map or dynamic slug lookup.
+        # Negative results are cached on the instance to avoid re-querying
+        # the slug API every cycle for sports OBG simply doesn't offer
+        # (e.g. esports, baseball on spelklubben).
+        if not hasattr(self, "_missing_categories"):
+            self._missing_categories: set[str] = set()
+        if sport in self._missing_categories:
+            return []
         category_id = self.SPORT_CATEGORY_IDS.get(sport)
         if category_id is None:
             category_id = await self._lookup_category_id(sport)
             if category_id is None:
                 slug = self.SPORT_SLUGS.get(sport)
                 if slug:
-                    logger.warning(f"[{self.provider_id}] Could not find category ID for '{sport}' (slug: {slug})")
+                    logger.info(
+                        f"[{self.provider_id}] No category ID for '{sport}' (slug: {slug}) — caching negative; not offered on this brand"
+                    )
                 else:
                     logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported (no slug mapping)")
+                self._missing_categories.add(sport)
                 return []
 
         try:
@@ -488,8 +498,12 @@ class GeckoV2Retriever(BrowserRetriever):
                 return []
 
             if not resp.ok:
-                if resp.status == 400:
-                    logger.warning(f"[{self.provider_id}] 400 error, re-initializing session")
+                # 400 = session expired, 403 = CDN/Cloudflare gate (signed-cookie
+                # rotation). Both recoverable via session re-init; without the
+                # 403 path we previously dropped 20+ runs of spelklubben data
+                # per hour (see audit 2026-05-10).
+                if resp.status in (400, 403):
+                    logger.warning(f"[{self.provider_id}] {resp.status} error, re-initializing session")
                     self._api_headers = None
                     self._api_base = None
                     self._session_ready = False

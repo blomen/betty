@@ -555,18 +555,23 @@ class MetricsCollector:
         session,
         report: str = None,
         tier_name: str | None = None,
-        max_runs_per_tier: int = 10,
+        max_runs_per_tier: int = 500,
     ):
         """
         Persist pipeline metrics to database.
         Keeps the last `max_runs_per_tier` runs per tier — prunes oldest beyond that.
+
+        Default raised 10 → 500 (2026-05-10) so per-tier history covers ~3 days
+        at the fastest cadence (1-min sharp). Enables real weekly trend
+        analysis from extraction_runs/provider_run_metrics; ~10K rows total
+        across all tiers.
 
         Args:
             run_metrics: PipelineMetrics instance to persist
             session: SQLAlchemy session
             report: Optional extraction report text
             tier_name: Tier name (sharp/api_soft/browser_soft) stored in trigger field
-            max_runs_per_tier: Number of historical runs to keep per tier (default 10)
+            max_runs_per_tier: Number of historical runs to keep per tier (default 500)
         """
         from datetime import datetime as dt
         from datetime import timezone as tz

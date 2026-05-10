@@ -68,11 +68,33 @@ _boot_id: str = uuid.uuid4().hex[:8]
 _background_tasks: set = set()  # prevent GC of fire-and-forget tasks
 
 
+def _install_asyncio_exception_handler() -> None:
+    """Surface "Future exception was never retrieved" errors with their task name.
+
+    The default handler logs only the bare exception, which is useless for
+    finding the offender among hundreds of background tasks. We add the
+    task name + traceback so silent failures stop being silent.
+    """
+
+    def _handler(loop, context):
+        msg = context.get("message", "")
+        exc = context.get("exception")
+        task = context.get("future") or context.get("task")
+        task_name = getattr(task, "get_name", lambda: "<unnamed>")() if task else "<no-task>"
+        if exc is not None:
+            logger.error("[asyncio] uncaught exception in task=%s: %s — %s", task_name, msg, exc, exc_info=exc)
+        else:
+            logger.error("[asyncio] uncaught error in task=%s: %s — %r", task_name, msg, context)
+
+    asyncio.get_event_loop().set_exception_handler(_handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
     global _startup_time
     _startup_time = time.time()
+    _install_asyncio_exception_handler()
     await asyncio.to_thread(init_db)
 
     # Add new columns to existing Postgres tables (create_all only makes new tables)
@@ -940,6 +962,12 @@ async def lifespan(app: FastAPI):
                 # immediately — retrying can't fix those.
                 if os.environ.get("STOCKS_AUTONOMOUS", "").lower() != "true":
                     return
+                # Exponential backoff: 60s → 120s → 240s → 480s → 960s → cap 1800s.
+                # Weekend maintenance returns errorCode 3 indistinguishable from a
+                # revoked key (see project_topstepx_api_subscription.md) — fixed
+                # 60s retries hammer the auth endpoint for ~24h every weekend.
+                BACKOFF_BASE_S = 60
+                BACKOFF_CAP_S = 1800
                 attempt = 0
                 while True:
                     attempt += 1
@@ -947,16 +975,20 @@ async def lifespan(app: FastAPI):
                         rt = await bootstrap_stocks_on_server(app)
                         if rt is not None:
                             return  # success — runtime is installed on app.state
+                        sleep_s = min(BACKOFF_BASE_S * (2 ** min(attempt - 1, 5)), BACKOFF_CAP_S)
                         logger.warning(
-                            "[Stocks] Bootstrap returned None (attempt %d); retrying in 60s",
+                            "[Stocks] Bootstrap returned None (attempt %d); retrying in %ds",
                             attempt,
+                            sleep_s,
                         )
                     except Exception:
+                        sleep_s = min(BACKOFF_BASE_S * (2 ** min(attempt - 1, 5)), BACKOFF_CAP_S)
                         logger.exception(
-                            "[Stocks] Bootstrap raised (attempt %d); retrying in 60s",
+                            "[Stocks] Bootstrap raised (attempt %d); retrying in %ds",
                             attempt,
+                            sleep_s,
                         )
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(sleep_s)
 
             _stocks_bootstrap_task = asyncio.create_task(
                 _stocks_bg_bootstrap(),
