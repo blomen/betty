@@ -52,3 +52,41 @@ def betby_sport_id_to_arnold(sport_id: int | str | None) -> str | None:
     except (TypeError, ValueError):
         return None
     return _SPORT_ID_TO_ARNOLD.get(key)
+
+
+def categorize_market(descriptor: dict) -> str | None:
+    """Classify a Betby market descriptor into an arnold market type.
+
+    The descriptor is one entry from the descriptions catalogue (e.g.
+    descriptions["1"], descriptions["219"]). Returns one of
+    {"1x2", "moneyline", "spread", "total"} or None if the market is
+    not in ALLOWED_MARKETS.
+
+    Decision tree (per discovery doc Section 5.2):
+      - name == "1x2"                                          -> 1x2
+      - name starts with "winner"                              -> moneyline
+        (covers "Winner", "Winner (incl. overtime)",
+         "Winner (incl. extra innings)",
+         "Winner (incl. overtime and penalties)")
+      - market_type == "Handicap" and specifiers == ["hcp"]    -> spread
+        (filters out multi-specifier markets like 555 "{!mapnr} map - kill handicap"
+         which uses ["mapnr","hcp"])
+      - market_type == "Total"    and specifiers == ["total"]  -> total
+      - everything else                                        -> None
+
+    Real-payload note: the catalogue uses ``None`` (not ``[]``) for markets that
+    have no specifiers. Both shapes are handled here.
+    """
+    name = (descriptor.get("name") or "").lower()
+    market_type = descriptor.get("market_type") or ""
+    specs = descriptor.get("specifiers") or []
+
+    if name == "1x2":
+        return "1x2"
+    if name.startswith("winner"):
+        return "moneyline"
+    if market_type == "Handicap" and specs == ["hcp"]:
+        return "spread"
+    if market_type == "Total" and specs == ["total"]:
+        return "total"
+    return None
