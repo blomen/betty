@@ -173,6 +173,12 @@ async def _passive_position_poller() -> None:
             r = await client.get(url, timeout=5.0)
             data = r.json() if r.status_code == 200 else {}
             pos = (data or {}).get("position") or {}
+            # `halted` lives at the top level of the runtime-status response
+            # (broker_adapter._halted), not inside `position`. Surface it on
+            # the position dict so the broadcaster's active synthesis can
+            # forward it and the chart widget recolors amber when the
+            # autonomous broker is halted (risk cap hit, manual pause, etc).
+            halted = bool(data.get("halted", False)) if isinstance(data, dict) else False
             if pos and not pos.get("flat"):
                 side_raw = pos.get("side", "long")
                 side = "long" if str(side_raw).lower() == "long" else "short"
@@ -212,6 +218,7 @@ async def _passive_position_poller() -> None:
                                 "entry_time": entry_time,
                                 "tp_price": float(tp) if tp else None,
                                 "original_stop_price": float(original_stop) if original_stop else None,
+                                "halted": halted,
                             }
                         ]
                     )

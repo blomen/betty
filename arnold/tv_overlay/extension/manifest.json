@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.4.8",
-  "description": "Trail line dropped from closed-trade widgets — for a closed trade, exit_price + the headerText label already convey the outcome, and the trail line was just visual noise overlapping the closed widget's own bands. Active widget keeps the trail line (the live stop walking matters in real time). _safeRemoveTrail kept in cleanup paths as a safety net for any leftover trail-keyed shapes from prior renders. Earlier: stripped stale FRVP override keys; visible-range filter for closed widgets; full info-block visibility; correct qty math; bare-minimum create payload.",
+  "version": "0.4.9",
+  "description": "Closed widget right-edge handle now slopes to exit_price (set via post-create setPoints, since createMultipointShape coerces both points to entry on widget creation). Restores the visual cue that distinguishes closed from active and lets TV's Closed P&L info-block read the actual exit price instead of bar-close at endEpoch. Earlier: trail line dropped from closed widgets; stripped stale FRVP override keys; visible-range filter for closed widgets; full info-block visibility; correct qty math; bare-minimum create payload.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

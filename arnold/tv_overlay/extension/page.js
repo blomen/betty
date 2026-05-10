@@ -1178,9 +1178,19 @@
     const profitLevel = Math.max(1, Math.round(Math.abs(tpPx - yAnchor) / NQ_TICK));
 
     const shapeName = isLong ? 'long_position' : 'short_position';
+    // Create-time points: both y values must equal entry — TV's
+    // createMultipointShape coerces the second point's price to match the
+    // first when constructing a long_position widget. Post-create we call
+    // setPoints with the actual exit price so the right-edge handle visibly
+    // slopes to where the trade closed AND TV's Closed P&L calc reads the
+    // real exit instead of the bar's close at endEpoch.
     const points = [
       { time: anchor, price: yAnchor },
       { time: endEpoch, price: yAnchor },
+    ];
+    const slopedPoints = [
+      { time: anchor, price: yAnchor },
+      { time: endEpoch, price: exit ?? yAnchor },
     ];
     // Label injected into the widget header. setProperties may or may
     // not honor `text` for native position widgets (shape doesn't expose
@@ -1239,7 +1249,7 @@
       try {
         const obj = chart.getShapeById(existing.shapeId);
         if (obj) {
-          if (typeof obj.setPoints === 'function') obj.setPoints(points);
+          if (typeof obj.setPoints === 'function') obj.setPoints(slopedPoints);
           if (typeof obj.setProperties === 'function') {
             // Each setProperties call is isolated so any single rejected
             // field doesn't tear down the others.
@@ -1247,9 +1257,10 @@
             try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
-          // No trail line on closed trades — exit_price already conveys
-          // outcome; the trail line was visual noise. Active widget keeps
-          // it because the live stop walking matters in real time.
+          // No trail line on closed trades — exit_price is now visible via
+          // the right-edge handle slope, and the headerText label conveys
+          // realized P&L. Active widget keeps the trail line because the
+          // live stop walking matters in real time.
           return true;
         }
       } catch (_) {}
@@ -1275,14 +1286,19 @@
       }
       drawnPositions.set(p.key, { shapeId, kind: shapeName });
       _ensureGroupAndAdd('Arnold • Closed Trades', shapeId);
-      // Apply fancy props + header text post-create. Each call is
-      // independently try/catch'd so a single rejected field doesn't tear
-      // down the others.
+      // Apply fancy props + header text + slope right edge to exit price
+      // post-create. Each call is independently try/catch'd so a single
+      // rejected field doesn't tear down the others.
       try {
         const obj = chart.getShapeById(shapeId);
-        if (obj && typeof obj.setProperties === 'function') {
-          try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
-          try { obj.setProperties({ text: headerText }); } catch (_) {}
+        if (obj) {
+          if (typeof obj.setPoints === 'function') {
+            try { obj.setPoints(slopedPoints); } catch (_) {}
+          }
+          if (typeof obj.setProperties === 'function') {
+            try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
+            try { obj.setProperties({ text: headerText }); } catch (_) {}
+          }
         }
       } catch (_) {}
       // No trail line on closed trades — see mutate-in-place branch above.
