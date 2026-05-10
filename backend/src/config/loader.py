@@ -73,6 +73,10 @@ class ProviderConfig(BaseModel):
     detail_extraction_filter: str | None = "all"  # "all", "popular", or "none"
     sports_to_extract: str | list[str] | None = None  # Sports to extract ("all" or list)
 
+    # Rainbet (Betby) — brand_id keys the Betby tenant; theme_name selects sptpub theme.
+    brand_id: str | None = None
+    theme_name: str | None = None
+
 
 class AppConfig(BaseModel):
     """Root application configuration."""
