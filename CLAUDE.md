@@ -330,6 +330,55 @@ Server bootstrap lives in `backend/src/stocks/server_bootstrap.py`:
 `POST /api/stocks/halt?flatten=true` panic stops + flattens.
 `POST /api/stocks/resume` clears the pause flag.
 
+### Stocks — Trade Lifecycle (Phase 1 / Phase 2 state machine, added 2026-05-09)
+
+The autonomous broker runs a deterministic two-phase state machine. **Spec at [docs/superpowers/specs/2026-05-09-phase1-phase2-mechanics-design.md](docs/superpowers/specs/2026-05-09-phase1-phase2-mechanics-design.md), plan at [docs/superpowers/plans/2026-05-09-phase1-phase2-mechanics.md](docs/superpowers/plans/2026-05-09-phase1-phase2-mechanics.md). Read those before changing live trade dispatch.**
+
+**Tracker.phase** ([backend/src/broker/position_tracker.py](backend/src/broker/position_tracker.py)):
+- `0` = flat
+- `1` = sacred bracket — pre-1.5R, no DQN re-eval / trail / pyramid / flip
+- `2` = zone-driven ride — post-1.5R, BE-lock fired (`tracker.locked_BE=True`)
+
+**Module-level helpers in [backend/src/market_data/level_monitor.py](backend/src/market_data/level_monitor.py)** (top of file, lines ~24-130):
+- `_conf_floor()` / `_of_floor()` — env-var-aware entry floors. Reckless (paper, default) = 0.0/0.0; strict (real money) = 0.15/0.30
+- `MIN_ENTRY_STOP_TICKS = 6.0` / `MAX_ENTRY_STOP_TICKS = 40.0` / `_stop_ticks_in_bounds()` — sanity bound; rejects nonsense-stop trades the trainer can't learn from
+- `PHASE_2_THRESHOLD_R = 1.5` — must match `BE_LOCK_R` in broker_adapter.py
+- `PHASE_2_BASE_SIZE = 1` / `_pyramid_add_size(conf)` — confidence-scaled pyramid; pyramid_decision head's add_size is IGNORED in live
+- `_is_phase2_rev_opposite(result, tr, approach)` — gates fall-through to broker.on_signal for REV-flip
+- `_should_run_phase2_handlers(tr)` — wraps the entire in-position handler; Phase 1 result → None unconditionally
+- `_reversal_signals_active()` / `_early_exit_lock_active()` — both default OFF; set `ENABLE_PER_TICK_REVERSAL=1` / `ENABLE_EARLY_EXIT_LOCK=1` to opt back in. **Per spec, Phase 2 decisions are zone-driven only.**
+
+**Entry gate stack** (FLAT only, applied in order; first failure wins): `halted` → `action != SKIP` → `confidence ≥ _conf_floor()` → `of_score ≥ _of_floor()` → `_stop_ticks_in_bounds(stop_ticks)` → `is_flat`. The `_build_inference_gates` UI dict and the broker dispatch path read from the SAME helpers, so the UI can never lie about what the broker actually did.
+
+**Sizing — confidence-scaled at every stage**, via `src.rl.confidence.size_multiplier(composite_confidence)` × `BASE_SIZE`, floored at 1 contract. Tiers: `≥0.85→1.5`, `0.70-0.85→1.0`, `0.50-0.70→0.6`, `0.30-0.50→0.3`, `<0.30 reckless→0.5`. With `BASE_SIZE=1`, only `conf ≥ 0.85` produces 2 contracts; everything else floors to 1. Applies to: Phase 1 entry size (`_execute_entry`), Phase 2 pyramid add size, Phase 2 REV-flip fresh entry size. **Don't bring back the size_model.predict path** — `size_model_v5.joblib` stays in the model pool but is no longer called from live.
+
+**Phase 1 → Phase 2 transition (BE-lock):** when `peak_R` first crosses 1.5, `broker_adapter.update_mark_and_check_be_lock` moves stop to `entry ± 2 ticks` ($10/contract — covers spread + commission with buffer) and sets `tracker.locked_BE=True`. Single-shot via the flag. **This is the "barely profitable" point** the user spec'd — worst case the trade closes flat-plus-pennies, never below break-even.
+
+**Phase 2 dispatch on next zone touch** (gated by `_should_run_phase2_handlers`):
+- `action == CONTINUATION` → cont-trail (skipped if of_score < 0.3) AND pyramid (these COEXIST after Task 12; previously they were mutually-exclusive elif branches)
+- `action == REVERSAL` opposite to current side → fall through to `broker.on_signal` which calls `flatten("flip_on_reversal")` then `_execute_entry` for the opposite direction. Two distinct `broker_trades` rows. New position enters Phase 1.
+- `action == REVERSAL` same side → suppressed (e.g., long position + REVERSAL at down-approach implies wanting long = same side)
+- `action == SKIP` → hold
+
+**Action strings — exact match required.** DQN emits `Action.CONTINUATION.name = "CONTINUATION"` and `Action.REVERSAL.name = "REVERSAL"`. Branches checking `"CONT"` or `"REV"` are dead code (this exact bug shipped in Task 10's first pass and was caught during Task 11 review).
+
+**Trail bug context (resolved in commit `d783180a`):** TopstepX's `SubscribeContractTrades` is silent by design — every third-party ProjectX integration (Go runbook, Python tsxapi4py, TypeScript topstepx-api) treats `GatewayQuote` as the primary price feed. Without `on_quote` wired, `peak_R` never advances and Phase 2 is structurally unreachable. The fix wires `stream.on_quote` to `adapter.update_mark_and_check_be_lock(lastPrice or (bestBid+bestAsk)/2)` in [server_bootstrap.py](backend/src/stocks/server_bootstrap.py). Don't remove this wiring. See [project_trail_bug_root_cause_resolved.md memory](C:\Users\rasmu\.claude\projects\c--Users-rasmu-arnold\memory\project_trail_bug_root_cause_resolved.md).
+
+**TopstepX API quirks (added in commits `d25eadcc`, `89d4a206`, `09c4da1d`, `4de32117`):**
+- `Auth/validate` response field is `newToken`, NOT `token` — asymmetric with `Auth/loginKey`. Reading the wrong field forces silent full re-auth every cycle.
+- User hub subscriptions: `SubscribeAccounts` (canTrade flip detection) + `SubscribePositions` + `SubscribeOrders` + `SubscribeTrades`. **All four required** — without `SubscribeAccounts` we don't know about prop-firm violations until the next `Order/place` rejects.
+- `GatewayUserAccount.canTrade=false` → broker halts + flattens any open position via `adapter.flatten("account_violation")`.
+- Startup contract verification via `/api/Contract/available` — logs CRITICAL if `TOPSTEPX_CONTRACT_ID` is no longer active. **NQ rolls quarterly: M26 → U26 on 2026-06-15.**
+- See [project_topstepx_api_subscription.md memory](C:\Users\rasmu\.claude\projects\c--Users-rasmu-arnold\memory\project_topstepx_api_subscription.md) for billing quirks (separate $14.50/mo with code `topstep`; cancellation revokes API access immediately; weekend maintenance returns errorCode 3 indistinguishable from a revoked key).
+
+**Deferred follow-ups** (not yet implemented):
+- Bracket orders — `/api/Order/place` accepts `stopLossBracket` + `takeProfitBracket` for atomic OCO leg attachment. Would eliminate the entry-fill race entirely. Larger refactor of `_execute_entry`.
+- Pre-existing `test_broker_adapter.py` failures (3 tests) — stale `max_daily_loss` default, wrong stop type constant, positional-arg `modify_order`. Real bugs but unrelated to the Phase 1/2 work.
+
+**Don't touch unless you understand the spec:**
+- The `_should_run_phase2_handlers` wrap. Removing it puts Phase 2 logic back into Phase 1, which means underwater pyramids and chopped winners.
+- The `FORCE_REV_ONLY` flag in `session_manager.py`. That's the BACKTEST class, not live. Live path was un-forced in commit `9a9dccc5` (2026-04-28). If you see code referring to `FORCE_REV_ONLY=True` affecting live trades, it's wrong — that flag only matters in `SessionManager` which is the simulator.
+
 ## Arnold — Local Client
 
 **Run `arnold.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser + TopstepX relay (unless `STOCKS_AUTONOMOUS=true`).
