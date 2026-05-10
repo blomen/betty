@@ -90,3 +90,41 @@ def categorize_market(descriptor: dict) -> str | None:
     if market_type == "Total" and specs == ["total"]:
         return "total"
     return None
+
+
+def parse_variant_key(variant_key: str) -> dict:
+    """Parse a Betby variant key string into a {specifier: float_value} dict.
+
+    Examples (per discovery doc Section 4.3):
+      ""                  -> {}
+      "total=2.5"         -> {"total": 2.5}
+      "hcp=-1.5"          -> {"hcp": -1.5}
+      "hcp=-10.5"         -> {"hcp": -10.5}
+      "hcp=0"             -> {"hcp": 0.0}
+      "mapnr=1|hcp=-0.5"  -> {"mapnr": 1.0, "hcp": -0.5}
+      "setnr=2"           -> {"setnr": 2.0}
+
+    Values are always cast to float for uniformity (mapnr/setnr are conceptually
+    integers but storing them as floats keeps the dict shape consistent).
+    Unknown specifier names are passed through; the rest of the parser uses
+    only ``hcp`` and ``total``.
+
+    Malformed segments (no '=' or non-numeric value) are silently skipped so
+    the parser stays tolerant of unexpected payload shapes.
+    """
+    if not variant_key:
+        return {}
+
+    out: dict[str, float] = {}
+    for segment in variant_key.split("|"):
+        if "=" not in segment:
+            continue
+        name, _, raw_value = segment.partition("=")
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            out[name] = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return out

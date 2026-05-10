@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from src.providers.rainbet import betby_sport_id_to_arnold, categorize_market
+from src.providers.rainbet import (
+    betby_sport_id_to_arnold,
+    categorize_market,
+    parse_variant_key,
+)
 
 # Real market-descriptions catalogue captured 2026-05-10 (full 577 KB body).
 # Keep the path here so individual test cases can read sub-dicts from it.
@@ -181,3 +185,55 @@ class TestCategorizeMarket:
 
     def test_empty_descriptor_returns_none(self):
         assert categorize_market({}) is None
+
+
+class TestParseVariantKey:
+    """Variant key string -> dict of specifier name -> float value."""
+
+    def test_empty_string(self):
+        assert parse_variant_key("") == {}
+
+    def test_total_decimal(self):
+        assert parse_variant_key("total=2.5") == {"total": 2.5}
+
+    def test_total_integer(self):
+        # Soccer market 18 sometimes ships keys like "total=3" (no decimal point).
+        assert parse_variant_key("total=3") == {"total": 3.0}
+
+    def test_handicap_negative(self):
+        assert parse_variant_key("hcp=-1.5") == {"hcp": -1.5}
+
+    def test_handicap_large_negative(self):
+        # Basketball / NFL spread markets ship larger lines (e.g. -10.5 points).
+        assert parse_variant_key("hcp=-10.5") == {"hcp": -10.5}
+
+    def test_handicap_positive(self):
+        assert parse_variant_key("hcp=1.5") == {"hcp": 1.5}
+
+    def test_handicap_zero(self):
+        assert parse_variant_key("hcp=0") == {"hcp": 0.0}
+
+    def test_multi_specifier_dota(self):
+        # Real example from market 555: "{!mapnr} map - kill handicap".
+        assert parse_variant_key("mapnr=1|hcp=-0.5") == {"mapnr": 1.0, "hcp": -0.5}
+
+    def test_multi_specifier_setnr(self):
+        # Real example from market 202: per-set winner.
+        assert parse_variant_key("setnr=2") == {"setnr": 2.0}
+
+    def test_unknown_specifier_passes_through(self):
+        # Parser preserves unknown specifier names so debugging info isn't lost.
+        # Downstream code only cares about hcp / total.
+        result = parse_variant_key("foo=4.2")
+        assert result == {"foo": 4.2}
+
+    def test_malformed_segment_skipped(self):
+        # If a segment doesn't contain '=' we skip it rather than raise; keeps
+        # the parser tolerant of unexpected payload shapes.
+        result = parse_variant_key("hcp=-1.5|garbage")
+        assert result == {"hcp": -1.5}
+
+    def test_non_numeric_value_skipped(self):
+        # Defensive: if Betby ever ships "hcp=abc" we don't want a crash.
+        result = parse_variant_key("hcp=abc")
+        assert result == {}
