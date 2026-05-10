@@ -12,6 +12,7 @@ import pytest
 from src.providers.rainbet import (
     betby_sport_id_to_arnold,
     categorize_market,
+    parse_event,
     parse_variant_key,
     pick_main_market,
 )
@@ -20,6 +21,7 @@ from src.providers.rainbet import (
 # Keep the path here so individual test cases can read sub-dicts from it.
 _DISCOVERY_DIR = Path("c:/tmp/rainbet_discovery")
 _DESCRIPTIONS_PATH = _DISCOVERY_DIR / "markets_descriptions.json"
+_PREMATCH_CHUNK_PATH = _DISCOVERY_DIR / "prematch_chunk_1.json"
 
 
 @pytest.fixture(scope="module")
@@ -29,6 +31,20 @@ def descriptions() -> dict:
         pytest.skip(f"Discovery catalogue not present at {_DESCRIPTIONS_PATH}")
     with _DESCRIPTIONS_PATH.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def prematch_chunk() -> dict:
+    """Real prematch chunk (one of 5) captured 2026-05-10."""
+    if not _PREMATCH_CHUNK_PATH.is_file():
+        pytest.skip(f"Discovery chunk not present at {_PREMATCH_CHUNK_PATH}")
+    with _PREMATCH_CHUNK_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def sports_map(prematch_chunk) -> dict:
+    return prematch_chunk.get("sports") or {}
 
 
 class TestBetbySportIdToArnold:
@@ -374,3 +390,279 @@ class TestPickMainMarket:
         chosen = pick_main_market("18", variants, "total")
         assert chosen is not None
         assert chosen[0] == "total=3.5"
+
+
+def _market_by_type(event, market_type):
+    """Helper: return the first market of a given type, or None."""
+    for m in event.markets:
+        if m["type"] == market_type:
+            return m
+    return None
+
+
+class TestParseEvent:
+    """Per-event parsing into StandardEvent."""
+
+    # ---- Real soccer event from prematch_chunk_1.json ----
+
+    def test_soccer_event_parses_1x2_and_total(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664825045611843589"  # Zaglebie Sosnowiec vs KS Hutnik Krakow SSA
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        assert result.id == ev_id
+        assert result.sport == "football"
+        assert result.provider == "rainbet"
+        # 1x2 + total — double chance (id 10) is dropped (not in ALLOWED_MARKETS).
+        types = {m["type"] for m in result.markets}
+        assert types == {"1x2", "total"}
+
+    def test_soccer_1x2_outcomes(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664825045611843589"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        m = _market_by_type(result, "1x2")
+        assert m is not None
+        outcomes = {o["name"]: o for o in m["outcomes"]}
+        assert outcomes["home"]["odds"] == 2.6
+        assert outcomes["draw"]["odds"] == 3.5
+        assert outcomes["away"]["odds"] == 2.34
+
+    def test_soccer_total_picks_balanced_line(self, prematch_chunk, descriptions, sports_map):
+        # The 5 lines in market 18 — most balanced is total=2.5 (1.69 vs 1.99).
+        ev_id = "2664825045611843589"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        m = _market_by_type(result, "total")
+        assert m is not None
+        for o in m["outcomes"]:
+            assert o["point"] == 2.5
+        over = next(o for o in m["outcomes"] if o["name"] == "over")
+        under = next(o for o in m["outcomes"] if o["name"] == "under")
+        assert over["odds"] == 1.69
+        assert under["odds"] == 1.99
+
+    def test_soccer_team_names_normalized(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664825045611843589"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        # normalize_team_name lowercases + strips common prefixes.
+        assert result.home_team == "zaglebie sosnowiec"
+        assert result.away_team == "ks hutnik krakow ssa"
+        assert " vs " in result.name
+
+    def test_soccer_start_time_iso(self, prematch_chunk, descriptions, sports_map):
+        # scheduled = 1778425200 -> 2026-05-10T15:00:00Z
+        ev_id = "2664825045611843589"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result.start_time == "2026-05-10T15:00:00Z"
+
+    # ---- Real basketball event from prematch_chunk_1.json ----
+
+    def test_basketball_drops_1x2_uses_moneyline(self, prematch_chunk, descriptions, sports_map):
+        # Sample basketball event has both market 1 (3-way) and 219 (2-way moneyline).
+        # arnold should drop the 1x2 in favour of the 2-way moneyline.
+        ev_id = "2664852545721212974"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        types = {m["type"] for m in result.markets}
+        assert "1x2" not in types
+        assert types == {"moneyline", "spread", "total"}
+
+    def test_basketball_moneyline_uses_outcome_ids_4_5(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664852545721212974"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        m = _market_by_type(result, "moneyline")
+        assert m is not None
+        outcomes = {o["name"]: o for o in m["outcomes"]}
+        # Market 219: outcome 4=home, 5=away. From real capture: 1.18 / 4.7.
+        assert outcomes["home"]["odds"] == 1.18
+        assert outcomes["away"]["odds"] == 4.7
+
+    def test_basketball_spread_signed_handicap(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664852545721212974"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        m = _market_by_type(result, "spread")
+        assert m is not None
+        outcomes = {o["name"]: o for o in m["outcomes"]}
+        # hcp=-10.5 -> home gets -10.5, away gets +10.5.
+        assert outcomes["home"]["point"] == -10.5
+        assert outcomes["away"]["point"] == 10.5
+
+    def test_basketball_total_balanced(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664852545721212974"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        m = _market_by_type(result, "total")
+        assert m is not None
+        for o in m["outcomes"]:
+            assert o["point"] == 167.5
+
+    # ---- Real ice hockey event ----
+
+    def test_hockey_uses_406_moneyline_drops_1x2(self, prematch_chunk, descriptions, sports_map):
+        # Hockey events ship both market 1 (3-way reg time) and market 406
+        # (winner incl. OT and penalties). arnold prefers 406 as moneyline.
+        ev_id = "2665148250939592707"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        types = {m["type"] for m in result.markets}
+        assert "1x2" not in types
+        assert "moneyline" in types
+
+    # ---- Real tennis event ----
+
+    def test_tennis_prefers_set_handicap_over_game_handicap(self, prematch_chunk, descriptions, sports_map):
+        # Tennis event ships both market 188 (set handicap) and 187 (game handicap).
+        # categorize_market returns "spread" for both — but only ONE spread should
+        # survive in the output.
+        ev_id = "2664749539319230505"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        spread_count = sum(1 for m in result.markets if m["type"] == "spread")
+        assert spread_count == 1
+
+    def test_tennis_prefers_total_games_over_total_sets(self, prematch_chunk, descriptions, sports_map):
+        ev_id = "2664749539319230505"
+        ev_data = prematch_chunk["events"][ev_id]
+        result = parse_event(ev_id, ev_data, descriptions, sports_map)
+        assert result is not None
+        total_count = sum(1 for m in result.markets if m["type"] == "total")
+        assert total_count == 1
+        # Market 189 has totals 20.5-24.5 (game-level); market 314 ships total=2.5
+        # (set-level). The kept market should be the games one.
+        m = _market_by_type(result, "total")
+        # Any of the picked game-level lines is in the 20-25 range.
+        assert m["outcomes"][0]["point"] > 10
+
+    # ---- Filters ----
+
+    def test_live_event_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": "A"}, {"name": "B"}],
+            },
+            "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.0"}}}},
+            "state": {"status": 21, "match_status": 0},
+        }
+        assert parse_event("123", ev_data, {"1": {"name": "1x2", "market_type": "Result"}}, sports_map) is None
+
+    def test_non_match_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "stage",
+                "sport": "9",
+                "competitors": [{"name": "Tournament"}, {"name": "Winner"}],
+            },
+            "markets": {},
+            "state": {"status": 0, "match_status": 0},
+        }
+        assert parse_event("999", ev_data, {}, sports_map) is None
+
+    def test_missing_home_team_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": ""}, {"name": "Away"}],
+            },
+            "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.0"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        assert parse_event("abc", ev_data, descs, sports_map) is None
+
+    def test_missing_away_team_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": "Home"}],
+            },
+            "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.0"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        assert parse_event("abc", ev_data, descs, sports_map) is None
+
+    def test_unknown_sport_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "9",  # golf -- not in arnold scope
+                "competitors": [{"name": "A"}, {"name": "B"}],
+            },
+            "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.0"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        assert parse_event("xyz", ev_data, descs, sports_map) is None
+
+    def test_event_with_no_recognized_markets_returns_none(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": "A"}, {"name": "B"}],
+            },
+            "markets": {"10": {"": {"9": {"k": "1.5"}, "10": {"k": "1.3"}, "11": {"k": "1.4"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"10": {"name": "Double chance", "market_type": "Result"}}
+        assert parse_event("dchance", ev_data, descs, sports_map) is None
+
+    def test_invalid_odds_outcome_skipped(self, sports_map):
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": "Home"}, {"name": "Away"}],
+            },
+            # Home odds invalid (<= 1.0); should be dropped, leaving draw + away.
+            "markets": {"1": {"": {"1": {"k": "0.5"}, "2": {"k": "3.0"}, "3": {"k": "2.0"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        result = parse_event("oddtest", ev_data, descs, sports_map)
+        # Only 2 valid outcomes — market is still emitted (>=2 outcomes), but
+        # without home.
+        assert result is not None
+        m = _market_by_type(result, "1x2")
+        assert m is not None
+        names = {o["name"] for o in m["outcomes"]}
+        assert "home" not in names
+        assert names == {"draw", "away"}
+
+    def test_event_id_used_directly(self, sports_map):
+        # The event_id is the dict key — parser should use it as StandardEvent.id
+        # without prefixing.
+        ev_data = {
+            "desc": {
+                "scheduled": 1778425200,
+                "type": "match",
+                "sport": "1",
+                "competitors": [{"name": "Home"}, {"name": "Away"}],
+            },
+            "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.5"}}}},
+            "state": {"status": 0, "match_status": 0},
+        }
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        result = parse_event("event-id-123", ev_data, descs, sports_map)
+        assert result is not None
+        assert result.id == "event-id-123"
