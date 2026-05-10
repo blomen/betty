@@ -1164,12 +1164,13 @@
     const NQ_TICK = 0.25;
     // Unified geometry for both wins and losses: anchor at entry, stopLevel
     // from original 1R, profitLevel from planned 2R tp. Same shape as the
-    // active widget so TV's R:R = 2 label stays correct, and the realized
-    // exit + the BE-locked/trailed stop are surfaced via the auxiliary trail
-    // line (_drawTrailLineIfMoved) and the headerText label, not via the
-    // widget bands. Removed the old win-mode `stopLevel = 0` branch — newer
-    // TV builds reject the long_position widget with "Value is undefined"
-    // when stopLevel is 0, which was killing every win since 2026-05-08.
+    // active widget so TV's R:R = 2 label stays correct. The realized exit
+    // and final P&L are surfaced via the headerText label and TV's built-in
+    // Closed P&L info-block; no trail line is drawn for closed trades (it
+    // was visual noise — exit_price already conveys outcome). Removed the
+    // old win-mode `stopLevel = 0` branch — newer TV builds reject the
+    // long_position widget with "Value is undefined" when stopLevel is 0,
+    // which was killing every win since 2026-05-08.
     const tpPx = tp ?? (isLong ? entry + 1 : entry - 1);
     const stopPx = stop ?? (isLong ? entry - 1 : entry + 1);
     const yAnchor = entry;
@@ -1246,7 +1247,9 @@
             try { obj.setProperties(widgetInfoBlocks); } catch (_) {}
             try { obj.setProperties({ text: headerText }); } catch (_) {}
           }
-          _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
+          // No trail line on closed trades — exit_price already conveys
+          // outcome; the trail line was visual noise. Active widget keeps
+          // it because the live stop walking matters in real time.
           return true;
         }
       } catch (_) {}
@@ -1282,7 +1285,7 @@
           try { obj.setProperties({ text: headerText }); } catch (_) {}
         }
       } catch (_) {}
-      _drawTrailLineIfMoved(p, anchor, endEpoch, p.original_stop_price ?? stop, p.placed_stop_price);
+      // No trail line on closed trades — see mutate-in-place branch above.
       return true;
     } catch (e) {
       sendError(`_drawClosedPositionWidget failed: ${e instanceof Error ? e.message : String(e)}`);

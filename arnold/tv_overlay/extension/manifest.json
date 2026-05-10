@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.4.7",
-  "description": "Stripped 10 override keys from applyVpAnchor that TV's current FRVP study schema doesn't recognize (*.showLastValue, showStudyLastValue, showStudyArguments, showStudyTitle) — they were spamming Chart.Model.StudyPropertiesOverrider warnings ~30x/min, drowning every other console message and making diagnostics impossible. Visual behavior unchanged (POC/VAH/VAL lines still render with the same colors and price labels still hidden via showPrice:false, which the schema does still accept). Earlier: closed-trade widgets obey visible range; full info-block visibility; lotSize/accountSize/leverage/risk for qty math; bare-minimum create-call payload; trail line at placed stop.",
+  "version": "0.4.8",
+  "description": "Trail line dropped from closed-trade widgets — for a closed trade, exit_price + the headerText label already convey the outcome, and the trail line was just visual noise overlapping the closed widget's own bands. Active widget keeps the trail line (the live stop walking matters in real time). _safeRemoveTrail kept in cleanup paths as a safety net for any leftover trail-keyed shapes from prior renders. Earlier: stripped stale FRVP override keys; visible-range filter for closed widgets; full info-block visibility; correct qty math; bare-minimum create payload.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",
