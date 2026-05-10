@@ -439,6 +439,8 @@ def parse_event(
     (``desc.type != "match"``), out-of-scope sports, missing teams, or events
     with no parseable markets.
     """
+    if not isinstance(event_data, dict):
+        return None
     desc = event_data.get("desc") or {}
     state = event_data.get("state") or {}
 
@@ -831,13 +833,31 @@ class RainbetRetriever(BrowserRetriever):
         def handler(resp):
             asyncio.create_task(grab(resp))
 
-        page.on("response", handler)
+        # Counter shared with _clear_turnstile so the click loop can exit
+        # on the BEHAVIOURAL signal (any sptpub.com response = page is past
+        # the wall and bootstrapping) rather than on the formal cookie/iframe
+        # state, which spike v4 showed lags behind real progress.
+        sptpub_hits = [0]
+        original_grab = grab
+
+        async def _grab_with_counter(resp):
+            host = urlparse(resp.url).hostname or ""
+            if "sptpub.com" in host:
+                sptpub_hits[0] += 1
+            await original_grab(resp)
+
+        # Replace the bare grab with the counting wrapper.
+        def handler2(resp):
+            asyncio.create_task(_grab_with_counter(resp))
+
+        page.remove_listener("response", handler)
+        page.on("response", handler2)
 
         try:
             # Navigate. Patchright passes most CF on its own; Turnstile
             # widget then needs a synthetic click.
             await page.goto(self._site_url, wait_until="domcontentloaded", timeout=60_000)
-            await self._clear_turnstile()
+            await self._clear_turnstile(sptpub_hits)
 
             # Let the SPA bootstrap and fetch the prematch manifest +
             # version chunks. Poll every 2s up to 30s, exit early once
@@ -851,7 +871,7 @@ class RainbetRetriever(BrowserRetriever):
                     break
         finally:
             try:
-                page.remove_listener("response", handler)
+                page.remove_listener("response", handler2)
             except Exception:
                 pass
 
@@ -875,26 +895,31 @@ class RainbetRetriever(BrowserRetriever):
             f"complete={self._snapshot_complete}"
         )
 
-    async def _clear_turnstile(self) -> None:
-        """Click the Cloudflare Turnstile widget until it clears.
+    async def _clear_turnstile(self, sptpub_hits: list[int]) -> None:
+        """Click the Cloudflare Turnstile widget until the page bootstraps.
 
-        The widget renders inside an iframe at a stable on-page position;
-        a single click on the checkbox is sufficient when patchright's
-        stealth has primed the browser fingerprint. Polls for the
-        ``cf_clearance`` cookie AND iframe absence every 2s up to 60s.
+        Exit condition matches spike v4: ANY response from a ``*.sptpub.com``
+        host means the SPA is past the wall and is fetching Betby data.
+        Cookie/iframe state is unreliable as a success signal — Cloudflare
+        sometimes leaves the iframe in the DOM after the cookie lands but
+        before the SPA actually starts loading.
+
+        Caps at 60s of clicking; raises RuntimeError on timeout.
         """
         page = self._page
         loop = asyncio.get_event_loop()
         deadline = loop.time() + 60.0
 
         while loop.time() < deadline:
-            # Fast-path: if cleared on the first poll (patchright bypassed
-            # the widget entirely), exit without clicking.
-            try:
-                cookies = await page.context.cookies()
-                has_cookie = any(c.get("name") == "cf_clearance" for c in cookies)
-            except Exception:
-                has_cookie = False
+            # Behavioral exit: any sptpub response means the wall is breached
+            # and the SPA is bootstrapping. This is the criterion spike v4
+            # used and that we observed working in 0.7s-8.5s.
+            if sptpub_hits[0] > 0:
+                if not self._turnstile_cleared:
+                    logger.info(f"[{self.provider_id}] Turnstile cleared (sptpub_hits={sptpub_hits[0]})")
+                self._turnstile_cleared = True
+                return
+
             ts_iframe = None
             try:
                 ts_iframe = await page.query_selector(
@@ -902,13 +927,6 @@ class RainbetRetriever(BrowserRetriever):
                 )
             except Exception:
                 pass
-            widget_present = ts_iframe is not None
-
-            if has_cookie and not widget_present:
-                if not self._turnstile_cleared:
-                    logger.info(f"[{self.provider_id}] Turnstile cleared")
-                self._turnstile_cleared = True
-                return
 
             # Click the Turnstile checkbox. Primary: bbox-based — query the
             # iframe's bounding box and click near its left edge (the checkbox
