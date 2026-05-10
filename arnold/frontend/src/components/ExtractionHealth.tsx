@@ -24,6 +24,22 @@ const COLORS = {
   error: 'text-zinc-500',
 } as const
 
+// Canonical provider_id → cluster display name. Backend emits one canonical
+// per platform group (see backend/src/constants.py PLATFORM_GROUPS); members
+// fan out via PROVIDER_CANONICAL so we never get duplicate health rows here.
+const CLUSTER_NAME: Record<string, string> = {
+  unibet: 'Kambi',
+  betinia: 'Altenar',
+  spelklubben: 'Gecko/OBG',
+  '888sport': 'Spectate',
+  comeon: 'ComeOn',
+  vbet: 'BetConstruct',
+}
+
+function clusterLabel(providerId: string): string {
+  return CLUSTER_NAME[providerId] ?? providerId
+}
+
 function fmtAge(min: number | null): string {
   if (min === null) return '—'
   if (min < 1) return '<1m'
@@ -61,7 +77,8 @@ export function ExtractionHealth() {
   const label = (() => {
     if (status === 'error') return 'health err'
     if (sharp && (sharp.status === 'critical' || sharp.status === 'down')) {
-      return `Pinnacle ${sharp.status === 'down' ? 'DOWN' : `${fmtAge(sharp.age_minutes)} stale`}`
+      const sharpLabel = clusterLabel(sharp.provider_id)
+      return `${sharpLabel} ${sharp.status === 'down' ? 'DOWN' : `${fmtAge(sharp.age_minutes)} stale`}`
     }
     if (bad.length === 0) return 'extraction ok'
     return `${bad.length} stale`
@@ -89,8 +106,11 @@ export function ExtractionHealth() {
               {providers.map(p => (
                 <tr key={p.provider_id} className="border-b border-zinc-800/40 last:border-b-0">
                   <td className={`py-0.5 pr-2 ${COLORS[p.status]}`}>●</td>
-                  <td className={`py-0.5 pr-2 ${p.is_sharp ? 'text-orange-400 font-semibold' : 'text-zinc-300'}`}>
-                    {p.provider_id}
+                  <td
+                    className={`py-0.5 pr-2 ${p.is_sharp ? 'text-orange-400 font-semibold' : 'text-zinc-300'}`}
+                    title={p.provider_id}
+                  >
+                    {clusterLabel(p.provider_id)}
                   </td>
                   <td className="py-0.5 pr-2 text-zinc-500 text-right">{fmtAge(p.age_minutes)}</td>
                   <td className="py-0.5 text-zinc-700 text-right text-[10px]">
