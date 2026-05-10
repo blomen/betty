@@ -128,3 +128,111 @@ def parse_variant_key(variant_key: str) -> dict:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _safe_float(raw: object) -> float | None:
+    """Coerce a Betby ``k`` field (JSON string) to float, or None on failure."""
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def pick_main_market(
+    market_id: str,
+    variants: dict,
+    market_type: str,
+) -> tuple[str, dict] | None:
+    """Pick the "main line" variant for a given market.
+
+    Args:
+        market_id: Betby market id (string-encoded int). Currently informational
+            only — picking logic is driven by ``market_type`` and the variant
+            shape.
+        variants: dict from variant_key (e.g. ``"hcp=-1.5"``) to the variant's
+            outcome dict (e.g. ``{"1714": {"k": "1.9"}, "1715": {"k": "1.9"}}``).
+        market_type: arnold market type from :func:`categorize_market`.
+
+    Returns:
+        ``(variant_key, variant_data)`` of the chosen line, or ``None`` if no
+        valid variant exists.
+
+    Selection rules (per discovery doc Section 4.4):
+        - 1x2 / moneyline: there is exactly one variant (key ``""``); return it.
+        - spread: pick the variant with the smallest ``abs(hcp)``. Tie-break:
+            prefer the negative line (favourite laying points). Variants whose
+            key cannot be parsed for ``hcp`` are skipped.
+        - total: pick the variant with the most balanced odds (smallest absolute
+            difference between over (id ``"12"``) and under (id ``"13"``) prices).
+            Tie-break: prefer the median total. Variants missing an outcome or
+            carrying invalid odds are skipped.
+    """
+    if not variants:
+        return None
+
+    if market_type in ("1x2", "moneyline"):
+        # No specifiers — the only valid variant key is the empty string.
+        data = variants.get("")
+        if not data:
+            return None
+        return ("", data)
+
+    if market_type == "spread":
+        candidates: list[tuple[float, float, str, dict]] = []
+        # Priority key order (lower is "more main"):
+        #   1) abs(hcp)        — smallest line wins
+        #   2) signed hcp      — negative wins on a tie (favourite laying)
+        for vkey, vdata in variants.items():
+            specs = parse_variant_key(vkey)
+            hcp = specs.get("hcp")
+            if hcp is None:
+                continue
+            candidates.append((abs(hcp), hcp, vkey, vdata))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: (t[0], t[1]))
+        _, _, key, data = candidates[0]
+        return (key, data)
+
+    if market_type == "total":
+        # Score each variant by |over_odds - under_odds|; lower is better.
+        # Tie-break: median total (i.e. abs(total - median(totals))) — keeps the
+        # picker stable across snapshots when the bookmaker hasn't moved odds.
+        scored: list[tuple[float, str, dict]] = []  # (balance_score, vkey, vdata)
+        totals: list[float] = []
+        for vkey, vdata in variants.items():
+            specs = parse_variant_key(vkey)
+            total = specs.get("total")
+            if total is None:
+                continue
+            over = vdata.get("12")
+            under = vdata.get("13")
+            if not over or not under:
+                continue
+            over_odds = _safe_float(over.get("k"))
+            under_odds = _safe_float(under.get("k"))
+            if over_odds is None or under_odds is None:
+                continue
+            scored.append((abs(over_odds - under_odds), vkey, vdata))
+            totals.append(total)
+
+        if not scored:
+            return None
+
+        if len(scored) == 1:
+            _, key, data = scored[0]
+            return (key, data)
+
+        # Apply tie-break with median total.
+        sorted_totals = sorted(totals)
+        median_total = sorted_totals[len(sorted_totals) // 2]
+        scored_with_median: list[tuple[float, float, str, dict]] = []
+        for balance, vkey, vdata in scored:
+            specs = parse_variant_key(vkey)
+            total = specs["total"]
+            scored_with_median.append((balance, abs(total - median_total), vkey, vdata))
+        scored_with_median.sort(key=lambda t: (t[0], t[1]))
+        _, _, key, data = scored_with_median[0]
+        return (key, data)
+
+    return None

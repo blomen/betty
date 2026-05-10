@@ -13,6 +13,7 @@ from src.providers.rainbet import (
     betby_sport_id_to_arnold,
     categorize_market,
     parse_variant_key,
+    pick_main_market,
 )
 
 # Real market-descriptions catalogue captured 2026-05-10 (full 577 KB body).
@@ -237,3 +238,139 @@ class TestParseVariantKey:
         # Defensive: if Betby ever ships "hcp=abc" we don't want a crash.
         result = parse_variant_key("hcp=abc")
         assert result == {}
+
+
+class TestPickMainMarket:
+    """(market_id, variants_dict, market_type) -> chosen (variant_key, variant_data)."""
+
+    # ----- 1x2 / moneyline (single variant, key "") -----
+
+    def test_1x2_single_variant_returned(self):
+        variants = {"": {"1": {"k": "2.6"}, "2": {"k": "3.5"}, "3": {"k": "2.34"}}}
+        chosen = pick_main_market("1", variants, "1x2")
+        assert chosen is not None
+        key, data = chosen
+        assert key == ""
+        assert data == {"1": {"k": "2.6"}, "2": {"k": "3.5"}, "3": {"k": "2.34"}}
+
+    def test_moneyline_single_variant_returned(self):
+        variants = {"": {"4": {"k": "1.18"}, "5": {"k": "4.7"}}}
+        chosen = pick_main_market("219", variants, "moneyline")
+        assert chosen is not None
+        assert chosen[0] == ""
+        assert chosen[1] == {"4": {"k": "1.18"}, "5": {"k": "4.7"}}
+
+    def test_1x2_no_empty_key_returns_none(self):
+        # If there's no "" variant the data is malformed for a no-specifier market.
+        variants = {"hcp=0": {"1": {"k": "2.0"}}}
+        assert pick_main_market("1", variants, "1x2") is None
+
+    def test_1x2_empty_variants_returns_none(self):
+        assert pick_main_market("1", {}, "1x2") is None
+
+    # ----- spread: smallest |hcp| wins, tie-break prefers negative -----
+
+    def test_spread_picks_smallest_abs_hcp(self):
+        variants = {
+            "hcp=-3.5": {"1714": {"k": "1.9"}, "1715": {"k": "1.9"}},
+            "hcp=-1.5": {"1714": {"k": "2.1"}, "1715": {"k": "1.75"}},
+            "hcp=-2.5": {"1714": {"k": "2.5"}, "1715": {"k": "1.55"}},
+        }
+        chosen = pick_main_market("16", variants, "spread")
+        assert chosen is not None
+        assert chosen[0] == "hcp=-1.5"
+
+    def test_spread_tie_prefers_negative(self):
+        # Real tennis-style 0.5 / -0.5 -- pick the negative one (favourite laying).
+        variants = {
+            "hcp=0.5": {"1714": {"k": "2.0"}, "1715": {"k": "1.85"}},
+            "hcp=-0.5": {"1714": {"k": "1.85"}, "1715": {"k": "2.0"}},
+        }
+        chosen = pick_main_market("188", variants, "spread")
+        assert chosen is not None
+        assert chosen[0] == "hcp=-0.5"
+
+    def test_spread_zero_handicap(self):
+        # Pick'em — abs(0) is the smallest; one variant wins outright.
+        variants = {
+            "hcp=0": {"1714": {"k": "1.9"}, "1715": {"k": "1.9"}},
+            "hcp=-1.5": {"1714": {"k": "2.4"}, "1715": {"k": "1.55"}},
+        }
+        chosen = pick_main_market("16", variants, "spread")
+        assert chosen is not None
+        assert chosen[0] == "hcp=0"
+
+    def test_spread_with_invalid_variant_key_skipped(self):
+        # If variant key cannot be parsed (no hcp), skip it.
+        variants = {
+            "garbage": {"1714": {"k": "1.5"}, "1715": {"k": "2.5"}},
+            "hcp=-2.5": {"1714": {"k": "1.85"}, "1715": {"k": "1.95"}},
+        }
+        chosen = pick_main_market("16", variants, "spread")
+        assert chosen is not None
+        assert chosen[0] == "hcp=-2.5"
+
+    def test_spread_no_valid_variants_returns_none(self):
+        variants = {
+            "garbage": {"1714": {"k": "1.5"}, "1715": {"k": "2.5"}},
+        }
+        assert pick_main_market("16", variants, "spread") is None
+
+    # ----- total: most balanced odds, tie-break = median total -----
+
+    def test_total_picks_most_balanced(self):
+        # 5 lines, the most balanced is the one whose over/under odds differ least.
+        variants = {
+            "total=1.5": {"12": {"k": "1.24"}, "13": {"k": "3.45"}},  # |1.24-3.45|=2.21
+            "total=2": {"12": {"k": "1.34"}, "13": {"k": "2.88"}},  # 1.54
+            "total=2.5": {"12": {"k": "1.69"}, "13": {"k": "1.99"}},  # 0.30 <- pick
+            "total=3": {"12": {"k": "2.16"}, "13": {"k": "1.58"}},  # 0.58
+            "total=3.5": {"12": {"k": "2.8"}, "13": {"k": "1.36"}},  # 1.44
+        }
+        chosen = pick_main_market("18", variants, "total")
+        assert chosen is not None
+        assert chosen[0] == "total=2.5"
+
+    def test_total_single_variant(self):
+        variants = {"total=167.5": {"12": {"k": "1.9"}, "13": {"k": "1.86"}}}
+        chosen = pick_main_market("225", variants, "total")
+        assert chosen is not None
+        assert chosen[0] == "total=167.5"
+
+    def test_total_balance_tie_prefers_median(self):
+        # Three lines with identical balance — picker should fall back to median.
+        variants = {
+            "total=1.5": {"12": {"k": "1.9"}, "13": {"k": "1.9"}},
+            "total=2.5": {"12": {"k": "1.9"}, "13": {"k": "1.9"}},
+            "total=3.5": {"12": {"k": "1.9"}, "13": {"k": "1.9"}},
+        }
+        chosen = pick_main_market("18", variants, "total")
+        assert chosen is not None
+        assert chosen[0] == "total=2.5"
+
+    def test_total_skips_variant_missing_outcome(self):
+        # If a line lacks "12" or "13" we cannot evaluate balance — skip it.
+        variants = {
+            "total=2.5": {"12": {"k": "1.9"}},  # missing under -> skip
+            "total=3.5": {"12": {"k": "2.1"}, "13": {"k": "1.7"}},  # ok
+        }
+        chosen = pick_main_market("18", variants, "total")
+        assert chosen is not None
+        assert chosen[0] == "total=3.5"
+
+    def test_total_no_valid_variants_returns_none(self):
+        variants = {
+            "total=2.5": {"12": {"k": "1.9"}},  # missing under
+            "total=3.5": {"13": {"k": "1.7"}},  # missing over
+        }
+        assert pick_main_market("18", variants, "total") is None
+
+    def test_total_skips_invalid_odds(self):
+        # Non-numeric "k" should not crash; skip the variant.
+        variants = {
+            "total=2.5": {"12": {"k": "not_a_number"}, "13": {"k": "1.9"}},
+            "total=3.5": {"12": {"k": "2.1"}, "13": {"k": "1.7"}},
+        }
+        chosen = pick_main_market("18", variants, "total")
+        assert chosen is not None
+        assert chosen[0] == "total=3.5"
