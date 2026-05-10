@@ -13,6 +13,7 @@ from src.providers.rainbet import (
     betby_sport_id_to_arnold,
     categorize_market,
     parse_event,
+    parse_prematch_snapshot,
     parse_variant_key,
     pick_main_market,
 )
@@ -666,3 +667,129 @@ class TestParseEvent:
         result = parse_event("event-id-123", ev_data, descs, sports_map)
         assert result is not None
         assert result.id == "event-id-123"
+
+
+class TestParsePrematchSnapshot:
+    """List[chunk] -> List[StandardEvent]."""
+
+    def test_empty_chunks_yields_no_events(self):
+        assert parse_prematch_snapshot([], {}) == []
+
+    def test_chunk_without_events_key_safe(self):
+        chunks = [{"sports": {}, "categories": {}, "tournaments": {}}]
+        assert parse_prematch_snapshot(chunks, {}) == []
+
+    def test_filters_non_match_types(self):
+        chunks = [
+            {
+                "sports": {"1": {"name": "Soccer", "slug": "soccer"}},
+                "events": {
+                    "match-evt": {
+                        "desc": {
+                            "scheduled": 1778425200,
+                            "type": "match",
+                            "sport": "1",
+                            "competitors": [{"name": "Home"}, {"name": "Away"}],
+                        },
+                        "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.5"}}}},
+                        "state": {"status": 0, "match_status": 0},
+                    },
+                    "stage-evt": {
+                        "desc": {
+                            "scheduled": 1778425200,
+                            "type": "stage",
+                            "sport": "9",
+                            "competitors": [{"name": "Tournament"}, {"name": "Winner"}],
+                        },
+                        "markets": {},
+                        "state": {"status": 0, "match_status": 0},
+                    },
+                },
+            }
+        ]
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        events = parse_prematch_snapshot(chunks, descs)
+        assert len(events) == 1
+        assert events[0].id == "match-evt"
+
+    def test_filters_live_events(self):
+        chunks = [
+            {
+                "sports": {"1": {"name": "Soccer"}},
+                "events": {
+                    "prematch": {
+                        "desc": {
+                            "scheduled": 1778425200,
+                            "type": "match",
+                            "sport": "1",
+                            "competitors": [{"name": "A"}, {"name": "B"}],
+                        },
+                        "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.5"}}}},
+                        "state": {"status": 0, "match_status": 0},
+                    },
+                    "live": {
+                        "desc": {
+                            "scheduled": 1778425200,
+                            "type": "match",
+                            "sport": "1",
+                            "competitors": [{"name": "C"}, {"name": "D"}],
+                        },
+                        "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.5"}}}},
+                        "state": {"status": 21, "match_status": 0},
+                    },
+                },
+            }
+        ]
+        descs = {"1": {"name": "1x2", "market_type": "Result"}}
+        events = parse_prematch_snapshot(chunks, descs)
+        assert len(events) == 1
+        assert events[0].id == "prematch"
+
+    def test_real_chunk_smoke(self, prematch_chunk, descriptions):
+        # End-to-end happiness — at least 50 events parsed from one real chunk.
+        events = parse_prematch_snapshot([prematch_chunk], descriptions)
+        assert len(events) >= 50, f"Expected at least 50 events, got {len(events)}"
+        # Every emitted event must have at least one market.
+        assert all(len(e.markets) >= 1 for e in events)
+        # Provider stamped on every event.
+        assert all(e.provider == "rainbet" for e in events)
+
+    def test_multiple_chunks_concatenated(self):
+        # Two separate chunks -> events from both should appear in the output.
+        chunk_a = {
+            "sports": {"1": {"name": "Soccer"}},
+            "events": {
+                "evt-a": {
+                    "desc": {
+                        "scheduled": 1778425200,
+                        "type": "match",
+                        "sport": "1",
+                        "competitors": [{"name": "A1"}, {"name": "A2"}],
+                    },
+                    "markets": {"1": {"": {"1": {"k": "2.0"}, "2": {"k": "3.0"}, "3": {"k": "2.5"}}}},
+                    "state": {"status": 0, "match_status": 0},
+                }
+            },
+        }
+        chunk_b = {
+            "sports": {"2": {"name": "Basketball"}},
+            "events": {
+                "evt-b": {
+                    "desc": {
+                        "scheduled": 1778425200,
+                        "type": "match",
+                        "sport": "2",
+                        "competitors": [{"name": "B1"}, {"name": "B2"}],
+                    },
+                    "markets": {"219": {"": {"4": {"k": "1.5"}, "5": {"k": "2.5"}}}},
+                    "state": {"status": 0, "match_status": 0},
+                }
+            },
+        }
+        descs = {
+            "1": {"name": "1x2", "market_type": "Result"},
+            "219": {"name": "Winner (incl. overtime)", "market_type": "Result"},
+        }
+        events = parse_prematch_snapshot([chunk_a, chunk_b], descs)
+        ids = {e.id for e in events}
+        assert ids == {"evt-a", "evt-b"}

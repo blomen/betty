@@ -554,3 +554,49 @@ def parse_event(
         home_team=home_team,
         away_team=away_team,
     )
+
+
+def parse_prematch_snapshot(
+    chunks: list[dict],
+    descriptions: dict,
+) -> list[StandardEvent]:
+    """Parse a complete Betby prematch snapshot into a list of StandardEvents.
+
+    A snapshot is the union of N chunk responses (currently 5 per refresh in
+    capture). Each chunk has its own ``events`` block keyed by event_id and
+    its own ``sports`` block. The ``descriptions`` catalogue is fetched
+    separately from the chunk endpoint and is the same across all chunks.
+
+    Args:
+        chunks: list of decoded chunk JSON dicts (one per
+            ``GET /api/v4/prematch/brand/{brand}/en/{version}`` response).
+        descriptions: full markets-descriptions catalogue (single dict shared
+            across all chunks).
+
+    Returns:
+        List of StandardEvents in chunk-then-dict-iteration order. Failed
+        events (live, non-match, no recognized markets, etc.) are silently
+        skipped.
+    """
+    if not chunks:
+        return []
+
+    # Aggregate the sports map across chunks (informational; passed through
+    # to parse_event for forward-compat).
+    sports_map: dict = {}
+    for chunk in chunks:
+        sports_block = chunk.get("sports") or {}
+        sports_map.update(sports_block)
+
+    events: list[StandardEvent] = []
+    for chunk in chunks:
+        events_block = chunk.get("events") or {}
+        for event_id, event_data in events_block.items():
+            try:
+                ev = parse_event(event_id, event_data, descriptions, sports_map)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("[rainbet] parse_event raised for event_id=%s", event_id)
+                continue
+            if ev is not None:
+                events.append(ev)
+    return events
