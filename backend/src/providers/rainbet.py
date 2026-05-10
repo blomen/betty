@@ -11,6 +11,7 @@ plus the browser orchestration class (RainbetRetriever) at the bottom.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -656,6 +657,16 @@ class RainbetRetriever(BrowserRetriever):
         self._snapshot_complete = False
         self._all_events: list[StandardEvent] | None = None
 
+        # Patchright lifecycle owned by this retriever (NOT via BrowserTransport).
+        # Validated empirically: BrowserTransport's launch args + locale/geo
+        # tripped Cloudflare's interactive Turnstile re-challenge loop, while
+        # the spike v4 args below clear it in ~0.7s. See discovery doc + the
+        # rainbet-spike v4 capture for the matching invocation.
+        self._pw = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
     def parse(self, data, sport: str) -> list[StandardEvent]:
         """Pure-data parsing happens via :func:`parse_prematch_snapshot`
         in :meth:`extract`; this method is unused but required by the
@@ -695,6 +706,74 @@ class RainbetRetriever(BrowserRetriever):
             events = events[:limit]
         return events
 
+    async def _ensure_browser(self) -> None:
+        """Launch patchright Chromium directly with spike-v4-validated args.
+
+        We bypass BrowserTransport because its launch profile (locale="sv-SE",
+        Stockholm geolocation, --disable-blink-features=AutomationControlled,
+        no --disable-http2/--disable-quic) caused Cloudflare's Turnstile to
+        re-challenge in a loop. Spike v4 with the args below clears Turnstile
+        in ~0.7s.
+        """
+        if self._page is not None:
+            return
+
+        from patchright.async_api import async_playwright
+
+        proxy = None
+        pu = os.environ.get("PROXY_URL")
+        if pu:
+            parsed = urlparse(pu)
+            proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+            if parsed.username:
+                proxy["username"] = parsed.username
+                proxy["password"] = parsed.password or ""
+
+        logger.info(f"[{self.provider_id}] launching patchright Chromium (proxy={bool(proxy)})")
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(
+            headless=True,
+            args=["--disable-http2", "--disable-quic"],
+            proxy=proxy,
+        )
+        self._context = await self._browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 720},
+        )
+        self._context.set_default_timeout(60_000)
+        self._page = await self._context.new_page()
+
+    async def close(self) -> None:
+        """Tear down patchright resources owned by this retriever."""
+        for attr, method in (
+            ("_page", "close"),
+            ("_context", "close"),
+            ("_browser", "close"),
+            ("_pw", "stop"),
+        ):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                fn = getattr(obj, method)
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                pass
+            setattr(self, attr, None)
+        self._turnstile_cleared = False
+
+        # Also call up to BrowserRetriever.close() in case the parent's
+        # transport got initialised by a code path we don't own.
+        try:
+            await super().close()
+        except Exception:
+            pass
+
     async def _fetch_full_snapshot(self) -> None:
         """Drive the page to capture sptpub prematch chunks + descriptions.
 
@@ -704,8 +783,8 @@ class RainbetRetriever(BrowserRetriever):
         if self._snapshot_complete:
             return
 
-        await self.transport._ensure_browser()
-        page = self.transport.page
+        await self._ensure_browser()
+        page = self._page
 
         # Captured payloads — use list for chunks (de-dup later by URL),
         # closure-mutable list-of-one for descriptions so the inner
@@ -804,7 +883,7 @@ class RainbetRetriever(BrowserRetriever):
         stealth has primed the browser fingerprint. Polls for the
         ``cf_clearance`` cookie AND iframe absence every 2s up to 60s.
         """
-        page = self.transport.page
+        page = self._page
         loop = asyncio.get_event_loop()
         deadline = loop.time() + 60.0
 
