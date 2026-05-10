@@ -539,8 +539,10 @@ Configured in `providers.yaml` under `extraction_scheduling`. Each provider runs
 | `polymarket` | 5 min | polymarket | ~200s |
 | `api_soft` | 2 min | unibet, betinia, betsson, bethard, spelklubben, vbet | ~300s |
 | `browser_soft` | 10 min | 888sport, interwetten, 10bet, tipwin | ~400-1000s |
-| `browser_antibot` | 15 min | coolbet, comeon | ~700-1700s |
+| `browser_antibot` | 25 min | comeon, rainbet | ~700-1700s |
 | `signal_international` | 5 min | stake, cloudbet, marathon | ~16-340s |
+
+**Rainbet (Betby tenant, added 2026-05-10):** lives in `browser_antibot` alongside ComeOn but uses **patchright** (Chromium with cross-origin-iframe-click patches), not Camoufox. ComeOn uses Camoufox (Imperva-protected). Rainbet uses patchright (Cloudflare Turnstile) — the two anti-bot stacks differ enough that one pattern doesn't cover both. The retriever launches its own patchright via `--disable-http2 --disable-quic --no-locale --no-geo` (NOT through `BrowserTransport`, whose default args trip Turnstile re-challenges). Spec at [docs/superpowers/specs/2026-05-10-rainbet-provider-design.md](docs/superpowers/specs/2026-05-10-rainbet-provider-design.md), discovery doc at [docs/superpowers/research/2026-05-10-rainbet-discovery.md](docs/superpowers/research/2026-05-10-rainbet-discovery.md). When debugging Turnstile-clear timeouts, the exit signal is `sptpub_hits > 0` (any response from `*.sptpub.com`), NOT cookie+iframe state — the iframe persists in the DOM after the SPA bootstraps.
 
 ### Pinnacle Match Rate (Key Health Metric)
 
