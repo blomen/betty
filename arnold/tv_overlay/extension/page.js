@@ -682,32 +682,29 @@
     // price-on-line text; showLastValue=false hides the right-axis price
     // tag. Both needed to remove all price labels.
     const fadedColor = _hexToRgba(winColor, 0.5);
+    // 10 override keys that previously paired with these were stripped — TV's
+    // current FRVP study schema doesn't recognize *.showLastValue,
+    // showStudyLastValue, showStudyArguments, showStudyTitle. Kept emitting
+    // them spammed `Chart.Model.StudyPropertiesOverrider:Study does not have
+    // property ...` ~30x/min, drowning every other console message.
     const overrides = {
       'graphics.horizlines.pocLines.visible': true,
       'graphics.horizlines.pocLines.color': winColor,
       'graphics.horizlines.pocLines.showPrice': false,
-      'graphics.horizlines.pocLines.showLastValue': false,
       'graphics.horizlines.pocLines.width': 1,
       'graphics.horizlines.vahLines.visible': true,
       'graphics.horizlines.vahLines.color': fadedColor,
       'graphics.horizlines.vahLines.showPrice': false,
-      'graphics.horizlines.vahLines.showLastValue': false,
       'graphics.horizlines.vahLines.width': 1,
       'graphics.horizlines.valLines.visible': true,
       'graphics.horizlines.valLines.color': fadedColor,
       'graphics.horizlines.valLines.showPrice': false,
-      'graphics.horizlines.valLines.showLastValue': false,
       'graphics.horizlines.valLines.width': 1,
-      // Kill the developing* plot labels too (display: 0 = price-scale only,
+      // Kill the developing* plot labels (display: 0 = price-scale only,
       // no last-value bubble on right axis).
       'styles.developingPoc.display': 0,
       'styles.developingVAHigh.display': 0,
       'styles.developingVALow.display': 0,
-      'styles.developingPoc.showLastValue': false,
-      'styles.developingVAHigh.showLastValue': false,
-      'styles.developingVALow.showLastValue': false,
-      showLastValue: false,
-      showStudyLastValue: false,
       // Histogram visible but compressed.
       'graphics.hhists.histBars2.visible': true,
       'graphics.hhists.histBars2.colors': [winColor, winColor],
@@ -718,10 +715,6 @@
       'graphics.hhists.histBarsVA.percentWidth': 8,
       'graphics.hhists.histBarsVA.transparencies': [60, 60],
       'graphics.polygons.histBoxBg.transparency': 100,
-      // Hide the FRVP from the chart's status line / arguments header
-      // so the top strip stays clean.
-      showStudyArguments: false,
-      showStudyTitle: false,
     };
     const existingId = drawnStudies.get(studyName);
     if (existingId != null && typeof chart.getStudyById === 'function') {
