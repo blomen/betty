@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from src.providers.rainbet import (
+    RainbetRetriever,
     betby_sport_id_to_arnold,
     categorize_market,
     parse_event,
@@ -793,3 +794,55 @@ class TestParsePrematchSnapshot:
         events = parse_prematch_snapshot([chunk_a, chunk_b], descs)
         ids = {e.id for e in events}
         assert ids == {"evt-a", "evt-b"}
+
+
+class TestRainbetRetrieverInit:
+    """Construction-time validation for the browser orchestrator class.
+
+    The browser-driven extract() path needs a real Chromium and is
+    covered by Task 15's production smoke test, not unit tests.
+    These tests just confirm the class wires up correctly and
+    enforces its required config.
+    """
+
+    def test_init_with_minimal_config(self):
+        retriever = RainbetRetriever({"id": "rainbet", "brand_id": "2374656571012681728"})
+        assert retriever.provider_id == "rainbet"
+        assert retriever._brand_id == "2374656571012681728"
+        # Defaults applied when caller doesn't override.
+        assert retriever._site_url == "https://rainbet.com/sportsbook"
+        assert retriever._sport_timeout == 600
+        # Cache state starts empty so the first extract() triggers a fetch.
+        assert retriever._all_events is None
+        assert retriever._snapshot_chunks == []
+        assert retriever._descriptions is None
+        assert retriever._snapshot_complete is False
+        assert retriever._turnstile_cleared is False
+
+    def test_init_overrides_site_url_and_timeout(self):
+        retriever = RainbetRetriever(
+            {
+                "id": "rainbet",
+                "brand_id": "999",
+                "site_url": "https://example.test/sportsbook",
+                "sport_timeout": 300,
+            }
+        )
+        assert retriever._site_url == "https://example.test/sportsbook"
+        assert retriever._sport_timeout == 300
+
+    def test_init_rejects_missing_brand_id(self):
+        with pytest.raises(ValueError, match="brand_id"):
+            RainbetRetriever({"id": "rainbet"})
+
+    def test_get_sport_url_returns_site_url(self):
+        retriever = RainbetRetriever({"id": "rainbet", "brand_id": "X"})
+        # Same URL regardless of sport — Betby snapshot is sport-agnostic.
+        assert retriever._get_sport_url("football") == retriever._site_url
+        assert retriever._get_sport_url("basketball") == retriever._site_url
+
+    def test_parse_returns_empty_list(self):
+        # The Retriever.parse() ABC method is unused for Rainbet (extract()
+        # owns the parsing) but must still return a list per the contract.
+        retriever = RainbetRetriever({"id": "rainbet", "brand_id": "X"})
+        assert retriever.parse({}, "football") == []

@@ -4,13 +4,17 @@ See:
 - docs/superpowers/specs/2026-05-10-rainbet-provider-design.md  (design)
 - docs/superpowers/research/2026-05-10-rainbet-discovery.md     (protocol)
 
-The browser orchestration class (RainbetRetriever) is added in a separate task.
-This file currently only contains the pure parser functions.
+Contains the pure parser functions (parse_event, parse_prematch_snapshot, ...)
+plus the browser orchestration class (RainbetRetriever) at the bottom.
 """
 
+import asyncio
+import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
+from ..core.browser_retriever import BrowserRetriever
 from ..core.retriever import StandardEvent
 from ..matching.normalizer import normalize_team_name
 
@@ -600,3 +604,236 @@ def parse_prematch_snapshot(
             if ev is not None:
                 events.append(ev)
     return events
+
+
+class RainbetRetriever(BrowserRetriever):
+    """Rainbet (Betby-backed) sportsbook extractor.
+
+    Drives ``self.transport.page`` (patchright Chromium provided by
+    :class:`BrowserTransport`). The bt-renderer SPA mounts inside the page
+    after we clear Cloudflare Turnstile and makes its own HTTP calls to
+    Betby's data backend (``*.sptpub.com``); we capture the listing
+    responses and parse them via :func:`parse_prematch_snapshot`.
+
+    Browser lifecycle is owned by :class:`BrowserTransport`: launched on
+    first ``_ensure_browser()``, cleaned up by ``transport.close()``
+    (called by the orchestrator at the end of a run via the inherited
+    :meth:`BrowserRetriever.close`).
+
+    :meth:`extract` is called once per supported sport in a run. We:
+
+    - On first call: navigate to ``rainbet/sportsbook``, clear Turnstile,
+      capture all sptpub.com responses while the SPA bootstraps for
+      ~30 sec.
+    - On all calls (first and subsequent): filter the captured snapshot
+      to events matching ``sport``, return ``StandardEvent[]``.
+
+    The full prematch snapshot contains all sports — we don't re-fetch
+    per sport. Parser runs once per run, filter many times.
+    """
+
+    def __init__(
+        self,
+        config: dict,
+        transport=None,
+        circuit_breaker=None,
+        rate_limit_config=None,
+    ):
+        super().__init__(config, transport=transport)
+
+        self._brand_id = config.get("brand_id")
+        if not self._brand_id:
+            raise ValueError(
+                f"[{self.provider_id}] config missing required 'brand_id' (Betby brand id used by sptpub backend)"
+            )
+        self._site_url = config.get("site_url", "https://rainbet.com/sportsbook")
+        self._sport_timeout = config.get("sport_timeout", 600)
+
+        # Cached state across extract() calls within a single run.
+        self._turnstile_cleared = False
+        self._snapshot_chunks: list[dict] = []
+        self._descriptions: dict | None = None
+        self._snapshot_complete = False
+        self._all_events: list[StandardEvent] | None = None
+
+    def parse(self, data, sport: str) -> list[StandardEvent]:
+        """Pure-data parsing happens via :func:`parse_prematch_snapshot`
+        in :meth:`extract`; this method is unused but required by the
+        :class:`Retriever` ABC.
+        """
+        return []
+
+    def _get_sport_url(self, sport: str) -> str:
+        """Return the single Betby SPA URL we navigate to.
+
+        We don't navigate per-sport (the prematch snapshot covers all
+        sports), but the orchestrator's health-check code calls this
+        method so we return the configured site URL.
+        """
+        return self._site_url
+
+    async def extract(self, sport: str, limit: int = 0, **kwargs) -> list[StandardEvent]:
+        """Extract prematch events for ``sport`` from Betby's snapshot.
+
+        Fetches the full snapshot once per run (idempotent) and filters
+        the cached parsed events by sport on each call.
+        """
+        if self._all_events is None:
+            await self._fetch_full_snapshot()
+            if not self._snapshot_chunks:
+                logger.warning(f"[{self.provider_id}] no prematch chunks captured — returning empty event list")
+                self._all_events = []
+            else:
+                self._all_events = parse_prematch_snapshot(self._snapshot_chunks, self._descriptions or {})
+                logger.info(
+                    f"[{self.provider_id}] parsed {len(self._all_events)} "
+                    f"events from snapshot ({len(self._snapshot_chunks)} chunks)"
+                )
+
+        events = [e for e in self._all_events if e.sport == sport]
+        if limit and len(events) > limit:
+            events = events[:limit]
+        return events
+
+    async def _fetch_full_snapshot(self) -> None:
+        """Drive the page to capture sptpub prematch chunks + descriptions.
+
+        Idempotent within a run: subsequent calls short-circuit once
+        ``_snapshot_complete`` is True.
+        """
+        if self._snapshot_complete:
+            return
+
+        await self.transport._ensure_browser()
+        page = self.transport.page
+
+        # Captured payloads — use list for chunks (de-dup later by URL),
+        # closure-mutable list-of-one for descriptions so the inner
+        # handler can rebind without `nonlocal` shenanigans.
+        captured: list[tuple[str, dict]] = []
+        descriptions_holder: list[dict | None] = [None]
+
+        async def grab(resp):
+            try:
+                host = urlparse(resp.url).hostname or ""
+                if "sptpub.com" not in host:
+                    return
+                content_type = ""
+                try:
+                    headers = resp.headers
+                    if isinstance(headers, dict):
+                        content_type = headers.get("content-type") or headers.get("Content-Type") or ""
+                except Exception:
+                    pass
+                if content_type and "json" not in content_type.lower():
+                    return
+                try:
+                    body = await resp.body()
+                except Exception:
+                    return
+                try:
+                    blob = json.loads(body)
+                except (ValueError, TypeError):
+                    return
+                if not isinstance(blob, dict):
+                    return
+
+                url = resp.url
+                if "/api/v3/descriptions/brand/" in url and "/markets/" in url:
+                    descriptions_holder[0] = blob
+                    return
+                if "/api/v4/prematch/brand/" in url:
+                    captured.append((url, blob))
+            except Exception:
+                # Handler must never raise — Playwright will fail the request
+                # callback chain if it does.
+                logger.debug(f"[{self.provider_id}] grab() handler error", exc_info=True)
+
+        def handler(resp):
+            asyncio.create_task(grab(resp))
+
+        page.on("response", handler)
+
+        try:
+            # Navigate. Patchright passes most CF on its own; Turnstile
+            # widget then needs a synthetic click.
+            await page.goto(self._site_url, wait_until="domcontentloaded", timeout=60_000)
+            await self._clear_turnstile()
+
+            # Let the SPA bootstrap and fetch the prematch manifest +
+            # version chunks. Poll every 2s up to 30s, exit early once
+            # we've got both `snapshot_complete: true` AND descriptions.
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 30.0
+            while loop.time() < deadline:
+                await page.wait_for_timeout(2000)
+                has_complete = any(blob.get("snapshot_complete") is True for _u, blob in captured)
+                if has_complete and descriptions_holder[0] is not None:
+                    break
+        finally:
+            try:
+                page.remove_listener("response", handler)
+            except Exception:
+                pass
+
+        # De-dup captured chunks by URL and drop the bare manifest
+        # (no `events` block) — Section 3 of the discovery doc.
+        seen_urls: set[str] = set()
+        for url, blob in captured:
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            if blob.get("events"):
+                self._snapshot_chunks.append(blob)
+
+        self._descriptions = descriptions_holder[0]
+        self._snapshot_complete = bool(self._snapshot_chunks) and self._descriptions is not None
+
+        logger.info(
+            f"[{self.provider_id}] snapshot fetched: "
+            f"{len(self._snapshot_chunks)} chunks, "
+            f"descriptions={'yes' if self._descriptions else 'no'}, "
+            f"complete={self._snapshot_complete}"
+        )
+
+    async def _clear_turnstile(self) -> None:
+        """Click the Cloudflare Turnstile widget until it clears.
+
+        The widget renders inside an iframe at a stable on-page position;
+        a single click on the checkbox is sufficient when patchright's
+        stealth has primed the browser fingerprint. Polls for the
+        ``cf_clearance`` cookie AND iframe absence every 2s up to 60s.
+        """
+        page = self.transport.page
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + 60.0
+
+        while loop.time() < deadline:
+            # Fast-path: if cleared on the first poll (patchright bypassed
+            # the widget entirely), exit without clicking.
+            try:
+                cookies = await page.context.cookies()
+                has_cookie = any(c.get("name") == "cf_clearance" for c in cookies)
+            except Exception:
+                has_cookie = False
+            try:
+                ts_iframe = await page.query_selector(
+                    "iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']"
+                )
+                widget_present = ts_iframe is not None
+            except Exception:
+                widget_present = False
+
+            if has_cookie and not widget_present:
+                if not self._turnstile_cleared:
+                    logger.info(f"[{self.provider_id}] Turnstile cleared")
+                self._turnstile_cleared = True
+                return
+
+            try:
+                await page.mouse.click(210, 290)
+            except Exception:
+                pass
+            await page.wait_for_timeout(2000)
+
+        raise RuntimeError(f"[{self.provider_id}] Turnstile not cleared within 60s")
