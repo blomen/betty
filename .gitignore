@@ -68,6 +68,7 @@ node_modules/
 !/scripts/container-watchdog.sh
 !/scripts/audit_fresh_profile.py
 !/scripts/deploy-busy.sh
+!/scripts/discover_rainbet.py
 
 # info docs
 /_ALL_RAW.md
