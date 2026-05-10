@@ -3,7 +3,10 @@ import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 
 // Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
-const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
+// `rainbet` is signal-only (Betby tenant, no play workflow yet) — included so its value-vs-Pinnacle and
+// arb-vs-other-unlimited opportunities surface in the value-bets section. The login chip will show ✗
+// (no mirror workflow) and the cluster card will render with an empty stats row.
+const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi', 'rainbet'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
 // Below this, no meaningful bet can be placed after odds rounding and
@@ -1690,7 +1693,7 @@ export default function PlayPage() {
           )
         })()}
         {clusterIds.length === 0 && batch.length > 0 && (
-          <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet).</div>
+          <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet / Kalshi / Rainbet).</div>
         )}
 
         {clusterIds.map(clusterId => {
