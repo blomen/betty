@@ -1283,13 +1283,47 @@ class TopstepXBrokerAdapter:
                             target_stop = _round_tick(price - intended_pts)
                         else:
                             target_stop = _round_tick(price + intended_pts)
+                        divergence_pts = abs(target_stop - cur_stop)
+                        # Divergence guard: bracket discovery picks "newest
+                        # STOP_MARKET on contract+side", which after a halt /
+                        # SIZE_MISMATCH / FLIP_ON_REVERSAL can latch onto a
+                        # stale orphan stop from the prior trade. The orphan's
+                        # stopPrice has no relation to this entry's intended
+                        # distance, so the trade runs with a wildly wrong stop
+                        # (e.g. trades 635-638 on 2026-05-11 had 24-35 tick
+                        # requests but 11-17 tick effective stops). The
+                        # broker-side bracket is fill-anchored, so under
+                        # normal operation |target - cur| ≤ 1 tick. Anything
+                        # >5 ticks is structurally an orphan pickup, not
+                        # rounding/slippage — halt+flatten before this trade
+                        # can pollute the training pool.
+                        DIVERGENCE_HALT_TICKS = 5
+                        if divergence_pts > DIVERGENCE_HALT_TICKS * 0.25:
+                            log.error(
+                                "Bracket-stop divergence: broker_stop=%.2f expected=%.2f "
+                                "(diff=%.2f pts, %d-tick request, fill=%.2f) — "
+                                "halting+flattening to prevent orphan-stop contamination",
+                                cur_stop,
+                                target_stop,
+                                divergence_pts,
+                                int(intended_ticks),
+                                price,
+                            )
+                            try:
+                                import asyncio as _a
+
+                                _a.create_task(self.flatten("bracket_stop_diverged"))
+                            except Exception:
+                                log.exception("flatten on bracket-stop divergence failed")
+                            self._halt("bracket_stop_diverged")
+                            return
                         # Only move if the difference materially changes risk
                         # (>= 2 ticks). Don't relax — modify_stop enforces
                         # only-tighten direction. So if slip went IN our favor
                         # (better fill), stop will move closer; if slip went
                         # AGAINST us, modify_stop will refuse to widen and
                         # we'll log a warning so the cost is visible.
-                        if abs(target_stop - cur_stop) >= 0.5:
+                        if divergence_pts >= 0.5:
                             log.info(
                                 "Re-anchoring stop after fill: cur=%.2f → target=%.2f "
                                 "(slip=%.2f pts, intended=%d ticks from fill %.2f)",
