@@ -379,6 +379,183 @@ def debug_broker(request: Request):
     return out
 
 
+@router.get("/_debug-obs")
+def debug_obs(request: Request):
+    """Diagnostic-only: decode the latest captured observation vector and
+    return key segments with human-readable values + sanity flags.
+
+    Confirms which of the 311 dims are actually populated (vs all-zero
+    indicating a feature pipeline gap). Currently surfaces TPO (38 dims,
+    3 sessions × 12 + 2 migrations), macro (11 dims), session_memory
+    (6 dims), and zone_features (4 dims). Indexes derived from
+    BASE_OBSERVATION_SCHEMA + AUGMENTED_SCHEMA.
+    """
+    import base64
+
+    import numpy as np
+
+    from ...db.models import StockSignal, get_session
+
+    db = get_session()
+    try:
+        sig = (
+            db.query(StockSignal)
+            .filter(StockSignal.observation_b64.is_not(None))
+            .order_by(StockSignal.id.desc())
+            .first()
+        )
+        if sig is None:
+            return {"error": "no signal with observation_b64"}
+        raw = base64.b64decode(sig.observation_b64)
+        obs = np.frombuffer(raw, dtype=np.float32)
+    finally:
+        db.close()
+
+    out = {
+        "signal_id": sig.id,
+        "signal_ts": sig.ts.isoformat() if sig.ts else None,
+        "signal_action": sig.action,
+        "observation_dim_actual": int(obs.size),
+        "observation_dim_db": sig.observation_dim,
+    }
+
+    # Schema offsets — manually derived from BASE_OBSERVATION_SCHEMA. Order:
+    # level_composition(31) + orderflow(21) + structure(64) + tpo(38) +
+    # candles(15) + zone_features(4) + zone_confluence(5) + macro(11) +
+    # exchange_stats(5) + setup_flags(14) + amt_static(20) + amt_dynamics(20) +
+    # micro(20) + approach_dir(1) + execution(7) + session_cvd(2) + hvn_lvn(2) +
+    # big_trades_abs(2) + of_alignment(3) + reaction(8) + patterns(5) +
+    # zone_quality(1) + zone_memory(3) + prev_zone(5)
+    # = 311 base. Augmented: + gbt_forecast(8) + position_state(8) + session_memory(6)
+    SEG = {
+        "level_composition": (0, 31),
+        "orderflow": (31, 52),
+        "structure": (52, 116),
+        "tpo": (116, 154),
+        "candles": (154, 169),
+        "zone_features": (169, 173),
+        "zone_confluence": (173, 178),
+        "macro": (178, 189),
+        "exchange_stats": (189, 194),
+        "setup_flags": (194, 208),
+        "amt_static": (208, 228),
+        "amt_dynamics": (228, 248),
+        "micro": (248, 268),
+        "approach_dir": (268, 269),
+        "execution": (269, 276),
+        "session_cvd": (276, 278),
+        "hvn_lvn": (278, 280),
+        "big_trades_abs": (280, 282),
+        "of_alignment": (282, 285),
+        "reaction": (285, 293),
+        "patterns": (293, 298),
+        "zone_quality": (298, 299),
+        "zone_memory": (299, 302),
+        "prev_zone": (302, 307),
+        "gbt_forecast": (307, 315),
+        "position_state": (315, 323),
+        "session_memory": (323, 329),
+    }
+
+    def _slice(name):
+        if name not in SEG:
+            return None
+        lo, hi = SEG[name]
+        if hi > obs.size:
+            return None
+        return obs[lo:hi].tolist()
+
+    # Per-session TPO layout: 12 dims each for Tokyo / London / NY + 2 migrations
+    tpo_raw = _slice("tpo")
+    tpo_detail = None
+    if tpo_raw and len(tpo_raw) == 38:
+        sess_names = ["tokyo", "london", "ny"]
+        sub_names = [
+            "price_vs_poc",
+            "price_vs_vah",
+            "price_vs_val",
+            "shape",
+            "ib_range",
+            "price_vs_ib_mid",
+            "poor_extreme",
+            "price_position_in_va",
+            "rotation_factor",
+            "opening_type",
+            "opening_direction",
+            "excess_signal",
+        ]
+        tpo_detail = {}
+        for i, sess in enumerate(sess_names):
+            seg = tpo_raw[i * 12 : (i + 1) * 12]
+            tpo_detail[sess] = {n: round(float(v), 4) for n, v in zip(sub_names, seg)}
+        tpo_detail["poc_migration_tokyo_london"] = round(float(tpo_raw[36]), 4)
+        tpo_detail["poc_migration_london_ny"] = round(float(tpo_raw[37]), 4)
+        # Sanity flags
+        tpo_detail["_all_zero"] = all(abs(v) < 1e-6 for v in tpo_raw)
+        tpo_detail["_nonzero_count"] = sum(1 for v in tpo_raw if abs(v) > 1e-6)
+
+    # Macro segment with named dims (per VIX/DXY/yields/news layout)
+    macro_raw = _slice("macro")
+    macro_detail = None
+    if macro_raw and len(macro_raw) == 11:
+        macro_detail = {
+            "values": [round(float(v), 4) for v in macro_raw],
+            "_all_zero": all(abs(v) < 1e-6 for v in macro_raw),
+            "_nonzero_count": sum(1 for v in macro_raw if abs(v) > 1e-6),
+        }
+
+    # Session memory: rolling_5 win_rate + avg_R + DD_from_peak + consec_loss + trade_count + R_vol
+    sm_raw = _slice("session_memory")
+    sm_detail = None
+    if sm_raw and len(sm_raw) == 6:
+        sm_detail = {
+            "rolling_5_win_rate": round(float(sm_raw[0]), 4),
+            "rolling_5_avg_R": round(float(sm_raw[1]), 4),
+            "DD_from_peak": round(float(sm_raw[2]), 4),
+            "consec_loss": round(float(sm_raw[3]), 4),
+            "trade_count": round(float(sm_raw[4]), 4),
+            "R_vol": round(float(sm_raw[5]), 4),
+            "_all_zero": all(abs(v) < 1e-6 for v in sm_raw),
+        }
+
+    # Zone features: hierarchy + member_count + strength + width
+    zf_raw = _slice("zone_features")
+    zf_detail = None
+    if zf_raw and len(zf_raw) == 4:
+        zf_detail = {
+            "hierarchy_score": round(float(zf_raw[0]), 4),
+            "member_count_norm": round(float(zf_raw[1]), 4),
+            "strength_norm": round(float(zf_raw[2]), 4),
+            "width_ticks_norm": round(float(zf_raw[3]), 4),
+        }
+
+    # GBT forecast: prob_cont + prob_rev + confidence + ...
+    gbt_raw = _slice("gbt_forecast")
+    gbt_detail = None
+    if gbt_raw and len(gbt_raw) == 8:
+        gbt_detail = {
+            "prob_cont": round(float(gbt_raw[0]), 4),
+            "prob_rev": round(float(gbt_raw[1]), 4),
+            "confidence": round(float(gbt_raw[2]), 4),
+            "expected_best_r": round(float(gbt_raw[3]), 4),
+            "expected_worst_r": round(float(gbt_raw[4]), 4),
+            "prob_breakeven": round(float(gbt_raw[5]), 4),
+            "predicted_levels": round(float(gbt_raw[6]), 4),
+            "predicted_stop": round(float(gbt_raw[7]), 4),
+        }
+
+    out["tpo"] = tpo_detail
+    out["macro"] = macro_detail
+    out["session_memory"] = sm_detail
+    out["zone_features"] = zf_detail
+    out["gbt_forecast"] = gbt_detail
+
+    # Whole-vector sanity check — count of non-zero dims
+    out["_total_nonzero_dims"] = int((obs != 0).sum())
+    out["_total_dims"] = int(obs.size)
+    return out
+
+
 @router.post("/_debug-test-signal")
 async def debug_test_signal(request: Request):
     """Diagnostic-only: invoke broker.on_signal with a synthetic enter_long
@@ -396,16 +573,30 @@ async def debug_test_signal(request: Request):
             "reason": "not flat — refusing to test on live position",
             "tracker_side": adapter.tracker.side,
         }
-    # Synthesize a small enter_long signal at the last-tick mid price.
+    # Synthesize a small enter_long signal. Try last-tick mid price; fall
+    # back to a hardcoded "near-market" price so the test runs even when
+    # dashboard._state["ticks"] hasn't populated yet (fresh container).
+    last_price = 0.0
     try:
         from src.stocks import dashboard as _ds
 
         last_tick = (_ds._state.get("ticks") or [None])[-1]
         last_price = float(last_tick["price"]) if last_tick else 0.0
     except Exception:
-        last_price = 0.0
+        pass
     if last_price <= 0:
-        return {"skipped": True, "reason": "no last tick"}
+        # Fallback: query a fresh quote from TopstepX directly.
+        try:
+            quote = await rt.client._post(
+                "/api/MarketData/getQuote",
+                {"contractId": rt.client._config.contract_id},
+            )
+            last_price = float(quote.get("lastPrice") or quote.get("bestBid") or 0)
+        except Exception:
+            pass
+    if last_price <= 0:
+        # Last resort: hardcoded current-week NQ midpoint.
+        last_price = 29450.0
     synth = {
         "action": "enter_long",
         "price": last_price,
