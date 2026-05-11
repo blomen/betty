@@ -300,7 +300,13 @@ class OverlayBroadcaster:
             # floor, the userscript falls back to 1-point form (since
             # endEpoch <= anchor) and TV auto-extends the long_position
             # shape rightward forever.
-            effective_end = close_time if close_time else now
+            # Open trade: extend the widget 1 hour into the future so the
+            # active position visually reads as "still running" and TV's
+            # auto-fit zoom keeps the right edge near the live candle. When
+            # the trade closes, the close_time branch wins and x2 snaps
+            # exactly to the exit fill.
+            OPEN_TRADE_FUTURE_BUFFER_S = 3600
+            effective_end = close_time if close_time else (now + OPEN_TRADE_FUTURE_BUFFER_S)
             if close_time is not None and effective_end <= entry_time:
                 effective_end = entry_time + 60
             # No artificial duration cap — TV's long_position widget
@@ -526,7 +532,7 @@ class OverlayBroadcaster:
         # trades get end_time = closed_at and the buffer doesn't apply.
         # Quantized to the minute so we don't spam an upsert every loop tick.
         _now_min = int(datetime.now(tz=timezone.utc).timestamp() // 60) * 60
-        OPEN_TRADE_FUTURE_BUFFER_S = 300
+        OPEN_TRADE_FUTURE_BUFFER_S = 3600
         end_time = _now_min + OPEN_TRADE_FUTURE_BUFFER_S
         payload: dict[str, Any] = {
             "key": "pos:current",

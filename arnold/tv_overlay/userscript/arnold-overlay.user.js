@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.0
-// @description  Object-tree folders (Arnold • Zones / Swings / TPO / FVG / Order Blocks / Active Trade / Closed Trades) so families collapse with one click. TPO POC/VAH/VAL/IBH/IBL now render as chart-spanning purple horizontal lines. 0.9.1 visual / Phase-1 mechanics preserved.
+// @version      0.10.1
+// @description  v0.10.0 base + (a) low-strength zones now keep their per-member brush lines even when the rectangle is hidden — audit caught single-dim zones vanishing entirely, (b) active-trade widget extends 1h into the future for clearer "still running" cue.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -177,43 +177,43 @@
       transparency = 50;
     }
 
-    // Hide low-strength single-family zones — see page.js for rationale.
-    // Kept in sync between extension and userscript so the chart looks
-    // identical regardless of which renderer is active. Server still emits
-    // every zone; the DQN observation is unaffected. The safeRemove +
-    // safeRemovePrefix at the top of drawZone already cleared any prior
-    // shape for this key, so we just return without redrawing.
+    // Low-strength filter only hides the zone RECTANGLE — the per-member
+    // brush lines below still render so the user sees every dim that
+    // contributed to the model observation. Previously this branch
+    // `return false`-d out of drawZone entirely, dropping the brush
+    // lines too; user audit 2026-05-12 caught that single-family zones
+    // (each a legitimate dim) were vanishing from the chart.
     const ZONE_PAINT_MIN_STRENGTH = 0.5;
-    if (!hasSwing && Number(p.strength) < ZONE_PAINT_MIN_STRENGTH) {
-      return false;
-    }
+    const skipRectangle = !hasSwing && Number(p.strength) < ZONE_PAINT_MIN_STRENGTH;
 
-    try {
-      const id = chart.createMultipointShape(
-        [
-          { time: tStart, price: p.top },
-          { time: tEnd,   price: p.bottom },
-        ],
-        {
-          shape: 'rectangle',
-          text: `${p.kind} ×${p.members}`,
-          overrides: {
-            color: color,
-            backgroundColor: color,
-            transparency: transparency,
-            showLabel: true,
-          },
+    if (!skipRectangle) {
+      try {
+        const id = chart.createMultipointShape(
+          [
+            { time: tStart, price: p.top },
+            { time: tEnd,   price: p.bottom },
+          ],
+          {
+            shape: 'rectangle',
+            text: `${p.kind} ×${p.members}`,
+            overrides: {
+              color: color,
+              backgroundColor: color,
+              transparency: transparency,
+              showLabel: true,
+            },
+          }
+        );
+        if (id != null) {
+          drawn.set(p.key, id);
+          _ensureGroupAndAdd('Arnold • Zones', id);
+        } else {
+          return false;
         }
-      );
-      if (id != null) {
-        drawn.set(p.key, id);
-        _ensureGroupAndAdd('Arnold • Zones', id);
-      } else {
+      } catch (e) {
+        sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
         return false;
       }
-    } catch (e) {
-      sendError(`drawZone failed: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
     }
 
     // Per-member thin lines. Each member draws a 1px brush stroke as a
