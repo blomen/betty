@@ -89,6 +89,49 @@ async def reconcile_tracker_from_broker(
     # Tracker was populated from broker — matched is True regardless of disk state
     result.matched = True
 
+    # Safety: if we adopted a position but couldn't find a matching protective
+    # stop in the book, the live trade is naked. Sweep ALL STOP_MARKET orders
+    # on this contract (a wrong-direction orphan stop from a previous trade
+    # may still be sitting there — it isn't protecting THIS position and
+    # could fire as a stop-add later) and halt the adapter so the user
+    # explicitly decides to flatten or place a fresh stop before any further
+    # entries. Without this, the broker silently runs an unprotected
+    # position; the chart widget shows the 4-tick fallback because
+    # tracker.stop_price stayed at 0. Documented in
+    # project_recovery_naked_position_2026_05_12.md.
+    if stop_order_id is None:
+        try:
+            orders_to_sweep = await client.search_open_orders()
+        except Exception:
+            logger.warning("reconcile: orphan-sweep search failed", exc_info=True)
+            orders_to_sweep = []
+        swept = 0
+        for o in orders_to_sweep:
+            if o.get("contractId") != contract_id:
+                continue
+            if int(o.get("type") or 0) != 4:  # STOP_MARKET only
+                continue
+            oid = o.get("id") or o.get("orderId")
+            if oid is None:
+                continue
+            try:
+                await client.cancel_order(int(oid))
+                swept += 1
+            except Exception:
+                logger.warning("reconcile: failed to cancel orphan stop %s", oid, exc_info=True)
+        logger.error(
+            "reconcile: adopted position (side=%s avg=%.2f size=%d) with NO matching "
+            "stop — swept %d orphan stops, halting adapter for manual review",
+            side,
+            avg_price,
+            size,
+            swept,
+        )
+        try:
+            adapter._halt("recovery_no_stop")
+        except Exception:
+            logger.warning("reconcile: _halt call failed", exc_info=True)
+
     # Reconcile against disk
     if pending:
         disk_size = int(pending.get("size") or 0)
@@ -97,7 +140,12 @@ async def reconcile_tracker_from_broker(
         if (disk_size != size) or (disk_side != side) or abs(disk_entry - avg_price) > 0.5:
             logger.warning(
                 "reconcile: broker/disk divergence — broker=(side=%s, size=%d, avg=%.2f) disk=(side=%s, size=%d, avg=%.2f); broker wins",
-                side, size, avg_price, disk_side, disk_size, disk_entry,
+                side,
+                size,
+                avg_price,
+                disk_side,
+                disk_size,
+                disk_entry,
             )
             result.divergence_logged = True
     else:
@@ -105,6 +153,10 @@ async def reconcile_tracker_from_broker(
 
     logger.info(
         "reconcile: tracker populated from broker — side=%s entry=%.2f size=%d stop=%.2f stop_order_id=%s",
-        side, avg_price, size, stop_price, stop_order_id,
+        side,
+        avg_price,
+        size,
+        stop_price,
+        stop_order_id,
     )
     return result
