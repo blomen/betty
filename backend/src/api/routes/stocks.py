@@ -608,6 +608,16 @@ def ingest_broker_trade(body: BrokerTradeIn, db: Session = Depends(get_db)):
         if existing:
             return {"id": existing[0], "deduped": True}
 
+    # Auto-bind to the active profile so the GET filter sees it. Without
+    # this every inserted row has profile_id=NULL and disappears from the
+    # Stats UI / ingest-live-trades query as soon as a profile has its
+    # topstepx_account_id set (which filters to profile-owned trades only).
+    # Discovered 2026-05-12 during the broker_trades rebuild from TopstepX.
+    from ...db.models import Profile
+
+    active_profile = db.query(Profile).filter(Profile.is_active).first()
+    profile_id = active_profile.id if active_profile is not None else None
+
     row = BrokerTrade(
         ts=ts,
         session_date=body.session_date,
@@ -633,6 +643,7 @@ def ingest_broker_trade(body: BrokerTradeIn, db: Session = Depends(get_db)):
         signal_rev_p=body.signal_rev_p,
         orderflow_score=getattr(body, "orderflow_score", None),
         closed_at=closed_at,
+        profile_id=profile_id,
     )
     db.add(row)
     db.commit()
