@@ -188,16 +188,26 @@ class TopstepXClient:
         stop to the ENTRY FILL PRICE on the broker side — slippage is fully
         absorbed and the R-ratio is preserved.
 
-        ticks is positive distance from fill (direction implied by `action`).
-        type=4 (Stop) is the stop-loss bracket order type. Take-profit
-        brackets are intentionally omitted — TP behavior remains exit-via-
-        FLIP/STOP/manual-flatten per the current architecture.
+        TopstepX uses SIGNED ticks for the bracket: negative for the stop
+        side of a long (stop is below entry), positive for the stop side
+        of a short (stop is above entry). The ticks field is an offset from
+        fill, with sign indicating direction. Empirically verified — passing
+        positive ticks for a Buy entry returns errorCode=2 "Ticks should be
+        less than zero when longing." Also requires the ProjectX account to
+        be in "Auto OCO Brackets" mode — "Position Brackets" mode rejects
+        with "Brackets cannot be used with Position Brackets". Type=4 =
+        STOP_MARKET. Take-profit bracket intentionally omitted — TP
+        behavior remains exit-via-FLIP/STOP/manual-flatten.
 
         Returns the standard Order/place response: {orderId, success,
         errorCode, errorMessage}. The bracketed stop becomes a separate
         order on the broker side; its orderId must be discovered post-place
         via /api/Order/searchOpen.
         """
+        # Direction-signed stop ticks. action="Buy" → long → stop below
+        # entry → ticks negative. action="Sell" → short → stop above → +.
+        is_buy = str(action).lower() == "buy"
+        signed_ticks = -int(abs(stop_ticks)) if is_buy else int(abs(stop_ticks))
         payload = {
             "accountId": self._account_id,
             "contractId": self._config.contract_id,
@@ -206,17 +216,17 @@ class TopstepXClient:
             "size": quantity,
             "customTag": self._new_order_tag(),
             "stopLossBracket": {
-                "ticks": int(stop_ticks),
+                "ticks": signed_ticks,
                 "type": ORDER_TYPE_STOP_MARKET,
             },
         }
         result = await self._post("/api/Order/place", payload)
         log.info(
-            "Market+stop-bracket placed: %s %d %s stop_ticks=%d → %s",
+            "Market+stop-bracket placed: %s %d %s ticks=%d → %s",
             action,
             quantity,
             self._config.contract_id,
-            stop_ticks,
+            signed_ticks,
             result,
         )
         return result
