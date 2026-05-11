@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.8.2
-// @description  Sidebar declutter: closed positions, swing/FVG/OB levels, and trail-stop lines are now drawn as BACKGROUND entities (disableSelection + disableSave + disableUndo + lock). They render normally on the chart but stay out of the Objects Tree and can't be accidentally moved/deleted. Trail-stop line now also enforces a single-instance invariant: any line keyed to a non-current position is swept before the active line is drawn — guarantees AT MOST ONE trail line on the chart at any time. Active trade remains fully interactive.
+// @version      0.9.0
+// @description  Model-behavior visualization: trail history (faded gray dashed segments showing each previous stop position the model walked through) + event markers ("BE-lock → X.XX" in amber when locked_BE first fires, "Trail → X.XX" in gray on each subsequent Phase 2 trail advance). Diff against lastSeenState fires each marker exactly once per transition. Cleared on trade close. All background-drawing flags preserved. Trail-stop line single-instance invariant from 0.8.2 unchanged.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -255,6 +255,19 @@
   // changes (which happens on every fresh entry, including FLIP re-entries
   // that re-use the same active WS key).
   const phase1Snapshots = new Map(); // key → { entryTime, stopOffsetTicks, profitOffsetTicks }
+  // Trail history — every distinct stop_price the active trade has walked
+  // through, rendered as faded gray horizontal segments showing the stop's
+  // journey from original 1R below entry → BE+4t → under each new zone.
+  // Each entry: { fromTime, toTime, price, shapeId }. Cleared when the
+  // trade closes (removePosition).
+  const trailHistory = new Map(); // key → list of segments
+  // Per-key event annotations (text shapes at decision moments).
+  // Tracks shapeIds so we can clean them on trade close.
+  const eventMarkers = new Map(); // key → list of shapeIds
+  // Last-seen state per active key, used to DETECT transitions for events:
+  //   { phase, stop, lockedBE } — diff against incoming payload to fire
+  //   "BE-lock", "trail advance" markers exactly once per transition.
+  const lastSeenState = new Map(); // key → { phase, stop, lockedBE }
 
   // True iff the closed trade's [entry_time, end_time] window overlaps
   // the chart's visible range. Both ranges are epoch seconds. Returns
@@ -421,6 +434,12 @@
     if (!isLive) {
       _removeTrailStopLine(p.key);
       trailStopPrice = null;
+    } else {
+      // Active trade — record trail-history segments + emit event markers
+      // (BE-lock, Trail-advance) at every distinct stop_price transition.
+      // Detection diffs against lastSeenState so each event fires exactly
+      // once per cross. Cleared in removePosition when the trade closes.
+      _recordTrailAndEvents(p);
     }
 
     const points = [
@@ -547,6 +566,119 @@
     }
   }
 
+  // Trail history + event markers — record the model's stop journey + key
+  // decision points so the user can see exactly what the model did.
+  // Called from _drawWidget(isLive=true) on every position_upsert.
+  // The detection of "BE-lock fired" / "trail advance" works by diffing
+  // against lastSeenState — first crossing produces the event marker.
+  function _recordTrailAndEvents(p) {
+    if (!chart) return;
+    const newStop = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : null;
+    const newLockedBE = !!p.locked_BE;  // server may emit this; fallback below
+    const newPhase = Number(p.phase) || 0;
+    if (newStop == null) return;
+    const tNow = Math.floor(Date.now() / 1000);
+    const last = lastSeenState.get(p.key);
+
+    // First emit for this key — seed state, no events to fire yet.
+    if (!last) {
+      lastSeenState.set(p.key, { phase: newPhase, stop: newStop, lockedBE: newLockedBE });
+      return;
+    }
+
+    // Detect stop change → close the previous trail segment + start a new one.
+    if (Math.abs(last.stop - newStop) > 1e-6) {
+      // Render the segment the stop just left as a faded gray horizontal trend_line.
+      try {
+        const segId = chart.createMultipointShape(
+          [
+            { time: last.timeSinceStart || tNow - 60, price: last.stop },
+            { time: tNow, price: last.stop },
+          ],
+          {
+            shape: 'trend_line',
+            overrides: {
+              linecolor: '#94a3b8',  // slate-400, faded gray
+              linewidth: 1,
+              linestyle: 2,  // dashed
+              extendLeft: false,
+              extendRight: false,
+              showLabel: false,
+            },
+            disableSelection: true,
+            disableSave: true,
+            disableUndo: true,
+            lock: true,
+          },
+        );
+        if (segId != null) {
+          const list = trailHistory.get(p.key) || [];
+          list.push(segId);
+          trailHistory.set(p.key, list);
+        }
+      } catch (e) {
+        sendError(`trail segment failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      // Event marker at the moment of transition. If phase just flipped to 2
+      // OR lockedBE flipped True, call it BE-lock; otherwise call it a trail
+      // advance. Place the label slightly above/below the new stop so it
+      // doesn't overlap the trail line itself.
+      const isPhase2Just = newPhase === 2 && last.phase !== 2;
+      const isBELockJust = newLockedBE && !last.lockedBE;
+      const isFirstLock = isPhase2Just || isBELockJust;
+      const label = isFirstLock ? `BE-lock → ${newStop.toFixed(2)}` : `Trail → ${newStop.toFixed(2)}`;
+      try {
+        const txtId = chart.createMultipointShape(
+          [{ time: tNow, price: newStop }],
+          {
+            shape: 'text',
+            text: label,
+            overrides: {
+              color: isFirstLock ? '#fbbf24' : '#94a3b8',
+              fontsize: 10,
+              bold: isFirstLock,
+              backgroundColor: 'rgba(15,23,42,0.6)',
+              borderColor: isFirstLock ? '#fbbf24' : '#94a3b8',
+              drawBorder: true,
+            },
+            disableSelection: true,
+            disableSave: true,
+            disableUndo: true,
+            lock: true,
+          },
+        );
+        if (txtId != null) {
+          const list = eventMarkers.get(p.key) || [];
+          list.push(txtId);
+          eventMarkers.set(p.key, list);
+        }
+      } catch (e) {
+        sendError(`event marker failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    lastSeenState.set(p.key, {
+      phase: newPhase,
+      stop: newStop,
+      lockedBE: newLockedBE,
+      timeSinceStart: tNow,
+    });
+  }
+
+  function _clearTrailAndEvents(key) {
+    if (!chart) return;
+    for (const sid of trailHistory.get(key) || []) {
+      try { chart.removeEntity(sid); } catch (_) {}
+    }
+    for (const sid of eventMarkers.get(key) || []) {
+      try { chart.removeEntity(sid); } catch (_) {}
+    }
+    trailHistory.delete(key);
+    eventMarkers.delete(key);
+    lastSeenState.delete(key);
+  }
+
   function removePosition(key) {
     const entry = drawnPositions.get(key);
     drawnPositions.delete(key);
@@ -554,6 +686,7 @@
     closedTradePayloads.delete(key);
     phase1Snapshots.delete(key);
     _removeTrailStopLine(key);
+    _clearTrailAndEvents(key);
     const shapeId = entry && entry.shapeId;
     if (shapeId != null && chart) {
       try { chart.removeEntity(shapeId); } catch (_) {}
