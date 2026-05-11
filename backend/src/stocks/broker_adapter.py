@@ -1357,6 +1357,16 @@ class TopstepXBrokerAdapter:
             )
             return
 
+        # Capture stop_order_id BEFORE on_exit nulls it. For non-stop exits
+        # (manual flatten via UI, opposing-side fill, external close) the
+        # protective stop order is still resting in TopstepX's open-orders
+        # book — orphan source for the next entry's bracket discovery.
+        # `flatten()` cancels it via tracker.stop_order_id, but exits that
+        # arrive purely through on_stream_fill (no flatten_reason set) never
+        # called flatten — see project_signal_exit_orphan_stop memory for the
+        # trade 642 case that motivated this.
+        stop_id_to_cancel = self.tracker.stop_order_id if (not is_stop and self.tracker.stop_order_id) else None
+
         self.tracker.on_exit(exit_price=price, was_stop=is_stop)
         log.info(
             "Stream fill (exit): %.2f stop=%s order_id=%s trails=%d session_pnl=$%.2f",
@@ -1366,6 +1376,21 @@ class TopstepXBrokerAdapter:
             self._trail_count,
             self.tracker.session_pnl,
         )
+
+        if stop_id_to_cancel is not None:
+            try:
+                import asyncio as _a_cancel
+
+                async def _cancel_orphan_stop(oid: int) -> None:
+                    try:
+                        await self.client.cancel_order(oid)
+                        log.info("Cancelled protective stop %d after non-stop exit (orphan prevention)", oid)
+                    except Exception:
+                        log.warning("Failed to cancel protective stop %d after exit", oid, exc_info=True)
+
+                _a_cancel.create_task(_cancel_orphan_stop(stop_id_to_cancel))
+            except Exception:
+                log.warning("orphan-stop cancel scheduling failed", exc_info=True)
 
         # Capture the closing leg's TopstepX orderId on the pending dict
         # before it gets cleared in _log_broker_trade. Used downstream to
