@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.9.0
-// @description  Model-behavior visualization: trail history (faded gray dashed segments showing each previous stop position the model walked through) + event markers ("BE-lock → X.XX" in amber when locked_BE first fires, "Trail → X.XX" in gray on each subsequent Phase 2 trail advance). Diff against lastSeenState fires each marker exactly once per transition. Cleared on trade close. All background-drawing flags preserved. Trail-stop line single-instance invariant from 0.8.2 unchanged.
+// @version      0.9.1
+// @description  Phase 1 TP visual changed 2R → 1.5R to align with the model's BE-lock threshold (BE_LOCK_R in broker_adapter). Chart's green band now marks the EXACT level where the model fires BE-lock and the trade transitions Phase 1 → Phase 2. Visual matches model behavior. Trail history + event markers from 0.9.0 unchanged.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -375,17 +375,15 @@
     const entryTime = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
 
     // Phase 1 sacred: lock the widget at the broker's original stop + TP
-    // captured on the first tick of the trade. Both are frozen for the
-    // life of the Phase 1 entry even if p.stop / p.tp values change. The
-    // broker places TP at 2R (broker_adapter._execute_entry: price + 2 ×
-    // stop_offset), pre-slippage — using broker's actual p.tp ensures the
-    // chart matches the order book even when fill slippage shifts the
-    // R-ratio off exactly 2.0.
-    // 2R (not 1.5R) so Phase 2 has room above the BE-lock trigger (peak_R
-    // = 1.5) to actually run before TP fires — 1.5R TP would race the
-    // BE-lock and the trail architecture never activates.
-    // Phase 2 (or unknown): follow live broker values so the widget evolves
-    // with the trail / TP moves.
+    // captured on the first tick of the trade. Both frozen for the life
+    // of the Phase 1 entry.
+    // TP visual = 1.5R (matches BE_LOCK_R in broker_adapter). The chart's
+    // green band marks the level where BE-lock fires and the trade
+    // transitions Phase 1 → Phase 2. Since no TP order is placed at the
+    // broker, this is purely a visual reference; the live model exits via
+    // SL hit / REV signal / manual flatten. Visual matches model behavior.
+    // Phase 2 (locked_BE=true): follow live broker stop_price; tp stays
+    // frozen at the 1.5R reference for the widget's R:R label.
     let stopOffsetTicks;
     let tpOffsetTicks;
     // trailStopPrice is the price of the explicit horizontal red line drawn
@@ -412,7 +410,7 @@
         if (liveTp != null) {
           tpOffsetTicks = Math.max(1, Math.round(Math.abs(liveTp - p.entry) / NQ_TICK));
         } else {
-          tpOffsetTicks = Math.max(1, Math.round(stopOffsetTicks * 2));
+          tpOffsetTicks = Math.max(1, Math.round(stopOffsetTicks * 1.5));
         }
         phase1Snapshots.set(p.key, { entryTime, stopOffsetTicks, profitOffsetTicks: tpOffsetTicks });
       }

@@ -1795,13 +1795,14 @@ class TopstepXBrokerAdapter:
         self.tracker.stop_order_id = stop_order_id
 
         now = datetime.now(timezone.utc)
-        # TP = 2R from entry, anchored to the broker's bracket stop (which
-        # the broker positioned from the actual fill). With stop = entry ± 1R,
-        # TP at entry ± 2R = stop ± 3R. This way the chart's 2R band stays
-        # honest even after slippage shifts the entry away from signal price.
-        # (No TP order is placed; tp_price is reference-only for the widget
-        # + reasoning blobs — see "No TP bracket (stop only)" decision.)
-        tp_price = _round_tick(stop_price + offset * 3 if is_long else stop_price - offset * 3)
+        # TP visual = 1.5R from entry, anchored to the bracket-placed stop
+        # (fill-anchored). With stop = entry ± 1R, the 1.5R target =
+        # stop ± 2.5R. 1.5R matches BE_LOCK_R so the chart's green band
+        # marks the exact level where BE-lock fires and Phase 1 → Phase 2
+        # transition happens. Visual aligns with model behavior. (No TP
+        # order is placed; tp_price is reference-only for the widget +
+        # reasoning blob — see "No TP bracket (stop only)" decision.)
+        tp_price = _round_tick(stop_price + offset * 2.5 if is_long else stop_price - offset * 2.5)
         self._pending_trade = {
             "ts": now,
             "session_date": now.strftime("%Y-%m-%d"),
