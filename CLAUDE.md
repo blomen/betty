@@ -281,6 +281,8 @@ Zones drawn on TradingView by the userscript at `arnold/tv_overlay/userscript/ar
 - Outcomes measured over `OUTCOME_WINDOWS = [10, 30, 60, 120, 300]s` in `live_collector._compute_reward` — handles delayed market reaction. Flushed to `data/rl/live_episodes/*.npy`.
 - Skip / low-confidence touches ARE in the training set, labeled with actual post-touch reaction. Don't gate recording on inference output.
 
+**No hard time-gating in reckless mode (added 2026-05-11).** In `RECKLESS_LEARNING_MODE=1` (paper-account default), `ZONE_COOLDOWN_S` and `MIN_TRADE_INTERVAL_S` are both **0** — the RL feedback loop teaches the model when to skip. Every rejected signal is a training tuple the trainer never gets, so hard cooldowns make the model permanently naive about "don't re-enter a zone that just stopped you out." When the model takes a 10-stop streak at one zone (today's trades 601-610 at 29,399.75), those 10 losing tuples → correlate cron → ingest-live-trades → next training cycle teaches "this signature → SKIP." Strict mode keeps the gates (120s zone / 30s interval) for live-capital protection. Don't propose post-loss backoff, exponential cooldowns, or any time-based suppression as a "fix" for losing streaks — that's the symptom; the cure is the feedback loop. See [feedback_no_hard_time_gates memory](C:\Users\rasmu\.claude\projects\c--Users-rasmu-arnold\memory\feedback_no_hard_time_gates.md). Structural rules that are NOT time gates (Phase 1 sacred, _pending_trade state check, _signal_lock) stay active in both modes.
+
 ### Live trade → training feedback loop (added 2026-04-25)
 
 End-to-end ground-truth pipeline so the model learns from its own real outcomes, not just simulator estimates:
