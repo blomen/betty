@@ -429,6 +429,14 @@ class OverlayBroadcaster:
         # so the entry handle on the chart matches when the trade actually
         # filled, not when the broadcaster first emitted.
         entry_time = first.get("entry_time")
+        # Open-trade right-edge buffer: extend the widget 5 minutes beyond
+        # "now" so visually it's clear the trade is still running (the
+        # green/red region extends into the future-candle area). Closed
+        # trades get end_time = closed_at and the buffer doesn't apply.
+        # Quantized to the minute so we don't spam an upsert every loop tick.
+        _now_min = int(datetime.now(tz=timezone.utc).timestamp() // 60) * 60
+        OPEN_TRADE_FUTURE_BUFFER_S = 300
+        end_time = _now_min + OPEN_TRADE_FUTURE_BUFFER_S
         payload: dict[str, Any] = {
             "key": "pos:current",
             "side": side,
@@ -437,6 +445,10 @@ class OverlayBroadcaster:
             "tp": float(tp) if tp is not None else None,
             "size": int(first.get("size", 0)),
             "entry_time": int(entry_time) if entry_time else None,
+            "end_time": end_time,
+            # closed=false signals the userscript that this is the live
+            # active position so the future-buffer extension renders.
+            "closed": False,
         }
         if payload != self._last_position:
             await self._emit({"type": "position_upsert", **payload})

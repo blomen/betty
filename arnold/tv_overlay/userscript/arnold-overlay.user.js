@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.8.0
-// @description  Unified TV long/short_position widget for BOTH active and closed trades — closed-trade rectangle removed entirely. Closed trades render the same widget, frozen with end_time=close_time and the broker's final stop/TP values from close. Phase 1 sacred snapshot + Phase 2 trail-stop horizontal line still apply for active trades. Daily-only scope from broadcaster filter.
+// @version      0.8.1
+// @description  Active trade widget now extends 5 minutes into the future (visual cue that it's still open). Trail-stop line hard-gated to active trades only — closed trades get an explicit _removeTrailStopLine on every redraw as belt-and-suspenders. Unified TV widget + daily scope from 0.8.0 preserved.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -412,6 +412,15 @@
       // stop band, frozen at the close-time value — no separate horizontal
       // line needed since nothing is going to move after exit.
       if (isLive) trailStopPrice = stopPrice;
+    }
+
+    // Hard guarantee: closed trades NEVER carry a trail-stop line. Defensive
+    // belt-and-suspenders on top of the Phase 2 `if (isLive)` gate above —
+    // ensures any stale line from a previous active-state of the same key
+    // (or from an earlier userscript version) is cleared on close.
+    if (!isLive) {
+      _removeTrailStopLine(p.key);
+      trailStopPrice = null;
     }
 
     const points = [
