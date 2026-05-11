@@ -1493,27 +1493,28 @@ class TopstepXBrokerAdapter:
         log.info("Session reset")
 
     def _check_risk(self) -> dict | None:
-        """Run risk checks."""
-        if self.tracker.exceeds_daily_loss(self.config.max_daily_loss):
-            self._halt(f"daily loss limit ${self.config.max_daily_loss}")
-            return {"rejected": True, "reason": self._halt_reason}
+        """Run risk checks.
 
-        if self.tracker.exceeds_trailing_dd(self.config.max_trailing_dd):
-            self._halt(f"trailing DD limit ${self.config.max_trailing_dd}")
-            return {"rejected": True, "reason": self._halt_reason}
+        In reckless paper mode (RECKLESS_LEARNING_MODE=1, the default on the
+        practice account), all dollar/streak-based halts are bypassed: the
+        whole point of paper is maximum data velocity, and the user has
+        explicitly accepted unbounded losses to learn. Bug-catching halts
+        (orphan_position, size_mismatch, account_violation, reconcile_failed)
+        are NOT touched here — those fire in other code paths and remain
+        active in every mode. Strict-mode gates fire normally.
+        """
+        if not _RECKLESS:
+            if self.tracker.exceeds_daily_loss(self.config.max_daily_loss):
+                self._halt(f"daily loss limit ${self.config.max_daily_loss}")
+                return {"rejected": True, "reason": self._halt_reason}
 
-        # 2026-05-05: 3-consecutive-stops halt blocks learning velocity in
-        # reckless paper mode — on 05-05 it halted from 11:46 to 12:55 (a full
-        # hour of A+ setups untraded, including the 27926.5 6-member zone
-        # that ran 80pt). This isn't a risk cap; it's a "stop the bleeding"
-        # pause that's only useful when each stop is real money. In reckless
-        # mode (paper account, learning phase), we WANT the trades that
-        # follow stops — they're signal whether the model can recover from a
-        # losing streak. Account-survival caps (daily_loss, trailing_dd)
-        # above still fire. Cap the halt at 10 stops as a safety net.
-        if self.tracker.consecutive_stops >= (10 if _RECKLESS else 3):
-            self._halt(f"{self.tracker.consecutive_stops} consecutive stops")
-            return {"rejected": True, "reason": self._halt_reason}
+            if self.tracker.exceeds_trailing_dd(self.config.max_trailing_dd):
+                self._halt(f"trailing DD limit ${self.config.max_trailing_dd}")
+                return {"rejected": True, "reason": self._halt_reason}
+
+            if self.tracker.consecutive_stops >= 3:
+                self._halt(f"{self.tracker.consecutive_stops} consecutive stops")
+                return {"rejected": True, "reason": self._halt_reason}
 
         if time.time() - self.tracker.last_trade_ts < MIN_TRADE_INTERVAL_S:
             return {"rejected": True, "reason": "min_interval"}
@@ -1557,7 +1558,15 @@ class TopstepXBrokerAdapter:
                 size_mult,
             )
             return {"rejected": True, "reason": "size_multiplier_skip"}
-        size = max(1, min(round(BASE_SIZE * size_mult), self.config.max_position))
+        # Reckless paper mode: hard-cap at 1 contract regardless of
+        # confidence. We only care about R-ratio for learning; absolute
+        # dollar risk should be minimized so a long losing streak doesn't
+        # eat into the practice account faster than the trainer can absorb
+        # the signal. Strict mode keeps the original conf-scaled sizing.
+        if _RECKLESS:
+            size = 1
+        else:
+            size = max(1, min(round(BASE_SIZE * size_mult), self.config.max_position))
 
         log.info(
             "Sizing: conf=%.3f → size_mult=%.2f → %d contracts (BASE_SIZE=%d, max_pos=%d)",
