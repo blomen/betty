@@ -374,6 +374,11 @@ def get_pending_bets(db: Session = Depends(get_db)):
                 "home_team": (event.display_home or event.home_team) if event else None,
                 "away_team": (event.display_away or event.away_team) if event else None,
                 "sport": event.sport if event else None,
+                # Free-text fallback for bets recorded without an event_id —
+                # e.g. _record_unknown_open_bets inserts manually-placed bets
+                # that we don't have an Event row for. UI uses this when
+                # home_team/away_team are null.
+                "event_name": bet.boost_event,
             }
         )
 
