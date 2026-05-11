@@ -200,7 +200,29 @@ class OverlayBroadcaster:
         # means removing the today_str check.
         today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         active = [t for t in trades if t.get("id") == "active"]
-        closed = [t for t in trades if t.get("id") != "active" and (t.get("session_date") or "") == today_str]
+
+        def _has_valid_levels(t: dict) -> bool:
+            """Skip closed trades whose stop_price / tp_price never got
+            written (e.g., orphan positions flattened via MANUAL_HALT before
+            bracket discovery populated the tracker). The widget falls back
+            to a 1-pt default when these are 0/null, producing tiny 4-tick
+            "Stop: 1.00 / Target: 1.00 / R:R 1" boxes that pollute the
+            chart — drop them at the source instead.
+            """
+            sp = t.get("stop_price")
+            tpv = t.get("tp_price")
+            try:
+                sp_ok = sp is not None and float(sp) > 0
+                tp_ok = tpv is not None and float(tpv) > 0
+            except (TypeError, ValueError):
+                return False
+            return sp_ok and tp_ok
+
+        closed = [
+            t
+            for t in trades
+            if t.get("id") != "active" and (t.get("session_date") or "") == today_str and _has_valid_levels(t)
+        ]
         # Floor zero-duration trades (closed_at <= ts) up to entry+60s in the
         # payload below — keeps instant-stop fills visible as a 1-min shape
         # instead of dropping them. Sort newest-first for stable iteration.
