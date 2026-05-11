@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.5.0
-// @description  Closed-trade rectangles are filtered against TV's visible range — off-screen trades no longer pile up at the chart's left edge. Auto-redraw on scroll/zoom (debounced 200ms). Active trade rendering unchanged.
+// @version      0.8.0
+// @description  Unified TV long/short_position widget for BOTH active and closed trades — closed-trade rectangle removed entirely. Closed trades render the same widget, frozen with end_time=close_time and the broker's final stop/TP values from close. Phase 1 sacred snapshot + Phase 2 trail-stop horizontal line still apply for active trades. Daily-only scope from broadcaster filter.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -242,6 +242,19 @@
   // changes so reconcileClosedTradeVisibility can redraw a previously-
   // undrawn trade when the user scrolls to its time window.
   const closedTradePayloads = new Map(); // key → payload
+  // Per-active-position trail-stop line. The long_position widget's
+  // built-in stop band is fixed at draw time and does NOT re-flow when
+  // the broker trails the stop, so we paint an explicit horizontal_line
+  // on top that updates each position_upsert tick. Keyed by position key.
+  // Only drawn in Phase 2 — Phase 1 is sacred and the widget's stop band
+  // alone communicates the locked conf-based stop.
+  const trailStopShapes = new Map(); // key → shapeId
+  // Phase 1 sacred snapshot — once a Phase 1 trade is drawn, freeze its
+  // stop / profit offsets so live mutations to p.stop / p.tp don't redraw
+  // the widget. Keyed by position key; auto-invalidated when entry_time
+  // changes (which happens on every fresh entry, including FLIP re-entries
+  // that re-use the same active WS key).
+  const phase1Snapshots = new Map(); // key → { entryTime, stopOffsetTicks, profitOffsetTicks }
 
   // True iff the closed trade's [entry_time, end_time] window overlaps
   // the chart's visible range. Both ranges are epoch seconds. Returns
@@ -277,7 +290,7 @@
         const anchor = fillEpoch != null ? fillEpoch : now;
         let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
         if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
-        _drawClosedRect(p, anchor, endEpoch);
+        _drawWidget(p, anchor, endEpoch, false);
       } else if (!overlap && isDrawn) {
         const existing = drawnPositions.get(key);
         if (existing && existing.shapeId != null) {
@@ -318,7 +331,7 @@
     let endEpoch = (typeof p.end_time === 'number') ? Math.floor(p.end_time) : null;
     if (endEpoch == null || endEpoch <= anchor) endEpoch = anchor + 60;
 
-    if (isActive) return _drawActiveShape(p, anchor, endEpoch);
+    if (isActive) return _drawWidget(p, anchor, endEpoch, true);
 
     // Closed trade — always buffer, then draw only if it overlaps the
     // current visible range. Off-range trades stay in the buffer so the
@@ -326,7 +339,7 @@
     closedTradePayloads.set(p.key, p);
     const range = _currentVisibleRange();
     if (_closedTradeOverlapsRange(p, range)) {
-      return _drawClosedRect(p, anchor, endEpoch);
+      return _drawWidget(p, anchor, endEpoch, false);
     }
     // Out of range: ensure no stale shape lingers from a prior in-range emit.
     // Inline the shape-only cleanup — do NOT call removePosition here (that
@@ -341,14 +354,66 @@
     return true; // accepted (buffered), so the WS sender still gets an ack.
   }
 
-  function _drawActiveShape(p, anchor, endEpoch) {
+  function _drawWidget(p, anchor, endEpoch, isLive) {
     const isLong = p.side === 'long';
     const shapeName = isLong ? 'long_position' : 'short_position';
     const NQ_TICK = 0.25;
-    const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
-    const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
-    const stopOffsetTicks = Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK);
-    const tpOffsetTicks   = Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK);
+    const phase = Number(p.phase) || 0;
+    const entryTime = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
+
+    // Phase 1 sacred: lock the widget at the broker's original stop + TP
+    // captured on the first tick of the trade. Both are frozen for the
+    // life of the Phase 1 entry even if p.stop / p.tp values change. The
+    // broker places TP at 2R (broker_adapter._execute_entry: price + 2 ×
+    // stop_offset), pre-slippage — using broker's actual p.tp ensures the
+    // chart matches the order book even when fill slippage shifts the
+    // R-ratio off exactly 2.0.
+    // 2R (not 1.5R) so Phase 2 has room above the BE-lock trigger (peak_R
+    // = 1.5) to actually run before TP fires — 1.5R TP would race the
+    // BE-lock and the trail architecture never activates.
+    // Phase 2 (or unknown): follow live broker values so the widget evolves
+    // with the trail / TP moves.
+    let stopOffsetTicks;
+    let tpOffsetTicks;
+    // trailStopPrice is the price of the explicit horizontal red line drawn
+    // ON TOP of the widget — Phase 2 only. Null in Phase 1 (line removed if
+    // it was there from a previous Phase 2 trade under the same key).
+    let trailStopPrice = null;
+    if (phase === 1) {
+      const cached = phase1Snapshots.get(p.key);
+      if (cached && cached.entryTime === entryTime) {
+        stopOffsetTicks = cached.stopOffsetTicks;
+        tpOffsetTicks = cached.profitOffsetTicks;
+      } else {
+        const origStop = (typeof p.original_stop_price === 'number' && p.original_stop_price > 0)
+          ? Number(p.original_stop_price) : null;
+        const baseStop = (origStop != null)
+          ? origStop
+          : ((typeof p.stop === 'number' && p.stop > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1));
+        stopOffsetTicks = Math.max(1, Math.round(Math.abs(baseStop - p.entry) / NQ_TICK));
+        // Use broker's actual tp_price when present so the widget matches
+        // the live order book (slippage between signal and fill can push
+        // the R-ratio off exactly 2.0 — we trust broker over the formula).
+        // Fallback to synthetic 2R only if broker hasn't sent a TP yet.
+        const liveTp = (typeof p.tp === 'number' && Number(p.tp) > 0) ? Number(p.tp) : null;
+        if (liveTp != null) {
+          tpOffsetTicks = Math.max(1, Math.round(Math.abs(liveTp - p.entry) / NQ_TICK));
+        } else {
+          tpOffsetTicks = Math.max(1, Math.round(stopOffsetTicks * 2));
+        }
+        phase1Snapshots.set(p.key, { entryTime, stopOffsetTicks, profitOffsetTicks: tpOffsetTicks });
+      }
+    } else {
+      const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
+      const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
+      stopOffsetTicks = Math.max(1, Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK));
+      tpOffsetTicks   = Math.max(1, Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK));
+      // Trail line: live Phase 2 only. Closed trades use the widget's own
+      // stop band, frozen at the close-time value — no separate horizontal
+      // line needed since nothing is going to move after exit.
+      if (isLive) trailStopPrice = stopPrice;
+    }
+
     const points = [
       { time: anchor, price: p.entry },
       { time: endEpoch, price: p.entry },
@@ -366,6 +431,7 @@
         if (obj) {
           if (typeof obj.setPoints === 'function') obj.setPoints(points);
           if (typeof obj.setProperties === 'function') obj.setProperties(positionOverrides);
+          _updateTrailStopLine(p.key, trailStopPrice);
           return true;
         }
       } catch (_) { /* fall through to recreate */ }
@@ -377,103 +443,73 @@
         overrides: positionOverrides,
       });
       if (shapeId == null) {
-        sendError(`_drawActiveShape: createMultipointShape returned null for ${shapeName}`);
+        sendError(`_drawWidget: createMultipointShape returned null for ${shapeName}`);
         return false;
       }
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
       drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
+      _updateTrailStopLine(p.key, trailStopPrice);
       return true;
     } catch (e) {
-      sendError(`_drawActiveShape failed: ${e instanceof Error ? e.message : String(e)}`);
+      sendError(`_drawWidget failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   }
 
-  // Closed trade rectangle. Per user spec 2026-05-05:
-  //   X = entry_time → exit_time
-  //   Loss → rect from tp_price (would-have-been 2R) to stop_price
-  //          (where we got stopped out). Spans entry; RED fill.
-  //   Win  → rect from exit_price (where we got out) to stop_price
-  //          (the trailed stop-on-profit, in profit by close). No
-  //          original stoploss line. GREEN fill.
-  function _drawClosedRect(p, anchor, endEpoch) {
-    const pnl = (typeof p.pnl_dollars === 'number') ? p.pnl_dollars : 0;
-    const isWin = pnl >= 0;
-    const stop = (typeof p.stop === 'number' && p.stop > 0) ? p.stop : null;
-    const tp = (typeof p.tp === 'number' && p.tp > 0) ? p.tp : null;
-    const exit = (typeof p.exit_price === 'number' && p.exit_price > 0) ? p.exit_price : null;
-    const entry = Number(p.entry);
-    if (!Number.isFinite(entry) || entry <= 0) return false;
-
-    let y1, y2;
-    if (isWin) {
-      y1 = exit != null ? exit : entry;
-      y2 = stop != null ? stop : entry;
-    } else {
-      y1 = tp != null ? tp : entry;
-      y2 = stop != null ? stop : entry;
+  // Re-anchored after the mutate-in-place branch returns true too — call it
+  // there as well so a stop trail without a full recreate still moves the line.
+  function _updateTrailStopLine(key, stopPrice) {
+    if (!chart) return;
+    if (stopPrice == null || !Number.isFinite(stopPrice) || stopPrice <= 0) {
+      _removeTrailStopLine(key);
+      return;
     }
-    if (!Number.isFinite(y1) || !Number.isFinite(y2) || y1 === y2) {
-      const fallback = 0.25;
-      y1 = entry + fallback;
-      y2 = entry - fallback;
-    }
-    const top = Math.max(y1, y2);
-    const bottom = Math.min(y1, y2);
-
-    const fillColor = isWin ? '#10b981' : '#ef4444';
-    const points = [
-      { time: anchor, price: top },
-      { time: endEpoch, price: bottom },
-    ];
-    const sideLabel = (p.side === 'long') ? 'L' : 'S';
-    const sizeSuffix = (p.size && p.size > 1) ? `×${p.size}` : '';
-    const dollarStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(Math.round(pnl));
-    const rStr = (typeof p.pnl_r === 'number') ? ` ${p.pnl_r >= 0 ? '+' : ''}${p.pnl_r.toFixed(2)}R` : '';
-    const reasonStr = (typeof p.exit_reason === 'string' && p.exit_reason) ? ` [${p.exit_reason}]` : '';
-    const label = `${sideLabel}${sizeSuffix} ${dollarStr}${rStr}${reasonStr}`;
-    const overrides = {
-      color: fillColor,
-      backgroundColor: fillColor,
-      transparency: 70,
-      linewidth: 1,
-      showLabel: true,
-      textColor: '#f8fafc',
-      fontSize: 11,
-    };
-
-    const existing = drawnPositions.get(p.key);
-    if (existing && existing.shapeId != null && existing.kind === 'rectangle' && typeof chart.getShapeById === 'function') {
+    const tNow = Math.floor(Date.now() / 1000);
+    const existing = trailStopShapes.get(key);
+    if (existing != null && typeof chart.getShapeById === 'function') {
       try {
-        const obj = chart.getShapeById(existing.shapeId);
-        if (obj) {
-          if (typeof obj.setPoints === 'function') obj.setPoints(points);
-          if (typeof obj.setProperties === 'function') obj.setProperties({ ...overrides, text: label });
-          return true;
+        const obj = chart.getShapeById(existing);
+        if (obj && typeof obj.setPoints === 'function') {
+          obj.setPoints([{ time: tNow, price: stopPrice }]);
+          return;
         }
       } catch (_) { /* fall through to recreate */ }
     }
-
     try {
-      const shapeId = chart.createMultipointShape(points, {
-        shape: 'rectangle',
-        text: label,
-        overrides,
-      });
-      if (shapeId == null) {
-        sendError(`_drawClosedRect: createMultipointShape returned null`);
-        return false;
+      const shapeId = chart.createMultipointShape(
+        [{ time: tNow, price: stopPrice }],
+        {
+          shape: 'horizontal_line',
+          overrides: {
+            linecolor: '#ef4444',
+            linewidth: 2,
+            linestyle: 0,
+            showPrice: true,
+            showLabel: true,
+            textcolor: '#ef4444',
+            horzLabelsAlign: 'right',
+            vertLabelsAlign: 'middle',
+          },
+        },
+      );
+      if (shapeId != null) {
+        if (existing != null && existing !== shapeId) {
+          try { chart.removeEntity(existing); } catch (_) {}
+        }
+        trailStopShapes.set(key, shapeId);
       }
-      if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
-        try { chart.removeEntity(existing.shapeId); } catch (_) {}
-      }
-      drawnPositions.set(p.key, { shapeId, kind: 'rectangle' });
-      return true;
     } catch (e) {
-      sendError(`_drawClosedRect failed: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
+      sendError(`_updateTrailStopLine failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function _removeTrailStopLine(key) {
+    const shapeId = trailStopShapes.get(key);
+    trailStopShapes.delete(key);
+    if (shapeId != null && chart) {
+      try { chart.removeEntity(shapeId); } catch (_) {}
     }
   }
 
@@ -482,6 +518,8 @@
     drawnPositions.delete(key);
     positionAnchors.delete(key);
     closedTradePayloads.delete(key);
+    phase1Snapshots.delete(key);
+    _removeTrailStopLine(key);
     const shapeId = entry && entry.shapeId;
     if (shapeId != null && chart) {
       try { chart.removeEntity(shapeId); } catch (_) {}

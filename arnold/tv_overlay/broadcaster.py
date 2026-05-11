@@ -192,13 +192,15 @@ class OverlayBroadcaster:
 
         now = int(datetime.now(tz=timezone.utc).timestamp())
         seen: dict[str, dict] = {}
-        # Emit every closed trade the poller pulls (currently last 7 days
-        # via stocks_runtime._passive_trades_poller). Each trade is its own
-        # time-bounded long_position shape anchored at the real entry→exit
-        # window, so they don't stack vertically the way the old fixed-time
-        # rendering did. Off-screen trades are fine — the user can scroll.
+        # Daily closed-trade scope: render only trades whose session_date
+        # matches today's UTC date. Keeps the chart focused on the current
+        # session and prevents stale shapes from yesterday cluttering the
+        # view. The active position is always kept (id == "active"). The
+        # 7-day poller cache is unchanged — widening this filter later just
+        # means removing the today_str check.
+        today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         active = [t for t in trades if t.get("id") == "active"]
-        closed = [t for t in trades if t.get("id") != "active"]
+        closed = [t for t in trades if t.get("id") != "active" and (t.get("session_date") or "") == today_str]
         # Floor zero-duration trades (closed_at <= ts) up to entry+60s in the
         # payload below — keeps instant-stop fills visible as a 1-min shape
         # instead of dropping them. Sort newest-first for stable iteration.
@@ -290,7 +292,8 @@ class OverlayBroadcaster:
                 await self._emit({"type": "position_upsert", **payload})
                 self._trades[key] = payload
 
-        # Removes: trades that fell out of the 7-day window
+        # Removes: trades that fell out of the daily-session scope
+        # (typically previous-day's trades after UTC midnight rolls over).
         for key in list(self._trades.keys()):
             if key not in seen:
                 await self._emit({"type": "position_remove", "key": key})

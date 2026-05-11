@@ -263,6 +263,12 @@ Zones drawn on TradingView by the userscript at `arnold/tv_overlay/userscript/ar
 
 **FVGs and order blocks are first-class zone members.** Their ranges feed `level_monitor.load_levels` at the midpoint. `_LEVEL_FAMILY` puts FVG bull+bear into one family and OB bull+bear into another. Weights: FVG 0.6, OB 0.8 (`_HIERARCHY_WEIGHTS` in `zone_builder.py`). Do NOT re-introduce separate FVG overlays — the whole point of the consolidation is that SMC signals affect zone heat, not chart noise.
 
+**Trade rendering uses ONLY TV's native `long_position` / `short_position` widget — both active AND closed.** Do NOT substitute custom rectangles, diagonals, exit markers, or any other shape for closed trades. This has been tried multiple times (v0.5.0 stop-to-exit band, v0.6.0 entry→exit diagonal) and rejected each time. The canonical view is:
+- **Active trade**: long/short_position widget with `stopLevel` + `profitLevel` overrides. Phase 1 snapshot freezes both at first tick (broker's original_stop_price + tp_price). Phase 2 follows live broker values + draws a horizontal red trail-stop line on top.
+- **Closed trade**: same widget, `end_time` = `closed_at`, frozen at the broker's final stop/TP values. NO trail line, NO rectangle, NO exit marker.
+- Daily-only scope: broadcaster filters closed trades by `session_date == today_utc`; previous days' trades drop off the chart automatically at UTC midnight rollover.
+- Current canonical implementation: [`arnold/tv_overlay/userscript/arnold-overlay.user.js`](arnold/tv_overlay/userscript/arnold-overlay.user.js) v0.8.0+, `_drawWidget(p, anchor, endEpoch, isLive)`.
+
 **Model calibration shift (2026-04-24 → ~2026-05-15):** The live DQN weights were trained against the old mean-weight hierarchy (`sum/len/1.2`). The new `_compute_strength` shifts the distribution — isolated weak zones score *lower*, multi-family confluence scores *higher*. Both shifts are directionally correct (the old math could reduce strength when a weak level was added). The monotonic "higher = trust more" relationship the DQN learned keeps working, but absolute thresholds are recalibrating. Expected realignment: 2-3 weeks of live-episode accumulation at ~20-30 setups/day lets the daemon's natural retrain cycle drift the training pool toward new-math-dominant. Don't force a retrain now — the historical tick parquets are gone so a fresh replay would use a much smaller dataset (only April 2026 ticks survive).
 
 **Volume profile (server-side — rendering moved off-chart):**
