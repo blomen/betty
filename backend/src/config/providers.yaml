@@ -424,7 +424,7 @@ providers:
     integration: lodurse
     bonus:
       type: bonusdeposit
-      amount: 500
+      amount: 1000
       trigger_mode: cumulative
 
   dbet:
