@@ -176,6 +176,51 @@ class TopstepXClient:
         log.info("Market order placed: %s %d %s → %s", action, quantity, self._config.contract_id, result)
         return result
 
+    async def place_market_order_with_stop_bracket(self, action: str, quantity: int, stop_ticks: int) -> dict:
+        """Place a market order with a stop-loss bracket attached atomically.
+
+        Why brackets: with separate place_market + place_stop calls, the stop
+        is positioned from the signal-time price, but the entry fills later
+        at a different price. During fast moves (cash open, news) the fill
+        price can be 30-80 ticks away from the signal trigger, leaving the
+        intended stop_ticks distance broken (e.g. 27-tick intent becomes
+        77-tick effective stop). With a bracketed stop, TopstepX anchors the
+        stop to the ENTRY FILL PRICE on the broker side — slippage is fully
+        absorbed and the R-ratio is preserved.
+
+        ticks is positive distance from fill (direction implied by `action`).
+        type=4 (Stop) is the stop-loss bracket order type. Take-profit
+        brackets are intentionally omitted — TP behavior remains exit-via-
+        FLIP/STOP/manual-flatten per the current architecture.
+
+        Returns the standard Order/place response: {orderId, success,
+        errorCode, errorMessage}. The bracketed stop becomes a separate
+        order on the broker side; its orderId must be discovered post-place
+        via /api/Order/searchOpen.
+        """
+        payload = {
+            "accountId": self._account_id,
+            "contractId": self._config.contract_id,
+            "type": ORDER_TYPE_MARKET,
+            "side": self._side(action),
+            "size": quantity,
+            "customTag": self._new_order_tag(),
+            "stopLossBracket": {
+                "ticks": int(stop_ticks),
+                "type": ORDER_TYPE_STOP_MARKET,
+            },
+        }
+        result = await self._post("/api/Order/place", payload)
+        log.info(
+            "Market+stop-bracket placed: %s %d %s stop_ticks=%d → %s",
+            action,
+            quantity,
+            self._config.contract_id,
+            stop_ticks,
+            result,
+        )
+        return result
+
     async def place_stop_order(self, action: str, quantity: int, stop_price: float) -> dict:
         """Place a stop-market order (stop-loss). action: 'Buy' or 'Sell'."""
         payload = {

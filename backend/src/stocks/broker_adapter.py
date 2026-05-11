@@ -1522,11 +1522,16 @@ class TopstepXBrokerAdapter:
         return None
 
     async def _execute_entry(self, signal: dict) -> dict:
-        """Place market + stop orders with risk-based sizing."""
+        """Place a bracketed market+stop entry with risk-based sizing.
+
+        Single atomic /api/Order/place call attaches the stop-loss bracket
+        anchored to the entry FILL price (broker computes stop = fill ± ticks),
+        so signal→fill slippage no longer distorts the R-ratio. TP is not
+        placed as an order — kept as a reference value on _pending_trade only.
+        """
         action = signal["action"]
         is_long = "long" in action.lower()
         order_action = "Buy" if is_long else "Sell"
-        stop_action = "Sell" if is_long else "Buy"
         price = float(signal.get("price", 0) or 0)
         stop_price = float(signal.get("stop_price", 0) or 0)
         confidence = float(signal.get("confidence", 0) or 0)
@@ -1621,12 +1626,18 @@ class TopstepXBrokerAdapter:
         last_exc: Exception | None = None
         for attempt in (1, 2):
             try:
-                result = await self.client.place_market_order(order_action, size)
+                # Bracketed market order: the broker attaches the stop-loss
+                # atomically and anchors it to the ENTRY FILL PRICE — slippage
+                # between signal-time and fill is fully absorbed. Replaces
+                # the old place_market + separate place_stop + widen-on-error
+                # + verify-live dance (~135 lines), all of which existed only
+                # to paper over the signal/fill price gap.
+                result = await self.client.place_market_order_with_stop_bracket(order_action, size, stop_dist_ticks)
                 break
             except Exception as exc:
                 last_exc = exc
                 log.warning(
-                    "place_market_order attempt %d/2 failed: %s — retrying",
+                    "place_market_order_with_stop_bracket attempt %d/2 failed: %s — retrying",
                     attempt,
                     type(exc).__name__,
                 )
@@ -1688,152 +1699,84 @@ class TopstepXBrokerAdapter:
         # submission to avoid the dropped-fill race. Just sync entry_order_id.
         self.tracker.entry_order_id = entry_order_id
 
+        # Bracket-stop discovery: TopstepX attaches the stop atomically when
+        # place_market_order_with_stop_bracket succeeds — the parent order's
+        # orderId is the entry; the bracket stop gets its own orderId visible
+        # via /api/Order/searchOpen. Poll briefly (with retry) to find it.
+        # The bracket is anchored to fill price server-side, so we don't need
+        # to recompute or widen on our end — the broker handles slippage.
+        stop_side_int = 1 if is_long else 0  # stop side = opposite of entry
         stop_order_id = None
-        if stop_price > 0:
-            current_stop = stop_price
-            for attempt in (1, 2, 3):
-                try:
-                    stop_result = await self.client.place_stop_order(stop_action, size, current_stop)
-                except Exception:
-                    log.exception("Stop placement raised (attempt %d/3)", attempt)
-                    stop_result = None
-                if isinstance(stop_result, dict):
-                    if stop_result.get("success", True):
-                        stop_order_id = stop_result.get("orderId")
-                        break
-                    err_msg = str(stop_result.get("errorMessage", ""))
-                    log.warning(
-                        "Stop placement rejected (attempt %d/3): %s",
-                        attempt,
-                        err_msg,
-                    )
-                    # "Order price is outside allowed range" means the market
-                    # has moved through our pre-computed stop level between
-                    # signal time and order placement. Recompute the stop from
-                    # the actual fill price (entry_price as set by stream fill)
-                    # with an extra 2-tick safety buffer + widen by 4 ticks
-                    # each retry. This adapts to fast-moving NQ where the
-                    # signal-time stop is stale by the time the order lands.
-                    if (
-                        "allowed range" in err_msg.lower()
-                        or "best ask" in err_msg.lower()
-                        or "best bid" in err_msg.lower()
-                    ):
-                        live_entry = self.tracker.entry_price or price
-                        # Widen by 4 ticks per retry. is_long: stop below; short: stop above.
-                        widen_ticks = 4 * attempt
-                        widen_offset = (stop_dist_ticks + widen_ticks) * 0.25
-                        if is_long:
-                            current_stop = _round_tick(live_entry - widen_offset)
-                        else:
-                            current_stop = _round_tick(live_entry + widen_offset)
-                        log.info(
-                            "Stop recalc from live entry %.2f: new_stop=%.2f (was %.2f, +%d ticks)",
-                            live_entry,
-                            current_stop,
-                            stop_price,
-                            widen_ticks,
-                        )
-                        # Reflect updated stop in pending trade record so
-                        # broker_trades persists the actual placed stop, not
-                        # the stale signal-time one.
-                        stop_price = current_stop
-
-            if stop_order_id is None:
-                # We have a filled (or about-to-fill) market order but no stop. Sitting
-                # naked is worse than reverting — liquidate immediately to bound risk.
-                log.error(
-                    "Stop placement failed twice — flattening entry to avoid unhedged position",
-                )
-                # Roll back the pre-populated tracker (set right after order
-                # submission). Without this, the close fill from liquidate
-                # would land while side="long" entry_price=0, triggering the
-                # unknown-orderId sentinel which would misclassify it as an
-                # entry. Resetting to flat means the close fill cleanly drops
-                # via the "while flat" guard or the reconcile loop catches it.
-                self._reset_tracker_for_rollback()
-                try:
-                    await self.client.liquidate_position()
-                except Exception:
-                    log.exception("Emergency liquidate after failed stop also failed — POSITION MAY BE OPEN")
-                self._halt("stop_placement_failed")
-                return {"rejected": True, "reason": "stop_placement_failed"}
-
-            # Verify the stop is actually live on the broker. TopstepX
-            # sometimes accepts the place_stop_order call (returns success +
-            # orderId) but the order doesn't end up in the book — trade 128
-            # (2026-04-30 15:50, +$890) entered with a "successful" stop
-            # response but Order/searchOpen later showed zero open orders,
-            # leaving the position naked. Confirm before tracking it.
+        for attempt in (1, 2, 3, 4, 5):
             try:
                 open_orders = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
-                live_ids = {int(o.get("id")) for o in (open_orders.get("orders") or []) if o.get("id")}
-                if int(stop_order_id) not in live_ids:
-                    # 2026-05-07: false-positive guard. If the stop fills FAST
-                    # (entry → stop within sub-second), by the time this verify
-                    # runs the stop is gone from Order/searchOpen because it's
-                    # already filled, AND broker shows no open position. The
-                    # halt that fired here yesterday on a -$70 close was a
-                    # legitimate stop-hit, not a naked-position event. Cross-
-                    # check broker truth: if Position/searchOpen shows zero
-                    # contracts, the stop already did its job — log and
-                    # continue, don't halt.
+                orders = open_orders.get("orders") or []
+                bracket_stops = [
+                    o
+                    for o in orders
+                    if o.get("contractId") == self.config.contract_id
+                    and int(o.get("type") or 0) == 4  # STOP_MARKET
+                    and int(o.get("side") or -1) == stop_side_int
+                ]
+                if bracket_stops:
+                    # Newest = highest orderId (broker assigns monotonically).
+                    newest = max(bracket_stops, key=lambda o: int(o.get("id") or 0))
+                    candidate_id = int(newest.get("id"))
+                    broker_stop_price_raw = newest.get("stopPrice")
+                    # Brackets are anchored at fill time — pre-fill the order
+                    # may exist but stopPrice can be 0 or None. Only accept
+                    # the discovery once the broker has actually computed
+                    # the fill-anchored stopPrice. Keep polling otherwise.
                     try:
-                        broker_positions = await self.client.search_open_positions()
-                        contract_id = getattr(self.client, "_config", None)
-                        contract_id = getattr(contract_id, "contract_id", None) if contract_id else None
-                        broker_size = sum(
-                            int(p.get("size") or 0)
-                            for p in broker_positions
-                            if not contract_id or p.get("contractId") == contract_id
-                        )
-                    except Exception:
-                        broker_size = -1  # unknown — fail-safe to halt
-                    if broker_size == 0:
+                        broker_stop_price = float(broker_stop_price_raw) if broker_stop_price_raw is not None else 0.0
+                    except (TypeError, ValueError):
+                        broker_stop_price = 0.0
+                    if broker_stop_price > 0:
+                        stop_order_id = candidate_id
+                        stop_price = broker_stop_price
+                        self.tracker.stop_price = stop_price
                         log.info(
-                            "Stop verify NO-OP: orderId %s not in Order/searchOpen but "
-                            "Position/searchOpen also shows zero contracts — stop fired "
-                            "before verify ran, position closed cleanly. Continuing.",
+                            "Bracket stop confirmed: orderId=%d stopPrice=%.2f (attempt %d)",
                             stop_order_id,
+                            stop_price,
+                            attempt,
                         )
-                        # The stop already filled; tracker should converge via
-                        # the close fill or reconcile loop. Don't halt.
-                    else:
-                        log.error(
-                            "Stop verify FAILED: orderId %s not in Order/searchOpen (%d open) "
-                            "AND broker has size=%d — naked position, flattening",
-                            stop_order_id,
-                            len(live_ids),
-                            broker_size,
-                        )
-                        # Roll back the pre-populated tracker before liquidate
-                        # so the close fill is cleanly dropped (see comment
-                        # in stop_placement_failed branch above).
-                        self._reset_tracker_for_rollback()
-                        try:
-                            await self.client.liquidate_position()
-                        except Exception:
-                            log.exception("Emergency liquidate after stop-verify failure also failed")
-                        self._halt("stop_verify_failed")
-                        return {"rejected": True, "reason": "stop_verify_failed"}
-                else:
-                    log.info("Stop verified live: orderId=%s @ %.2f", stop_order_id, current_stop)
+                        break
+                    log.debug(
+                        "Bracket stop seen (orderId=%d) but stopPrice not yet anchored — retrying",
+                        candidate_id,
+                    )
             except Exception:
-                # Verification call itself failed — don't block trade on a
-                # transient REST error. The reconcile loop will catch any
-                # genuine naked-position state within 60s.
-                log.warning("Stop verification REST call failed; continuing", exc_info=True)
+                log.warning("Bracket-stop discovery attempt %d/5 raised", attempt, exc_info=True)
+            await asyncio.sleep(0.2)
 
-        # tracker.on_fill + entry_order_id were already set above (right after
-        # place_market_order returned) so the entry fill could be processed
-        # without being dropped as "while flat". Calling on_fill again here
-        # would overwrite the real fill price back to 0. Just sync stop_order_id
-        # which is only known after stop placement.
+        if stop_order_id is None:
+            # Bracket attachment is supposed to be atomic — if we can't find
+            # the stop after 1s of polling, something's wrong (broker bug or
+            # the bracket payload was silently dropped). Liquidate to bound
+            # risk: a naked position with the wrong slippage profile is
+            # exactly what we were trying to avoid.
+            log.error("Bracket stop not found after 5 attempts — flattening entry to avoid naked position")
+            self._reset_tracker_for_rollback()
+            try:
+                await self.client.liquidate_position()
+            except Exception:
+                log.exception("Emergency liquidate after missing bracket also failed — POSITION MAY BE OPEN")
+            self._halt("bracket_stop_missing")
+            return {"rejected": True, "reason": "bracket_stop_missing"}
+
+        # tracker.side / size / entry_order_id were set above pre-submit.
+        # stop_order_id is now the broker's bracket-anchored stop order id.
         self.tracker.stop_order_id = stop_order_id
 
         now = datetime.now(timezone.utc)
-        # TP = 2R from entry
-        tp_price = _round_tick(price + offset * 2 if is_long else price - offset * 2)
+        # TP = 2R from entry, anchored to the broker's bracket stop (which
+        # the broker positioned from the actual fill). With stop = entry ± 1R,
+        # TP at entry ± 2R = stop ± 3R. This way the chart's 2R band stays
+        # honest even after slippage shifts the entry away from signal price.
+        # (No TP order is placed; tp_price is reference-only for the widget
+        # + reasoning blobs — see "No TP bracket (stop only)" decision.)
+        tp_price = _round_tick(stop_price + offset * 3 if is_long else stop_price - offset * 3)
         self._pending_trade = {
             "ts": now,
             "session_date": now.strftime("%Y-%m-%d"),
