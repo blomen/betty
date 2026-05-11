@@ -1,12 +1,13 @@
 #!/bin/bash
 # Scheduled RL training daemon — fires ONCE per day at the configured
-# UTC window (default 20:00 UTC = 22:00 Stockholm CEST). 2026-05-11: rewrote
-# from "always-on every 4h" to "scheduled when market is closed" so live
-# inference + deploys never compete with training.
+# UTC window (default 21:00 UTC = 23:00 Stockholm CEST, aligned with NQ daily
+# maintenance start). 2026-05-11: rewrote from "always-on every 4h" to
+# "scheduled when market is closed" so live inference + deploys never compete
+# with training.
 #
 # Schedule:
-#   - Mon-Thu 20:00 UTC: 2h training (covers ETH-lull + NQ daily maintenance)
-#   - Fri    20:00 UTC: starts the weekend run (caps at 49h, covers Fri close
+#   - Mon-Thu 21:00 UTC: 2h training (NQ daily maintenance window)
+#   - Fri    21:00 UTC: starts the weekend run (caps at 49h, covers Fri close
 #                       through Sun reopen)
 #   - Sat/Sun: skipped (already in weekend run from Friday)
 #
@@ -16,7 +17,7 @@
 #
 # Logs: /app/data/rl/daemon.log
 
-TRAIN_HOUR_UTC=20          # 20:00 UTC = 22:00 Stockholm CEST (summer)
+TRAIN_HOUR_UTC=21          # 21:00 UTC = 23:00 Stockholm CEST (matches NQ daily maintenance start)
 DAILY_DURATION_H=2         # Mon-Thu run length
 WEEKEND_DURATION_H=49      # Fri 20:00 → Sun 21:00 = ~49h
 MAX_RETRIES=3              # Max retries per pipeline run on failure
