@@ -218,11 +218,27 @@ class OverlayBroadcaster:
                 return False
             return sp_ok and tp_ok
 
-        closed = [
-            t
-            for t in trades
-            if t.get("id") != "active" and (t.get("session_date") or "") == today_str and _has_valid_levels(t)
-        ]
+        # 48-hour rolling window instead of session_date == today_str.
+        # The previous filter dropped every closed trade the moment UTC
+        # crossed midnight (CEST early-morning, when the user is most
+        # active reviewing the prior session). 48h keeps yesterday's
+        # session fully visible without unbounded chart clutter.
+        cutoff_epoch = int(datetime.now(tz=timezone.utc).timestamp()) - 48 * 3600
+
+        def _within_window(t: dict) -> bool:
+            ts_raw = t.get("ts")
+            if not ts_raw:
+                return False
+            try:
+                ts_clean = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                dt = datetime.fromisoformat(ts_clean)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp()) >= cutoff_epoch
+            except Exception:
+                return False
+
+        closed = [t for t in trades if t.get("id") != "active" and _within_window(t) and _has_valid_levels(t)]
         # Floor zero-duration trades (closed_at <= ts) up to entry+60s in the
         # payload below — keeps instant-stop fills visible as a 1-min shape
         # instead of dropping them. Sort newest-first for stable iteration.
@@ -602,6 +618,29 @@ class OverlayBroadcaster:
                             if dedup in swing_seen:
                                 continue
                             swing_seen.add(dedup)
+                            levels.append({"name": name, "price": price})
+
+                    # Inject TPO POC/VAH/VAL (family="tpo": tpoc/tvah/tval/tibh/tibl)
+                    # as standalone chart-spanning levels. Same rationale as swings
+                    # — they're zone-members today, but the user wants chart-wide
+                    # horizontal lines so the rotation/balance landmarks stay
+                    # visible when scrolled away from the touched zone.
+                    tpo_seen: set[tuple[str, float]] = set()
+                    for z in full_zones_for_swings:
+                        for m in z.get("members_detail") or []:
+                            fam = str(m.get("family") or "")
+                            if fam != "tpo":
+                                continue
+                            name = str(m.get("name") or "")
+                            try:
+                                price = float(m.get("price"))
+                            except (TypeError, ValueError):
+                                continue
+                            qp = round(price / 0.25) * 0.25
+                            dedup = (name, qp)
+                            if dedup in tpo_seen:
+                                continue
+                            tpo_seen.add(dedup)
                             levels.append({"name": name, "price": price})
                     await self.reconcile_zones(zones)
                     # reconcile_position emits a separate `pos:current` shape

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.9.1
-// @description  Phase 1 TP visual changed 2R → 1.5R to align with the model's BE-lock threshold (BE_LOCK_R in broker_adapter). Chart's green band now marks the EXACT level where the model fires BE-lock and the trade transitions Phase 1 → Phase 2. Visual matches model behavior. Trail history + event markers from 0.9.0 unchanged.
+// @version      0.10.0
+// @description  Object-tree folders (Arnold • Zones / Swings / TPO / FVG / Order Blocks / Active Trade / Closed Trades) so families collapse with one click. TPO POC/VAH/VAL/IBH/IBL now render as chart-spanning purple horizontal lines. 0.9.1 visual / Phase-1 mechanics preserved.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -102,6 +102,40 @@
   // --- Drawing registry ---
   const drawn = new Map(); // key → entityId
 
+  // ── Shape groups (TV Object Tree folders) ─────────────────────────────
+  // Lets the user collapse / hide a whole family of arnold drawings with
+  // one click from TV's right-hand Object Tree sidebar. Created lazily on
+  // first shape add, then `addShapeToGroup` for subsequent shapes. Group
+  // creation is best-effort — if the TV build doesn't expose
+  // `shapesGroupController`, the shapes simply remain ungrouped (still
+  // visible, just one entry per shape in the tree).
+  const _groups = new Map(); // logical-name → tv-group-id
+  function _ensureGroupAndAdd(logicalName, shapeId) {
+    if (!chart || shapeId == null) return;
+    try {
+      const gc = chart.shapesGroupController && chart.shapesGroupController();
+      const sel = chart.selection && chart.selection();
+      if (!gc || !sel) return;
+      const existing = _groups.get(logicalName);
+      if (existing != null) {
+        try { gc.addShapeToGroup(existing, shapeId); } catch (_) {}
+        return;
+      }
+      // First shape for this group → create via selection.
+      const priorSel = sel.allSources ? sel.allSources().slice() : [];
+      sel.clear();
+      sel.add(shapeId);
+      const newId = gc.createGroupFromSelection();
+      sel.clear();
+      // Restore prior selection (best effort) so we don't disrupt the user.
+      for (const s of priorSel) { try { sel.add(s); } catch (_) {} }
+      if (newId != null) {
+        try { gc.setGroupName(newId, logicalName); } catch (_) {}
+        _groups.set(logicalName, newId);
+      }
+    } catch (_) { /* group failure is non-fatal */ }
+  }
+
   function safeRemove(key) {
     const entityId = drawn.get(key);
     if (entityId == null || !chart) return;
@@ -173,6 +207,7 @@
       );
       if (id != null) {
         drawn.set(p.key, id);
+        _ensureGroupAndAdd('Arnold • Zones', id);
       } else {
         return false;
       }
@@ -216,7 +251,10 @@
               },
             }
           );
-          if (mid != null) drawn.set(memberKey, mid);
+          if (mid != null) {
+            drawn.set(memberKey, mid);
+            _ensureGroupAndAdd('Arnold • Zones', mid);
+          }
         } catch (e) {
           // Individual member-line failure shouldn't kill the zone draw.
           // Log once via sendError, continue with other members.
@@ -485,6 +523,7 @@
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
       }
       drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
+      _ensureGroupAndAdd(isLive ? 'Arnold • Active Trade' : 'Arnold • Closed Trades', shapeId);
       _updateTrailStopLine(p.key, trailStopPrice);
       return true;
     } catch (e) {
@@ -701,17 +740,25 @@
   const drawnLevels = new Map();
   const _LEVEL_META = {
     // Swings — chart-spanning horizontal lines, tier-graded amber→red.
-    daily_swing_high:   { color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
-    daily_swing_low:    { color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
-    weekly_swing_high:  { color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
-    weekly_swing_low:   { color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
-    monthly_swing_high: { color: '#dc2626', shape: 'horizontal_line', showPrice: true },
-    monthly_swing_low:  { color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    daily_swing_high:   { family: 'Swings', color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    daily_swing_low:    { family: 'Swings', color: '#fbbf24', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_high:  { family: 'Swings', color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    weekly_swing_low:   { family: 'Swings', color: '#f59e0b', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_high: { family: 'Swings', color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    monthly_swing_low:  { family: 'Swings', color: '#dc2626', shape: 'horizontal_line', showPrice: true },
+    // TPO — POC / VAH / VAL of the current session. Chart-spanning lines so
+    // rotation / balance reference levels stay visible across the chart.
+    // Names match level_monitor's MonitoredLevel emissions (family="tpo").
+    tpoc: { family: 'TPO', color: '#a855f7', shape: 'horizontal_line', showPrice: true },
+    tvah: { family: 'TPO', color: '#a855f7', shape: 'horizontal_line', showPrice: true, dashed: true },
+    tval: { family: 'TPO', color: '#a855f7', shape: 'horizontal_line', showPrice: true, dashed: true },
+    tibh: { family: 'TPO', color: '#c084fc', shape: 'horizontal_line', showPrice: true, dashed: true },
+    tibl: { family: 'TPO', color: '#c084fc', shape: 'horizontal_line', showPrice: true, dashed: true },
     // FVG / Order Block — translucent rectangles spanning a price range.
-    fvg_bullish:         { color: '#34d399', shape: 'rectangle' },
-    fvg_bearish:         { color: '#f87171', shape: 'rectangle' },
-    order_block_bullish: { color: '#34d399', shape: 'rectangle' },
-    order_block_bearish: { color: '#f87171', shape: 'rectangle' },
+    fvg_bullish:         { family: 'FVG', color: '#34d399', shape: 'rectangle' },
+    fvg_bearish:         { family: 'FVG', color: '#f87171', shape: 'rectangle' },
+    order_block_bullish: { family: 'Order Blocks', color: '#34d399', shape: 'rectangle' },
+    order_block_bearish: { family: 'Order Blocks', color: '#f87171', shape: 'rectangle' },
   };
 
   function applyLevel(p) {
@@ -759,17 +806,25 @@
           }
         );
       } else {
+        const overrides = {
+          linecolor: meta.color,
+          linewidth: 1,
+          showPrice: !!meta.showPrice,
+          showLabel: false,
+        };
+        if (meta.dashed) overrides.linestyle = 2;
         id = chart.createMultipointShape(
           [{ time: now, price: p.price }],
           {
             shape: meta.shape,
             ...bgFlags,
-            overrides: { linecolor: meta.color, linewidth: 1, showPrice: !!meta.showPrice, showLabel: false },
+            overrides,
           }
         );
       }
       if (id == null) return false;
-      drawnLevels.set(p.key, { shapeId: id });
+      drawnLevels.set(p.key, { shapeId: id, family: meta.family });
+      if (meta.family) _ensureGroupAndAdd(`Arnold • ${meta.family}`, id);
       return true;
     } catch (e) {
       sendError(`level draw failed for ${p.name}: ${e instanceof Error ? e.message : String(e)}`);
