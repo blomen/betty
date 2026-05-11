@@ -5,6 +5,130 @@
 >
 > When wiring a new provider or auditing an existing one, walk this document top-to-bottom. The agent checklist in §12 is the acceptance criterion.
 
+## Auto-navigation invariant (READ THIS BEFORE TOUCHING ANY WORKFLOW)
+
+**The mirror only auto-navigates the tab in ONE case: when the user clicks a row on the arb page, the soft anchor + each counter tab are driven to that event's page.** Everything else is passive — `sync_balance`, `sync_history`, `check_login`, settle flows, redeem flows, etc. read off whatever URL the user has open. No `page.goto` allowed in those code paths.
+
+| Action | Auto-nav? |
+|---|---|
+| User clicks arb row → soft anchor + counter legs nav to event | **YES** — only allowed nav |
+| `workflow.navigate_to_event(page, bet)` | YES — invoked from the arb-click path above |
+| Bet placement (`prep_betslip`, `place_bet`) | NO — operates on the already-navigated page |
+| `sync_balance(page)` / `fetch_balance(page)` | NO — read from cache, or scrape current page |
+| `sync_history(page)` | NO — read cached coupon-history body, or no-op when not on history page |
+| `check_login(page)` | NO — read intercepted state, or scrape current page |
+| Settlement / redeem / claim flows | NO — no-op when not already on the right portfolio/positions page |
+| Pending loop's 60s tick | Scrapes only — never navigates |
+
+If you're tempted to add `page.goto(...)` outside `navigate_to_event`, **stop**. The mirror's job is to watch + intercept + sync; the user owns navigation outside of the arb event-click path. Anything that needs to be "where the user is" should:
+
+1. Read from the browser interceptor cache (`browser.provider_data` is populated by every API response the page makes — coupon-history, wallets, etc. — without us re-issuing the call).
+2. Or no-op when the page isn't on the right URL and let the next sync tick pick it up after the user navigates manually.
+
+Existing examples of the passive pattern:
+- `polymarket._history` / `_scrape_portfolio` / `_redeem_all` — bail when not on `/portfolio?tab=…`.
+- `gecko.sync_history` — read `provider_data[pid]['coupon_history_by_url']` populated by the interceptor; never navigates.
+- `kambi.sync_history` — try KSP API only; no auto-nav fallback.
+- `interwetten.sync_history` — bail when not on `/journal/bets`.
+- `strategies/altenar._sync_history` — bail when not on a `betHistory` URL.
+
+Violating this invariant breaks the user's mental model and clobbers whatever page they have open.
+
+## Reactive sync architecture (PendingLoop polling REMOVED — 2026-05-12)
+
+There is no 60s background tick anymore. Bet recovery and settlement reconciliation are entirely event-driven:
+
+```
+User navigates provider tab to /history or /portfolio?tab=positions
+        ↓ (page makes the bookmaker's history API call)
+browser.py interceptor matches _HISTORY_KEYWORDS
+        ↓ caches body to provider_data[pid]['coupon_history_by_url']
+        ↓ emits history_intercepted SSE
+router.py _on_browser_event (SYNCHRONOUS debounce — 5 s per provider)
+        ↓ asyncio.ensure_future(_reactive_history_sync(pid))
+_reactive_history_sync(pid)
+        ↓ workflow.sync_history(page)  ← passive read of cached body / authed-fetch / DOM scrape
+        ↓ reconcile_and_publish(...)   ← matches DB pending against settled provider entries
+        ↓ pending_loop._record_unknown_open_bets(...) ← inserts pending entries not in DB
+```
+
+**Critical invariants for new providers:**
+
+1. **Add the bookmaker's history-response URL to `_HISTORY_KEYWORDS` in [browser.py](../arnold/mirror/browser.py).** Substring match, case-insensitive. Polymarket needed BOTH `data-api.polymarket.com/trades` and `data-api.polymarket.com/positions`. Pinnacle: `arcadia.pinnacle.se/0.1/bets`. Cloudbet: `sports-betting/v4/bets/positions`. Kalshi: `event_positions`. Gecko V2: `coupon-history`. Altenar tenants: `widgetbethistory`. If the URL isn't matched, `history_intercepted` never fires and recovery doesn't start.
+
+2. **`workflow.sync_history(page)` MUST be passive.** Three valid patterns:
+   - **Cached body read** (Gecko V2): the interceptor stashes the response under `coupon_history_by_url`. `sync_history` calls `get_active_browser()` and reads from `provider_data[pid]`.
+   - **Authed API fetch** (Altenar): use `_authed_fetch(page, url)` which pulls the auth token from page localStorage. No page navigation.
+   - **DOM scrape of current URL** (Polymarket): tab-state-gated. Returns `[]` when not on the right page; populates when the user lands there.
+
+3. **History parser must map every open-state variant.** This is the single most common silent-drop bug. Required mappings:
+
+   | Raw status | Mapped status |
+   |---|---|
+   | `""` (missing), `"0"`, `"open"`, `"pending"`, `"active"`, `"accepted"`, `"placed"`, `"running"` | `"pending"` |
+   | `"won"`, `"win"`, `"1"` | `"won"` |
+   | `"lost"`, `"lose"`, `"2"` | `"lost"` |
+   | `"void"`, `"voided"`, `"cancelled"`, `"refund"`, `"3"` | `"void"` |
+   | `"cashout"`, `"cashed_out"`, `"4"` | `"cashout"` |
+
+   Some providers ship the result in a different key (Gecko V2's `betsStatus: {"won": N}` / `{"lost": N}` while `couponStatus: null`). Read priority: result-encoding dict → couponStatus → top-level status → "pending" default. NEVER return None for unknown — that's how every open bet disappears silently.
+
+4. **Synchronous debounce.** The 5s gate lives in the SSE callback BEFORE `asyncio.ensure_future`. Putting it inside the async task means concurrent `history_intercepted` events all read the same stale timestamp before any writes back → all pass the gate → duplicate inserts.
+
+5. **Workflows access the browser via module-level `get_active_browser()`** in `arnold/mirror/browser.py`. Never attach attributes to `page.context` — Playwright proxies may strip them.
+
+## Manual-mode bet recorder (`play_loop._record_manual_bet`)
+
+When the user clicks an arb row directly (no auto-runner), `bet_intercepted` events from placements get routed through `play_loop.on_bet_intercepted` → fallback path → `_record_manual_bet`. Rules:
+
+- **Parse `actual_stake` from the RESPONSE body, not the request.** Bookmakers stake-limit (user requested 559 kr, slip accepted 171; request body still says 559 → recording it produces a wrong row).
+- **If `actual_stake is None or <= 0`, defer.** Broadcast `bet_record_deferred` SSE (frontend shows amber toast prompting "open <provider> history to record"). Reactive sync from the bookmaker's own history API will pick up the correct accepted amount when the user navigates to history.
+- **Dedup keyed on `(provider_id, parsed_bet_id_or_body_hash)` with 60s TTL.** The same placement can fire `bet_intercepted` multiple times (request + response halves, retries, page re-emits). Without dedup → 4× duplicate inserts (we saw this with Polymarket).
+- **Correlate event/market/outcome from `browser._user_picked_opp[pid]`** — cached by `/mirror/arb/navigate-opp` when the user clicked the arb row. Carries `event_id`, `market`, `outcome`, `point`, `planned_odds`.
+- **Free-text event name → `bet.boost_event`** (repurposed field, originally for boost bets). Backend's `/api/opportunities/play/pending-bets` surfaces it as `event_name`. Frontend pending row falls back to it when `home_team`/`away_team` are null.
+
+**Polymarket CLOB caveat:** order placement frequently bypasses our HTTP intercept (WebSocket signing path, or different endpoint). `clob.polymarket.com/order` appears in the log inconsistently. The reliable capture is reactive sync via `/portfolio?tab=positions` — always navigate there after a polymarket placement.
+
+## DOM-scrape live prices: match by team name
+
+When a workflow's live-price scrape reads the slip/event DOM (e.g. `read_outcome_odds_dom`), it must NOT pick columns by index (`home=0, away=1, draw=middle`). The bookmaker's display column order doesn't always match the scanner's home/away convention.
+
+**Canonical breakage:** UFC fights. The scanner pivots on the promoter API where Costa is home / Allen is away. Betinia renders Allen in column 0 (their "home" by their own convention). idx=1 → Costa @ 2.16 labeled as Allen's odds → wrong arb math.
+
+**Pattern:** pass `display_home` and `display_away` into the JS payload. JS tries:
+1. Full team name (lower) `includes(colText)` → column wins.
+2. Surname (last word, ≥3 chars) `includes(colText)` → column wins.
+3. Fall back to index-based mapping (home=0, away=last, draw=1, over=0, under=1).
+
+Surface the matched method in the debug dict so the log shows whether team-name or index match won — easy to tell when a new sport silently regresses.
+
+## Frontend pending row contract
+
+Two render sites in [PlayPage.tsx](../arnold/frontend/src/pages/PlayPage.tsx) must stay synchronised:
+- Soft-cluster pending list (~line 2879)
+- Unlimited-cluster pending list (~line 3690)
+
+Required fields per row:
+
+| Field | Source | Fallback chain |
+|---|---|---|
+| Event label | `home_team v away_team` | `event_name` (from `bet.boost_event`) → `event_id.split(':').slice(1,3).join(' v ')` → `'Unknown event'` — never blank |
+| Outcome / market | `p.outcome ?? p.market` | — |
+| Odds | `formatOddsWithCents(p.odds, isPolymarket)` | shows `(XX¢)` for crypto providers |
+| Stake | provider-currency aware (kr vs $) | — |
+| `placed HH:MM` | `p.placed_at` | "—" |
+| `starts HH:MM · countdown` | `p.start_time` + `fmtTtkFromIso` + `ttkClass` colors | "no start time" |
+| `live` pill (amber) | `now > start && now < start + 3h` | — |
+| `ready to settle` pill (emerald) | `now > start + 3h && !detected_settlement` | — |
+
+`detectedSettlements[bet_id]` adds won/lost/void chip + profit when reconcile fires.
+
+## Global event+market blacklist
+
+The arb table filter derives `placedEventMarketKeys` from `pendingByProvider` and hides any opp whose `(event_id, market)` is in the set. Normalises `1x2 ↔ moneyline` (scanner emits both names for the same 3-way / 2-way market). Cross-provider: a BETINIA pending bet on PariVision-G2 hides the same arb under every cluster. Different markets on the same event (totals, spreads, 1X2 outcomes on a moneyline-placed event) stay visible.
+
+Implemented inline at the top of the `subTab === 'arb'` render block in `PlayPage.tsx`.
+
 ---
 
 ## 1. Overview
@@ -589,6 +713,197 @@ def set_run(self, run: bool) -> bool:
 
 ---
 
+## 8b. User-pick mode (manual cell-click drain workflow)
+
+> **Added 2026-05-10.** Soft-anchor drain workflow where the operator drives the play loop manually by clicking arb-row cells, instead of letting an auto-runner pop opps from a queue. Auto-runner stays available for unlimited providers (Polymarket / Kalshi) — this section covers the **manual cell-click path** added on top.
+
+### Problem this solves
+
+The auto-runner's bet loop processes opps autonomously: pop top → navigate → wait for place. For a soft-anchor drain (BETINIA → sharp counter), the operator wants to **see** every prospective arb in the list, **pick which one** to act on, and watch live odds drift in place. Auto-runner behaviour conflicts with this — its top-opp watcher dethrones picks mid-flight, and `_load_all_legs` navigates without operator consent. The user-pick mode subordinates the runner so the cell-click drives navigation.
+
+### Endpoint
+
+`POST /mirror/arb/navigate-opp` ([arnold/mirror/router.py](../arnold/mirror/router.py))
+
+```json
+{
+  "provider_id": "betinia",
+  "opp": { "...full opp from /api/opportunities/arb-workflow..." },
+  "leg":  { "...optional explicit leg meta — wins over opp.legs lookup..." }
+}
+```
+
+Pipeline:
+1. Stop any auto-runner for `provider_id` and remove from coordinator's `_provider_ids` (kills the dethrone watcher).
+2. Resolve which leg of the opp to use:
+   - explicit `leg` in body, OR
+   - `opp._picked_leg` (frontend convention), OR
+   - `legs[].provider == provider_id`, OR
+   - any leg in the same cluster (`_PROVIDER_TO_CLUSTER`) — handles Altenar siblings.
+3. `find_tab` (or `open_tab(home_url)` if missing).
+4. Build a `bet_ns` from `_opp_to_bet(opp, leg)` → `_bet_ns(bet)`.
+5. Emit `arb_leg_started` (with `event_id`).
+6. Call `wf.navigate_to_event(page, bet_ns)`. Emit `arb_leg_navigated`.
+7. Run `ProviderRunner._is_event_closed(page)` — see §8c. If closed → emit `arb_leg_event_closed`, return `{status: "event_closed"}`. **Stop here.**
+8. **Branch on placement mode**:
+   - **Guided counter** (`autonomous_placement=False` AND not the soft anchor's own cluster) — nav-only, emit `arb_leg_synced {guided: true}`, return `{status: "nav_only"}`. No prep, no slip stream.
+   - **Soft anchor** OR **autonomous** (Polymarket SDK) — call `prep_betslip`, then start the live-odds poll task (§8d). Emit `arb_leg_synced`, return `{status: "synced"}`.
+
+### SSE events
+
+| Event | When | Payload essentials |
+|---|---|---|
+| `arb_leg_started` | Right after the click | `provider_id, role, planned_odds, planned_stake, user_picked: true, event_id` |
+| `arb_leg_navigated` | After `navigate_to_event` returns OK | `provider_id, url, user_picked: true, event_id` |
+| `arb_leg_event_closed` | If `_is_event_closed` matches | `provider_id, event_id, url, user_picked: true` |
+| `arb_leg_synced` | Anchor: after prep+stream start. Counter: after nav-only | `provider_id, planned_odds, planned_stake, url, user_picked: true, event_id, [guided: bool]` |
+| `arb_leg_failed` | Any step fails | `provider_id, stage, reason` |
+| `arb_leg_odds` | Each tick where live odds drift | `provider_id, live_odds, planned_odds, user_picked: true, event_id` |
+
+**ALL of these MUST be in `useMirrorStream`'s allowlist** in [arnold/frontend/src/hooks/useMirrorStream.ts](../arnold/frontend/src/hooks/useMirrorStream.ts) — `EventSource.addEventListener` silently drops events whose type isn't registered. Pitfall #18 in §15.
+
+### Frontend integration
+
+| Layer | What |
+|---|---|
+| Each arb row | Per-leg clickable cells (BET = anchor, each HEDGE = counter). `onClick` calls `api.navigateOpp(legPid, {...opp, _picked_leg: leg})`. Per-provider in-flight lock (`navInFlight: useRef<Set>`) drops concurrent clicks. |
+| Status feedback | While in flight: amber pulse on the clicked cell. Synced: emerald cell. `event_closed`: row added to `drainedEventIds`, filtered from list, status="event finished — drained, click next" — **no auto-pop**. |
+| Per-leg sync map | `syncedLegs: Record<event_id, Set<provider_id>>` populated on `arb_leg_synced` (gated on `data.user_picked === true`). Row gets `ring-1 ring-emerald-500/40` + green `●` when ALL legs in `opp.legs` are in the set ("ready to place"). |
+| Live odds streaming | `arb_leg_odds` handler mutates `oppsByCluster[cluster][N].legs[match].odds = live`, recalcs `guaranteed_profit_pct = (1 / Σ(1/odds_i) − 1) × 100`, re-sorts the cluster. **No auto-renav on dethrone** — the row visibly moves to its new rank, operator clicks again if they want the new top. |
+
+### Persistence
+
+| Layer | Persisted? |
+|---|---|
+| `mirror_event_log` | ✅ every SSE including `arb_leg_odds` (post-mortem replay) |
+| `mirror_provider_state` / `mirror_runner_state` | ✅ updated on every state transition |
+| `arb_live_odds` table | ❌ intentionally NOT — would be 1 Hz × every active poll = noisy. Server's `/api/opportunities/arb-workflow` has its own 60-s cache TTL that refreshes naturally. |
+| `bets` (`/api/bets`) | ✅ on actual placement intercept. Without an active runner, `play_loop.on_bet_intercepted` falls through to `bet_intercepted_unattached` SSE — the bet is logged but lacks `arb_group_id`; correlate manually by `(event_id, market, outcome, ts)`. |
+
+---
+
+## 8c. Detecting a finished or suspended event
+
+`ProviderRunner._is_event_closed(page) -> bool` ([arnold/mirror/provider_runner.py](../arnold/mirror/provider_runner.py)). Two signals — either fires:
+
+1. **Full-phrase text match** in the bookmaker widget's shadow root only (NOT every shadow on the page — nav menus / settled-bet history can contain `avslutat` independently of the picked event):
+
+   ```python
+   const stb = document.querySelector('stb-sportsbook')
+   const root = stb?.querySelector('div')?.shadowRoot
+   const text = (root?.textContent || '').substring(0, 8000).toLowerCase()
+   ```
+
+   Phrases (Swedish + English): `detta evenemang är avslutat`, `evenemanget är avslutat`, `denna match är avslutad`, `matchen är slut`, `event has ended`, `event is over`, `this event is closed`, `market closed`, `market suspended`, `no longer available`, `spel stängt`. **Bare `avslutat` / `avslutad` are too broad — DO NOT add them.**
+
+2. **Lock-state / shell-only DOM scan** (pierces all reachable shadows): counts outcome buttons. If ≥ 80 % carry a `lock|disabled|suspend` class fragment / `aria-disabled` / lock-icon child → suspended. If total buttons = 0 AND no price-shaped text AND `stb-sportsbook` shell rendered with empty shadow content → widget didn't bootstrap; treat as unavailable.
+
+Pre-check sleep is 4 s — gives the WSDK a fair chance to bootstrap before judging emptiness.
+
+---
+
+## 8d. Live-odds streaming (the "mirror" obligation)
+
+The endpoint that drives navigate-opp also spins up a per-provider poll task to scrape live odds and broadcast them as `arb_leg_odds`. This is what makes the local app a true **mirror** — odds drift on the bookmaker tab is reflected in arnold's UI within ~1 s.
+
+### Source priority (per tick)
+
+```
+1. wf.read_outcome_odds_dom(page, bet)   ← primary, always-fresh
+2. wf.check_live_price(page, bet)        ← cached GetEventDetails
+3. wf.read_slip_odds(page, expected_event_id=eid)   ← slip click-time only
+```
+
+### Why DOM scrape is primary
+
+The bookmaker keeps its rendered DOM in sync with the live price feed (whatever transport — internal WebSocket, push channel, polled HTTP) — that's what the user sees on screen. Reading `OddValue` text from the widget's shadow DOM gives the always-current value, independent of which transport the bookmaker uses.
+
+The slip is **click-locked** (`shouldUpdate: false`) — its `selection.odd.price` doesn't track drift after the user's click. Trusting the slip would freeze the UI at click-time. Only fallback when both DOM scrape and `check_live_price` cache are empty.
+
+### `read_outcome_odds_dom` shape (Altenar reference impl)
+
+For Altenar's WSDK (BETINIA / QUICKCASINO / DBET / etc.):
+
+```js
+const stb = document.querySelector('stb-sportsbook')
+const root = stb?.querySelector('div')?.shadowRoot
+const wrappers = root.querySelectorAll('[class*="EventDetailsMarketWrapperBase"]')
+
+// Match by SHAPE — wrappers don't carry header text:
+//   1x2          → 3 columns
+//   moneyline    → 2 columns, no draw, no över/under, no +/-
+//   total        → 2 columns containing över/under
+//   spread       → 2 columns containing +N or -N
+const targetWrap = /* first wrapper of matching shape */
+
+// Pick column by outcome:
+//   home  → 0
+//   draw  → 1
+//   away  → cols.length >= 3 ? 2 : 1
+//   over  → 0
+//   under → 1
+const oddValue = targetWrap.querySelectorAll('[class^="EventDetailsMarketColumn-"]')[idx]
+                          .querySelector('[class*="OddValue"]')
+return parseFloat(oddValue.textContent.trim())
+```
+
+Selector quirks:
+- `[class^="EventDetailsMarketColumn-"]` (starts-with) is required — `[class*=...]` would also match `EventDetailsMarketColumnsBase` (the parent container) and inflate the column count.
+- The outer host's light DOM is empty `<div></div>` — content lives only in the shadow root.
+
+Other workflows: stub-and-replace by overriding `read_outcome_odds_dom` per workflow class — DOM structure is provider-specific.
+
+### Poll loop (canonical)
+
+```python
+async def _poll_live_price():
+    last: float | None = None
+    while True:
+        await asyncio.sleep(1.0)
+        live = None
+        if hasattr(wf, "read_outcome_odds_dom"):
+            live = await wf.read_outcome_odds_dom(page, bet_ns)
+        if live is None and hasattr(wf, "check_live_price"):
+            live, _ = await wf.check_live_price(page, bet_ns)
+        if live is None and hasattr(wf, "read_slip_odds"):
+            live = await wf.read_slip_odds(page, expected_event_id=eid)
+        if live is not None and live != last:
+            last = live
+            broadcaster.publish("arb_leg_odds", {
+                "provider_id": pid, "live_odds": live,
+                "planned_odds": leg.get("odds"), "user_picked": True,
+                "event_id": opp.get("event_id"),
+            })
+```
+
+The task is stored in `browser._user_picked_tasks[provider_id]` — replaced on next nav-opp click for the same provider (cancel the old, start a fresh one).
+
+### Frontend reaction to `arb_leg_odds`
+
+```ts
+setOppsByCluster(prev => {
+  for (const [cluster, opps] of Object.entries(prev)) {
+    const updated = opps.map(o => {
+      if (o.event_id !== eid) return o
+      const legs = o.legs.map(l =>
+        (l.provider ?? l.provider_id) === pid ? { ...l, odds: live } : l
+      )
+      let invSum = 0
+      for (const l of legs) invSum += 1 / Number(l.odds)
+      const newProfit = (1 / invSum - 1) * 100
+      return { ...o, legs, guaranteed_profit_pct: newProfit }
+    })
+    next[cluster] = [...updated].sort((a, b) =>
+      (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
+  }
+  return next
+})
+```
+
+No DB write. Server's `/api/opportunities/arb-workflow` re-scans on its 60-s cache TTL.
+
+---
+
 ## 9. Provider capability matrix
 
 Current wiring status as of 2026-04-30. **Legend:** ✅ working, ⚠️ partial/needs testing, ❌ not wired, A=autonomous, G=guided, M=manual
@@ -817,6 +1132,22 @@ class PlatformWorkflow(BaseWorkflow):
 7. **`set_run(False)` not waking a runner waiting on Place/Skip at STATE_READY.** ProviderRunner sets `_skip_event`. ArbRunner intentionally does NOT — pause-mid-anchor unwinds at the next iteration boundary.
 8. **`hasattr(workflow, "fetch_balance")` returning False** — graceful degradation, not a bug. The interceptor still picks up balance changes whenever the user touches the provider site. Don't add `fetch_balance` stubs that 404 — leave it absent and rely on the interceptor.
 9. **Stale `arnoldsports/mirror/...` paths in code/docs.** The project was renamed (firev → arnold, arnoldsports/ collapsed into arnold/) on 2026-04-23/24. All paths now live under `arnold/mirror/`.
+
+10. **`useMirrorStream` event-type allowlist out of date.** `EventSource.addEventListener('foo', cb)` only fires for events whose `event:` field == `foo` — events not in the registered list are **silently dropped**. When adding new SSE events on the backend, also add them to the array in [arnold/frontend/src/hooks/useMirrorStream.ts](../arnold/frontend/src/hooks/useMirrorStream.ts). Symptom: backend log shows `[POLL] FIRE odds=X.XX` and SSE captured via curl confirms the event fires, but the frontend's `[arb_leg_odds] received…` debug log never appears. Cost a session of debugging during the §8b live-odds wiring.
+
+11. **Bare `avslutat` / `avslutad` in `_is_event_closed` phrase list.** Too broad — match menu chips ("avslutade matcher" tab), settled-bet history rows, live-match in-progress badges. Use full sentences only (`detta evenemang är avslutat`, `evenemanget är avslutat`, `denna match är avslutad`, `matchen är slut`). False positives strand live events in `drainedEventIds` and the operator can't click their hedges.
+
+12. **`_is_event_closed` text scan piercing all shadow roots.** If you traverse every reachable shadow on the page, "avslutat" or other closed-phrase fragments from unrelated widgets (notification banners, settled history overlays, live-results sidebars) bleed in. Restrict the scan to the bookmaker's main widget shadow only — for Altenar, `document.querySelector('stb-sportsbook')?.querySelector('div')?.shadowRoot.textContent`.
+
+13. **Auto-renav on dethrone in user-pick mode.** If `arb_leg_odds` mutates the cluster's opp list AND the picked event drops in rank, do NOT auto-fire `navigateOpp(newTop)` — it races the in-flight navigate, the operator's click, and the closed-event auto-skip into a haywire cascade. The list re-sorts visually; operator clicks the new top if they want to switch.
+
+14. **Auto-pop-next on `event_closed` in user-pick mode.** Same recursion problem — closure captures stale `opps` + stale `drainedEventIds`. Drain the row, set status `event finished — drained, click next`, **STOP**. Operator picks the next row.
+
+15. **Slip price treated as live.** `selection.odd.price` in WSDK localStorage is **click-locked** (`shouldUpdate: false`). Always falls behind drift. DOM scrape (§8d) is the only always-fresh source. Slip is a fallback when DOM scrape AND `check_live_price` cache both return None.
+
+16. **DOM-scrape selector matching the parent container.** `[class*="EventDetailsMarketColumn"]` matches both `EventDetailsMarketColumn-…` AND `EventDetailsMarketColumnsBase-…` (the wrapper) — column count is inflated and `idx` lands on the wrong outcome. Always use `[class^="EventDetailsMarketColumn-"]` (starts-with).
+
+17. **Spawning the auto-runner on every BETINIA card click.** Old `handleCardClick` called `api.startPlayLoop` which spawned an `ArbRunner` for the soft anchor. The runner's bet loop + top-opp watcher then auto-navigated the tab without operator consent. For drain mode, **card click ONLY opens the tab** — no runner spawn. Bet placement still records via `play_loop.on_bet_intercepted` fallback (emits `bet_intercepted_unattached` SSE; correlates by `(event_id, market, outcome, ts)` if needed).
 
 ---
 

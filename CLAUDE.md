@@ -432,6 +432,25 @@ IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLA
 - Daily cap: 10/day per soft provider (uncapped: pinnacle, polymarket, cloudbet)
 - Provider history is source of truth — unknown bets recorded to DB during settlement
 
+**Mirror invariants (read before touching ANY workflow):**
+
+| Rule | Where | Why |
+|---|---|---|
+| Only `navigate_to_event` is auto. Everything else passive — no `page.goto` in `sync_history`, `check_login`, `sync_balance`, settle flows | All workflows | User owns navigation outside arb event-click; auto-nav clobbered open pages |
+| **PendingLoop polling is DELETED.** Recovery is reactive — user navigates to history → `history_intercepted` → `_reactive_history_sync(pid)` → workflow.sync_history → reconcile + `_record_unknown_open_bets` | `router.py` `_on_browser_event` | The user explicitly drives navigation; polling was clobbering pages |
+| History status parser MUST map every open-state variant (`"open"`, `"pending"`, `"active"`, `"accepted"`, `"placed"`, `"running"`, `"0"`, `""`) to `"pending"`. Returning None silently drops every open bet | Each workflow's `_parse_history_entry` | 6 Altenar tenants had this bug; spelklubben's coupon-history shipped null couponStatus |
+| `_record_unknown_open_bets` dedup: provider_bet_id first → (odds, stake) signature as Counter (count-based) → track inserts within the same call so paginated history doesn't double-insert | `pending_loop.py:_record_unknown_open_bets` | Betinia returned same bet × 5 pages → 5 dups |
+| `_record_manual_bet` NEVER falls back to planned/request stake. If response doesn't expose actual_stake → emit `bet_record_deferred` SSE and defer to reactive sync | `play_loop.py:_record_manual_bet` | Bookmakers stake-limit; request body still carries requested amount |
+| `_record_manual_bet` dedup keyed on `(provider_id, parsed_bet_id_or_body_hash)` 60s TTL — same intercept can fire twice (req + resp halves) | `play_loop.on_bet_intercepted` | Polymarket × 4 dup spam |
+| Live-odds debounce lives SYNCHRONOUSLY in the SSE callback (not inside the async task it spawns) | `router.py` `history_intercepted` handler | Concurrent intercepts all read same stale timestamp before any wrote |
+| Workflows reach the active browser via module-level `get_active_browser()`. Never attach attributes to `page.context` — Playwright proxies may strip them | `browser.py:_ACTIVE_BROWSER` | Gecko V2 sync_history reads `provider_data[pid]['coupon_history_by_url']` cache populated by interceptor |
+| DOM-scrape live prices must match by TEAM NAME, not column index. Pass `display_home`/`display_away` into the JS, match by full name + surname, fall back to index | `workflows/altenar.py:read_outcome_odds_dom` | UFC: scanner says Allen=away but Betinia shows Allen first → idx=1 returned Costa price |
+| Bets without an Event row use `bet.boost_event` for the free-text event name. `/api/opportunities/play/pending-bets` surfaces it as `event_name`; UI falls back to that when `home_team`/`away_team` are null | `pending_loop._record_unknown_open_bets` + `opportunities.get_pending_bets` | Manually-recovered bets had blank rows otherwise |
+| Frontend pending row contract: BOTH soft-cluster + unlimited-cluster render sites in `PlayPage.tsx` must show event_name fallback, placed time, starts time + countdown (ttkClass), live/ready-to-settle pills | `PlayPage.tsx` ~2879 + ~3690 | Two divergent renders existed; unified 2026-05-12 |
+| Global event+market blacklist for arb table — derive `placedEventMarketKeys` from `pendingByProvider`, normalise `1x2 ↔ moneyline`, filter `opps` | `PlayPage.tsx` subTab === 'arb' block | Same arb resurfaced after placement; different markets on same event stay visible |
+
+**Polymarket CLOB caveat:** order placement frequently bypasses HTTP intercept (WebSocket or unintercepted paths). The reliable capture is reactive sync via `data-api.polymarket.com/positions` interception when the user navigates to `/portfolio?tab=positions`. Always nav there after placing.
+
 ### Key Files
 ```
 arnold/
