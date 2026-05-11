@@ -57,7 +57,13 @@ class BankrollService:
             cfg = yaml_bonuses.get(p.id) or {}
             amount = float(cfg.get("amount") or 0)
             record = bonus_records.get(p.id)
-            is_available = record is not None and record.bonus_status == "available"
+            # "No row at all" = bonus has never been touched by this profile,
+            # which is functionally identical to status="available" (the row
+            # would default to that on creation). Without this fallback, every
+            # provider with a yaml-defined bonus stays invisible until the
+            # user manually seeds rows via /seed-bonuses, even though the
+            # bonus is still claimable.
+            is_available = record is None or record.bonus_status == "available"
             trigger_actionable = is_available and amount > 0 and balance < amount
 
             provider_data.append(
