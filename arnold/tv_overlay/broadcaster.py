@@ -202,21 +202,59 @@ class OverlayBroadcaster:
         active = [t for t in trades if t.get("id") == "active"]
 
         def _has_valid_levels(t: dict) -> bool:
-            """Skip closed trades whose stop_price / tp_price never got
-            written (e.g., orphan positions flattened via MANUAL_HALT before
-            bracket discovery populated the tracker). The widget falls back
-            to a 1-pt default when these are 0/null, producing tiny 4-tick
-            "Stop: 1.00 / Target: 1.00 / R:R 1" boxes that pollute the
-            chart — drop them at the source instead.
+            """Skip closed trades that have NEITHER recorded stop/tp NOR a
+            valid entry+exit to back-derive from. Trades from the TopstepX
+            backfill have stop_price/tp_price NULL (fills don't carry
+            broker-side bracket levels), but they DO have entry + exit +
+            side + pnl_dollars — enough to synthesize a Phase 1 1R/1.5R
+            widget so the user sees what happened on the chart.
+
+            Drop only if entry or exit is missing — then even the synthetic
+            fallback can't run.
             """
-            sp = t.get("stop_price")
-            tpv = t.get("tp_price")
+            entry = t.get("entry_price")
+            exit_p = t.get("exit_price")
             try:
-                sp_ok = sp is not None and float(sp) > 0
-                tp_ok = tpv is not None and float(tpv) > 0
+                entry_ok = entry is not None and float(entry) > 0
+                exit_ok = exit_p is not None and float(exit_p) > 0
             except (TypeError, ValueError):
                 return False
-            return sp_ok and tp_ok
+            return entry_ok and exit_ok
+
+        def _synth_stop_tp(t: dict) -> tuple[float | None, float | None]:
+            """For trades missing recorded stop/tp (e.g., backfilled rows),
+            back-derive a Phase 1 1R/1.5R reference from the actual entry +
+            exit. We assume the system's standard 1:1.5 risk profile:
+
+              loser  → exit ≈ where stop hit. tp = entry + 1.5 × |exit-entry|
+                                              in the direction we wanted.
+              winner → exit ≈ where the model exited (≥ 1.5R if target hit,
+                              maybe earlier on REV / signal). Treat as the
+                              1.5R reference; back-derive stop at 1R.
+
+            Returns (None, None) if entry / exit unavailable.
+            """
+            try:
+                entry = float(t.get("entry_price"))
+                exit_p = float(t.get("exit_price"))
+            except (TypeError, ValueError):
+                return None, None
+            side = str(t.get("side") or "").lower()
+            is_long = side in ("long", "buy", "0")
+            move = exit_p - entry if is_long else entry - exit_p  # positive = winner
+            if move < 0:
+                # Loser: exit is the stop side.
+                stop = exit_p
+                r_dist = abs(entry - stop)
+                tp = entry + 1.5 * r_dist if is_long else entry - 1.5 * r_dist
+            else:
+                # Winner: exit is on the profit side. Back-derive 1R from 1.5R.
+                tp = exit_p
+                r_dist = abs(tp - entry) / 1.5
+                if r_dist < 0.25:
+                    r_dist = 0.25  # bottom out at one tick so the widget shape exists
+                stop = entry - r_dist if is_long else entry + r_dist
+            return stop, tp
 
         # 48-hour rolling window instead of session_date == today_str.
         # The previous filter dropped every closed trade the moment UTC
@@ -271,11 +309,26 @@ class OverlayBroadcaster:
             # Visual overlap is acceptable; truncating timestamps so the
             # right edge doesn't match `closed_at` is what made the user
             # call the chart "off".
+
+            # Recorded stop/tp from DB (NULL for backfilled trades).
+            db_stop = float(t["stop_price"]) if t.get("stop_price") is not None else None
+            db_tp = float(t["tp_price"]) if t.get("tp_price") is not None else None
+            # Back-derive a 1R/1.5R reference frame when recorded values are
+            # missing. Only applies to closed trades (active trades always
+            # have the live tracker's stop/tp).
+            stop = db_stop
+            tp = db_tp
+            if close_time is not None and (stop is None or stop <= 0 or tp is None or tp <= 0):
+                synth_stop, synth_tp = _synth_stop_tp(t)
+                if stop is None or stop <= 0:
+                    stop = synth_stop
+                if tp is None or tp <= 0:
+                    tp = synth_tp
             payload = {
                 "key": key,
                 "side": side,
                 "entry": float(entry_price),
-                "stop": float(t.get("stop_price")) if t.get("stop_price") is not None else None,
+                "stop": stop,
                 # Prefer the unified-name keys (set explicitly by the active-trade
                 # synthesis dict to carry semantic meaning regardless of DB schema).
                 # Fall back to the DB column names for closed trades polled from
@@ -284,14 +337,14 @@ class OverlayBroadcaster:
                 "original_stop_price": (
                     float(t["original_stop_price"])
                     if t.get("original_stop_price") is not None
-                    else (float(t["stop_price"]) if t.get("stop_price") is not None else None)
+                    else (stop if stop is not None else None)
                 ),
                 "placed_stop_price": (
                     float(t["placed_stop_price"])
                     if t.get("placed_stop_price") is not None
                     else (float(t["final_stop_price"]) if t.get("final_stop_price") is not None else None)
                 ),
-                "tp": float(t.get("tp_price")) if t.get("tp_price") is not None else None,
+                "tp": tp,
                 "size": int(t.get("size") or 1),
                 "entry_time": entry_time,
                 # Closed → close timestamp is the right edge. Open → "now"
