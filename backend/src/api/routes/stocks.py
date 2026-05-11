@@ -379,6 +379,51 @@ def debug_broker(request: Request):
     return out
 
 
+@router.post("/_debug-test-signal")
+async def debug_test_signal(request: Request):
+    """Diagnostic-only: invoke broker.on_signal with a synthetic enter_long
+    signal at the current market price and return whatever the broker
+    returns. Bypasses level_monitor entirely so we can isolate whether the
+    broker side itself accepts entries.
+    """
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    if rt is None:
+        raise HTTPException(status_code=503, detail="stocks runtime not initialized")
+    adapter = rt.adapter
+    if not adapter.tracker.is_flat:
+        return {
+            "skipped": True,
+            "reason": "not flat — refusing to test on live position",
+            "tracker_side": adapter.tracker.side,
+        }
+    # Synthesize a small enter_long signal at the last-tick mid price.
+    try:
+        from src.stocks import dashboard as _ds
+
+        last_tick = (_ds._state.get("ticks") or [None])[-1]
+        last_price = float(last_tick["price"]) if last_tick else 0.0
+    except Exception:
+        last_price = 0.0
+    if last_price <= 0:
+        return {"skipped": True, "reason": "no last tick"}
+    synth = {
+        "action": "enter_long",
+        "price": last_price,
+        "stop_price": last_price - 25 * 0.25,  # 25-tick stop
+        "stop_ticks": 25,
+        "confidence": 0.50,  # well above 0.05 reckless floor
+        "orderflow_score": 0.40,
+        "zone": last_price,
+        "trigger": "zone_entry",
+        "cont_p": 0.55,
+        "rev_p": 0.45,
+        "size": 1.0,
+        "reasoning": {"summary": "DEBUG TEST SIGNAL"},
+    }
+    result = await adapter.on_signal(synth)
+    return {"signal": synth, "result": result}
+
+
 @router.post("/recover")
 async def recover_trading(request: Request):
     """Self-heal a stuck-tracker halt without a container restart.
