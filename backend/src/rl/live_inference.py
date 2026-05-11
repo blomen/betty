@@ -888,3 +888,18 @@ def get_dqn_inference():
         _instance = LiveInference()
         _instance.try_load()
     return _instance
+
+
+def reset_dqn_inference() -> dict:
+    """Drop the cached singleton so the next get_dqn_inference() call reloads
+    all model files from disk. Used after a training run completes to push
+    new weights into the live broker without a container restart.
+
+    Returns a small status dict so the caller can log what changed. The
+    actual reload is lazy — performed on the next inference call — to avoid
+    blocking the HTTP request thread on torch.load + GBT joblib loads.
+    """
+    global _instance
+    prev_type = type(_instance).__name__ if _instance is not None else None
+    _instance = None
+    return {"previous_instance_type": prev_type, "reset": True}

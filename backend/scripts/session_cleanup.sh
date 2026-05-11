@@ -1,10 +1,12 @@
 #!/bin/bash
 # Session cleanup — runs at the end of each scheduled training window.
-# Four actions per the 2026-05-11 design:
+# Five actions:
 #   1. Reset broker.tracker.consecutive_stops + clear any session halts via HTTP
 #   2. Archive today's broker_trades to parquet under /app/data/rl/trades_archive/
 #   3. Prune live_episodes/_chunks/* once they've been merged into the training pool
 #   4. Cancel any orphan TopstepX orders left in the book from broken sessions
+#   5. Reload the live DQN inference singleton so the freshly trained weights
+#      go live without a container restart
 #
 # Idempotent — safe to run multiple times. Logs to /app/data/rl/daemon.log
 # via the caller.
@@ -136,5 +138,15 @@ try:
 except Exception as e:
     print(f'Orphan sweep failed: {e}')
 " 2>&1 | sed 's/^/  /'
+
+# --- 5. Reload live DQN inference singleton ---
+# Training just overwrote dqn_v5.pt + GBT joblibs on disk, but the running
+# broker keeps the previous tensors in RAM. Drop the LiveInference singleton
+# so the next zone touch lazy-reloads from disk — picks up tonight's freshly
+# trained weights without a container restart. Without this step, training
+# is a no-op for live inference until the next manual deploy.
+log "Step 5/5: Reloading live DQN inference"
+curl -s -X POST "http://localhost:8000/api/stocks/reload-model" \
+    -H "X-API-Key: $ARNOLD_API_KEY" 2>&1 | sed 's/^/  /'
 
 log "Session cleanup done."

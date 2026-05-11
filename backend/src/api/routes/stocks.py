@@ -507,6 +507,39 @@ async def debug_test_signal(request: Request):
     return {"signal": synth, "result": result}
 
 
+@router.post("/reload-model")
+async def reload_inference_model(request: Request):
+    """Drop the cached LiveInference singleton so the next zone-touch
+    inference re-reads dqn_v5.pt + GBT joblibs from disk.
+
+    Called by session_cleanup.sh after a training cycle completes so the
+    live broker picks up the freshly-trained weights without a container
+    restart. The reload itself is lazy — the next get_dqn_inference()
+    call performs torch.load + joblib loads on the inference thread, so
+    this request returns immediately.
+    """
+    import os
+
+    from ...rl.live_inference import reset_dqn_inference
+
+    model_path = "/app/backend/data/rl/models/dqn_v5.pt"
+    model_mtime = None
+    if os.path.exists(model_path):
+        model_mtime = datetime.utcfromtimestamp(os.path.getmtime(model_path)).isoformat()
+
+    result = reset_dqn_inference()
+    log.info(
+        "Inference singleton reset (was %s); next zone touch will lazy-load. dqn_v5.pt mtime=%s",
+        result.get("previous_instance_type"),
+        model_mtime,
+    )
+    return {
+        "reset": True,
+        "previous_instance_type": result.get("previous_instance_type"),
+        "dqn_v5_mtime": model_mtime,
+    }
+
+
 @router.post("/recover")
 async def recover_trading(request: Request):
     """Self-heal a stuck-tracker halt without a container restart.
