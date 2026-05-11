@@ -371,7 +371,12 @@ class TopstepXBrokerAdapter:
         ):
             return
 
-        BE_BUFFER_TICKS = 2
+        # BE-lock buffer at 4 ticks ($20/contract) = fees + spread + small
+        # profit cushion. On a funded NQ contract: ~$6.40 round-trip
+        # commission, $5 1-tick spread → 4-tick lock yields ~$8.60 net
+        # profit floor on a stop-hit after BE-lock fires. Tighter than this
+        # (e.g. 2-tick) only covers spread and leaves no real cushion.
+        BE_BUFFER_TICKS = 4
         buffer_pts = BE_BUFFER_TICKS * 0.25
         if self.tracker.side == "long":
             target_stop = self.tracker.entry_price + buffer_pts

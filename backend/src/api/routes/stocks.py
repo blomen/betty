@@ -342,6 +342,43 @@ def resume_trading():
     return {"paused": False, "removed": False, "note": "flag was not set"}
 
 
+@router.get("/_debug-broker")
+def debug_broker(request: Request):
+    """Diagnostic-only: surface broker-adapter wiring + level_monitor link.
+
+    Returns whether level_monitor._broker_adapter is set, the adapter's
+    halt + tracker state, and the pending-trade snapshot if any. Used to
+    diagnose the 'signals fire but no broker activity' failure mode where
+    we can't tell from runtime-status whether the level_monitor instance
+    actually has a reference to the broker.
+    """
+    rt = getattr(request.app.state, "stocks_runtime", None)
+    lm = getattr(request.app.state, "level_monitor", None)
+    out = {
+        "stocks_runtime_present": rt is not None,
+        "app_state_level_monitor_present": lm is not None,
+        "level_monitor_id": id(lm) if lm is not None else None,
+        "level_monitor_broker_adapter_set": getattr(lm, "_broker_adapter", None) is not None
+        if lm is not None
+        else None,
+        "level_monitor_broker_id": id(getattr(lm, "_broker_adapter", None))
+        if lm is not None and getattr(lm, "_broker_adapter", None) is not None
+        else None,
+    }
+    if rt is not None:
+        adapter = rt.adapter
+        out["bootstrap_adapter_id"] = id(adapter)
+        out["bootstrap_halted"] = adapter._halted
+        out["bootstrap_halt_reason"] = adapter._halt_reason
+        out["bootstrap_tracker_flat"] = adapter.tracker.is_flat
+        out["bootstrap_tracker_side"] = adapter.tracker.side
+        out["bootstrap_tracker_entry_price"] = adapter.tracker.entry_price
+        out["bootstrap_pending_trade_set"] = adapter._pending_trade is not None
+        out["bootstrap_signal_lock"] = adapter._signal_lock is not None
+        out["bootstrap_signal_lock_held"] = adapter._signal_lock.locked() if adapter._signal_lock is not None else None
+    return out
+
+
 @router.post("/recover")
 async def recover_trading(request: Request):
     """Self-heal a stuck-tracker halt without a container restart.
