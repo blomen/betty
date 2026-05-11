@@ -30,23 +30,25 @@ import os as _os
 
 _RECKLESS = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
 
-# 2026-05-05: full-reckless tuning. Learning data shows the model has
-# only ~113 correlated samples since 05-01. The conservative gates were
-# silently filtering out the very signals the trainer needs to learn from.
-# Loosened to maximize labeled (obs, action, realized_pnl_r) tuples per day:
-# - MIN_TRADE_INTERVAL_S 10→3: zone-touch density is sub-second; the 10s
-#   floor was rejecting back-to-back signals at the same level
-# - ZONE_COOLDOWN_S 30→5: same reasoning — 30s blocks ~30 signals per zone
-#   when price oscillates; 5s still prevents same-tick re-entries
-# - MIN_CONFIDENCE stays at 0.05 (already at floor)
-# Risk caps (daily_loss, trailing_dd) untouched — those are account survival.
-MIN_TRADE_INTERVAL_S = 3.0 if _RECKLESS else 30.0
+# 2026-05-11 design rule: do NOT hard-gate trade frequency in reckless
+# (paper) mode. The model must SEE realized outcomes of bad timings,
+# losing streaks, and same-zone re-entries to learn when to skip — every
+# rejected signal is a training tuple the trainer never gets. Hard
+# cooldowns make the model permanently naive about when not to trade.
+# Strict mode keeps the structural caps for live-capital protection;
+# in reckless we trust the RL feedback loop to teach the model itself.
+MIN_TRADE_INTERVAL_S = 0.0 if _RECKLESS else 30.0
 # In reckless paper-trading mode this MUST match level_monitor's broker
 # conf floor (0.05) — otherwise this filter silently rejects pivot
 # signals the upstream gate already approved. Today's 12:31 pivot
 # fired 4 signals with OF=0.40 but conf=0.078, all silently dropped.
 MIN_CONFIDENCE = 0.05 if _RECKLESS else 0.30
-ZONE_COOLDOWN_S = 5.0 if _RECKLESS else 120.0  # don't re-enter same zone within N seconds
+# 2026-05-11: zone cooldown ZEROED in reckless. The model learns when to
+# skip re-entries by SEEING the realized outcomes of consecutive losses
+# at the same zone — hard cooldowns prevent those data points from
+# entering the training pool. Strict mode keeps the 120s cap for live
+# capital protection.
+ZONE_COOLDOWN_S = 0.0 if _RECKLESS else 120.0
 DEFAULT_STOP_TICKS = 25  # sensible default if model returns None
 MIN_STOP_TICKS = 15  # minimum stop distance (prevent too-tight stops)
 # 2026-05-05: raised from 40→80. Backtest emits stop_ticks up to 50
