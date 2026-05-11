@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...market_data.tpo import SessionTPO, SessionTPOSet
+from ...market_data.tpo import SessionTPOSet
 from ..config import TICK_SIZE
 
 _FEATURES_PER_SESSION = 12
@@ -23,47 +23,69 @@ _SHAPE_ORDINAL = {"p-shape": 1.0, "b-shape": -1.0, "d-shape": 0.0}
 _OPENING_TYPE_ORDINAL = {"OD": 1.0, "OTD": 0.5, "ORR": -0.5, "OA": 0.0}
 
 
+def _g(session, attr: str, default=None):
+    """Read `attr` from a SessionTPO object OR dict (when `session_data` was
+    serialized via `_asdict()` on the market_service side, level_monitor
+    receives dicts instead of objects). Accepts both transparently."""
+    if session is None:
+        return default
+    if isinstance(session, dict):
+        return session.get(attr, default)
+    return getattr(session, attr, default)
+
+
 def _extract_single_session(
-    session: SessionTPO | None,
+    session,
     current_price: float,
 ) -> np.ndarray:
-    """Extract 12 features from a single session TPO profile."""
+    """Extract 12 features from a single session TPO profile (object or dict)."""
     out = np.zeros(_FEATURES_PER_SESSION, dtype=np.float32)
     if session is None:
         return out
 
-    poc, vah, val = session.poc, session.vah, session.val
+    poc = _g(session, "poc", 0.0) or 0.0
+    vah = _g(session, "vah", 0.0) or 0.0
+    val = _g(session, "val", 0.0) or 0.0
     va_width = vah - val
 
     # 0: price_vs_poc (ticks, normalised to ~[-1, 1])
-    out[0] = np.clip((current_price - poc) / TICK_SIZE / 200.0, -1.0, 1.0)
+    if poc > 0:
+        out[0] = np.clip((current_price - poc) / TICK_SIZE / 200.0, -1.0, 1.0)
     # 1: price_vs_vah
-    out[1] = np.clip((current_price - vah) / TICK_SIZE / 200.0, -1.0, 1.0)
+    if vah > 0:
+        out[1] = np.clip((current_price - vah) / TICK_SIZE / 200.0, -1.0, 1.0)
     # 2: price_vs_val
-    out[2] = np.clip((current_price - val) / TICK_SIZE / 200.0, -1.0, 1.0)
+    if val > 0:
+        out[2] = np.clip((current_price - val) / TICK_SIZE / 200.0, -1.0, 1.0)
     # 3: shape ordinal
-    out[3] = _SHAPE_ORDINAL.get(session.shape, 0.0)
+    out[3] = _SHAPE_ORDINAL.get(_g(session, "shape", ""), 0.0)
     # 4: ib_range (zeroed if not valid)
-    if session.ib_valid:
-        out[4] = np.clip((session.ib_high - session.ib_low) / TICK_SIZE / 200.0, 0.0, 1.0)
+    if _g(session, "ib_valid", False):
+        ib_high = _g(session, "ib_high", 0.0) or 0.0
+        ib_low = _g(session, "ib_low", 0.0) or 0.0
+        out[4] = np.clip((ib_high - ib_low) / TICK_SIZE / 200.0, 0.0, 1.0)
         # 5: price_vs_ib_mid
-        ib_mid = (session.ib_high + session.ib_low) / 2.0
+        ib_mid = (ib_high + ib_low) / 2.0
         out[5] = np.clip((current_price - ib_mid) / TICK_SIZE / 200.0, -1.0, 1.0)
     # 6: poor_extreme signal (+1 poor high, -1 poor low, 0 neither/both)
-    out[6] = float(session.poor_high) - float(session.poor_low)
+    out[6] = float(_g(session, "poor_high", False)) - float(_g(session, "poor_low", False))
     # 7: price_position_in_va (continuous, no discontinuity)
-    # Maps: val→-1, VA_mid→0, vah→+1, above vah→>1, below val→<-1
     if va_width > 0:
         va_mid = (vah + val) / 2.0
         out[7] = float(np.clip((current_price - va_mid) / (va_width / 2.0), -2.0, 2.0))
     # 8: rotation_factor (normalised to ~[-1, 1])
-    out[8] = np.clip(session.rotation_factor / 20.0, -1.0, 1.0)
+    out[8] = np.clip((_g(session, "rotation_factor", 0.0) or 0.0) / 20.0, -1.0, 1.0)
     # 9: opening_type ordinal (directional conviction)
-    out[9] = _OPENING_TYPE_ORDINAL.get(session.opening_type, 0.0)
+    out[9] = _OPENING_TYPE_ORDINAL.get(_g(session, "opening_type", ""), 0.0)
     # 10: opening_direction (+1 up, -1 down, 0 neutral)
-    out[10] = 1.0 if session.opening_direction == "up" else (-1.0 if session.opening_direction == "down" else 0.0)
+    od = _g(session, "opening_direction", "")
+    out[10] = 1.0 if od == "up" else (-1.0 if od == "down" else 0.0)
     # 11: excess signal (upper excess - lower excess, capped)
-    out[11] = np.clip((session.upper_excess - session.lower_excess) / 10.0, -1.0, 1.0)
+    out[11] = np.clip(
+        ((_g(session, "upper_excess", 0.0) or 0.0) - (_g(session, "lower_excess", 0.0) or 0.0)) / 10.0,
+        -1.0,
+        1.0,
+    )
 
     return out
 
@@ -88,14 +110,16 @@ def extract_session_tpo_features(
     if session_tpos is None:
         return np.zeros(_N_FEATURES, dtype=np.float32)
 
-    tokyo_feats = _extract_single_session(session_tpos.tokyo, current_price)
-    london_feats = _extract_single_session(session_tpos.london, current_price)
-    ny_feats = _extract_single_session(session_tpos.ny, current_price)
+    # Accept both SessionTPOSet objects AND dicts (market_service serializes
+    # via _asdict() for storage / JSON, level_monitor receives the dict).
+    tokyo_feats = _extract_single_session(_g(session_tpos, "tokyo"), current_price)
+    london_feats = _extract_single_session(_g(session_tpos, "london"), current_price)
+    ny_feats = _extract_single_session(_g(session_tpos, "ny"), current_price)
 
     migrations = np.array(
         [
-            np.clip(session_tpos.poc_migration_tokyo_london / 200.0, -1.0, 1.0),
-            np.clip(session_tpos.poc_migration_london_ny / 200.0, -1.0, 1.0),
+            np.clip((_g(session_tpos, "poc_migration_tokyo_london", 0.0) or 0.0) / 200.0, -1.0, 1.0),
+            np.clip((_g(session_tpos, "poc_migration_london_ny", 0.0) or 0.0) / 200.0, -1.0, 1.0),
         ],
         dtype=np.float32,
     )
