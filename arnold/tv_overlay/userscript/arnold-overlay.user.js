@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.8.1
-// @description  Active trade widget now extends 5 minutes into the future (visual cue that it's still open). Trail-stop line hard-gated to active trades only — closed trades get an explicit _removeTrailStopLine on every redraw as belt-and-suspenders. Unified TV widget + daily scope from 0.8.0 preserved.
+// @version      0.8.2
+// @description  Sidebar declutter: closed positions, swing/FVG/OB levels, and trail-stop lines are now drawn as BACKGROUND entities (disableSelection + disableSave + disableUndo + lock). They render normally on the chart but stay out of the Objects Tree and can't be accidentally moved/deleted. Trail-stop line now also enforces a single-instance invariant: any line keyed to a non-current position is swept before the active line is drawn — guarantees AT MOST ONE trail line on the chart at any time. Active trade remains fully interactive.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -447,9 +447,18 @@
     }
 
     try {
+      // Background-drawing flags for CLOSED trades only — they shouldn't
+      // appear in the Objects Tree, be selectable, or be saved to the
+      // chart layout (they're regenerated from the broker_trades poll
+      // each session). Active trade stays interactive so the user can
+      // see/inspect it normally.
+      const bgFlags = isLive
+        ? {}
+        : { disableSelection: true, disableSave: true, disableUndo: true, lock: true };
       const shapeId = chart.createMultipointShape(points, {
         shape: shapeName,
         overrides: positionOverrides,
+        ...bgFlags,
       });
       if (shapeId == null) {
         sendError(`_drawWidget: createMultipointShape returned null for ${shapeName}`);
@@ -474,6 +483,16 @@
     if (stopPrice == null || !Number.isFinite(stopPrice) || stopPrice <= 0) {
       _removeTrailStopLine(key);
       return;
+    }
+    // Enforce single-trail-line invariant: there can only be ONE trail line
+    // on the chart at any time (the current active Phase 2 trade's). Any
+    // line belonging to a different key (stale from a closed trade that
+    // didn't clean up properly, or surviving across a userscript reload)
+    // is swept here before drawing/updating the current one.
+    for (const [otherKey, otherShapeId] of Array.from(trailStopShapes.entries())) {
+      if (otherKey === key) continue;
+      try { chart.removeEntity(otherShapeId); } catch (_) {}
+      trailStopShapes.delete(otherKey);
     }
     const tNow = Math.floor(Date.now() / 1000);
     const existing = trailStopShapes.get(key);
@@ -501,6 +520,12 @@
             horzLabelsAlign: 'right',
             vertLabelsAlign: 'middle',
           },
+          // Background drawing: don't clutter the Objects Tree / sidebar
+          // and don't let the user accidentally drag/delete it.
+          disableSelection: true,
+          disableSave: true,
+          disableUndo: true,
+          lock: true,
         },
       );
       if (shapeId != null) {
@@ -582,6 +607,15 @@
       } catch (_) { /* fall through to recreate */ }
     }
 
+    // Swings + FVG/OB are background drawings: full disableSelection/lock/
+    // disableUndo on top of the existing disableSave so they don't clutter
+    // the Objects Tree sidebar and can't be accidentally moved/deleted.
+    const bgFlags = {
+      disableSelection: true,
+      disableSave: true,
+      disableUndo: true,
+      lock: true,
+    };
     try {
       let id = null;
       if (meta.shape === 'rectangle' && p.top != null && p.bottom != null) {
@@ -589,7 +623,7 @@
           [{ time: tStart, price: p.top }, { time: tEnd, price: p.bottom }],
           {
             shape: 'rectangle',
-            disableSave: true,
+            ...bgFlags,
             overrides: { color: meta.color, backgroundColor: meta.color, transparency: 92, linewidth: 1 },
           }
         );
@@ -598,7 +632,7 @@
           [{ time: now, price: p.price }],
           {
             shape: meta.shape,
-            disableSave: true,
+            ...bgFlags,
             overrides: { linecolor: meta.color, linewidth: 1, showPrice: !!meta.showPrice, showLabel: false },
           }
         );
