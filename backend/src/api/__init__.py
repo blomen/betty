@@ -475,6 +475,7 @@ async def lifespan(app: FastAPI):
                                 if session_data and isinstance(session_data, dict):
                                     rl_context = {
                                         "volume_profile": session_data.get("volume_profile"),
+                                        "session_tpos": session_data.get("session_tpos"),
                                         "session_levels": session_data.get("session_levels"),
                                         "session_context": session_data.get("session_context"),
                                         "macro": session_data.get("macro"),
@@ -556,6 +557,7 @@ async def lifespan(app: FastAPI):
                                     if session_data and isinstance(session_data, dict):
                                         rl_context = {
                                             "volume_profile": session_data.get("volume_profile"),
+                                            "session_tpos": session_data.get("session_tpos"),
                                             "session_levels": session_data.get("session_levels"),
                                             "session_context": session_data.get("session_context"),
                                             "macro": session_data.get("macro"),
@@ -859,6 +861,7 @@ async def lifespan(app: FastAPI):
                         if expanded and session_data and isinstance(session_data, dict):
                             rl_context = {
                                 "volume_profile": session_data.get("volume_profile"),
+                                "session_tpos": session_data.get("session_tpos"),
                                 "session_levels": session_data.get("session_levels"),
                                 "session_context": session_data.get("session_context"),
                                 "macro": session_data.get("macro"),
@@ -912,6 +915,7 @@ async def lifespan(app: FastAPI):
                             if session_data and isinstance(session_data, dict):
                                 rl_context = {
                                     "volume_profile": session_data.get("volume_profile"),
+                                    "session_tpos": session_data.get("session_tpos"),
                                     "session_levels": session_data.get("session_levels"),
                                     "session_context": session_data.get("session_context"),
                                     "macro": session_data.get("macro"),
