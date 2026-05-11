@@ -524,7 +524,25 @@ class TopstepXBrokerAdapter:
                 self._trail_count = 0
             return result
 
-        # --- IN POSITION: same direction → trail / hold ---
+        # --- IN POSITION (Phase 1 sacred gate) ---
+        # Pre-1.5R (locked_BE=False) → ignore ALL signal-driven exits/trails
+        # on the live position. The trade plays out against:
+        #   - Its original bracket stop (broker-side, fill-anchored)
+        #   - update_mark_and_check_be_lock which flips locked_BE at peak_R=1.5
+        # Only after BE-lock fires does Phase 2 handling (cont-trail / pyramid /
+        # REV-flip) run via the branches below.
+        # level_monitor also gates this via _should_run_phase2_handlers BEFORE
+        # dispatching to broker.on_signal — this is a second line of defense
+        # for signals that arrive via SignalRelay or any other channel.
+        if not getattr(self.tracker, "locked_BE", False):
+            log.info(
+                "Phase 1 sacred — signal ignored while pre-BE-lock (peak_R=%.2f, side=%s)",
+                float(self.tracker.peak_R or 0.0),
+                self.tracker.side,
+            )
+            return {"rejected": True, "reason": "phase_1_sacred"}
+
+        # --- PHASE 2 IN POSITION: same direction → trail / hold ---
         # Audit found 3/3 trailed trades closed losing (-$420). The original
         # logic tightened the stop on EVERY same-side zone touch, which on a
         # winning trend baked in early exits — counter-trend wicks would
