@@ -39,7 +39,15 @@ def _of_floor() -> float:
 
 
 MIN_ENTRY_STOP_TICKS = 6.0
-MAX_ENTRY_STOP_TICKS = 40.0
+# Raised 40 → 60 on 2026-05-12 after audit showed 24.6% of enter signals
+# today landed in the 40-50 tick bucket and got silently rejected at this
+# gate — wasting almost a quarter of the model's recommendations on a
+# 1-tick boundary issue. The broker-adapter's own MAX_STOP_TICKS is 80,
+# so the gate was strictly tighter than what the broker would accept.
+# In reckless paper mode the trainer wants every realized outcome it can
+# get; if a 50-tick stop is what the zone needs to not get chopped, take
+# it. Strict-mode users can tune via env later.
+MAX_ENTRY_STOP_TICKS = 60.0
 
 # Phase 2 transition threshold — matches BE_LOCK_R in broker_adapter.py.
 # Lowered from 2.0 to 1.5 on 2026-05-09 per phase1-phase2 spec.
