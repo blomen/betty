@@ -1791,7 +1791,14 @@ class TopstepXBrokerAdapter:
         # to recompute or widen on our end — the broker handles slippage.
         stop_side_int = 1 if is_long else 0  # stop side = opposite of entry
         stop_order_id = None
-        for attempt in (1, 2, 3, 4, 5):
+        # Discovery window: 15 attempts × 300ms = 4.5s. Previous 5×200ms (1s)
+        # was too short — TopstepX consistently took 1-3s to commit the
+        # bracket's stopPrice during busy periods. Most rejected signals
+        # this morning were bracket_stop_missing rollbacks where the stop
+        # landed AFTER our timeout (then sat as an orphan until my new
+        # orphan-sweep ran). 4.5s comfortably covers the observed latency
+        # without unduly blocking the inference thread.
+        for attempt in range(1, 16):
             try:
                 open_orders = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
                 orders = open_orders.get("orders") or []
@@ -1831,8 +1838,8 @@ class TopstepXBrokerAdapter:
                         candidate_id,
                     )
             except Exception:
-                log.warning("Bracket-stop discovery attempt %d/5 raised", attempt, exc_info=True)
-            await asyncio.sleep(0.2)
+                log.warning("Bracket-stop discovery attempt %d raised", attempt, exc_info=True)
+            await asyncio.sleep(0.3)
 
         if stop_order_id is None:
             # Bracket attachment is supposed to be atomic — if we can't find
