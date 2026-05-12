@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.2
-// @description  v0.10.1 base + render ALL zones as rectangles regardless of strength (was hiding 66% as brush-lines-only at the 0.5 cutoff). Transparency 30-94% carries the strength signal so weak zones are visible-but-faint. Brush lines still render inside each rectangle.
+// @version      0.10.3
+// @description  v0.10.2 base + explicit exit marker on closed trades. TV's long_position widget shows target/stop bands but NOT the realized exit, so users misread the band corners as the exit point. Now a small amber line + "exit X.XX" text sits at the actual exit price at the trade's end_time, disambiguating planned target/stop from realized close.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -524,8 +524,52 @@
       }
       if (existing && existing.shapeId != null && existing.shapeId !== shapeId) {
         try { chart.removeEntity(existing.shapeId); } catch (_) {}
+        if (existing.exitMarkerId != null) {
+          try { chart.removeEntity(existing.exitMarkerId); } catch (_) {}
+        }
       }
-      drawnPositions.set(p.key, { shapeId, kind: 'long_position' });
+      // Exit marker for CLOSED trades: small horizontal segment at the
+      // actual exit_price spanning the last 30s of the trade, plus a
+      // text label. TV's long_position widget shows target/stop bands
+      // but NOT the realized exit — so users misread the band corners
+      // as "exit point" (user audit 2026-05-12 trade 1641: target band
+      // top at 28915 at end_time 19:22, but actual exit was 28890.75).
+      // The exit marker disambiguates: this is where the trade ACTUALLY
+      // closed, distinct from where the planned target/stop would be.
+      let exitMarkerId = null;
+      const exitPx = typeof p.exit_price === 'number' && p.exit_price > 0 ? p.exit_price : null;
+      if (!isLive && exitPx != null) {
+        const markerStart = Math.max(anchor, endEpoch - 30);
+        try {
+          exitMarkerId = chart.createMultipointShape(
+            [
+              { time: markerStart, price: exitPx },
+              { time: endEpoch, price: exitPx },
+            ],
+            {
+              shape: 'trend_line',
+              text: `exit ${exitPx.toFixed(2)}`,
+              disableSelection: true,
+              disableSave: true,
+              disableUndo: true,
+              lock: true,
+              overrides: {
+                linecolor: '#fbbf24',
+                linewidth: 3,
+                linestyle: 0,
+                showLabel: true,
+                textcolor: '#fbbf24',
+                fontsize: 10,
+                bold: true,
+              },
+            }
+          );
+          if (exitMarkerId != null) {
+            _ensureGroupAndAdd('Arnold • Closed Trades', exitMarkerId);
+          }
+        } catch (_) { /* exit marker is non-fatal */ }
+      }
+      drawnPositions.set(p.key, { shapeId, kind: 'long_position', exitMarkerId });
       _ensureGroupAndAdd(isLive ? 'Arnold • Active Trade' : 'Arnold • Closed Trades', shapeId);
       _updateTrailStopLine(p.key, trailStopPrice);
       return true;
@@ -730,6 +774,10 @@
     const shapeId = entry && entry.shapeId;
     if (shapeId != null && chart) {
       try { chart.removeEntity(shapeId); } catch (_) {}
+    }
+    const exitMarkerId = entry && entry.exitMarkerId;
+    if (exitMarkerId != null && chart) {
+      try { chart.removeEntity(exitMarkerId); } catch (_) {}
     }
   }
 
