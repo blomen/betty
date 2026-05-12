@@ -141,6 +141,14 @@ def _build_rl_context_from_session(session_data: dict, expanded: dict | None) ->
             ib_low=sd.get("ib_low"),
         )
 
+    # Reconstruct SwingStructure typed object from the JSON-serialized dict
+    # that build_expanded_session() returns. extract_swing_features checks
+    # `hasattr(swing, "daily")` — dict has no such attr, so all 40 swing
+    # dims (structure[20:60]) stayed at zero. Mirror of the TPO dict-vs-
+    # object fix in tpo_features.py.
+    swing_dict = (expanded or {}).get("swing_structure") if expanded else None
+    swing_structure = _reconstruct_swing_structure(swing_dict)
+
     return {
         "vwap_bands": vwap_bands,
         "volume_profile": vp,
@@ -152,9 +160,59 @@ def _build_rl_context_from_session(session_data: dict, expanded: dict | None) ->
         # init time. Keep this slot for future static fields if needed.
         "session_context": sd.get("session_context"),
         "macro": sd.get("macro"),
-        "swing_structure": (expanded or {}).get("swing_structure") if expanded else None,
+        "swing_structure": swing_structure,
         "atr": sd.get("atr") or sd.get("ib_range") or 200.0,
     }
+
+
+def _reconstruct_swing_structure(d: dict | None):
+    """Rebuild a SwingStructure dataclass from the dict produced by
+    market_service._serialize_swing_structure. Returns None if input is
+    missing the daily/weekly/monthly keys.
+
+    The structure extractor in rl/features/structure_features.py uses
+    `hasattr(swing, "daily")` to detect a real SwingStructure, falling
+    through to zeros otherwise — dicts don't satisfy that check, so all
+    40 swing-related dims stayed at zero on the wire.
+    """
+    if not isinstance(d, dict):
+        return None
+    try:
+        from ..market_data.levels import SwingLevel, SwingStructure, TimeframeSwings
+    except ImportError:
+        return None
+
+    def _swing_level(s: dict):
+        return SwingLevel(
+            price=float(s.get("price") or 0.0),
+            timestamp=int(s.get("timestamp") or 0),
+            type=str(s.get("type") or ""),
+            timeframe=str(s.get("timeframe") or ""),
+        )
+
+    def _tf(tf: dict | None):
+        if not isinstance(tf, dict):
+            return None
+        return TimeframeSwings(
+            timeframe=str(tf.get("timeframe") or ""),
+            structure=str(tf.get("structure") or "ranging"),
+            swing_highs=[_swing_level(s) for s in (tf.get("swing_highs") or [])],
+            swing_lows=[_swing_level(s) for s in (tf.get("swing_lows") or [])],
+            bos_active=bool(tf.get("bos_active") or False),
+            choch_active=bool(tf.get("choch_active") or False),
+        )
+
+    daily = _tf(d.get("daily"))
+    weekly = _tf(d.get("weekly"))
+    monthly = _tf(d.get("monthly"))
+    if daily is None or weekly is None or monthly is None:
+        return None
+    return SwingStructure(
+        daily=daily,
+        weekly=weekly,
+        monthly=monthly,
+        trend_alignment=float(d.get("trend_alignment") or 0.0),
+    )
 
 
 @asynccontextmanager
