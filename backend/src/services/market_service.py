@@ -452,6 +452,20 @@ class MarketService:
         session_date = _dt_parsed.replace(hour=12, tzinfo=_et)
         session_levels = compute_session_levels(all_bars_for_levels, session_date)
 
+        # Lift the SessionLevels result into session_data so downstream
+        # RL context construction (api/__init__._build_rl_context_from_session)
+        # can rebuild a typed SessionLevels object — analysis.to_dict()
+        # only carries ib_high/ib_low and ignores pdh/pdl/tokyo/london, so
+        # without this injection the structure-segment dims for PDH/PDL
+        # (feats 60-63) and amt dims relying on prior_vah/prior_val stayed
+        # at zero even though the data was computed.
+        session_data["pdh"] = session_levels.pdh
+        session_data["pdl"] = session_levels.pdl
+        session_data["tokyo_high"] = session_levels.tokyo_high
+        session_data["tokyo_low"] = session_levels.tokyo_low
+        session_data["london_high"] = session_levels.london_high
+        session_data["london_low"] = session_levels.london_low
+
         # --- New: Aggregate to 30-min bars for TPO and metrics ---
         bars_30m = self._aggregate_bars_30m(bars)
 
