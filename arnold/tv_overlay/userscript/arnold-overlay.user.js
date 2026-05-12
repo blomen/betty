@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.3
-// @description  v0.10.2 base + explicit exit marker on closed trades. TV's long_position widget shows target/stop bands but NOT the realized exit, so users misread the band corners as the exit point. Now a small amber line + "exit X.XX" text sits at the actual exit price at the trade's end_time, disambiguating planned target/stop from realized close.
+// @version      0.10.4
+// @description  v0.10.3 base + tighter zone transparency range (25-65% instead of 30-94%) so 1-member 0.33-strength zones render as clearly faint bands instead of ghostly hints. Caught 2026-05-12 — user saw an active trade at zone 28972 but the zone was at 71% transparency and invisible.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -163,10 +163,13 @@
     const tStart = now - 8 * 60 * 60; // 8h back
     const tEnd = now;
     let color = COLOR_BY_STRENGTH(p.strength);
-    // Wider transparency range so weak zones (strength ~0.3) render as
-    // very faint rectangles instead of invisible. Was 20-80%; now 30-94%.
-    // Below the old 0.5 cutoff, transparency >85% = ghostly hint.
-    let transparency = Math.max(30, 94 - Math.round(p.strength * 70));
+    // Transparency range tuned 2026-05-12 v0.10.4: strength=0.33 yielded
+    // 71% transparency in v0.10.3 — too faint, user couldn't see the
+    // entry zone at all. Tightened to 25-65% so a 0.33-strength zone
+    // sits at ~52% transparency (clearly visible faint band) while a
+    // strength=0.9 zone is at 25% (vivid). Brush lines inside each zone
+    // still carry the per-member detail.
+    let transparency = Math.max(25, 65 - Math.round(p.strength * 50));
 
     // Swing-family override — daily/weekly/monthly swing pivots are
     // structurally important even when they form 1-member zones (which
