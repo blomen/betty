@@ -154,6 +154,10 @@ def _build_rl_context_from_session(session_data: dict, expanded: dict | None) ->
         "volume_profile": vp,
         "session_levels": session_levels,
         "session_tpos": sd.get("session_tpos"),
+        # tpo_profile_obj is the typed TPOProfile that setup-detector
+        # features need (extract_setup_features early-returns zeros when
+        # this is None). Lifted onto session_data by market_service.
+        "tpo_profile_obj": sd.get("tpo_profile_obj"),
         # session_context dict (time-varying fields like minute_of_day,
         # session_type, ib_broken) is computed PER zone touch in
         # level_monitor._build_rl_state_zone — too volatile to bake in at

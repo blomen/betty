@@ -465,6 +465,13 @@ class MarketService:
         session_data["tokyo_low"] = session_levels.tokyo_low
         session_data["london_high"] = session_levels.london_high
         session_data["london_low"] = session_levels.london_low
+        # Live TPOProfile object so setup-detector features can read it.
+        # extract_setup_features early-returns the 14-dim setup segment to
+        # zero when tpo_profile_obj is missing. The flat tpo_poc/vah/val
+        # scalars in to_dict aren't enough — detectors need the typed
+        # object to inspect single-prints, distribution shape, etc.
+        # `tpo` here is the live build_full_tpo_profile result built a few
+        # lines above and consumed by store_tpo_session.
 
         # --- New: Aggregate to 30-min bars for TPO and metrics ---
         bars_30m = self._aggregate_bars_30m(bars)
@@ -497,6 +504,11 @@ class MarketService:
         session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
         # Keep live object reference for RL context (stripped before DB serialization)
         _session_tpo_obj = session_tpo_set
+        # Lift the TPOProfile object onto session_data so the rl_context
+        # setter can pass it through to the setup-detector features. Without
+        # this, extract_setup_features returns zeros for all 14 setup dims
+        # because tpo_profile_obj is None.
+        session_data["tpo_profile_obj"] = tpo
 
         try:
             self.store_tpo_session(tpo, symbol, target_date)
