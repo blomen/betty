@@ -106,7 +106,15 @@ def runtime_diagnostic(request: Request):
         ctx = getattr(lm, "_session_context", None) or {}
         diag["rl_context_keys"] = sorted(ctx.keys()) if isinstance(ctx, dict) else []
         rl_audit = {}
-        for k in ("vwap_bands", "volume_profile", "session_levels", "session_tpos", "swing_structure", "macro"):
+        for k in (
+            "vwap_bands",
+            "volume_profile",
+            "session_levels",
+            "session_tpos",
+            "swing_structure",
+            "macro",
+            "tpo_profile_obj",
+        ):
             v = ctx.get(k) if isinstance(ctx, dict) else None
             rl_audit[k] = {
                 "present": v is not None,
