@@ -364,6 +364,75 @@ def resume_trading():
     return {"paused": False, "removed": False, "note": "flag was not set"}
 
 
+@router.get("/_debug-synth-obs")
+def debug_synth_obs(request: Request):
+    """Synthesize a fresh observation from current live state — bypasses
+    the need to wait for a real zone touch when we just want to verify
+    obs population (which dims are zero, which carry data).
+
+    Picks the zone whose center is closest to last_price, builds an
+    rl_state via the same path zone-touch inference uses, then runs
+    build_observation. Returns per-segment nonzero counts so you can see
+    structure / amt / micro / etc. without waiting.
+
+    Mirrors the schema-driven decode in /_debug-obs but operates on a
+    LIVE state instead of the most recent persisted observation_b64.
+    """
+    import numpy as np
+
+    from ...rl.features.observation import build_observation
+    from ...rl.features.observation_index import SEGMENTS
+
+    lm = getattr(request.app.state, "level_monitor", None)
+    if lm is None:
+        return {"error": "level_monitor not initialized"}
+    zones = list(getattr(lm, "_zones", []) or [])
+    if not zones:
+        return {"error": "no zones loaded"}
+
+    last_price = getattr(lm, "_last_price", None)
+    if not last_price:
+        last_price = float(zones[0].center_price)
+    closest = min(zones, key=lambda z: abs(z.center_price - last_price))
+    approach = "up" if last_price < closest.center_price else "down"
+
+    try:
+        state = lm._build_rl_state_zone(closest, float(last_price), approach)
+        obs = build_observation(state)
+    except Exception as exc:
+        return {"error": f"build failed: {exc!r}"}
+
+    out_segments: list[dict] = []
+    cursor = 0
+    for seg in SEGMENTS:
+        size = seg["size"]
+        block = np.asarray(obs[cursor : cursor + size])
+        nz = int((np.abs(block) > 1e-6).sum())
+        nonzero_pairs = [
+            (lbl, round(float(block[i]), 4)) for i, lbl in enumerate(seg["labels"]) if abs(float(block[i])) > 1e-6
+        ]
+        out_segments.append(
+            {
+                "name": seg["name"],
+                "start": cursor,
+                "end": cursor + size,
+                "size": size,
+                "nonzero_count": nz,
+                "nonzero_values": dict(nonzero_pairs),
+            }
+        )
+        cursor += size
+    return {
+        "zone_center": float(closest.center_price),
+        "zone_member_count": int(getattr(closest, "member_count", 0)),
+        "last_price": float(last_price),
+        "approach": approach,
+        "total_dims": int(obs.size),
+        "total_nonzero": int((np.abs(obs) > 1e-6).sum()),
+        "segments": out_segments,
+    }
+
+
 @router.get("/_debug-broker")
 def debug_broker(request: Request):
     """Diagnostic-only: surface broker-adapter wiring + level_monitor link.
