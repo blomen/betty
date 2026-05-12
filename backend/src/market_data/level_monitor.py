@@ -2504,6 +2504,60 @@ class LevelMonitor:
                 direction = "long" if approach == "up" else "short"
                 of_signals = compute_signals(candles, direction, lookback=10)
 
+        # Compute time-varying session_context fields per zone touch.
+        # Previously rl_context["session_context"] was set ONCE at init by
+        # api/__init__.py (with whatever flat keys session_data had — most
+        # were missing) and stayed static. Result: minute_of_day stayed at
+        # 0 → cos(0)=1 stuck on, session_rth always 1.0, ib_broken always
+        # "none". Now we compute these at touch time so the 11 dims at
+        # structure[9:20] (timing / session type / IB break) carry real
+        # information that varies tick-to-tick.
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        _now = _dt.now(_tz.utc)
+        minute_of_day = _now.hour * 60 + _now.minute
+        rth_open_min = 13 * 60 + 30  # 13:30 UTC = NY 09:30 ET
+        rth_close_min = 21 * 60  # 21:00 UTC = NY 17:00 ET (CME maintenance start)
+        in_rth = rth_open_min <= minute_of_day < rth_close_min
+        if in_rth:
+            session_type = "rth"
+            minutes_since_rth = minute_of_day - rth_open_min
+        elif minute_of_day < 6 * 60:  # 00:00-06:00 UTC = Tokyo
+            session_type = "globex"
+            minutes_since_rth = 0
+        elif minute_of_day < rth_open_min:  # 06:00-13:30 UTC = London
+            session_type = "london"
+            minutes_since_rth = 0
+        else:  # 21:00-24:00 UTC = post-RTH overnight
+            session_type = "globex"
+            minutes_since_rth = minute_of_day - rth_open_min
+
+        sl = ctx.get("session_levels")
+        ib_high = getattr(sl, "ib_high", None) if sl is not None else None
+        ib_low = getattr(sl, "ib_low", None) if sl is not None else None
+        if ib_high and price > ib_high:
+            ib_broken = "up"
+        elif ib_low and price < ib_low:
+            ib_broken = "down"
+        else:
+            ib_broken = "none"
+
+        dynamic_session_ctx = {
+            "minute_of_day": minute_of_day,
+            "minutes_since_rth": minutes_since_rth,
+            "session_type": session_type,
+            "ib_broken": ib_broken,
+        }
+        # Static ctx (init-time daily_range_pct / session_volume_pct etc.)
+        # still wins if present so we don't accidentally clobber values the
+        # init path populated. Touch-time fields layer on top.
+        merged_session_ctx = {
+            **(ctx.get("session_context") or {}),
+            **(ctx.get("amt_context") or {}),
+            **dynamic_session_ctx,
+        }
+
         return {
             "zone": zone,
             "all_zones": self._zones,
@@ -2521,7 +2575,7 @@ class LevelMonitor:
             "all_levels": [l.price for l in self._levels],
             "orderflow_signals": of_signals,
             "macro": ctx.get("macro"),
-            "session_context": {**(ctx.get("session_context") or {}), **(ctx.get("amt_context") or {})},
+            "session_context": merged_session_ctx,
             "day_type": ctx.get("day_type"),
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),

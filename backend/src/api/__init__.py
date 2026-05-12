@@ -89,6 +89,74 @@ def _install_asyncio_exception_handler() -> None:
     asyncio.get_event_loop().set_exception_handler(_handler)
 
 
+def _build_rl_context_from_session(session_data: dict, expanded: dict | None) -> dict:
+    """Convert the flat session_data dict from MarketService.compute_session()
+    into the rl_context shape that level_monitor + observation extractors
+    expect: typed VolumeProfile/VWAPBands/SessionLevels objects with
+    attribute access, plus the macro/swing/atr scalars.
+
+    Before this helper, the 4 rl_context sites all read
+    `session_data.get("volume_profile") / .get("session_levels") /
+    .get("vwap_bands")` — but SessionAnalysis.to_dict flattens those into
+    scalar keys (poc/vah/val, vwap/vwap_1sd_upper/..., ib_high/ib_low) and
+    drops the typed objects. Result: extract_structure_features got None
+    for vwap_bands, volume_profile, session_levels — feats 0-8, 60-63 of
+    the structure segment (12 dims) stayed at zero. Reconstructing the
+    typed objects from the flat keys revives those dims.
+
+    Session levels also need pdh/pdl + tokyo/london highs/lows which
+    compute_session writes as top-level keys (see market_service.py:867).
+    """
+    from ..market_data.levels import SessionLevels, VolumeProfile, VWAPBands
+
+    sd = session_data or {}
+
+    vp = None
+    if sd.get("poc") is not None and sd.get("vah") is not None and sd.get("val") is not None:
+        vp = VolumeProfile(poc=float(sd["poc"]), vah=float(sd["vah"]), val=float(sd["val"]))
+
+    vwap_bands = None
+    if sd.get("vwap") is not None:
+        v = float(sd["vwap"])
+        vwap_bands = VWAPBands(
+            vwap=v,
+            sd1_upper=float(sd.get("vwap_1sd_upper") or v),
+            sd1_lower=float(sd.get("vwap_1sd_lower") or v),
+            sd2_upper=float(sd.get("vwap_2sd_upper") or v),
+            sd2_lower=float(sd.get("vwap_2sd_lower") or v),
+            sd3_upper=float(sd.get("vwap_3sd_upper") or v),
+            sd3_lower=float(sd.get("vwap_3sd_lower") or v),
+        )
+
+    session_levels = None
+    if any(sd.get(k) is not None for k in ("pdh", "pdl", "ib_high", "ib_low", "tokyo_high", "tokyo_low")):
+        session_levels = SessionLevels(
+            pdh=sd.get("pdh"),
+            pdl=sd.get("pdl"),
+            tokyo_high=sd.get("tokyo_high"),
+            tokyo_low=sd.get("tokyo_low"),
+            london_high=sd.get("london_high"),
+            london_low=sd.get("london_low"),
+            ib_high=sd.get("ib_high"),
+            ib_low=sd.get("ib_low"),
+        )
+
+    return {
+        "vwap_bands": vwap_bands,
+        "volume_profile": vp,
+        "session_levels": session_levels,
+        "session_tpos": sd.get("session_tpos"),
+        # session_context dict (time-varying fields like minute_of_day,
+        # session_type, ib_broken) is computed PER zone touch in
+        # level_monitor._build_rl_state_zone — too volatile to bake in at
+        # init time. Keep this slot for future static fields if needed.
+        "session_context": sd.get("session_context"),
+        "macro": sd.get("macro"),
+        "swing_structure": (expanded or {}).get("swing_structure") if expanded else None,
+        "atr": sd.get("atr") or sd.get("ib_range") or 200.0,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
@@ -473,15 +541,7 @@ async def lifespan(app: FastAPI):
 
                                 # Set session context so zones get correct ATR bounds
                                 if session_data and isinstance(session_data, dict):
-                                    rl_context = {
-                                        "volume_profile": session_data.get("volume_profile"),
-                                        "session_tpos": session_data.get("session_tpos"),
-                                        "session_levels": session_data.get("session_levels"),
-                                        "session_context": session_data.get("session_context"),
-                                        "macro": session_data.get("macro"),
-                                        "swing_structure": expanded.get("swing_structure") if expanded else None,
-                                        "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
-                                    }
+                                    rl_context = _build_rl_context_from_session(session_data, expanded)
                                     level_monitor.set_session_context(rl_context)
                                     logger.info(
                                         "Auto-compute: session context set (ATR=%.1f)", rl_context.get("atr", 0)
@@ -555,15 +615,7 @@ async def lifespan(app: FastAPI):
                                 if expanded and level_monitor:
                                     level_monitor.load_levels(expanded)
                                     if session_data and isinstance(session_data, dict):
-                                        rl_context = {
-                                            "volume_profile": session_data.get("volume_profile"),
-                                            "session_tpos": session_data.get("session_tpos"),
-                                            "session_levels": session_data.get("session_levels"),
-                                            "session_context": session_data.get("session_context"),
-                                            "macro": session_data.get("macro"),
-                                            "swing_structure": expanded.get("swing_structure") if expanded else None,
-                                            "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
-                                        }
+                                        rl_context = _build_rl_context_from_session(session_data, expanded)
                                         level_monitor.set_session_context(rl_context)
                                     logger.info("Periodic recompute: zones rebuilt")
                             finally:
@@ -859,15 +911,7 @@ async def lifespan(app: FastAPI):
                         # Also pull get_indicators() so day_type lands in the
                         # context dict the reasoning JSONB reads from.
                         if expanded and session_data and isinstance(session_data, dict):
-                            rl_context = {
-                                "volume_profile": session_data.get("volume_profile"),
-                                "session_tpos": session_data.get("session_tpos"),
-                                "session_levels": session_data.get("session_levels"),
-                                "session_context": session_data.get("session_context"),
-                                "macro": session_data.get("macro"),
-                                "swing_structure": expanded.get("swing_structure") if expanded else None,
-                                "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
-                            }
+                            rl_context = _build_rl_context_from_session(session_data, expanded)
                             try:
                                 indicators = await svc.get_indicators()
                                 rl_context["day_type"] = indicators.get("ml_day_type")
@@ -913,15 +957,7 @@ async def lifespan(app: FastAPI):
                         if expanded:
                             level_monitor.load_levels(expanded)
                             if session_data and isinstance(session_data, dict):
-                                rl_context = {
-                                    "volume_profile": session_data.get("volume_profile"),
-                                    "session_tpos": session_data.get("session_tpos"),
-                                    "session_levels": session_data.get("session_levels"),
-                                    "session_context": session_data.get("session_context"),
-                                    "macro": session_data.get("macro"),
-                                    "swing_structure": expanded.get("swing_structure"),
-                                    "atr": session_data.get("atr") or session_data.get("ib_range") or 200.0,
-                                }
+                                rl_context = _build_rl_context_from_session(session_data, expanded)
                                 try:
                                     indicators = await svc.get_indicators()
                                     rl_context["day_type"] = indicators.get("ml_day_type")
