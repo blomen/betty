@@ -135,6 +135,21 @@ class TickBuffer:
         self.delta_1m = 0
         return d
 
+    def get_recent(self, n: int = 50) -> list[dict]:
+        """Return the last n ticks (newest at end) as a plain list.
+
+        level_monitor._build_rl_state_zone calls this to feed
+        extract_micro_features. The method was missing — caller wrapped
+        the call in contextlib.suppress(Exception), so the AttributeError
+        was swallowed silently and the entire 20-dim micro segment stayed
+        at zero on every observation.
+        """
+        if n <= 0:
+            return []
+        if len(self.ticks) <= n:
+            return list(self.ticks)
+        return list(self.ticks)[-n:]
+
 
 class TickWriter:
     """Batches ticks and periodically flushes to the market_trades DB table."""
