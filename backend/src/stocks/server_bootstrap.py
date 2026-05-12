@@ -593,6 +593,17 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
     On mismatch, halt + flatten — better to take a wash trade than to
     operate with diverged state.
     """
+    # Halt reasons that are SAFE to auto-clear once the underlying condition
+    # is resolved (broker book clean: 0 positions matching contract, 0 stop
+    # orders matching contract+side). These represent transient broker-state
+    # divergences, NOT account-level violations.
+    AUTO_RECOVER_HALT_REASONS = {
+        "orphan_position",
+        "bracket_stop_missing",
+        "bracket_stop_diverged",
+        "size_mismatch",
+    }
+
     while True:
         try:
             await asyncio.sleep(60)
@@ -604,6 +615,39 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
             matching = [p for p in positions if p.get("contractId") == contract_id]
             broker_size = sum(int(p.get("size") or 0) for p in matching)
             local_size = int(adapter.tracker.size or 0)
+
+            # Auto-recovery: if halted with a known-transient reason AND the
+            # broker book is provably clean (0 positions + 0 orders on
+            # contract) AND tracker is flat → clear the halt so trading
+            # resumes automatically. Previously orphan_position / bracket_*
+            # halts stuck FOREVER once tripped, blocking trading for hours
+            # (caught 2026-05-12: trade #1635 at 13:30 UTC profited +$260
+            # via SIGNAL exit, then orphan_position halt stuck the broker
+            # for 44+ min until manual /recover. In reckless mode this
+            # silently kills hundreds of training signals per hour).
+            if (
+                getattr(adapter, "_halted", False)
+                and getattr(adapter, "_halt_reason", "") in AUTO_RECOVER_HALT_REASONS
+                and adapter.tracker.is_flat
+                and broker_size == 0
+            ):
+                try:
+                    orders_resp = await client._post("/api/Order/searchOpen", {"accountId": client._account_id})
+                    book_orders = orders_resp.get("orders") or []
+                    open_stops = [
+                        o for o in book_orders if o.get("contractId") == contract_id and int(o.get("type") or 0) == 4
+                    ]
+                except Exception:
+                    open_stops = None  # treat unknown as not-clean; skip auto-recovery
+                if open_stops is not None and len(open_stops) == 0:
+                    prev_reason = adapter._halt_reason
+                    adapter._halted = False
+                    adapter._halt_reason = ""
+                    log.warning(
+                        "reconcile loop: AUTO-RECOVERED from halt=%s — book is clean "
+                        "(broker_size=0, open_stops=0, tracker flat). Trading resumed.",
+                        prev_reason,
+                    )
             # Orphan-while-flat: tracker says flat but broker has a position.
             # 2026-05-05 saw a zombie BUY-STOP fire 47s after trade 377 closed,
             # opening an unprotected LONG that arnold never noticed (broker had
