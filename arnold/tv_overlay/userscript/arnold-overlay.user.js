@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.1
-// @description  v0.10.0 base + (a) low-strength zones now keep their per-member brush lines even when the rectangle is hidden — audit caught single-dim zones vanishing entirely, (b) active-trade widget extends 1h into the future for clearer "still running" cue.
+// @version      0.10.2
+// @description  v0.10.1 base + render ALL zones as rectangles regardless of strength (was hiding 66% as brush-lines-only at the 0.5 cutoff). Transparency 30-94% carries the strength signal so weak zones are visible-but-faint. Brush lines still render inside each rectangle.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -163,7 +163,10 @@
     const tStart = now - 8 * 60 * 60; // 8h back
     const tEnd = now;
     let color = COLOR_BY_STRENGTH(p.strength);
-    let transparency = Math.max(20, 80 - Math.round(p.strength * 60));
+    // Wider transparency range so weak zones (strength ~0.3) render as
+    // very faint rectangles instead of invisible. Was 20-80%; now 30-94%.
+    // Below the old 0.5 cutoff, transparency >85% = ghostly hint.
+    let transparency = Math.max(30, 94 - Math.round(p.strength * 70));
 
     // Swing-family override — daily/weekly/monthly swing pivots are
     // structurally important even when they form 1-member zones (which
@@ -177,13 +180,13 @@
       transparency = 50;
     }
 
-    // Low-strength filter only hides the zone RECTANGLE — the per-member
-    // brush lines below still render so the user sees every dim that
-    // contributed to the model observation. Previously this branch
-    // `return false`-d out of drawZone entirely, dropping the brush
-    // lines too; user audit 2026-05-12 caught that single-family zones
-    // (each a legitimate dim) were vanishing from the chart.
-    const ZONE_PAINT_MIN_STRENGTH = 0.5;
+    // Render ALL zones as rectangles — transparency carries the strength
+    // signal (weak zones nearly invisible, strong zones vivid). User audit
+    // 2026-05-12 found that with the previous 0.5 cutoff, 66% of zones (45
+    // of 68) were rendering as brush-lines-only and looked like "floating
+    // lines" rather than zones. Drop the cutoff entirely so the structural
+    // count on chart matches the backend.
+    const ZONE_PAINT_MIN_STRENGTH = 0.0;
     const skipRectangle = !hasSwing && Number(p.strength) < ZONE_PAINT_MIN_STRENGTH;
 
     if (!skipRectangle) {
