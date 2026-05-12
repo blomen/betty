@@ -212,6 +212,15 @@ class PositionTracker:
         self.peak_R = 0.0
         self.locked_half_R = False
         self.locked_BE = False
+        # Stamp the flat-transition moment so the reconcile loop can
+        # apply a grace window before tripping orphan_position. TopstepX's
+        # Position/searchOpen briefly returns the just-closed position
+        # as still open for a few seconds after the stop fill; without
+        # this stamp the loop halted the broker on every clean stop-out.
+        # See _reconcile_position_loop in stocks/server_bootstrap.py.
+        import time as _t
+
+        self.last_flat_ts = _t.time()
 
         return pnl_dollars
 

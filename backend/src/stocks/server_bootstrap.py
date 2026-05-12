@@ -613,6 +613,26 @@ async def _reconcile_position_loop(adapter, client, contract_id: str) -> None:
             # gates on tracker.is_flat so it would no-op).
             if adapter.tracker.is_flat:
                 if broker_size > 0:
+                    # Grace window: TopstepX's Position/searchOpen REST
+                    # briefly returns the just-closed position as still open
+                    # for ~5-30s after the stop fill — without this the
+                    # reconcile loop halted the broker on every clean
+                    # stop-out (caught 2026-05-12: 422 enter signals
+                    # overnight produced only 3 trades because each clean
+                    # stop triggered a false-positive orphan_position).
+                    # Skip the halt if tracker only just transitioned to
+                    # flat; re-check next 60s tick.
+                    import time as _t
+
+                    last_flat = getattr(adapter.tracker, "last_flat_ts", 0.0)
+                    if last_flat and (_t.time() - last_flat) < 90.0:
+                        log.info(
+                            "reconcile loop: broker_size=%d but tracker only just flattened "
+                            "(%.1fs ago); deferring orphan check",
+                            broker_size,
+                            _t.time() - last_flat,
+                        )
+                        continue
                     log.error(
                         "reconcile loop: ORPHAN POSITION — tracker flat but broker has size=%d "
                         "(contract=%s); halting + liquidating",
