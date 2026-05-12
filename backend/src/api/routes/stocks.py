@@ -97,6 +97,28 @@ def runtime_diagnostic(request: Request):
         diag["dashboard_zone_count"] = len(_dashboard._state.get("zones") or [])
     except Exception as exc:
         diag["dashboard_zone_count_error"] = str(exc)
+    # rl_context audit — checks whether _build_rl_context_from_session
+    # actually populated the typed objects (vwap_bands/volume_profile/
+    # session_levels) the obs extractors need. None values here mean the
+    # structure/amt segments will stay at their default-zero state even
+    # after my fix. Used to verify the 5/64-structure-dim issue.
+    if lm is not None:
+        ctx = getattr(lm, "_session_context", None) or {}
+        diag["rl_context_keys"] = sorted(ctx.keys()) if isinstance(ctx, dict) else []
+        rl_audit = {}
+        for k in ("vwap_bands", "volume_profile", "session_levels", "session_tpos", "swing_structure", "macro"):
+            v = ctx.get(k) if isinstance(ctx, dict) else None
+            rl_audit[k] = {
+                "present": v is not None,
+                "type": type(v).__name__ if v is not None else None,
+            }
+            if v is not None and hasattr(v, "__dict__"):
+                # Show a snippet of the object's attributes so we can verify
+                # poc/vah/val/vwap/ib_high made it through to the typed object.
+                rl_audit[k]["sample"] = (
+                    {k2: getattr(v, k2, None) for k2 in list(vars(v).keys())[:6]} if hasattr(v, "__dict__") else None
+                )
+        diag["rl_context_audit"] = rl_audit
     return diag
 
 
