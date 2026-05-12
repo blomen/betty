@@ -1699,6 +1699,32 @@ class TopstepXBrokerAdapter:
         self.tracker.side = side
         self.tracker.size = size
         self.tracker.stop_price = stop_price
+        # Pre-claim _pending_trade with the intent so on_stream_fill's
+        # bracket-stop-divergence guard CAN run even when the entry fill
+        # races ahead of place_market_order returning. Without this,
+        # divergence guard sat inside `if self._pending_trade:` and was
+        # skipped entirely on racy fills — leaking exactly the orphan-
+        # stop scenarios it was built to catch. Trade 1643 (2026-05-12)
+        # is the smoking gun: requested 38-tick stop, observed 19 ticks
+        # (orphan pickup), guard never fired, stopped out at -0.5R.
+        # Full _pending_trade dict (with tp_price + reasoning + order_ids)
+        # still gets populated after the order returns and bracket
+        # discovery finds the real stop. This pre-claim is the minimum
+        # subset the divergence guard needs.
+        entry_submit_ts = datetime.now(timezone.utc)
+        self._pending_trade = {
+            "ts": entry_submit_ts,
+            "session_date": entry_submit_ts.strftime("%Y-%m-%d"),
+            "symbol": "NQ",
+            "side": side,
+            "size": size,
+            "stop_price": stop_price,
+            "stop_ticks": stop_dist_ticks,
+            "signal_price": price,
+            "signal_action": action,
+            "signal_confidence": float(signal.get("confidence", 0) or 0),
+        }
+        self._set_pending_trade(self._pending_trade)
         log.info("Position opening: %s %d stop=%.2f (waiting for entry fill)", side, size, stop_price)
 
         # Network flakiness to api.topstepx.com surfaces as ConnectTimeout.
@@ -1895,7 +1921,13 @@ class TopstepXBrokerAdapter:
         # order is placed; tp_price is reference-only for the widget +
         # reasoning blob — see "No TP bracket (stop only)" decision.)
         tp_price = _round_tick(stop_price + offset * 2.5 if is_long else stop_price - offset * 2.5)
+        # MERGE onto the pre-claim dict instead of overwriting. on_stream_fill
+        # may have already added entry_price + entry_fill_ts during the
+        # order-submit await; clobbering them would lose the actual fill
+        # timestamp and re-introduce the dropped-entry-fill bug.
+        _prior = self._pending_trade or {}
         self._pending_trade = {
+            **_prior,
             "ts": now,
             "session_date": now.strftime("%Y-%m-%d"),
             "symbol": "NQ",
@@ -1910,7 +1942,7 @@ class TopstepXBrokerAdapter:
             "stop_ticks": stop_dist_ticks,
             "signal_price": price,
             "entry_submit_ts": entry_submit_ts,
-            "entry_fill_ts": None,
+            "entry_fill_ts": _prior.get("entry_fill_ts"),
             # TopstepX broker order ids — persisted into broker_trades
             # at close time so backfill/realignment can join unambiguously
             # against /api/Trade/search (single source of truth, no
