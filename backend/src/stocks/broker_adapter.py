@@ -1846,6 +1846,32 @@ class TopstepXBrokerAdapter:
                 await self.client.liquidate_position()
             except Exception:
                 log.exception("Emergency liquidate after missing bracket also failed — POSITION MAY BE OPEN")
+            # Sweep orphan stops attached during the failed bracket window.
+            # The bracket may have landed in TopstepX's book LATE (after our
+            # 5x200ms discovery loop) — without this sweep, the stop sits
+            # forever, blocking auto-recovery and getting picked up by the
+            # next bracket discovery as a wrong-direction orphan. Documented
+            # 2026-05-12: orphan SELL-stop survived after a failed bracket
+            # entry, kept the broker halted for 44+ min.
+            try:
+                book = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
+                for o in book.get("orders") or []:
+                    if o.get("contractId") != self.config.contract_id:
+                        continue
+                    if int(o.get("type") or 0) != 4:  # STOP_MARKET only
+                        continue
+                    if int(o.get("side") or -1) != stop_side_int:
+                        continue
+                    oid = o.get("id") or o.get("orderId")
+                    if oid is None:
+                        continue
+                    try:
+                        await self.client.cancel_order(int(oid))
+                        log.warning("Swept orphan stop %s after bracket_stop_missing rollback", oid)
+                    except Exception:
+                        log.warning("Failed to sweep orphan stop %s", oid, exc_info=True)
+            except Exception:
+                log.warning("Orphan-stop sweep failed", exc_info=True)
             self._halt("bracket_stop_missing")
             return {"rejected": True, "reason": "bracket_stop_missing"}
 
