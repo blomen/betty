@@ -2543,11 +2543,36 @@ class LevelMonitor:
         else:
             ib_broken = "none"
 
+        # Compute today's high/low/open from the recent candle window so
+        # amt features (Dalton day type, range_extension) get real values
+        # instead of returning zeros at line 186 of amt_features.py. Without
+        # daily_high/low or daily_range_pct, the extractor early-returns
+        # the full 20-dim segment as zero even when IB and VP are present.
+        daily_high = None
+        daily_low = None
+        open_price = None
+        if candles:
+            try:
+                daily_high = max(float(c.high) for c in candles)
+                daily_low = min(float(c.low) for c in candles)
+                open_price = float(candles[0].open)
+            except (AttributeError, ValueError, TypeError):
+                daily_high = daily_low = open_price = None
+        daily_range_pct = 0.0
+        if daily_high is not None and daily_low is not None and price > 0:
+            daily_range_pct = (daily_high - daily_low) / price
+
         dynamic_session_ctx = {
             "minute_of_day": minute_of_day,
             "minutes_since_rth": minutes_since_rth,
             "session_type": session_type,
             "ib_broken": ib_broken,
+            "daily_high": daily_high,
+            "daily_low": daily_low,
+            "daily_range_pct": daily_range_pct,
+            "open_price": open_price,
+            "ib_high": ib_high,
+            "ib_low": ib_low,
         }
         # Static ctx (init-time daily_range_pct / session_volume_pct etc.)
         # still wins if present so we don't accidentally clobber values the
