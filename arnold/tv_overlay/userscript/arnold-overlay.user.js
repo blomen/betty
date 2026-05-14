@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.4
-// @description  v0.10.3 base + tighter zone transparency range (25-65% instead of 30-94%) so 1-member 0.33-strength zones render as clearly faint bands instead of ghostly hints. Caught 2026-05-12 — user saw an active trade at zone 28972 but the zone was at 71% transparency and invisible.
+// @version      0.10.5
+// @description  v0.10.4 base + closed-trade widget band stretches to the ACTUAL exit price (not the planned 1.5R target). A Phase-2 trade that trailed to +16R was rendering identical to a +1.5R target hit. Now the band reaches the realized exit and the R:R label matches pnl_r.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
@@ -463,6 +463,26 @@
       const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
       stopOffsetTicks = Math.max(1, Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK));
       tpOffsetTicks   = Math.max(1, Math.round(Math.abs(tpPrice   - p.entry) / NQ_TICK));
+      // Closed-trade band stretched to the ACTUAL exit, not the planned
+      // 1.5R target. A Phase-2 trade that trailed to +16R was rendering
+      // identical to a +1.5R target hit — the green band capped at the
+      // planned tp. Now: whichever side the exit landed on, that band
+      // extends to the realized exit so the widget's shape reflects the
+      // true outcome (R:R label then matches pnl_r). The opposite-side
+      // band keeps its planned reference (the risk/reward that WAS at
+      // stake). Caught 2026-05-12 trade 1660: +16.97R EOD_FLATTEN winner
+      // looked like a target hit.
+      if (!isLive && typeof p.exit_price === 'number' && p.exit_price > 0) {
+        const exitMove = isLong ? p.exit_price - p.entry : p.entry - p.exit_price;
+        const exitOffsetTicks = Math.max(1, Math.round(Math.abs(p.exit_price - p.entry) / NQ_TICK));
+        if (exitMove > 0) {
+          // Winner — stretch the profit band to the actual exit.
+          tpOffsetTicks = Math.max(tpOffsetTicks, exitOffsetTicks);
+        } else if (exitMove < 0) {
+          // Loser — stretch the stop band to the actual exit.
+          stopOffsetTicks = Math.max(stopOffsetTicks, exitOffsetTicks);
+        }
+      }
       // Trail line: live Phase 2 only. Closed trades use the widget's own
       // stop band, frozen at the close-time value — no separate horizontal
       // line needed since nothing is going to move after exit.
