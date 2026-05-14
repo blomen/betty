@@ -1274,7 +1274,20 @@ class TopstepXBrokerAdapter:
                     self._pending_trade.get("stop_ticks") if self._pending_trade else None,
                     self.tracker.stop_price,
                 )
-                if self._pending_trade:
+                # Divergence guard ONLY runs once bracket discovery has
+                # CONFIRMED a stop (tracker.stop_order_id set). Before that,
+                # tracker.stop_price holds the pre-claim SIGNAL-based estimate
+                # (entry_submit time, signal price ± offset). Comparing that
+                # signal-based value against a FILL-anchored target makes the
+                # guard fire on ordinary slippage — 2026-05-14 audit found
+                # 13/27 trades (48%) false-positive halted as
+                # bracket_stop_diverged simply because the fill raced ahead
+                # of discovery and the fill was >5 ticks off the signal price.
+                # When stop_order_id is None, discovery is still pending; the
+                # re-anchor (modify_stop) path below will correct the stop
+                # once discovery resolves, so skip the halt entirely here.
+                _stop_confirmed = self.tracker.stop_order_id is not None
+                if self._pending_trade and _stop_confirmed:
                     intended_ticks = self._pending_trade.get("stop_ticks")
                     cur_stop = self.tracker.stop_price
                     if intended_ticks and cur_stop > 0:
@@ -1292,11 +1305,10 @@ class TopstepXBrokerAdapter:
                         # distance, so the trade runs with a wildly wrong stop
                         # (e.g. trades 635-638 on 2026-05-11 had 24-35 tick
                         # requests but 11-17 tick effective stops). The
-                        # broker-side bracket is fill-anchored, so under
-                        # normal operation |target - cur| ≤ 1 tick. Anything
-                        # >5 ticks is structurally an orphan pickup, not
-                        # rounding/slippage — halt+flatten before this trade
-                        # can pollute the training pool.
+                        # broker-side bracket is fill-anchored, so once
+                        # discovery CONFIRMS the stop, |target - cur| ≤ 1 tick
+                        # under normal operation. Anything >5 ticks at that
+                        # point is a genuine orphan pickup — halt+flatten.
                         DIVERGENCE_HALT_TICKS = 5
                         if divergence_pts > DIVERGENCE_HALT_TICKS * 0.25:
                             log.error(
