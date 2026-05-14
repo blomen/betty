@@ -119,18 +119,60 @@ async def reconcile_tracker_from_broker(
                 swept += 1
             except Exception:
                 logger.warning("reconcile: failed to cancel orphan stop %s", oid, exc_info=True)
-        logger.error(
-            "reconcile: adopted position (side=%s avg=%.2f size=%d) with NO matching "
-            "stop — swept %d orphan stops, halting adapter for manual review",
-            side,
-            avg_price,
-            size,
-            swept,
-        )
-        try:
-            adapter._halt("recovery_no_stop")
-        except Exception:
-            logger.warning("reconcile: _halt call failed", exc_info=True)
+
+        # Reckless paper mode: don't sit halted waiting for a human. The
+        # bootstrap reconcile adopts whatever position TopstepX shows from
+        # the PRIOR container — after a watchdog restart / crash that's a
+        # naked position with no bracket. Halting "for manual review"
+        # froze trading entirely (2026-05-14 audit: 249 enter signals,
+        # 0 executed — broker adopted a naked long at boot and waited all
+        # day). In reckless mode the right move is: liquidate the adopted
+        # position, reset the tracker to flat, and keep trading. The lost
+        # position is unrecoverable context anyway; staying halted is
+        # strictly worse for learning velocity. Strict mode keeps the
+        # halt — real capital deserves the manual review.
+        import os as _os
+
+        _reckless = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+        if _reckless:
+            logger.error(
+                "reconcile: adopted naked position (side=%s avg=%.2f size=%d), swept %d "
+                "orphan stops — RECKLESS mode: liquidating + resetting tracker to flat "
+                "instead of halting",
+                side,
+                avg_price,
+                size,
+                swept,
+            )
+            try:
+                await client.liquidate_position()
+            except Exception:
+                logger.exception("reconcile: liquidate of adopted naked position failed")
+            # Reset tracker to flat — the adopted position is gone.
+            adapter.tracker.side = None
+            adapter.tracker.entry_price = 0.0
+            adapter.tracker.stop_price = 0.0
+            adapter.tracker.size = 0
+            adapter.tracker.entry_order_id = None
+            adapter.tracker.stop_order_id = None
+            adapter.tracker.peak_R = 0.0
+            adapter.tracker.locked_half_R = False
+            adapter.tracker.locked_BE = False
+            adapter._set_pending_trade(None)
+            result.matched = False  # no longer holding the broker position
+        else:
+            logger.error(
+                "reconcile: adopted position (side=%s avg=%.2f size=%d) with NO matching "
+                "stop — swept %d orphan stops, halting adapter for manual review",
+                side,
+                avg_price,
+                size,
+                swept,
+            )
+            try:
+                adapter._halt("recovery_no_stop")
+            except Exception:
+                logger.warning("reconcile: _halt call failed", exc_info=True)
 
     # Reconcile against disk
     if pending:
