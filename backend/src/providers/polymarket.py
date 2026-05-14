@@ -373,21 +373,28 @@ class PolymarketRetriever(Retriever):
         through all results using offset parameter.
 
         Args:
-            limit: Events per page (capped at API_MAX_LIMIT=500)
+            limit: Events per page (capped at API_MAX_LIMIT=100)
 
         Returns all events with sport/league determined from series info.
         """
-        API_MAX_LIMIT = 500  # Polymarket API caps at 500 events per request
+        # Polymarket's Gamma API caps a page at 100 events regardless of the
+        # requested `limit` (changed ~2026-05-14 11:00 UTC — it previously
+        # honored limit=500). We page by the *actual* returned count and stop
+        # on an empty page, so a future cap change can't silently re-break
+        # pagination: the old `len(data) < page_limit` termination assumed the
+        # API honored `limit`, so a 100-row response to a limit=500 request
+        # looked like the last page → only the 100 oldest, long-resolved
+        # events were ever fetched and everything downstream went stale.
+        API_MAX_LIMIT = 100
 
         # Phase 1: Fetch raw event data from Gamma API.
         #
-        # Cap at MAX_PAGES (2026-04-28) — direct API probing showed each page
-        # is 14-31 MB at limit=500 with the catalog at 2500+ active events.
-        # Without the cap we paginate 5-10 times through proxy, hitting 28-min
-        # wallclock and triggering the watchdog. Events are ordered by
-        # startTime ascending; the first 2500 cover all near-term events
-        # (further pages = months-out futures with no arbs anyway).
-        MAX_PAGES = 5
+        # Cap at MAX_PAGES — events are ordered by startTime ascending, so the
+        # first ~2500 cover all near-term events (further pages = months-out
+        # futures with no arbs anyway). At 100 events/page that's 25 pages;
+        # each page is ~3-6 MB so total transfer is similar to the old
+        # 5-page × 500 layout.
+        MAX_PAGES = 25
         all_raw = []
         offset = 0
         page = 1
@@ -413,10 +420,9 @@ class PolymarketRetriever(Retriever):
             logger.debug(f"[{self.provider_id}] Page {page}: fetched {len(data)} events (offset={offset})")
             all_raw.extend(data)
 
-            if len(data) < page_limit:
-                break
-
-            offset += page_limit
+            # Page by the actual returned count, not the requested page_limit —
+            # the API caps below page_limit, so assuming it doesn't drops pages.
+            offset += len(data)
             page += 1
         if page > MAX_PAGES:
             logger.info(
@@ -454,9 +460,7 @@ class PolymarketRetriever(Retriever):
                     all_raw.append(item)
                     seen_ids.add(item.get("id"))
                     closed_count += 1
-            if len(closed_data) < page_limit:
-                break
-            closed_offset += page_limit
+            closed_offset += len(closed_data)
             closed_page += 1
         if closed_count:
             logger.info(f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events")
