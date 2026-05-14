@@ -1824,6 +1824,30 @@ class TopstepXBrokerAdapter:
         # landed AFTER our timeout (then sat as an orphan until my new
         # orphan-sweep ran). 4.5s comfortably covers the observed latency
         # without unduly blocking the inference thread.
+        #
+        # creationTimestamp filter: ONLY consider stops created at/after
+        # entry_submit_ts. Pre-existing orphan stops (from a prior trade
+        # whose position closed but bracket survived) share the
+        # contract+side and would otherwise be picked as "newest by
+        # orderId" — caught 2026-05-14: a side=0 orphan @29635 from 14:31
+        # made every subsequent SHORT entry's discovery latch onto it,
+        # triggering bracket_stop_missing / bracket_stop_diverged on a
+        # loop. The bracket WE just placed is necessarily created after
+        # our submit timestamp; anything older is somebody else's stop.
+        _submit_epoch = entry_submit_ts.timestamp() - 1.0  # 1s tolerance for clock skew
+
+        def _created_after_submit(o: dict) -> bool:
+            raw = o.get("creationTimestamp")
+            if not raw:
+                return False  # no timestamp → can't prove it's ours → exclude
+            try:
+                from datetime import datetime as _dt
+
+                ts = _dt.fromisoformat(str(raw).replace("Z", "+00:00"))
+                return ts.timestamp() >= _submit_epoch
+            except Exception:
+                return False
+
         for attempt in range(1, 16):
             try:
                 open_orders = await self.client._post("/api/Order/searchOpen", {"accountId": self.client._account_id})
@@ -1834,6 +1858,7 @@ class TopstepXBrokerAdapter:
                     if o.get("contractId") == self.config.contract_id
                     and int(o.get("type") or 0) == 4  # STOP_MARKET
                     and int(o.get("side") or -1) == stop_side_int
+                    and _created_after_submit(o)
                 ]
                 if bracket_stops:
                     # Newest = highest orderId (broker assigns monotonically).
