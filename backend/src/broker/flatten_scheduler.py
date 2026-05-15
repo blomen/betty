@@ -70,8 +70,17 @@ class FlattenScheduler:
                 except Exception:
                     log.exception("EOD flatten failed!")
 
-            # Safety verify at +4 min — skip if adapter is already halted (EOD done)
-            if self._flattened_date == today and current_time >= self._verify_time:
+            # Safety verify in the 16-min window after EOD only. The check
+            # used to be `current_time >= self._verify_time`, which was true
+            # from 15:59 ET all the way to 23:59 ET — 8 hours. If anything
+            # cleared the EOD halt (an unconditional /recover call, or
+            # session_cleanup.sh resetting counters after RL training at
+            # ~18:20 ET), any new post-EOD entry got force-flattened within
+            # 30s. 2026-05-14 overnight: 7 of 14 trades (50%) were murdered
+            # by this. Bounding to the verify→end window (15:59 → 16:15 ET)
+            # preserves the legitimate safety net for a failed EOD flatten
+            # while letting post-EOD learning trades ride to their stops.
+            if self._flattened_date == today and self._verify_time <= current_time < self._flatten_end_time:
                 if not self._adapter._halted and not self._adapter.tracker.is_flat:
                     log.error("SAFETY: Still not flat at %s — forcing liquidation!", current_time)
                     await self._adapter.flatten("safety_verify")
