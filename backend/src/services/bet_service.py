@@ -63,6 +63,7 @@ class BetService:
         bet_type: str | None = None,
         start_time_str: str | None = None,
         provider_bet_id: str | None = None,
+        external_placement: bool = False,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -104,12 +105,16 @@ class BetService:
         if cooldown_reason:
             return {"error": f"Bet blocked: {cooldown_reason}"}
 
-        # Validate sufficient balance (unless free bet)
-        # Stake is in native currency (USD for Polymarket, SEK for others)
-        # Balance is also in native currency
+        # Validate sufficient balance (unless free bet or external placement).
+        # external_placement=True is used by the mirror's reactive sync when
+        # recording bets the user already placed manually on the bookmaker's
+        # site — the stake is already gone from the bookmaker balance, and
+        # the local cached balance may be stale or zero. Rejecting on
+        # insufficient balance would silently drop the record.
+        # Stake is in native currency (USD for Polymarket, SEK for others).
         currency = get_provider_currency(provider_id)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
-        if not is_bonus and current_balance < stake:
+        if not is_bonus and not external_placement and current_balance < stake:
             fmt = f"${current_balance:.2f}" if currency != "SEK" else f"{current_balance:.0f} kr"
             fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {"error": f"Insufficient balance: {fmt} available, {fmt_req} required"}

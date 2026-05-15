@@ -358,6 +358,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             bet_type=bet.bet_type,
             start_time_str=bet.start_time,
             provider_bet_id=bet.provider_bet_id,
+            external_placement=bet.external_placement,
         )
 
         if "error" in result:

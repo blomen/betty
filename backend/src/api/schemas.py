@@ -86,6 +86,13 @@ class BetCreate(BaseModel):
     bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
     start_time: str | None = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
     provider_bet_id: str | None = None  # Coupon/bet ref from placement response — enables exact-ID settlement matching
+    # Skip the balance-sufficiency check. Used by mirror's reactive sync
+    # when recording bets the user already placed manually on the
+    # bookmaker's site — the bookmaker already accepted the stake, our
+    # balance number may already reflect the deduction, and rejecting on
+    # "insufficient balance" would silently drop the record (the pinnacle
+    # 0-kr issue, 2026-05-15).
+    external_placement: bool = False
 
 
 class BatchBetLeg(BaseModel):
