@@ -385,7 +385,13 @@
         ));
         if (mid != null) {
           drawn.set(memberKey, mid);
-          _ensureGroupAndAdd('Arnold • Zones', mid);
+          // Route swing-family members (daily_swing / weekly_swing /
+          // monthly_swing) to their own "Arnold • Swings" folder so the
+          // user can collapse all swing pivots independently of the zone
+          // detail. Other families stay in "Arnold • Zones" alongside
+          // the rectangles. Matches the userscript v0.10.9 routing.
+          const memberFolder = /swing/.test(family) ? 'Arnold • Swings' : 'Arnold • Zones';
+          _ensureGroupAndAdd(memberFolder, mid);
         }
       } catch (e) {
         // Per-member failure shouldn't kill the zone draw — skip and continue.
@@ -1167,20 +1173,31 @@
     if (!Number.isFinite(entry) || entry <= 0) return false;
 
     const NQ_TICK = 0.25;
-    // Unified geometry for both wins and losses: anchor at entry, stopLevel
-    // from original 1R, profitLevel from planned 2R tp. Same shape as the
-    // active widget so TV's R:R = 2 label stays correct. The realized exit
-    // and final P&L are surfaced via the headerText label and TV's built-in
-    // Closed P&L info-block; no trail line is drawn for closed trades (it
-    // was visual noise — exit_price already conveys outcome). Removed the
-    // old win-mode `stopLevel = 0` branch — newer TV builds reject the
-    // long_position widget with "Value is undefined" when stopLevel is 0,
-    // which was killing every win since 2026-05-08.
-    const tpPx = tp ?? (isLong ? entry + 1 : entry - 1);
-    const stopPx = stop ?? (isLong ? entry - 1 : entry + 1);
+    // Stoploss band must NEVER stretch or shrink on close — keep it at the
+    // ORIGINAL stop offset from entry. Using p.stop (broker's current stop)
+    // produces a collapsed 2-tick band on winners because the broker
+    // BE-locks and trails the stop upward — p.stop on close is the trailed
+    // value, not the placed stop. Same logic for profit band: always render
+    // the planned 1.5R reference, never the realized exit (the realized
+    // exit is shown by the x2 anchor handle position, not the band edge).
+    //
+    // Realized exit is communicated by:
+    //   - x2 anchor (slopedPoints below) — handle sits at exit_price
+    //   - headerText — "L +$310 1.45R [STOP]" etc.
+    //   - TV's Closed P&L info-block (computed from slopedPoints)
+    const orig_stop = (typeof p.original_stop_price === 'number' && p.original_stop_price > 0)
+      ? p.original_stop_price : null;
+    const stopPx = orig_stop ?? stop ?? (isLong ? entry - 1 : entry + 1);
+    const stopDistPts = Math.abs(stopPx - entry);
+    // Profit band = 1.5R from entry in the trade's intended direction. We
+    // do NOT use p.tp because the broker doesn't always place a TP order
+    // matching 1.5R, and for trailed/BE-locked trades p.tp drifts away
+    // from the original target. The widget is a learning frame; the
+    // 1.5R reference is fixed regardless of broker state.
+    const tpPx = isLong ? (entry + 1.5 * stopDistPts) : (entry - 1.5 * stopDistPts);
     const yAnchor = entry;
-    const stopLevel = Math.max(1, Math.round(Math.abs(yAnchor - stopPx) / NQ_TICK));
-    const profitLevel = Math.max(1, Math.round(Math.abs(tpPx - yAnchor) / NQ_TICK));
+    const stopLevel = Math.max(1, Math.round(stopDistPts / NQ_TICK));
+    const profitLevel = Math.max(1, Math.round(1.5 * stopDistPts / NQ_TICK));
 
     const shapeName = isLong ? 'long_position' : 'short_position';
     // Create-time points: both y values must equal entry — TV's

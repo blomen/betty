@@ -50,10 +50,35 @@ def create_router() -> APIRouter:
         bc = getattr(request.app.state, "overlay_broadcaster", None)
         if bc is None:
             return {"error": "broadcaster not initialized"}
-        return {**overlay_status.get_status(), "broadcaster": bc.state_snapshot()}
+        # Also surface a per-family member-count summary so we can diagnose
+        # missing swings without modifying the userscript: if "swing" isn't
+        # in the family list, the brush lines literally cannot be drawn.
+        try:
+            from src.stocks.dashboard import _state as _dash_state
 
-    @router.get("/api/tv-overlay/userscript")
-    async def serve_userscript() -> Response:
+            zones = _dash_state.get("zones") or []
+            fam_counts: dict[str, int] = {}
+            sample_members: list[dict] = []
+            for z in zones:
+                for m in z.get("members_detail") or []:
+                    fam = str(m.get("family") or "unknown")
+                    fam_counts[fam] = fam_counts.get(fam, 0) + 1
+                    if len(sample_members) < 10:
+                        sample_members.append({"family": fam, "name": m.get("name"), "price": m.get("price")})
+            zones_summary = {
+                "zone_count": len(zones),
+                "family_member_counts": fam_counts,
+                "sample_members": sample_members,
+            }
+        except Exception as e:
+            zones_summary = {"error": f"zones probe failed: {e}"}
+        return {
+            **overlay_status.get_status(),
+            "broadcaster": bc.state_snapshot(),
+            "zones_probe": zones_summary,
+        }
+
+    async def _serve_userscript_impl() -> Response:
         if not _USERSCRIPT_PATH.exists():
             return Response(
                 content="// arnold-overlay.user.js missing — install pending",
@@ -64,6 +89,21 @@ def create_router() -> APIRouter:
             content=_USERSCRIPT_PATH.read_text(encoding="utf-8"),
             media_type="application/javascript; charset=utf-8",
         )
+
+    @router.get("/api/tv-overlay/userscript")
+    async def serve_userscript() -> Response:
+        # Legacy path — kept so existing Tampermonkey installs with
+        # @updateURL pointing here still receive updates.
+        return await _serve_userscript_impl()
+
+    @router.get("/api/tv-overlay/arnold-overlay.user.js")
+    async def serve_userscript_userjs() -> Response:
+        # .user.js suffix — Tampermonkey only triggers its install/update
+        # prompt for URLs ending in this extension. Visiting the bare
+        # /userscript path just renders the script as text in the browser
+        # (no install dialog), forcing manual copy-paste. This route
+        # serves identical content at a URL Tampermonkey recognizes.
+        return await _serve_userscript_impl()
 
     @router.post("/api/tv-overlay/ping-zone/{zone_key}")
     async def ping_zone(zone_key: str) -> dict:

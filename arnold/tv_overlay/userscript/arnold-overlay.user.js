@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         Arnold TradingView Overlay
 // @namespace    https://github.com/blomen/arnold
-// @version      0.10.5
-// @description  v0.10.4 base + closed-trade widget band stretches to the ACTUAL exit price (not the planned 1.5R target). A Phase-2 trade that trailed to +16R was rendering identical to a +1.5R target hit. Now the band reaches the realized exit and the R:R label matches pnl_r.
+// @version      0.10.12
+// @description  v0.10.11 + @updateURL/@downloadURL now point to /arnold-overlay.user.js. Tampermonkey only auto-detects userscripts when the URL ends in `.user.js`; the previous bare /userscript path made the browser render the script as text, never triggering Tampermonkey's install/update prompt. The new suffixed route serves the same content; visiting it shows Tampermonkey's install dialog so users can refresh to the latest version with one click. Also lands the unconditional userscript-loaded ping introduced in v0.10.11.
 // @match        https://*.tradingview.com/*
 // @match        https://tradingview.com/*
 // @run-at       document-idle
 // @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
-// @updateURL    http://127.0.0.1:8000/stocks/api/tv-overlay/userscript
-// @downloadURL  http://127.0.0.1:8000/stocks/api/tv-overlay/userscript
+// @updateURL    http://127.0.0.1:8000/stocks/api/tv-overlay/arnold-overlay.user.js
+// @downloadURL  http://127.0.0.1:8000/stocks/api/tv-overlay/arnold-overlay.user.js
 // ==/UserScript==
 
 // Why @grant unsafeWindow + @connect: TradingView's CSP blocks ws:// from
@@ -110,30 +110,53 @@
   // `shapesGroupController`, the shapes simply remain ungrouped (still
   // visible, just one entry per shape in the tree).
   const _groups = new Map(); // logical-name → tv-group-id
+  // One-shot diagnostic guard so a missing TV API doesn't spam the server
+  // with N×shape sendError calls; we report each unique failure mode once.
+  const _groupDiagFired = new Set();
+  function _groupDiag(tag, extra) {
+    if (_groupDiagFired.has(tag)) return;
+    _groupDiagFired.add(tag);
+    sendError(`group:${tag}${extra ? ' ' + extra : ''}`);
+  }
   function _ensureGroupAndAdd(logicalName, shapeId) {
-    if (!chart || shapeId == null) return;
+    if (!chart) { _groupDiag('no-chart'); return; }
+    if (shapeId == null) { _groupDiag('null-shape-id'); return; }
     try {
-      const gc = chart.shapesGroupController && chart.shapesGroupController();
-      const sel = chart.selection && chart.selection();
-      if (!gc || !sel) return;
+      const hasGc = typeof chart.shapesGroupController === 'function';
+      const hasSel = typeof chart.selection === 'function';
+      if (!hasGc) { _groupDiag('no-shapesGroupController-method'); return; }
+      if (!hasSel) { _groupDiag('no-selection-method'); return; }
+      const gc = chart.shapesGroupController();
+      const sel = chart.selection();
+      if (!gc) { _groupDiag('shapesGroupController-returned-null'); return; }
+      if (!sel) { _groupDiag('selection-returned-null'); return; }
       const existing = _groups.get(logicalName);
       if (existing != null) {
-        try { gc.addShapeToGroup(existing, shapeId); } catch (_) {}
+        try { gc.addShapeToGroup(existing, shapeId); }
+        catch (e) { _groupDiag('addShapeToGroup-threw', `name=${logicalName} err=${e && e.message || e}`); }
         return;
       }
       // First shape for this group → create via selection.
       const priorSel = sel.allSources ? sel.allSources().slice() : [];
-      sel.clear();
-      sel.add(shapeId);
-      const newId = gc.createGroupFromSelection();
-      sel.clear();
+      try { sel.clear(); } catch (e) { _groupDiag('sel-clear-threw', e && e.message || String(e)); return; }
+      try { sel.add(shapeId); } catch (e) { _groupDiag('sel-add-threw', e && e.message || String(e)); return; }
+      let newId;
+      try { newId = gc.createGroupFromSelection(); }
+      catch (e) { _groupDiag('createGroupFromSelection-threw', e && e.message || String(e)); try { sel.clear(); } catch (_) {} return; }
+      try { sel.clear(); } catch (_) {}
       // Restore prior selection (best effort) so we don't disrupt the user.
       for (const s of priorSel) { try { sel.add(s); } catch (_) {} }
-      if (newId != null) {
-        try { gc.setGroupName(newId, logicalName); } catch (_) {}
-        _groups.set(logicalName, newId);
+      if (newId == null) {
+        _groupDiag(`createGroupFromSelection-null:${logicalName}`, '');
+        return;
       }
-    } catch (_) { /* group failure is non-fatal */ }
+      try { gc.setGroupName(newId, logicalName); } catch (e) { _groupDiag(`setGroupName-threw:${logicalName}`, e && e.message || String(e)); }
+      _groups.set(logicalName, newId);
+      // Per-folder one-shot diag — confirms each folder was actually created.
+      _groupDiag(`group-ok:${logicalName}`, `id=${newId}`);
+    } catch (e) {
+      _groupDiag('outer-catch', e && e.message || String(e));
+    }
   }
 
   function safeRemove(key) {
@@ -259,7 +282,16 @@
           );
           if (mid != null) {
             drawn.set(memberKey, mid);
-            _ensureGroupAndAdd('Arnold • Zones', mid);
+            // Route swing-family members (daily_swing, weekly_swing,
+            // monthly_swing) to their own "Arnold • Swings" folder so the
+            // user can collapse all swing pivots independently of the zone
+            // detail. The level_upsert standalone-swing path is currently
+            // unreliable (server-side level_update WS pushes drop under
+            // event-loop starvation), so the zone-member brush lines are
+            // the de-facto swing rendering. Other families stay in
+            // "Arnold • Zones" alongside the rectangles.
+            const memberFolder = /swing/.test(family) ? 'Arnold • Swings' : 'Arnold • Zones';
+            _ensureGroupAndAdd(memberFolder, mid);
           }
         } catch (e) {
           // Individual member-line failure shouldn't kill the zone draw.
@@ -418,23 +450,32 @@
     const phase = Number(p.phase) || 0;
     const entryTime = (typeof p.entry_time === 'number') ? Math.floor(p.entry_time) : null;
 
-    // Phase 1 sacred: lock the widget at the broker's original stop + TP
-    // captured on the first tick of the trade. Both frozen for the life
-    // of the Phase 1 entry.
-    // TP visual = 1.5R (matches BE_LOCK_R in broker_adapter). The chart's
-    // green band marks the level where BE-lock fires and the trade
-    // transitions Phase 1 → Phase 2. Since no TP order is placed at the
-    // broker, this is purely a visual reference; the live model exits via
-    // SL hit / REV signal / manual flatten. Visual matches model behavior.
-    // Phase 2 (locked_BE=true): follow live broker stop_price; tp stays
-    // frozen at the 1.5R reference for the widget's R:R label.
+    // Active widget = CONSTANT Phase 1 visual frame for every trade,
+    // regardless of phase. Frozen at entry: stop = original_stop_price,
+    // TP = entry ± 1.5 × original_stop ticks. Never mutated by phase
+    // transitions or broker stop_price updates. The live trailing stop
+    // (after BE-lock kicks in at 1.5R) is drawn ONLY via the horizontal
+    // red trail line on top of the widget — see _updateTrailStopLine.
+    //
+    // Why this matters:
+    //   - The broker sometimes places (or fails to place) a TP order at a
+    //     distance unrelated to 1.5R (e.g. near-BE on Phase 1 partial fills
+    //     producing an R:R label of 0.1). The widget is a learning frame,
+    //     not the order book — pin it at the intended 1.5R reference.
+    //   - Mutating the widget on Phase 2 transition (old code path) made
+    //     it impossible to see at-a-glance whether a winning trade was
+    //     riding past the planned target. Now the planned 1.5R band is
+    //     always visible; the trail line shows where the actual stop sits.
+    //
+    // trailStopPrice = price of the explicit horizontal red line drawn ON
+    // TOP of the widget. Drawn whenever an active trade has a live stop
+    // (typically Phase 2 after BE-lock; the line is harmless in Phase 1
+    // when it would overlap the widget's own stop band). Null for closed
+    // trades — the close-time widget already shows the final stop.
     let stopOffsetTicks;
     let tpOffsetTicks;
-    // trailStopPrice is the price of the explicit horizontal red line drawn
-    // ON TOP of the widget — Phase 2 only. Null in Phase 1 (line removed if
-    // it was there from a previous Phase 2 trade under the same key).
     let trailStopPrice = null;
-    if (phase === 1) {
+    if (isLive) {
       const cached = phase1Snapshots.get(p.key);
       if (cached && cached.entryTime === entryTime) {
         stopOffsetTicks = cached.stopOffsetTicks;
@@ -446,19 +487,21 @@
           ? origStop
           : ((typeof p.stop === 'number' && p.stop > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1));
         stopOffsetTicks = Math.max(1, Math.round(Math.abs(baseStop - p.entry) / NQ_TICK));
-        // Use broker's actual tp_price when present so the widget matches
-        // the live order book (slippage between signal and fill can push
-        // the R-ratio off exactly 2.0 — we trust broker over the formula).
-        // Fallback to synthetic 2R only if broker hasn't sent a TP yet.
-        const liveTp = (typeof p.tp === 'number' && Number(p.tp) > 0) ? Number(p.tp) : null;
-        if (liveTp != null) {
-          tpOffsetTicks = Math.max(1, Math.round(Math.abs(liveTp - p.entry) / NQ_TICK));
-        } else {
-          tpOffsetTicks = Math.max(1, Math.round(stopOffsetTicks * 1.5));
-        }
+        // Always 1.5R — ignore broker's live tp_price. The widget is a
+        // CONSTANT learning frame, not a mirror of the order book.
+        tpOffsetTicks = Math.max(1, Math.round(stopOffsetTicks * 1.5));
         phase1Snapshots.set(p.key, { entryTime, stopOffsetTicks, profitOffsetTicks: tpOffsetTicks });
       }
+      // Trail line: Phase 2 only (after BE-lock). Phase 1's stop = original
+      // stop = same as the widget's own stop band, so a trail line there
+      // would just overlap; keep the chart clean by drawing it only when
+      // the broker has migrated the stop (BE-lock and beyond).
+      if (phase >= 2) {
+        const livePrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : null;
+        if (livePrice != null) trailStopPrice = livePrice;
+      }
     } else {
+      // Closed trade — show entry/stop/tp/exit as recorded.
       const stopPrice = (p.stop != null && Number(p.stop) > 0) ? Number(p.stop) : (isLong ? p.entry - 1 : p.entry + 1);
       const tpPrice   = (p.tp   != null && Number(p.tp)   > 0) ? Number(p.tp)   : (isLong ? p.entry + 1 : p.entry - 1);
       stopOffsetTicks = Math.max(1, Math.round(Math.abs(stopPrice - p.entry) / NQ_TICK));
@@ -472,7 +515,7 @@
       // band keeps its planned reference (the risk/reward that WAS at
       // stake). Caught 2026-05-12 trade 1660: +16.97R EOD_FLATTEN winner
       // looked like a target hit.
-      if (!isLive && typeof p.exit_price === 'number' && p.exit_price > 0) {
+      if (typeof p.exit_price === 'number' && p.exit_price > 0) {
         const exitMove = isLong ? p.exit_price - p.entry : p.entry - p.exit_price;
         const exitOffsetTicks = Math.max(1, Math.round(Math.abs(p.exit_price - p.entry) / NQ_TICK));
         if (exitMove > 0) {
@@ -483,10 +526,8 @@
           stopOffsetTicks = Math.max(stopOffsetTicks, exitOffsetTicks);
         }
       }
-      // Trail line: live Phase 2 only. Closed trades use the widget's own
-      // stop band, frozen at the close-time value — no separate horizontal
-      // line needed since nothing is going to move after exit.
-      if (isLive) trailStopPrice = stopPrice;
+      // No trail line on closed trades — the widget's own stop band, frozen
+      // at close-time, shows the final stop.
     }
 
     // Hard guarantee: closed trades NEVER carry a trail-stop line. Defensive
@@ -504,6 +545,16 @@
       _recordTrailAndEvents(p);
     }
 
+    // Both anchor points at entry price (horizontal). Tradingview's
+    // long_position widget uses point-1's price as the entry reference and
+    // the band offsets (stopLevel / profitLevel ticks) are drawn relative
+    // to it. Trying to set point-2 to exit_price (attempted in v0.10.9)
+    // broke createMultipointShape on tradingview.com web — no shape was
+    // created, so the "Arnold • Closed Trades" folder vanished entirely
+    // because no shape ever reached _ensureGroupAndAdd. The realized exit
+    // is communicated by the v0.10.5 band-stretch logic (stretching the
+    // SL or TP band so its far edge sits at exit_price) plus the
+    // dedicated exit-marker shape drawn at the actual exit price.
     const points = [
       { time: anchor, price: p.entry },
       { time: endEpoch, price: p.entry },
@@ -935,6 +986,11 @@
     ws.onopen = () => {
       console.log('[arnold-overlay] connected');
       try { ws.send(JSON.stringify({ type: 'hello', version: '0.2.0', href: PAGE.location.href })); } catch (_) {}
+      // Unconditional diagnostic — surfaces the loaded userscript version
+      // through /api/tv-overlay/status's recent_errors so we can verify
+      // Tampermonkey actually fetched the new file. Without this, an
+      // empty recent_errors could mean "no failures" OR "stale userscript".
+      try { ws.send(JSON.stringify({ type: 'error', message: 'userscript-loaded:0.10.12 chart=' + (chart ? 'attached' : 'null') })); } catch (_) {}
     };
 
     ws.onmessage = (ev) => {
@@ -947,6 +1003,52 @@
         case 'position_remove': removePosition(msg.key); sendAck(1); break;
         case 'level_upsert':    if (applyLevel(msg)) sendAck(1); break;
         case 'level_remove':    removeLevel(msg.key); sendAck(1); break;
+        case 'force_cleanup': {
+          // Server sends this on every /ws/tv-overlay connect to wipe leftover
+          // state before replaying current zones + trades. Without this handler,
+          // every reconnect duplicates every shape (especially closed-trade
+          // widgets, which the server replays from its `_trades` dict). Nuke
+          // chart shapes + reset all in-userscript registries so the subsequent
+          // replay is the SOLE source of truth.
+          if (chart) {
+            // Cancel any in-flight reconcile so it can't race against our wipe.
+            if (_rangeChangeTimer != null) { try { clearTimeout(_rangeChangeTimer); } catch (_) {} _rangeChangeTimer = null; }
+            // Nuclear option — wipes shapes loaded from TV's saved-state too,
+            // not just what we've drawn this session. Some TV builds expose it,
+            // some don't; fall back to per-entity remove if missing.
+            if (typeof chart.removeAllShapes === 'function') {
+              try { chart.removeAllShapes(); }
+              catch (e) { sendError(`removeAllShapes threw: ${e && e.message || e}`); }
+            } else {
+              // Best-effort per-shape removal from our own registries.
+              for (const id of drawn.values())              { try { chart.removeEntity(id); } catch (_) {} }
+              for (const entry of drawnPositions.values())  { if (entry && entry.shapeId != null) { try { chart.removeEntity(entry.shapeId); } catch (_) {} } if (entry && entry.exitMarkerId != null) { try { chart.removeEntity(entry.exitMarkerId); } catch (_) {} } }
+              for (const id of trailStopShapes.values())    { try { chart.removeEntity(id); } catch (_) {} }
+              for (const list of trailHistory.values())     { for (const id of list || []) { try { chart.removeEntity(id); } catch (_) {} } }
+              for (const list of eventMarkers.values())     { for (const id of list || []) { try { chart.removeEntity(id); } catch (_) {} } }
+              for (const entry of drawnLevels.values())     { if (entry && entry.shapeId != null) { try { chart.removeEntity(entry.shapeId); } catch (_) {} } }
+            }
+          }
+          // Reset every in-userscript registry — these are stale once the
+          // chart shapes are gone. Including _groups because TV's group IDs
+          // are invalidated by removeAllShapes; subsequent addShapeToGroup
+          // calls against stale IDs would silently fail and leave new shapes
+          // ungrouped.
+          drawn.clear();
+          drawnPositions.clear();
+          positionAnchors.clear();
+          closedTradePayloads.clear();
+          trailStopShapes.clear();
+          phase1Snapshots.clear();
+          trailHistory.clear();
+          eventMarkers.clear();
+          lastSeenState.clear();
+          drawnLevels.clear();
+          _groups.clear();
+          _groupDiagFired.clear();
+          sendAck(1);
+          break;
+        }
         case 'ping_zone': {
           // Flash-ping a zone — bring camera to it (best effort).
           try {

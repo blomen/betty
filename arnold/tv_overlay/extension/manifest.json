@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Arnold TradingView Overlay",
-  "version": "0.5.0",
-  "description": "Active widget header now shows trade phase: 'L×1 [P1]' (sacred bracket, pre-1.5R, no trail/pyramid/flip) vs 'L×2 [P2]' (zone-driven ride, post-1.5R BE-lock fired). Phase forwarded from tracker.phase via /api/stocks/runtime-status → poller → broadcaster. Earlier: closed widget right-edge slopes to exit_price; halt amber cue wired (poller now reads top-level data.halted); trail line dropped from closed widgets; visible-range filter for closed widgets; full info-block visibility; correct qty math.",
+  "version": "0.6.1",
+  "description": "v0.6.0 + closed-trade widget bands frozen at ORIGINAL stop and 1.5R reference, not the broker's current (BE-locked / trailed) values. v0.5.0 read p.stop and p.tp directly, so on winners the stop band collapsed to 2 ticks (BE-locked value) and the target band stretched to 333 ticks (realized exit), making every closed widget visually wrong. Now: stopLevel = original_stop_price distance from entry (frozen), profitLevel = 1.5R from entry (frozen), x2 anchor still slopes to the actual exit_price/exit_time, headerText carries realized P&L. Plus v0.6.0's swing-folder routing for zone-member brush lines.",
   "host_permissions": [
     "ws://127.0.0.1:*/*",
     "ws://localhost:*/*",

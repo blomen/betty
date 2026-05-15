@@ -506,12 +506,48 @@ class TopstepXBrokerAdapter:
             # row is written. Refuse new entry while _pending_trade is
             # still populated — that means a close-flush is in flight.
             if self._pending_trade is not None:
-                log.warning(
-                    "Signal rejected — prior trade still flushing (_pending_trade not yet cleared, side=%s entry=%.2f)",
-                    self._pending_trade.get("side"),
-                    self._pending_trade.get("entry_price", 0) or 0,
-                )
-                return {"rejected": True, "reason": "prior_trade_flushing"}
+                # Auto-recovery for stuck pre-claims. _execute_entry pre-claims
+                # _pending_trade BEFORE submitting the order (to avoid the
+                # dropped-fill race documented in project_trail_dropped_fill_bug).
+                # If the fill never arrives or isn't matched, _pending_trade
+                # stays with entry_price=0 forever and every subsequent signal
+                # is rejected here. 2026-05-15 13:36-13:48: 30+ valid signals
+                # (incl. conf=0.75 short) were lost over a 10-minute window
+                # exactly this way, requiring manual /recover to unblock.
+                #
+                # If the pre-claim is older than STUCK_PENDING_TIMEOUT_S AND
+                # entry_price is still 0 (no fill ever populated it), clear
+                # the slot and proceed. Normal fills land within 1-2s, so 60s
+                # is a comfortable threshold for "genuinely stuck".
+                pending_entry = self._pending_trade.get("entry_price", 0) or 0
+                pending_ts = self._pending_trade.get("ts")
+                age_s = 0.0
+                if pending_ts is not None:
+                    try:
+                        if isinstance(pending_ts, datetime):
+                            age_s = (datetime.now(timezone.utc) - pending_ts).total_seconds()
+                        else:
+                            age_s = time.time() - float(pending_ts)
+                    except Exception:
+                        age_s = 0.0
+                STUCK_PENDING_TIMEOUT_S = 60.0
+                if pending_entry <= 0 and age_s > STUCK_PENDING_TIMEOUT_S:
+                    log.warning(
+                        "Auto-clearing stuck _pending_trade (age=%.1fs, side=%s, no fill received) — accepting new signal",
+                        age_s,
+                        self._pending_trade.get("side"),
+                    )
+                    self._reset_tracker_for_rollback()
+                    self._set_pending_trade(None)
+                    # Fall through to the entry path below — do NOT return here.
+                else:
+                    log.warning(
+                        "Signal rejected — prior trade still flushing (_pending_trade not yet cleared, side=%s entry=%.2f age=%.1fs)",
+                        self._pending_trade.get("side"),
+                        pending_entry,
+                        age_s,
+                    )
+                    return {"rejected": True, "reason": "prior_trade_flushing"}
 
             # Zone cooldown only applies to new entries
             if zone_price > 0:
