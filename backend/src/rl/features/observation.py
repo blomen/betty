@@ -390,6 +390,26 @@ def build_observation(state: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
+    # Zone-sweep detection — teaches the model the stop-hunt pattern.
+    # Audit 2026-05-15: 29 of 33 recent stop exits (87.9%) were wicks
+    # piercing zones 5-10 ticks then reversing 5R+ in our intended
+    # direction. The model was systematically the early bidder at zones
+    # that were about to be swept. These two features expose:
+    #   * zone_sweep_recent_t — exp(-Δt/600s), 0=no sweep on file,
+    #     1=sweep just happened. Post-sweep entries are statistically
+    #     the winners; the model should LIKE high values.
+    #   * last_wick_size_R — magnitude of the most recent wick that
+    #     pierced this zone, in R units (wick_ticks / stop_ticks).
+    #     Big wick → market just paid the liquidity → next test is
+    #     the real move.
+    sweep_state = state.get("zone_sweep", {}) or {}
+    sweep_recent_t = float(sweep_state.get("recent_t", 0.0))
+    sweep_wick_R = float(sweep_state.get("last_wick_R", 0.0))
+    # Clip to [0,1] / [0,5] respectively — bounded inputs train cleaner.
+    sweep_recent_t = max(0.0, min(1.0, sweep_recent_t))
+    sweep_wick_R = max(0.0, min(5.0, sweep_wick_R))
+    seg_zone_sweep = np.array([sweep_recent_t, sweep_wick_R], dtype=np.float32)
+
     obs = np.concatenate(
         [
             seg_level,  # len(LevelType) — multi-hot (zone) or one-hot (legacy)
@@ -416,6 +436,7 @@ def build_observation(state: dict) -> np.ndarray:
             seg_zone_quality,  # 1 (Phase 3a — unified level quality score)
             seg_zone_memory,  # 3
             seg_prev_zone,  # 5 (Phase 3d — cross-zone narrative for stacked zones)
+            seg_zone_sweep,  # 2 (Phase 4 — sweep recency + wick magnitude in R)
         ]
     )
 

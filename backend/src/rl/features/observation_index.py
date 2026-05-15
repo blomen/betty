@@ -25,7 +25,7 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # 2026-05-15: appended zone_sweep(2) segment at tail for stop-hunt-pattern learning
 
 
 class Segment(TypedDict):
@@ -467,6 +467,13 @@ def _build_segments() -> list[Segment]:
                 "prev_zone_valid",
                 "stack_density",
             ],
+            "kind": "scalar",
+        },
+        {
+            "name": "zone_sweep",
+            "title": "Zone sweep detection",
+            "size": 2,
+            "labels": ["zone_sweep_recent_t", "last_wick_size_R"],
             "kind": "scalar",
         },
     ]

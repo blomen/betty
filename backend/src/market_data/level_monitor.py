@@ -2638,7 +2638,69 @@ class LevelMonitor:
             "zone_memory": self._build_zone_memory_for_state(),
             "prev_zone": self._build_prev_zone_state(zone, price),
             "zone_stack": self._compute_zone_stack_density(price),
+            "zone_sweep": self._build_zone_sweep_state(zone, candles or []),
         }
+
+    def _build_zone_sweep_state(self, zone: "Zone", candles: list) -> dict:
+        """Detect whether this zone has been recently swept and how deep.
+
+        A "sweep" = a 1m candle whose wick pierced the zone's far edge by
+        ≥ _MIN_SWEEP_TICKS but whose CLOSE returned back inside the zone
+        within the same minute. The stop-hunt pattern audit on 2026-05-15
+        showed 87.9% of recent stop exits had this signature — model
+        learns to RECOGNIZE the sweep and ENTER on the post-sweep test,
+        rather than being the early bidder that gets swept.
+
+        Returns:
+          {
+            "recent_t":   exp(-Δt/600s), 0=no sweep on file, 1=just swept
+            "last_wick_R": wick depth in R units (wick_ticks / 30t reference)
+          }
+        """
+        import math
+        import time as _time
+
+        if zone is None or not candles:
+            return {"recent_t": 0.0, "last_wick_R": 0.0}
+        # Look back ~30 minutes of 1m candles (or whatever's available)
+        recent = candles[-30:] if len(candles) > 30 else candles
+        _MIN_SWEEP_TICKS = 4
+        _TICK = 0.25
+        _SWEEP_THRESHOLD = _MIN_SWEEP_TICKS * _TICK
+        zone_low = float(zone.lower_bound)
+        zone_high = float(zone.upper_bound)
+        # Find the MOST RECENT sweep candle for either side of the zone.
+        most_recent_ts: float | None = None
+        max_wick_pts = 0.0
+        for c in reversed(recent):
+            try:
+                c_low = float(c.l if hasattr(c, "l") else c["l"])
+                c_high = float(c.h if hasattr(c, "h") else c["h"])
+                c_close = float(c.c if hasattr(c, "c") else c["c"])
+                c_ts = float(c.t if hasattr(c, "t") else c["t"])
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+            # Sweep BELOW the zone (long-bias): wick punched below zone_low
+            # by >= threshold AND close came back inside the zone.
+            if (zone_low - c_low) >= _SWEEP_THRESHOLD and c_close >= zone_low:
+                most_recent_ts = c_ts
+                max_wick_pts = zone_low - c_low
+                break  # iterating reversed, first hit is most recent
+            # Sweep ABOVE the zone (short-bias): wick punched above zone_high
+            # by >= threshold AND close came back inside the zone.
+            if (c_high - zone_high) >= _SWEEP_THRESHOLD and c_close <= zone_high:
+                most_recent_ts = c_ts
+                max_wick_pts = c_high - zone_high
+                break
+        if most_recent_ts is None:
+            return {"recent_t": 0.0, "last_wick_R": 0.0}
+        age_s = max(0.0, _time.time() - most_recent_ts)
+        # Decay over 10 min — 600s half-life-ish (e^-1 at 600s)
+        recent_t = math.exp(-age_s / 600.0)
+        # Normalize wick by a 30-tick reference (typical conf-based stop).
+        wick_ticks = max_wick_pts / _TICK
+        last_wick_R = wick_ticks / 30.0
+        return {"recent_t": recent_t, "last_wick_R": last_wick_R}
 
     def _build_prev_zone_state(self, current_zone, price: float) -> dict:
         """Cross-zone narrative for the model: distance + outcome of the
