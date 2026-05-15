@@ -322,6 +322,20 @@ async def signal_relay(ws: WebSocket):
         except Exception:
             log.exception("position replay on connect failed (non-fatal)")
 
+    # Replay recent closed trades so a reconnecting passive listener
+    # catches every close it missed during disconnect. _broadcast_via_signal_callbacks
+    # is fire-and-forget — when /ws/signals churns under server load
+    # (1011 keepalive timeouts within ~100ms of open), closes between
+    # disconnect and reconnect would otherwise only arrive via the 30s
+    # broker-trades HTTP poller, freezing the chart's closed-trade widgets.
+    try:
+        from ...stocks.server_bootstrap import get_recent_closed_trades
+
+        for trade_dict in get_recent_closed_trades():
+            await ws.send_json({"type": "trade_closed", "trade": trade_dict})
+    except Exception:
+        log.exception("trade_closed replay on connect failed (non-fatal)")
+
     # Running VWAP tracker — anchored midnight CET, updated on every 1m candle close.
     # Seed from DB so reconnects start with correct accumulated VWAP, not zero.
     # Runs in a thread so the blocking psycopg2 call can't freeze the event loop:

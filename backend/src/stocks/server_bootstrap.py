@@ -132,6 +132,29 @@ class ServerStocksRuntime:
 # which is sub-ms work.
 _PERSIST_LOCK = threading.Lock()
 
+# 2026-05-15: ring buffer of the last 20 trade_closed payloads so the
+# /ws/signals replay-on-connect can re-deliver them to a reconnecting
+# passive listener. Without this, when the local arnold client's WS
+# churns (event-loop starvation under extraction load — repeatedly closes
+# connections within ~100ms of open with 1011 keepalive ping timeout),
+# `trade_closed` pushes between disconnect and reconnect are LOST because
+# _broadcast_via_signal_callbacks is fire-and-forget. The 30s broker-trades
+# HTTP poller is the only fallback; closed widgets lag up to 30s as a result.
+# Replaying recent closes on every connect makes the chart eventually-
+# consistent regardless of WS stability.
+from collections import deque as _deque
+
+_RECENT_CLOSED_TRADES: _deque[dict] = _deque(maxlen=20)
+_RECENT_CLOSED_LOCK = threading.Lock()
+
+
+def get_recent_closed_trades() -> list[dict]:
+    """Snapshot of the most recent trade_closed payloads, oldest first.
+    Called by signals_ws.py on each /ws/signals connect to seed the
+    passive listener's dash_state["trades"]."""
+    with _RECENT_CLOSED_LOCK:
+        return list(_RECENT_CLOSED_TRADES)
+
 
 def _persist_broker_trade_direct(payload: dict) -> None:
     """Threaded direct DB insert for closed broker_trades — no HTTP.
@@ -271,8 +294,13 @@ def _persist_broker_trade_direct(payload: dict) -> None:
 
     # ALSO push the close to /ws/signals listeners so the local TV overlay
     # appends the closed trade instantly (no 30s broker-trades poll lag).
+    # Also append to the recent-closes ring so replay-on-connect can re-deliver
+    # to any listener that missed it during a WS-churn reconnect window.
     try:
-        _broadcast_via_signal_callbacks({"type": "trade_closed", "trade": _trade_payload_to_dict(payload)})
+        trade_dict = _trade_payload_to_dict(payload)
+        with _RECENT_CLOSED_LOCK:
+            _RECENT_CLOSED_TRADES.append(trade_dict)
+        _broadcast_via_signal_callbacks({"type": "trade_closed", "trade": trade_dict})
     except Exception:
         log.warning("trade_closed broadcast failed", exc_info=True)
 

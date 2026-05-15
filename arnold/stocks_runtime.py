@@ -142,10 +142,14 @@ async def _passive_position_poller() -> None:
     substitutes the last tick price so the chart still renders.
 
     Used to run at 2s — that produced 30 round-trips/min through the SSH
-    tunnel for state the WS push already delivers. 30s is enough for the
-    entry_price=0 fallback because positions are slow-changing and the
-    fallback only kicks when the WS push has already failed to populate
-    entry_price.
+    tunnel for state the WS push already delivers. Was raised to 30s, then
+    lowered to 5s (2026-05-15) after py-spy confirmed the server's default
+    asyncio executor is regularly saturated by extraction work (orchestrator
+    resolve_deferred + extraction_report _build_pinnacle_delta SQLAlchemy
+    queries), causing /ws/signals connections to die in ~100ms with 1011
+    keepalive ping timeouts. When the WS push path is dead, this poller
+    becomes the ONLY source of truth for trail/stop updates on the chart —
+    30s lag was unacceptable; 5s is a tolerable trade-off vs 12 req/min.
     """
     import json
 
@@ -241,7 +245,7 @@ async def _passive_position_poller() -> None:
             log.debug("position poller: %s", exc)
         except Exception:
             log.exception("position poller iteration failed")
-        await asyncio.sleep(30.0)
+        await asyncio.sleep(5.0)
 
 
 async def _passive_trades_poller() -> None:
@@ -249,8 +253,11 @@ async def _passive_trades_poller() -> None:
     `dash_state["trades"]` so the TV overlay broadcaster can paint each
     trade on the chart (closed AND open, with entry/exit/stop/tp/timestamps).
 
-    Polls every 30s — historical data is slow-changing; the active position
-    has its own faster poller for live updates.
+    Polls every 5s (2026-05-15, was 30s). Closed trades arrive primarily via
+    the /ws/signals `trade_closed` push, which is now also replayed on
+    reconnect server-side. This poller is the last-resort fallback for when
+    the WS path is fully starved by server load — 5s is the longest the
+    chart can lag a closed widget before it feels broken.
     """
     import json
 
@@ -272,7 +279,7 @@ async def _passive_trades_poller() -> None:
             log.debug("trades poller: %s", exc)
         except Exception:
             log.exception("trades poller iteration failed")
-        await asyncio.sleep(30.0)
+        await asyncio.sleep(5.0)
 
 
 async def _passive_dashboard_listener() -> None:
