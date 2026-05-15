@@ -220,8 +220,8 @@ def compute_consensus_fair_odds(
     for out, providers in odds_by_outcome.items():
         for p in providers:
             pid = p["provider"]
-            if pid in sharp_providers or pid == "polymarket":
-                continue
+            if pid in sharp_providers or pid in PREDICTION_MARKETS:
+                continue  # Sharp + prediction-market pricing don't belong in sportsbook consensus
             if pid not in provider_markets:
                 provider_markets[pid] = {}
             provider_markets[pid][out] = p["odds"]

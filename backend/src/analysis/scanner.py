@@ -1372,9 +1372,10 @@ class OpportunityScanner:
                     soft_prob_sums[p["provider"]] += 1.0 / p["odds"]
 
         # Check for odds discrepancy (likely event mismatch)
-        # Exclude Polymarket from ratio calc — prediction market pricing naturally
-        # diverges from traditional sportsbooks, especially for underdogs
-        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers={"polymarket"}, market=market):
+        # Exclude prediction markets (Polymarket, Kalshi) from ratio calc — their
+        # pricing naturally diverges from traditional sportsbooks (binary contracts,
+        # underdog longshots, illiquidity-driven floor/ceiling prints).
+        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers=set(PREDICTION_MARKETS), market=market):
             return []  # Skip entire market if any outcome has high discrepancy
 
         for outcome, provider_odds_list in odds_by_outcome.items():
@@ -1423,13 +1424,14 @@ class OpportunityScanner:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
-                # Skip for Polymarket — prediction markets can have single-outcome listings
+                # Skip for prediction markets (Polymarket, Kalshi) — binary contracts
+                # and single-side-of-book quoting routinely produce prob_sum < 0.90.
                 # Skip for spread markets — after Asian spread fix, each point has only 1
                 # outcome per provider (prob_sum ~0.5), which is expected. The complement
                 # lookup already reconstructs the full Pinnacle market for proper de-vigging.
                 is_spread_market = market.startswith("spread")
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
-                    if po["provider"] != "polymarket" and not is_spread_market:
+                    if po["provider"] not in PREDICTION_MARKETS and not is_spread_market:
                         continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)

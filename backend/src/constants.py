@@ -41,10 +41,16 @@ POLYMARKET_FEE_RATE = 0.02
 # multiplier on the price (tune from live fills data once enough trades land).
 KALSHI_FEE_RATE = 0.02
 
+# Prediction-market exchanges. Their pricing diverges from traditional sportsbook
+# books (binary contracts, single-side-of-book quoting, illiquidity-driven floor/
+# ceiling prints) so scanner gates that assume sportsbook microstructure must
+# exempt them — see scanner.MIN_VALID_PROB_SUM and _has_odds_discrepancy.
+PREDICTION_MARKETS = frozenset({"polymarket", "kalshi"})
+
 # Providers that store the extended market set (enrichment + map markets).
 # Pinnacle: sharp baseline for all markets.
 # Polymarket + Kalshi: prediction-market microstructure for value comparison.
-EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({"polymarket", "kalshi"})
+EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | PREDICTION_MARKETS
 
 # Platform map: provider_id -> platform name
 # Providers on the same platform share the same odds engine (not independent).
