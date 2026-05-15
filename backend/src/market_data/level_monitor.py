@@ -584,6 +584,16 @@ class LevelMonitor:
         self._amt_tracker = AMTDynamicsTracker()
         # Throttle: skip level checks when price hasn't moved
         self._last_price: float = 0.0
+        # Session-anchored CVD accumulator. Feeds observation segment
+        # session_cvd(2) which was reading state["session_cvd"] /
+        # state["session_cvd_total_vol"] but nothing was setting them.
+        # Resets at RTH open (13:30 UTC). Inferred side from price
+        # movement (proxy — true bid/ask aggressor would require an
+        # on_tick signature change to receive side; deferred). Better
+        # than zero feature dim, gets the model 2 more usable inputs.
+        self._session_cvd_value: float = 0.0
+        self._session_cvd_total_vol: float = 0.0
+        self._session_cvd_date: object = None  # UTC date last anchored at RTH open
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
 
@@ -1011,6 +1021,31 @@ class LevelMonitor:
         # Update AMT dynamics tracker (infer side from price movement)
         _side = "buy" if price >= self._last_price else "sell"
         self._amt_tracker.update(price, size, _side)
+
+        # Session-anchored CVD accumulator. Resets daily at 13:30 UTC (RTH open).
+        # Anchoring at session open captures the day's directional flow imbalance
+        # — feeds observation seg_session_cvd(2). Uses price-movement-inferred
+        # side (proxy for real aggressor side); when on_tick gets a side param
+        # in a future refactor, swap this to the real side.
+        try:
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+
+            tick_dt = _dt.fromtimestamp(now, tz=_tz.utc)
+            session_date = tick_dt.date()
+            # Reset at session boundary: if it's a new UTC date AND we're past
+            # 13:30 UTC, anchor CVD at zero for the new session.
+            if self._session_cvd_date is None or (
+                session_date != self._session_cvd_date and tick_dt.hour * 60 + tick_dt.minute >= 13 * 60 + 30
+            ):
+                self._session_cvd_value = 0.0
+                self._session_cvd_total_vol = 0.0
+                self._session_cvd_date = session_date
+            signed = float(size) if _side == "buy" else -float(size)
+            self._session_cvd_value += signed
+            self._session_cvd_total_vol += float(size)
+        except Exception:
+            pass
         if price_changed:
             self._last_price = price
         else:
@@ -2639,6 +2674,10 @@ class LevelMonitor:
             "prev_zone": self._build_prev_zone_state(zone, price),
             "zone_stack": self._compute_zone_stack_density(price),
             "zone_sweep": self._build_zone_sweep_state(zone, candles or []),
+            # Session-anchored CVD feeds seg_session_cvd(2). The two
+            # state keys are read at observation.py:221-225.
+            "session_cvd": self._session_cvd_value,
+            "session_cvd_total_vol": self._session_cvd_total_vol,
         }
 
     def _build_zone_sweep_state(self, zone: "Zone", candles: list) -> dict:
@@ -2817,4 +2856,7 @@ class LevelMonitor:
             "recent_ticks": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
             "amt_dynamics": self._amt_tracker.snapshot(),
+            # Session-anchored CVD — feeds seg_session_cvd(2).
+            "session_cvd": self._session_cvd_value,
+            "session_cvd_total_vol": self._session_cvd_total_vol,
         }
