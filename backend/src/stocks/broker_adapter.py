@@ -1668,11 +1668,24 @@ class TopstepXBrokerAdapter:
             # stop on the wrong side — keep the tick-based fallback.
             struct_ok = (is_long and struct_stop < price) or (not is_long and struct_stop > price)
             if struct_ok:
+                # Use whichever stop is WIDER (farther from entry). The point
+                # of the structural override is to protect against sweep-and-
+                # reverse stop hunts — making the stop TIGHTER than the model
+                # wanted defeats the purpose. Thin zones (5-tick widths) +
+                # 10-tick buffer would otherwise produce a 10-tick stop that
+                # gets eaten by ordinary noise. Always take the more
+                # conservative of {model_stop, struct_stop}.
+                if is_long:
+                    final_stop = min(stop_price, struct_stop) if stop_price > 0 else struct_stop
+                else:
+                    final_stop = max(stop_price, struct_stop) if stop_price > 0 else struct_stop
                 model_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else 0
                 struct_dist_ticks = abs(struct_stop - price) / 0.25
+                final_dist_ticks = abs(final_stop - price) / 0.25
+                picked = "struct" if abs(final_stop - struct_stop) < 0.13 else "model"
                 log.info(
                     "Structural stop: %s zone=[%.2f-%.2f] entry=%.2f buffer=%dt "
-                    "model_stop=%.2f (%dt) -> struct_stop=%.2f (%dt)",
+                    "model_stop=%.2f (%dt) struct_stop=%.2f (%dt) -> %s_stop=%.2f (%dt)",
                     "long" if is_long else "short",
                     float(zone_bottom),
                     float(zone_top),
@@ -1682,8 +1695,11 @@ class TopstepXBrokerAdapter:
                     int(model_dist_ticks),
                     struct_stop,
                     int(struct_dist_ticks),
+                    picked,
+                    final_stop,
+                    int(final_dist_ticks),
                 )
-                stop_price = struct_stop
+                stop_price = final_stop
 
         # Validate/adjust stop distance (clamp to MIN/MAX_STOP_TICKS)
         stop_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else DEFAULT_STOP_TICKS
