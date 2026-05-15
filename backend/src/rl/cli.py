@@ -3208,7 +3208,11 @@ def backtest(
 
             # Run SessionManager through the episodes
             sm.reset_session()
-            for ep in episodes:
+            # Tick pointer for the wick-aware stop walker below. ticks are
+            # already chronological so we advance monotonically.
+            ti = 0
+            n_ticks = len(ticks)
+            for ep_idx, ep in enumerate(episodes):
                 # Build state from episode's stored state
                 state = ep.state if hasattr(ep, "state") else {}
                 if not state:
@@ -3218,11 +3222,39 @@ def backtest(
                     continue
 
                 sm.on_level_touch(state, price)
-
-                # Check stop on each tick between episodes (simplified: use episode prices)
-                # In live trading this would be tick-by-tick
                 if sm.position.is_open:
                     sm.on_price_update(price)
+
+                # Wick-aware stop simulation: walk EVERY tick between this
+                # episode and the next, calling on_price_update for each.
+                # This is the fix for the train-vs-live gap documented in the
+                # 2026-05-15 stop-hunt audit:
+                #   - 88.9% of live stop exits were wicks piercing the stop
+                #     by 5-10 ticks then closing back inside the zone.
+                #   - Live broker brackets fire on the wick tick itself.
+                #   - Previously the trainer only called on_price_update at
+                #     EPISODE boundaries (every zone touch), so intermediate
+                #     wicks were invisible. Every sweep-and-reverse trade
+                #     was labelled a WINNER in training and a -1R loser
+                #     live, producing the 71% backtest -> 32% live WR gap.
+                # Walking ticks in order preserves BE-lock interactions —
+                # a wick UP past 1.5R fires BE-lock, the stop moves to BE,
+                # and a subsequent wick DOWN past the original stop is now
+                # protected by the trailed stop.
+                if sm.position.is_open and ep_idx + 1 < len(episodes):
+                    next_ts = episodes[ep_idx + 1].touch_ts
+                    cur_ts = ep.touch_ts
+                    # Advance ti past the current episode's timestamp
+                    while ti < n_ticks and ticks[ti].get("ts") <= cur_ts:
+                        ti += 1
+                    # Walk every tick strictly AFTER cur_ts and at-or-before next_ts
+                    while ti < n_ticks and ticks[ti].get("ts") <= next_ts:
+                        p = float(ticks[ti].get("price") or 0.0)
+                        if p > 0:
+                            sm.on_price_update(p)
+                            if not sm.position.is_open:
+                                break  # stopped out — no need to keep walking
+                        ti += 1
 
             # Close at session end
             if sm.position.is_open and ticks:
