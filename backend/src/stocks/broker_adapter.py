@@ -937,7 +937,12 @@ class TopstepXBrokerAdapter:
             side=side,
             size=size,
             entry_price=entry_px,
-            stop_price=pt.get("original_stop_price") or stop_price,
+            # broker_trades.stop_price is the ORIGINAL placed stop, NEVER the
+            # trailed/BE-locked value. Prefer tracker.original_stop_price
+            # (set once on first fill, immutable) over _pending_trade
+            # (clobbered on rebuild paths). final_stop_price carries the
+            # value at close.
+            stop_price=getattr(self.tracker, "original_stop_price", 0.0) or pt.get("original_stop_price") or stop_price,
             final_stop_price=pt.get("stop_price") or self.tracker.stop_price or stop_price,
             tp_price=pt.get("tp_price"),
             exit_price=weighted_px,
@@ -1585,7 +1590,11 @@ class TopstepXBrokerAdapter:
                 side=side,
                 size=size,
                 entry_price=entry_px,
-                stop_price=pt.get("original_stop_price") or stop_price,
+                # See note at the parallel call site — prefer immutable
+                # tracker.original_stop_price over _pending_trade.
+                stop_price=getattr(self.tracker, "original_stop_price", 0.0)
+                or pt.get("original_stop_price")
+                or stop_price,
                 final_stop_price=pt.get("stop_price") or self.tracker.stop_price or stop_price,
                 tp_price=pt.get("tp_price"),
                 exit_price=price,

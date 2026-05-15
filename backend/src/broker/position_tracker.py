@@ -35,6 +35,14 @@ class PositionTracker:
         self.side: str | None = None
         self.entry_price: float = 0.0
         self.stop_price: float = 0.0
+        # Frozen at first fill, NEVER touched by BE-lock / trail / modify_stop.
+        # Used by the chart widget to draw the planned-1R band so a Phase-2
+        # trade that BE-locked at 1.5R doesn't visually collapse its stop
+        # band to 2 ticks (the BE-locked value). Without this, _pending_trade
+        # ["original_stop_price"] was getting clobbered on some rebuild paths
+        # (flip-entry, recovery flows) and the widget rendered nonsense.
+        # Resets to 0 on on_exit; set once on on_fill.
+        self.original_stop_price: float = 0.0
         self.size: int = 0
         self.entry_order_id: int | None = None
         self.stop_order_id: int | None = None
@@ -95,6 +103,7 @@ class PositionTracker:
             "side": self.side,
             "entry_price": self.entry_price,
             "stop_price": self.stop_price,
+            "original_stop_price": self.original_stop_price,
             "size": self.size,
             "entry_order_id": self.entry_order_id,
             "stop_order_id": self.stop_order_id,
@@ -113,6 +122,9 @@ class PositionTracker:
         self.side = snap.get("side")
         self.entry_price = float(snap.get("entry_price") or 0.0)
         self.stop_price = float(snap.get("stop_price") or 0.0)
+        # Fall back to stop_price if the snapshot predates the field — better
+        # than 0 (which would let on_fill rewrite it on the next call).
+        self.original_stop_price = float(snap.get("original_stop_price") or snap.get("stop_price") or 0.0)
         self.size = int(snap.get("size") or 0)
         self.entry_order_id = snap.get("entry_order_id")
         self.stop_order_id = snap.get("stop_order_id")
@@ -125,6 +137,12 @@ class PositionTracker:
         self.side = side
         self.entry_price = price
         self.stop_price = stop_price
+        # Capture the original stop ONCE per trade. BE-lock + trail mutate
+        # self.stop_price but NEVER self.original_stop_price. Guarded so a
+        # pyramid-add or re-call of on_fill on the same trade doesn't
+        # accidentally rewrite it (only fires when transitioning from flat).
+        if self.original_stop_price == 0.0:
+            self.original_stop_price = stop_price
         self.size = size
         self.last_trade_ts = time.time()
         self.fills.append(
@@ -206,6 +224,7 @@ class PositionTracker:
         self.side = None
         self.entry_price = 0.0
         self.stop_price = 0.0
+        self.original_stop_price = 0.0
         self.size = 0
         self.entry_order_id = None
         self.stop_order_id = None

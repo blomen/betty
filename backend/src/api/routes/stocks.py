@@ -181,10 +181,13 @@ def runtime_status(request: Request):
     entry = tracker.entry_price or float(pending.get("entry_price") or 0.0) or float(pending.get("signal_price") or 0.0)
     stop = tracker.stop_price or pending.get("stop_price")
     tp = pending.get("tp_price")
-    # Original entry-time stop, captured once on _pending_trade and never
-    # mutated by modify_stop. Used by the chart widget to render the
-    # planned-1R band (so R:R = 2 stays correct after trail walks).
-    original_stop = pending.get("original_stop_price")
+    # Original entry-time stop. Read from tracker (set once on on_fill,
+    # NEVER mutated by BE-lock / trail) rather than _pending_trade
+    # (which gets clobbered on rebuild paths — flip-entry, recovery —
+    # producing nonsense widget bands like "Stop 2 ticks" on a Phase-2
+    # winner). Falls back to pending then current stop so legacy snapshots
+    # without the tracker field still produce something sensible.
+    original_stop = getattr(tracker, "original_stop_price", 0.0) or pending.get("original_stop_price") or stop
     return {
         "running": True,
         "paused": paused,
