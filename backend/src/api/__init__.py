@@ -113,7 +113,22 @@ def _build_rl_context_from_session(session_data: dict, expanded: dict | None) ->
 
     vp = None
     if sd.get("poc") is not None and sd.get("vah") is not None and sd.get("val") is not None:
-        vp = VolumeProfile(poc=float(sd["poc"]), vah=float(sd["vah"]), val=float(sd["val"]))
+        # Carry forward HVN/LVN arrays (and single_prints + levels) when
+        # available. Dead-dims audit 2026-05-15 found seg_hvn_lvn(2) was
+        # reading vp.hvn_levels / vp.lvn_levels but the reconstructor was
+        # dropping them — the accumulator computes both via local-peak
+        # detection in the value area (see rl/data/accumulators.py:131-145),
+        # but VolumeProfile was being rebuilt with only poc/vah/val and
+        # the rest defaulted to empty lists. Result: 2 dims permanently
+        # zero. Pull whichever the session_data flat-dict has.
+        vp = VolumeProfile(
+            poc=float(sd["poc"]),
+            vah=float(sd["vah"]),
+            val=float(sd["val"]),
+            hvn_levels=[float(x) for x in (sd.get("hvn_levels") or [])],
+            lvn_levels=[float(x) for x in (sd.get("lvn_levels") or [])],
+            single_prints=list(sd.get("single_prints") or []),
+        )
 
     vwap_bands = None
     if sd.get("vwap") is not None:

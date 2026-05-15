@@ -961,7 +961,17 @@ class MarketService:
             vp = None
 
         if vp is not None:
-            profiles = {"session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}}
+            # Include hvn/lvn arrays so the RL context reconstructor can
+            # rebuild VolumeProfile with these populated (feeds seg_hvn_lvn).
+            profiles = {
+                "session": {
+                    "poc": vp.poc,
+                    "vah": vp.vah,
+                    "val": vp.val,
+                    "hvn_levels": list(getattr(vp, "hvn_levels", []) or []),
+                    "lvn_levels": list(getattr(vp, "lvn_levels", []) or []),
+                }
+            }
         elif session_row.date == today:
             # Only use DB fallback if session_row is from today
             profiles = {"session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}}
@@ -1639,6 +1649,16 @@ class MarketService:
             "vah": vp.vah,
             "val": vp.val,
             "levels": [{"price": lv.price, "volume": lv.volume} for lv in vp.levels],
+            # HVN/LVN arrays carry forward into session_data so the RL
+            # context reconstructor (api/__init__.py:_build_rl_context_from_session)
+            # can rebuild the typed VolumeProfile with these populated.
+            # Without these, seg_hvn_lvn(2) stayed at zero (dead-dims audit
+            # 2026-05-15).
+            "hvn_levels": list(getattr(vp, "hvn_levels", []) or []),
+            "lvn_levels": list(getattr(vp, "lvn_levels", []) or []),
+            "single_prints": [
+                list(sp) if isinstance(sp, tuple) else sp for sp in (getattr(vp, "single_prints", []) or [])
+            ],
         }
         # Session VP: 30s cache (live refresh). Historical/weekly/monthly: 300s.
         ttl = 30 if timeframe == "session" and not date else 300
