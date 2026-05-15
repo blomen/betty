@@ -323,6 +323,13 @@ def build_observation(state: dict) -> np.ndarray:
     # Measures HOW THE MARKET REACTED to the level touch, not how it arrived.
     # In training: reaction_ticks = peek at norm_ticks[i:i+50] from replay_engine.
     # In live: session_manager waits N ticks after touch then rebuilds state.
+    # NOTE (dead-dims audit 2026-05-15): These 8 dims are BY-DESIGN empty in
+    # the live-inference path used by the autonomous broker — at signal time
+    # the broker has not yet seen the post-touch reaction (it IS the trigger
+    # for entry). They populate during offline training replay where future
+    # ticks are accessible, then the trained model uses them. The live obs
+    # vector accepts the empty slot and the model effectively ignores those
+    # 8 dims at inference time — that's the spec, not a bug.
     from .reaction_features import extract_reaction_features
 
     _touch_px = float(state.get("touch_price", price))
@@ -337,6 +344,10 @@ def build_observation(state: dict) -> np.ndarray:
     # 16c. Pattern detectors (Phase 3a — 5 dims)
     # Explicit Fabio-style patterns: pin_bar, absorption_wall, imbalance_cluster,
     # delta_divergence, trapped_breakout. Each 0-1 float.
+    # NOTE (dead-dims audit 2026-05-15): Same as reaction above — these
+    # operate on the touch-bar partial + post-touch reaction, neither of
+    # which is observable to the live broker at signal time. 5 dims are
+    # by-design empty in live; training replay populates them.
     from .pattern_features import extract_pattern_features
 
     seg_pattern = extract_pattern_features(
