@@ -14,11 +14,34 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
+
+# Dedicated thread pool for extraction work. Previously every extraction
+# pipeline run used asyncio.to_thread() which submits to the process-wide
+# DEFAULT executor — the same pool the WS handlers, broker callbacks, and
+# every other asyncio.to_thread() call use. py-spy on 2026-05-15 confirmed
+# the default pool was saturated by extraction's blocking SQLAlchemy work
+# (orchestrator.resolve_deferred, extraction_report._build_pinnacle_delta).
+# When all 8 default-pool threads were doing extraction queries, the
+# event loop's other I/O calls had to queue behind them, /health probes
+# timed out, watchdog cron restarted the container, autonomous broker
+# died for 60s. Three restarts in 20min on 2026-05-15 during a clean
+# 100+pt bullish move blocked every signal the model emitted.
+#
+# Isolating extraction onto its own bounded pool means:
+#   - The default executor stays available for WS handlers + broker
+#     callbacks (no head-of-line blocking).
+#   - max_workers=4 caps concurrent extraction work at 4 providers in
+#     flight (vs unbounded queuing on the default 8-worker pool). With
+#     the i7-7700's 4 cores, more than 4 simultaneous extraction threads
+#     just thrash the GIL anyway. Browsers run as subprocesses outside
+#     this pool, so this only bounds the Python-side SQLAlchemy work.
+_EXTRACTION_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="extraction-")
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +285,7 @@ class ExtractionScheduler:
         # interrupted extractions as "fresh" — a partial write shouldn't delay retry.
         providers = schedule.providers or [schedule.provider_id]
         last_completed = await asyncio.get_running_loop().run_in_executor(
-            None, self._get_last_completed_run, schedule.category, providers
+            _EXTRACTION_POOL, self._get_last_completed_run, schedule.category, providers
         )
         if last_completed:
             age_seconds = (datetime.now(timezone.utc) - last_completed).total_seconds()
@@ -399,7 +422,10 @@ class ExtractionScheduler:
                     pipeline.session.close()
                 loop.close()
 
-        return await asyncio.to_thread(_run_in_thread)
+        # Run on the dedicated _EXTRACTION_POOL instead of the default
+        # asyncio executor so extraction can't starve the broker / WS
+        # event-loop callbacks. See _EXTRACTION_POOL comment at module top.
+        return await asyncio.get_running_loop().run_in_executor(_EXTRACTION_POOL, _run_in_thread)
 
     def stop_provider(self, provider_id: str):
         """Stop a specific provider schedule."""
@@ -798,7 +824,7 @@ class ExtractionScheduler:
         update_provider_state("boosts", {"running": True, "category": "boosts"})
 
         loop = asyncio.get_running_loop()
-        specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
+        specials, run_log = await loop.run_in_executor(_EXTRACTION_POOL, lambda: scrape_all(verbose=False))
 
         session = get_session()
         try:
@@ -1123,7 +1149,7 @@ class ExtractionScheduler:
 
             return stats
 
-        return await loop.run_in_executor(None, _do_cleanup)
+        return await loop.run_in_executor(_EXTRACTION_POOL, _do_cleanup)
 
     # ── CLV snapshot tier (closing odds for started events) ───
 
