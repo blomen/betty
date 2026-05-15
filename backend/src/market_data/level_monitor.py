@@ -2152,6 +2152,21 @@ class LevelMonitor:
                             ZONE_SAFETY_BUFFER_TICKS = int(os.environ.get("ZONE_SAFETY_BUFFER_TICKS", "10"))
                         except ValueError:
                             ZONE_SAFETY_BUFFER_TICKS = 10
+                        # Cash-open carnage window: 13:00-15:00 UTC spans the
+                        # 09:30 ET equity open ± 30 min. The 30-day audit
+                        # (project_short_side_asymmetry_2026_05_08) showed
+                        # this 2h window ate -$4,545 of short-side losses
+                        # alone, dominated by liquidity-sweep wicks before
+                        # institutional flow committed. Widen the buffer for
+                        # that window so wicks have to clear a larger pad.
+                        try:
+                            CASH_OPEN_BUFFER_TICKS = int(os.environ.get("CASH_OPEN_BUFFER_TICKS", "18"))
+                        except ValueError:
+                            CASH_OPEN_BUFFER_TICKS = 18
+                        _utc_now = datetime.now(timezone.utc)
+                        _utc_hour = _utc_now.hour + _utc_now.minute / 60.0
+                        if 13.0 <= _utc_hour < 15.0:
+                            ZONE_SAFETY_BUFFER_TICKS = max(ZONE_SAFETY_BUFFER_TICKS, CASH_OPEN_BUFFER_TICKS)
                         zb = ZONE_SAFETY_BUFFER_TICKS * 0.25
                         if is_long:
                             zone_safety_stop = float(zone.lower_bound) - zb
