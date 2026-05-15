@@ -2105,9 +2105,18 @@ class LevelMonitor:
                         # Zone-aware safety: place stop OUTSIDE the zone (so a
                         # wick through the level doesn't take us out — only
                         # acceptance beyond the zone, which actually
-                        # invalidates the setup, does). 4-tick buffer past the
-                        # zone's far bound.
-                        ZONE_SAFETY_BUFFER_TICKS = 4
+                        # invalidates the setup, does). Buffer past the zone's
+                        # far bound — widened 4 → 10 ticks on 2026-05-15 after
+                        # the stop-hunt audit showed 29/33 recent stop exits
+                        # (87.9%) had wicks pierce 5-10 ticks beyond zones
+                        # before reversing 5R+ in our direction. A 4-tick
+                        # buffer was structurally inside the sweep range; 10t
+                        # sits past it without making stops absurdly wide
+                        # (the 50t cap below still applies). Env-tunable.
+                        try:
+                            ZONE_SAFETY_BUFFER_TICKS = int(os.environ.get("ZONE_SAFETY_BUFFER_TICKS", "10"))
+                        except ValueError:
+                            ZONE_SAFETY_BUFFER_TICKS = 10
                         zb = ZONE_SAFETY_BUFFER_TICKS * 0.25
                         if is_long:
                             zone_safety_stop = float(zone.lower_bound) - zb

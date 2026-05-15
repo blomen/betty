@@ -1632,76 +1632,17 @@ class TopstepXBrokerAdapter:
         stop_price = float(signal.get("stop_price", 0) or 0)
         confidence = float(signal.get("confidence", 0) or 0)
 
-        # Structural stop placement (gated on USE_STRUCTURAL_STOPS, default ON).
-        # Stop-hunt audit 2026-05-15: 29 of 33 recent stop exits (87.9%) were
-        # swept-and-reversed within 15 min — wicks pierced just past the zone
-        # edge, took our tick-based stop, then ran 5R+ in the intended
-        # direction (avg reversal 5.21R, max 17.76R, $3935 lost in 3 days).
-        # The fix is to place the stop a buffer beyond the zone's FAR edge
-        # so an ordinary sweep can't trigger it; the model's directional call
-        # was right 88% of the time on these "losers" — the stop was the
-        # only thing wrong. Falls back to the model's tick-based stop when
-        # zone bounds aren't in the signal (e.g., flip entries from Phase 2).
-        zone_top = signal.get("zone_top")
-        zone_bottom = signal.get("zone_bottom")
-        use_structural = _os.environ.get("USE_STRUCTURAL_STOPS", "1") != "0"
-        if (
-            use_structural
-            and zone_top is not None
-            and zone_bottom is not None
-            and float(zone_top) > 0
-            and float(zone_bottom) > 0
-            and price > 0
-        ):
-            try:
-                buffer_ticks = int(_os.environ.get("STRUCTURAL_STOP_BUFFER_TICKS", "10"))
-            except ValueError:
-                buffer_ticks = 10
-            buffer_pts = max(1, buffer_ticks) * 0.25
-            if is_long:
-                struct_stop = float(zone_bottom) - buffer_pts
-            else:
-                struct_stop = float(zone_top) + buffer_pts
-            # Sanity: structural stop must be on the correct side of price.
-            # If a flip / weird signal puts price below the zone for a LONG
-            # (or above for a SHORT), the structural calc would produce a
-            # stop on the wrong side — keep the tick-based fallback.
-            struct_ok = (is_long and struct_stop < price) or (not is_long and struct_stop > price)
-            if struct_ok:
-                # Use whichever stop is WIDER (farther from entry). The point
-                # of the structural override is to protect against sweep-and-
-                # reverse stop hunts — making the stop TIGHTER than the model
-                # wanted defeats the purpose. Thin zones (5-tick widths) +
-                # 10-tick buffer would otherwise produce a 10-tick stop that
-                # gets eaten by ordinary noise. Always take the more
-                # conservative of {model_stop, struct_stop}.
-                if is_long:
-                    final_stop = min(stop_price, struct_stop) if stop_price > 0 else struct_stop
-                else:
-                    final_stop = max(stop_price, struct_stop) if stop_price > 0 else struct_stop
-                model_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else 0
-                struct_dist_ticks = abs(struct_stop - price) / 0.25
-                final_dist_ticks = abs(final_stop - price) / 0.25
-                picked = "struct" if abs(final_stop - struct_stop) < 0.13 else "model"
-                log.info(
-                    "Structural stop: %s zone=[%.2f-%.2f] entry=%.2f buffer=%dt "
-                    "model_stop=%.2f (%dt) struct_stop=%.2f (%dt) -> %s_stop=%.2f (%dt)",
-                    "long" if is_long else "short",
-                    float(zone_bottom),
-                    float(zone_top),
-                    price,
-                    buffer_ticks,
-                    stop_price,
-                    int(model_dist_ticks),
-                    struct_stop,
-                    int(struct_dist_ticks),
-                    picked,
-                    final_stop,
-                    int(final_dist_ticks),
-                )
-                stop_price = final_stop
-
         # Validate/adjust stop distance (clamp to MIN/MAX_STOP_TICKS)
+        #
+        # Note: the upstream pipeline already does multi-dim structural stop
+        # refinement — TriggerGBT prediction → stop_policy.apply_stop_adjustments
+        # (confidence + regime + structural-anchor across 25 level types) →
+        # level_monitor.zone_safety_stop (widens to past zone far edge). This
+        # broker_adapter step just clamps + grid-aligns the final value.
+        # An earlier override here (commit e61a8d37, reverted) tried to compute
+        # its own structural stop from zone_top/zone_bottom + 10-tick buffer,
+        # but it duplicated the upstream logic and could OVERRIDE the
+        # already-refined stop with a tighter value (trade 1744: 42t -> 10t).
         stop_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else DEFAULT_STOP_TICKS
         stop_dist_ticks = int(max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks)))
         offset = stop_dist_ticks * 0.25
