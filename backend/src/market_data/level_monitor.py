@@ -2161,6 +2161,17 @@ class LevelMonitor:
                             "confidence": confidence,
                             "orderflow_score": of_score,
                             "zone": zone.center_price,
+                            # Zone bounds — broker_adapter._execute_entry uses
+                            # these to compute a STRUCTURAL stop placed beyond
+                            # the zone's far edge rather than N ticks from
+                            # entry. 88% of recent stop exits were stop-hunts:
+                            # wicks pierced just past the zone, took our stop,
+                            # then reversed. Structural stops survive the
+                            # sweep; the buffer in broker_adapter
+                            # (STRUCTURAL_STOP_BUFFER_TICKS, default 10) sets
+                            # how far past the zone edge the stop sits.
+                            "zone_top": zone.upper_bound,
+                            "zone_bottom": zone.lower_bound,
                             "trigger": "zone_entry",
                             "cont_p": result.get("cont_p"),
                             "rev_p": result.get("rev_p"),

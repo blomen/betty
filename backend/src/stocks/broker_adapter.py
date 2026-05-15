@@ -1632,7 +1632,60 @@ class TopstepXBrokerAdapter:
         stop_price = float(signal.get("stop_price", 0) or 0)
         confidence = float(signal.get("confidence", 0) or 0)
 
-        # Validate/adjust stop distance
+        # Structural stop placement (gated on USE_STRUCTURAL_STOPS, default ON).
+        # Stop-hunt audit 2026-05-15: 29 of 33 recent stop exits (87.9%) were
+        # swept-and-reversed within 15 min — wicks pierced just past the zone
+        # edge, took our tick-based stop, then ran 5R+ in the intended
+        # direction (avg reversal 5.21R, max 17.76R, $3935 lost in 3 days).
+        # The fix is to place the stop a buffer beyond the zone's FAR edge
+        # so an ordinary sweep can't trigger it; the model's directional call
+        # was right 88% of the time on these "losers" — the stop was the
+        # only thing wrong. Falls back to the model's tick-based stop when
+        # zone bounds aren't in the signal (e.g., flip entries from Phase 2).
+        zone_top = signal.get("zone_top")
+        zone_bottom = signal.get("zone_bottom")
+        use_structural = _os.environ.get("USE_STRUCTURAL_STOPS", "1") != "0"
+        if (
+            use_structural
+            and zone_top is not None
+            and zone_bottom is not None
+            and float(zone_top) > 0
+            and float(zone_bottom) > 0
+            and price > 0
+        ):
+            try:
+                buffer_ticks = int(_os.environ.get("STRUCTURAL_STOP_BUFFER_TICKS", "10"))
+            except ValueError:
+                buffer_ticks = 10
+            buffer_pts = max(1, buffer_ticks) * 0.25
+            if is_long:
+                struct_stop = float(zone_bottom) - buffer_pts
+            else:
+                struct_stop = float(zone_top) + buffer_pts
+            # Sanity: structural stop must be on the correct side of price.
+            # If a flip / weird signal puts price below the zone for a LONG
+            # (or above for a SHORT), the structural calc would produce a
+            # stop on the wrong side — keep the tick-based fallback.
+            struct_ok = (is_long and struct_stop < price) or (not is_long and struct_stop > price)
+            if struct_ok:
+                model_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else 0
+                struct_dist_ticks = abs(struct_stop - price) / 0.25
+                log.info(
+                    "Structural stop: %s zone=[%.2f-%.2f] entry=%.2f buffer=%dt "
+                    "model_stop=%.2f (%dt) -> struct_stop=%.2f (%dt)",
+                    "long" if is_long else "short",
+                    float(zone_bottom),
+                    float(zone_top),
+                    price,
+                    buffer_ticks,
+                    stop_price,
+                    int(model_dist_ticks),
+                    struct_stop,
+                    int(struct_dist_ticks),
+                )
+                stop_price = struct_stop
+
+        # Validate/adjust stop distance (clamp to MIN/MAX_STOP_TICKS)
         stop_dist_ticks = abs(stop_price - price) / 0.25 if stop_price > 0 else DEFAULT_STOP_TICKS
         stop_dist_ticks = int(max(MIN_STOP_TICKS, min(MAX_STOP_TICKS, stop_dist_ticks)))
         offset = stop_dist_ticks * 0.25
