@@ -1163,6 +1163,19 @@
   //   (offset from trailed_stop to exit). Custom shape `text` injects
   //   "L +$310 1.45R" / "S -$170 -0.81R" so the realized PnL is visible.
   async function _drawClosedPositionWidget(p, anchor, endEpoch) {
+    // Defensive trail sweep: if the active trade just closed and its
+    // position_remove handler was missed/skipped (e.g. broadcaster diff
+    // dedup, WS reconnect race), the `trade:active:trail` horizontal_line
+    // can persist on the chart. The user is explicit that trail lines are
+    // active-only — sweep on every closed-trade render so a closed widget
+    // can never coexist with a leftover trail from the active session.
+    // Also sweep this trade's own potential `${p.key}:trail` in case the
+    // shape was registered under the closed-trade key for any reason.
+    try {
+      _safeRemoveTrail('trade:active:trail');
+      _safeRemoveTrail('pos:current:trail');
+      if (p && p.key) _safeRemoveTrail(`${p.key}:trail`);
+    } catch (_) {}
     const isLong = p.side === 'long';
     const pnl = (typeof p.pnl_dollars === 'number') ? p.pnl_dollars : 0;
     const isWin = pnl >= 0;
