@@ -215,19 +215,26 @@ class BatchBuilder:
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_total_bankroll(profile_id)
 
-        # Per-provider Kelly: each provider's stake is sized to ITS OWN
-        # balance, not the combined bankroll. Prevents over-leveraging a
-        # single provider when total bankroll is large but that provider is
-        # drained. SEK-equivalent (Polymarket USDC × rate) keeps Kelly math
-        # consistent — the post-Kelly polymarket→USDC conversion still
-        # applies in _make_candidate.
+        # Per-provider Kelly: each provider/cluster's stake is sized to its
+        # OWN balance, not the combined bankroll. Prevents over-leveraging.
+        # Cluster siblings (altenar_main, kambi, etc.) share odds — they're
+        # interchangeable bet venues — so their Kelly bankroll is the
+        # cluster's SUM, not any single sibling's. This lets the allocator
+        # spill bets across siblings (quickcasino→betinia, etc.) within the
+        # cluster's combined funds.
         from ..config import get_exchange_rate
 
         raw_balances = self.profile_repo.get_all_balances(profile_id)
         provider_bankroll_sek = {pid: bal * get_exchange_rate(pid) for pid, bal in raw_balances.items()}
+        # Cluster bankroll = sum of all sibling balances. Used when the
+        # opp's provider has 0 balance but a sibling in the same cluster
+        # has funds (cluster siblings share odds + are fungible for placement).
+        cluster_bankroll_sek: dict[str, float] = {}
+        for grp_name, grp_info in PLATFORM_GROUPS.items():
+            cluster_bankroll_sek[grp_name] = sum(provider_bankroll_sek.get(p, 0.0) for p in grp_info["members"])
 
         # -- Phase 1: candidate collection (per-provider Kelly) ----------------
-        candidates = self._collect_candidates(total_bankroll, profile, provider_bankroll_sek)
+        candidates = self._collect_candidates(total_bankroll, profile, provider_bankroll_sek, cluster_bankroll_sek)
 
         # Filter out blacklisted bets (persisted across sessions)
         from ..db.models import Bet, BetBlacklist
@@ -388,6 +395,7 @@ class BatchBuilder:
         total_bankroll: float,
         profile,
         provider_bankroll_sek: dict[str, float],
+        cluster_bankroll_sek: dict[str, float],
     ) -> list[BatchBet]:
         """
         Query all opportunity types and compute Kelly stakes.
@@ -415,6 +423,7 @@ class BatchBuilder:
                     min_edge,
                     min_stake,
                     provider_bankroll_sek,
+                    cluster_bankroll_sek,
                 )
                 if bet is not None:
                     raw.append(bet)
@@ -445,14 +454,18 @@ class BatchBuilder:
         min_edge: float,
         min_stake: float,
         provider_bankroll_sek: dict[str, float],
+        cluster_bankroll_sek: dict[str, float],
     ) -> BatchBet | None:
         """
         Convert an Opportunity+Event into a BatchBet candidate, or None to skip.
 
-        Per-provider Kelly: stake sized to THIS provider's own balance, not
-        the combined bankroll. min_stake floor still uses total_bankroll so
-        a small per-provider balance doesn't push the floor unrealistically
-        low. Provider routing + bonus logic still happens in _allocate_batch().
+        Per-provider Kelly: stake sized to THIS provider's own balance, OR
+        the cluster's combined balance for soft siblings (altenar tenants,
+        kambi tenants, etc. — they share odds and are fungible for
+        placement). Skips entirely if both are 0 — no fallback to total
+        bankroll, which would over-stake an unfunded provider relative to
+        what the user can actually place. Provider routing + bonus logic
+        still happens in _allocate_batch().
         """
 
         # Skip live events (TTK <= 0) and events beyond 48h
@@ -472,13 +485,17 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
-        # Per-provider Kelly: use this provider's own SEK-equivalent balance.
-        # Falls back to total bankroll when the provider has no balance row
-        # (unregistered / never deposited) — _allocate_batch still filters
-        # those out, so surfacing them with a stake gives the UI a "deposit
-        # to unlock" target instead of silently dropping the +EV bet.
-        provider_bankroll = provider_bankroll_sek.get(provider_id, 0.0)
-        kelly_bankroll = provider_bankroll if provider_bankroll > 0 else total_bankroll
+        # Per-provider Kelly with cluster fallback. Order:
+        #   1. Provider's own balance (e.g. Pinnacle, Polymarket — standalone).
+        #   2. Cluster's combined balance (altenar_main tenants, kambi tenants
+        #      etc. — siblings share odds and are interchangeable for placement,
+        #      so the cluster's total funds are the right bankroll for sizing).
+        #   3. None → calculate_stake will return stake=0 with skip_reason +
+        #      bankroll_needed so the UI shows a "deposit to unlock" hint.
+        own = provider_bankroll_sek.get(provider_id, 0.0)
+        cluster = _provider_to_cluster(provider_id)
+        cluster_sum = cluster_bankroll_sek.get(cluster, 0.0)
+        kelly_bankroll = own if own > 0 else cluster_sum
 
         result = calculate_stake(
             bankroll_total=kelly_bankroll,
