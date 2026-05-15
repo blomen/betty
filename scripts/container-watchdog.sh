@@ -39,6 +39,10 @@ if [ "$backend_status" = "running" ]; then
     # container during RTH. /health/live is the smallest possible probe
     # — if it times out, the loop is genuinely starved.
     if docker compose exec -T backend curl -sf -m 30 http://localhost:8000/health/live >/dev/null 2>&1; then
+        # Reset the consecutive-unhealthy counter on every healthy reading
+        # so a previous transient unhealthy spike doesn't accumulate
+        # toward the restart threshold.
+        rm -f /var/lib/arnold-watchdog/unhealthy_count 2>/dev/null
         exit 0  # Healthy, nothing to do
     fi
 
@@ -69,9 +73,32 @@ for line in sys.stdin:
         exit 0
     fi
 
-    echo "$LOG_PREFIX WARNING: Backend running but unhealthy (health: $health)"
-    echo "$LOG_PREFIX Restarting backend..."
+    # Require N consecutive unhealthy readings before restart. A single
+    # unhealthy reading is often a transient load spike (extraction burst,
+    # GC pause) and restarting nukes the autonomous broker mid-trade for
+    # ~60s. 2026-05-15: watchdog restarted the container 3 times in 20 min
+    # (14:15 / 14:25 / 14:35 UTC), killing every active position and
+    # blocking trading during a clean 100+ point bullish move. The 3rd
+    # restart in particular fired during a session where the model was
+    # emitting valid conf=0.43-0.98 signals that all got rejected because
+    # the broker was either restarting or freshly halted on orphan_position.
+    # Three consecutive unhealthy readings = 15 minutes of true unhealth;
+    # transient spikes resolve on their own well within that window.
+    STATE_DIR="/var/lib/arnold-watchdog"
+    STATE_FILE="$STATE_DIR/unhealthy_count"
+    UNHEALTHY_THRESHOLD=3
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    current=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+    if ! [[ "$current" =~ ^[0-9]+$ ]]; then current=0; fi
+    current=$((current + 1))
+    echo "$current" > "$STATE_FILE"
+    if [ "$current" -lt "$UNHEALTHY_THRESHOLD" ]; then
+        echo "$LOG_PREFIX WARNING: Backend unhealthy (health: $health) — count $current/$UNHEALTHY_THRESHOLD, not restarting yet"
+        exit 0
+    fi
+    echo "$LOG_PREFIX WARNING: Backend unhealthy (health: $health) for $current consecutive readings — restarting"
     docker compose restart backend
+    rm -f "$STATE_FILE"
     echo "$LOG_PREFIX Backend restarted"
 else
     echo "$LOG_PREFIX CRITICAL: Backend container not running (state: $backend_status)"
