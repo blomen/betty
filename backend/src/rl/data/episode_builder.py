@@ -35,10 +35,13 @@ _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
 _MAX_TRAIL_LEVELS = 10  # raised from 6 — audit showed 15 episodes hitting the ceiling
 _TRAIL_TIMEOUT_S = 1200  # 20 min max to scan for levels (was 10 min — missed slow moves)
 _STOP_TICKS_TRAIL = 20  # initial stop distance in ticks (was 10 — too tight, got stopped before moves)
-_BE_TRIGGER_R = 1.0  # price must move this many R before stop moves to +0.5R
-# At 1R: stop moves to entry + 0.5R (not breakeven). This locks $36 profit
-# per contract after fees ($14 RT cost). No winner turns into a loser.
-# With 20-tick stop: 1R trigger = 20 ticks (5 pts), stop moves to +10 ticks (2.5 pts).
+_BE_TRIGGER_R = 1.5  # price must move this many R before stop moves to +0.5R.
+# Aligned 2026-05-16 with live broker's PHASE_2_THRESHOLD_R = 1.5 (see
+# CLAUDE.md "Phase 1 sacred bracket"). Previously 1.0R, which let labels
+# lock profit at a point the live policy never even checks for BE-lock.
+# Live BE-lock fires at 1.5R; the live policy can never reach profit-lock
+# earlier than that, so a 1.0R training trigger handed out wins the model
+# could never realize in production.
 _BE_LOCK_R = 0.5  # R-multiple to lock when BE trigger fires (profit lock, not just breakeven)
 
 
