@@ -32,14 +32,14 @@ SHARP_PROVIDERS = frozenset({"pinnacle"})
 # should never appear as "bet on marathon" in the frontend.
 SIGNAL_ONLY_PROVIDERS = frozenset({"marathon", "stake", "smarkets"})
 
-# Polymarket fee: 2% on net profit (winnings minus cost).
-# Effective odds after fee = (1 - fee) * odds + fee
-POLYMARKET_FEE_RATE = 0.02
+# Polymarket fee is applied once at extraction time inside
+# providers.polymarket._price_to_odds (local POLY_FEE_RATE = 0.02). Stored DB
+# odds are already net of the fee, so downstream consumers MUST NOT re-apply.
 
 # Kalshi per-trade fee approximation. Actual formula is
 # ceil(0.07 × price × (1 − price) × contracts); we model it as a flat
 # multiplier on the price (tune from live fills data once enough trades land).
-KALSHI_FEE_RATE = 0.02
+KALSHI_FEE_RATE = 0.07
 
 # Prediction-market exchanges. Their pricing diverges from traditional sportsbook
 # books (binary contracts, single-side-of-book quoting, illiquidity-driven floor/

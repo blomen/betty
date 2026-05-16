@@ -15,8 +15,6 @@ A bet has value if edge > 0 (provider odds > fair odds).
 import logging
 from dataclasses import dataclass
 
-from src.constants import POLYMARKET_FEE_RATE
-
 from .devig import get_fair_odds_for_outcome
 
 logger = logging.getLogger(__name__)
@@ -70,25 +68,18 @@ class ValueBet:
         return (self.provider_odds * self.fair_probability) - 1
 
 
-def polymarket_effective_odds(odds: float) -> float:
-    """Adjust decimal odds for Polymarket's 2% fee on net profit.
-
-    Fee is charged on (payout - cost), so:
-        net_payout = odds - fee * (odds - 1) = (1 - fee) * odds + fee
-    """
-    return (1 - POLYMARKET_FEE_RATE) * odds + POLYMARKET_FEE_RATE
-
-
 def compute_edge(provider: str, provider_odds: float, fair_odds: float) -> float | None:
     """Compute edge percentage of provider odds vs fair odds.
 
-    For Polymarket, applies 2% fee on net profit before comparison.
+    Stored odds are already net of any provider-side fee (Polymarket's 2% fee on
+    net profit is applied in polymarket._price_to_odds at extraction; Kalshi's
+    per-trade fee in kalshi._price_to_odds). No further adjustment here.
+
     Returns edge as percentage (e.g. 5.0 for 5% edge), or None if inputs invalid.
     """
     if fair_odds <= 1 or provider_odds <= 1:
         return None
-    effective_odds = polymarket_effective_odds(provider_odds) if provider == "polymarket" else provider_odds
-    return (effective_odds / fair_odds - 1) * 100
+    return (provider_odds / fair_odds - 1) * 100
 
 
 def find_value(
