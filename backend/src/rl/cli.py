@@ -1914,7 +1914,20 @@ def ingest_live_trades() -> None:
         "FROM stock_signals s "
         "JOIN broker_trades t ON t.id = s.trade_id "
         "WHERE s.observation_b64 IS NOT NULL "
-        "  AND t.pnl_dollars IS NOT NULL"
+        "  AND t.pnl_dollars IS NOT NULL "
+        # 2026-05-16: exclude recovery/reconciliation rows. signal_action is
+        # populated only when the trade entered through _execute_entry's
+        # signal path; recovery paths (_recover_via_broker_truth,
+        # orphan-adopt) leave it NULL. Without this filter, 684 such rows
+        # were ingested as fake "CONT decisions with synthetic R" because
+        # the Python-side fallback at line 2147-2151 derives reward from
+        # pnl_dollars when pnl_r is NULL. The corresponding observation
+        # exists (stock_signals was created when the original signal
+        # fired) but the trade was never the model's actual decision —
+        # the broker filled something we missed and recovery wrote the
+        # row. Poisons the trainer with action=CONT labels for trades
+        # the model didn't take.
+        "  AND t.signal_action IS NOT NULL"
     )
     with engine.connect() as conn:
         rows = conn.execute(sql).fetchall()
