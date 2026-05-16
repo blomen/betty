@@ -625,8 +625,8 @@ class OpportunityScanner:
         if len(pinnacle_market) < 2:
             return []
 
-        # Odds discrepancy check (same as regular value scan)
-        if self._has_odds_discrepancy(odds_by_outcome):
+        # Odds discrepancy check — exclude prediction markets (see find_value_in_market)
+        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers=set(PREDICTION_MARKETS), market=market):
             return []
 
         for outcome in pinnacle_market:
@@ -705,8 +705,8 @@ class OpportunityScanner:
         if sharp_outcome_count < 2:
             return None  # Need Pinnacle on 2+ outcomes for fair odds
 
-        # Odds discrepancy check (likely event mismatch)
-        if self._has_odds_discrepancy(odds_by_outcome):
+        # Odds discrepancy check — exclude prediction markets (see find_value_in_market)
+        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers=set(PREDICTION_MARKETS), market=market):
             return None  # Skip entire market
 
         # For each outcome: find best odds (soft OR Pinnacle raw) and compute edge vs fair
@@ -1546,8 +1546,8 @@ class OpportunityScanner:
             if anchor_outcome_count != sharp_outcome_count and not is_spread_asymmetry:
                 return []  # Don't compare 3-way vs 2-way markets
 
-        # Check for odds discrepancy (likely event mismatch)
-        if self._has_odds_discrepancy(odds_by_outcome, market=market):
+        # Check for odds discrepancy — exclude prediction markets (see find_value_in_market)
+        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers=set(PREDICTION_MARKETS), market=market):
             return []  # Skip market if likely event mismatch
 
         is_spread_market = market.startswith("spread") or market.startswith("total")
