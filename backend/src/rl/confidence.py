@@ -188,12 +188,22 @@ def size_multiplier(composite: float) -> float:
     """Map composite confidence to a position sizing multiplier.
 
     Tiers (RECKLESS_LEARNING_MODE=1, paper-phase floor at 0.5):
-        0.85-1.00 → 1.5  (A+ setup, full conviction)
+        0.85-1.00 → 1.0  (was 1.5, capped 2026-05-16 — see note below)
         0.70-0.85 → 1.0  (A setup, standard)
         0.50-0.70 → 0.6  (B setup, reduced)
         0.30-0.50 → 0.3  (C setup, minimum)
         <0.30     → 0.5 reckless / 0.0 strict  (paper: take it for the data;
                                                 strict: skip below threshold)
+
+    2026-05-16 sizing audit: 41 live trades at size=2 (composite >= 0.85)
+    had mean realized R = -0.324 and WR 12%, vs 114 trades at size=1
+    (mean R +0.084, WR 38%). The "high confidence" tier was anti-predictive
+    — model's overconfident traps got double-sized and drove the bulk of
+    the DD violation. Capping all entries at 1× until live data validates
+    that conf >= 0.85 actually outperforms conf 0.30-0.50. The new model
+    deployed 2026-05-16 20:27 UTC has more realistic labels (cap + slip);
+    re-enable the 1.5× tier only after 30+ post-fix live trades confirm
+    high-conf wins more than low-conf.
 
     The 0.0 floor in strict mode rejects the entry outright in
     broker_adapter (size_multiplier_skip). In reckless mode that loses the
@@ -211,7 +221,7 @@ def size_multiplier(composite: float) -> float:
 
     _reckless = _os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
     if composite >= 0.85:
-        return 1.5
+        return 1.0  # capped from 1.5 — see docstring
     elif composite >= 0.70:
         return 1.0
     elif composite >= 0.50:
