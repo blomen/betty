@@ -84,7 +84,6 @@ class RiskConfigResponse(BaseModel):
     """Current risk configuration."""
 
     lambda_coefficient: float
-    stake_noise_pct: float
     softmax_temperature: float
     weight_stake_entropy: float
     weight_market_diversity: float
@@ -105,7 +104,6 @@ class RiskConfigUpdate(BaseModel):
     """Update risk configuration."""
 
     lambda_coefficient: float | None = Field(None, ge=0, le=1)
-    stake_noise_pct: float | None = Field(None, ge=0, le=20)
     softmax_temperature: float | None = Field(None, ge=0.01, le=10)
     weight_stake_entropy: float | None = Field(None, ge=0, le=1)
     weight_market_diversity: float | None = Field(None, ge=0, le=1)
@@ -274,7 +272,6 @@ def get_risk_config(db: Session = Depends(get_db)):
 
     return RiskConfigResponse(
         lambda_coefficient=config.lambda_coefficient,
-        stake_noise_pct=config.stake_noise_pct,
         softmax_temperature=config.softmax_temperature,
         weight_stake_entropy=config.weight_stake_entropy,
         weight_market_diversity=config.weight_market_diversity,
@@ -318,7 +315,6 @@ def update_risk_config(
 
     return RiskConfigResponse(
         lambda_coefficient=config.lambda_coefficient,
-        stake_noise_pct=config.stake_noise_pct,
         softmax_temperature=config.softmax_temperature,
         weight_stake_entropy=config.weight_stake_entropy,
         weight_market_diversity=config.weight_market_diversity,
