@@ -100,6 +100,35 @@ class BetService:
                     "error": f"Already have a pending bet on this market ({market} {outcome}{point_str}) at {existing.provider_id}"
                 }
 
+        # Secondary near-dup guard: same provider + same odds + same stake placed
+        # in the last 60s. Catches reactive-sync races where event_id / outcome
+        # are missing (polymarket has no provider_bet_id and the picked-opp
+        # state can be empty when sync fires independently of a click) — two
+        # concurrent syncs both insert what looks like a fresh bet because the
+        # event_id-keyed check above can't compare.
+        from datetime import timedelta as _td
+
+        near_dup_cutoff = datetime.now(timezone.utc) - _td(seconds=60)
+        near = (
+            self.db.query(Bet)
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == provider_id,
+                Bet.odds == odds,
+                Bet.stake == stake,
+                Bet.result == "pending",
+                Bet.placed_at >= near_dup_cutoff,
+            )
+            .first()
+        )
+        if near:
+            return {
+                "error": (
+                    f"Near-duplicate bet rejected: {provider_id} {odds}@{stake} already recorded "
+                    f"as bet #{near.id} within the last 60s"
+                )
+            }
+
         # Check cooldown
         cooldown_reason = self._check_cooldown(provider_id)
         if cooldown_reason:
