@@ -193,31 +193,6 @@ class StakeResult:
     bankroll_needed: float = 0.0
 
 
-def round_stake_natural(stake: float) -> float:
-    """
-    Round stake to a 'human-looking' amount to avoid detection on soft books.
-
-    Exact amounts like 141 kr or 83 kr look bot-generated.
-    Humans naturally round to 5/10/25/50 intervals depending on size.
-
-    Rounding scheme:
-    - < 50 kr:    nearest 5   (25, 30, 35, 40, 45)
-    - 50-200 kr:  nearest 10  (50, 60, 70, ..., 200)
-    - 200-500 kr: nearest 25  (200, 225, 250, ..., 500)
-    - 500+ kr:    nearest 50  (500, 550, 600, ...)
-    """
-    if stake <= 0:
-        return 0.0
-    if stake < 50:
-        return max(5.0, round(stake / 5) * 5)
-    elif stake < 200:
-        return round(stake / 10) * 10
-    elif stake < 500:
-        return round(stake / 25) * 25
-    else:
-        return round(stake / 50) * 50
-
-
 def effective_max_kelly(profile_max_kelly: float, bankroll: float) -> float:
     """
     Scale max_kelly up when bankroll is small so Kelly stakes clear min_stake.
@@ -394,9 +369,6 @@ def calculate_stake(
 
     # Ensure non-negative
     stake = max(0.0, stake)
-
-    # Round to human-looking amount before min-stake check
-    stake = round_stake_natural(stake)
 
     # Floor at min_stake. min_stake is calibrated as the breakeven floor after
     # fees/vig/spread (already netted in the displayed odds) — so when Kelly's

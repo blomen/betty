@@ -56,7 +56,6 @@ class BetService:
         bonus_type: str | None = None,
         utility_score: float | None = None,
         selection_probability: float | None = None,
-        stake_noise_applied: float | None = None,
         fair_odds_at_placement: float | None = None,
         boost_event: str | None = None,
         boost_title: str | None = None,
@@ -148,10 +147,8 @@ class BetService:
             fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {"error": f"Insufficient balance: {fmt} available, {fmt_req} required"}
 
-        # Populate behavioral fields
         now = datetime.now(timezone.utc)
         risk_score = self._get_risk_score(provider_id)
-        is_round = stake == round(stake) and stake % 5 == 0 and stake >= 10
 
         # Compute fair odds at placement from current Pinnacle odds (or use passed value for boosts)
         if fair_odds_at_placement is None and event_id and market and outcome:
@@ -212,11 +209,8 @@ class BetService:
             is_bonus=is_bonus,
             bonus_type=bonus_type,
             start_time=start_time,
-            # Behavioral tracking
             hour_of_day=now.hour,
             day_of_week=now.weekday(),
-            stake_rounded=is_round,
-            stake_noise_applied=stake_noise_applied,
             risk_score_at_bet=risk_score,
             utility_score=utility_score,
             selection_probability=selection_probability,

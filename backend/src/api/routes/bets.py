@@ -351,7 +351,6 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             bonus_type=bet.bonus_type,
             utility_score=bet.utility_score,
             selection_probability=bet.selection_probability,
-            stake_noise_applied=bet.stake_noise_applied,
             fair_odds_at_placement=bet.fair_odds_at_placement,
             boost_event=bet.boost_event,
             boost_title=bet.boost_title,

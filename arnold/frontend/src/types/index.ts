@@ -591,7 +591,6 @@ export interface AllRiskResponse {
 
 export interface RiskConfig {
   lambda_coefficient: number;
-  stake_noise_pct: number;
   softmax_temperature: number;
   weight_stake_entropy: number;
   weight_market_diversity: number;
@@ -610,7 +609,6 @@ export interface RiskConfig {
 
 export interface RiskConfigUpdate {
   lambda_coefficient?: number;
-  stake_noise_pct?: number;
   softmax_temperature?: number;
   weight_stake_entropy?: number;
   weight_market_diversity?: number;

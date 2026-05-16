@@ -22,7 +22,6 @@ from ...db.models import (
 )
 from ...risk.calculator import RiskCalculator
 from ...risk.selector import StochasticSelector
-from ...risk.stake_noise import StakeNoiseInjector
 from ..deps import get_db
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
@@ -175,24 +174,6 @@ class CooldownRequest(BaseModel):
 
     duration_hours: int = Field(24, ge=1, le=720)
     reason: str | None = None
-
-
-class StakeNoiseRequest(BaseModel):
-    """Request to calculate stake with noise."""
-
-    stake: float = Field(..., gt=0)
-    provider_id: str
-
-
-class StakeNoiseResponse(BaseModel):
-    """Response with noisy stake."""
-
-    original_stake: float
-    final_stake: float
-    noise_applied: float
-    noise_pct: float
-    was_rounded: bool
-    reason: str
 
 
 # ============ Endpoints ============
@@ -503,28 +484,3 @@ def clear_provider_cooldown(
         "provider_id": provider_id,
         "message": "Cooldown cleared",
     }
-
-
-@router.post("/stake-noise", response_model=StakeNoiseResponse)
-def calculate_stake_noise(
-    request: StakeNoiseRequest,
-    db: Session = Depends(get_db),
-):
-    """Calculate stake with noise injection."""
-    calculator = RiskCalculator(db)
-    assessment = calculator.assess_provider(request.provider_id)
-
-    injector = StakeNoiseInjector(db)
-    noisy = injector.inject_noise(
-        stake=request.stake,
-        risk_score=assessment.risk_score,
-    )
-
-    return StakeNoiseResponse(
-        original_stake=noisy.original_stake,
-        final_stake=noisy.final_stake,
-        noise_applied=noisy.noise_applied,
-        noise_pct=noisy.noise_pct,
-        was_rounded=noisy.was_rounded,
-        reason=noisy.reason,
-    )

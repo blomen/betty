@@ -79,7 +79,6 @@ class BetCreate(BaseModel):
     # Risk management (optional, populated by auto-stake flow)
     utility_score: float | None = None
     selection_probability: float | None = None
-    stake_noise_applied: float | None = None
     fair_odds_at_placement: float | None = None  # For boosts: pass LLM fair odds directly
     boost_event: str | None = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
     boost_title: str | None = None  # For boosts: LLM-simplified title at placement
