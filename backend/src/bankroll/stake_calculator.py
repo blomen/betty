@@ -33,8 +33,19 @@ OPTIMAL_SINGLE_BET_CAP = 0.02  # 2% of bankroll max per bet (MC-optimal: 86% of 
 # Default minimum stake (skip bets below this)
 DEFAULT_MIN_STAKE = 25.0
 
-# Absolute floor — smallest practical bet on any sportsbook
-ABSOLUTE_MIN_STAKE = 5.0
+# Absolute floor — smallest stake that's worth the round-trip after typical
+# provider fees / spread eat into edge:
+#   - Pinnacle:    ~2-5% vig (priced into displayed odds; our fair already
+#                  de-vigs against it, so net edge is what's left)
+#   - Polymarket:  ~2% maker fee on filled orders (taker 0% on most markets)
+#   - Kalshi:      0.07 × stake taker fee, maker rebate varies
+#   - Soft books:  10-15% vig (priced into odds; our edge already nets it)
+# A 5 kr stake at 5% edge = 0.25 kr expected profit — below the cost of
+# clicking through placement. 20 kr is the floor where it's worth doing.
+# Per-provider Kelly (2% bankroll cap) still applies on TOP — so a small
+# bankroll provider whose Kelly suggests < 20 gets skipped with a deposit
+# hint, preventing over-leverage that would risk ruin.
+ABSOLUTE_MIN_STAKE = 20.0
 
 # Minimum expected profit to bother placing a bet (stake * edge >= this)
 DEFAULT_MIN_EXPECTED_PROFIT = 0.75
@@ -42,12 +53,11 @@ DEFAULT_MIN_EXPECTED_PROFIT = 0.75
 
 def dynamic_min_stake(bankroll: float) -> float:
     """
-    Scale minimum stake with bankroll so small bankrolls aren't locked out.
+    Minimum stake floor, scaled with bankroll within [20, 25] kr.
 
-    At 10,000+ bankroll: 25 kr (standard)
-    At 5,000 bankroll:   25 kr
-    At 1,500 bankroll:   10 kr (rounds to nearest 5)
-    At 500 bankroll:      5 kr (floor)
+    Always at least ABSOLUTE_MIN_STAKE (20 kr) — below that, fees + spread
+    eat too much of the edge to be worth placing. Caps at DEFAULT_MIN_STAKE
+    (25 kr) for high bankrolls.
 
     Formula: max(ABSOLUTE_MIN_STAKE, bankroll * 0.005) capped at DEFAULT_MIN_STAKE,
     rounded down to nearest 5.
