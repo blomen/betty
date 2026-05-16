@@ -32,7 +32,13 @@ _WINDOW_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]
 
 # Trailing reward params
 _TRAIL_BONUS_PER_LEVEL = 0.5  # R bonus per level captured
-_MAX_TRAIL_LEVELS = 10  # raised from 6 — audit showed 15 episodes hitting the ceiling
+_MAX_TRAIL_LEVELS = 2  # 2026-05-16: lowered from 10 — backtest-vs-live audit
+# showed labels at +1.09R/trade mean while live delivered -0.024R/trade (45x
+# over-prediction). Multi-level trail up to 10 levels was the dominant
+# contributor: it modeled an ideal Phase-2 ride that live only reaches 6.5%
+# of the time. 2 levels caps trail bonus at +1.0R, matching realistic
+# post-BE-lock behavior. Combined with the _REWARD_LIVE_MAX cap below,
+# label distribution should compress toward live realized R distribution.
 _TRAIL_TIMEOUT_S = 1200  # 20 min max to scan for levels (was 10 min — missed slow moves)
 _STOP_TICKS_TRAIL = 20  # initial stop distance in ticks (was 10 — too tight, got stopped before moves)
 _BE_TRIGGER_R = 1.5  # price must move this many R before stop moves to +0.5R.
@@ -401,12 +407,16 @@ def label_outcome_from_array(
     if short_peak_pre >= _EE_LOCK_R and reward_short < 0:
         reward_short = (1 - _EE_FIRE_RATE) * reward_short + _EE_FIRE_RATE * (_EE_LOCK_R - cost_r)
 
-    # Cap rewards to what a live trade can actually realize. Max upside bumped
-    # from +6R to +7R to accommodate the pyramid bonus. Min still -1R (live
-    # stop). Without this cap, CV eval shows phantom -15R losses that could
-    # never happen live.
+    # Cap rewards to what a live trade can actually realize.
+    # 2026-05-16: lowered from +7.0R to +2.5R. The +7R ceiling was modeling
+    # a 10-level trail that live never executes — Phase 2 audit showed
+    # only 6.5% of live trades reach >1.5R, and the max realized was ~3R.
+    # Labels capped at +7R taught the model "go for the moon" setups that
+    # in live exit at -1R or +1.5R. +2.5R covers the realistic upper-tail
+    # (Phase 2 winners) while eliminating the multi-level-trail fantasy
+    # that was driving the +1.09R/trade backtest vs -0.02R/trade live gap.
     _REWARD_LIVE_MIN = -1.0
-    _REWARD_LIVE_MAX = 7.0
+    _REWARD_LIVE_MAX = 2.5
     reward_long = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_long)))
     reward_short = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_short)))
 
