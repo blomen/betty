@@ -398,50 +398,26 @@ def calculate_stake(
     # Round to human-looking amount before min-stake check
     stake = round_stake_natural(stake)
 
-    # Compute bankroll needed to pass both min_stake and min_expected_profit guards.
-    # Use stable Kelly (profile max without low-bankroll boost) for the estimate since
-    # the target bankroll will be large enough that the boost has tapered off.
-    additional_for_stake = 0.0
-    additional_for_ev = 0.0
-    if kelly > 0 and edge_used > 0:
-        stable_kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
-        stable_kelly = max(stable_kelly, 1e-9)
-        if stake < min_stake:
-            needed = min_stake * (odds - 1) / (stable_kelly * edge_used)
-            additional_for_stake = max(0.0, needed - bankroll_total)
-        expected_profit = stake * edge_used
-        if min_expected_profit > 0 and expected_profit < min_expected_profit:
-            needed = min_expected_profit * (odds - 1) / (stable_kelly * edge_used**2)
-            additional_for_ev = max(0.0, needed - bankroll_total)
-
-    additional = max(additional_for_stake, additional_for_ev)
-
-    if stake < min_stake or (min_expected_profit > 0 and stake * edge_used < min_expected_profit):
-        additional = round(additional, 0)
-
-        if additional < 1:
-            skip_reason = "low EV"
-        elif additional > bankroll_total:
-            # Needing more than double the current bankroll means this bet is structurally
-            # too small-Kelly for the current strategy — not a "deposit more" situation.
-            skip_reason = "Kelly too small"
-        else:
-            add_str = f"+{additional / 1000:.0f}k kr" if additional >= 1000 else f"+{additional:.0f} kr"
-            skip_reason = f"add {add_str} to play"
-
-        return StakeResult(
-            stake=0.0,
-            kelly_fraction=kelly,
-            edge_used=edge_used,
-            edge_raw=edge_raw,
-            bankroll=bankroll_total,
-            raw_kelly_stake=round(raw_stake, 2),
-            single_bet_cap=round(single_bet_cap, 2),
-            was_capped_single=was_capped_single,
-            skip_reason=skip_reason,
-            counts_toward_wagering=_counts_toward_wagering,
-            bankroll_needed=additional,
-        )
+    # Floor at min_stake. min_stake is calibrated as the breakeven floor after
+    # fees/vig/spread (already netted in the displayed odds) — so when Kelly's
+    # raw size falls below it, we still want to place at min_stake. The only
+    # genuine skip is when bankroll itself is below min_stake.
+    if stake < min_stake:
+        if bankroll_total < min_stake:
+            return StakeResult(
+                stake=0.0,
+                kelly_fraction=kelly,
+                edge_used=edge_used,
+                edge_raw=edge_raw,
+                bankroll=bankroll_total,
+                raw_kelly_stake=round(raw_stake, 2),
+                single_bet_cap=round(single_bet_cap, 2),
+                was_capped_single=was_capped_single,
+                skip_reason="bankroll below min stake",
+                counts_toward_wagering=_counts_toward_wagering,
+                bankroll_needed=round(min_stake - bankroll_total, 0),
+            )
+        stake = min_stake
 
     return StakeResult(
         stake=stake,
