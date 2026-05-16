@@ -120,6 +120,12 @@ class ReplayEngine:
         # Zone touch memory: tracks how many times each zone was touched in this session
         self._zone_touch_mem: dict[float, dict] = {}  # zone_key → {count, last_ts}
 
+        # Cross-zone narrative state — mirrors level_monitor._last_zone_state.
+        # Without this, observation.py:seg_prev_zone reads state.get("prev_zone")
+        # as None and the 5 prev_zone dims all stay 0 in training labels.
+        # 2026-05-17 dim audit found these dead.
+        self._last_zone_state: dict = {"key": 0.0, "result": 0.0, "ts": 0.0}
+
         # Precomputed cross-session levels (injected before replay)
         self._precomputed: dict | None = None
 
@@ -425,6 +431,14 @@ class ReplayEngine:
                 rc, rr = episode.reward_continuation, episode.reward_reversal
                 if zone_key in self._zone_touch_mem:
                     self._zone_touch_mem[zone_key]["last_result"] = 1.0 if rr > rc else -1.0
+                # Update cross-zone narrative state for the NEXT (different) zone touch.
+                # Mirrors live's _last_zone_state. Without this update, prev_zone
+                # never has a non-zero "valid" flag → all 5 prev_zone dims stay 0.
+                self._last_zone_state = {
+                    "key": zone_key,
+                    "result": 1.0 if rr > rc else -1.0,
+                    "ts": tick["ts"].timestamp(),
+                }
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]
                 log.debug(
@@ -877,7 +891,32 @@ class ReplayEngine:
             "swing_structure": (self._precomputed.get("swing_structure") if self._precomputed else None),
             "amt_dynamics": self._amt_tracker.snapshot(),
             "zone_memory": self._get_zone_memory_for_state(zone, ts),
+            "prev_zone": self._build_prev_zone_state_replay(zone, price, ts),
+            "zone_stack": self._compute_zone_stack_density_replay(price),
         }
+
+    def _build_prev_zone_state_replay(self, current_zone, price: float, ts: datetime) -> dict:
+        """Replay-side mirror of level_monitor._build_prev_zone_state.
+
+        Returns prev_zone dict for observation.py:seg_prev_zone (5 dims).
+        Mirrors the live computation so training labels see the same shape.
+        """
+        last = self._last_zone_state
+        cur_key = round(current_zone.center_price * 4) / 4 if current_zone else round(price * 4) / 4
+        if abs(last["key"] - cur_key) < 0.5 or last["key"] == 0.0:
+            return {"dist_pts": 0.0, "outcome": 0.0, "age_s": 0.0, "valid": 0.0}
+        return {
+            "dist_pts": float(cur_key - last["key"]),
+            "outcome": float(last["result"]),
+            "age_s": float(min(ts.timestamp() - last["ts"], 3600)),
+            "valid": 1.0,
+        }
+
+    def _compute_zone_stack_density_replay(self, price: float, radius_pts: float = 5.0) -> int:
+        """Count active zones within ±radius_pts of price (mirrors live)."""
+        if not getattr(self, "_active_zones", None):
+            return 0
+        return sum(1 for z in self._active_zones if abs(z.center_price - price) <= radius_pts)
 
     def _get_zone_memory_for_state(self, zone: Zone, ts: datetime) -> dict:
         """Build zone_memory dict for the observation.
