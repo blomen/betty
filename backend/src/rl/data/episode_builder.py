@@ -371,8 +371,17 @@ def label_outcome_from_array(
     long_dd_penalty = _DD_LAMBDA * max(0.0, long_mae / max(long_stop_ticks, 1))
     short_dd_penalty = _DD_LAMBDA * max(0.0, short_mae / max(short_stop_ticks, 1))
 
-    reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty
-    reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty
+    # Entry slippage cost. 2026-05-16 live audit measured mean adverse
+    # entry slippage of -5 to -14 ticks on stopped trades; conservative
+    # 5-tick average for ALL trades models the upfront cost of getting
+    # filled at a worse price than signal. At _STOP_TICKS_TRAIL=20 this
+    # is ~0.25R per trade — winners win less, losers lose more. Closes
+    # part of the remaining sim-vs-live gap (~24x after the 7R cap).
+    _SLIPPAGE_TICKS_AVG = 5.0
+    slippage_cost_r = _SLIPPAGE_TICKS_AVG / max(_STOP_TICKS_TRAIL, 1)
+
+    reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - long_dd_penalty - slippage_cost_r
+    reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r - short_dd_penalty - slippage_cost_r
 
     # === TIER 2 PYRAMID BONUS ===
     # Live rule (add_policy.py): when the position reaches +0.3R in profit AND
@@ -415,7 +424,13 @@ def label_outcome_from_array(
     # in live exit at -1R or +1.5R. +2.5R covers the realistic upper-tail
     # (Phase 2 winners) while eliminating the multi-level-trail fantasy
     # that was driving the +1.09R/trade backtest vs -0.02R/trade live gap.
-    _REWARD_LIVE_MIN = -1.0
+    # _REWARD_LIVE_MIN widened from -1.0 to -1.5 on 2026-05-16. Live audit
+    # showed worst trades hit -2.1R (entry slippage + stop slippage on fast
+    # moves). -1.5 gives the slippage cost a place to land without being
+    # truncated, while still capping pathological tails (replay finds occasional
+    # episodes where reward calc explodes to -15R from spurious price jumps —
+    # those need the cap).
+    _REWARD_LIVE_MIN = -1.5
     _REWARD_LIVE_MAX = 2.5
     reward_long = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_long)))
     reward_short = float(max(_REWARD_LIVE_MIN, min(_REWARD_LIVE_MAX, reward_short)))
