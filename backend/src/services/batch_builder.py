@@ -540,11 +540,15 @@ class BatchBuilder:
         if stake <= 0 and not skip_reason:
             return None
 
-        # Convert SEK stake to USDC for Polymarket
-        if provider_id == "polymarket" and stake > 0:
-            from ..config import get_exchange_rate
+        # Convert SEK stake to native for USD-denominated providers (poly, kalshi).
+        # Their balances and bet placements are in USDC/USD; the balance-vs-stake
+        # check downstream compares native-to-native.
+        from .. import bankroll
+        from ..config import get_exchange_rate
 
-            exchange_rate = get_exchange_rate("polymarket")
+        prof = bankroll.stake_calculator.PROVIDER_STAKE_PROFILES.get(provider_id)
+        if prof and prof.currency != "SEK" and stake > 0:
+            exchange_rate = get_exchange_rate(provider_id)
             if exchange_rate > 0:
                 stake = stake / exchange_rate
 
