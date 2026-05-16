@@ -2183,6 +2183,31 @@ class LevelMonitor:
                         _utc_hour = _utc_now.hour + _utc_now.minute / 60.0
                         if 13.0 <= _utc_hour < 15.0:
                             ZONE_SAFETY_BUFFER_TICKS = max(ZONE_SAFETY_BUFFER_TICKS, CASH_OPEN_BUFFER_TICKS)
+                        # OF-strength scaling on the safety buffer (Phase 1 of
+                        # the OF-aware entry pattern, 2026-05-17). Strong
+                        # orderflow confirmation means tape agrees with the
+                        # trade direction — tighter stop is appropriate
+                        # because the flow itself defends the entry. Weak OF
+                        # (just-passing the gate) keeps the conservative
+                        # buffer so wicks don't take us out. The 0.30 cut is
+                        # the original strict OF threshold and matches the
+                        # audit cohort that ate -0.46R per trade — those
+                        # were strong-OF traps, but the tight-stop hypothesis
+                        # is that the realistic post-fix model should now
+                        # produce strong OF on real confirmation, not traps.
+                        # Reckless mode bypasses (no scaling) so paper-phase
+                        # data stays uniform.
+                        _reckless_mode = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
+                        if not _reckless_mode and of_score >= 0.30:
+                            # Halve the buffer for strong-OF confirmation; floor at 4t
+                            ZONE_SAFETY_BUFFER_TICKS_TIGHT = max(4, ZONE_SAFETY_BUFFER_TICKS // 2)
+                            logger.info(
+                                "OF-tight stop: of=%.3f >= 0.30 — buffer %d → %dt",
+                                of_score,
+                                ZONE_SAFETY_BUFFER_TICKS,
+                                ZONE_SAFETY_BUFFER_TICKS_TIGHT,
+                            )
+                            ZONE_SAFETY_BUFFER_TICKS = ZONE_SAFETY_BUFFER_TICKS_TIGHT
                         zb = ZONE_SAFETY_BUFFER_TICKS * 0.25
                         if is_long:
                             zone_safety_stop = float(zone.lower_bound) - zb
