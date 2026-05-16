@@ -64,20 +64,22 @@ class ProviderStakeProfile:
 # it at extraction time), so the edge derived from those odds is ALREADY net of
 # fees — subtracting fee again here would double-count and under-stake.
 #
-# Pinnacle:   no commission on top of odds (vig is priced in; our fair
-#             already de-vigs against it). 20 kr min is the cost-of-click
-#             floor that matches soft-book practice.
-# Polymarket: 2% fee on net profit applied at extraction in _price_to_odds.
-#             fee_rate=0 here (already in odds). $2 min (≈21 kr).
-# Kalshi:     ceil(0.07 × price × (1-price)) per-contract fee applied at
-#             extraction in _price_to_odds. fee_rate=0 here (already in odds).
-#             $2 min stake (≈21 kr).
-# Cloudbet:   no commission on top; vig in odds. 20 kr min.
+# min_stake_native = breakeven floor after fees/vig/spread (all already in
+# stored odds). Below this, the per-trade action cost (gas/click/tracking)
+# eats the edge. Calibrated so a TYPICAL-edge bet (5%) at this stake covers
+# the action cost with margin:
+#
+# Pinnacle:   no commission, 20 kr click overhead → 20 kr min.
+# Polymarket: fee in odds. Polygon gas ~$0.01-0.05 per trade → $1 USDC min
+#             gives 5% × $1 = $0.05 EV, covers typical gas with margin.
+# Kalshi:     fee in odds, no gas. Tracking overhead minimal → $1 USD min
+#             (smallest meaningfully sized contract bet).
+# Cloudbet:   no commission, 20 kr click overhead → 20 kr min.
 # Rainbet:    signal-only, no playable path — included for completeness.
 PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     "pinnacle": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
-    "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=2.0, currency="USDC"),
-    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=2.0, currency="USD"),
+    "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC"),
+    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD"),
     "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
     "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
 }
