@@ -25,17 +25,33 @@ def _conf_floor() -> float:
     """Confidence floor for entry dispatch.
 
     Reckless (paper) = 0.0 — every non-SKIP signal becomes a trade.
-    Strict (real money) = 0.15 — historical default.
+    Strict (real money) = 0.15 by default; env-overridable via CONF_FLOOR_STRICT.
     """
-    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.15
+    if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0":
+        return 0.0
+    try:
+        return float(os.environ.get("CONF_FLOOR_STRICT", "0.15"))
+    except ValueError:
+        return 0.15
 
 
 def _of_floor() -> float:
     """Orderflow score floor for entry dispatch.
+
     Reckless (paper) = 0.0 — collect labeled outcomes for all OF regimes.
-    Strict (real money) = 0.30 — early audit showed OF>=0.30 wins 4/4.
+    Strict (real money) = 0.30 by default; env-overridable via OF_FLOOR_STRICT.
+    The 0.30 default was set when an early audit (n=4) showed OF>=0.30 wins
+    4/4. Subsequent 30-day data inverted that finding: OF>=0.30 cohort
+    actually lost 0/4 (small n). Setting OF_FLOOR_STRICT=0.0 disables the
+    OF gate while keeping every other strict behavior on — useful when the
+    model's OF calibration is still in flux but you want the conf gate on.
     """
-    return 0.0 if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0" else 0.30
+    if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0":
+        return 0.0
+    try:
+        return float(os.environ.get("OF_FLOOR_STRICT", "0.30"))
+    except ValueError:
+        return 0.30
 
 
 MIN_ENTRY_STOP_TICKS = 6.0
