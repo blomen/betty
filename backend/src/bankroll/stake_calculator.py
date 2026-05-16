@@ -30,22 +30,72 @@ OPTIMAL_MAX_KELLY = 0.75  # 3/4 Kelly ceiling (converges here at high bankroll)
 OPTIMAL_MIN_KELLY = 0.25  # Quarter Kelly floor for low-edge bets (≤2%)
 OPTIMAL_SINGLE_BET_CAP = 0.02  # 2% of bankroll max per bet (MC-optimal: 86% of 3% growth, 40% less DD)
 
-# Default minimum stake (skip bets below this)
+# Default minimum stake (skip bets below this) — global default in SEK.
+# Provider-specific overrides live in PROVIDER_STAKE_PROFILES below.
 DEFAULT_MIN_STAKE = 25.0
 
-# Absolute floor — smallest stake that's worth the round-trip after typical
-# provider fees / spread eat into edge:
-#   - Pinnacle:    ~2-5% vig (priced into displayed odds; our fair already
-#                  de-vigs against it, so net edge is what's left)
-#   - Polymarket:  ~2% maker fee on filled orders (taker 0% on most markets)
-#   - Kalshi:      0.07 × stake taker fee, maker rebate varies
-#   - Soft books:  10-15% vig (priced into odds; our edge already nets it)
-# A 5 kr stake at 5% edge = 0.25 kr expected profit — below the cost of
-# clicking through placement. 20 kr is the floor where it's worth doing.
-# Per-provider Kelly (2% bankroll cap) still applies on TOP — so a small
-# bankroll provider whose Kelly suggests < 20 gets skipped with a deposit
-# hint, preventing over-leverage that would risk ruin.
+# Absolute global floor in SEK — last-resort fallback if no per-provider
+# profile exists. Per-provider floors (PROVIDER_STAKE_PROFILES) take
+# precedence and are the right knob to tune.
 ABSOLUTE_MIN_STAKE = 20.0
+
+
+# ── Per-provider value-bet stake profile ──────────────────────────────────
+# VALUE BETS ONLY. Arb soft anchors always max-stake to balance and don't
+# go through this path — they're filled by ArbRunner with cluster-cap math.
+#
+# fee_rate: paid on top of stake on placement (decimal). Subtracted from
+#   edge before Kelly sizing so we don't over-stake bets whose +EV gets
+#   eaten by the round-trip cost.
+# min_stake_native: smallest stake that's worth placing on this provider
+#   in its NATIVE currency. Below this, fees + click overhead dominate
+#   the expected profit. We use native units (USDC/USD/SEK) because the
+#   provider's own minimum bet rules are in native too.
+@dataclass(frozen=True)
+class ProviderStakeProfile:
+    fee_rate: float
+    min_stake_native: float
+    currency: str  # "SEK" / "USDC" / "USD" — informational, no conversion
+
+
+# Pinnacle:   no commission on top of odds (vig is priced in; our fair
+#             already de-vigs against it). 20 kr min is the cost-of-click
+#             floor that matches soft-book practice.
+# Polymarket: 2% maker fee on filled orders, ~0% taker on most markets.
+#             Conservative 2% for value-bet sizing. $2 min (≈21 kr) so
+#             tiny-stake bets aren't placed below the fee cost.
+# Kalshi:     0.07 × stake × (1-price) taker fee. For 50¢ price ≈ 3.5%
+#             of stake; cheaper shares cost more. Use 5% conservative
+#             rate. $2 min stake (≈21 kr) — same rationale as poly.
+# Cloudbet:   no commission on top; vig in odds. 20 kr min.
+# Rainbet:    signal-only, no playable path — included for completeness.
+PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
+    "pinnacle": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
+    "polymarket": ProviderStakeProfile(fee_rate=0.02, min_stake_native=2.0, currency="USDC"),
+    "kalshi": ProviderStakeProfile(fee_rate=0.05, min_stake_native=2.0, currency="USD"),
+    "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
+    "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
+}
+
+
+def provider_min_stake_sek(provider_id: str, exchange_rate: float, fallback: float) -> float:
+    """Min stake for a provider expressed in SEK (for Kelly comparison).
+
+    fallback (in SEK) is used when no profile exists for the provider —
+    typically the global dynamic_min_stake for the bankroll. Soft books
+    (used as arb anchors, not value-bet targets) fall through to fallback.
+    """
+    profile = PROVIDER_STAKE_PROFILES.get(provider_id)
+    if profile is None:
+        return fallback
+    return profile.min_stake_native * (exchange_rate or 1.0)
+
+
+def provider_fee_rate(provider_id: str) -> float:
+    """Round-trip fee rate as a decimal (0.02 = 2%). 0 if no profile."""
+    profile = PROVIDER_STAKE_PROFILES.get(provider_id)
+    return profile.fee_rate if profile else 0.0
+
 
 # Minimum expected profit to bother placing a bet (stake * edge >= this)
 DEFAULT_MIN_EXPECTED_PROFIT = 0.75

@@ -497,14 +497,34 @@ class BatchBuilder:
         cluster_sum = cluster_bankroll_sek.get(cluster, 0.0)
         kelly_bankroll = own if own > 0 else cluster_sum
 
+        # Fee-aware edge: subtract round-trip provider fees before Kelly so
+        # we don't over-stake bets whose +EV gets eaten by the cost.
+        # Pinnacle/cluster soft = 0% (vig in odds, already netted by fair).
+        # Polymarket 2% maker, Kalshi ~5% taker — meaningful at low edges.
+        fee = provider_fee_rate(provider_id)
+        edge_after_fees = max(0.0, edge_raw - fee)
+
+        # Per-provider min stake: profile (Pinnacle 20 kr, Poly $2≈21 kr,
+        # Kalshi $2≈21 kr, soft books fall back to dynamic_min_stake).
+        # provider_min_stake_sek converts the profile's native-currency
+        # minimum (USD/USDC) to SEK so it can be compared against Kelly's
+        # SEK-equivalent bankroll math directly.
+        from ..config import get_exchange_rate
+
+        provider_min = provider_min_stake_sek(
+            provider_id,
+            exchange_rate=get_exchange_rate(provider_id),
+            fallback=min_stake,
+        )
+
         result = calculate_stake(
             bankroll_total=kelly_bankroll,
-            edge_raw=edge_raw,
+            edge_raw=edge_after_fees,
             odds=odds,
             single_bet_cap_pct=single_bet_cap_pct,
             min_edge=min_edge,
             min_odds=0.0,
-            min_stake=min_stake,
+            min_stake=provider_min,
             max_kelly=OPTIMAL_MAX_KELLY,
         )
         # "low EV" = no real edge after Kelly + caps; drop. Other skip_reasons
