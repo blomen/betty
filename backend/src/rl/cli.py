@@ -1683,12 +1683,22 @@ def merge_live() -> None:
         main_trig = np.load(main_trig_path) if main_trig_path.exists() else None
         typer.echo(f"Main episodes: {len(main_obs)} ({main_obs.shape[1]}-dim)")
 
-        # Check dim compatibility
+        # Schema-version drift: pad shorter side with zeros, truncate longer
+        # to match. Without this, a mid-cycle schema bump (e.g. v3 → v4)
+        # raises Exit(1), the pipeline marks step 0d failed-non-critical,
+        # and the live chunks are silently lost. Pattern mirrors
+        # ingest_live_trades's pad/truncate (c.f. a1a08763 fix).
         if live_obs.shape[1] != main_obs.shape[1]:
+            target = max(live_obs.shape[1], main_obs.shape[1])
             typer.echo(
-                f"Dimension mismatch: live={live_obs.shape[1]} vs main={main_obs.shape[1]}. Cannot merge.", err=True
+                f"Dimension drift: live={live_obs.shape[1]}, main={main_obs.shape[1]} — padding both to {target}"
             )
-            raise typer.Exit(1)
+            if live_obs.shape[1] < target:
+                pad_n = target - live_obs.shape[1]
+                live_obs = np.concatenate([live_obs, np.zeros((len(live_obs), pad_n), dtype=live_obs.dtype)], axis=1)
+            if main_obs.shape[1] < target:
+                pad_n = target - main_obs.shape[1]
+                main_obs = np.concatenate([main_obs, np.zeros((len(main_obs), pad_n), dtype=main_obs.dtype)], axis=1)
 
         # Concatenate core arrays
         merged_obs = np.concatenate([main_obs, live_obs])
