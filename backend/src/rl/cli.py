@@ -2399,14 +2399,38 @@ def train(
                 # SESSION MEMORY (Phase 3c): chronological rolling win-rate, DD
                 # from peak, consec-loss streak, etc. Teaches heads to recognise
                 # hostile regimes from session context.
+                #
+                # CRITICAL: must pass `actions=` (from TriggerGBT) — without it,
+                # simulate_session_memory uses max(rc, rr, 0) as the legacy
+                # greedy-best-action assumption, meaning consec_losses NEVER
+                # accumulates in training labels. The model then can't learn
+                # "after 2 stops, skip" — confirmed live (2026-05-16 audit):
+                # 19 trades after 2+ stops over 14d, -7.19R total, only 4 wins.
+                # Without realistic session_memory training, the consec-loss
+                # input dim is dead weight.
                 from src.rl.features.session_memory_features import simulate_session_memory
+
+                _sim_actions = None
+                try:
+                    from src.rl.agent.trigger_gbt import TriggerGBT
+
+                    _tgbt_path = _MODELS_DIR / "trigger_gbt_v5.joblib"
+                    if _tgbt_path.exists():
+                        _gbt = TriggerGBT.load(_tgbt_path)
+                        _sim_actions, _, _ = _gbt.predict_direction_batch(trigger_obs.astype(np.float32))
+                except Exception:
+                    _sim_actions = None
 
                 session_memory = simulate_session_memory(
                     touch_epochs=touch_epochs,
                     rewards_cont=rewards_cont,
                     rewards_rev=rewards_rev,
+                    actions=_sim_actions,
                 )
-                typer.echo(f"Session memory: {session_memory.shape[1]}-dim rolling context")
+                typer.echo(
+                    f"Session memory: {session_memory.shape[1]}-dim rolling context"
+                    f" ({'realistic (GBT-actions)' if _sim_actions is not None else 'legacy (greedy-best, consec_losses=0)'})"
+                )
             else:
                 position_state = np.zeros((len(observations), 8), dtype=np.float32)
                 session_memory = np.zeros((len(observations), 6), dtype=np.float32)
@@ -3012,10 +3036,25 @@ def eval(
                 from src.rl.features.session_memory_features import simulate_session_memory
 
                 _touch_epochs = np.load(_te_path)
+                # Pass GBT actions for realistic consec_losses signal — see
+                # session_memory_features.simulate_session_memory docstring.
+                _eval_actions = None
+                try:
+                    from src.rl.agent.trigger_gbt import TriggerGBT
+
+                    _tgbt_path = _MODELS_DIR / "trigger_gbt_v5.joblib"
+                    if _tgbt_path.exists():
+                        _gbt = TriggerGBT.load(_tgbt_path)
+                        _eval_actions, _, _ = _gbt.predict_direction_batch(
+                            trigger_obs[: len(observations)].astype(np.float32)
+                        )
+                except Exception:
+                    _eval_actions = None
                 session_memory = simulate_session_memory(
                     touch_epochs=_touch_epochs[: len(observations)],
                     rewards_cont=rewards_cont[: len(observations)],
                     rewards_rev=rewards_rev[: len(observations)],
+                    actions=_eval_actions,
                 )
             else:
                 session_memory = np.zeros((len(observations), 6), dtype=np.float32)
@@ -4051,10 +4090,23 @@ def analyze_dim_correlation(
 
             te = np.load(te_path)
             m = min(len(observations), len(te), len(rewards_cont), len(rewards_rev))
+            # Pass GBT actions for realistic consec_losses signal — see
+            # session_memory_features.simulate_session_memory docstring.
+            _adc_actions = None
+            try:
+                from src.rl.agent.trigger_gbt import TriggerGBT
+
+                _tgbt_path = models_dir / "trigger_gbt_v5.joblib"
+                if _tgbt_path.exists():
+                    _gbt = TriggerGBT.load(_tgbt_path)
+                    _adc_actions, _, _ = _gbt.predict_direction_batch(np.array(trigger_obs[:m]).astype(np.float32))
+            except Exception:
+                _adc_actions = None
             session_memory = simulate_session_memory(
                 touch_epochs=te[:m],
                 rewards_cont=rewards_cont[:m],
                 rewards_rev=rewards_rev[:m],
+                actions=_adc_actions,
             )
             if m < len(observations):
                 pad = np.zeros((len(observations) - m, session_memory.shape[1]), dtype=np.float32)
