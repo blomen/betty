@@ -2000,7 +2000,7 @@ def ingest_live_trades() -> None:
     # touch_epochs feeds session_memory features in train. Without these
     # entries merge-live can't extend touch_epochs.npy (audit #19).
     te_list: list[float] = []
-    skipped_dim = 0
+    padded_dim_count = 0
     skipped_recovery = 0
 
     # 2026-05-07: encode exit_reason + signal_trigger as int codes so the
@@ -2132,9 +2132,23 @@ def ingest_live_trades() -> None:
             arr = np.frombuffer(base64.b64decode(r.observation_b64), dtype=np.float32)
             if r.observation_dim and r.observation_dim > 0 and arr.size != r.observation_dim:
                 continue
+            # Schema-version drift handling. Each schema bump appends new
+            # dims at the tail (see observation_index.SEGMENTS). Trades
+            # captured under the old schema have shorter obs; under newer
+            # they have longer. Pad with zeros / truncate so the trainer
+            # can still use them — mirrors live_inference.py:447-451's
+            # pad-or-truncate pattern so live inference and training treat
+            # cross-schema observations identically.
+            # Before this change, 2026-05-15: 362/362 of the day's live
+            # trades were SKIPPED because they captured at obs_dim=311
+            # while target was 313 (zone_sweep added). All training signal
+            # from that session's realized trades was silently lost.
             if target_dim and arr.size != target_dim:
-                skipped_dim += 1
-                continue
+                if arr.size < target_dim:
+                    arr = np.concatenate([arr, np.zeros(target_dim - arr.size, dtype=np.float32)])
+                else:  # arr.size > target_dim
+                    arr = arr[:target_dim]
+                padded_dim_count += 1
         except Exception:
             continue
 
@@ -2224,15 +2238,10 @@ def ingest_live_trades() -> None:
         lat_list.append(np.float32(float(getattr(r, "fill_latency_ms", None) or 0.0)))
         te_list.append(float(r.trade_ts.timestamp()) if r.trade_ts else 0.0)
 
-    if skipped_dim:
-        typer.echo(f"Skipped {skipped_dim} row(s) at non-target obs dim — marking ingested so they don't requeue.")
+    if padded_dim_count:
+        typer.echo(f"Pad/truncated {padded_dim_count} row(s) to target obs dim {target_dim} (schema-version drift).")
 
     if not obs_list:
-        # Still persist the seen-set so dim-mismatched rows don't requeue forever.
-        if skipped_dim:
-            seen.update(r.tid for r in new_rows)
-            with seen_path.open("w") as f:
-                f.write(" ".join(str(x) for x in sorted(seen)))
         typer.echo("No usable rows after filtering.")
         return
 
