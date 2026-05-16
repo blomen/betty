@@ -1779,6 +1779,14 @@ class TopstepXBrokerAdapter:
         # discovery finds the real stop. This pre-claim is the minimum
         # subset the divergence guard needs.
         entry_submit_ts = datetime.now(timezone.utc)
+        # Pre-claim INCLUDES all signal-derived fields. 2026-05-16 audit
+        # showed 61/61 shorts (8s avg hold) had NULL orderflow_score,
+        # signal_cont_p, signal_rev_p, signal_zone in broker_trades — fast
+        # exits via REV-flip cascade completed before line 2021's full dict
+        # ran, so on_stream_fill / _recover_via_broker_truth wrote with the
+        # minimal pre-claim that omitted these. Signal context is known at
+        # signal time and never mutates — safe to populate here so even a
+        # sub-second exit preserves the training-data attribution.
         self._pending_trade = {
             "ts": entry_submit_ts,
             "session_date": entry_submit_ts.strftime("%Y-%m-%d"),
@@ -1790,6 +1798,12 @@ class TopstepXBrokerAdapter:
             "signal_price": price,
             "signal_action": action,
             "signal_confidence": float(signal.get("confidence", 0) or 0),
+            "signal_zone": float(signal.get("zone", signal.get("zone_price", 0)) or 0),
+            "signal_trigger": str(signal.get("trigger", "")),
+            "signal_cont_p": float(signal.get("cont_p", 0) or 0),
+            "signal_rev_p": float(signal.get("rev_p", 0) or 0),
+            "orderflow_score": float(signal.get("orderflow_score", 0) or 0),
+            "reasoning": signal.get("reasoning") if isinstance(signal.get("reasoning"), dict) else None,
         }
         self._set_pending_trade(self._pending_trade)
         log.info("Position opening: %s %d stop=%.2f (waiting for entry fill)", side, size, stop_price)
