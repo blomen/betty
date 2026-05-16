@@ -230,21 +230,24 @@ class BatchBuilder:
         raw_balances = self.profile_repo.get_all_balances(profile_id)
         provider_bankroll_sek = {pid: bal * get_exchange_rate(pid) for pid, bal in raw_balances.items()}
 
-        # Open-position augmentation for prediction-market providers (polymarket,
-        # kalshi). Cash alone under-sizes Kelly here: those providers lock most of
-        # the bankroll into short-duration positions that will resolve back to
-        # cash within hours/days. For a binary-outcome contract with decimal odds
-        # X, expected redemption = stake (stake×prob_win × shares_on_win = stake
-        # × (1/X) × (X×stake/stake) = stake). So sum(pending_stake) is a fair
-        # approximation of unredeemed-position value without needing live marks.
-        # Kelly here is about NOT going bust + compounding the WHOLE bankroll —
-        # treating locked positions as 0 leaks edge. We don't apply this to soft
-        # books because their "pending bets" are placed wagers, not unredeemed
-        # capital — settlement on those happens at event-end, not at-will.
+        # Open-position augmentation for all value-bet providers (pinnacle,
+        # polymarket, kalshi, cloudbet). Cash alone under-sizes Kelly here:
+        # bets placed on these providers lock part of the bankroll into
+        # short-duration positions that resolve to cash within hours/days.
+        # For a binary-outcome contract with decimal odds X, expected
+        # redemption = stake (stake × prob_win × shares_on_win = stake ×
+        # (1/X) × (X×stake/stake) = stake). So sum(pending_stake) is a fair
+        # approximation of unredeemed-position value without needing live
+        # marks. Kelly here is about NOT going bust + compounding the WHOLE
+        # bankroll — treating locked positions as 0 leaks edge.
+        #
+        # We don't apply this to soft books because their bets go through
+        # ArbRunner (max-stake-to-balance, not Kelly), so the soft-book
+        # provider_bankroll_sek values aren't actually consumed for sizing.
         from ..db.models import Bet as _Bet
 
-        _PREDICTION_MARKET_PROVIDERS = ("polymarket", "kalshi")
-        for _pid in _PREDICTION_MARKET_PROVIDERS:
+        _VALUE_BET_PROVIDERS = ("pinnacle", "polymarket", "kalshi", "cloudbet")
+        for _pid in _VALUE_BET_PROVIDERS:
             pending_total_native = (
                 self.db.query(func.coalesce(func.sum(_Bet.stake), 0.0))
                 .filter(
