@@ -24,6 +24,7 @@ from ..bankroll.stake_calculator import (
     OPTIMAL_SINGLE_BET_CAP,
     calculate_stake,
     dynamic_min_stake,
+    provider_fee_rate,
 )
 from ..constants import PLATFORM_GROUPS, PROVIDER_CANONICAL
 from ..repositories.opportunity_repo import OpportunityRepo
