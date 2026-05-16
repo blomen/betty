@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import (
@@ -228,6 +229,37 @@ class BatchBuilder:
 
         raw_balances = self.profile_repo.get_all_balances(profile_id)
         provider_bankroll_sek = {pid: bal * get_exchange_rate(pid) for pid, bal in raw_balances.items()}
+
+        # Open-position augmentation for prediction-market providers (polymarket,
+        # kalshi). Cash alone under-sizes Kelly here: those providers lock most of
+        # the bankroll into short-duration positions that will resolve back to
+        # cash within hours/days. For a binary-outcome contract with decimal odds
+        # X, expected redemption = stake (stake×prob_win × shares_on_win = stake
+        # × (1/X) × (X×stake/stake) = stake). So sum(pending_stake) is a fair
+        # approximation of unredeemed-position value without needing live marks.
+        # Kelly here is about NOT going bust + compounding the WHOLE bankroll —
+        # treating locked positions as 0 leaks edge. We don't apply this to soft
+        # books because their "pending bets" are placed wagers, not unredeemed
+        # capital — settlement on those happens at event-end, not at-will.
+        from ..db.models import Bet as _Bet
+
+        _PREDICTION_MARKET_PROVIDERS = ("polymarket", "kalshi")
+        for _pid in _PREDICTION_MARKET_PROVIDERS:
+            pending_total_native = (
+                self.db.query(func.coalesce(func.sum(_Bet.stake), 0.0))
+                .filter(
+                    _Bet.profile_id == profile_id,
+                    _Bet.provider_id == _pid,
+                    _Bet.result == "pending",
+                )
+                .scalar()
+                or 0.0
+            )
+            if pending_total_native > 0:
+                provider_bankroll_sek[_pid] = provider_bankroll_sek.get(
+                    _pid, 0.0
+                ) + pending_total_native * get_exchange_rate(_pid)
+
         # Cluster bankroll = sum of all sibling balances. Used when the
         # opp's provider has 0 balance but a sibling in the same cluster
         # has funds (cluster siblings share odds + are fungible for placement).
