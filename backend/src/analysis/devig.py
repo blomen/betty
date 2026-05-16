@@ -13,6 +13,8 @@ Most common use: Multiplicative for Pinnacle odds.
 
 import logging
 
+from ..constants import PREDICTION_MARKETS
+
 logger = logging.getLogger(__name__)
 
 

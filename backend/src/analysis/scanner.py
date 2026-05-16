@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import StakeCalculator
-from ..constants import PLATFORM_MAP, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS
+from ..constants import PLATFORM_MAP, PREDICTION_MARKETS, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS
 from ..db.models import Event
 from ..repositories import EventRepo
 from .devig import (
