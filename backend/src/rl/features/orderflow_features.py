@@ -11,6 +11,12 @@ from .l1_features import compute_l1_features
 
 _N_FEATURES = 21
 
+# Indices into the feats array for L1-overridable dims.
+# Must stay in sync with the order in _ORDERFLOW_LABELS (observation_index.py)
+# and with the np.array([...]) construction below.
+_SPREAD_TICKS_IDX = 6
+_PASSIVE_ACTIVE_IDX = 7
+
 
 def extract_orderflow_features(
     candles: list[CandleFlow],
@@ -229,9 +235,9 @@ def extract_orderflow_features(
     # aggressor classification; candle-derived values are approximations.
     if l1_snapshot is not None:
         l1_feats = compute_l1_features(snapshot=l1_snapshot, recent_trades=recent_trades or [])
-        # Index 6: spread_ticks (capped at 50, normalised /50)
-        feats[6] = min(l1_feats["spread_ticks"], 50.0) / 50.0
-        # Index 7: passive_active_ratio (capped at 5, normalised /5)
-        feats[7] = min(l1_feats["passive_active_ratio"], 5.0) / 5.0
+        # Index _SPREAD_TICKS_IDX: spread_ticks (capped at 50, normalised /50)
+        feats[_SPREAD_TICKS_IDX] = min(l1_feats["spread_ticks"], 50.0) / 50.0
+        # Index _PASSIVE_ACTIVE_IDX: passive_active_ratio (capped at 5, normalised /5)
+        feats[_PASSIVE_ACTIVE_IDX] = min(l1_feats["passive_active_ratio"], 5.0) / 5.0
 
     return feats
