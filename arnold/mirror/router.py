@@ -618,7 +618,12 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
         async def fetch_events() -> list[dict]:
             try:
-                r = await tunnel_client().get("/api/events?limit=1000", timeout=10.0)
+                # upcoming_only=true — without it the endpoint returns oldest
+                # events first and limit=2000 still cuts today's matches.
+                r = await tunnel_client().get(
+                    "/api/events?limit=2000&upcoming_only=true",
+                    timeout=10.0,
+                )
                 if r.status_code == 200:
                     return r.json().get("events", []) or []
             except Exception as exc:

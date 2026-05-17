@@ -12,13 +12,32 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 
 @router.get("")
-def list_events(sport: str | None = None, limit: int = 50, db: Session = Depends(get_db)):
-    """Get extracted events with odds."""
+def list_events(
+    sport: str | None = None,
+    limit: int = 50,
+    upcoming_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Get extracted events with odds.
+
+    upcoming_only=True restricts to events with start_time >= NOW (or no
+    start_time set) AND orders DESC so the most-imminent come first — required
+    by API recorders matching against fresh events (default ASC + limit cuts
+    today's events when the DB has many historical rows).
+    """
+    from datetime import datetime, timezone
+
     query = db.query(Event)
     if sport:
         query = query.filter(Event.sport == sport)
+    if upcoming_only:
+        from sqlalchemy import or_
 
-    events = query.order_by(Event.start_time).limit(limit).all()
+        now = datetime.now(timezone.utc)
+        query = query.filter(or_(Event.start_time.is_(None), Event.start_time >= now))
+        events = query.order_by(Event.start_time.asc()).limit(limit).all()
+    else:
+        events = query.order_by(Event.start_time).limit(limit).all()
 
     return {
         "events": [
