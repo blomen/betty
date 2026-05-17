@@ -38,6 +38,7 @@ class ServerStocksRuntime:
     stream: Any
     flatten_scheduler: Any
     tasks: dict = field(default_factory=dict)
+    l1_writer: Any = None
 
     async def shutdown(self, flatten_positions: bool = True) -> None:
         """Graceful teardown. Flatten first (safest for deploy/restart),
@@ -118,6 +119,11 @@ class ServerStocksRuntime:
             await self.client.close()
         except Exception:
             log.exception("client.close failed")
+        try:
+            if self.l1_writer is not None:
+                self.l1_writer.close()
+        except Exception:
+            log.exception("l1_writer.close failed")
         log.info("ServerStocksRuntime stopped")
 
 
@@ -978,23 +984,53 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     stream.on_tick = _build_server_tick_handler(app, level_monitor)
     stream.on_fill = adapter.on_stream_fill
 
-    def _on_quote_mark(quote_payload) -> None:
-        """Use GatewayQuote as the mark-to-market price source. NQ trades are
-        sparse on this feed; quotes fire reliably on every bid/ask change."""
+    from pathlib import Path
+
+    from src.market_data.l1_persistence import L1ParquetWriter
+
+    _L1_OUT_DIR = Path("/app/data/rl/l1_quotes")
+    l1_writer = L1ParquetWriter(out_dir=_L1_OUT_DIR, flush_interval_s=60.0)
+
+    def _on_quote(quote_payload) -> None:
+        """Triple-duty: mark-to-market for broker, L1 state for feature
+        extraction, persistence for backtest."""
         try:
-            # quote_payload is the raw GatewayQuote dict (handle_quote unpacks args[1])
-            last_price = float(quote_payload.get("lastPrice") or 0)
-            if last_price <= 0:
-                bid = float(quote_payload.get("bestBid") or 0)
-                ask = float(quote_payload.get("bestAsk") or 0)
-                if bid > 0 and ask > 0:
-                    last_price = (bid + ask) / 2.0
+            import time
+
+            ts = time.time()
+            bid = quote_payload.get("bestBid") or quote_payload.get("bid") or 0.0
+            ask = quote_payload.get("bestAsk") or quote_payload.get("ask") or 0.0
+            bid_size = quote_payload.get("bestBidSize") or quote_payload.get("bid_size") or 0
+            ask_size = quote_payload.get("bestAskSize") or quote_payload.get("ask_size") or 0
+            last_price = quote_payload.get("lastPrice", 0)
+
+            # 1. Mark-to-market (existing behavior)
             if last_price > 0:
                 adapter.update_mark_and_check_be_lock(last_price)
-        except Exception:
-            log.debug("on_quote_mark error", exc_info=True)
+            elif bid > 0 and ask > 0:
+                adapter.update_mark_and_check_be_lock((bid + ask) / 2.0)
 
-    stream.on_quote = _on_quote_mark
+            # 2. L1 state for feature extraction
+            if bid > 0 and ask > 0:
+                level_monitor.l1_state.update(
+                    bid=float(bid),
+                    ask=float(ask),
+                    bid_size=int(bid_size),
+                    ask_size=int(ask_size),
+                    ts=ts,
+                )
+                # 3. Persistence
+                l1_writer.record(
+                    bid=float(bid),
+                    ask=float(ask),
+                    bid_size=int(bid_size),
+                    ask_size=int(ask_size),
+                    ts=ts,
+                )
+        except Exception:
+            log.debug("on_quote error", exc_info=True)
+
+    stream.on_quote = _on_quote
     stream.on_depth = _build_server_depth_handler(level_monitor)
 
     def _on_account_event(payload: dict) -> None:
@@ -1058,6 +1094,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         stream=stream,
         flatten_scheduler=flatten_scheduler,
         tasks={"zone_seed": _seed_task, "reconcile": _reconcile_task},
+        l1_writer=l1_writer,
     )
     app.state.stocks_runtime = runtime
     log.info("ServerStocksRuntime active — autonomous trading ON")
