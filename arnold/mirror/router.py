@@ -598,6 +598,55 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         "pinnacle": "https://www.pinnacle.se/sv/account/bets",
     }
 
+    @router.post("/sync-positions/{provider_id}")
+    async def sync_positions(provider_id: str):
+        """API-based bet recorder — replaces DOM scraping for poly / kalshi.
+
+        - polymarket: public data-api.polymarket.com/positions (wallet-keyed)
+        - kalshi:     authenticated trade-api.kalshi.com/portfolio/positions
+                      (requires KALSHI_API_KEY + KALSHI_PRIVATE_KEY env vars)
+
+        Idempotent — dedup against existing DB rows via provider_bet_id +
+        (event_id, outcome). Safe to call repeatedly.
+        """
+        from arnold.http_client import tunnel_client
+
+        from .recorders import polymarket_api  # local import: avoid module-load cost
+
+        async def api_post(payload: dict):
+            return await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
+
+        async def fetch_events() -> list[dict]:
+            try:
+                r = await tunnel_client().get("/api/events?limit=1000", timeout=10.0)
+                if r.status_code == 200:
+                    return r.json().get("events", []) or []
+            except Exception as exc:
+                print(f"[sync-positions] fetch_events raised: {exc!r}", flush=True)
+            return []
+
+        async def fetch_db_pending() -> list[dict]:
+            return await pending_loop._fetch_pending_for_provider(provider_id) or []
+
+        if provider_id == "polymarket":
+            wallet = "0x71fca29E6B31a93d262D2972C9b361Af371D426d"  # TODO: pull from profile
+            result = await polymarket_api.sync(wallet, api_post, fetch_events, fetch_db_pending)
+        elif provider_id == "kalshi":
+            from .recorders import kalshi_api
+
+            result = await kalshi_api.sync(api_post, fetch_events, fetch_db_pending)
+        else:
+            raise HTTPException(400, f"sync-positions not supported for {provider_id}")
+
+        return {
+            "provider_id": result.provider_id,
+            "fetched": result.fetched,
+            "inserted": result.inserted,
+            "skipped_dup": result.skipped_dup,
+            "skipped_unmatched": result.skipped_unmatched,
+            "errors": result.errors[:10],
+        }
+
     # Providers whose settlement state lives on a SECOND URL (activity / history
     # tab). Polymarket: open positions on ?tab=positions, settled rows on
     # ?tab=history. Without scraping both, anything that resolved and aged off
