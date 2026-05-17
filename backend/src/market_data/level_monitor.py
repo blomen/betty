@@ -14,6 +14,7 @@ from src.rl.config import LevelType as RLLevelType
 from src.rl.zone_builder import _LEVEL_FAMILY, Zone, build_zones
 
 from .amt_dynamics import AMTDynamicsTracker
+from .l1_quote_state import L1QuoteState
 from .zone_trail import compute_zone_trail_target
 
 logger = logging.getLogger(__name__)
@@ -685,6 +686,7 @@ class LevelMonitor:
         self._active_level_name: str | None = None
         # Live session context for DQN inference (populated by set_session_context)
         self._session_context: dict | None = None
+        self.l1_state = L1QuoteState()
         # Zone-aware DQN inference state
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
