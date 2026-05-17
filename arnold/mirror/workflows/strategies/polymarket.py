@@ -220,17 +220,105 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     Reconcile/_match_polymarket_settlements does the fuzzy match against pending DB bets.
     """
     current_url = page.url or ""
-    if "/portfolio" not in current_url or "tab=history" not in current_url:
+    if "/portfolio" not in current_url:
+        logger.debug(
+            f"[polymarket] sync_history: tab is on {current_url[:80]} (not /portfolio) — skipping; "
+            "user must navigate manually"
+        )
+        return []
+
+    # Two surfaces:
+    #   /portfolio?tab=history   → activity rows (Bought/Sold/Loss/Redeemed)
+    #   /portfolio?tab=positions → open positions (Redeem/Sell buttons)
+    # When the user is on positions we emit each open position as a pending
+    # HistoryEntry so reactive sync can record it. Settlement matching still
+    # comes from the history tab when they switch.
+    if "tab=history" not in current_url:
         try:
-            await page.goto(
-                "https://polymarket.com/portfolio?tab=history",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            await asyncio.sleep(4)
+            positions = await _scrape_portfolio(page, intel)
         except Exception as e:
-            logger.warning(f"[polymarket] navigate to history failed: {e}")
+            logger.warning(f"[polymarket] sync_history (positions): {e}")
             return []
+        out: list[HistoryEntry] = []
+        # Cent thresholds for early-settle detection. Polymarket resolves shares to
+        # $1.00 (won) or $0.00 (lost) at market resolution, but the now_price ticks
+        # to within a few cents of certainty BEFORE the UI swaps Sell → Redeem.
+        # Treating extremes as terminal lets reconcile_from_history settle the
+        # DB bet immediately on positions sync, instead of waiting for the user
+        # to redeem + nav to /portfolio?tab=history.
+        WON_THRESHOLD = 98.0
+        LOST_THRESHOLD = 2.0
+        won_count = lost_count = open_count = 0
+        for pos in positions:
+            raw_status = pos.get("status") or "open"
+            avg_cents = pos.get("avg_price") or 0
+            now_cents = pos.get("now_price")
+            shares = pos.get("shares") or 0
+            if avg_cents <= 0 or shares <= 0:
+                continue
+
+            # Resolve final status: explicit WON/LOST text wins; otherwise read
+            # the now_price band. Open positions in [LOST..WON] stay pending.
+            if raw_status in ("won", "lost"):
+                status = raw_status
+            elif now_cents is not None and now_cents >= WON_THRESHOLD:
+                status = "won"
+            elif now_cents is not None and now_cents <= LOST_THRESHOLD:
+                status = "lost"
+            else:
+                status = "pending"
+
+            # Decimal odds = 100 / cents_price (entry-side). Stake (USD) = avg_cents/100 × shares.
+            odds = round(100.0 / float(avg_cents), 4)
+            stake = round(float(avg_cents) / 100.0 * float(shares), 2)
+            # Polymarket shares resolve to $1 each on win, $0 on loss. Payout for
+            # won = shares (USD). Lost = 0. Pending = 0 (filled at settlement).
+            payout = round(float(shares), 2) if status == "won" else 0.0
+
+            out.append(
+                HistoryEntry(
+                    provider_bet_id="",
+                    event_name=pos.get("market") or "",
+                    market="1x2",
+                    outcome="",
+                    odds=odds,
+                    stake=stake,
+                    status=status,
+                    payout=payout,
+                )
+            )
+            if status == "won":
+                won_count += 1
+            elif status == "lost":
+                lost_count += 1
+            else:
+                open_count += 1
+        logger.info(
+            f"[polymarket] sync_history (positions tab): {len(out)} positions "
+            f"({open_count} open, {won_count} won≥{WON_THRESHOLD}¢, {lost_count} lost≤{LOST_THRESHOLD}¢)"
+        )
+        return out
+
+    # Same React hydration race as positions tab — activity rows mount
+    # ~2-4s after domcontentloaded. Wait up to 8s for any of the row labels
+    # (Loss / Redeemed / Bought / Sold / Lost / Claimed) OR an explicit
+    # empty-state ("no activity / nothing here / no trades yet").
+    try:
+        await page.wait_for_function(
+            r"""() => {
+                const labels = ['Loss', 'Redeemed', 'Bought', 'Sold', 'Lost', 'Claimed'];
+                for (const el of document.querySelectorAll('div, span, p')) {
+                    const t = (el.textContent || '').trim();
+                    if (labels.includes(t)) return true;
+                }
+                const body = document.body.innerText || '';
+                if (/no\s+activity|no\s+trades\s+yet|nothing\s+here/i.test(body)) return true;
+                return false;
+            }""",
+            timeout=8000,
+        )
+    except Exception:
+        await asyncio.sleep(2.0)
 
     try:
         raw = await page.evaluate(_HISTORY_SCRAPE_JS)
@@ -239,6 +327,7 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
         return []
 
     if not raw:
+        logger.warning(f"[polymarket] history scrape returned 0 rows (url={current_url[:80]})")
         return []
 
     _STATUS_MAP = {
@@ -271,11 +360,20 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
         else:
             odds, stake = 0.0, 0.0
 
+        # market="moneyline" by default — polymarket's binary YES/NO contracts
+        # are 2-way moneyline by structure, even when the underlying sport
+        # is 3-way (soccer 1x2). The scanner already handles polymarket↔
+        # pinnacle 2-way↔3-way via is_polymarket_mismatch. Previous code
+        # hardcoded "1x2" which broke per-bet market lookup downstream.
+        # outcome stays as raw "Yes"/"No" — downstream _user_picked_opp
+        # context (persisted across restarts) overrides with the correct
+        # home/away mapping when present. Bets placed outside arnold get
+        # the raw value and won't analyze cleanly until manually corrected.
         entries.append(
             HistoryEntry(
                 provider_bet_id="",
                 event_name=market[:120],
-                market="1x2",
+                market="moneyline",
                 outcome=outcome,
                 odds=odds,
                 stake=stake,
@@ -289,25 +387,50 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 
 
 async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
-    """Scrape /portfolio?tab=positions — each open/settled row with Redeem or Sell button."""
+    """Scrape /portfolio?tab=positions — each open/settled row with Redeem or Sell button.
+
+    No-op when the tab is on a different page. The user controls navigation;
+    we just scrape opportunistically when they land on the right URL.
+    """
     current_url = page.url or ""
     if "/portfolio" not in current_url or "tab=history" in current_url:
-        try:
-            await page.goto(
-                "https://polymarket.com/portfolio?tab=positions",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            await asyncio.sleep(4)
-        except Exception as e:
-            logger.warning(f"[polymarket] portfolio nav failed: {e}")
-            return []
+        logger.debug(f"[polymarket] _scrape_portfolio: tab is on {current_url[:80]} (not positions) — skipping")
+        return []
+
+    # Polymarket SPA hydrates the positions list ~2-4s AFTER domcontentloaded.
+    # Without waiting, we hit the DOM before React mounts the rows and get
+    # zero Sell/Redeem buttons even when positions exist. Wait up to 8s for
+    # ANY position-row signal: a Sell/Redeem button, a row with a ¢ + $
+    # pattern, or the explicit empty-state. Bail early on empty-state.
+    try:
+        await page.wait_for_function(
+            r"""() => {
+                // Position-row signal: any visible Sell/Redeem button
+                for (const btn of document.querySelectorAll('button')) {
+                    const t = (btn.textContent || '').trim();
+                    if (t === 'Sell' || t === 'Redeem') return true;
+                }
+                // Empty-state signal: explicit "no positions" text
+                const body = document.body.innerText || '';
+                if (/no\s+positions|no\s+active\s+positions|nothing\s+here/i.test(body)) {
+                    return true;
+                }
+                return false;
+            }""",
+            timeout=8000,
+        )
+    except Exception:
+        # Fall through with a final fixed wait so React has SOME chance to mount
+        await asyncio.sleep(2.0)
 
     raw = await page.evaluate(
         r"""() => {
-            const out = { buttons: [] };
+            const out = { buttons: [], diag: { totalButtons: 0, sampleLabels: [], hasEmptyText: false } };
+            const btnLabels = new Map();  // label -> count
             for (const btn of document.querySelectorAll('button')) {
                 const t = (btn.textContent || '').trim();
+                if (t && t.length < 40) btnLabels.set(t, (btnLabels.get(t) || 0) + 1);
+                out.diag.totalButtons += 1;
                 if (t !== 'Redeem' && t !== 'Sell') continue;
                 let parent = btn.parentElement;
                 let rowText = '';
@@ -318,6 +441,13 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
                 }
                 out.buttons.push({ type: t, row_text: rowText.slice(0, 300) });
             }
+            // Diagnostic: top 8 most common button labels (helps spot UI renames
+            // like Sell → Cash Out without re-grepping HTML manually).
+            out.diag.sampleLabels = [...btnLabels.entries()]
+                .sort((a, b) => b[1] - a[1]).slice(0, 8)
+                .map(([label, n]) => `${label}×${n}`);
+            const body = document.body.innerText || '';
+            out.diag.hasEmptyText = /no\s+positions|no\s+active\s+positions|nothing\s+here/i.test(body);
             return out;
         }"""
     )
@@ -353,7 +483,15 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
             }
         )
 
-    logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
+    if not positions:
+        diag = raw.get("diag") or {}
+        logger.warning(
+            f"[polymarket] _scrape_portfolio: 0 positions "
+            f"(url={current_url[:80]} total_btns={diag.get('totalButtons')} "
+            f"empty_state={diag.get('hasEmptyText')} top_btns={diag.get('sampleLabels')})"
+        )
+    else:
+        logger.info(f"[polymarket] Scraped {len(positions)} portfolio positions")
     return positions
 
 
@@ -442,18 +580,15 @@ async def _claim_banner(page: Page, intel: dict | None) -> dict:
 
 
 async def _redeem_all(page: Page, intel: dict | None) -> dict:
-    """Click Redeem on every FINISHED position (Won/Lost) via Playwright locators."""
+    """Click Redeem on every FINISHED position (Won/Lost) via Playwright locators.
+
+    No-op when the tab isn't on /portfolio?tab=positions. User wants manual
+    control over polymarket navigation — when they land on positions, the
+    next sync cycle clicks Redeem; otherwise we just leave it alone.
+    """
     if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
-        try:
-            await page.goto(
-                "https://polymarket.com/portfolio?tab=positions",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            await asyncio.sleep(3)
-        except Exception as e:
-            logger.warning(f"[polymarket] redeem nav failed: {e}")
-            return {"redeemed": 0, "skipped_open": 0, "errors": 1, "total": 0}
+        logger.debug(f"[polymarket] _redeem_all: tab is on {(page.url or '')[:80]} (not positions) — skipping")
+        return {"redeemed": 0, "skipped_open": 0, "errors": 0, "total": 0}
 
     # Enumerate Won/Lost rows that have a visible Redeem button.
     rows_info = await page.evaluate(
@@ -1167,13 +1302,78 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
             _LOCATE_TARGET_JS,
             {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
         )
-    except Exception:
+    except Exception as e:
+        print(f"[polymarket check_live_price] evaluate raised: {e!r}", flush=True)
         return None, None
 
     if not info:
-        return None, None
+        # DOM scrape failed — Polymarket's /sports/ layout renders cents via
+        # CSS pseudo-elements (not text nodes). Fall back to the public
+        # Gamma API. Same-origin fetch via page.evaluate avoids CORS.
+        event_slug = _g("event_slug")
+        if not event_slug:
+            return None, None
+        try:
+            api_data = await page.evaluate(
+                r"""async (slug) => {
+                    try {
+                        const r = await fetch('https://gamma-api.polymarket.com/events?slug=' + encodeURIComponent(slug));
+                        if (!r.ok) return { error: 'http_' + r.status };
+                        return await r.json();
+                    } catch (e) { return { error: String(e) }; }
+                }""",
+                event_slug,
+            )
+        except Exception:
+            return None, None
+        if not isinstance(api_data, list) or not api_data:
+            return None, None
+        ev = api_data[0]
+        markets = ev.get("markets") or []
+        if not markets:
+            return None, None
+        import json as _json
+
+        # Pick the market whose outcomes list contains the bet's target team.
+        # In single-market 2-way events (Dodgers v Angels moneyline), there's
+        # one market with outcomes=[home_team, away_team]. Some events have
+        # multiple markets (alt lines etc.) — find the matching one.
+        target_name = (away if outcome in ("away", "2") else home if outcome in ("home", "1") else "").strip()
+        if not target_name:
+            return None, None
+        chosen_idx = None
+        chosen_prices: list[float] | None = None
+        for m in markets:
+            try:
+                outs = _json.loads(m.get("outcomes") or "[]")
+                prices = _json.loads(m.get("outcomePrices") or "[]")
+            except Exception:
+                continue
+            if len(outs) != len(prices):
+                continue
+            # Match by case-insensitive equality first, then substring.
+            for i, name in enumerate(outs):
+                nlow = (name or "").lower()
+                if nlow == target_name or target_name in nlow or nlow in target_name:
+                    chosen_idx = i
+                    chosen_prices = [float(p) for p in prices]
+                    break
+            if chosen_idx is not None:
+                break
+        if chosen_idx is None or chosen_prices is None:
+            return None, None
+        prob = chosen_prices[chosen_idx]
+        if prob <= 0 or prob >= 1:
+            return None, None
+        live_odds = round(1.0 / prob, 3)
+        live_edge = round((live_odds / float(fair_odds) - 1.0) * 100.0, 2)
+        return live_odds, live_edge
     cents = info.get("cents")
     if not cents or cents <= 0 or cents >= 100:
+        print(
+            f"[polymarket check_live_price] info had bad cents={cents!r} target={target!r} info={info}",
+            flush=True,
+        )
         return None, None
 
     live_odds = round(100.0 / cents, 3)
