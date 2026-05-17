@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -12,12 +14,156 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from .browser import MirrorBrowser
-from .pending_loop import PendingLoop
+from .pending_loop import _AUTH_HEADER, _AUTH_VALUE, PendingLoop
 from .play_loop import PlayLoop
 from .sse import MirrorBroadcaster
 from .workflows import get_workflow
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# _user_picked_opp persistence
+# ---------------------------------------------------------------------------
+# In-memory _user_picked_opp[provider_id] is set when the user clicks "play"
+# in the UI (arb or value). It carries event_id/market/outcome/start_time so
+# downstream bet-recording paths (play_loop._record_manual_bet, pending_loop.
+# _record_unknown_open_bets) can populate those fields when the provider's
+# placement response doesn't expose them. Without persistence, ANY bet placed
+# in session A and recorded via reactive sync in session B loses event_id ->
+# the row ends up in the "unknown" sport bucket with no edge/CLV analysis.
+#
+# JSON file in arnold/data/ alongside the rest of the local state. 24h TTL
+# discards stale picks (anything older is irrelevant; a placement that hasn't
+# settled in 24h is a separate problem).
+_PICKED_OPP_TTL_SEC = 24 * 3600
+_PICKED_OPP_PATH = Path(__file__).resolve().parent.parent / "data" / "picked_opps.json"
+
+
+def _load_picked_opps() -> dict[str, dict]:
+    """Load persisted picks, dropping any past TTL. Safe on missing/corrupt file."""
+    if not _PICKED_OPP_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(_PICKED_OPP_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"[picked_opps] failed to load {_PICKED_OPP_PATH}: {e}")
+        return {}
+    now = time.time()
+    fresh: dict[str, dict] = {}
+    for pid, entry in (raw or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("_picked_ts", 0)
+        if now - ts > _PICKED_OPP_TTL_SEC:
+            continue
+        fresh[pid] = entry
+    return fresh
+
+
+def _persist_picked_opps(picked: dict[str, dict]) -> None:
+    """Write picks to disk. Best-effort; logs but doesn't raise."""
+    try:
+        _PICKED_OPP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PICKED_OPP_PATH.write_text(json.dumps(picked, default=str))
+    except OSError as e:
+        logger.warning(f"[picked_opps] failed to write {_PICKED_OPP_PATH}: {e}")
+
+
+def _set_picked_opp(browser: Any, provider_id: str, payload: dict) -> None:
+    """Set the picked-opp context for a provider and persist to disk.
+
+    Used by both /arb/navigate-opp (arb anchor click) and /navigate (single
+    value-bet click) so downstream recording can fill event_id/market/outcome.
+    """
+    if not hasattr(browser, "_user_picked_opp"):
+        browser._user_picked_opp = {}
+    payload = dict(payload)
+    payload["_picked_ts"] = time.time()
+    browser._user_picked_opp[provider_id] = payload
+    _persist_picked_opps(browser._user_picked_opp)
+
+
+def _restore_picked_opps(browser: Any) -> None:
+    """Restore picks from disk on first browser-use after startup."""
+    if hasattr(browser, "_user_picked_opp"):
+        return
+    browser._user_picked_opp = _load_picked_opps()
+    if browser._user_picked_opp:
+        logger.info(
+            f"[picked_opps] restored {len(browser._user_picked_opp)} picks from disk: "
+            f"{list(browser._user_picked_opp.keys())}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Live-odds → DB sync
+# ---------------------------------------------------------------------------
+# In-memory cache of last value pushed per leg, used to debounce: only POST
+# when the odds actually change (avoids hammering /api/odds/live-update with
+# every 1s poll tick when the price hasn't moved). Bounded growth not a
+# concern — the user has at most ~10 active legs at once.
+_LAST_PUSHED_ODDS: dict[tuple[str, str, str, str, float | None], float] = {}
+
+# Same idea for DOM-scraped balances. Keyed by provider_id → last value we
+# POSTed to /api/bankroll/set. Debouncing on provider_data's cached balance
+# was wrong: that cache can already hold the live value (from a poll that
+# predates this process) while the server DB is still stale, so a delta
+# check against it blocks the initial persist forever. Tracking what we
+# actually pushed is the only correct gate.
+_LAST_PUSHED_BALANCE: dict[str, float] = {}
+
+
+def _persist_live_odds(
+    provider_id: str,
+    event_id: str | None,
+    market: str,
+    outcome: str,
+    point: float | None,
+    odds: float,
+) -> None:
+    """Fire-and-forget POST to /api/odds/live-update so the next /arb-workflow
+    scan returns the live-updated value. Without this, the mirror's live
+    observations live only in the frontend in-memory overlay — on refresh
+    or other devices the user sees stale extraction-time odds.
+
+    Skipped when (provider_id, event_id, market, outcome, point) hasn't
+    changed value since last push — keeps the tunnel quiet during quiet
+    markets.
+    """
+    if not event_id or not market or not outcome or not isinstance(odds, (int, float)) or odds <= 1:
+        return
+    key = (provider_id, event_id, market, outcome, point)
+    last = _LAST_PUSHED_ODDS.get(key)
+    if last is not None and abs(last - odds) < 0.005:
+        return
+    _LAST_PUSHED_ODDS[key] = float(odds)
+    import asyncio as _asyncio
+
+    async def _do_push():
+        try:
+            from arnold.http_client import tunnel_client
+
+            await tunnel_client().post(
+                "/api/odds/live-update",
+                json={
+                    "provider_id": provider_id,
+                    "event_id": event_id,
+                    "market": market,
+                    "outcome": outcome,
+                    "point": point,
+                    "odds": float(odds),
+                    "source": "mirror",
+                },
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug(f"[live-odds DB push] {provider_id} {event_id} {market}/{outcome}: {e!r}")
+
+    try:
+        _asyncio.ensure_future(_do_push())
+    except RuntimeError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +182,12 @@ class NavigateRequest(BaseModel):
     stake: float
     display_home: str
     display_away: str
+    # Provider-specific metadata (event_slug, matchup_id, token_id, etc.).
+    # Forwarded into the bet object so workflows whose URL template requires
+    # a slug — Polymarket "/event/{event_slug}", Pinnacle matchup_id — can
+    # resolve the event page. Without this, /mirror/navigate lands on the
+    # provider's lobby (the value-bet click nav bug, 2026-05-15).
+    provider_meta: dict | None = None
 
 
 class PlaceRequest(BaseModel):
@@ -65,8 +217,14 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     router = APIRouter(prefix="/mirror", tags=["mirror"])
 
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
+    # PendingLoop is intentionally NOT started. Per the auto-nav invariant
+    # the mirror is hands-off on everything except arb event-clicks — the
+    # user manually navigates to provider history pages and the browser
+    # interceptor catches the response. The interceptor → history_synced
+    # SSE → reactive_sync helper below records any unknown pending bets +
+    # reconciles settlements. Kept the instance so we can still reuse its
+    # helpers (_record_unknown_open_bets / reconcile) from the reactive path.
     pending_loop = PendingLoop(browser, broadcaster, proxy_url)
-    pending_loop.start()
 
     # Wire browser bet interception → play loop auto-record
     # Chain with existing callback (broadcaster.publish set in server.py)
@@ -82,8 +240,24 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 json={"balance": balance},
                 timeout=10.0,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[balance-sync] {provider_id} POST failed: {e!r}", flush=True)
+
+    # Strong refs for fire-and-forget balance POSTs. asyncio.ensure_future
+    # returns a Task the event loop only weakly tracks — with no reference
+    # held, it can be GC'd before it runs (the silent-drop bug class). Keep
+    # each task in this set until it completes.
+    _pending_balance_tasks: set = set()
+
+    def _fire_balance_post(provider_id: str, balance: float) -> None:
+        import asyncio
+
+        try:
+            task = asyncio.ensure_future(_post_balance_async(provider_id, balance))
+        except RuntimeError:
+            return
+        _pending_balance_tasks.add(task)
+        task.add_done_callback(_pending_balance_tasks.discard)
 
     def _on_browser_event(event_type: str, data: dict):
         if _prev_callback:
@@ -104,16 +278,224 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 wf = get_workflow(pid)
                 if hasattr(wf, "cache_event_details"):
                     wf.cache_event_details(eid, body)
+        if event_type == "odds_states_intercepted":
+            pid = data.get("provider_id", "")
+            body = data.get("body")
+            if pid and body:
+                from .workflows import get_workflow
+
+                wf = get_workflow(pid)
+                if hasattr(wf, "update_odds_states"):
+                    try:
+                        touched = wf.update_odds_states(body)
+                        if touched:
+                            print(f"[odds_states] {pid} merged {touched} odd updates", flush=True)
+                    except Exception as e:
+                        print(f"[odds_states] {pid} merge raised: {e!r}", flush=True)
+                # Extract {outcome_id: price} flat map and broadcast so the
+                # arnold UI can update displayed leg odds in real time without
+                # waiting for a server-side re-scan. Match by leg.provider_meta.
+                # outcome_id (Altenar's odd id) which the scanner stamps into
+                # every leg it emits.
+                try:
+                    updates: dict[str, float] = {}
+                    states = body.get("oddStates") or body.get("OddStates") or body.get("odds") or []
+                    if isinstance(body, list):
+                        states = body
+                    if isinstance(states, list):
+                        for s in states:
+                            if not isinstance(s, dict):
+                                continue
+                            oid = s.get("id") or s.get("Id") or s.get("oddId") or s.get("OddId")
+                            price = s.get("price") or s.get("Price")
+                            if oid is None or price is None:
+                                continue
+                            try:
+                                updates[str(oid)] = float(price)
+                            except (TypeError, ValueError):
+                                continue
+                    if updates:
+                        broadcaster.publish(
+                            "live_provider_odds",
+                            {
+                                "provider_id": pid,
+                                "updates": updates,
+                            },
+                        )
+                except Exception as e:
+                    print(f"[odds_states] broadcast extract failed: {e!r}", flush=True)
         if event_type == "balance_intercepted":
             pid = data.get("provider_id", "")
             bal = data.get("balance")
             if pid and bal is not None:
+                _fire_balance_post(pid, bal)
+        # Reactive history sync — fires when the user manually navigates the
+        # provider tab to its history/positions page. Replaces the deleted
+        # PendingLoop 60s tick. We grab whatever sync_history returns (workflow
+        # decides: cache read for Gecko, authed-fetch for Altenar, DOM scrape
+        # for Polymarket) and pipe it through reconcile + _record_unknown_open_bets.
+        #
+        # Debounce here SYNCHRONOUSLY (before spawning the async task) — pre-
+        # 2026-05-11 the debounce check lived inside _reactive_history_sync,
+        # which meant 3 history_intercepted events in <1 s spawned 3 tasks
+        # that all read the same (stale) timestamp before any wrote, all
+        # passed the gate, and each inserted a duplicate bet (the Polymarket
+        # × 4 dup we just cleaned up). Doing the check in this sync handler
+        # before `ensure_future` makes the check-and-set atomic from the
+        # event-loop's POV: the SSE callbacks fire serially on the loop.
+        if event_type == "history_intercepted":
+            pid = data.get("provider_id", "")
+            print(f"[history_intercepted] pid={pid}", flush=True)
+            if pid:
                 import asyncio
+                import time as _time
 
+                debouncer = getattr(browser, "_reactive_sync_debouncer", None) or {}
+                now = _time.monotonic()
+                last = debouncer.get(pid, 0.0)
+                if now - last < 5.0:
+                    print(f"[history_intercepted] {pid} debounced (last={now - last:.2f}s ago)", flush=True)
+                    return
+                debouncer[pid] = now
+                browser._reactive_sync_debouncer = debouncer
                 try:
-                    asyncio.ensure_future(_post_balance_async(pid, bal))
-                except RuntimeError:
-                    pass
+                    asyncio.ensure_future(_reactive_history_sync(pid))
+                    print(f"[history_intercepted] {pid} sync task spawned", flush=True)
+                except RuntimeError as exc:
+                    print(f"[history_intercepted] {pid} ensure_future RuntimeError: {exc!r}", flush=True)
+
+    # Per-provider lock so concurrent intercepts can't double-record even
+    # if they slip past the 5s callback debounce (network glitch, manual
+    # /mirror/start, etc.). The debounce makes "duplicate fires within 5s"
+    # impossible; this lock handles the rare > 5s scenario where two syncs
+    # for the same provider would otherwise read db_pending in parallel and
+    # both decide "this position isn't in DB yet".
+    _reactive_sync_locks: dict[str, asyncio.Lock] = {}
+
+    async def _reactive_history_sync(provider_id: str) -> None:
+        """Fired by the browser interceptor whenever a history response is cached.
+
+        Pulls the workflow's sync_history (passive read of cached data), runs
+        reconcile against DB pending, and inserts unknown pending entries.
+        Replaces the polling PendingLoop — recovery only happens when the user
+        chooses to look at their history page. Debounce lives in the sync
+        callback above so concurrent intercepts can't race past the gate.
+
+        Broadcasts settling_pending → settling_done so the UI shows a
+        transient "scanning pending..." badge for the active sync, then
+        clears it. Without this the badge stays stuck on whatever the play
+        runner last reported (which can be stale for hours).
+        """
+        import asyncio as _asyncio
+
+        from .workflows import get_workflow
+
+        print(f"[reactive_sync] {provider_id} start", flush=True)
+        lock = _reactive_sync_locks.get(provider_id)
+        if lock is None:
+            lock = _asyncio.Lock()
+            _reactive_sync_locks[provider_id] = lock
+        if lock.locked():
+            print(f"[reactive_sync] {provider_id} another sync in flight — skipping", flush=True)
+            return
+
+        # Only fire the "scanning pending..." badge when the user is actually
+        # looking at a history/positions page. Bookmaker widgets often hit
+        # their bet-history endpoint to render a pending-count chip in the
+        # header (Betinia's `widgetbethistory`, Polymarket's positions API)
+        # on EVERY page — without this gate the badge would flash up every
+        # few seconds while the user is just browsing the lobby. The sync
+        # itself still runs in the background; only the UI signal is gated.
+        recorded = 0
+        reconciled = 0
+        page_url = ""
+        try:
+            async with lock:
+                try:
+                    workflow = get_workflow(provider_id)
+                    page = await workflow.find_tab(browser.context)
+                    if page is None:
+                        print(f"[reactive_sync] {provider_id} no tab found — skipping", flush=True)
+                        return
+                    page_url = (page.url or "").lower()
+                    on_history_page = any(
+                        kw in page_url
+                        for kw in (
+                            "history",
+                            "portfolio",
+                            "spelhistorik",
+                            "betting/history",
+                            "mybets",
+                            "journal/bets",
+                            "minaspel",
+                            "mina-spel",
+                            "positions",
+                        )
+                    )
+                    if on_history_page:
+                        broadcaster.publish(
+                            "settling_pending",
+                            {"provider_id": provider_id, "source": "reactive"},
+                        )
+                    print(f"[reactive_sync] {provider_id} calling sync_history on {page_url[:60]}", flush=True)
+                    history = await workflow.sync_history(page)
+                    print(
+                        f"[reactive_sync] {provider_id} sync_history returned {len(history) if history else 0} entries",
+                        flush=True,
+                    )
+                    if not history:
+                        return
+                    history_dicts = [
+                        {
+                            "odds": e.odds,
+                            "stake": e.stake,
+                            "status": e.status,
+                            "payout": e.payout,
+                            "provider_bet_id": e.provider_bet_id,
+                            "event_name": e.event_name,
+                        }
+                        for e in history
+                    ]
+                    # Fetch current DB pending for reconcile. None = fetch
+                    # failed — fail-closed: skip BOTH reconcile and record.
+                    # Recording against an unknown DB state re-inserts every
+                    # open bet as a duplicate (BETINIA ×3 dup bug, 2026-05-12).
+                    db_pending = await pending_loop._fetch_pending_for_provider(provider_id)
+                    if db_pending is None:
+                        print(
+                            f"[reactive_sync] {provider_id} db_pending fetch failed — "
+                            "skipping reconcile+record this cycle",
+                            flush=True,
+                        )
+                        return
+                    # Reconcile (matches DB pending against settled history entries)
+                    from .reconcile import reconcile_and_publish
+
+                    reconciled = await reconcile_and_publish(
+                        pending_loop._proxy_url,
+                        _AUTH_HEADER,
+                        _AUTH_VALUE,
+                        provider_id,
+                        db_pending,
+                        history_dicts,
+                        broadcaster,
+                        page=page,
+                        workflow=workflow,
+                    )
+                    # Insert pending entries that aren't in the DB yet
+                    await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
+                except Exception as exc:
+                    print(f"[reactive_sync] {provider_id} raised: {exc!r}", flush=True)
+        finally:
+            broadcaster.publish(
+                "settling_done",
+                {
+                    "provider_id": provider_id,
+                    "source": "reactive",
+                    "reconciled": reconciled or 0,
+                    "recorded": recorded,
+                },
+            )
 
     browser.set_event_callback(_on_browser_event)
 
@@ -142,26 +524,42 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.post("/open-provider-tab")
     async def open_provider_tab(request: Request):
-        """Open a provider's site in a new tab (starts browser if needed)."""
+        """Open a provider's site in a tab (idempotent).
+
+        Checks every page in the context for a live, http(s) tab whose host
+        matches the workflow's domain. If found, just brings it to front and
+        returns 'already_open'. Otherwise spawns a new tab. Skips closed pages
+        and non-http URLs (about:blank, chrome:// etc.) to avoid the silent
+        "tab exists but actually died" trap.
+        """
         body = await request.json()
         pid = body.get("provider_id", "")
         if not pid:
             raise HTTPException(400, "provider_id required")
-        # Start browser if not running
+        # Rainbet is signal-only — no playable mirror workflow. Reject opens.
+        if pid == "rainbet":
+            raise HTTPException(400, "rainbet is signal-only (data consensus) — not playable in the mirror")
         if not browser.running:
             await browser.start()
-        # Check if tab already open — focus it so the click brings it forward
-        # in the Chromium window (otherwise the user sees no visible response).
+        from ._urls import hostname_matches
+
         workflow = get_workflow(pid)
-        if browser.context:
+        if browser.context and workflow.domain:
             for page in browser.context.pages:
-                if workflow.domain and workflow.domain in page.url:
-                    try:
-                        await page.bring_to_front()
-                    except Exception:
-                        pass
-                    return {"status": "already_open", "url": page.url, "provider_id": pid}
-        # Open new tab
+                try:
+                    if page.is_closed():
+                        continue
+                    url = (page.url or "").lower()
+                    if not url.startswith(("http://", "https://")):
+                        continue
+                    if hostname_matches(workflow.domain, url):
+                        try:
+                            await page.bring_to_front()
+                        except Exception:
+                            pass
+                        return {"status": "already_open", "url": page.url, "provider_id": pid}
+                except Exception:
+                    continue
         domain = workflow.domain
         if not domain:
             raise HTTPException(400, f"No domain for provider {pid}")
@@ -187,6 +585,143 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 pass
             tabs.append({"url": url, "title": title})
         return {"tabs": tabs}
+
+    # Per-provider portfolio URL — pages whose response triggers the
+    # history/positions interceptor → reactive sync cascade. For sites
+    # whose primary placement path bypasses HTTP intercept (Polymarket CLOB
+    # via WebSocket), this is the only reliable way to surface a freshly-
+    # placed bet without the user manually clicking "Portfolio".
+    _PORTFOLIO_URL = {
+        "polymarket": "https://polymarket.com/portfolio?tab=positions",
+        "kalshi": "https://kalshi.com/portfolio",
+        "cloudbet": "https://www.cloudbet.com/en/my-bets",
+        "pinnacle": "https://www.pinnacle.se/sv/account/bets",
+    }
+
+    # Providers whose settlement state lives on a SECOND URL (activity / history
+    # tab). Polymarket: open positions on ?tab=positions, settled rows on
+    # ?tab=history. Without scraping both, anything that resolved and aged off
+    # the positions list stays "pending" in our DB indefinitely.
+    _SECONDARY_PORTFOLIO_URL = {
+        "polymarket": "https://polymarket.com/portfolio?tab=history",
+    }
+
+    @router.post("/poll-portfolio/{provider_id}")
+    async def poll_portfolio(provider_id: str):
+        """Sync a provider's pending bets to the DB. Strategy:
+
+        1. Navigate the tab to the provider's portfolio/bet-history URL so the
+           positions/history XHR fires and the interceptor → reactive_sync
+           chain records any new bets (works for polymarket / kalshi /
+           cloudbet whose pages drive the XHR on render).
+        2. ALSO directly invoke workflow.sync_history(page) → reconcile +
+           record_unknown_open_bets. Required for pinnacle: its bet-history
+           page redirects to /sv/ and never fires the XHR, but the workflow's
+           sync_history makes the bets-API call independently via the page's
+           request context.
+
+        Idempotent; safe to call repeatedly. Step 2's record path
+        deduplicates against existing DB rows via (odds, stake) signature.
+        """
+        url = _PORTFOLIO_URL.get(provider_id)
+        if not url:
+            raise HTTPException(400, f"no portfolio URL configured for {provider_id}")
+        if not browser.running or not browser.context:
+            raise HTTPException(400, "browser not running")
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if page is None:
+            raise HTTPException(404, f"no open tab for {provider_id}")
+
+        # Step 1: navigate (best-effort — some providers redirect).
+        nav_error: str | None = None
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        except Exception as exc:
+            nav_error = repr(exc)
+
+        # Step 2: sync_history at primary URL (positions for polymarket,
+        # bet-history for kalshi/cloudbet/pinnacle).
+        raw_history_primary: list = []
+        try:
+            raw_history_primary = await workflow.sync_history(page) or []
+        except Exception as exc:
+            print(f"[poll-portfolio] {provider_id} primary sync raised: {exc!r}", flush=True)
+
+        # Step 3: providers whose settlement state lives on a SECOND URL
+        # (polymarket: activity/history tab) — navigate there and merge.
+        # Without this, anything that resolved + aged off the positions list
+        # stays "pending" in our DB indefinitely.
+        raw_history_secondary: list = []
+        secondary_url = _SECONDARY_PORTFOLIO_URL.get(provider_id)
+        if secondary_url:
+            try:
+                await page.goto(secondary_url, wait_until="domcontentloaded", timeout=20000)
+                raw_history_secondary = await workflow.sync_history(page) or []
+            except Exception as exc:
+                print(f"[poll-portfolio] {provider_id} secondary sync raised: {exc!r}", flush=True)
+
+        raw_history = list(raw_history_primary) + list(raw_history_secondary)
+
+        synced = 0
+        recorded = 0
+        try:
+            history_dicts = [
+                {
+                    "odds": e.odds,
+                    "stake": e.stake,
+                    "status": e.status,
+                    "payout": e.payout,
+                    "provider_bet_id": e.provider_bet_id,
+                    "event_name": e.event_name,
+                }
+                for e in raw_history
+            ]
+            db_pending = await pending_loop._fetch_pending_for_provider(provider_id)
+            if db_pending is not None:
+                from .reconcile import reconcile_and_publish
+
+                synced = await reconcile_and_publish(
+                    pending_loop._proxy_url,
+                    _AUTH_HEADER,
+                    _AUTH_VALUE,
+                    provider_id,
+                    db_pending,
+                    history_dicts,
+                    broadcaster,
+                    page=page,
+                    workflow=workflow,
+                )
+                # Snapshot pending count before insert so we can report new rows.
+                pre_count = len(db_pending)
+                await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
+                post = await pending_loop._fetch_pending_for_provider(provider_id)
+                if post is not None:
+                    recorded = max(0, len(post) - pre_count)
+        except Exception as exc:
+            print(f"[poll-portfolio] {provider_id} reconcile raised: {exc!r}", flush=True)
+
+        return {
+            "navigated": nav_error is None,
+            "nav_error": nav_error,
+            "url": page.url,
+            "history_entries": len(raw_history),
+            "history_primary": len(raw_history_primary),
+            "history_secondary": len(raw_history_secondary),
+            "reconciled": synced,
+            "recorded": recorded,
+        }
+
+    @router.post("/browser/provider/{provider_id}/clear-cache")
+    async def clear_provider_cache(provider_id: str):
+        """Clear cached provider_data for a provider — forces the next
+        check_login to actually run instead of trusting a stale cache.
+        Mostly a debugging tool: once the cache says logged_in=True we
+        never re-verify until the cache gets cleared (e.g. by tab close
+        or restart). For a long-lived session whose token expired
+        server-side this can leave the UI stuck on "green" indefinitely."""
+        browser.provider_data.pop(provider_id, None)
+        return {"cleared": provider_id}
 
     @router.get("/browser/provider/{provider_id}")
     async def browser_provider_state(provider_id: str):
@@ -233,6 +768,17 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     browser.provider_data.setdefault(provider_id, {}).update(
                         {"balance": bal, "source": "workflow_sync_balance"}
                     )
+                    # DOM-scraped balances (polymarket "Cash $X", pinnacle
+                    # localStorage, etc.) never produce a balance_intercepted
+                    # network event, so they were never persisted to the
+                    # server DB — /api/bankroll stayed stale forever while the
+                    # mirror knew the live value. Push when the value differs
+                    # from what we last POSTed (not from provider_data, which
+                    # may already hold the live value while the DB is stale).
+                    last_pushed = _LAST_PUSHED_BALANCE.get(provider_id)
+                    if last_pushed is None or abs(float(last_pushed) - float(bal)) > 0.01:
+                        _LAST_PUSHED_BALANCE[provider_id] = float(bal)
+                        _fire_balance_post(provider_id, bal)
             except Exception:
                 pass
         return {
@@ -248,10 +794,59 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def diag(provider_id: str):
         """Debug: surface workflow internals so we can tell stale-code from init-failure."""
         workflow = get_workflow(provider_id)
+        # Snapshot the keys of provider_data so we can tell which interceptor
+        # branches have fired (e.g. is coupon_history_raw populated?). Body
+        # values may be huge so we only report keys + sizes here.
+        pdata = browser.provider_data.get(provider_id, {}) or {}
+        pdata_summary = {}
+        for k, v in pdata.items():
+            if k == "coupon_history_by_url" and isinstance(v, dict):
+                pdata_summary[k] = {
+                    "urls": list(v.keys()),
+                    "coupons_per_url": {
+                        u: len((b.get("data") or {}).get("coupons", []) or []) if isinstance(b, dict) else "?"
+                        for u, b in v.items()
+                    },
+                }
+            elif k == "coupon_history_raw" and isinstance(v, dict):
+                coupons = (v.get("data") or {}).get("coupons", []) or []
+                first = coupons[0] if coupons else {}
+                # Capture a few diagnostic fields verbatim — we need to know
+                # which key carries settlement status and what shape it has.
+                first_sample = {
+                    fk: first.get(fk)
+                    for fk in (
+                        "id",
+                        "couponId",
+                        "couponStatus",
+                        "status",
+                        "settlementStatus",
+                        "betsStatus",
+                        "totalOdds",
+                        "stake",
+                        "totalPayout",
+                        "eventNames",
+                        "fullCouponSettlementDate",
+                    )
+                }
+                pdata_summary[k] = {
+                    "top_keys": list(v.keys())[:20],
+                    "data_keys": list((v.get("data") or {}).keys())[:20] if isinstance(v.get("data"), dict) else None,
+                    "coupons_len": len(coupons),
+                    "first_coupon_keys": list(first.keys())[:40] if first else None,
+                    "first_coupon_sample": first_sample,
+                }
+            elif isinstance(v, (dict, list)):
+                pdata_summary[k] = f"<{type(v).__name__} len={len(v)}>"
+            elif isinstance(v, str):
+                pdata_summary[k] = v[:80]
+            else:
+                pdata_summary[k] = v
         out: dict[str, Any] = {
             "class": type(workflow).__name__,
             "module": type(workflow).__module__,
             "autonomous_placement": getattr(workflow, "autonomous_placement", None),
+            "provider_data": pdata_summary,
         }
         # Find a live page for this provider; check_login needs one (no SDK fallback any more).
         page = None
@@ -266,6 +861,16 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 out["check_login"] = await workflow.check_login(page)
             except Exception as e:
                 out["check_login_error"] = str(e)
+            # Pinnacle exposes its raw signal dict — surface it so we can
+            # see exactly which signal fired (or failed) without re-running
+            # the page eval ourselves.
+            try:
+                from .workflows.strategies.pinnacle import _check_login_signals
+
+                if provider_id == "pinnacle":
+                    out["signals"] = await _check_login_signals(page)
+            except Exception as e:
+                out["signals_error"] = str(e)
         return out
 
     @router.get("/browser/test-settle/{provider_id}")
@@ -288,6 +893,185 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             }
         except Exception as e:
             return {"error": str(e)}
+
+    @router.get("/browser/api-probe/{provider_id}")
+    async def api_probe(provider_id: str, url: str):
+        """Hit an arbitrary URL via the provider tab's request context.
+
+        Uses Playwright's `page.request` API which carries the tab's auth
+        cookies and bypasses CORS — so we can call APIs the SPA itself
+        uses (api.arcadia.pinnacle.se etc.) which JS-side fetches can't.
+        Debug-only — keeps response body short."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow(provider_id)
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no tab"}
+        try:
+            resp = await page.request.get(url, timeout=10_000)
+            text = await resp.text()
+            return {
+                "status": resp.status,
+                "ok": resp.ok,
+                "url": resp.url,
+                "body": text[:2000],
+                "headers": dict(resp.headers),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @router.get("/pinnacle/refresh-matchup/{matchup_id}")
+    async def refresh_pinnacle_matchup(matchup_id: int):
+        """Targeted live-odds refresh for one Pinnacle matchup.
+
+        Hits api.arcadia.pinnacle.se with the public X-API-Key (extracted
+        from the SPA's appConfig) via Playwright's page.request — bypasses
+        CORS, uses the tab's session cookies. Returns all markets for the
+        matchup with American prices converted to decimal so the frontend
+        can apply them as liveLegOdds overrides without a per-leg click.
+
+        Auto-follows the pre-match → live successor chain: if the
+        requested matchup has gone live, returns markets for the live
+        matchup_id (frontend keys overrides on the original matchup_id
+        that's stored in arnold's DB, so it doesn't care).
+
+        Returns shape:
+          {
+            "matchup_id": int,            # the ID we read markets from
+            "requested_id": int,          # what frontend asked for
+            "league": str | None,
+            "sport": str | None,
+            "participants": [str, str],
+            "markets": [
+              {
+                "key": "s;0;m" | "s;6;m" | "s;0;s;-1.5" | "s;0;ou;2.5" | ...,
+                "period": int,
+                "prices": [
+                  {"designation": "home"|"away"|"draw"|"over"|"under",
+                   "american": int, "decimal": float, "points": float|null}
+                ]
+              }, ...
+            ]
+          }
+        """
+        from .workflows.strategies.pinnacle import (
+            _PINNACLE_API_BASE,
+            _PINNACLE_FRONTEND_API_KEY,
+            _american_to_decimal,
+        )
+
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        workflow = get_workflow("pinnacle")
+        page = await workflow.find_tab(browser.context)
+        if not page:
+            return {"error": "no pinnacle tab"}
+        headers = {"X-API-Key": _PINNACLE_FRONTEND_API_KEY}
+
+        async def _fetch_json(url: str):
+            try:
+                resp = await page.request.get(url, headers=headers, timeout=8_000)
+                if not resp.ok:
+                    return None
+                return await resp.json()
+            except Exception as e:
+                logger.debug(f"[refresh-matchup] {url} failed: {e!r}")
+                return None
+
+        # Step 1: matchup info — also tells us if there's a live successor.
+        m = await _fetch_json(f"{_PINNACLE_API_BASE}/matchups/{matchup_id}")
+        if not isinstance(m, dict) or not m.get("league"):
+            return {"error": "matchup_not_found", "requested_id": matchup_id}
+
+        target_id = matchup_id
+        # If pre-match has gone live, fetch markets from the live successor.
+        if m.get("hasLive") and m.get("status") == "pending":
+            league_id = m["league"]["id"]
+            league_matchups = await _fetch_json(f"{_PINNACLE_API_BASE}/leagues/{league_id}/matchups")
+            if isinstance(league_matchups, list):
+                live = next(
+                    (
+                        x
+                        for x in league_matchups
+                        if x.get("parentId") == int(matchup_id)
+                        and x.get("type") == "matchup"
+                        and x.get("isLive") is True
+                        and x.get("status") == "started"
+                        and (x.get("league") or {}).get("id") == league_id
+                        and any(p.get("period") == 0 for p in (x.get("periods") or []))
+                    ),
+                    None,
+                )
+                if live:
+                    target_id = live["id"]
+                    m = live  # use the live matchup's metadata too
+
+        # Step 2: markets/straight for the (live) matchup.
+        markets_raw = await _fetch_json(f"{_PINNACLE_API_BASE}/matchups/{target_id}/markets/straight")
+        if not isinstance(markets_raw, list):
+            return {"error": "markets_not_found", "matchup_id": target_id}
+
+        markets = []
+        for mk in markets_raw:
+            if mk.get("isAlternate"):
+                continue
+            prices_out = []
+            for p in mk.get("prices") or []:
+                price = p.get("price")
+                if price is None:
+                    continue
+                try:
+                    decimal = _american_to_decimal(float(price))
+                except Exception:
+                    continue
+                prices_out.append(
+                    {
+                        "designation": p.get("designation"),
+                        "american": price,
+                        "decimal": round(decimal, 4),
+                        "points": p.get("points"),
+                    }
+                )
+            if prices_out:
+                markets.append(
+                    {
+                        "key": mk.get("key"),
+                        "period": mk.get("period"),
+                        "prices": prices_out,
+                    }
+                )
+
+        parts = m.get("participants") or []
+        return {
+            "matchup_id": target_id,
+            "requested_id": matchup_id,
+            "league": (m.get("league") or {}).get("name"),
+            "sport": ((m.get("league") or {}).get("sport") or {}).get("name"),
+            "participants": [p.get("name") if isinstance(p, dict) else p for p in parts],
+            "is_live": bool(m.get("isLive")),
+            "status": m.get("status"),
+            "markets": markets,
+        }
+
+    @router.get("/browser/eval-on-tab")
+    async def eval_on_tab(url_contains: str, js: str = "document.title"):
+        """Debug: evaluate JS on the first tab whose URL contains `url_contains`.
+        Lets us inspect non-provider tabs (e.g. the local arnold UI at
+        127.0.0.1:8000) without needing a registered workflow."""
+        if not browser.running or not browser.context:
+            return {"error": "browser not running"}
+        target = None
+        for p in browser.context.pages:
+            if url_contains in (p.url or ""):
+                target = p
+                break
+        if not target:
+            return {"error": f"no tab with url containing {url_contains!r}"}
+        try:
+            return {"url": target.url, "result": await target.evaluate(js)}
+        except Exception as e:
+            return {"error": str(e), "url": target.url}
 
     @router.get("/browser/debug-eval/{provider_id}")
     async def debug_eval(provider_id: str, js: str = "document.title"):
@@ -397,15 +1181,24 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         browser's startup grace window.
         """
         await browser.start()
+        # Restore the user_picked_opp cache from disk so reactive-sync bet
+        # recording (after a placement that intercept missed) can still fill
+        # event_id/market/outcome on bets placed in a previous arnold session.
+        _restore_picked_opps(browser)
         # Defensive sweep BEFORE re-opening unlimited tabs so we don't end up
         # with both a stray dbet AND a fresh cloudbet (Chromium can refuse to
         # open a duplicate tab if it already has one for the same provider).
+        #
+        # Build the allowlist from every domain we have a workflow for. Pre-
+        # 2026-05-11 this was hardcoded to the 5 unlimited counters + TV +
+        # localhost, which silently killed any soft provider tab (BETINIA,
+        # quickcasino, etc.) the user had open — including funded ones with
+        # an active arb session. Deriving from `_DOMAIN_TO_PROVIDER` keeps
+        # the allowlist in sync with whatever providers we support.
+        from .browser import _DOMAIN_TO_PROVIDER
+
         _ALLOWED = (
-            "polymarket.com",
-            "pinnacle.se",
-            "cloudbet.com",
-            "kalshi.com",
-            "rainbet.com",
+            *_DOMAIN_TO_PROVIDER.keys(),
             "tradingview.com",
             "127.0.0.1",
             "localhost",
@@ -424,7 +1217,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     print(f"[mirror/start] Closed stray tab: {url[:80]}", flush=True)
                 except Exception:
                     pass
-        for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi", "rainbet"):
+        # Rainbet is signal-only (data consensus on the server-side extraction
+        # pipeline). Don't open it in the local mirror — Cloudflare Turnstile
+        # rejects plain Chromium and there's no playable workflow.
+        for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi"):
             try:
                 workflow = get_workflow(pid)
                 if not workflow.domain:
@@ -523,6 +1319,26 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         bet = _Bet()
         for field, value in req.model_dump().items():
             setattr(bet, field, value)
+
+        # Stash the picked-opp context per-provider so the subsequent placement
+        # (intercepted via play_loop._record_manual_bet) or the reactive history
+        # sync (pending_loop._record_unknown_open_bets) can fill event_id /
+        # market / outcome. Persisted to disk so this survives arnold restarts.
+        _set_picked_opp(
+            browser,
+            req.provider_id,
+            {
+                "event_id": req.event_id,
+                "market": req.market,
+                "outcome": req.outcome,
+                "point": req.point,
+                "planned_odds": req.odds,
+                "planned_stake": req.stake,
+                "fair_odds": req.fair_odds,
+                "home_team": req.display_home,
+                "away_team": req.display_away,
+            },
+        )
 
         success = await workflow.navigate_to_event(page, bet)
         return {"success": success, "url": page.url}
@@ -658,6 +1474,533 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def play_status():
         """Return current play loop status."""
         return play_loop.get_status()
+
+    @router.post("/arb/navigate-opp")
+    async def arb_navigate_opp(body: dict[str, Any]):
+        """Drive a single provider tab to a leg of a user-picked arb opp.
+
+        Bypasses the runner's queue. Body shapes:
+          { provider_id, opp, leg? }
+            - provider_id: the tab/workflow to drive (e.g. betinia, pinnacle)
+            - opp: full opp dict (used for context — sport/market/event_id)
+            - leg (optional): the specific leg to use for nav meta. If omitted,
+              we resolve by matching leg.provider == provider_id, then by
+              cluster (sibling fallback — opp anchored on a cluster rep is also
+              valid for any sibling of that rep).
+            { provider_id, leg }   — leg-only shape for direct calls
+
+        For Altenar siblings (betinia/quickcasino/campobet/...), the anchor
+        leg's provider may not match the clicked provider_id; the events are
+        shared across the cluster, so we use the leg's meta to navigate the
+        sibling's own tab.
+
+        Soft anchor → nav + prep + SlipOddsStream (drift detection).
+        Counter legs (autonomous_placement=False) → nav-only per F17.
+        """
+        from .arb_runner import ArbRunner
+        from .play_loop import _PROVIDER_TO_CLUSTER, UNLIMITED_PROVIDERS, _bet_ns
+        from .workflows import get_workflow
+
+        provider_id = body.get("provider_id")
+        opp = body.get("opp") or {}
+        explicit_leg = body.get("leg")
+        if not provider_id:
+            raise HTTPException(status_code=400, detail="provider_id required")
+        if not explicit_leg and not isinstance(opp, dict):
+            raise HTTPException(status_code=400, detail="opp dict required when leg is omitted")
+
+        # Resolve which leg's meta to use for navigation. Frontend may inline
+        # the picked leg as `opp._picked_leg` (per-leg click) or pass `leg` at
+        # top level (programmatic call). Both win over auto-resolution.
+        legs = opp.get("arb_legs") or opp.get("legs", []) if isinstance(opp, dict) else []
+        anchor_leg = (
+            explicit_leg
+            or (opp.get("_picked_leg") if isinstance(opp, dict) else None)
+            or next((l for l in legs if l.get("provider") == provider_id), None)
+        )
+        if not anchor_leg:
+            # Sibling fallback: if any leg's provider is in the same cluster
+            # as the requested provider_id, reuse its meta. Altenar siblings
+            # (betinia/quickcasino/...) share event_ids, so navigation works.
+            target_cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
+            if target_cluster:
+                anchor_leg = next(
+                    (l for l in legs if _PROVIDER_TO_CLUSTER.get(l.get("provider")) == target_cluster),
+                    None,
+                )
+        if not anchor_leg:
+            raise HTTPException(
+                status_code=400,
+                detail=f"opp has no leg for {provider_id} or its cluster siblings",
+            )
+
+        # Manual pick takes precedence over the auto-runner. Stop any runner
+        # for this provider AND remove it from the coordinator's provider_ids
+        # so subsequent _add_new_runners cycles don't re-spawn it. The user is
+        # in manual mode (cell-click drives navigation); the auto-runner's
+        # top-opp watcher would race and look haywire.
+        existing_runner = play_loop._runners.get(provider_id)
+        if existing_runner is not None and getattr(existing_runner, "running", False):
+            try:
+                existing_runner.stop()
+                logger.info(f"[/arb/navigate-opp] stopped existing runner for {provider_id}")
+            except Exception as e:
+                logger.warning(f"[/arb/navigate-opp] failed to stop runner for {provider_id}: {e!r}")
+        try:
+            if provider_id in getattr(play_loop, "_provider_ids", []):
+                play_loop._provider_ids = [p for p in play_loop._provider_ids if p != provider_id]
+                logger.info(f"[/arb/navigate-opp] removed {provider_id} from coordinator provider_ids")
+            play_loop._runners.pop(provider_id, None)
+        except Exception as e:
+            logger.debug(f"[/arb/navigate-opp] cleanup raised: {e!r}")
+
+        wf = get_workflow(provider_id)
+        if not browser.context:
+            await browser.start()
+        page = await wf.find_tab(browser.context)
+        if not page:
+            page = await browser.open_tab(wf.home_url)
+
+        balance = browser.provider_data.get(provider_id, {}).get("balance") or 0.0
+        bet = ArbRunner._opp_to_bet(opp, anchor_leg)
+        # Frontend can override the anchor stake (manual stake input on the
+        # DUTCH ARB widget). Clamp to [0, balance] so we can't request a bet
+        # larger than what's available — the bookmaker would reject it
+        # anyway, but failing here keeps the slip prep from getting into
+        # an inconsistent state.
+        override_stake = opp.get("_override_stake") if isinstance(opp, dict) else None
+        if isinstance(override_stake, (int, float)) and override_stake > 0:
+            bet["stake"] = round(min(float(override_stake), balance), 2)
+        else:
+            bet["stake"] = round(balance, 2)
+        bet_ns = _bet_ns(bet)
+
+        leg_event_id = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+        # Stash the picked-opp context per-provider (persisted to disk so the
+        # context survives an arnold restart and reactive-sync bet recording
+        # in a later session still preserves event_id). Without this any bet
+        # recorded via reactive sync after a restart loses event_id and lands
+        # in the "unknown" sport analytics bucket with no edge/CLV breakdown.
+        _set_picked_opp(
+            browser,
+            provider_id,
+            {
+                "event_id": opp.get("event_id"),
+                "market": anchor_leg.get("market") or opp.get("market"),
+                "outcome": anchor_leg.get("outcome"),
+                "point": anchor_leg.get("point") if anchor_leg.get("point") is not None else opp.get("point"),
+                "planned_odds": anchor_leg.get("odds"),
+                "planned_stake": bet["stake"],
+                "start_time": opp.get("starts_at") or opp.get("start_time"),
+                "home_team": opp.get("display_home") or opp.get("home_team"),
+                "away_team": opp.get("display_away") or opp.get("away_team"),
+                "sport": opp.get("sport"),
+            },
+        )
+        broadcaster.publish(
+            "arb_leg_started",
+            {
+                "provider_id": provider_id,
+                "role": "anchor",
+                "planned_odds": anchor_leg.get("odds"),
+                "planned_stake": bet["stake"],
+                "user_picked": True,
+                "event_id": opp.get("event_id"),
+            },
+        )
+
+        nav_ok = await wf.navigate_to_event(page, bet_ns)
+        if not nav_ok:
+            # For Pinnacle: navigate_to_event already follows the live-successor
+            # chain and returns False only when the matchup is genuinely dead
+            # (no live ID can render content). Treat this as event_closed so
+            # the frontend drains the row, instead of leaving the user with a
+            # "nav failed" status they can't act on.
+            if provider_id == "pinnacle":
+                event_id_pn = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+                broadcaster.publish(
+                    "arb_leg_event_closed",
+                    {
+                        "provider_id": provider_id,
+                        "event_id": event_id_pn,
+                        "url": page.url,
+                        "user_picked": True,
+                        "reason": "no_live_matchup",
+                    },
+                )
+                return {
+                    "status": "event_closed",
+                    "url": page.url,
+                    "event_id": event_id_pn,
+                }
+            broadcaster.publish(
+                "arb_leg_failed",
+                {"provider_id": provider_id, "stage": "navigate", "reason": "navigate_failed"},
+            )
+            raise HTTPException(status_code=502, detail="navigate_to_event failed")
+        broadcaster.publish(
+            "arb_leg_navigated",
+            {"provider_id": provider_id, "url": page.url, "user_picked": True, "event_id": opp.get("event_id")},
+        )
+
+        # Event-closed detection: bookmaker shows "Detta evenemang är avslutat"
+        # (or English equivalent) for finished/suspended events. We don't want
+        # to prep the slip on a dead page — return early so the frontend can
+        # mark this opp drained and auto-pop the next.
+        from .provider_runner import ProviderRunner
+
+        # Pinnacle uses a different fingerprint: expired matchups serve 502
+        # from the API and leave the page on the home shell with no event
+        # card. The Altenar-shaped check (`_is_event_closed`) only looks
+        # inside `stb-sportsbook` shadow root and won't catch this.
+        pinnacle_empty = False
+        if provider_id == "pinnacle":
+            try:
+                from .workflows.strategies.pinnacle import _is_matchup_empty
+
+                pinnacle_empty = await _is_matchup_empty(page)
+            except Exception as e:
+                logger.debug(f"[/arb/navigate-opp] pinnacle empty-check raised: {e!r}")
+        if pinnacle_empty or await ProviderRunner._is_event_closed(page):
+            event_id = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+            broadcaster.publish(
+                "arb_leg_event_closed",
+                {
+                    "provider_id": provider_id,
+                    "event_id": event_id,
+                    "url": page.url,
+                    "user_picked": True,
+                },
+            )
+            return {
+                "status": "event_closed",
+                "url": page.url,
+                "event_id": event_id,
+            }
+
+        # Guided counter (autonomous_placement=False AND not the soft anchor's
+        # cluster) — nav-only per F17. Pinnacle/Kambi/etc. counter tabs just
+        # land on the event page; the user clicks outcome + Place themselves.
+        # Soft anchor (Altenar/Gecko/etc.) AND autonomous (Polymarket SDK) get
+        # the full prep + stream chain so we have drift detection.
+        is_unlimited = provider_id in UNLIMITED_PROVIDERS
+        is_autonomous = bool(getattr(wf, "autonomous_placement", False))
+        is_soft_anchor = (not is_unlimited) and _PROVIDER_TO_CLUSTER.get(provider_id) is not None
+        if not (is_soft_anchor or is_autonomous):
+            # Guided counters STILL get a live-odds poll task so the frontend
+            # sees the counter's odds drift in real time. Without this, only
+            # the soft anchor streams updates and the user can't tell when
+            # the sharp side moved against them after locking BETINIA.
+            captured_event_id_g = opp.get("event_id")
+            captured_market_g = anchor_leg.get("market") or opp.get("market") or ""
+            captured_outcome_g = anchor_leg.get("outcome") or ""
+            captured_point_g = anchor_leg.get("point")
+
+            def _on_odds_g(o):
+                broadcaster.publish(
+                    "arb_leg_odds",
+                    {
+                        "provider_id": provider_id,
+                        "live_odds": o,
+                        "planned_odds": anchor_leg.get("odds"),
+                        "user_picked": True,
+                        "event_id": captured_event_id_g,
+                    },
+                )
+                # ALSO publish live_price so Section B's value-bet rows
+                # update livePrices. arb_leg_odds only feeds the arb
+                # section's overlay; without this the value-bet display
+                # would keep showing extraction-time odds while the slip
+                # stream knows the live value (the 56-vs-58 mismatch).
+                fair_g = anchor_leg.get("fair_odds")
+                live_edge_g = ((o / fair_g - 1) * 100) if fair_g and fair_g > 0 else None
+                if captured_market_g and captured_outcome_g:
+                    broadcaster.publish(
+                        "live_price",
+                        {
+                            "provider_id": provider_id,
+                            "event_id": captured_event_id_g,
+                            "market": captured_market_g,
+                            "outcome": captured_outcome_g,
+                            "point": captured_point_g,
+                            "live_odds": o,
+                            "live_edge": live_edge_g,
+                        },
+                    )
+                # Persist to DB so the next /arb-workflow scan returns the
+                # live value — frontend stays correct across refresh / other
+                # devices / browser data clear. Fire-and-forget so the poll
+                # cadence isn't blocked on tunnel latency.
+                _persist_live_odds(
+                    provider_id, captured_event_id_g, captured_market_g, captured_outcome_g, captured_point_g, o
+                )
+
+            async def _poll_guided_live_price():
+                last: float | None = None
+                ticks = 0
+                print(f"[POLL {provider_id}] START (guided)", flush=True)
+                try:
+                    while True:
+                        await asyncio.sleep(1.0)
+                        ticks += 1
+                        live: float | None = None
+                        src = ""
+                        # Slip-first: when the user clicks an outcome on the
+                        # bookmaker tab, the slip carries the exact odd id +
+                        # price they selected. Unambiguous even when the
+                        # page shows multiple moneyline-shaped markets
+                        # stacked (Winner-Enhanced / Vinnare / First-Set).
+                        if hasattr(wf, "read_slip_odds"):
+                            slip_event_id_g = getattr(bet_ns, "altenar_event_id", None) or (
+                                getattr(bet_ns, "provider_meta", None) or {}
+                            ).get("event_id")
+                            try:
+                                live = (
+                                    await wf.read_slip_odds(page, expected_event_id=slip_event_id_g)
+                                    if slip_event_id_g
+                                    else await wf.read_slip_odds(page)
+                                )
+                                if live is not None:
+                                    src = "slip"
+                            except Exception as e:
+                                print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                        if live is None and hasattr(wf, "read_outcome_odds_dom"):
+                            try:
+                                live = await wf.read_outcome_odds_dom(page, bet_ns)
+                                if live is not None:
+                                    src = "dom"
+                            except Exception as e:
+                                print(f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}", flush=True)
+                        if live is None and hasattr(wf, "check_live_price"):
+                            try:
+                                live, _ = await wf.check_live_price(page, bet_ns)
+                                if live is not None:
+                                    src = "live_price"
+                            except Exception:
+                                pass
+                        if ticks % 5 == 0:
+                            print(
+                                f"[POLL {provider_id}] tick={ticks} live={live} src={src!r} last={last}",
+                                flush=True,
+                            )
+                        if live is not None and live != last:
+                            last = live
+                            try:
+                                _on_odds_g(live)
+                            except Exception as e:
+                                print(f"[POLL {provider_id}] _on_odds raised: {e!r}", flush=True)
+                except asyncio.CancelledError:
+                    print(f"[POLL {provider_id}] CANCELLED after {ticks} ticks", flush=True)
+                except Exception as e:
+                    print(f"[POLL {provider_id}] crashed: {e!r}", flush=True)
+
+            existing_task_g = getattr(browser, "_user_picked_tasks", {}).get(provider_id)
+            if existing_task_g and not existing_task_g.done():
+                existing_task_g.cancel()
+            task_g = asyncio.create_task(_poll_guided_live_price(), name=f"live_price_{provider_id}")
+            if not hasattr(browser, "_user_picked_tasks"):
+                browser._user_picked_tasks = {}
+            browser._user_picked_tasks[provider_id] = task_g
+
+            broadcaster.publish(
+                "arb_leg_synced",
+                {
+                    "provider_id": provider_id,
+                    "planned_odds": anchor_leg.get("odds"),
+                    "url": page.url,
+                    "user_picked": True,
+                    "guided": True,
+                    "event_id": opp.get("event_id"),
+                },
+            )
+            return {
+                "status": "nav_only",
+                "url": page.url,
+                "planned_odds": anchor_leg.get("odds"),
+                "guided": True,
+                "event_id": opp.get("event_id"),
+            }
+
+        prep = await wf.prep_betslip(page, bet_ns, bet["stake"])
+        if prep.status not in ("prepped", "placed"):
+            broadcaster.publish(
+                "arb_leg_failed",
+                {
+                    "provider_id": provider_id,
+                    "stage": "prep",
+                    "reason": getattr(prep, "reason", None) or prep.status,
+                },
+            )
+            return {
+                "status": "prep_failed",
+                "url": page.url,
+                "reason": getattr(prep, "reason", None) or prep.status,
+            }
+
+        # Start slip-odds stream so the row shows live drift. Replace any
+        # existing stream for this provider.
+        existing = getattr(browser, "_user_picked_streams", {}).get(provider_id)
+        if existing:
+            try:
+                existing.stop()
+            except Exception:
+                pass
+
+        captured_event_id = opp.get("event_id")
+        captured_market = anchor_leg.get("market") or opp.get("market") or ""
+        captured_outcome = anchor_leg.get("outcome") or ""
+        captured_point = anchor_leg.get("point")
+
+        def _on_odds(o):
+            broadcaster.publish(
+                "arb_leg_odds",
+                {
+                    "provider_id": provider_id,
+                    "live_odds": o,
+                    "planned_odds": anchor_leg.get("odds"),
+                    "user_picked": True,
+                    "event_id": captured_event_id,
+                },
+            )
+            # Parallel live_price for Section B's value-bet row display
+            # (livePrices map). See _on_odds_g for the rationale.
+            fair = anchor_leg.get("fair_odds")
+            live_edge = ((o / fair - 1) * 100) if fair and fair > 0 else None
+            if captured_market and captured_outcome:
+                broadcaster.publish(
+                    "live_price",
+                    {
+                        "provider_id": provider_id,
+                        "event_id": captured_event_id,
+                        "market": captured_market,
+                        "outcome": captured_outcome,
+                        "point": captured_point,
+                        "live_odds": o,
+                        "live_edge": live_edge,
+                    },
+                )
+            # Persist to DB. Same rationale as the guided counter — make
+            # mirror updates the canonical source on the server side, not
+            # just a frontend overlay that disappears on refresh.
+            _persist_live_odds(provider_id, captured_event_id, captured_market, captured_outcome, captured_point, o)
+
+        # Live-odds polling. Order matters:
+        # 1. read_slip_odds — when the user has clicked an outcome the slip
+        #    carries the EXACT odd id + price they selected. Unambiguous —
+        #    no need to guess between Winner-Enhanced @ 1.56 vs Vinnare @
+        #    1.53 vs First-Set @ 1.61. The user telling us which market is
+        #    canonical via their click is the cleanest signal we have.
+        # 2. DOM scrape — when slip is empty, read the rendered OddValue
+        #    from the widget's shadow DOM. Falls back to index/team-name
+        #    based wrapper selection (ambiguous on tennis pages that show
+        #    multiple moneyline-shaped markets stacked).
+        # 3. check_live_price — cached GetEventDetails fallback when both
+        #    above fail.
+        async def _poll_live_price():
+            last: float | None = None
+            ticks = 0
+            print(f"[POLL {provider_id}] START", flush=True)
+            try:
+                while True:
+                    await asyncio.sleep(1.0)
+                    ticks += 1
+                    live: float | None = None
+                    src: str = ""
+                    # 1. Slip-first — user click is the unambiguous source
+                    if hasattr(wf, "read_slip_odds"):
+                        slip_event_id = getattr(bet_ns, "altenar_event_id", None) or (
+                            getattr(bet_ns, "provider_meta", None) or {}
+                        ).get("event_id")
+                        try:
+                            live = (
+                                await wf.read_slip_odds(page, expected_event_id=slip_event_id)
+                                if slip_event_id
+                                else await wf.read_slip_odds(page)
+                            )
+                            if live is not None:
+                                src = "slip"
+                        except Exception as e:
+                            print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                    # 2. DOM scrape — read the rendered OddValue directly from
+                    # the bookmaker widget's shadow DOM. This is what the user
+                    # SEES on the tab, kept in sync by the widget itself with
+                    # whatever transport (HTTP poll, WebSocket, SSE) it uses
+                    # internally. Most reliable continuous-stream source.
+                    if live is None and hasattr(wf, "read_outcome_odds_dom"):
+                        try:
+                            live = await wf.read_outcome_odds_dom(page, bet_ns)
+                            if live is not None:
+                                src = "dom"
+                        except Exception as e:
+                            print(f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}", flush=True)
+                    # 3. check_live_price — cached GetEventDetails. Falls
+                    # behind on bookmakers that don't re-fetch on drift.
+                    if live is None and hasattr(wf, "check_live_price"):
+                        try:
+                            live, _ = await wf.check_live_price(page, bet_ns)
+                            if live is not None:
+                                src = "live_price"
+                        except Exception as e:
+                            print(f"[POLL {provider_id}] check_live_price raised: {e!r}", flush=True)
+                    if False and live is None and hasattr(wf, "read_slip_odds"):
+                        slip_event_id = getattr(bet_ns, "altenar_event_id", None) or (
+                            getattr(bet_ns, "provider_meta", None) or {}
+                        ).get("event_id")
+                        try:
+                            try:
+                                live = await wf.read_slip_odds(page, expected_event_id=slip_event_id)
+                            except TypeError:
+                                live = await wf.read_slip_odds(page)
+                            if live is not None:
+                                src = "slip"
+                        except Exception as e:
+                            print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                    if ticks % 5 == 0:
+                        print(
+                            f"[POLL {provider_id}] tick={ticks} live={live} src={src!r} last={last}",
+                            flush=True,
+                        )
+                    if live is not None and live != last:
+                        last = live
+                        print(f"[POLL {provider_id}] FIRE odds={live} src={src!r}", flush=True)
+                        try:
+                            _on_odds(live)
+                        except Exception as e:
+                            print(f"[POLL {provider_id}] _on_odds raised: {e!r}", flush=True)
+            except asyncio.CancelledError:
+                print(f"[POLL {provider_id}] CANCELLED after {ticks} ticks", flush=True)
+            except Exception as e:
+                print(f"[POLL {provider_id}] crashed: {e!r}", flush=True)
+                import traceback
+
+                traceback.print_exc()
+
+        existing_task = getattr(browser, "_user_picked_tasks", {}).get(provider_id)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+        task = asyncio.create_task(_poll_live_price(), name=f"live_price_{provider_id}")
+        if not hasattr(browser, "_user_picked_tasks"):
+            browser._user_picked_tasks = {}
+        browser._user_picked_tasks[provider_id] = task
+
+        broadcaster.publish(
+            "arb_leg_synced",
+            {
+                "provider_id": provider_id,
+                "planned_odds": anchor_leg.get("odds"),
+                "planned_stake": bet["stake"],
+                "url": page.url,
+                "user_picked": True,
+                "event_id": captured_event_id,
+            },
+        )
+
+        return {
+            "status": "synced",
+            "url": page.url,
+            "planned_odds": anchor_leg.get("odds"),
+            "planned_stake": bet["stake"],
+        }
 
     # -----------------------------------------------------------------------
     # Data streams (per-provider continuous polling)
