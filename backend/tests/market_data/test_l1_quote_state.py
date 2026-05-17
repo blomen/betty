@@ -1,4 +1,4 @@
-from src.market_data.l1_quote_state import L1QuoteState, L1Snapshot
+from src.market_data.l1_quote_state import L1QuoteState
 
 
 def test_initial_state_returns_none_snapshot():
@@ -37,12 +37,63 @@ def test_crossed_book_keeps_last_valid():
     assert snap.ts == 1.0
 
 
+def test_equal_bid_ask_rejected():
+    """bid == ask is a zero-spread crossed book — must be rejected."""
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=10, ts=1.0)
+    state.update(bid=25000.5, ask=25000.5, bid_size=10, ask_size=10, ts=2.0)  # equal
+    snap = state.snapshot()
+    assert snap.ts == 1.0  # unchanged
+
+
+def test_zero_bid_rejected():
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=10, ts=1.0)
+    state.update(bid=0.0, ask=25000.25, bid_size=10, ask_size=10, ts=2.0)
+    snap = state.snapshot()
+    assert snap.ts == 1.0  # unchanged
+
+
+def test_zero_ask_rejected():
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=10, ts=1.0)
+    state.update(bid=25000.0, ask=0.0, bid_size=10, ask_size=10, ts=2.0)
+    snap = state.snapshot()
+    assert snap.ts == 1.0  # unchanged
+
+
+def test_nan_bid_rejected():
+    """NaN bid must be rejected — NaN comparisons always return False,
+    so without an explicit isnan check NaN would slip past bid<=0 / bid>=ask."""
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=10, ts=1.0)
+    state.update(bid=float("nan"), ask=25000.25, bid_size=10, ask_size=10, ts=2.0)
+    snap = state.snapshot()
+    assert snap.ts == 1.0  # unchanged
+
+
+def test_nan_ask_rejected():
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=10, ts=1.0)
+    state.update(bid=25000.0, ask=float("nan"), bid_size=10, ask_size=10, ts=2.0)
+    snap = state.snapshot()
+    assert snap.ts == 1.0  # unchanged
+
+
 def test_top_of_book_imbalance():
     state = L1QuoteState()
     state.update(bid=25000.0, ask=25000.25, bid_size=30, ask_size=10, ts=1.0)
     snap = state.snapshot()
     # (30 - 10) / (30 + 10) = 0.5  (bid-side heavier)
     assert snap.top_imbalance == 0.5
+
+
+def test_top_of_book_imbalance_ask_heavy():
+    state = L1QuoteState()
+    state.update(bid=25000.0, ask=25000.25, bid_size=10, ask_size=30, ts=1.0)
+    snap = state.snapshot()
+    # (10 - 30) / (10 + 30) = -0.5  (ask-side heavier)
+    assert snap.top_imbalance == -0.5
 
 
 def test_top_of_book_imbalance_zero_sizes():

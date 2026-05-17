@@ -11,6 +11,7 @@ book imbalance, absorption) can be computed from it alone.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 TICK_SIZE = 0.25
@@ -58,8 +59,10 @@ class L1QuoteState:
         ask_size: int,
         ts: float,
     ) -> None:
-        # Reject crossed/invalid books — keep last valid snapshot
-        if bid <= 0 or ask <= 0 or bid >= ask:
+        # Reject crossed/invalid books — keep last valid snapshot.
+        # math.isnan checks must come first: NaN comparisons always return False,
+        # so bid<=0 / bid>=ask would silently pass NaN through.
+        if math.isnan(bid) or math.isnan(ask) or bid <= 0 or ask <= 0 or bid >= ask:
             return
         clean_bid_size = max(0, int(bid_size))
         clean_ask_size = max(0, int(ask_size))
