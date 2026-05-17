@@ -25,7 +25,13 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 3  # 2026-05-15: appended zone_sweep(2) segment at tail for stop-hunt-pattern learning
+SCHEMA_VERSION = 4  # 2026-05-17: OF dims 6 (spread_ticks) and 7 (passive_active_ratio)
+# now L1-quote-derived when LevelMonitor.l1_state holds a snapshot; falls
+# back to candle-derived for backward compat. Dim count unchanged (313).
+# Episodes recorded before this date have these dims candle-derived; new
+# episodes recorded inside a container receiving TopstepX GatewayQuote
+# events have them computed from true bestBid/bestAsk + Lee-Ready
+# aggressor classification.
 
 # Methodology group taxonomy (2026-05-17, per Fabio Valentini AMT + Ryan/
 # blockroots OF + Cimitan + VSA fondamenti — 12 sources read).
@@ -67,6 +73,18 @@ def _zone_composition_labels() -> list[str]:
     return [lt.value for lt in LevelType]
 
 
+# Orderflow segment (21 dims). Dims marked [L1] are recomputed from L1
+# quote state when LevelMonitor.l1_state has a current snapshot — else
+# they fall back to candle-derived approximations. Dims marked [L2-needed]
+# are placeholders requiring depth data we don't currently subscribe to;
+# they read as the candle approximation. See SCHEMA_VERSION 4 note above.
+#   [L1]        spread_ticks            (index 6) — true (ask-bid)/tick_size
+#   [L1]        passive_active_ratio    (index 7) — Lee-Ready classification
+#   [L2-needed] imbalance_density       (index 8)
+#   [L2-needed] stacked_imbalance_count (index 9)
+#   [L2-needed] stacked_direction       (index 10)
+# All other dims (delta, cvd, big-trade, vsa_absorption, etc.) are
+# tick-aggregation based and not improvable by L1 alone.
 _ORDERFLOW_LABELS: list[str] = [
     "delta_pct",
     "delta_norm",
