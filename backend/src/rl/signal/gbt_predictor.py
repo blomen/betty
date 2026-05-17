@@ -24,24 +24,30 @@ import numpy as np
 
 from src.rl.agent.trigger_gbt import TriggerGBT
 
+from .gbt_multitask import MultiTaskGBT
 from .protocol import ModelProtocol
 from .types import MultiTaskOutputs
 
 
 class GBTPredictor(ModelProtocol):
-    def __init__(self, gbt: TriggerGBT) -> None:
+    def __init__(self, gbt: TriggerGBT, multitask: MultiTaskGBT | None = None) -> None:
         super().__init__()
         self._gbt = gbt
+        self._multitask = multitask  # None = use heuristics
         self.trigger_obs_dim = self._gbt.input_dim if hasattr(self._gbt, "input_dim") else 313
 
     @classmethod
-    def load(cls, model_path: Path | str) -> GBTPredictor:
+    def load(
+        cls,
+        model_path: Path | str,
+        multitask_path: Path | str | None = None,
+    ) -> GBTPredictor:
         gbt = TriggerGBT.load(Path(model_path))
-        return cls(gbt=gbt)
+        multitask = MultiTaskGBT.load(Path(multitask_path)) if multitask_path else None
+        return cls(gbt=gbt, multitask=multitask)
 
     def predict_raw(self, obs: np.ndarray) -> MultiTaskOutputs:
         action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(obs)
-        stop_ticks = float(self._gbt.predict_stop(obs))
 
         # 3-class direction from 2-class GBT
         # p_skip heuristic: low conf → higher skip probability
@@ -54,16 +60,21 @@ class GBTPredictor(ModelProtocol):
         else:
             p_cont = p_rev = (1.0 - p_skip) / 2.0
 
-        # Magnitude approximation: confidence-scaled R
-        magnitude_R = 2.0 * confidence  # TP1_R = 2.0 baseline
-
-        # Win-prob heuristic: confidence directly
-        win_prob = float(confidence)
+        # Multi-task heads if available, else heuristic
+        if self._multitask is not None:
+            mt = self._multitask.predict(obs)
+            magnitude_R = mt["magnitude_R"]
+            win_prob = mt["win_probability"]
+            duration_bars = mt["duration_bars"]
+        else:
+            magnitude_R = 2.0 * confidence  # TP1_R = 2.0 baseline
+            win_prob = float(confidence)
+            duration_bars = 5.0
 
         return MultiTaskOutputs(
             direction_logits=[float(p_cont), float(p_rev), float(p_skip)],
             magnitude_R=float(magnitude_R),
             win_probability=float(win_prob),
-            duration_bars=5.0,  # placeholder until magnitude head trained
+            duration_bars=float(duration_bars),
             uncertainty=float(1.0 - confidence),
         )
