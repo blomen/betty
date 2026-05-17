@@ -2775,6 +2775,14 @@ class LevelMonitor:
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
+            # L1 wiring (Task 8 of fix-of-dims plan). l1_state.snapshot() is
+            # populated by the on_quote handler in server_bootstrap and read by
+            # extract_orderflow_features to override the spread + passive/active
+            # dims with true book values. recent_trades is the same tick list
+            # — compute_l1_features only reads `price` and `size` keys, which
+            # are present in the TickBuffer dict shape.
+            "l1_snapshot": self.l1_state.snapshot(),
+            "recent_trades": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
             "amt_dynamics": self._amt_tracker.snapshot(),
             "zone_memory": self._build_zone_memory_for_state(),
@@ -2961,6 +2969,14 @@ class LevelMonitor:
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
+            # L1 wiring (Task 8 of fix-of-dims plan). l1_state.snapshot() is
+            # populated by the on_quote handler in server_bootstrap and read by
+            # extract_orderflow_features to override the spread + passive/active
+            # dims with true book values. recent_trades is the same tick list
+            # — compute_l1_features only reads `price` and `size` keys, which
+            # are present in the TickBuffer dict shape.
+            "l1_snapshot": self.l1_state.snapshot(),
+            "recent_trades": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
             "amt_dynamics": self._amt_tracker.snapshot(),
             # Session-anchored CVD — feeds seg_session_cvd(2).
