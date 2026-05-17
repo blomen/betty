@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from src.market_data.l1_quote_state import L1Snapshot
+from ...market_data.l1_quote_state import L1Snapshot
 
 TICK_SIZE = 0.25
+_PRICE_EPS = TICK_SIZE / 100.0  # float guard: < 0.5 tick, never reclassifies level
 
 
 def compute_true_spread_ticks(snapshot: L1Snapshot) -> float:
@@ -43,10 +44,9 @@ def classify_trade_lee_ready(
     - trade_price <= bid → sell aggressor (hit bid)
     - inside spread → tick-rule (vs previous trade price)
     """
-    eps = TICK_SIZE / 100.0
-    if trade_price >= snapshot.ask - eps:
+    if trade_price >= snapshot.ask - _PRICE_EPS:
         return "buy"
-    if trade_price <= snapshot.bid + eps:
+    if trade_price <= snapshot.bid + _PRICE_EPS:
         return "sell"
     if prev_trade_price is None:
         return "unknown"
@@ -68,13 +68,12 @@ def aggressor_side(
     """
     passive = 0
     active = 0
-    eps = TICK_SIZE / 100.0
     for t in trades:
         price = float(t.get("price", 0))
         size = int(t.get("size", 0))
         if price <= 0 or size <= 0:
             continue
-        if price >= snapshot.ask - eps or price <= snapshot.bid + eps:
+        if price >= snapshot.ask - _PRICE_EPS or price <= snapshot.bid + _PRICE_EPS:
             active += size
         else:
             passive += size
@@ -83,8 +82,8 @@ def aggressor_side(
 
 def detect_absorption_l1(
     trades: list[dict],
-    snap_before: L1Snapshot,
-    snap_after: L1Snapshot,
+    snap_before: L1Snapshot | None,
+    snap_after: L1Snapshot | None,
 ) -> float:
     """Score [0,1]: how much trade volume hit a level without
     proportional book displacement (= passive size refreshed/absorbed).
@@ -109,9 +108,8 @@ def detect_absorption_l1(
         return 0.0
 
     # Aggregate buy-side aggression at the ask
-    eps = TICK_SIZE / 100.0
-    buy_hit = sum(int(t.get("size", 0)) for t in trades if float(t.get("price", 0)) >= snap_before.ask - eps)
-    sell_hit = sum(int(t.get("size", 0)) for t in trades if float(t.get("price", 0)) <= snap_before.bid + eps)
+    buy_hit = sum(int(t.get("size", 0)) for t in trades if float(t.get("price", 0)) >= snap_before.ask - _PRICE_EPS)
+    sell_hit = sum(int(t.get("size", 0)) for t in trades if float(t.get("price", 0)) <= snap_before.bid + _PRICE_EPS)
 
     # Score the side with more aggression
     if buy_hit >= sell_hit and ask_price_stable:
@@ -155,12 +153,15 @@ def compute_l1_features(
     passive_vol, active_vol = aggressor_side(recent_trades, snapshot)
 
     # passive/active ratio: high = passive flow dominant (weaker hand winning)
-    pa_ratio = passive_vol / max(active_vol, 1)
+    pa_ratio = min(passive_vol / max(active_vol, 1), 5.0)
 
     # Split active by direction
-    eps = TICK_SIZE / 100.0
-    active_buy = sum(int(t.get("size", 0)) for t in recent_trades if float(t.get("price", 0)) >= snapshot.ask - eps)
-    active_sell = sum(int(t.get("size", 0)) for t in recent_trades if float(t.get("price", 0)) <= snapshot.bid + eps)
+    active_buy = sum(
+        int(t.get("size", 0)) for t in recent_trades if float(t.get("price", 0)) >= snapshot.ask - _PRICE_EPS
+    )
+    active_sell = sum(
+        int(t.get("size", 0)) for t in recent_trades if float(t.get("price", 0)) <= snapshot.bid + _PRICE_EPS
+    )
 
     return {
         "spread_ticks": float(spread),
