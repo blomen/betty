@@ -256,7 +256,8 @@ async def sync(
         event_id, outcome = match_event_and_outcome(pos, events)
         if not event_id or not outcome:
             result.skipped_unmatched += 1
-            logger.info(f"[kalshi_api] unmatched: {pos.event_name[:60]} / outcome={pos.outcome_name}")
+            logger.info(f"[kalshi_api] unmatched: {pos.event_name[:60]} / outcome={pos.outcome_name} — skipping")
+            continue
         payload = {
             "provider_id": "kalshi",
             "event_id": event_id or "",

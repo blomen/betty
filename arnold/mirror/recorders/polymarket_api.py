@@ -181,11 +181,12 @@ async def sync(
             result.skipped_unmatched += 1
             logger.info(
                 f"[polymarket_api] unmatched position: {pos.event_name[:60]} / "
-                f"outcome={pos.outcome_name} — inserted with empty event_id"
+                f"outcome={pos.outcome_name} — skipping insert (no event match)"
             )
+            continue
 
         # Dedup by (event_id, outcome) — same market same side
-        if event_id and outcome and (event_id, outcome) in known_sigs:
+        if (event_id, outcome) in known_sigs:
             result.skipped_dup += 1
             continue
 
