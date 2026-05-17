@@ -686,7 +686,7 @@ class LevelMonitor:
         self._active_level_name: str | None = None
         # Live session context for DQN inference (populated by set_session_context)
         self._session_context: dict | None = None
-        self.l1_state = L1QuoteState()
+        self.l1_state: L1QuoteState = L1QuoteState()
         # Zone-aware DQN inference state
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
