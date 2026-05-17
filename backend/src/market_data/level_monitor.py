@@ -38,20 +38,22 @@ def _conf_floor() -> float:
 def _of_floor() -> float:
     """Orderflow score floor for entry dispatch.
 
-    Reckless (paper) = 0.0 — collect labeled outcomes for all OF regimes.
-    Strict (real money) = 0.30 by default; env-overridable via OF_FLOOR_STRICT.
-    The 0.30 default was set when an early audit (n=4) showed OF>=0.30 wins
-    4/4. Subsequent 30-day data inverted that finding: OF>=0.30 cohort
-    actually lost 0/4 (small n). Setting OF_FLOOR_STRICT=0.0 disables the
-    OF gate while keeping every other strict behavior on — useful when the
-    model's OF calibration is still in flux but you want the conf gate on.
+    Disabled by default in both reckless and strict modes (2026-05-17):
+    the hand-coded OF gate was anti-predictive in 30-day live data (cohort
+    that passed conf but failed OF was +0.11R/trade; cohort that passed
+    both was -0.20R/trade). The 21 orderflow + 2 session_cvd + 2 big_abs
+    dims now live as raw inputs to the DQN — trust the model's synaptic
+    weights, not a hand-coded composite. _compute_orderflow_score_live
+    is kept as a per-tick observability output (logged + dashboard) but
+    no longer gates dispatch.
+
+    Override with OF_FLOOR_STRICT > 0 to re-enable the gate for emergency
+    A/B comparison.
     """
-    if os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0":
-        return 0.0
     try:
-        return float(os.environ.get("OF_FLOOR_STRICT", "0.30"))
+        return float(os.environ.get("OF_FLOOR_STRICT", "0.0"))
     except ValueError:
-        return 0.30
+        return 0.0
 
 
 MIN_ENTRY_STOP_TICKS = 6.0
@@ -707,6 +709,16 @@ class LevelMonitor:
         # Zone-aware DQN inference state
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
+        # OF-await-entry state (2026-05-17, methodology-aligned per Fabio
+        # AMT + Ryan trapped-traders pattern). When conf passes but OF
+        # doesn't, signal is ARMED and we watch for participation SHIFT
+        # over the next 30s. On every tick we recompute OF; when it
+        # crosses the floor (or shifts +0.15 from arm time), we dispatch.
+        # Key: zone_key (rounded center price). Value: dict with cached
+        # action/conf/result/approach + armed_at + initial_of_score.
+        self._armed_signals: dict[float, dict] = {}
+        self._OF_AWAIT_TIMEOUT_S = 30.0
+        self._OF_AWAIT_PRICE_DRIFT_TICKS = 8
         self._session_atr: float = 40.0
         # Diagnostic counters — exposed via /api/stocks/runtime-diagnostic so
         # we can verify the on_tick → zone-touch → emit pipeline without
@@ -2242,12 +2254,29 @@ class LevelMonitor:
                         int(MAX_ENTRY_STOP_TICKS),
                     )
                 else:
+                    # Per-group methodology diagnostic — observability only,
+                    # never a gate. Shows what each methodology family
+                    # (OF/VSA/PROFILE/AMT/DOW/MICRO/MACRO/ZONE_MEMORY/EXECUTION)
+                    # contributed to the obs the DQN acted on.
+                    diag_str = ""
+                    if captured_obs is not None:
+                        try:
+                            from src.rl.features.observation_index import (
+                                compute_per_group_diagnostic,
+                                format_per_group_diagnostic,
+                            )
+
+                            diag = compute_per_group_diagnostic(captured_obs)
+                            diag_str = " | " + format_per_group_diagnostic(diag)
+                        except Exception:
+                            logger.debug("per-group diag failed", exc_info=True)
                     logger.info(
-                        "broker gate PASSED: of=%.3f conf=%.3f action=%s zone=%.2f — dispatching",
+                        "broker gate PASSED: of=%.3f conf=%.3f action=%s zone=%.2f — dispatching%s",
                         of_score,
                         confidence,
                         action,
                         zone.center_price,
+                        diag_str,
                     )
                 if (
                     action not in ("SKIP", "skip")

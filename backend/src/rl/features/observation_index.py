@@ -27,6 +27,32 @@ from .observation import OBSERVATION_DIM
 
 SCHEMA_VERSION = 3  # 2026-05-15: appended zone_sweep(2) segment at tail for stop-hunt-pattern learning
 
+# Methodology group taxonomy (2026-05-17, per Fabio Valentini AMT + Ryan/
+# blockroots OF + Cimitan + VSA fondamenti — 12 sources read).
+# Each segment is tagged with a single primary category. The category
+# determines which per-group diagnostic the segment contributes to.
+# Categories:
+#   OF             = tick-level orderflow (delta, CVD, footprint, big trades)
+#   VSA            = bar-level effort vs result (candles, reactions, patterns)
+#   PROFILE        = volume distribution (volume profile + TPO time-at-price)
+#   AMT            = auction state (balance/imbalance, value migration, day type)
+#   DOW_STRUCTURE  = multi-TF swing structure (HH/HL/LH/LL/BOS/CHoCH) + session levels
+#   MICRO          = sub-candle tick patterns (approach velocity, acceleration)
+#   ZONE_MEMORY    = prev-zone narrative + sweep detection
+#   MACRO          = external context (VIX, DXY, news, COT, exchange stats)
+#   EXECUTION      = trade execution state (approach direction, OF alignment)
+MethodologyCategory = Literal[
+    "OF",
+    "VSA",
+    "PROFILE",
+    "AMT",
+    "DOW_STRUCTURE",
+    "MICRO",
+    "ZONE_MEMORY",
+    "MACRO",
+    "EXECUTION",
+]
+
 
 class Segment(TypedDict):
     name: str
@@ -34,6 +60,7 @@ class Segment(TypedDict):
     size: int
     labels: list[str]
     kind: Literal["scalar", "multi_hot", "one_hot"]
+    category: MethodologyCategory
 
 
 def _zone_composition_labels() -> list[str]:
@@ -301,6 +328,7 @@ def _build_segments() -> list[Segment]:
             "size": len(zone_labels),
             "labels": zone_labels,
             "kind": "multi_hot",
+            "category": "PROFILE",
         },
         {
             "name": "orderflow",
@@ -308,6 +336,7 @@ def _build_segments() -> list[Segment]:
             "size": 21,
             "labels": _ORDERFLOW_LABELS,
             "kind": "scalar",
+            "category": "OF",
         },
         {
             "name": "structure",
@@ -315,6 +344,7 @@ def _build_segments() -> list[Segment]:
             "size": 64,
             "labels": structure_labels,
             "kind": "scalar",
+            "category": "DOW_STRUCTURE",
         },
         {
             "name": "tpo",
@@ -322,6 +352,7 @@ def _build_segments() -> list[Segment]:
             "size": 38,
             "labels": tpo_labels,
             "kind": "scalar",
+            "category": "PROFILE",
         },
         {
             "name": "candles",
@@ -329,6 +360,7 @@ def _build_segments() -> list[Segment]:
             "size": 15,
             "labels": _CANDLE_LABELS,
             "kind": "scalar",
+            "category": "VSA",
         },
         {
             "name": "zone_features",
@@ -336,6 +368,7 @@ def _build_segments() -> list[Segment]:
             "size": 4,
             "labels": _ZONE_FEATURE_LABELS,
             "kind": "scalar",
+            "category": "PROFILE",
         },
         {
             "name": "zone_confluence",
@@ -343,6 +376,7 @@ def _build_segments() -> list[Segment]:
             "size": 5,
             "labels": _ZONE_CONFLUENCE_LABELS,
             "kind": "scalar",
+            "category": "PROFILE",
         },
         {
             "name": "macro",
@@ -350,6 +384,7 @@ def _build_segments() -> list[Segment]:
             "size": 11,
             "labels": _MACRO_LABELS,
             "kind": "scalar",
+            "category": "MACRO",
         },
         {
             "name": "exchange_stats",
@@ -357,6 +392,7 @@ def _build_segments() -> list[Segment]:
             "size": 5,
             "labels": _EXCHANGE_STATS_LABELS,
             "kind": "scalar",
+            "category": "MACRO",
         },
         {
             "name": "setup",
@@ -364,6 +400,7 @@ def _build_segments() -> list[Segment]:
             "size": 14,
             "labels": _SETUP_LABELS,
             "kind": "multi_hot",
+            "category": "AMT",
         },
         {
             "name": "amt",
@@ -371,6 +408,7 @@ def _build_segments() -> list[Segment]:
             "size": 20,
             "labels": _AMT_LABELS,
             "kind": "scalar",
+            "category": "AMT",
         },
         {
             "name": "amt_dynamics",
@@ -378,6 +416,7 @@ def _build_segments() -> list[Segment]:
             "size": 20,
             "labels": _AMT_DYNAMICS_LABELS,
             "kind": "scalar",
+            "category": "AMT",
         },
         {
             "name": "micro",
@@ -385,6 +424,7 @@ def _build_segments() -> list[Segment]:
             "size": 20,
             "labels": _MICRO_LABELS,
             "kind": "scalar",
+            "category": "MICRO",
         },
         {
             "name": "approach",
@@ -392,6 +432,7 @@ def _build_segments() -> list[Segment]:
             "size": 1,
             "labels": ["approach_direction"],
             "kind": "scalar",
+            "category": "EXECUTION",
         },
         {
             "name": "execution",
@@ -399,6 +440,7 @@ def _build_segments() -> list[Segment]:
             "size": 7,
             "labels": _EXECUTION_LABELS,
             "kind": "scalar",
+            "category": "EXECUTION",
         },
         {
             "name": "session_cvd",
@@ -406,6 +448,7 @@ def _build_segments() -> list[Segment]:
             "size": 2,
             "labels": ["session_cvd_ratio", "session_cvd_sign"],
             "kind": "scalar",
+            "category": "OF",
         },
         {
             "name": "hvn_lvn",
@@ -413,6 +456,7 @@ def _build_segments() -> list[Segment]:
             "size": 2,
             "labels": ["hvn_dist", "lvn_dist"],
             "kind": "scalar",
+            "category": "PROFILE",
         },
         {
             "name": "big_abs",
@@ -420,6 +464,7 @@ def _build_segments() -> list[Segment]:
             "size": 2,
             "labels": ["big_abs_count", "big_abs_net"],
             "kind": "scalar",
+            "category": "OF",
         },
         {
             "name": "of_alignment",
@@ -427,6 +472,7 @@ def _build_segments() -> list[Segment]:
             "size": 3,
             "labels": ["of_score_rev", "zone_strength", "of_zone_alignment"],
             "kind": "scalar",
+            "category": "EXECUTION",
         },
         {
             "name": "reaction",
@@ -434,6 +480,7 @@ def _build_segments() -> list[Segment]:
             "size": 8,
             "labels": _REACTION_LABELS,
             "kind": "scalar",
+            "category": "VSA",
         },
         {
             "name": "pattern",
@@ -441,6 +488,7 @@ def _build_segments() -> list[Segment]:
             "size": 5,
             "labels": _PATTERN_LABELS,
             "kind": "multi_hot",
+            "category": "VSA",
         },
         {
             "name": "zone_quality",
@@ -448,6 +496,7 @@ def _build_segments() -> list[Segment]:
             "size": 1,
             "labels": ["zone_quality"],
             "kind": "scalar",
+            "category": "PROFILE",
         },
         {
             "name": "zone_memory",
@@ -455,6 +504,7 @@ def _build_segments() -> list[Segment]:
             "size": 3,
             "labels": ["touch_count_norm", "last_result", "time_since_last"],
             "kind": "scalar",
+            "category": "ZONE_MEMORY",
         },
         {
             "name": "prev_zone",
@@ -468,6 +518,7 @@ def _build_segments() -> list[Segment]:
                 "stack_density",
             ],
             "kind": "scalar",
+            "category": "ZONE_MEMORY",
         },
         {
             "name": "zone_sweep",
@@ -475,6 +526,7 @@ def _build_segments() -> list[Segment]:
             "size": 2,
             "labels": ["zone_sweep_recent_t", "last_wick_size_R"],
             "kind": "scalar",
+            "category": "ZONE_MEMORY",
         },
     ]
 
@@ -518,6 +570,7 @@ def schema() -> dict:
                 "end": cursor + seg["size"],
                 "labels": list(seg["labels"]),
                 "kind": seg["kind"],
+                "category": seg["category"],
             }
         )
         cursor += seg["size"]
@@ -527,3 +580,68 @@ def schema() -> dict:
         "narrative_names": list(NARRATIVE_NAMES),
         "segments": out_segments,
     }
+
+
+def _segment_offsets() -> dict[str, tuple[int, int]]:
+    """Return name -> (start, end) for every segment. Derived (never hardcoded)."""
+    offsets: dict[str, tuple[int, int]] = {}
+    cursor = 0
+    for seg in SEGMENTS:
+        offsets[seg["name"]] = (cursor, cursor + seg["size"])
+        cursor += seg["size"]
+    return offsets
+
+
+_SEGMENT_OFFSETS: dict[str, tuple[int, int]] = _segment_offsets()
+
+
+def get_segments_by_category() -> dict[MethodologyCategory, list[Segment]]:
+    """Group segments by methodology category."""
+    out: dict[MethodologyCategory, list[Segment]] = {}
+    for seg in SEGMENTS:
+        out.setdefault(seg["category"], []).append(seg)
+    return out
+
+
+_CATEGORY_SEGMENTS: dict[MethodologyCategory, list[Segment]] = get_segments_by_category()
+
+
+def compute_per_group_diagnostic(obs) -> dict[str, dict[str, float]]:
+    """Per-category diagnostic for a single observation vector.
+
+    Returns:
+        {category: {alive_pct, signal_strength, n_dims}}
+        - alive_pct: fraction of dims in this category that are nonzero
+        - signal_strength: mean absolute value across category dims
+        - n_dims: total dims in this category
+
+    Used for signal-dispatch logging ("VSA: 0.45 strength, OF: 0.72") and
+    UI overlay. Trust the model's synaptic weights; this is observability,
+    not a gate.
+    """
+    import numpy as np  # local import — keep module import cheap
+
+    arr = np.asarray(obs, dtype=np.float32)
+    out: dict[str, dict[str, float]] = {}
+    for cat, segs in _CATEGORY_SEGMENTS.items():
+        total_dims = 0
+        alive_dims = 0
+        abs_sum = 0.0
+        for seg in segs:
+            start, end = _SEGMENT_OFFSETS[seg["name"]]
+            sub = arr[start:end]
+            total_dims += sub.size
+            alive_dims += int((sub != 0).sum())
+            abs_sum += float(np.abs(sub).sum())
+        out[cat] = {
+            "alive_pct": (alive_dims / total_dims) if total_dims else 0.0,
+            "signal_strength": (abs_sum / total_dims) if total_dims else 0.0,
+            "n_dims": float(total_dims),
+        }
+    return out
+
+
+def format_per_group_diagnostic(diag: dict[str, dict[str, float]]) -> str:
+    """Compact one-line summary for logs: 'OF 0.42 | VSA 0.31 | PROFILE 0.55 ...'"""
+    parts = [f"{cat} {d['signal_strength']:.2f}" for cat, d in sorted(diag.items())]
+    return " | ".join(parts)
