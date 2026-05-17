@@ -522,6 +522,15 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
+        # Per-provider min-edge filter — skip outright before Kelly. Polymarket
+        # has ~$0.07 Polygon gas per trade, so sub-5% edge bets at the $1 min
+        # are net-EV-negative after gas (gas-aware MC showed median bankroll
+        # collapsing to $1 / 61.5% bust). Pinnacle/Cloudbet/Kalshi keep 1%
+        # floor — no per-trade gas, fee already in odds.
+        prov_min_edge_pct = provider_min_edge_pct(provider_id)
+        if (opp.edge_pct or 0.0) < prov_min_edge_pct:
+            return None
+
         # Per-provider Kelly with cluster fallback. Order:
         #   1. Provider's own balance (e.g. Pinnacle, Polymarket — standalone).
         #   2. Cluster's combined balance (altenar_main tenants, kambi tenants

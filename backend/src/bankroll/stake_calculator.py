@@ -28,7 +28,12 @@ from dataclasses import dataclass
 # ── Sim-optimal constants (from Monte Carlo: 3k runs, 52 weeks, 0% ruin) ──
 OPTIMAL_MAX_KELLY = 0.75  # 3/4 Kelly ceiling (converges here at high bankroll)
 OPTIMAL_MIN_KELLY = 0.25  # Quarter Kelly floor for low-edge bets (≤2%)
-OPTIMAL_SINGLE_BET_CAP = 0.02  # 2% of bankroll max per bet (MC-optimal: 86% of 3% growth, 40% less DD)
+# Single-bet cap as % of bankroll. Bumped 2% → 5% (2026-05-17) based on
+# gas-aware MC sim across $100-$20k bankroll tiers: 5% cap dominates 2% at
+# higher bankrolls (binds more high-edge bets at full Kelly) while making
+# zero difference at small bankrolls (where min-stake floor binds first).
+# Bust risk at 5% is identical to 2% under realistic + pessimistic edge.
+OPTIMAL_SINGLE_BET_CAP = 0.05
 
 # Default minimum stake (skip bets below this) — global default in SEK.
 # Provider-specific overrides live in PROVIDER_STAKE_PROFILES below.
@@ -56,6 +61,13 @@ class ProviderStakeProfile:
     fee_rate: float
     min_stake_native: float
     currency: str  # "SEK" / "USDC" / "USD" — informational, no conversion
+    # Per-provider edge floor (% as decimal-times-100). Below this edge, skip
+    # the bet entirely. Used for providers where per-trade friction (gas,
+    # spread, partial-fill drift) is large relative to typical stake. Without
+    # this floor, polymarket's $0.07 gas-per-trade eats EV on the 68% of
+    # candidates that sit at 1-4% edge — gas-aware sim showed median bankroll
+    # collapsing to $1 / 61.5% bust within a year.
+    min_edge_pct: float = 1.0
 
 
 # fee_rate here is for stakes where the fee is paid SEPARATELY ON TOP of the
@@ -77,11 +89,15 @@ class ProviderStakeProfile:
 # Cloudbet:   no commission, 20 kr click overhead → 20 kr min.
 # Rainbet:    signal-only, no playable path — included for completeness.
 PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
-    "pinnacle": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
-    "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC"),
-    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD"),
-    "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
-    "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK"),
+    "pinnacle": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
+    # Polymarket: ~$0.07 Polygon gas per trade (placement + amortized redeem).
+    # At $1 min stake, edges <7% are net-EV-negative after gas. min_edge_pct=5
+    # is the slightly-tolerant cutoff that keeps total expected growth positive
+    # in the gas-aware MC while not throwing away nearly all polymarket volume.
+    "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0),
+    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=1.0),
+    "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
+    "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
 }
 
 
@@ -102,6 +118,12 @@ def provider_fee_rate(provider_id: str) -> float:
     """Round-trip fee rate as a decimal (0.02 = 2%). 0 if no profile."""
     profile = PROVIDER_STAKE_PROFILES.get(provider_id)
     return profile.fee_rate if profile else 0.0
+
+
+def provider_min_edge_pct(provider_id: str) -> float:
+    """Per-provider edge floor (in %). Returns 1.0 default if no profile."""
+    profile = PROVIDER_STAKE_PROFILES.get(provider_id)
+    return profile.min_edge_pct if profile else 1.0
 
 
 # Minimum expected profit to bother placing a bet (stake * edge >= this)
