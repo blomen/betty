@@ -125,7 +125,16 @@ def build_observation(state: dict) -> np.ndarray:
         seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
 
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
-    seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
+    # When rl_state carries an L1 snapshot + recent trades (populated by
+    # LevelMonitor in zone mode), the L1-derivable dims (spread_ticks,
+    # passive_active_ratio) get recomputed from true bid/ask + Lee-Ready
+    # aggressor classification instead of candle approximations.
+    seg_orderflow = extract_orderflow_features(
+        candles,
+        orderflow_signals,
+        l1_snapshot=state.get("l1_snapshot"),
+        recent_trades=state.get("recent_trades", []),
+    )
 
     # 3. Dow Theory + session + PDH/PDL (64)
     swing_structure = state.get("swing_structure")

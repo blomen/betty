@@ -57,10 +57,18 @@ def extract_orderflow_features(
     Other dims are unchanged. Backward-compatible: l1_snapshot=None
     preserves legacy candle-only behaviour.
 
-    Returns zeros(21) if candles is empty.
+    Returns zeros(21) if candles is empty — but the L1 override still
+    applies to dims 6 and 7 when l1_snapshot is provided, so an
+    L1-aware obs vector can populate top-of-book features even when
+    candles haven't been built yet (e.g. cold start).
     """
     if not candles:
-        return np.zeros(_N_FEATURES, dtype=np.float32)
+        feats = np.zeros(_N_FEATURES, dtype=np.float32)
+        if l1_snapshot is not None:
+            l1_feats = compute_l1_features(snapshot=l1_snapshot, recent_trades=recent_trades or [])
+            feats[_SPREAD_TICKS_IDX] = min(l1_feats["spread_ticks"], 50.0) / 50.0
+            feats[_PASSIVE_ACTIVE_IDX] = min(l1_feats["passive_active_ratio"], 5.0) / 5.0
+        return feats
 
     recent = candles[-lookback:] if len(candles) >= lookback else candles
     last = recent[-1]
