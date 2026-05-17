@@ -39,6 +39,7 @@ class ServerStocksRuntime:
     flatten_scheduler: Any
     tasks: dict = field(default_factory=dict)
     l1_writer: Any = None
+    l1_flush_task: Any = None
 
     async def shutdown(self, flatten_positions: bool = True) -> None:
         """Graceful teardown. Flatten first (safest for deploy/restart),
@@ -106,6 +107,12 @@ class ServerStocksRuntime:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+        if self.l1_flush_task is not None:
+            self.l1_flush_task.cancel()
+            try:
+                await self.l1_flush_task
+            except asyncio.CancelledError:
+                pass
         try:
             if self.flatten_scheduler:
                 self.flatten_scheduler.stop()
@@ -984,25 +991,27 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
     stream.on_tick = _build_server_tick_handler(app, level_monitor)
     stream.on_fill = adapter.on_stream_fill
 
+    import time as _time
     from pathlib import Path
 
     from src.market_data.l1_persistence import L1ParquetWriter
 
     _L1_OUT_DIR = Path("/app/data/rl/l1_quotes")
-    l1_writer = L1ParquetWriter(out_dir=_L1_OUT_DIR, flush_interval_s=60.0)
+    # flush_interval_s=inf so record() never auto-flushes inline on the hot
+    # path. A background task (_l1_flush_loop) calls flush() every 60s via
+    # run_in_executor so disk I/O (100-500ms) never blocks the event loop.
+    l1_writer = L1ParquetWriter(out_dir=_L1_OUT_DIR, flush_interval_s=float("inf"))
 
     def _on_quote(quote_payload) -> None:
         """Triple-duty: mark-to-market for broker, L1 state for feature
         extraction, persistence for backtest."""
         try:
-            import time
-
-            ts = time.time()
+            ts = _time.time()
             bid = quote_payload.get("bestBid") or quote_payload.get("bid") or 0.0
             ask = quote_payload.get("bestAsk") or quote_payload.get("ask") or 0.0
             bid_size = quote_payload.get("bestBidSize") or quote_payload.get("bid_size") or 0
             ask_size = quote_payload.get("bestAskSize") or quote_payload.get("ask_size") or 0
-            last_price = quote_payload.get("lastPrice", 0)
+            last_price = float(quote_payload.get("lastPrice") or 0)
 
             # 1. Mark-to-market (existing behavior)
             if last_price > 0:
@@ -1084,6 +1093,22 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         name="server-position-reconciler",
     )
 
+    async def _l1_flush_loop():
+        """Background flush every 60s. Runs flush() in a threadpool so disk
+        I/O doesn't block the asyncio event loop or the on_quote handler.
+        """
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await loop.run_in_executor(None, l1_writer.flush)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("l1 flush loop iteration failed")
+
+    _l1_flush_task = asyncio.create_task(_l1_flush_loop(), name="l1-flush")
+
     flatten_scheduler = FlattenScheduler(adapter, config.flatten_et)
     flatten_scheduler.start()
     log.info("FlattenScheduler started (flatten at %s ET)", config.flatten_et)
@@ -1095,6 +1120,7 @@ async def bootstrap_stocks_on_server(app) -> ServerStocksRuntime | None:
         flatten_scheduler=flatten_scheduler,
         tasks={"zone_seed": _seed_task, "reconcile": _reconcile_task},
         l1_writer=l1_writer,
+        l1_flush_task=_l1_flush_task,
     )
     app.state.stocks_runtime = runtime
     log.info("ServerStocksRuntime active — autonomous trading ON")
