@@ -383,6 +383,111 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
     raise HTTPException(503, "Database busy — please try again")
 
 
+@router.get("/analytics")
+def get_analytics(
+    provider_id: str | None = None,
+    days: int = 90,
+    db: Session = Depends(get_db),
+):
+    """Per-sport + per-edge-bucket realized ROI vs displayed edge.
+
+    Lets the user spot which sports/buckets are converting and which are
+    leaking — the difference between displayed edge and realized ROI shows
+    whether the signal is real or noise per slice.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from ...db.models import Bet
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    if not profile:
+        raise HTTPException(404, "No active profile")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    q = db.query(Bet).filter(
+        Bet.profile_id == profile.id,
+        Bet.placed_at >= cutoff,
+        Bet.result.in_(("won", "lost", "void")),
+    )
+    if provider_id:
+        q = q.filter(Bet.provider_id == provider_id)
+    bets = q.all()
+
+    def bucket(edge):
+        if edge is None:
+            return "unknown"
+        if edge < 2:
+            return "0-2%"
+        if edge < 5:
+            return "2-5%"
+        if edge < 10:
+            return "5-10%"
+        if edge < 20:
+            return "10-20%"
+        return "20%+"
+
+    def edge_of(b):
+        if not b.fair_odds_at_placement or b.fair_odds_at_placement <= 1 or b.odds <= 0:
+            return None
+        return (b.odds / b.fair_odds_at_placement - 1) * 100
+
+    def split_event_id(eid: str | None) -> str:
+        return (eid or "unknown").split(":", 1)[0]
+
+    def summarize(rows):
+        n = len(rows)
+        if n == 0:
+            return None
+        won = sum(1 for r in rows if r.result == "won")
+        lost = sum(1 for r in rows if r.result == "lost")
+        void = sum(1 for r in rows if r.result == "void")
+        decided = won + lost
+        staked = sum(r.stake or 0 for r in rows)
+        profit = sum((r.payout or 0) - (r.stake or 0) for r in rows)
+        edges = [edge_of(r) for r in rows]
+        edges = [e for e in edges if e is not None]
+        implied = [1.0 / r.odds for r in rows if r.odds > 0]
+        clvs = [r.clv_pct for r in rows if r.clv_pct is not None]
+        return {
+            "n": n,
+            "won": won,
+            "lost": lost,
+            "void": void,
+            "win_pct": round(100 * won / decided, 1) if decided else None,
+            "implied_pct": round(100 * sum(implied) / len(implied), 1) if implied else None,
+            "avg_displayed_edge_pct": round(sum(edges) / len(edges), 2) if edges else None,
+            "staked": round(staked, 2),
+            "profit": round(profit, 2),
+            "roi_pct": round(100 * profit / staked, 2) if staked else None,
+            "avg_clv_pct": round(sum(clvs) / len(clvs), 2) if clvs else None,
+        }
+
+    by_sport = {}
+    for b in bets:
+        s = split_event_id(b.event_id)
+        by_sport.setdefault(s, []).append(b)
+
+    by_edge = {}
+    for b in bets:
+        by_edge.setdefault(bucket(edge_of(b)), []).append(b)
+
+    by_sport_x_edge = {}
+    for b in bets:
+        key = f"{split_event_id(b.event_id)}|{bucket(edge_of(b))}"
+        by_sport_x_edge.setdefault(key, []).append(b)
+
+    return {
+        "provider_id": provider_id,
+        "days": days,
+        "cutoff": cutoff.isoformat(),
+        "overall": summarize(bets),
+        "by_sport": {k: summarize(v) for k, v in by_sport.items()},
+        "by_edge_bucket": {k: summarize(v) for k, v in by_edge.items()},
+        "by_sport_and_bucket": {k: summarize(v) for k, v in by_sport_x_edge.items()},
+    }
+
+
 @router.post("/close-started")
 def close_started_bets(service: BetService = Depends(_get_service)):
     """

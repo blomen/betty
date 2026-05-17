@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
+import { useMirrorState } from '../hooks/useMirrorState'
 
-// Unlimited providers — value-bet flow (Section B). All other providers route through arbitrage (Section A).
-// `rainbet` is signal-only (Betby tenant, no play workflow yet) — included so its value-vs-Pinnacle and
-// arb-vs-other-unlimited opportunities surface in the value-bets section. The login chip will show ✗
-// (no mirror workflow) and the cluster card will render with an empty stats row.
-const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi', 'rainbet'])
+// Unlimited providers — value-bet flow (Section B) + arb counter pool. All other providers route through arbitrage (Section A).
+// `rainbet` is intentionally excluded: KYC blocks Swedish residents (Sumsub
+// flow doesn't list Sweden as an issuing country), so it's not playable.
+// Server-side extraction still runs and its odds participate in fair-odds
+// consensus for the scanner — but the local UI doesn't show it as a target.
+const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
 // Below this, no meaningful bet can be placed after odds rounding and
 // provider-side minimum stakes (typically 5-10 kr), so the residue is
 // not actionable.
-const DRAIN_THRESHOLD_SEK = 20
+const DRAIN_THRESHOLD_SEK = 10
 
 // Minimum guaranteed_profit_pct an arb must show for a fully-drained
 // cluster (no funded members) to be surfaced as a deposit hint. Tuned
@@ -36,6 +38,11 @@ const SOFT_CLUSTER_MEMBERS: Record<string, string[]> = {
 const SOFT_STANDALONES: string[] = [
   'interwetten', 'vbet', '10bet', 'tipwin', 'coolbet', 'bethard',
 ]
+// Active soft anchors are now dynamic — any soft provider that has either a
+// balance above DRAIN_THRESHOLD_SEK, an unclaimed bonus, or pending bets
+// renders as a row in the arb section. Replaces the prior `SOFT_FOCUS` static
+// allowlist that only included betinia. See `isQualifiedSoft` helper inside
+// the component for the predicate.
 const PROVIDER_TO_SOFT_CLUSTER: Record<string, string> = {}
 for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
   for (const m of members) PROVIDER_TO_SOFT_CLUSTER[m] = c
@@ -43,50 +50,25 @@ for (const [c, members] of Object.entries(SOFT_CLUSTER_MEMBERS)) {
 // Resolve a soft provider's cluster (fallback to pid for standalones).
 const resolveSoftCluster = (pid: string): string => PROVIDER_TO_SOFT_CLUSTER[pid] ?? pid
 
-// Card visual states. Derived from loopProviderStatus[pid].state plus whether
-// the provider is currently selected. `idle` is the unselected default —
-// existing styling applies. The other four are the active-session palette:
-// blue (tab open) → cyan (logged in, syncing) → yellow (ready, paused)
-// → green (running). Yellow ↔ green is a toggle via the same card click.
-type CardState =
-  | 'idle'
-  | 'tab_open'         // tab opened, awaiting login
-  | 'logged_in_syncing' // login detected, balance/pending sync running
-  | 'ready_to_run'     // settled, gate closed, awaiting Run press
-  | 'running'          // bet loop active
+// Card states are derived from observable truth (tab + login presence in the
+// mirror) — NOT from the runner's internal FSM. Three states only:
+//   no_tab            — no provider tab in Chromium → click opens it
+//   tab_open_not_in   — tab exists but the user hasn't logged in → red badge
+//   tab_open_logged   — tab exists + login detected → green badge
+// Runner status (running / standby / etc.) is shown separately in the
+// status row below the card, not encoded in the card color.
+type CardState = 'no_tab' | 'tab_open_not_in' | 'tab_open_logged'
 
-const RUNNER_STATE_TO_CARD: Record<string, CardState> = {
-  provider_opening: 'tab_open',
-  login_waiting: 'tab_open',
-  settling: 'logged_in_syncing',
-  ready_to_run: 'ready_to_run',
-  navigating: 'running',
-  ready: 'running',
-  placing: 'running',
-  loading_legs: 'running',  // arb runner state
-  standby: 'running',       // arb runner state
-  awaiting_hedges: 'running', // arb runner state
+function deriveCardState(tabOpen: boolean, loggedIn: boolean): CardState {
+  if (!tabOpen) return 'no_tab'
+  if (!loggedIn) return 'tab_open_not_in'
+  return 'tab_open_logged'
 }
 
-function deriveCardState(isSelected: boolean, runnerState: string | undefined): CardState {
-  if (!isSelected) return 'idle'
-  if (!runnerState) return 'tab_open'
-  return RUNNER_STATE_TO_CARD[runnerState] ?? 'tab_open'
-}
-
-// Three-color UX (2026-04-30 rev 3):
-//   IDLE    — zinc       (unselected — existing styling)
-//   RED     — tab open, NOT logged in (waiting for user to log in on the site)
-//   AMBER   — tab open + logged in, await user Run press
-//             (covers BOTH the auto-syncing window and the ready-to-run gate;
-//              pill text disambiguates "Syncing..." vs "Press to run")
-//   GREEN   — full workflow active (navigating, prepping, placing bets)
 const CARD_STATE_CLASSES: Record<CardState, string> = {
-  idle: '',
-  tab_open: 'bg-red-500/45 text-red-100 border border-red-400/70',
-  logged_in_syncing: 'bg-amber-500/45 text-amber-100 border border-amber-400/70',
-  ready_to_run: 'bg-amber-500/55 text-amber-50 border border-amber-300/80 font-semibold',
-  running: 'bg-emerald-600/50 text-emerald-100 border border-emerald-500/70',
+  no_tab: 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50',
+  tab_open_not_in: 'bg-red-500/45 text-red-100 border border-red-400/70',
+  tab_open_logged: 'bg-emerald-600/50 text-emerald-100 border border-emerald-500/70',
 }
 
 type ProviderBalanceInfo = {
@@ -109,6 +91,89 @@ const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; curre
     ? { amount: b.bonus_trigger, currency: b.bonus_currency ?? 'SEK' }
     : null
 }
+// Providers whose balances + slip stakes are denominated in USD (USDC for
+// polymarket, USD for kalshi). Everything else is SEK. The /api/bankroll
+// `balance` field is normalised to SEK already (see PlayPage load()), so we
+// compute stakes in SEK and convert just for native-currency display.
+const USD_PROVIDERS = new Set(['polymarket', 'kalshi'])
+const SEK_PER_USD = 10.5
+
+// Providers that display prices in native cents (Polymarket: $0.62 ↔ 62¢,
+// Kalshi: 62¢ buy). The decimal odds we store are derived from that native
+// price (price = 1 / decimal_odds). Surface the native cents alongside the
+// decimal so the user can compare what the bookmaker tab actually shows.
+const CENT_PRICE_PROVIDERS = new Set(['polymarket', 'kalshi'])
+
+const formatLegStake = (pid: string, sek: number): string => {
+  if (sek <= 0) return ''
+  if (USD_PROVIDERS.has(pid)) return `$${(sek / SEK_PER_USD).toFixed(1)}`
+  return `${Math.round(sek)} kr`
+}
+
+// Build the odds display string. For decimal-only providers it's just "@ 1.61".
+// For cent-priced providers we append the native cents the site displays, so
+// the user can sanity-check against the bookmaker tab: "@ 1.61 (62¢)".
+const formatOddsDisplay = (pid: string, odds: number): string => {
+  if (!isFinite(odds) || odds <= 1) return `@ ${odds.toFixed(2)}`
+  const base = `@ ${odds.toFixed(2)}`
+  if (CENT_PRICE_PROVIDERS.has(pid)) {
+    const cents = Math.round(100 / odds)
+    return `${base} (${cents}¢)`
+  }
+  return base
+}
+
+// Compute planned arb stakes in SEK. Mirrors arb_runner.py drain strategy:
+// anchor stake = full anchor balance (capped only by stakeCap if the runner
+// has learned a site-max from a previous limit response). Counter stakes are
+// sized so each leg pays the same on win — sharp side has unlimited liquidity
+// (pinnacle/cloudbet) or auto-funds (polymarket/kalshi), so we DON'T cap the
+// soft side by counter balance — that would shrink the soft stake unnecessarily.
+function computeArbStakes(
+  anchorPid: string,
+  anchorOdds: number,
+  counters: any[],
+  balances: Record<string, ProviderBalanceLike>,
+  stakeCaps: Record<string, number>,
+  overridePayout?: number,
+): { anchorSek: number; counterSekByLeg: number[]; payout: number } {
+  // Payout-driven math: ALL leg stakes derive from a single target payout K.
+  //   stake_i = K / odds_i
+  // Default K = balance × anchor_odds (max-drain on the soft anchor). When
+  // the user edits ANY leg's stake input, the input value × that leg's odds
+  // becomes the new K, and every other leg's stake auto-recomputes from K /
+  // its odds. Keeps the arb invariant (equal payout regardless of outcome)
+  // symmetric — input on soft side, sharp side, or any specific hedge leg
+  // works the same way.
+  const balance = getBalance(balances[anchorPid])
+  let anchorStake = balance
+  const cap = stakeCaps[anchorPid]
+  if (cap && cap > 0) anchorStake = Math.min(anchorStake, cap)
+  if (anchorStake < 0 || !isFinite(anchorStake)) anchorStake = 0
+  let totalPayout = anchorStake * (anchorOdds || 0)
+  if (overridePayout != null && isFinite(overridePayout) && overridePayout > 0) {
+    totalPayout = overridePayout
+    if (anchorOdds > 0) {
+      anchorStake = Math.min(totalPayout / anchorOdds, balance)
+      // After clamp to balance, the payout we can ACTUALLY achieve drops to
+      // anchorStake × anchorOdds. Recompute so the counter stakes match the
+      // realisable payout, not the requested one. Otherwise the displayed
+      // counter stakes would be larger than what the anchor's payout can
+      // actually cover, breaking the equal-payout invariant.
+      totalPayout = anchorStake * anchorOdds
+    }
+  }
+  // Index per LEG, not per provider — 3-way arbs often have multiple legs on
+  // the same sportsbook (e.g. PINNACLE home + PINNACLE away in a 1x2 with
+  // BETINIA on draw). Keying by provider_id collides them and overwrites the
+  // first leg's stake with the second.
+  const counterSekByLeg: number[] = counters.map((leg: any) => {
+    const codds = Number(leg.odds ?? 0)
+    return codds > 0 ? totalPayout / codds : 0
+  })
+  return { anchorSek: anchorStake, counterSekByLeg, payout: totalPayout }
+}
+
 function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, ProviderBalanceLike> }) {
   const balance = getBalance(balances[pid])
   const trigger = getTrigger(balances[pid])
@@ -146,6 +211,9 @@ interface BatchBet {
   cluster?: string
   funded?: boolean
   skip_reason?: string
+  // Provider-specific routing data (event_slug, matchup_id, token_id, etc.).
+  // Needed for navigate-to-event when the URL template requires a slug.
+  provider_meta?: Record<string, unknown>
 }
 
 interface SettleToast {
@@ -187,6 +255,11 @@ export default function PlayPage() {
   const errorRef = useRef<string | null>(null)
   useEffect(() => { errorRef.current = error }, [error])
   const mirror = useMirrorStream()
+  // Phase 2 platform-rebuild recovery floor: read authoritative provider/runner
+  // state from server DB. Survives SSE drops, browser refresh, arnold.bat
+  // restart. Merged into loopProviderStatus by the effect below — SSE still
+  // drives sub-5s updates between the 5s polls.
+  const mirrorState = useMirrorState()
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
   const [toasts, setToasts] = useState<SettleToast[]>([])
@@ -212,6 +285,233 @@ export default function PlayPage() {
     })
   }, [])
   const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
+  // Event IDs whose pages came back "Detta evenemang är avslutat" — filter
+  // them out of arb rows so the runner doesn't re-pick a dead event.
+  // Persist drained event_ids in localStorage with a 24h TTL — events
+  // naturally roll over within hours, but a refresh shouldn't resurrect a
+  // closed event we already auto-skipped past. TTL prevents the set from
+  // growing unbounded over weeks of use. We track per-eid timestamps in a
+  // ref so re-saves preserve the original drain time (otherwise every save
+  // would reset the TTL clock to "now").
+  const DRAINED_EVENTS_KEY = 'arnold:drainedEventIds:v1'
+  const DRAINED_EVENTS_TTL_MS = 24 * 60 * 60 * 1000
+  const drainedTimestampsRef = useRef<Record<string, number>>({})
+  const [drainedEventIds, setDrainedEventIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(DRAINED_EVENTS_KEY)
+      if (!raw) return new Set()
+      const parsed = JSON.parse(raw) as { eid: string; ts: number }[]
+      const now = Date.now()
+      const fresh = parsed.filter(e => now - e.ts < DRAINED_EVENTS_TTL_MS)
+      const timestamps: Record<string, number> = {}
+      for (const e of fresh) timestamps[e.eid] = e.ts
+      drainedTimestampsRef.current = timestamps
+      return new Set(fresh.map(e => e.eid))
+    } catch {
+      return new Set()
+    }
+  })
+  useEffect(() => {
+    try {
+      const now = Date.now()
+      const map = drainedTimestampsRef.current
+      // Stamp newly-added eids; leave existing timestamps alone so TTL
+      // measures from the ORIGINAL drain, not the latest re-save.
+      for (const eid of drainedEventIds) {
+        if (!(eid in map)) map[eid] = now
+      }
+      // Drop timestamps for eids no longer in the Set (defensive cleanup).
+      for (const eid of Object.keys(map)) {
+        if (!drainedEventIds.has(eid)) delete map[eid]
+      }
+      const payload = Array.from(drainedEventIds).map(eid => ({
+        eid,
+        ts: map[eid] ?? now,
+      }))
+      localStorage.setItem(DRAINED_EVENTS_KEY, JSON.stringify(payload))
+    } catch { /* localStorage full / disabled */ }
+  }, [drainedEventIds])
+  // (event_id) → set of leg-keys (`${pid}|${outcome}|${point}`) for legs the
+  // user is currently navigating. Drives the per-cell amber pulse. Keyed by
+  // full leg identity (not just pid) because a 1X2 arb has 3 hedge legs all
+  // on the same counter provider — keying by pid alone would pulse all three
+  // when only one was clicked.
+  const [pickingLegs, setPickingLegs] = useState<Record<string, Set<string>>>({})
+  // Per-event manual stake override stored as TARGET PAYOUT (K). Each leg's
+  // stake = K / leg_odds. When the user types into ANY leg's stake input,
+  // we read the new value × that leg's odds = new K, and every other leg
+  // auto-recomputes. Symmetric: input on soft, sharp, or any specific hedge
+  // leg all drive the same payout math. Cleared when user hits ×.
+  const [payoutOverridesByEid, setPayoutOverridesByEid] = useState<Record<string, number>>({})
+  const setPayoutOverride = (eid: string, payout: number | null) => {
+    setPayoutOverridesByEid(prev => {
+      const next = { ...prev }
+      if (payout == null || !isFinite(payout) || payout <= 0) delete next[eid]
+      else next[eid] = payout
+      return next
+    })
+  }
+  // Helper: given a desired stake for a specific leg, compute the implied
+  // payout (stake × leg_odds) and store it as the override. Used by the
+  // per-leg stake inputs.
+  const setStakeForLeg = (eid: string, legOdds: number, newStake: number) => {
+    if (!isFinite(newStake) || newStake <= 0 || !isFinite(legOdds) || legOdds <= 0) {
+      setPayoutOverride(eid, null)
+      return
+    }
+    setPayoutOverride(eid, newStake * legOdds)
+  }
+  // (event_id) → set of leg-keys (same shape as pickingLegs) for legs that
+  // have been synced (nav ok + not closed + odds streaming). When ALL legs
+  // of an opp are in this set, the row is "all green" and ready to place.
+  const [syncedLegs, setSyncedLegs] = useState<Record<string, Set<string>>>({})
+  // Build a leg-identity key. Outcome + point uniquely identifies a leg
+  // within (event_id, provider_id), so this is what the picking/synced
+  // sets store.
+  const legKey = (pid: string, outcome: string | null | undefined, point: number | null | undefined): string =>
+    `${pid}|${outcome ?? ''}|${point ?? ''}`
+  // Provider → most recently user-picked event_id. Drives the per-provider
+  // arb widget below the cluster row, follows the row the user clicks.
+  const [pickedEventByProvider, setPickedEventByProvider] = useState<Record<string, string>>({})
+
+  // Live-odds override map: key = `eid|provider|outcome|point`, value = last
+  // streamed odds + timestamp. Persisted to localStorage so refresh / API
+  // re-scan doesn't snap back to stale 60-s-cached values. TTL is short on
+  // purpose: an override older than a few minutes is almost certainly stale
+  // vs the live market AND vs the next API scan, so applying it just
+  // distorts edges (a 6h TTL caused -25% phantom arbs on Pol Martin Tiffon
+  // 2026-05-12 — the API said -1% but the overlay overrode with values
+  // polled from a previous session). applyOverrides re-checks `ts` so an
+  // entry that survives the initial load filter still gets dropped once
+  // it ages past the TTL during a session.
+  const LIVE_ODDS_KEY = 'arnold:liveLegOdds:v1'
+  const LIVE_ODDS_TTL_MS = 90 * 1000
+  type LiveOddsEntry = { odds: number; ts: number }
+  // Key for live-odds overrides. Resolves soft cluster so QUICKCASINO and
+  // BETINIA collapse onto the same key — cluster siblings share odds (and
+  // the scanner picks whichever has the best @ extraction time), so the
+  // override stays correct regardless of which sibling provided the leg
+  // emitted by the scanner. Unlimited providers (pinnacle/polymarket/etc.)
+  // pass through unchanged because PROVIDER_TO_SOFT_CLUSTER doesn't map them.
+  const legOddsKey = (eid: string, provider: string, outcome: string, point: number | null | undefined): string =>
+    `${eid}|${PROVIDER_TO_SOFT_CLUSTER[provider] ?? provider}|${outcome ?? ''}|${point ?? ''}`
+  // Helper: apply persisted live-leg overrides on top of an opps map and
+  // recompute guaranteed_profit_pct from the merged odds. Used both at
+  // hydration time (so the cached opps don't render with stale @41.00 when
+  // the live override has @1.78) and from inside loadArbOpps after API fetch.
+  const applyLiveOverridesToClusterMap = (
+    map: Record<string, any[]>,
+    overrides: Record<string, LiveOddsEntry>,
+  ): Record<string, any[]> => {
+    const out: Record<string, any[]> = {}
+    const now = Date.now()
+    for (const [cluster, opps] of Object.entries(map)) {
+      out[cluster] = opps.map((o: any) => {
+        const eid = o.event_id
+        if (!eid) return o
+        let touched = false
+        const legs = (o.legs ?? []).map((l: any) => {
+          const k = legOddsKey(eid, l.provider ?? l.provider_id ?? '', l.outcome, l.point)
+          const ov = overrides[k]
+          // Reject stale overlays — see applyOverrides note.
+          if (ov && ov.odds > 0 && ov.odds !== l.odds && now - ov.ts < LIVE_ODDS_TTL_MS) {
+            touched = true
+            return { ...l, odds: ov.odds }
+          }
+          return l
+        })
+        if (!touched) return o
+        let invSum = 0
+        for (const l of legs) {
+          const x = Number(l.odds ?? 0)
+          if (x <= 0) { invSum = 0; break }
+          invSum += 1 / x
+        }
+        const newProfit = invSum > 0 ? (1 / invSum - 1) * 100 : (o.guaranteed_profit_pct ?? 0)
+        return { ...o, legs, guaranteed_profit_pct: newProfit, profit_pct: newProfit }
+      })
+      // Re-sort (guaranteed_profit_pct may have shifted)
+      out[cluster] = [...out[cluster]].sort(
+        (a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0),
+      )
+    }
+    return out
+  }
+  // Counter-pool filter: which UNLIMITED providers may be used as the hedge
+  // leg against the soft anchor. Defaults to all four. Toggling chips in
+  // the arb-page header narrows the search (e.g. play only BETINIA-vs-
+  // Pinnacle arbs). Persisted to localStorage. Must always contain at
+  // least one entry — UI enforces a minimum-of-one click rule.
+  const COUNTER_FILTER_KEY = 'arnold:counterPoolFilter:v1'
+  const [enabledCounters, setEnabledCounters] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COUNTER_FILTER_KEY)
+      if (!raw) return new Set(UNLIMITED_PROVIDERS)
+      const arr = JSON.parse(raw) as string[]
+      const valid = arr.filter(p => UNLIMITED_PROVIDERS.has(p))
+      return valid.length > 0 ? new Set(valid) : new Set(UNLIMITED_PROVIDERS)
+    } catch {
+      return new Set(UNLIMITED_PROVIDERS)
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(COUNTER_FILTER_KEY, JSON.stringify([...enabledCounters]))
+    } catch { /* full / disabled */ }
+  }, [enabledCounters])
+  const toggleCounter = (pid: string) => {
+    setEnabledCounters(prev => {
+      const next = new Set(prev)
+      if (next.has(pid)) {
+        // Enforce min-of-one: don't allow deselecting the last enabled counter.
+        if (next.size <= 1) return prev
+        next.delete(pid)
+      } else {
+        next.add(pid)
+      }
+      return next
+    })
+  }
+
+  const [liveLegOdds, setLiveLegOdds] = useState<Record<string, LiveOddsEntry>>(() => {
+    try {
+      const raw = localStorage.getItem(LIVE_ODDS_KEY)
+      if (!raw) return {}
+      const parsed = JSON.parse(raw) as Record<string, LiveOddsEntry>
+      const now = Date.now()
+      const fresh: Record<string, LiveOddsEntry> = {}
+      for (const [k, v] of Object.entries(parsed)) {
+        if (v && typeof v.odds === 'number' && typeof v.ts === 'number' && now - v.ts < LIVE_ODDS_TTL_MS) {
+          fresh[k] = v
+        }
+      }
+      return fresh
+    } catch {
+      return {}
+    }
+  })
+  // Ref mirror of liveLegOdds so loadArbOpps (a useCallback with stable
+  // deps) can read the latest overrides without listing them as a dep
+  // (which would re-fire the scan on every 1Hz odds tick).
+  const liveLegOddsRef = useRef(liveLegOdds)
+  useEffect(() => {
+    liveLegOddsRef.current = liveLegOdds
+    try {
+      localStorage.setItem(LIVE_ODDS_KEY, JSON.stringify(liveLegOdds))
+    } catch { /* full / disabled */ }
+  }, [liveLegOdds])
+  // Per-provider record of which leg the user picked when they clicked an arb
+  // cell. The arb_leg_odds SSE event tells us provider_id + live_odds but NOT
+  // outcome/point — so we MUST remember it from navigate-time. Without this
+  // the override gets keyed against whichever leg `find()` matched first
+  // (often the wrong outcome in over/under or 3-way markets).
+  type PickedLegMeta = { eid: string; outcome: string; point: number | null | undefined }
+  const pickedLegMetaByProvider = useRef<Record<string, PickedLegMeta>>({})
+  // Global single-leg lock — drops every click while any leg is mid-process.
+  // useRef holds the in-flight set for the synchronous busy check; useState
+  // mirrors busy=true/false so the UI can dim every other row's cursor.
+  const navInFlight = useRef<Set<string>>(new Set())
+  const [legBusy, setLegBusy] = useState<string | null>(null)
   const [detectedSettlements, setDetectedSettlements] = useState<Record<number, { result: string; payout: number; match_method: string }>>({})
   const [livePrices, setLivePrices] = useState<Record<string, { odds: number; edge: number | null }>>({})
   const [stakeCaps, setStakeCaps] = useState<Record<string, number>>({})
@@ -221,13 +521,73 @@ export default function PlayPage() {
   const [arbProfitPct, setArbProfitPct] = useState<number | null>(null)
   const [arbGroupId, setArbGroupId] = useState<string | null>(null)
   const [arbDethroneToast, setArbDethroneToast] = useState<string | null>(null)
+  // Toast emitted on every `bet_recorded` / `bet_record_failed` SSE so the
+  // user gets immediate confirmation that the placement made it to the DB.
+  // Without this it took ~5s (next /pending-bets poll) before the row showed
+  // up in PENDING — long enough that the user wasn't sure if their click
+  // actually landed.
+  const [betRecordedToasts, setBetRecordedToasts] = useState<
+    {
+      id: string
+      // 'ok' = green emerald (bet recorded immediately)
+      // 'info' = amber (deferred — waiting for reactive history sync to catch
+      //   the accepted stake; common when bookmaker stake-limits)
+      // 'fail' = red (genuine failure)
+      kind: 'ok' | 'info' | 'fail'
+      pid: string
+      bet_id?: number
+      odds?: number
+      stake?: number
+      reason?: string
+    }[]
+  >([])
   // Per-cluster arb opps: { cluster_key: [top 10 opps for that cluster's funded siblings] }
   // Siblings share odds, so one fetch per cluster suffices. Each sibling renders its
   // own card using the cluster's opp list (differing only in balance / cap / active state).
-  const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>({})
+  //
+  // Persisted to localStorage so a refresh shows the last live-updated state
+  // INSTANTLY (no flash of empty + 1-3min wait for the next scan). The next
+  // loadArbOpps run replaces it with fresh API data + applyOverrides re-applies
+  // any saved live-leg odds on top.
+  const OPPS_CACHE_KEY = 'arnold:oppsByCluster:v1'
+  const OPPS_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+  const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>(() => {
+    try {
+      const raw = localStorage.getItem(OPPS_CACHE_KEY)
+      if (!raw) return {}
+      const parsed = JSON.parse(raw) as { ts: number; data: Record<string, any[]> }
+      if (!parsed?.ts || Date.now() - parsed.ts >= OPPS_CACHE_TTL_MS) return {}
+      const cached = parsed.data ?? {}
+      // Apply any persisted live-leg overrides on top of the cached opps so
+      // a refresh shows the corrected odds immediately. Without this, the
+      // cached opp data (which can be a stale @41.00 from extraction lag)
+      // wins over the live @1.78 override until the next API scan completes.
+      return applyLiveOverridesToClusterMap(cached, liveLegOdds)
+    } catch {
+      return {}
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(OPPS_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: oppsByCluster }))
+    } catch { /* full / disabled */ }
+  }, [oppsByCluster])
   const [arbLoading, setArbLoading] = useState(false)
+  // Stale-arb verifier state: one cluster at a time. While running, button
+  // disables and shows progress. Persists `cluster_id` so the user can see
+  // which one is being checked; null = idle.
+  const [verifyingCluster, setVerifyingCluster] = useState<string | null>(null)
+  const [verifyProgress, setVerifyProgress] = useState<{ done: number; total: number } | null>(null)
   // Sub-tab switcher within the Play page
   const [subTab, setSubTab] = useState<'arb' | 'value'>('value')
+  // Tick state so the TTK column re-renders every 30s without depending on
+  // unrelated state changes. Cheap — single setState per tick, all consumers
+  // already pure functions of the iso string.
+  const [, setTtkTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTtkTick(t => t + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
 
   const startSkin = async (pid: string) => {
     // No-op if already active — clicking again should NOT toggle off.
@@ -247,29 +607,73 @@ export default function PlayPage() {
     await api.startPlayLoop(allBets, numericBalances, allPids)
   }
 
-  const handleCardClick = async (pid: string) => {
-    const isSelected = activeProviders.has(pid)
-    const runnerState = loopProviderStatus?.[pid]?.state
-    const cardState = deriveCardState(isSelected, runnerState)
-    console.log(`[card-click] pid=${pid} state=${cardState} runnerState=${runnerState ?? 'none'} selected=${isSelected}`)
-    // Two-click forward-only flow:
-    //   idle (zinc)             → click opens tab + starts watcher.
-    //   tab_open (red)          → click is a no-op (waiting for login).
-    //   logged_in_syncing       → click is a no-op (settling running).
-    //   ready_to_run (amber)    → click → starts bet loop.
-    //   running (green)         → click is a no-op (no pause, no toggle-off).
-    if (cardState === 'idle') return startSkin(pid)
-    if (cardState === 'ready_to_run') {
-      try {
-        const resp = await api.runProvider(pid)
-        console.log(`[card-click] runProvider(${pid}) ok`, resp)
-      } catch (e) {
-        console.error(`[card-click] runProvider(${pid}) failed`, e)
-      }
-      return
+  // Click a Section B value-bet row → navigate the provider's tab to the event
+  // page (same pattern as Section A arb-row click, but single-leg). Lets the
+  // user see live odds on the bookmaker site and place manually OR via the
+  // auto-runner. The /mirror/navigate endpoint just calls
+  // workflow.navigate_to_event — no slip-stream / runner side-effects.
+  const handleValueBetClick = async (b: BatchBet) => {
+    // Route through the same /mirror/arb/navigate-opp endpoint as Section A.
+    // For a value bet this is a degenerate 1-leg opp — backend resolves the
+    // single leg as the anchor, then nav + prep + slip-stream runs the same
+    // way. Gives us the same UX guarantees: row turns green on sync, the
+    // per-provider widget shows the picked event, status messages flow.
+    const leg = {
+      provider: b.provider_id,
+      outcome: b.outcome,
+      point: b.point,
+      odds: b.odds,
+      fair_odds: b.fair_odds,
+      stake: b.stake,
+      provider_meta: b.provider_meta,
     }
-    console.log(`[card-click] no-op for state=${cardState}`)
-    return
+    const oppShape = {
+      event_id: b.event_id,
+      market: b.market,
+      sport: b.sport,
+      starts_at: b.start_time,
+      display_home: b.display_home,
+      display_away: b.display_away,
+      legs: [leg],
+      _picked_leg: leg,
+    }
+    const lk = legKey(b.provider_id, b.outcome, b.point)
+    setPickedEventByProvider(prev => (prev[b.provider_id] === b.event_id ? prev : { ...prev, [b.provider_id]: b.event_id }))
+    setProviderStatusFor(b.provider_id, `navigating: ${b.outcome} @ ${b.odds.toFixed(2)}`)
+    try {
+      const r: any = await api.navigateOpp(b.provider_id, oppShape)
+      if (r?.status === 'synced' || r?.status === 'nav_only') {
+        setSyncedLegs(prev => {
+          const cur = prev[b.event_id] ?? new Set<string>()
+          if (cur.has(lk)) return prev
+          return { ...prev, [b.event_id]: new Set([...cur, lk]) }
+        })
+        const msg = r.status === 'synced'
+          ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'} — click Place on tab`
+          : `tab on event — click outcome + Place`
+        setProviderStatusFor(b.provider_id, msg)
+      } else if (r?.reason) {
+        setProviderStatusFor(b.provider_id, `nav: ${r.reason}`)
+      }
+    } catch (e) {
+      console.warn(`[value-bet-click] navigate failed for ${b.provider_id}:`, e)
+      setProviderStatusFor(b.provider_id, 'nav failed — see console')
+    }
+  }
+
+  const handleCardClick = async (pid: string) => {
+    // Manual-control workflow — NO auto-runner. Click only ensures the
+    // mirror is up + the provider tab is open. User then clicks individual
+    // arb cells to navigate to specific events. The auto-runner that the
+    // old card-click spawned would process opps autonomously and was the
+    // source of "navigated auto without me clicking" haywire.
+    //
+    // Bet placement still works: the browser's interceptor catches the
+    // /placewidget XHR and POSTs to /api/bets via the fallback path in
+    // play_loop.on_bet_intercepted (no runner needed).
+    try { await api.startMirror() } catch { /* mirror already up */ }
+    try { await api.openTab(pid) } catch (e) { console.warn(`[card-click] openTab failed for ${pid}:`, e) }
+    setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
   }
 
   const load = useCallback(async () => {
@@ -350,21 +754,226 @@ export default function PlayPage() {
   // re-create loadArbOpps on every balance tick.
   const fundedClustersKey = useMemo(() => {
     const reps: string[] = []
-    for (const pid of Object.keys(providerBalances)) {
+    const seen = new Set<string>([
+      ...Object.keys(providerBalances),
+      ...Object.keys(pendingByProvider),
+    ])
+    for (const pid of seen) {
       if (UNLIMITED_PROVIDERS.has(pid)) continue
-      if (getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK) {
+      const bal = getBalance(providerBalances[pid])
+      const trig = getTrigger(providerBalances[pid])
+      const pending = pendingByProvider[pid]?.length ?? 0
+      if (bal >= DRAIN_THRESHOLD_SEK || (trig?.amount ?? 0) > 0 || pending > 0) {
         reps.push(resolveSoftCluster(pid))
       }
     }
     return [...new Set(reps)].sort().join('|')
-  }, [providerBalances])
+  }, [providerBalances, pendingByProvider])
 
   // Snapshot the latest providerBalances inside a ref so the (stable) loadArbOpps
   // can read up-to-date values without listing providerBalances as a dep.
   const balancesRef = useRef(providerBalances)
   balancesRef.current = providerBalances
+  // Same ref trick for pendingByProvider so the stable loadArbOpps can check
+  // pending-bet presence without re-firing on every pending refresh.
+  const pendingRef = useRef<Record<string, any[]>>({})
+  pendingRef.current = pendingByProvider
+
+  // Same trick for enabledCounters — read latest via ref inside the scan.
+  // Stable dep key (sorted comma-joined) drives the re-scan trigger.
+  const enabledCountersRef = useRef(enabledCounters)
+  enabledCountersRef.current = enabledCounters
+  const enabledCountersKey = useMemo(
+    () => [...enabledCounters].sort().join(','),
+    [enabledCounters],
+  )
 
   const arbAbortRef = useRef<AbortController | null>(null)
+
+  // Map an opp's leg-shape (market + outcome + point) to the Pinnacle market
+  // key/designation. Lets us look up live odds in the refresh-matchup
+  // response without re-implementing the slug logic per call site.
+  const pinnacleMarketKeyPrefix = (market: string): string | null => {
+    if (market === 'moneyline' || market === '1x2') return 's;'  // matches s;0;m or s;6;m
+    if (market === 'spread') return 's;'                          // matches s;0;s;<pt> or s;6;s;<pt>
+    if (market === 'total') return 's;'                           // matches s;0;ou;<pt> or s;6;ou;<pt>
+    return null
+  }
+  const pinnacleMarketTypeChar = (market: string): string | null => {
+    if (market === 'moneyline' || market === '1x2') return 'm'
+    if (market === 'spread') return 's'
+    if (market === 'total') return 'ou'
+    return null
+  }
+  // For a given opp + leg, find the live decimal odds in a refresh-matchup
+  // response (the `markets` array). Picks the right period (3-way regulation
+  // for hockey 1x2 vs full-game ML) and the right designation.
+  const pickLiveOddsFromMarkets = (
+    market: string,
+    outcome: string,
+    point: number | null | undefined,
+    legsCount: number,  // total legs in opp; 3 = 3-way 1x2, 2 = 2-way ML
+    markets: any[],
+  ): number | null => {
+    const typeChar = pinnacleMarketTypeChar(market)
+    if (!typeChar) return null
+    // For 1x2/moneyline: 3-way means we want s;6;m (regulation, has draw)
+    // 2-way means s;0;m (full game). Pick by outcome count.
+    const wantThreeWay = market === '1x2' || (market === 'moneyline' && legsCount === 3)
+    const candidates = (markets ?? []).filter((m: any) => {
+      const k = (m.key ?? '') as string
+      if (typeChar === 'm') {
+        // moneyline / 1x2: key is "s;<period>;m"
+        if (!/^s;\d+;m$/.test(k)) return false
+        const has3 = (m.prices ?? []).length === 3
+        return wantThreeWay ? has3 : !has3
+      }
+      // spread / total: key is "s;<period>;s;<pt>" or "s;<period>;ou;<pt>"
+      const re = new RegExp(`^s;\\d+;${typeChar};`)
+      if (!re.test(k)) return false
+      // match the point — Pinnacle stores point either in key or in price.points
+      if (point != null) {
+        const parts = k.split(';')
+        const lastPart = parseFloat(parts[parts.length - 1])
+        if (Math.abs(lastPart - point) > 0.01) return false
+      }
+      return true
+    })
+    // Prefer period=0 unless we want 3-way 1x2 in which case period=6 wins.
+    candidates.sort((a: any, b: any) => {
+      if (wantThreeWay) {
+        const aPref = a.period === 6 ? 0 : 1
+        const bPref = b.period === 6 ? 0 : 1
+        if (aPref !== bPref) return aPref - bPref
+      }
+      return (a.period ?? 99) - (b.period ?? 99)
+    })
+    const m = candidates[0]
+    if (!m) return null
+    const designation = outcome  // Pinnacle uses identical labels: home/away/draw/over/under
+    const price = (m.prices ?? []).find((p: any) => p.designation === designation)
+    return price?.decimal ?? null
+  }
+  // Targeted refresh of Pinnacle odds for the picked opp. Fired in parallel
+  // with the BETINIA navigate so by the time the user looks at the row again
+  // the Pinnacle leg odds reflect live truth, not 2-5min-stale extraction.
+  const refreshPinnacleMatchup = useCallback(async (opp: any, matchupId: string) => {
+    let res
+    try {
+      res = await (await fetch(`/mirror/pinnacle/refresh-matchup/${matchupId}`, { signal: AbortSignal.timeout(10_000) })).json()
+    } catch (e) {
+      console.warn('[refresh-matchup] fetch failed:', e)
+      return
+    }
+    if (res?.error || !Array.isArray(res?.markets)) {
+      console.warn('[refresh-matchup] no markets:', res?.error)
+      return
+    }
+    const eid = opp.event_id
+    const market = opp.market as string
+    const point = opp.point
+    const legsCount = (opp.legs ?? []).length
+    const ts = Date.now()
+    // Build {legKey: live_odds} overrides for every Pinnacle leg.
+    const overrides: Record<string, number> = {}
+    for (const leg of (opp.legs ?? [])) {
+      const lp = (leg.provider ?? leg.provider_id) as string
+      if (lp !== 'pinnacle') continue
+      const live = pickLiveOddsFromMarkets(market, leg.outcome, leg.point ?? point, legsCount, res.markets)
+      if (live == null || live <= 0) continue
+      overrides[legOddsKey(eid, lp, leg.outcome, leg.point ?? point)] = live
+    }
+    if (Object.keys(overrides).length === 0) return
+    // Persist for cross-refresh continuity.
+    setLiveLegOdds(prev => {
+      const next = { ...prev }
+      let changed = false
+      for (const [k, v] of Object.entries(overrides)) {
+        if (next[k]?.odds === v) continue
+        next[k] = { odds: v, ts }
+        changed = true
+      }
+      return changed ? next : prev
+    })
+    // Apply IMMEDIATELY to the row so the user sees the recomputed profit %
+    // without waiting for the next API scan. Mutates legs.odds for matching
+    // (eid, provider, outcome, point), recomputes profit, re-sorts.
+    setOppsByCluster(prev => {
+      const next: Record<string, any[]> = {}
+      let mutated = false
+      for (const [cluster, opps] of Object.entries(prev)) {
+        const updated = opps.map((o: any) => {
+          if (o.event_id !== eid) return o
+          let touched = false
+          const newLegs = (o.legs ?? []).map((l: any) => {
+            const lk = legOddsKey(eid, l.provider ?? l.provider_id ?? '', l.outcome, l.point ?? point)
+            const live = overrides[lk]
+            if (live != null && live !== l.odds) {
+              touched = true
+              return { ...l, odds: live }
+            }
+            return l
+          })
+          if (!touched) return o
+          mutated = true
+          let invSum = 0
+          for (const l of newLegs) {
+            const x = Number(l.odds ?? 0)
+            if (x <= 0) { invSum = 0; break }
+            invSum += 1 / x
+          }
+          const newProfit = invSum > 0 ? (1 / invSum - 1) * 100 : (o.guaranteed_profit_pct ?? 0)
+          return { ...o, legs: newLegs, guaranteed_profit_pct: newProfit, profit_pct: newProfit }
+        })
+        next[cluster] = [...updated].sort(
+          (a: any, b: any) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0),
+        )
+      }
+      return mutated ? next : prev
+    })
+  }, [])
+
+  // Iterate over a cluster's currently-displayed top-N arbs, refreshing
+  // Pinnacle odds for each in series. After completion the list is sorted
+  // by *real* current profitability (refreshPinnacleMatchup mutates the
+  // opp's legs.odds and recomputes guaranteed_profit_pct, then re-sorts).
+  // Single-active: only one cluster can verify at a time. Subsequent
+  // clicks while running are dropped.
+  const verifyArbsInCluster = useCallback(async (clusterId: string) => {
+    if (verifyingCluster) return
+    const opps = oppsByCluster[clusterId] ?? []
+    // Only Pinnacle-side arbs need the targeted refresh. Filter + dedupe by
+    // matchup_id so we don't fetch the same matchup twice (3-leg arbs share
+    // one Pinnacle matchup_id across home/away legs).
+    const seen = new Set<string>()
+    const queue: Array<{ opp: any; matchupId: string }> = []
+    for (const o of opps.slice(0, 20)) {
+      const pinnLegs = (o.legs ?? []).filter((l: any) => (l.provider ?? l.provider_id) === 'pinnacle')
+      if (pinnLegs.length === 0) continue
+      const mid = pinnLegs[0]?.provider_meta?.matchup_id
+      if (!mid || seen.has(mid)) continue
+      seen.add(mid)
+      queue.push({ opp: o, matchupId: mid })
+    }
+    if (queue.length === 0) return
+    setVerifyingCluster(clusterId)
+    setVerifyProgress({ done: 0, total: queue.length })
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        const { opp, matchupId } = queue[i]
+        try {
+          await refreshPinnacleMatchup(opp, matchupId)
+        } catch (e) {
+          console.warn('[verify-arbs] failed', matchupId, e)
+        }
+        setVerifyProgress({ done: i + 1, total: queue.length })
+      }
+    } finally {
+      setVerifyingCluster(null)
+      // Keep the final progress visible briefly, then clear.
+      setTimeout(() => setVerifyProgress(null), 2000)
+    }
+  }, [oppsByCluster, refreshPinnacleMatchup, verifyingCluster])
 
   const loadArbOpps = useCallback(async () => {
     // Cancel any in-flight scan so a stale result can't overwrite fresh state.
@@ -373,24 +982,44 @@ export default function PlayPage() {
     arbAbortRef.current = controller
 
     const balances = balancesRef.current
-    // Group all known soft providers by cluster
+    // Group all known providers (including unlimited) by cluster. Unlimited
+    // providers are kept so polymarket↔pinnacle / kalshi↔pinnacle arbs surface
+    // as their own cluster cards — letting the user spot/play unlimited-only
+    // arbs (mostly esports per-map markets where Pinnacle's lines lag Polymarket).
     const softByCluster: Record<string, string[]> = {}
     for (const pid of Object.keys(balances)) {
-      if (UNLIMITED_PROVIDERS.has(pid)) continue
       const cluster = resolveSoftCluster(pid)
       ;(softByCluster[cluster] ??= []).push(pid)
     }
 
-    // Pick one representative per cluster that has at least one funded sibling
+    // Pick one representative per cluster — the qualifying member with the
+    // highest balance (or first with bonus/pending if no positive balance).
+    // "Qualifying" = balance ≥ threshold OR unclaimed bonus OR pending bets.
+    // Stays dynamic: any soft that meets one of those criteria scans/renders.
+    const isQualifyingMember = (pid: string): boolean => {
+      const bal = getBalance(balances[pid])
+      const trig = getTrigger(balances[pid])
+      const pending = pendingRef.current[pid]?.length ?? 0
+      return bal >= DRAIN_THRESHOLD_SEK || (trig?.amount ?? 0) > 0 || pending > 0
+    }
     const reps: Array<{ cluster: string; rep: string }> = []
     for (const [cluster, members] of Object.entries(softByCluster)) {
-      const funded = members.filter(pid => getBalance(balances[pid]) >= DRAIN_THRESHOLD_SEK)
-      if (funded.length > 0) {
-        reps.push({ cluster, rep: funded[0] })
-      }
+      const qualifying = members.filter(isQualifyingMember)
+      if (qualifying.length === 0) continue
+      // Prefer the highest-balance qualifying member as the rep — it's the
+      // most likely candidate for actually placing arbs (vs a bonus-only
+      // sibling with 0 balance).
+      qualifying.sort((a, b) => getBalance(balances[b]) - getBalance(balances[a]))
+      reps.push({ cluster, rep: qualifying[0] })
     }
 
     if (reps.length === 0) {
+      // No funded clusters → either balances haven't loaded yet, or every soft
+      // is drained. Leave cached oppsByCluster intact rather than wiping —
+      // when the bankroll fetch completes, fundedClustersKey re-fires and we
+      // scan properly. Wiping here used to clobber the localStorage-restored
+      // state on every initial mount.
+      if (Object.keys(balances).length === 0) return
       setOppsByCluster({})
       return
     }
@@ -401,7 +1030,44 @@ export default function PlayPage() {
     // the drain-to-unlimited goal and avoids opps where both legs are
     // caps-prone soft books (which the runner would also reject via
     // is_valid_arb_shape, so generating them is just UI noise).
-    const pool = Array.from(UNLIMITED_PROVIDERS)
+    // Honour the user's counter-pool filter (chip toggles in the arb-page
+    // header). enabledCountersRef.current is the latest set; reading via
+    // ref so the scan callback doesn't have to list it as a dep.
+    const pool = Array.from(UNLIMITED_PROVIDERS).filter(p => enabledCountersRef.current.has(p))
+
+    // Apply persisted live-odds overrides on top of fresh API results so a
+    // refresh / re-scan doesn't snap back to the 60-s cached values that
+    // pre-date our live drift. Recomputes profit from the merged odds.
+    const applyOverrides = (opps: any[]): any[] => {
+      const overrides = liveLegOddsRef.current
+      const now = Date.now()
+      return opps.map(o => {
+        const eid = o.event_id
+        if (!eid) return o
+        let touched = false
+        const legs = (o.legs ?? []).map((l: any) => {
+          const k = legOddsKey(eid, l.provider ?? l.provider_id ?? '', l.outcome, l.point)
+          const ov = overrides[k]
+          // Only apply if the overlay is fresh — stale entries silently
+          // distort the API edge (see Pol Martin Tiffon incident: 6h-old
+          // overlay made a -1% arb look like -25%, click reverted to truth).
+          if (ov && ov.odds > 0 && ov.odds !== l.odds && now - ov.ts < LIVE_ODDS_TTL_MS) {
+            touched = true
+            return { ...l, odds: ov.odds }
+          }
+          return l
+        })
+        if (!touched) return o
+        let invSum = 0
+        for (const l of legs) {
+          const x = Number(l.odds ?? 0)
+          if (x <= 0) { invSum = 0; break }
+          invSum += 1 / x
+        }
+        const newProfit = invSum > 0 ? (1 / invSum - 1) * 100 : (o.guaranteed_profit_pct ?? 0)
+        return { ...o, legs, guaranteed_profit_pct: newProfit, profit_pct: newProfit }
+      })
+    }
 
     try {
       setArbLoading(true)
@@ -413,9 +1079,9 @@ export default function PlayPage() {
         if (controller.signal.aborted) return
         const counters = pool.filter(p => resolveSoftCluster(p) !== cluster)
         try {
-          const res = await api.getArbOpps([rep], counters, 10)
+          const res = await api.getArbOpps([rep], counters, 20)
           if (controller.signal.aborted) return
-          const opps = ((res?.opportunities ?? []) as any[]).sort(
+          const opps = applyOverrides(((res?.opportunities ?? []) as any[])).sort(
             (a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0),
           )
           results.push([cluster, opps] as const)
@@ -434,10 +1100,11 @@ export default function PlayPage() {
     }
     // Note: providerBalances is read via balancesRef.current — NOT in the deps
     // list — so balance ticks don't re-trigger the scan. fundedClustersKey
-    // changes only when the SET of funded clusters changes, which is when we
-    // genuinely need a fresh scan.
+    // changes only when the SET of funded clusters changes. enabledCountersKey
+    // re-fires the scan when the user toggles which unlimited providers are
+    // allowed in the counter pool.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fundedClustersKey])
+  }, [fundedClustersKey, enabledCountersKey])
 
   useEffect(() => {
     loadArbOpps()
@@ -487,9 +1154,23 @@ export default function PlayPage() {
           const r = await fetch(`/mirror/browser/provider/${pid}`)
           const d = await r.json()
           if (cancelled) return
+          // Polling is AUTHORITATIVE for green/amber. Mirror backend reads
+          // the live page state every call (localStorage + DOM signals);
+          // if it says logged_in=false, we trust it and clear the set.
+          // SSE events still add immediately on login_detected so we don't
+          // wait 10s for the green flip — but the next poll reconciles
+          // any stale additions (e.g. balance_intercepted with balance=0
+          // from an unauthenticated /currency endpoint).
+          setLoggedInProviders(prev => {
+            const has = prev.has(pid)
+            if (d.logged_in && !has) return new Set(prev).add(pid)
+            if (!d.logged_in && has) {
+              const n = new Set(prev); n.delete(pid); return n
+            }
+            return prev
+          })
           if (d.logged_in) {
             missCount[pid] = 0
-            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
             if ((d.balance ?? 0) > 0) {
               try {
                 const ps = await getStatus()
@@ -512,13 +1193,10 @@ export default function PlayPage() {
             }
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
-            if (missCount[pid] >= 2) {
-              setLoggedInProviders(prev => {
-                if (!prev.has(pid)) return prev
-                const n = new Set(prev); n.delete(pid); return n
-              })
-              activated.delete(pid)
-            }
+            // loggedInProviders already reconciled at the top of the loop;
+            // here we only track activation gating which uses 2-miss
+            // debounce to avoid runner thrashing on transient blips.
+            if (missCount[pid] >= 2) activated.delete(pid)
           }
         } catch { /* swallow — retry next tick */ }
       }
@@ -572,22 +1250,20 @@ export default function PlayPage() {
               const n = new Set(prev); n.delete(pid); return n
             })
           }
+          // Polling is AUTHORITATIVE — see UNLIMITED loop above for rationale.
+          setLoggedInProviders(prev => {
+            const has = prev.has(pid)
+            if (d.logged_in && !has) return new Set(prev).add(pid)
+            if (!d.logged_in && has) {
+              const n = new Set(prev); n.delete(pid); return n
+            }
+            return prev
+          })
           if (d.logged_in) {
             missCount[pid] = 0
-            setLoggedInProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-            // Soft providers do NOT auto-activate. The user explicitly picks
-            // a soft anchor (clicks its row) when they want to play arb on it.
-            // The unlimited counter tabs are opened eagerly at mirror/start
-            // so they're ready as soon as a soft anchor activates.
           } else {
             missCount[pid] = (missCount[pid] || 0) + 1
-            if (missCount[pid] >= 2) {
-              setLoggedInProviders(prev => {
-                if (!prev.has(pid)) return prev
-                const n = new Set(prev); n.delete(pid); return n
-              })
-              activated.delete(pid)
-            }
+            if (missCount[pid] >= 2) activated.delete(pid)
           }
         } catch { /* swallow */ }
       }
@@ -599,6 +1275,74 @@ export default function PlayPage() {
     const id = setInterval(check, 10000)
     return () => { cancelled = true; clearInterval(id) }
   }, [providerBalances, pendingByProvider])
+
+  // One-shot seed on mount: pull /mirror/play/status so the chip reflects
+  // the runner's current state if the runner is already past the events
+  // we'd have caught via SSE. /mirror/stream is pure live fan-out (no
+  // replay), so a page reload mid-session leaves loopProviderStatus
+  // empty and the chip stuck on the default 'tab_open' / red pill even
+  // though the backend has already advanced to ready_to_run / running.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ps = await api.getPlayStatus()
+        if (cancelled || !ps) return
+        const providers = ps.providers ?? {}
+        const seeded: Record<string, any> = {}
+        for (const [pid, s] of Object.entries<any>(providers)) {
+          if (s?.state && s.state !== 'idle' && s.state !== 'none') {
+            seeded[pid] = { state: s.state, current_bet: s.current_bet ?? null }
+          }
+        }
+        if (Object.keys(seeded).length > 0) {
+          setLoopProviderStatus(prev => ({ ...(prev ?? {}), ...seeded }))
+          setActiveProviders(prev => {
+            const next = new Set(prev)
+            for (const pid of Object.keys(seeded)) next.add(pid)
+            return next
+          })
+        }
+        if (ps.state === 'running') setLoopRunning(true)
+      } catch { /* ignore — SSE will catch up next event */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Phase 2 recovery floor — fold mirror DB state into loopProviderStatus.
+  // Runs every time mirrorState refreshes (5s default). DB state is
+  // authoritative when SSE drops events; SSE still wins between polls
+  // because its updates land seconds before the next mirrorState tick.
+  useEffect(() => {
+    const runners = mirrorState.runners
+    if (!runners || Object.keys(runners).length === 0) return
+    // DB state can be stale from a prior arnold.bat run that died without
+    // writing state='idle'. Activity (i.e. activeProviders membership) must
+    // come from the live in-memory runner via /mirror/play/status — NOT from
+    // DB. Otherwise a previous session's "ready_to_run" leaks into a fresh
+    // launch where no runner exists. We ONLY update loopProviderStatus here,
+    // and only for providers the user already activated this session.
+    const seeded: Record<string, any> = {}
+    for (const [pid, r] of Object.entries(runners)) {
+      const s = r.state
+      if (!s || s === 'idle' || s === 'none') continue
+      if (!activeProviders.has(pid)) continue
+      seeded[pid] = { state: s, current_bet: null }
+    }
+    if (Object.keys(seeded).length > 0) {
+      setLoopProviderStatus(prev => {
+        const merged: Record<string, any> = { ...(prev ?? {}) }
+        for (const [pid, v] of Object.entries(seeded)) {
+          // SSE-driven entry is authoritative if it has a current_bet (live
+          // update). Otherwise DB state wins — this unsticks the "Log in to
+          // continue" red pill when SSE missed the provider_ready event.
+          const existing = merged[pid]
+          if (!existing || !existing.current_bet) merged[pid] = v
+        }
+        return merged
+      })
+    }
+  }, [mirrorState.lastFetched, activeProviders])
 
   // SSE event handler
   useEffect(() => {
@@ -626,6 +1370,15 @@ export default function PlayPage() {
     }
     if (type === 'settling_pending') setProviderStatusFor(data.provider_id, 'scanning pending…')
     if (type === 'settling_done') {
+      // Clear the "scanning pending…" status set by settling_pending — the
+      // sync is done so the badge shouldn't linger. Without this the cyan
+      // badge stayed on indefinitely if the play runner cached an old
+      // settling state. Reactive sync now fires settling_done in a finally
+      // block so the badge always clears.
+      setProviderStatus(prev => {
+        if (!prev[data.provider_id]) return prev
+        const next = { ...prev }; delete next[data.provider_id]; return next
+      })
       if (data.settlements?.length > 0) {
         const newToasts: SettleToast[] = data.settlements.map((s: any) => {
           const bet = data.pending_bets?.find((b: any) => b.bet_id === s.bet_id || b.id === s.bet_id)
@@ -777,6 +1530,287 @@ export default function PlayPage() {
       setArbAllGreen(false)
       setArbProfitPct(null)
     }
+    if (type === 'arb_leg_event_closed') {
+      const eid = data.event_id
+      const pid = data.provider_id
+      if (eid) setDrainedEventIds(prev => prev.has(eid) ? prev : new Set([...prev, eid]))
+      if (pid) setProviderStatusFor(pid, `event finished — auto-skipping`)
+    }
+    if (type === 'provider_manual_nav') {
+      // User browsed the counter tab to a matchup page on their own.
+      // Match the URL's team slugs against open opps and auto-pick the
+      // first hit so the DUTCH ARB widget shows the right event without
+      // the user having to click anything in the arnold UI.
+      const pid = data.provider_id
+      const homeSlug = (data.home_slug ?? '') as string
+      const awaySlug = (data.away_slug ?? '') as string
+      if (!pid || !homeSlug || !awaySlug) return
+      const slugify = (s: string) =>
+        s.toLowerCase().trim().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '')
+      const matchOpp = (o: any): boolean => {
+        const h = slugify(o.display_home || o.home_team || '')
+        const a = slugify(o.display_away || o.away_team || '')
+        if (!h || !a) return false
+        // Pinnacle's URL is always (home)-vs-(away). Ours could be either
+        // order if the canonical home/away differs — check both.
+        return (h === homeSlug && a === awaySlug) || (h === awaySlug && a === homeSlug)
+      }
+      let matched: { eid: string; opp: any } | null = null
+      for (const opps of Object.values(oppsByCluster)) {
+        const found = (opps as any[]).find(matchOpp)
+        if (found) { matched = { eid: found.event_id, opp: found }; break }
+      }
+      if (!matched) return  // no open arb for this matchup — ignore silently
+      const eid = matched.eid
+      setPickedEventByProvider(prev => prev[pid] === eid ? prev : { ...prev, [pid]: eid })
+      // Sync ONLY the leg the user already clicked in arnold UI (recorded
+      // at navigate-time in pickedLegMetaByProvider). Greening every leg
+      // of the opp lit up all 3 sibling legs in 1X2 arbs which contradicts
+      // the workflow: user picks soft anchor first → checks ONE specific
+      // sharp leg → places. Manual nav alone (no prior arnold click) just
+      // sets pickedEventByProvider without auto-syncing any leg.
+      const picked = pickedLegMetaByProvider.current[pid]
+      if (picked && picked.eid === eid) {
+        const lk = legKey(pid, picked.outcome, picked.point)
+        setSyncedLegs(prev => {
+          const cur = prev[eid] ?? new Set<string>()
+          if (cur.has(lk)) return prev
+          const next = new Set(cur); next.add(lk)
+          return { ...prev, [eid]: next }
+        })
+      }
+      setProviderStatusFor(pid, `manual nav detected — pick outcome + Place`)
+    }
+    if (type === 'arb_leg_synced' && data.user_picked) {
+      const eid = data.event_id
+      const pid = data.provider_id
+      if (eid && pid) {
+        // The SSE event tells us provider_id but not which specific leg
+        // outcome/point — recover that from pickedLegMetaByProvider, set at
+        // navigate-time. Without this the synced set is keyed by pid only,
+        // which collides for 1X2 arbs with multiple legs on one provider.
+        const picked = pickedLegMetaByProvider.current[pid]
+        const lk = picked && picked.eid === eid
+          ? legKey(pid, picked.outcome, picked.point)
+          : null
+        if (lk) {
+          setSyncedLegs(prev => {
+            const cur = prev[eid] ?? new Set<string>()
+            if (cur.has(lk)) return prev
+            const next = new Set(cur); next.add(lk)
+            return { ...prev, [eid]: next }
+          })
+        }
+      }
+    }
+    if (type === 'arb_leg_failed' && data.event_id && data.provider_id) {
+      // Drop from syncedLegs so the cell goes back to neutral. Same picked-
+      // meta lookup as arb_leg_synced.
+      const eid = data.event_id
+      const pid = data.provider_id
+      const picked = pickedLegMetaByProvider.current[pid]
+      const lk = picked && picked.eid === eid ? legKey(pid, picked.outcome, picked.point) : null
+      if (lk) {
+        setSyncedLegs(prev => {
+          const cur = prev[eid]
+          if (!cur || !cur.has(lk)) return prev
+          const next = new Set(cur); next.delete(lk)
+          return { ...prev, [eid]: next }
+        })
+      }
+    }
+    if (type === 'arb_leg_odds') {
+      // Update the picked event's leg odds with the streamed live value,
+      // recalc the arb's guaranteed_profit_pct, and re-sort the cluster's
+      // opp list so the row moves to its correct rank. NO auto-navigate on
+      // dethrone — the list just visually updates, user picks again if they
+      // want the new top. (Auto-renav was racing with in-flight navigates
+      // and event_closed auto-skip → cascading chaos.)
+      const pid = data.provider_id
+      const live = Number(data.live_odds ?? 0)
+      const eid = data.event_id
+      if (!pid || live <= 0 || !eid) return
+      console.log(`[arb_leg_odds] received pid=${pid} eid=${eid} live=${live}`)
+      // The poll task tells us provider_id + live_odds but NOT outcome/point.
+      // Use the picked-leg meta we stashed at navigate-time so we update the
+      // RIGHT leg (avoids over/under cross-pollination when both opps for
+      // this event share the same provider).
+      const picked = pickedLegMetaByProvider.current[pid]
+      const pickedOutcome = picked && picked.eid === eid ? picked.outcome : null
+      const pickedPoint = picked && picked.eid === eid ? picked.point : null
+      // Cluster-shared opps: scanner often picks a sibling's leg (e.g.
+      // QUICKCASINO @ 1.62 beats BETINIA @ 1.60) but the poll task streams
+      // updates keyed on `pid` (the funded cluster member the user navigated
+      // on). Accept ANY leg from the same soft cluster — otherwise the
+      // sibling-anchored leg in opp.legs never gets the live update and the
+      // UI stays at the stale extraction-time odds.
+      const pickedCluster = resolveSoftCluster(pid)
+      const legMatchesPicked = (l: any): boolean => {
+        const lpid = (l.provider ?? l.provider_id ?? '') as string
+        if (lpid !== pid && resolveSoftCluster(lpid) !== pickedCluster) return false
+        if (pickedOutcome == null) return true  // no meta — fall back to old loose match
+        if ((l.outcome ?? '') !== pickedOutcome) return false
+        if ((l.point ?? null) !== pickedPoint) return false
+        return true
+      }
+      const ts = Date.now()
+      setOppsByCluster(prev => {
+        // First pass: persist the override against the exact picked leg.
+        if (pickedOutcome != null) {
+          const k = legOddsKey(eid, pid, pickedOutcome, pickedPoint)
+          setLiveLegOdds(om => om[k]?.odds === live ? om : { ...om, [k]: { odds: live, ts } })
+        } else {
+          // No picked-leg meta (shouldn't happen post-navigate, but guard
+          // anyway) — best-effort key against the first matching leg.
+          for (const opps of Object.values(prev)) {
+            const o = opps.find((x: any) => x.event_id === eid)
+            if (!o) continue
+            const matchedLeg = (o.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid)
+            if (matchedLeg) {
+              const k = legOddsKey(eid, pid, matchedLeg.outcome, matchedLeg.point)
+              setLiveLegOdds(om => om[k]?.odds === live ? om : { ...om, [k]: { odds: live, ts } })
+            }
+            break
+          }
+        }
+        const next: Record<string, any[]> = {}
+        let totalMatches = 0
+        for (const [cluster, opps] of Object.entries(prev)) {
+          let mutated = false
+          const updated = opps.map(o => {
+            if (o.event_id !== eid) return o
+            totalMatches++
+            const legs = (o.legs ?? []).map((l: any) =>
+              legMatchesPicked(l) ? { ...l, odds: live } : l,
+            )
+            // Recalc guaranteed_profit_pct using arb math:
+            //   profit% = (1 / Σ(1/odds_i) − 1) × 100
+            let invSum = 0
+            for (const l of legs) {
+              const o2 = Number(l.odds ?? 0)
+              if (o2 <= 0) { invSum = 0; break }
+              invSum += 1 / o2
+            }
+            const newProfit = invSum > 0 ? (1 / invSum - 1) * 100 : (o.guaranteed_profit_pct ?? 0)
+            mutated = true
+            return { ...o, legs, guaranteed_profit_pct: newProfit, profit_pct: newProfit }
+          })
+          if (!mutated) {
+            next[cluster] = opps
+            continue
+          }
+          const sorted = [...updated]
+            .filter(o => !drainedEventIds.has(o.event_id))
+            .sort((a, b) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
+          const drainedPart = updated.filter(o => drainedEventIds.has(o.event_id))
+          next[cluster] = [...sorted, ...drainedPart]
+        }
+        if (totalMatches === 0) console.log(`[arb_leg_odds] no opp matched eid=${eid} (clusters=${Object.keys(prev).join(',')})`)
+        return next
+      })
+    }
+    // Passive live-odds push from the mirror's network interceptor. Fires
+    // ~every 5s while ANY tab is open on an Altenar tenant (BETINIA / Quick-
+    // casino / Campobet / Lodur / Swiper / Dbet) — the bookmaker's Get-
+    // OddsStates WS push broadcasts `{outcome_id: price}` updates which we
+    // correlate against each leg's `provider_meta.outcome_id`. No user click
+    // required — the UI tracks site-live odds the moment they change. Updates
+    // every cluster sibling at the same key because Altenar tenants share an
+    // odds engine.
+    if (type === 'live_provider_odds') {
+      const pid = data.provider_id as string
+      const updates = (data.updates ?? {}) as Record<string, number>
+      if (!pid || !updates || Object.keys(updates).length === 0) return
+      const cluster = resolveSoftCluster(pid)
+      const ts = Date.now()
+      setOppsByCluster(prev => {
+        const next: Record<string, any[]> = {}
+        let totalMatches = 0
+        for (const [c, opps] of Object.entries(prev)) {
+          if (c !== cluster) {
+            next[c] = opps
+            continue
+          }
+          let mutated = false
+          const updated = opps.map(o => {
+            let legMutated = false
+            const legs = (o.legs ?? []).map((l: any) => {
+              // Only act on legs belonging to this soft cluster — sharp /
+              // unlimited counter legs (pinnacle / polymarket / etc.) carry
+              // their own outcome_ids that would never collide, but the
+              // cluster filter is cheap insurance against future ID reuse.
+              const lpid = (l.provider ?? l.provider_id ?? '') as string
+              if (resolveSoftCluster(lpid) !== cluster) return l
+              const oid = (l.provider_meta || {}).outcome_id
+              if (!oid) return l
+              const newOdds = updates[String(oid)]
+              if (newOdds == null || newOdds <= 0 || newOdds === l.odds) return l
+              legMutated = true
+              // Persist override so loadArbOpps reapplies it after the next
+              // 5-min server re-scan (server odds may briefly snap back).
+              const k = legOddsKey(o.event_id, lpid, l.outcome, l.point)
+              setLiveLegOdds(om => om[k]?.odds === newOdds ? om : { ...om, [k]: { odds: newOdds, ts } })
+              return { ...l, odds: newOdds }
+            })
+            if (!legMutated) return o
+            mutated = true
+            totalMatches += 1
+            let invSum = 0
+            for (const l of legs) {
+              const x = Number(l.odds ?? 0)
+              if (x <= 0) { invSum = 0; break }
+              invSum += 1 / x
+            }
+            const newProfit = invSum > 0 ? (1 / invSum - 1) * 100 : (o.guaranteed_profit_pct ?? 0)
+            return { ...o, legs, guaranteed_profit_pct: newProfit, profit_pct: newProfit }
+          })
+          if (!mutated) {
+            next[c] = opps
+            continue
+          }
+          const sorted = [...updated]
+            .filter((o: any) => !drainedEventIds.has(o.event_id))
+            .sort((a: any, b: any) => (b.guaranteed_profit_pct ?? 0) - (a.guaranteed_profit_pct ?? 0))
+          const drainedPart = updated.filter((o: any) => drainedEventIds.has(o.event_id))
+          next[c] = [...sorted, ...drainedPart]
+        }
+        if (totalMatches > 0) console.log(`[live_provider_odds] ${pid} updated ${totalMatches} opps via ${Object.keys(updates).length} odd changes`)
+        return next
+      })
+    }
+    if (type === 'bet_recorded') {
+      const id = `${data.provider_id}-${data.bet_id}-${Date.now()}`
+      setBetRecordedToasts(prev => [
+        ...prev,
+        { id, kind: 'ok', pid: data.provider_id, bet_id: data.bet_id, odds: data.odds, stake: data.stake },
+      ])
+      setTimeout(() => setBetRecordedToasts(prev => prev.filter(t => t.id !== id)), 6000)
+      load()
+      return
+    }
+    if (type === 'bet_record_failed') {
+      const id = `${data.provider_id}-fail-${Date.now()}`
+      setBetRecordedToasts(prev => [
+        ...prev,
+        { id, kind: 'fail', pid: data.provider_id, reason: data.reason ?? 'unknown' },
+      ])
+      setTimeout(() => setBetRecordedToasts(prev => prev.filter(t => t.id !== id)), 8000)
+      return
+    }
+    if (type === 'bet_record_deferred') {
+      // Amber info toast (NOT red fail) — bookmaker accepted the bet but the
+      // response didn't carry the actual_stake (common when stake-limited).
+      // The reactive history sync will pick it up with the correct amount
+      // once the user lands on the provider's history page. Auto-cleared
+      // when bet_recorded for the same provider fires next.
+      const id = `${data.provider_id}-defer-${Date.now()}`
+      setBetRecordedToasts(prev => [
+        ...prev,
+        { id, kind: 'info', pid: data.provider_id, reason: `Open ${data.provider_id?.toUpperCase()} history to record actual stake` },
+      ])
+      setTimeout(() => setBetRecordedToasts(prev => prev.filter(t => t.id !== id)), 9000)
+      return
+    }
     if (type === 'arb_alignment') {
       setArbAllGreen(!!data.all_green)
       setArbProfitPct(data.current_profit_pct ?? data.profit_pct ?? null)
@@ -884,7 +1918,8 @@ export default function PlayPage() {
                    type === 'provider_running' ? 'running' :
                    type === 'bet_ready' ? 'ready' :
                    type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed' ? 'navigating' :
-                   type.includes('login') ? 'login_waiting' :
+                   type === 'login_waiting' ? 'login_waiting' :
+                   type === 'login_detected' ? 'settling' :
                    type === 'settling_pending' ? 'settling' : 'opening',
             current_bet: data.bet || null,
           }
@@ -932,24 +1967,109 @@ export default function PlayPage() {
     setConfirmedSettlements([])
   }, [toasts, settleWaiting, confirmedSettlements])
 
+  // TTK = time-to-kickoff. Generic over any ISO start time so we can render
+  // it on value bets (uses `start_time`), arb opps (uses `starts_at`) and
+  // pending rows alike. Negative values (event already started) flow back
+  // as -<m>m / -<h>h so the UI can display "started 8m ago".
+  const fmtTtkFromIso = (iso: string | null | undefined): string => {
+    if (!iso) return '—'
+    const t = new Date(iso).getTime()
+    if (Number.isNaN(t)) return '—'
+    const diffMs = t - Date.now()
+    const past = diffMs < 0
+    const m = Math.abs(diffMs) / 60000
+    const h = m / 60
+    const d = h / 24
+    let s: string
+    if (m < 60) s = `${Math.round(m)}m`
+    else if (h < 48) s = `${Math.round(h)}h`
+    else s = `${Math.round(d)}d`
+    return past ? `-${s}` : s
+  }
+  const ttkClass = (iso: string | null | undefined): string => {
+    if (!iso) return 'text-zinc-600'
+    const diffMs = new Date(iso).getTime() - Date.now()
+    if (Number.isNaN(diffMs)) return 'text-zinc-600'
+    if (diffMs < 0) return 'text-red-400'         // already started — pre-match arb is dead
+    if (diffMs < 15 * 60_000) return 'text-amber-400'  // <15m — urgent, place now
+    if (diffMs < 60 * 60_000) return 'text-yellow-300' // <1h
+    return 'text-zinc-400'
+  }
   const getTtkHours = (b: BatchBet) => {
     if (!b.start_time) return null
     const diff = new Date(b.start_time).getTime() - Date.now()
     return diff > 0 ? diff / 3600000 : 0
   }
-  const fmtTtk = (b: BatchBet) => {
-    const h = getTtkHours(b)
-    if (h == null) return '—'
-    if (h < 1) return `${Math.round(h * 60)}m`
-    if (h < 48) return `${Math.round(h)}h`
-    return `${Math.round(h / 24)}d`
-  }
+  const fmtTtk = (b: BatchBet) => fmtTtkFromIso(b.start_time)
+
+  // Blacklist: hide value bets where (event, market) is already placed.
+  // Two-tier matching, same as Section A:
+  //   1. exact event_id|market match (scanner-stamped bets)
+  //   2. fuzzy event_name + market via bigram-Dice ≥ 0.55 — covers
+  //      Polymarket positions which record with event_id="" market=""
+  //      (the positions API doesn't carry them). 1x2 ↔ moneyline
+  //      normalised; market="" treated as wildcard (Polymarket positions
+  //      blacklist any market on the matched event, which is what we want
+  //      since the user can only buy one outcome per Polymarket market).
+  // Other markets on the same event stay visible — playing ML doesn't hide
+  // an O/U row, but it does hide the ML row even if event_id is empty.
+  const valueBetBlacklist = useMemo(() => {
+    const stop = new Set(['vs', 'v', 'and', 'the', 'fc', 'cf', 'sc', 'fk', 'ec', 'esports', 'counter', 'strike'])
+    const normalise = (s: string): string =>
+      (s || '')
+        .toLowerCase()
+        .replace(/[.,:;!?'"`()/\\-]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length >= 2 && !stop.has(t))
+        .join(' ')
+    const toBigrams = (s: string): Set<string> => {
+      const out = new Set<string>()
+      const clean = s.replace(/\s+/g, '')
+      for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2))
+      return out
+    }
+    const exactKeys = new Set<string>()
+    const fuzzy: { bigrams: Set<string>; market: string }[] = []
+    for (const provBets of Object.values(pendingByProvider)) {
+      for (const b of provBets as any[]) {
+        const mk = b?.market === '1x2' ? 'moneyline' : (b?.market ?? '')
+        const eid = b?.event_id
+        if (eid && mk) exactKeys.add(`${eid}|${mk}`)
+        const name = b?.event_name || (b?.home_team && b?.away_team ? `${b.home_team} v ${b.away_team}` : '')
+        if (name) {
+          const norm = normalise(name)
+          if (norm.length >= 4) fuzzy.push({ bigrams: toBigrams(norm), market: mk || '*' })
+        }
+      }
+    }
+    return {
+      exactKeys,
+      matchesByName: (b: BatchBet): boolean => {
+        const oppName = `${b.display_home || ''} ${b.display_away || ''}`.trim()
+        const norm = normalise(oppName)
+        if (norm.length < 4) return false
+        const oppBigrams = toBigrams(norm)
+        const oppMk = b.market === '1x2' ? 'moneyline' : b.market
+        for (const { bigrams, market } of fuzzy) {
+          if (market !== '*' && market !== oppMk) continue
+          let shared = 0
+          for (const x of oppBigrams) if (bigrams.has(x)) shared++
+          const dice = (2 * shared) / (oppBigrams.size + bigrams.size || 1)
+          if (dice >= 0.55) return true
+        }
+        return false
+      },
+    }
+  }, [pendingByProvider])
 
   const bets = batch.filter(b => {
     if (!UNLIMITED_PROVIDERS.has(b.provider_id)) return false
     if (b.edge_pct <= 0) return false
     const h = getTtkHours(b)
     if (h != null && h > ttkFilter) return false
+    const mk = b.market === '1x2' ? 'moneyline' : b.market
+    if (b.event_id && mk && valueBetBlacklist.exactKeys.has(`${b.event_id}|${mk}`)) return false
+    if (valueBetBlacklist.matchesByName(b)) return false
     return true
   })
 
@@ -1025,8 +2145,12 @@ export default function PlayPage() {
   const totalEv = summary?.total_expected_profit ?? bets.reduce((s, b) => s + b.expected_profit, 0)
   const totalPending = Object.values(pendingByProvider).reduce((s, arr) => s + arr.length, 0)
 
-  const fmtStake = (b: BatchBet) => b.tier === 'polymarket' ? `$${b.stake.toFixed(1)}` : `${Math.round(b.stake)} kr`
-  const fmtEv = (b: BatchBet) => b.tier === 'polymarket' ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
+  // Polymarket + Kalshi are cents/dollar markets — odds derived from a 1-99¢
+  // probability price, stakes in USD. Everyone else is decimal-odds + SEK.
+  const isCentsMarket = (provider_id: string | undefined | null): boolean =>
+    provider_id === 'polymarket' || provider_id === 'kalshi'
+  const fmtStake = (b: BatchBet) => isCentsMarket(b.provider_id) ? `$${b.stake.toFixed(2)}` : `${Math.round(b.stake)} kr`
+  const fmtEv = (b: BatchBet) => isCentsMarket(b.provider_id) ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
   // Compact market label so the user can tell at a glance whether the bet is
   // on the moneyline / total / spread / 1x2. Includes the line value for
   // total/spread (e.g. "O/U 215.5"). Falls back to the raw market string for
@@ -1048,8 +2172,10 @@ export default function PlayPage() {
   // precision on the cent value (no integer rounding) — Polymarket's betslip
   // shows fractional cents and we need an exact match for confirmation.
   const oddsToCents = (odds: number) => odds > 0 ? (100 / odds).toFixed(2) : '0.00'
-  const fmtOddsWithCents = (odds: number, isPoly: boolean) =>
-    isPoly ? `${odds.toFixed(2)} (${oddsToCents(odds)}¢)` : odds.toFixed(2)
+  // `isCents` named generically because both polymarket and kalshi need the
+  // cent display, not just polymarket.
+  const fmtOddsWithCents = (odds: number, isCents: boolean) =>
+    isCents ? `${odds.toFixed(2)} (${oddsToCents(odds)}¢)` : odds.toFixed(2)
 
   const resolveOutcome = (b: BatchBet) => {
     if (b.outcome === 'home') return b.display_home || 'Home'
@@ -1085,6 +2211,20 @@ export default function PlayPage() {
         >
           Arbitrage
         </button>
+        {/* Live polling diagnostic — shows backend's logged_in answer per
+            unlimited provider in real time. If a chip below shows green but
+            the diag here shows ✗, the frontend has stale state. */}
+        <div className="ml-4 flex items-center gap-2 text-[10px] font-mono text-zinc-500">
+          <span className="text-zinc-600">poll:</span>
+          {Array.from(UNLIMITED_PROVIDERS).map(pid => {
+            const isIn = loggedInProviders.has(pid)
+            return (
+              <span key={pid} className={isIn ? 'text-emerald-400' : 'text-zinc-600'}>
+                {pid}={isIn ? '✓' : '✗'}
+              </span>
+            )
+          })}
+        </div>
       </div>
 
       {/* Header */}
@@ -1135,43 +2275,46 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Arb alignment card — shows per-leg slip state during a loaded opp */}
-      {arbLegs && arbLegs.length > 0 && (
-        <div className="border-b border-purple-700/50 bg-purple-900/10 px-3 py-2">
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-900/50 text-purple-400 border border-purple-700/50 rounded">DUTCH ARB</span>
-            {arbProfitPct != null && (
-              <span className={`text-xs font-mono font-semibold ${arbProfitPct > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {arbProfitPct > 0 ? '+' : ''}{arbProfitPct.toFixed(2)}% profit
-              </span>
-            )}
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${arbAllGreen ? 'bg-green-900/50 text-green-300' : 'bg-zinc-800 text-zinc-400'}`}>
-              {arbAllGreen ? 'ALL GREEN — place anchor' : 'WAITING'}
-            </span>
-            {arbGroupId && <span className="text-[10px] text-zinc-600 ml-auto font-mono">{arbGroupId}</span>}
-          </div>
-          <div className="space-y-0.5">
-            {arbLegs.map(leg => (
-              <div key={leg.provider_id} className="flex items-center gap-2 pl-1 text-[10px]">
-                <span className={`inline-block w-2 h-2 rounded-full ${leg.slip_state === 'green' ? 'bg-green-400' : leg.slip_state === 'red' ? 'bg-red-400' : 'bg-zinc-600 animate-pulse'}`} />
-                <span className="text-zinc-400 uppercase w-16">{leg.provider_id}</span>
-                <span className="font-mono text-zinc-300 w-16">@ {leg.current_odds?.toFixed(2)}</span>
-                <span className="font-mono text-zinc-500 w-20">(plan {leg.planned_odds?.toFixed(2)})</span>
-                <span className={`font-mono w-12 ${Math.abs(leg.drift_pct) > 1 ? 'text-amber-400' : 'text-zinc-500'}`}>
-                  {leg.drift_pct >= 0 ? '+' : ''}{leg.drift_pct?.toFixed(2)}%
-                </span>
-                <span className="font-mono text-zinc-300 w-16">{Math.round(leg.current_stake ?? 0)} kr</span>
-                {leg.placed && <span className="text-green-400 font-semibold">PLACED</span>}
-                {leg.failed_reason && <span className="text-red-400">FAILED: {leg.failed_reason}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* DUTCH ARB / WAITING widget moved per-provider — see the per-cluster
+          render below where it appears under each provider header row, scoped
+          to that provider's currently-picked event_id (pickedEventByProvider). */}
 
       {arbDethroneToast && (
         <div className="border-b border-amber-700/50 bg-amber-900/10 px-3 py-1.5 text-xs text-amber-300">
           {arbDethroneToast}
+        </div>
+      )}
+
+      {/* Floating bet-recorded confirmations (top-right). Auto-dismiss after
+          ~6s. Stack vertically when multiple legs of an arb land close in time. */}
+      {betRecordedToasts.length > 0 && (
+        <div className="fixed top-3 right-3 z-50 flex flex-col gap-2 max-w-sm">
+          {betRecordedToasts.map(t => {
+            const palette =
+              t.kind === 'ok'
+                ? 'bg-emerald-900/80 border-emerald-600/60 text-emerald-100'
+                : t.kind === 'info'
+                  ? 'bg-amber-900/80 border-amber-600/60 text-amber-100'
+                  : 'bg-red-900/80 border-red-600/60 text-red-100'
+            const label =
+              t.kind === 'ok'
+                ? 'Bet recorded'
+                : t.kind === 'info'
+                  ? 'Awaiting history sync'
+                  : 'Record failed'
+            return (
+              <div key={t.id} className={`px-3 py-2 rounded shadow-lg border text-xs font-mono ${palette}`}>
+                <div className="font-semibold uppercase tracking-wider text-[10px]">
+                  {label} · {t.pid?.toUpperCase()}
+                </div>
+                <div className="text-zinc-200 mt-0.5">
+                  {t.kind === 'ok'
+                    ? `bet #${t.bet_id} · @${(t.odds ?? 0).toFixed(2)} · ${Math.round(t.stake ?? 0)} kr · synced to DB`
+                    : t.reason}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -1205,7 +2348,7 @@ export default function PlayPage() {
                   </span>
                   <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
                   <span className="text-[10px] font-mono text-zinc-200">
-                    @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, pid === 'polymarket')}
+                    @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, isCentsMarket(pid))}
                   </span>
                   {status.current_bet.edge_pct != null && <span className="text-[10px] text-green-400">+{status.current_bet.edge_pct?.toFixed(1)}%</span>}
                   <span className="text-[10px] font-mono text-zinc-500">{Math.round(status.current_bet.stake ?? 0)} kr</span>
@@ -1231,6 +2374,80 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
+          // Global event+market blacklist set, derived from every provider's
+          // pending bets. Used by the per-cluster arb-row filter to hide arbs
+          // we've already placed. Normalises 1x2 → moneyline since the scanner
+          // emits both names for the same 3-way/2-way market. Cross-provider:
+          // a BETINIA pending bet on PariVision-G2 hides the same arb under
+          // every cluster including standalone unlimited counters.
+          //
+          // Two key sets:
+          //   1. event_id-keyed — scanner-stamped event_id matches exact.
+          //   2. token-keyed — event_name token-set matches the opp's
+          //      home/away tokens. Needed because manually-recovered bets
+          //      (recorded via _record_unknown_open_bets) have event_id=""
+          //      so the exact-id key never hits. Tokenisation strips punct,
+          //      lowercases, drops short words. Match = 2+ shared tokens.
+          const placedEventMarketKeys = new Set<string>()
+          // For event_name fallback we keep the raw normalised string per
+          // placed bet so we can do bigram-Dice similarity at filter time.
+          // Plain token-set match failed for cases where the bookmaker name
+          // differs from the scanner's canonical name (e.g. "PariVision" vs
+          // "pvision", "FC Barcelona" vs "Barcelona") — substring/dice
+          // catches the abbreviation/expansion pairs that token-set misses.
+          const placedNameMarket: { normName: string; bigrams: Set<string>; market: string }[] = []
+          const stop = new Set(['vs', 'v', 'and', 'the', 'fc', 'cf', 'sc', 'fk', 'ec', 'esports', 'counter', 'strike'])
+          const normalise = (s: string): string =>
+            (s || '')
+              .toLowerCase()
+              .replace(/[.,:;!?'"`()/\\-]/g, ' ')
+              .split(/\s+/)
+              .filter(t => t.length >= 2 && !stop.has(t))
+              .join(' ')
+          const toBigrams = (s: string): Set<string> => {
+            const out = new Set<string>()
+            const clean = s.replace(/\s+/g, '')
+            for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2))
+            return out
+          }
+          const diceCoeff = (a: Set<string>, b: Set<string>): number => {
+            if (a.size === 0 || b.size === 0) return 0
+            let shared = 0
+            for (const x of a) if (b.has(x)) shared++
+            return (2 * shared) / (a.size + b.size)
+          }
+          for (const bets of Object.values(pendingByProvider)) {
+            for (const b of bets) {
+              const mk = b?.market === '1x2' ? 'moneyline' : (b?.market ?? '')
+              const eid = b?.event_id
+              if (eid && mk) placedEventMarketKeys.add(`${eid}|${mk}`)
+              const name = b?.event_name || (b?.home_team && b?.away_team ? `${b.home_team} v ${b.away_team}` : '')
+              if (name) {
+                const normName = normalise(name)
+                if (normName.length >= 4) {
+                  placedNameMarket.push({ normName, bigrams: toBigrams(normName), market: mk || '*' })
+                }
+              }
+            }
+          }
+          const matchesPlacedByName = (opp: any, oppMarketKey: string): boolean => {
+            const oppName = (opp.display_home && opp.display_away)
+              ? `${opp.display_home} ${opp.display_away}`
+              : ''
+            if (!oppName) return false
+            const oppNorm = normalise(oppName)
+            if (oppNorm.length < 4) return false
+            const oppBigrams = toBigrams(oppNorm)
+            for (const { bigrams, market } of placedNameMarket) {
+              if (market !== '*' && market !== oppMarketKey) continue
+              // 0.55 threshold — empirically catches "parivision g2" vs
+              // "pvision g2" (~0.65), "los angeles dodgers san francisco
+              // giants" vs "dodgers giants" (~0.7), but rejects unrelated
+              // matches like "real madrid" vs "atlético madrid" (~0.4).
+              if (diceCoeff(oppBigrams, bigrams) >= 0.55) return true
+            }
+            return false
+          }
           // Build the soft-cluster universe: canonical siblings + standalones +
           // any provider we have current balance/pending data for. Then filter
           // to only clusters with at least one funded member, OR (drained but)
@@ -1247,33 +2464,55 @@ export default function PlayPage() {
             ...Object.keys(pendingByProvider),
           ])
           for (const pid of allKnownPids) {
-            if (UNLIMITED_PROVIDERS.has(pid)) continue
+            // Keep unlimited providers — see loadArbOpps comment. Unlimited
+            // ↔ unlimited arbs (mostly pinnacle+polymarket on esports) appear
+            // here as their own cluster cards.
             const cluster = resolveSoftCluster(pid)
             if (!softByCluster[cluster]) softByCluster[cluster] = []
             if (!softByCluster[cluster].includes(pid)) softByCluster[cluster].push(pid)
           }
 
-          // Funded check (used by both visibility filter and per-cluster render)
-          const isFunded = (pid: string) =>
-            getBalance(providerBalances[pid]) >= DRAIN_THRESHOLD_SEK ||
-            (pendingByProvider[pid]?.length ?? 0) > 0
+          // Qualifying-soft predicate: render a soft card if the user has
+          // ANY of the three actionable signals:
+          //   1. balance >= DRAIN_THRESHOLD_SEK (usable for a real stake)
+          //   2. pending bets (something to settle)
+          //   3. unclaimed bonus (something to claim)
+          const isQualifiedSoft = (pid: string) => {
+            const bal = getBalance(providerBalances[pid])
+            const trig = getTrigger(providerBalances[pid])
+            const pending = pendingByProvider[pid]?.length ?? 0
+            return bal >= DRAIN_THRESHOLD_SEK || (trig?.amount ?? 0) > 0 || pending > 0
+          }
+          // Alias: kept for the per-cluster funded-count display below; same
+          // predicate now (balance OR pending counts as "funded" for card-
+          // visibility purposes, which matches what the user actually cares
+          // about — anything they can act on).
+          const isFunded = isQualifiedSoft
 
-          // Visibility: cluster shows if any member is funded, OR if the cluster
-          // has a qualifying arb opp (>= DEPOSIT_HINT_MIN_PROFIT_PCT). Drained
-          // clusters with no qualifying arb are hidden entirely.
-          const clusterHasFunded = (cluster: string) =>
-            (softByCluster[cluster] ?? []).some(isFunded)
+          // Cluster gate: render only clusters where at least one member is
+          // qualified. Within a qualified cluster, only the qualified members
+          // render — siblings with 0 balance/bonus/pending stay hidden.
+          const clusterHasFocused = (cluster: string) =>
+            (softByCluster[cluster] ?? []).some(isQualifiedSoft)
+          const clusterHasFunded = clusterHasFocused
           const clusterHasQualifyingArb = (cluster: string) =>
             (oppsByCluster[cluster] ?? []).some(
               (o: any) => (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT,
             )
           const visibleClusters = Object.keys(softByCluster).filter(
-            c => clusterHasFunded(c) || clusterHasQualifyingArb(c),
+            c => clusterHasFocused(c) && (clusterHasFunded(c) || clusterHasQualifyingArb(c)),
           )
 
-          // Stable sort: named clusters first, then standalones alphabetically
+          // Sort: unlimited (sharp) clusters first in a fixed order, then named
+          // soft clusters in declaration order, then remaining standalones alpha.
+          const sharpOrder = ['pinnacle', 'polymarket', 'kalshi', 'cloudbet']
           const namedClusters = Object.keys(SOFT_CLUSTER_MEMBERS)
           const clusterOrder = visibleClusters.sort((a, b) => {
+            const as = sharpOrder.indexOf(a)
+            const bs = sharpOrder.indexOf(b)
+            if (as >= 0 && bs >= 0) return as - bs
+            if (as >= 0) return -1
+            if (bs >= 0) return 1
             const ai = namedClusters.indexOf(a)
             const bi = namedClusters.indexOf(b)
             if (ai >= 0 && bi >= 0) return ai - bi
@@ -1291,8 +2530,36 @@ export default function PlayPage() {
                 </h3>
                 <span className="text-[10px] text-zinc-500 font-mono">{totalOpps}</span>
                 {arbLoading && <span className="text-[10px] text-zinc-600">loading…</span>}
+                {/* Counter-pool filter: click a chip to disable that provider as
+                    a hedge counter. Last-enabled chip is sticky (min 1). Re-scans
+                    on every change. Lets the user narrow to e.g. BETINIA-vs-
+                    Pinnacle-only by deselecting the other 3. */}
+                <span className="text-[9px] text-zinc-600 uppercase tracking-wider ml-2 mr-1">counters:</span>
+                {Array.from(UNLIMITED_PROVIDERS).map(cpid => {
+                  const enabled = enabledCounters.has(cpid)
+                  const isLastEnabled = enabled && enabledCounters.size === 1
+                  return (
+                    <button
+                      key={cpid}
+                      onClick={() => toggleCounter(cpid)}
+                      disabled={isLastEnabled}
+                      className={`px-1.5 py-0.5 text-[9px] uppercase font-semibold rounded border transition-colors ${
+                        enabled
+                          ? 'bg-emerald-500/20 text-emerald-100 border-emerald-500/40 hover:bg-emerald-500/30'
+                          : 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40 hover:bg-zinc-800/70'
+                      } ${isLastEnabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}
+                      title={isLastEnabled
+                        ? `${cpid} — must keep at least one counter enabled`
+                        : enabled
+                          ? `Click to exclude ${cpid} as a hedge counter`
+                          : `Click to include ${cpid} as a hedge counter`}
+                    >
+                      {cpid}
+                    </button>
+                  )
+                })}
                 <span className="text-[10px] text-zinc-600 ml-auto">
-                  top 10 per cluster · siblings share odds · drained excluded
+                  top 20 per cluster · siblings share odds · drained excluded
                 </span>
               </div>
 
@@ -1303,7 +2570,11 @@ export default function PlayPage() {
               ) : (
                 <div className="flex flex-col">
                   {clusterOrder.map(cluster => {
-                    const members = softByCluster[cluster]
+                    // Render only qualified members (balance > threshold,
+                    // unclaimed bonus, or pending bets). Siblings that are
+                    // fully drained AND have no bonus/pending stay hidden so
+                    // the UI shows only what the user can act on.
+                    const members = (softByCluster[cluster] ?? []).filter(isQualifiedSoft)
                     const funded = members.filter(isFunded)
                     const opps = oppsByCluster[cluster] ?? []
                     const clusterMemberSet = new Set(members)
@@ -1331,12 +2602,46 @@ export default function PlayPage() {
                           </div>
                           {/* Per-member deposit hints — each cluster member with its bonus trigger */}
                           <div className="flex flex-wrap gap-3 px-3 py-2 bg-zinc-900/20 border-b border-zinc-800/30 text-[11px]">
-                            {members.map(pid => (
-                              <div key={pid} className="flex items-center gap-1.5">
-                                <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
-                                <BalanceCell pid={pid} balances={providerBalances} />
-                              </div>
-                            ))}
+                            {members.map(pid => {
+                              // If the ONLY reason this member qualifies is a bonus
+                              // trigger (no balance, no pending), expose a "mark
+                              // claimed" affordance so the user can hide the card
+                              // after they've taken the bonus on another account.
+                              // POSTs /bankroll/claim-bonus/{pid} → bonus_status
+                              // flips to "claimed" → next bankroll poll drops the
+                              // provider from isQualifiedSoft.
+                              const bal = getBalance(providerBalances[pid])
+                              const trig = getTrigger(providerBalances[pid])
+                              const pending = pendingByProvider[pid]?.length ?? 0
+                              const onlyBonus =
+                                (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
+                              return (
+                                <div key={pid} className="flex items-center gap-1.5">
+                                  <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
+                                  <BalanceCell pid={pid} balances={providerBalances} />
+                                  {onlyBonus && (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        try {
+                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
+                                          if (!r.ok) throw new Error(`status ${r.status}`)
+                                          load()  // immediate refresh; the 5-s poll would
+                                                  // catch it eventually but the user clicked
+                                                  // so feedback should be snappy.
+                                        } catch (err) {
+                                          console.warn(`[claim-bonus] ${pid} failed`, err)
+                                        }
+                                      }}
+                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
+                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
+                                    >
+                                      mark claimed
+                                    </button>
+                                  )}
+                                </div>
+                              )
+                            })}
                           </div>
                           <table className="w-full text-xs">
                             <tbody>
@@ -1373,13 +2678,28 @@ export default function PlayPage() {
                                       +{profitPct.toFixed(2)}%
                                     </td>
                                     <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
-                                    <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                                    <td
+                                      className="px-2 py-1 text-zinc-500 text-[10px] uppercase cursor-help"
+                                      title={(() => {
+                                        const m = (opp.market ?? '') as string
+                                        const sport = (opp.sport ?? '') as string
+                                        const legCount = (opp.legs ?? []).length
+                                        if (m === '1x2') return `1X2 — 3-way (home/draw/away). For hockey/soccer regulation. Pinnacle: s;6;m for hockey, s;0;m for soccer.`
+                                        if (m === 'moneyline') {
+                                          if (legCount === 3) return `MONEYLINE — 3-way (home/draw/away). Treated like 1X2. Pinnacle: s;0;m or s;6;m.`
+                                          return `MONEYLINE — 2-way (home/away), full game incl. OT/SO. Pinnacle: s;0;m.`
+                                        }
+                                        if (m === 'spread') return `SPREAD ${opp.point ?? ''} — ${sport === 'tennis' ? 'WARNING: tennis sets vs games unit mismatch — extractor should be skipping' : '2-way handicap'}. Pinnacle: s;<period>;s;<point>.`
+                                        if (m === 'total') return `TOTAL ${opp.point ?? ''} — over/under. Pinnacle: s;<period>;ou;<point>.`
+                                        return m
+                                      })()}
+                                    >{opp.market ?? ''}</td>
                                     <td className="px-2 py-1 text-[11px]">
                                       <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">bet</span>
                                       <span className="text-green-400 font-semibold">{anchorOutcome}</span>
                                       <span className="text-zinc-600 mx-1">on</span>
                                       <span className="text-zinc-400 uppercase text-[10px]">{anchorPid}</span>
-                                      <span className="font-mono text-zinc-200 ml-2">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                      <span className="font-mono text-zinc-200 ml-2">{formatOddsDisplay(anchorPid, Number(anchorLeg.odds ?? 0))}</span>
                                     </td>
                                     <td className="px-2 py-1 text-[11px]">
                                       <div className="flex flex-col gap-0.5">
@@ -1389,7 +2709,7 @@ export default function PlayPage() {
                                             <span className="text-pink-400 font-semibold">{resolveLegOutcome(leg)}</span>
                                             <span className="text-zinc-600">on</span>
                                             <span className="text-zinc-400 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
-                                            <span className="font-mono text-zinc-300 ml-2">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
+                                            <span className="font-mono text-zinc-300 ml-2">{formatOddsDisplay(leg.provider ?? leg.provider_id, Number(leg.odds ?? 0))}</span>
                                           </div>
                                         ))}
                                       </div>
@@ -1410,6 +2730,36 @@ export default function PlayPage() {
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
+                          {/* Verify-all button: hits the targeted refresh for every visible
+                              Pinnacle-side arb in this cluster, in series. Single-active
+                              across the whole UI — disabled while ANY cluster is verifying.
+                              Once done, the list is auto-sorted by real-time profitability. */}
+                          {(() => {
+                            const isThisCluster = verifyingCluster === cluster
+                            const isAnyRunning = verifyingCluster !== null
+                            const hasPinnacle = (opps as any[]).some(o =>
+                              (o.legs ?? []).some((l: any) => (l.provider ?? l.provider_id) === 'pinnacle'),
+                            )
+                            if (!hasPinnacle) return null
+                            return (
+                              <button
+                                onClick={() => verifyArbsInCluster(cluster)}
+                                disabled={isAnyRunning}
+                                className={`px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded border transition-colors ${
+                                  isThisCluster
+                                    ? 'bg-amber-700/40 text-amber-200 border-amber-600/50 cursor-wait animate-pulse'
+                                    : isAnyRunning
+                                      ? 'bg-zinc-800 text-zinc-600 border-zinc-700 cursor-not-allowed'
+                                      : 'bg-purple-900/30 text-purple-200 border-purple-700/50 hover:bg-purple-900/50 cursor-pointer'
+                                }`}
+                                title="Verify each top-20 arb's live Pinnacle odds in series. Real top arbs surface; ghost arbs (stale-data positives) drop."
+                              >
+                                {isThisCluster && verifyProgress
+                                  ? `Verifying ${verifyProgress.done}/${verifyProgress.total}…`
+                                  : 'Verify all'}
+                              </button>
+                            )
+                          })()}
                           <span className="text-[10px] text-zinc-600 ml-auto">
                             {opps.length} arb{opps.length === 1 ? '' : 's'} · siblings share odds
                           </span>
@@ -1419,38 +2769,29 @@ export default function PlayPage() {
                         {funded.map(pid => {
                           const bal = getBalance(providerBalances[pid])
                           const pending = pendingByProvider[pid]?.length ?? 0
-                          const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
+                          const cardState = deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
                               <div className="flex items-center gap-2 px-6 py-1.5 bg-zinc-900/20">
                                 <button
                                   onClick={() => handleCardClick(pid)}
-                                  className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                    cardState === 'idle'
-                                      ? 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                                      : `${CARD_STATE_CLASSES[cardState]} cursor-pointer`
-                                  }`}
+                                  className={`px-2 py-0.5 text-[10px] rounded transition-colors cursor-pointer ${CARD_STATE_CLASSES[cardState]}`}
+                                  title={
+                                    cardState === 'no_tab' ? 'Click to open the provider site' :
+                                    cardState === 'tab_open_not_in' ? 'Tab open — click to refresh if it closed silently' :
+                                    'Tab open + logged in'
+                                  }
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
-                                  {cardState === 'tab_open' && (
+                                  {cardState === 'tab_open_not_in' && (
                                     <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
                                       Log in to continue
                                     </span>
                                   )}
-                                  {cardState === 'logged_in_syncing' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/25 text-amber-100 font-semibold">
-                                      Logged in · syncing
-                                    </span>
-                                  )}
-                                  {cardState === 'ready_to_run' && (
-                                    <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/40 text-amber-50 font-semibold">
-                                      Logged in — press to run
-                                    </span>
-                                  )}
-                                  {cardState === 'running' && (
+                                  {cardState === 'tab_open_logged' && (
                                     <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
-                                      Running
+                                      Logged in
                                     </span>
                                   )}
                                   <span className="ml-1 text-green-400 font-mono">
@@ -1463,12 +2804,304 @@ export default function PlayPage() {
                                     ≤{Math.round(stakeCaps[pid])}
                                   </span>
                                 )}
-                                {providerStatus[pid] && (
-                                  <span className="text-[10px] text-amber-400 truncate" title={providerStatus[pid] || ''}>
-                                    {providerStatus[pid]}
-                                  </span>
-                                )}
+                                {/* Bonus-only provider: the only reason this card
+                                    showed up is an unclaimed bonus. Surface a
+                                    "mark claimed" affordance — POST flips
+                                    bonus_status to "claimed" and the next bankroll
+                                    poll drops the card. Reversible from Bankroll
+                                    tab. Skipped when the user has real balance or
+                                    pending bets (those are independent reasons to
+                                    keep the card visible). */}
+                                {(() => {
+                                  const trig = getTrigger(providerBalances[pid])
+                                  const onlyBonus =
+                                    (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
+                                  if (!onlyBonus) return null
+                                  return (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        try {
+                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
+                                          if (!r.ok) throw new Error(`status ${r.status}`)
+                                          load()
+                                        } catch (err) {
+                                          console.warn(`[claim-bonus] ${pid} failed`, err)
+                                        }
+                                      }}
+                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
+                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
+                                    >
+                                      mark claimed
+                                    </button>
+                                  )
+                                })()}
+                                {/* Counter sites — same login/balance status as the anchor.
+                                    The four unlimited providers are the auto-hedge pool; rendering
+                                    them inline next to the anchor lets the user see at a glance
+                                    which counters are tab-open / logged-in / funded before pressing Run. */}
+                                <div className="ml-auto flex items-center gap-1 flex-wrap">
+                                  <span className="text-[9px] text-zinc-600 uppercase tracking-wider mr-1">counter</span>
+                                  {Array.from(UNLIMITED_PROVIDERS).map(cpid => {
+                                    const cBal = getBalance(providerBalances[cpid])
+                                    const cBalRaw = providerBalances[cpid]
+                                    const cBalDisplay = (typeof cBalRaw === 'object' && cBalRaw?.balance_native != null) ? cBalRaw.balance_native : cBal
+                                    const cIsLoggedIn = loggedInProviders.has(cpid)
+                                    const cIsTabOpen = tabOpenProviders.has(cpid)
+                                    const native = cpid === 'polymarket' || cpid === 'kalshi' || cpid === 'cloudbet'
+                                    return (
+                                      <span key={cpid}
+                                        className={`px-1.5 py-0.5 text-[9px] rounded border ${
+                                          cIsLoggedIn
+                                            ? 'bg-emerald-500/20 text-emerald-100 border-emerald-500/40'
+                                            : cIsTabOpen
+                                              ? 'bg-amber-500/20 text-amber-100 border-amber-500/40'
+                                              : 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40'
+                                        }`}
+                                        title={cIsLoggedIn ? 'Logged in' : cIsTabOpen ? 'Tab open — awaiting login' : 'Tab not open'}
+                                      >
+                                        <span className="uppercase font-semibold">{cpid}</span>
+                                        {cBalDisplay > 0 && (
+                                          <span className="ml-1 text-green-400 font-mono">
+                                            {native ? '$' : ''}{cBalDisplay.toFixed(2)}{native ? '' : ' kr'}
+                                          </span>
+                                        )}
+                                      </span>
+                                    )
+                                  })}
+                                </div>
                               </div>
+                              {(() => {
+                                // Per-provider arb widget — DUTCH ARB / WAITING moved here from
+                                // the global header. Tracks the event the user most recently
+                                // picked for this provider (pickedEventByProvider[pid]) and
+                                // shows: profit %, all legs (anchor + counters) with planned
+                                // vs synced state, and the green ring once every leg is
+                                // synced (== ready to place).
+                                const pickedEid = pickedEventByProvider[pid]
+                                if (!pickedEid) {
+                                  if (!providerStatus[pid]) return null
+                                  return (
+                                    <div className="px-6 py-1 border-b border-zinc-800/30 bg-amber-950/20">
+                                      <span className="text-[10px] text-amber-300 font-mono" title={providerStatus[pid] || ''}>
+                                        {providerStatus[pid]}
+                                      </span>
+                                    </div>
+                                  )
+                                }
+                                const pickedOpp = (opps as any[]).find((o: any) => o.event_id === pickedEid)
+                                if (!pickedOpp) return null
+                                const pickedLegs: any[] = pickedOpp.legs ?? pickedOpp.arb_legs ?? []
+                                const synced = syncedLegs[pickedEid] ?? new Set<string>()
+                                const picking = pickingLegs[pickedEid] ?? new Set<string>()
+                                const allGreen = pickedLegs.length > 0 && pickedLegs.every((l: any) =>
+                                  synced.has(legKey(l.provider ?? l.provider_id ?? '', l.outcome, l.point)),
+                                )
+                                const profit = pickedOpp.guaranteed_profit_pct ?? 0
+                                const eventLabel = pickedOpp.display_home && pickedOpp.display_away
+                                  ? `${pickedOpp.display_home} v ${pickedOpp.display_away}`
+                                  : pickedOpp.event_id
+                                // Per-leg stake breakdown for the picked opp.
+                                // Anchor (this card's pid) is sized to full
+                                // balance; counter legs match payout. Total
+                                // stake = anchor + Σ counters; guaranteed
+                                // payout is the SAME for every outcome (= the
+                                // arb invariant). Profit = payout − total.
+                                // Cluster-sharing: scanner often picks a sibling's leg
+                                // (QUICKCASINO @ 1.62 beats BETINIA @ 1.60). Match
+                                // by cluster so the soft anchor leg is found whether
+                                // it's keyed on pid or any cluster sibling — without
+                                // this, find() returned undefined → anchorOdds=0 →
+                                // totalPayout=0 → every counter stake displayed as 0.
+                                const pickedClusterForStakes = resolveSoftCluster(pid)
+                                const isAnchorLeg = (l: any): boolean => {
+                                  const lpid = (l.provider ?? l.provider_id ?? '') as string
+                                  return lpid === pid || resolveSoftCluster(lpid) === pickedClusterForStakes
+                                }
+                                const anchorOddsPicked = Number(
+                                  (pickedLegs.find(isAnchorLeg) ?? {}).odds ?? 0,
+                                )
+                                const pickedCounters = pickedLegs.filter((l: any) => !isAnchorLeg(l))
+                                const payoutOverride = payoutOverridesByEid[pickedEid]
+                                const pickedStakes = computeArbStakes(
+                                  pid,
+                                  anchorOddsPicked,
+                                  pickedCounters,
+                                  providerBalances,
+                                  stakeCaps,
+                                  payoutOverride,
+                                )
+                                const totalStakeSek =
+                                  pickedStakes.anchorSek + pickedStakes.counterSekByLeg.reduce((s, x) => s + x, 0)
+                                const guaranteedPayoutSek = pickedStakes.payout
+                                const guaranteedProfitSek = guaranteedPayoutSek - totalStakeSek
+                                const anchorBalance = getBalance(providerBalances[pid])
+                                return (
+                                  <div className="px-6 py-1.5 border-b border-zinc-800/30 bg-purple-950/15">
+                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-purple-900/50 text-purple-300 border border-purple-700/50 rounded">DUTCH ARB</span>
+                                      <span className={`text-[10px] font-mono font-semibold ${profit > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        {profit > 0 ? '+' : ''}{profit.toFixed(2)}%
+                                      </span>
+                                      <span className="text-[10px] text-zinc-400 truncate max-w-[260px]">{eventLabel}</span>
+                                      <span
+                                        className={`text-[10px] font-mono ${ttkClass(pickedOpp.starts_at)}`}
+                                        title={pickedOpp.starts_at ? `kicks off ${new Date(pickedOpp.starts_at).toLocaleString()}` : 'no start time'}
+                                      >
+                                        {fmtTtkFromIso(pickedOpp.starts_at)}
+                                      </span>
+                                      {totalStakeSek > 0 && (
+                                        <span className="text-[10px] text-zinc-500 font-mono" title="Total stake across all legs">
+                                          total <span className="text-zinc-300">{Math.round(totalStakeSek)} kr</span>
+                                        </span>
+                                      )}
+                                      {/* Editable target payout K (SEK). Each leg's stake = K / leg_odds.
+                                          User can also type into any per-leg input below — does the same
+                                          math from the other direction. Reset (×) restores max-balance
+                                          default on the soft anchor. */}
+                                      <span className="text-[10px] text-zinc-500 font-mono inline-flex items-center gap-1" title="Guaranteed payout — same regardless of outcome. Drives all leg stakes (stake_i = payout / odds_i).">
+                                        payout
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          step={1}
+                                          value={Math.round(guaranteedPayoutSek)}
+                                          onChange={(e) => {
+                                            const raw = e.target.value
+                                            if (raw === '') { setPayoutOverride(pickedEid, null); return }
+                                            const n = Number(raw)
+                                            if (isFinite(n) && n > 0) setPayoutOverride(pickedEid, n)
+                                          }}
+                                          className={`w-16 px-1 py-0 bg-zinc-900 border ${payoutOverride != null ? 'border-amber-500/50 text-amber-200' : 'border-zinc-700 text-zinc-300'} rounded text-[10px] font-mono text-right focus:outline-none focus:border-purple-500`}
+                                        />
+                                        kr
+                                        {payoutOverride != null && (
+                                          <button
+                                            onClick={() => setPayoutOverride(pickedEid, null)}
+                                            className="text-zinc-500 hover:text-zinc-200 px-0.5"
+                                            title="Reset to max (anchor balance × odds)"
+                                          >×</button>
+                                        )}
+                                      </span>
+                                      {totalStakeSek > 0 && (
+                                        <span className={`text-[10px] font-mono font-semibold ${guaranteedProfitSek >= 0 ? 'text-green-400' : 'text-red-400'}`} title="Guaranteed profit — same regardless of outcome">
+                                          {guaranteedProfitSek >= 0 ? '+' : ''}{Math.round(guaranteedProfitSek)} kr
+                                        </span>
+                                      )}
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${
+                                        allGreen ? 'bg-green-900/50 text-green-300' :
+                                        picking.size > 0 ? 'bg-amber-900/50 text-amber-300 animate-pulse' :
+                                        'bg-zinc-800 text-zinc-400'
+                                      }`}>
+                                        {allGreen ? 'ALL GREEN — place each tab' : picking.size > 0 ? 'CHECKING' : 'WAITING'}
+                                      </span>
+                                      {providerStatus[pid] && (
+                                        <span className="ml-auto text-[10px] text-amber-300 font-mono truncate max-w-[260px]" title={providerStatus[pid] || ''}>
+                                          {providerStatus[pid]}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="space-y-0.5 pl-1">
+                                      {pickedLegs.map((leg: any, lidx: number) => {
+                                        const rawLegPid = leg.provider ?? leg.provider_id ?? ''
+                                        // Cluster-sharing: scanner often picks a sibling's leg
+                                        // (e.g. QUICKCASINO @ 1.62 beats BETINIA @ 1.60) but the
+                                        // user will actually place on `pid` (the funded cluster
+                                        // member). Display `pid` so the widget's name matches the
+                                        // tab the user clicks Place on. The underlying leg keeps
+                                        // its real provider for stake-key / sync tracking.
+                                        const isSiblingAnchor =
+                                          rawLegPid !== pid &&
+                                          clusterMemberSet.has(rawLegPid)
+                                        const displayPid = isSiblingAnchor ? pid : rawLegPid
+                                        const isAnchor = displayPid === pid
+                                        const lk = legKey(rawLegPid, leg.outcome, leg.point)
+                                        const isSynced = synced.has(lk)
+                                        const isPicking = picking.has(lk)
+                                        // Counter index = position within counters-only list. Anchor uses anchorSek.
+                                        const counterIdx = pickedCounters.indexOf(leg)
+                                        const stakeSek = isAnchor
+                                          ? pickedStakes.anchorSek
+                                          : (counterIdx >= 0 ? pickedStakes.counterSekByLeg[counterIdx] : 0)
+                                        const oddsForLeg = Number(leg.odds ?? 0)
+                                        const ifWinPayout = guaranteedPayoutSek > 0 ? guaranteedPayoutSek : (stakeSek * oddsForLeg)
+                                        // USD providers (Polymarket / Kalshi) display in $ but their
+                                        // balance is normalised to SEK in providerBalances. Show the
+                                        // input in SEK so the math stays in one unit; the user sees
+                                        // the native-currency display in the row below if they want.
+                                        return (
+                                          <div key={`${rawLegPid}-${lidx}`} className="flex items-center gap-2 text-[10px]">
+                                            <span className={`inline-block w-2 h-2 rounded-full ${
+                                              isSynced ? 'bg-green-400' : isPicking ? 'bg-amber-400 animate-pulse' : 'bg-zinc-600'
+                                            }`} />
+                                            <span className="text-zinc-400 uppercase w-20">{displayPid}</span>
+                                            <span className="font-mono text-zinc-300 w-24">{formatOddsDisplay(displayPid, oddsForLeg)}</span>
+                                            {/* Outcome → team-name. Bookmaker tabs show team names,
+                                                not "home"/"away" — matching the user's mental model
+                                                ("I'm betting on Lilli Tagger") is faster than asking
+                                                them to translate the side label. Falls back to the
+                                                raw outcome for over/under/draw / no-team markets. */}
+                                            <span className="text-zinc-300 w-32 truncate" title={`outcome: ${leg.outcome ?? ''}`}>
+                                              {(() => {
+                                                const out = leg.outcome ?? ''
+                                                if (out === 'home') return pickedOpp.display_home || 'Home'
+                                                if (out === 'away') return pickedOpp.display_away || 'Away'
+                                                if (out === 'draw') return 'Draw'
+                                                if (out === 'over' && leg.point != null) return `Over ${leg.point}`
+                                                if (out === 'under' && leg.point != null) return `Under ${leg.point}`
+                                                return out
+                                              })()}
+                                            </span>
+                                            {/* Editable per-leg stake. Typing into ANY leg sets the
+                                                target payout = new_stake × leg_odds, then every other
+                                                leg's stake auto-recomputes from K / its_odds. So input
+                                                "80" on Pinnacle leg @ 2.03 → payout 162 → BETINIA stake
+                                                = 162 / 2.20 = 74 kr. Inverse direction works too.
+                                                For USD providers (Polymarket/Kalshi) the input value
+                                                renders in dollars so it matches what the user enters
+                                                in the provider tab. Underlying math stays in SEK —
+                                                we convert on read/write. */}
+                                            {(() => {
+                                              const isUsd = USD_PROVIDERS.has(displayPid)
+                                              const displayValue = isUsd
+                                                ? Math.round((stakeSek / SEK_PER_USD) * 10) / 10
+                                                : Math.round(stakeSek)
+                                              return (
+                                                <>
+                                                  <input
+                                                    type="number"
+                                                    min={0}
+                                                    step={isUsd ? 0.1 : 1}
+                                                    value={displayValue}
+                                                    onChange={(e) => {
+                                                      const raw = e.target.value
+                                                      if (raw === '') { setPayoutOverride(pickedEid, null); return }
+                                                      const n = Number(raw)
+                                                      if (!isFinite(n)) return
+                                                      // Convert USD input back to SEK before pushing
+                                                      // through the SEK-keyed stake math.
+                                                      const nSek = isUsd ? n * SEK_PER_USD : n
+                                                      setStakeForLeg(pickedEid, oddsForLeg, nSek)
+                                                    }}
+                                                    className={`w-20 px-1 py-0 bg-zinc-900 border ${payoutOverride != null ? 'border-amber-500/50 text-amber-200' : 'border-zinc-700 text-amber-300'} rounded font-mono text-[10px] text-right focus:outline-none focus:border-purple-500`}
+                                                    title={`Stake on ${displayPid.toUpperCase()} (${isUsd ? 'USD' : 'SEK'}). Typing rebalances all legs to a new payout = stake × ${oddsForLeg.toFixed(2)}.`}
+                                                  />
+                                                  <span className="text-[9px] text-zinc-600">{isUsd ? '$' : 'kr'}</span>
+                                                </>
+                                              )
+                                            })()}
+                                            {ifWinPayout > 0 && (
+                                              <span className="font-mono text-zinc-500 text-[9px]" title="Guaranteed payout (same for every outcome, kept in SEK as the common reference)">
+                                                wins → {Math.round(ifWinPayout)} kr
+                                              </span>
+                                            )}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </div>
+                                )
+                              })()}
 
                               {/* Per-provider pending list */}
                               {(() => {
@@ -1501,10 +3134,36 @@ export default function PlayPage() {
                                     {providerPending.map((p: any) => {
                                       const betId = p.bet_id ?? p.id
                                       const det = detectedSettlements[betId]
-                                      const eventLabel = p.home_team && p.away_team
+                                      // Display priority: scanner team-names → event_name fallback
+                                      // (set by _record_unknown_open_bets from provider history) →
+                                      // event_id colon-split → "Unknown event" so the row never
+                                      // renders blank. Without the event_name fallback, manually-
+                                      // placed bets (no Event row) showed up as empty rows.
+                                      const eventLabel = (p.home_team && p.away_team)
                                         ? `${p.home_team} v ${p.away_team}`
-                                        : p.event_id?.split(':').slice(1, 3).join(' v ') ?? p.event_id
+                                        : (p.event_name || p.event_id?.split(':').slice(1, 3).join(' v ') || p.event_id || 'Unknown event')
                                       const profit = det ? (det.payout - (p.stake ?? 0)) : 0
+                                      // Settlement readiness — event start + 3 h grace window
+                                      // (covers full sport durations: tennis/basketball ~3h, soccer 2h,
+                                      // MMA fights vary). After that we assume the result is decidable
+                                      // and surface a "ready to settle" pill so the user knows to
+                                      // navigate to history for reconciliation.
+                                      const startMs = p.start_time ? new Date(p.start_time).getTime() : null
+                                      const placedMs = p.placed_at ? new Date(p.placed_at).getTime() : null
+                                      const nowMs = Date.now()
+                                      const SETTLE_GRACE_MS = 3 * 60 * 60 * 1000
+                                      const readyToSettle = startMs != null && nowMs > startMs + SETTLE_GRACE_MS
+                                      const inProgress = startMs != null && nowMs > startMs && !readyToSettle
+                                      const fmtTime = (ms: number | null): string => {
+                                        if (ms == null) return '—'
+                                        const d = new Date(ms)
+                                        const today = new Date(); today.setHours(0, 0, 0, 0)
+                                        const same = d >= today
+                                        return same
+                                          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                          : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+                                            d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                      }
                                       return (
                                         <div key={`pending-${p.id}`} className={`flex items-center gap-2 px-6 pl-9 py-0.5 border-b border-zinc-800/20 text-xs ${
                                           det ? (det.result === 'won' ? 'bg-green-900/10' : det.result === 'lost' ? 'bg-red-900/10' : 'bg-zinc-800/20') : ''
@@ -1513,6 +3172,34 @@ export default function PlayPage() {
                                           <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
                                           <span className="text-zinc-500 font-mono text-[10px]">@ {(p.odds ?? 0).toFixed(2)}</span>
                                           <span className="text-amber-300/50 font-mono text-[10px]">{Math.round(p.stake ?? 0)} kr</span>
+                                          <span
+                                            className="text-zinc-600 font-mono text-[10px]"
+                                            title={`Placed ${p.placed_at ?? '—'}`}
+                                          >
+                                            placed {fmtTime(placedMs)}
+                                          </span>
+                                          <span
+                                            className={`font-mono text-[10px] ${ttkClass(p.start_time)}`}
+                                            title={p.start_time ? `Event start: ${new Date(p.start_time).toLocaleString()}` : 'no event start time on bet — settlement will not auto-flag'}
+                                          >
+                                            {p.start_time ? `starts ${fmtTime(startMs)} · ${fmtTtkFromIso(p.start_time)}` : 'no start time'}
+                                          </span>
+                                          {!det && readyToSettle && (
+                                            <span
+                                              className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-emerald-700/40 text-emerald-200 border border-emerald-500/40 uppercase tracking-wider"
+                                              title="Event ended >3h ago — open the provider history page to recover the result"
+                                            >
+                                              ready to settle
+                                            </span>
+                                          )}
+                                          {!det && inProgress && (
+                                            <span
+                                              className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-700/30 text-amber-200 border border-amber-500/30 uppercase tracking-wider"
+                                              title="Event is live — result not yet final"
+                                            >
+                                              live
+                                            </span>
+                                          )}
                                           {det && (
                                             <>
                                               <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
@@ -1542,7 +3229,36 @@ export default function PlayPage() {
                               ) : (
                                 <table className="w-full text-xs">
                                   <tbody>
-                                    {opps.map((opp: any, i: number) => {
+                                    {opps.filter((opp: any) => {
+                                      if (drainedEventIds.has(opp.event_id)) return false
+                                      // Suppress clearly-bogus profit%. Real soft-vs-sharp arbs
+                                      // are typically 0-5%; >30% is a stale-extraction artifact
+                                      // (DB has BETINIA Italy @41.00 vs live @1.78 etc.). The
+                                      // live odds stream will correct it once the user clicks,
+                                      // but the unclicked rows stay broken indefinitely. Hide
+                                      // them so they can't trick the user into placing.
+                                      const p = opp.guaranteed_profit_pct ?? 0
+                                      if (p > 30) return false
+                                      // Global event+market blacklist — when ANY provider has a
+                                      // pending bet for this (event_id, market) combination, hide
+                                      // every arb on that exact market. Different markets on the
+                                      // same event are still allowed (a moneyline placed → totals
+                                      // / spreads stay visible). Cross-provider: if BETINIA has
+                                      // a moneyline on PariVision-G2 pending, the same row won't
+                                      // resurface on any cluster sibling either.
+                                      // Normalises 1x2 ↔ moneyline (scanner emits both names for
+                                      // 3-way / 2-way variants of the same market).
+                                      // Falls back to event_name fuzzy-token match for manually-
+                                      // recovered bets (no event_id stamped).
+                                      const oppMarketKey = opp.market === '1x2' ? 'moneyline' : (opp.market ?? '')
+                                      if (opp.event_id && placedEventMarketKeys.has(`${opp.event_id}|${oppMarketKey}`)) {
+                                        return false
+                                      }
+                                      if (matchesPlacedByName(opp, oppMarketKey)) {
+                                        return false
+                                      }
+                                      return true
+                                    }).map((opp: any, i: number) => {
                                       const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
                                       const profitPct = opp.guaranteed_profit_pct ?? 0
                                       const eventLabel = opp.display_home && opp.display_away
@@ -1572,31 +3288,397 @@ export default function PlayPage() {
                                         const lp = l.provider ?? l.provider_id ?? ''
                                         return !clusterMemberSet.has(lp)
                                       })
+                                      const stakes = computeArbStakes(
+                                        pid,
+                                        Number(anchorLeg.odds ?? 0),
+                                        counters,
+                                        providerBalances,
+                                        stakeCaps,
+                                      )
+                                      const navigateLeg = async (legPid: string, leg: any, label: string, _opp: any = opp, opts?: { autoChained?: boolean }) => {
+                                        const eid = _opp.event_id
+                                        const lk = legKey(legPid, leg?.outcome, leg?.point)
+                                        const autoChained = opts?.autoChained === true
+                                        // Soft-anchor-first ordering: counter (sharp) legs can only
+                                        // be picked AFTER the soft anchor for this opp is synced.
+                                        // Otherwise the user clicks Pinnacle first, sees its odds,
+                                        // then realises BETINIA's slip got cancelled by the time
+                                        // they go back. The whole point of arb is to lock the soft
+                                        // side first since that's the slower / less-liquid leg.
+                                        // Auto-chained counter clicks (fired by onAnchorClick
+                                        // immediately after the anchor) bypass this — we WANT both
+                                        // tabs to open together when the user clicks once.
+                                        const isAnchorClick = legPid === pid
+                                        if (!isAnchorClick && !autoChained) {
+                                          const anchorLk = legKey(
+                                            anchorLeg.provider ?? anchorLeg.provider_id ?? pid,
+                                            anchorLeg.outcome,
+                                            anchorLeg.point,
+                                          )
+                                          const anchorIsSynced = (syncedLegs[eid] ?? new Set<string>()).has(anchorLk)
+                                          if (!anchorIsSynced) {
+                                            // Surface on the anchor card's status row — that's what the
+                                            // user is looking at right above the arb table. The counter
+                                            // chip (`legPid`) has no widget that renders providerStatus.
+                                            const msg = `click ${pid.toUpperCase()} ${anchorOutcome} first, then ${legPid.toUpperCase()}`
+                                            setProviderStatusFor(pid, msg)
+                                            // Also flash a brief toast-style status on the counter for
+                                            // visibility — gets overwritten by the next legitimate sync.
+                                            setProviderStatusFor(legPid, `→ pick ${pid.toUpperCase()} first`)
+                                            console.log(`[navigateLeg] anchor not synced — drop counter click for ${lk}/${eid}`)
+                                            return
+                                          }
+                                        }
+                                        // Anchor clicks SUPERSEDE — clicking a new soft anchor while a
+                                        // previous one is still navigating cancels the old picked-event
+                                        // state and starts the new one. Frontend just clears + proceeds;
+                                        // the backend's navigate-opp internally stops the prior runner +
+                                        // re-uses the same tab so the page goes to the new URL anyway.
+                                        // Without this the user couldn't switch BETINIA events without
+                                        // waiting for the prior nav to fully settle (~6s of dead clicks).
+                                        // Counter clicks keep the single-leg lock — they target separate
+                                        // bookmaker tabs and racing them produces real state corruption.
+                                        if (isAnchorClick) {
+                                          // Wipe any prior anchor-side in-flight markers for THIS provider.
+                                          for (const k of Array.from(navInFlight.current)) {
+                                            if (k.startsWith(legPid + '|')) navInFlight.current.delete(k)
+                                          }
+                                        } else {
+                                          // Counter click — race protection is PER-PROVIDER, not global.
+                                          // Two counter navs on the SAME tab clobber slip state, but two
+                                          // navs on DIFFERENT tabs (Pinnacle + Polymarket) are fine and
+                                          // happen on purpose during auto-chain (anchor click fires all
+                                          // counters in parallel). Only drop if SAME-provider is busy.
+                                          const sameProviderBusy = Array.from(navInFlight.current).some(
+                                            k => k.startsWith(legPid + '|'),
+                                          )
+                                          if (sameProviderBusy) {
+                                            console.log(`[navigateLeg] ${legPid} busy, dropping counter click for ${lk}/${eid}`)
+                                            return
+                                          }
+                                        }
+                                        navInFlight.current.add(lk)
+                                        setLegBusy(`${lk}:${eid}`)
+                                        // Anchor click that switches event for the same soft provider:
+                                        // wipe the prior event's UI state so the DUTCH ARB widget
+                                        // moves to the new event and the old row no longer reads as
+                                        // synced/green/picking. Previously the old picked event would
+                                        // stick (widget keeps showing the dead pick, sync chips stay
+                                        // green for an opp the user has moved away from). Counter
+                                        // clicks don't trigger this — they're already gated on the
+                                        // anchor for this event being synced.
+                                        if (isAnchorClick) {
+                                          const prevEid = pickedEventByProvider[legPid]
+                                          if (prevEid && prevEid !== eid) {
+                                            setSyncedLegs(prev => {
+                                              if (!(prevEid in prev)) return prev
+                                              const next = { ...prev }
+                                              delete next[prevEid]
+                                              return next
+                                            })
+                                            setPickingLegs(prev => {
+                                              if (!(prevEid in prev)) return prev
+                                              const next = { ...prev }
+                                              delete next[prevEid]
+                                              return next
+                                            })
+                                            // Detach any counter providers that were pointed at the
+                                            // OLD event — otherwise their DUTCH ARB widget (if shown
+                                            // somewhere else) and their "checking…" status would
+                                            // linger on a pick the user has abandoned.
+                                            setPickedEventByProvider(prev => {
+                                              let mutated = false
+                                              const next: Record<string, string> = { ...prev }
+                                              for (const [p, e] of Object.entries(prev)) {
+                                                if (p !== legPid && e === prevEid) {
+                                                  delete next[p]
+                                                  mutated = true
+                                                }
+                                              }
+                                              return mutated ? next : prev
+                                            })
+                                            // Drop the picked-leg meta for counter providers tied to
+                                            // the old event. Frontend uses this to key live-odds
+                                            // overrides; a stale entry would resurrect wrong odds
+                                            // on the next SSE tick for the abandoned event.
+                                            for (const [p, meta] of Object.entries(pickedLegMetaByProvider.current)) {
+                                              if (p !== legPid && meta?.eid === prevEid) {
+                                                delete pickedLegMetaByProvider.current[p]
+                                              }
+                                            }
+                                          }
+                                        }
+                                        setPickedEventByProvider(prev => prev[legPid] === eid ? prev : { ...prev, [legPid]: eid })
+                                        // Record exactly which leg we picked so arb_leg_odds can key
+                                        // its persistence against the right outcome (not just the
+                                        // first leg that happened to match this provider id).
+                                        pickedLegMetaByProvider.current[legPid] = {
+                                          eid,
+                                          outcome: leg?.outcome ?? '',
+                                          point: leg?.point ?? null,
+                                        }
+                                        setPickingLegs(prev => {
+                                          const cur = prev[eid] ?? new Set<string>()
+                                          const next = new Set(cur); next.add(lk)
+                                          return { ...prev, [eid]: next }
+                                        })
+                                        setProviderStatusFor(legPid, `checking ${label}…`)
+                                        // Supersede check: when the API call returns, verify the user
+                                        // hasn't moved on to a different anchor event. If they have,
+                                        // skip the success setState — otherwise the late completion
+                                        // would re-add the abandoned event's sync state and resurrect
+                                        // a green chip on a row the user just left.
+                                        const isSuperseded = () =>
+                                          isAnchorClick && pickedLegMetaByProvider.current[legPid]?.eid !== eid
+                                        try {
+                                          // Pass the user's manual stake override (if any) to the
+                                          // backend. The override is stored as TARGET PAYOUT — we
+                                          // derive the anchor stake from payout / anchor_odds (clamped
+                                          // to balance). Backend uses this for bet["stake"] instead of
+                                          // full balance so the placed bet matches the UI display.
+                                          const payoutOverride = payoutOverridesByEid[eid]
+                                          let overrideAnchorStake: number | null = null
+                                          if (payoutOverride != null && payoutOverride > 0) {
+                                            const ao = Number(anchorLeg.odds ?? 0)
+                                            if (ao > 0) overrideAnchorStake = payoutOverride / ao
+                                          }
+                                          const r = await api.navigateOpp(legPid, {
+                                            ..._opp,
+                                            _picked_leg: leg,
+                                            ...(overrideAnchorStake != null && overrideAnchorStake > 0
+                                              ? { _override_stake: overrideAnchorStake }
+                                              : {}),
+                                          })
+                                          if (isSuperseded()) {
+                                            console.log(`[navigateLeg] superseded — ignoring ${lk}/${eid} response`)
+                                            return  // finally still runs to remove from navInFlight
+                                          }
+                                          if (r?.status === 'synced' || r?.status === 'nav_only') {
+                                            // Per-leg sync confirmed. Mark green:
+                                            //   1. The picked leg itself.
+                                            //   2. Every sibling leg on this opp that shares the SAME
+                                            //      provider (same event page renders all outcomes).
+                                            //   3. Every cluster-sibling leg (Altenar tenants share
+                                            //      an odds engine — BETINIA, QUICKCASINO etc. all
+                                            //      reflect the same odds; the scanner often emits the
+                                            //      cluster-best sibling's leg, and without a cluster
+                                            //      match the row's `allGreen` check stayed false even
+                                            //      though the user navigated successfully).
+                                            const syncedCluster = resolveSoftCluster(legPid)
+                                            setSyncedLegs(prev => {
+                                              const cur = prev[eid] ?? new Set<string>()
+                                              const next = new Set(cur)
+                                              next.add(lk)
+                                              for (const l of (_opp.legs ?? [])) {
+                                                const lp = (l.provider ?? l.provider_id ?? '') as string
+                                                if (!lp) continue
+                                                if (lp === legPid || resolveSoftCluster(lp) === syncedCluster) {
+                                                  next.add(legKey(lp, l.outcome, l.point))
+                                                }
+                                              }
+                                              if (next.size === cur.size) return prev
+                                              return { ...prev, [eid]: next }
+                                            })
+                                            const msg = r.status === 'synced'
+                                              ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'} — click Place on tab`
+                                              : `tab on event — click outcome + Place`
+                                            setProviderStatusFor(legPid, msg)
+                                          } else if (r?.status === 'prep_failed') {
+                                            setProviderStatusFor(legPid, `prep failed: ${r.reason ?? 'unknown'}`)
+                                          } else if (r?.status === 'event_closed') {
+                                            // Drain the row, STOP. No auto-pop — the previous chained
+                                            // recursion was racing with arb_leg_odds re-ranks (closure
+                                            // captures stale opps) and looked haywire. User clicks
+                                            // the next top arb manually.
+                                            setDrainedEventIds(prev => prev.has(eid) ? prev : new Set([...prev, eid]))
+                                            setProviderStatusFor(legPid, `event finished — drained, click next`)
+                                          } else {
+                                            setProviderStatusFor(legPid, 'nav done')
+                                          }
+                                        } catch (e: any) {
+                                          if (isSuperseded()) return
+                                          setProviderStatusFor(legPid, `nav failed: ${e?.message ?? e}`)
+                                        } finally {
+                                          setPickingLegs(prev => {
+                                            const cur = prev[eid]
+                                            if (!cur || !cur.has(lk)) return prev
+                                            const next = new Set(cur); next.delete(lk)
+                                            return { ...prev, [eid]: next }
+                                          })
+                                          navInFlight.current.delete(lk)
+                                          setLegBusy(prev => prev === `${lk}:${eid}` ? null : prev)
+                                        }
+                                      }
+                                      const onRowClick = (e: React.MouseEvent) => {
+                                        e.stopPropagation()
+                                        // Navigate every leg whose provider IS logged in. Skip the
+                                        // ones that aren't — the user plays those manually on the
+                                        // bookmaker's site (e.g., interwetten not logged in but
+                                        // Pinnacle is → clicking opens the Pinnacle event page so
+                                        // the hedge math can be referenced/placed). Previously this
+                                        // path bailed entirely on !canRun, which hid the calc-side
+                                        // value of seeing whatever counter tabs ARE available.
+                                        if (!canRun) {
+                                          setProviderStatusFor(
+                                            pid,
+                                            `manual play: ${missingLogins.map(p => p.toUpperCase()).join(' + ')}`,
+                                          )
+                                        }
+                                        if (loggedInProviders.has(pid)) {
+                                          navigateLeg(pid, anchorLeg, `${anchorOutcome} on ${pid}`)
+                                        }
+                                        // Auto-chain: fire navigateLeg for EVERY logged-in counter
+                                        // leg. When two legs share a counter provider (e.g. 1X2 arb
+                                        // with pinnacle covering both Draw and Away), we still fire
+                                        // both. The per-provider busy guard inside navigateLeg
+                                        // drops the 2nd same-provider call as a no-op, but the
+                                        // FIRST call's success handler greens every sibling leg
+                                        // sharing (provider, event) — the tab is on the event page
+                                        // which renders all outcomes anyway.
+                                        for (const cleg of counters) {
+                                          const cpid = (cleg.provider ?? cleg.provider_id) as string
+                                          if (!cpid) continue
+                                          if (!loggedInProviders.has(cpid)) continue
+                                          navigateLeg(cpid, cleg, `${resolveOutcome(cleg)} on ${cpid}`, opp, { autoChained: true })
+                                        }
+                                        // In parallel: pre-warm Pinnacle live odds via the targeted
+                                        // refresh endpoint. Auto-applies as liveLegOdds overrides
+                                        // so the row's profit % updates to reflect what Pinnacle is
+                                        // actually offering RIGHT NOW (extraction-time data is often
+                                        // 2-5 min stale and can flip a "+0.5%" arb to negative).
+                                        const pinnacleLegs = (opp.legs ?? []).filter((l: any) =>
+                                          (l.provider ?? l.provider_id) === 'pinnacle',
+                                        )
+                                        if (pinnacleLegs.length > 0) {
+                                          const matchupId = pinnacleLegs[0]?.provider_meta?.matchup_id
+                                          if (matchupId) {
+                                            refreshPinnacleMatchup(opp, matchupId).catch(err => {
+                                              console.warn('[refresh-matchup] failed', err)
+                                            })
+                                          }
+                                        }
+                                      }
+                                      const rowEid = opp.event_id
+                                      const eventSynced = syncedLegs[rowEid] ?? new Set<string>()
+                                      const eventPicking = pickingLegs[rowEid] ?? new Set<string>()
+                                      // All-green check now uses leg keys (pid|outcome|point) so 1X2
+                                      // arbs with 3 hedge legs on the same provider need each
+                                      // distinct outcome synced — not just one provider entry.
+                                      const allLegKeys = [
+                                        legKey(anchorLeg.provider ?? anchorLeg.provider_id ?? pid, anchorLeg.outcome, anchorLeg.point),
+                                        ...counters.map((l: any) => legKey(l.provider ?? l.provider_id ?? '', l.outcome, l.point)),
+                                      ]
+                                      const allGreen = allLegKeys.length > 0 && allLegKeys.every(k => eventSynced.has(k))
+                                      const anchorLegKey = legKey(anchorLeg.provider ?? anchorLeg.provider_id ?? pid, anchorLeg.outcome, anchorLeg.point)
+                                      const anchorSynced = eventSynced.has(anchorLegKey)
+                                      const anchorPicking = eventPicking.has(anchorLegKey)
+                                      // Runnable check: the FUNDED anchor (pid) + every ENABLED
+                                      // counter leg must be logged in. We use `pid` (this section's
+                                      // funded soft) and NOT anchorLeg.provider because cluster
+                                      // siblings share odds — the scanner often picks a sibling's
+                                      // leg as the anchor (e.g. QUICKCASINO @ 2.20 beats BETINIA @
+                                      // 2.10), but we'd still place on `pid` since that's the one
+                                      // the user has funded. Checking the sibling's login state
+                                      // would grey rows the user can perfectly well execute.
+                                      //
+                                      // Counters the user has disabled via the chip filter aren't
+                                      // part of the placement plan, so we skip them even if they're
+                                      // present in opp.legs.
+                                      //
+                                      // Also: if login state hasn't loaded yet (empty set on first
+                                      // paint), don't grey — would flash every row off then on.
+                                      const loginsKnown = loggedInProviders.size > 0
+                                      const rowProviders = [
+                                        pid,
+                                        ...counters
+                                          .filter((l: any) => {
+                                            const lp = l.provider ?? l.provider_id
+                                            return lp && enabledCounters.has(lp)
+                                          })
+                                          .map((l: any) => l.provider ?? l.provider_id),
+                                      ].filter(Boolean) as string[]
+                                      const missingLogins = loginsKnown
+                                        ? rowProviders.filter(p => !loggedInProviders.has(p))
+                                        : []
+                                      const canRun = missingLogins.length === 0
+                                      const cellClass = (synced: boolean, picking: boolean) =>
+                                        picking
+                                          ? 'bg-amber-900/40 animate-pulse'
+                                          : synced
+                                            ? 'bg-emerald-900/30'
+                                            : ''
+                                      const rowDisabledTitle = canRun
+                                        ? ''
+                                        : `Not logged in: ${missingLogins.map(p => p.toUpperCase()).join(', ')}. Log in to enable this arb.`
                                       return (
-                                        <tr key={`arb-${pid}-${i}`} className="border-b border-zinc-800/20 hover:bg-zinc-800/40">
+                                        <tr key={`arb-${pid}-${i}`}
+                                            title={rowDisabledTitle}
+                                            onClick={onRowClick}
+                                            className={`border-b border-zinc-800/20 ${allGreen ? 'ring-1 ring-emerald-500/40' : ''} hover:bg-zinc-800/40 cursor-pointer`}>
                                           <td className={`pl-9 pr-2 py-1 font-mono font-semibold text-right w-[60px] ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                            {allGreen && <span className="mr-1 text-emerald-300" title="All legs synced — ready to place">●</span>}
                                             {profitPct >= 0 ? '+' : ''}{profitPct.toFixed(2)}%
                                           </td>
-                                          <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">{eventLabel}</td>
-                                          <td className="px-2 py-1 text-zinc-500 text-[10px] uppercase">{opp.market ?? ''}</td>
+                                          <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate text-[11px]">
+                                            {eventLabel}
+                                          </td>
+                                          <td className={`px-2 py-1 font-mono text-[10px] w-[44px] text-right ${ttkClass(opp.starts_at)}`} title={opp.starts_at ? `kicks off ${new Date(opp.starts_at).toLocaleString()}` : 'no start time'}>
+                                            {fmtTtkFromIso(opp.starts_at)}
+                                          </td>
+                                          <td
+                                      className="px-2 py-1 text-zinc-500 text-[10px] uppercase cursor-help"
+                                      title={(() => {
+                                        const m = (opp.market ?? '') as string
+                                        const sport = (opp.sport ?? '') as string
+                                        const legCount = (opp.legs ?? []).length
+                                        if (m === '1x2') return `1X2 — 3-way (home/draw/away). For hockey/soccer regulation. Pinnacle: s;6;m for hockey, s;0;m for soccer.`
+                                        if (m === 'moneyline') {
+                                          if (legCount === 3) return `MONEYLINE — 3-way (home/draw/away). Treated like 1X2. Pinnacle: s;0;m or s;6;m.`
+                                          return `MONEYLINE — 2-way (home/away), full game incl. OT/SO. Pinnacle: s;0;m.`
+                                        }
+                                        if (m === 'spread') return `SPREAD ${opp.point ?? ''} — ${sport === 'tennis' ? 'WARNING: tennis sets vs games unit mismatch — extractor should be skipping' : '2-way handicap'}. Pinnacle: s;<period>;s;<point>.`
+                                        if (m === 'total') return `TOTAL ${opp.point ?? ''} — over/under. Pinnacle: s;<period>;ou;<point>.`
+                                        return m
+                                      })()}
+                                    >{opp.market ?? ''}</td>
                                           <td className="px-2 py-1 text-[11px]">
-                                            <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">bet</span>
-                                            <span className="text-green-400 font-semibold">{anchorOutcome}</span>
-                                            <span className="text-zinc-600 mx-1">on</span>
-                                            <span className="text-zinc-400 uppercase text-[10px]">{pid}</span>
-                                            <span className="font-mono text-zinc-200 ml-2">@ {Number(anchorLeg.odds ?? 0).toFixed(2)}</span>
+                                            <span
+                                              className={`rounded px-1 -mx-1 py-0.5 inline-block ${cellClass(anchorSynced, anchorPicking)}`}
+                                            >
+                                              <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">bet</span>
+                                              <span className="text-green-400 font-semibold">{anchorOutcome}</span>
+                                              <span className="text-zinc-600 mx-1">on</span>
+                                              <span className="text-zinc-400 uppercase text-[10px]">{pid}</span>
+                                              <span className="font-mono text-zinc-200 ml-2">{formatOddsDisplay(pid, Number(anchorLeg.odds ?? 0))}</span>
+                                              {stakes.anchorSek > 0 && (
+                                                <span className="font-mono text-amber-300 ml-2">{formatLegStake(pid, stakes.anchorSek)}</span>
+                                              )}
+                                            </span>
                                           </td>
                                           <td className="px-2 py-1 text-[11px]">
                                             <div className="flex flex-col gap-0.5">
-                                              {counters.map((leg: any, li: number) => (
-                                                <div key={li} className="flex items-center gap-1">
-                                                  <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">hedge</span>
-                                                  <span className="text-pink-400 font-semibold">{resolveOutcome(leg)}</span>
-                                                  <span className="text-zinc-600">on</span>
-                                                  <span className="text-zinc-400 uppercase text-[10px]">{leg.provider ?? leg.provider_id}</span>
-                                                  <span className="font-mono text-zinc-300 ml-2">@ {Number(leg.odds ?? 0).toFixed(2)}</span>
-                                                </div>
-                                              ))}
+                                              {counters.map((leg: any, li: number) => {
+                                                const cpid = leg.provider ?? leg.provider_id
+                                                const cstake = stakes.counterSekByLeg[li] ?? 0
+                                                const hedgeLegKey = legKey(cpid ?? '', leg.outcome, leg.point)
+                                                const hedgeSynced = eventSynced.has(hedgeLegKey)
+                                                const hedgePicking = eventPicking.has(hedgeLegKey)
+                                                return (
+                                                  <div
+                                                    key={li}
+                                                    className={`flex items-center gap-1 rounded px-1 -mx-1 py-0.5 ${cellClass(hedgeSynced, hedgePicking)}`}
+                                                  >
+                                                    <span className="text-[9px] text-zinc-500 uppercase tracking-wider mr-1">hedge</span>
+                                                    <span className="text-pink-400 font-semibold">{resolveOutcome(leg)}</span>
+                                                    <span className="text-zinc-600">on</span>
+                                                    <span className="text-zinc-400 uppercase text-[10px]">{cpid}</span>
+                                                    <span className="font-mono text-zinc-300 ml-2">{formatOddsDisplay(cpid, Number(leg.odds ?? 0))}</span>
+                                                    {cstake > 0 && (
+                                                      <span className="font-mono text-amber-300 ml-2">{formatLegStake(cpid, cstake)}</span>
+                                                    )}
+                                                  </div>
+                                                )
+                                              })}
                                             </div>
                                           </td>
                                         </tr>
@@ -1726,7 +3808,7 @@ export default function PlayPage() {
                     const pending = pendingByProvider[pid]?.length ?? 0
                     const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
                     const disabled = bal <= 0 && pending === 0 && !uncapped
-                    const cardState = deriveCardState(activeProviders.has(pid), loopProviderStatus?.[pid]?.state)
+                    const cardState = deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
                     return (
                       <button key={pid}
                         onClick={() => !disabled && handleCardClick(pid)}
@@ -1734,35 +3816,28 @@ export default function PlayPage() {
                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
                           disabled
                             ? 'text-zinc-700 border border-zinc-800/30 cursor-not-allowed opacity-40'
-                            : cardState === 'idle'
-                              ? 'text-zinc-300 hover:bg-zinc-700/50 border border-zinc-700/50 cursor-pointer'
-                              : `${CARD_STATE_CLASSES[cardState]} cursor-pointer`
+                            : `${CARD_STATE_CLASSES[cardState]} cursor-pointer`
                         }`}
+                        title={
+                          cardState === 'no_tab' ? 'Click to open the provider site' :
+                          cardState === 'tab_open_not_in' ? 'Tab open — click to refresh if it closed silently' :
+                          'Tab open + logged in'
+                        }
                       >
                         <span className="uppercase font-semibold">{pid}</span>
-                        {cardState === 'tab_open' && (
+                        {cardState === 'tab_open_not_in' && (
                           <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
                             Log in to continue
                           </span>
                         )}
-                        {cardState === 'logged_in_syncing' && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/25 text-amber-100 font-semibold">
-                            Logged in · syncing
-                          </span>
-                        )}
-                        {cardState === 'ready_to_run' && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-400/40 text-amber-50 font-semibold">
-                            Logged in — press to run
-                          </span>
-                        )}
-                        {cardState === 'running' && (
+                        {cardState === 'tab_open_logged' && (
                           <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
-                            Running
+                            Logged in
                           </span>
                         )}
                         {balDisplay > 0 && (
                           <span className="ml-1 text-green-400 font-mono">
-                            {pid === 'polymarket' ? '$' : ''}{balDisplay.toFixed(2)}{pid !== 'polymarket' ? ' kr' : ''}
+                            {USD_PROVIDERS.has(pid) ? '$' : ''}{balDisplay.toFixed(2)}{!USD_PROVIDERS.has(pid) ? ' kr' : ''}
                           </span>
                         )}
                         {pending > 0 && <span className="ml-1 text-amber-400">{pending}p</span>}
@@ -1860,10 +3935,30 @@ export default function PlayPage() {
                     {clusterPending.map((p: any) => {
                       const betId = p.bet_id ?? p.id
                       const det = detectedSettlements[betId]
-                      const eventLabel = p.home_team && p.away_team
+                      // Display priority same as soft-cluster pending row:
+                      // scanner team-names → event_name fallback → event_id
+                      // split → "Unknown event" so the row never renders blank.
+                      const eventLabel = (p.home_team && p.away_team)
                         ? `${p.home_team} v ${p.away_team}`
-                        : p.event_id?.split(':').slice(1, 3).join(' v ') ?? p.event_id
+                        : (p.event_name || p.event_id?.split(':').slice(1, 3).join(' v ') || p.event_id || 'Unknown event')
                       const profit = det ? (det.payout - (p.stake ?? 0)) : 0
+                      // Settlement readiness — event start + 3 h grace window.
+                      const startMs = p.start_time ? new Date(p.start_time).getTime() : null
+                      const placedMs = p.placed_at ? new Date(p.placed_at).getTime() : null
+                      const nowMs = Date.now()
+                      const SETTLE_GRACE_MS = 3 * 60 * 60 * 1000
+                      const readyToSettle = startMs != null && nowMs > startMs + SETTLE_GRACE_MS
+                      const inProgress = startMs != null && nowMs > startMs && !readyToSettle
+                      const fmtTime = (ms: number | null): string => {
+                        if (ms == null) return '—'
+                        const d = new Date(ms)
+                        const today = new Date(); today.setHours(0, 0, 0, 0)
+                        const same = d >= today
+                        return same
+                          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+                            d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      }
                       return (
                         <div key={`pending-${p.id}`} className={`flex items-center gap-2 px-3 pl-6 py-0.5 border-b border-zinc-800/20 text-xs ${
                           det ? (det.result === 'won' ? 'bg-green-900/10' : det.result === 'lost' ? 'bg-red-900/10' : 'bg-zinc-800/20') : ''
@@ -1871,10 +3966,38 @@ export default function PlayPage() {
                           <span className="text-[10px] text-zinc-600 uppercase w-[80px]">{p._pid}</span>
                           <span className={`truncate flex-1 ${det ? 'text-zinc-400' : 'text-amber-300/70'}`}>{eventLabel}</span>
                           <span className="text-amber-400/60 text-[10px]">{p.outcome ?? p.market}</span>
-                          <span className="text-zinc-500 font-mono text-[10px]">@ {fmtOddsWithCents(p.odds ?? 0, clusterId === 'polymarket')}</span>
+                          <span className="text-zinc-500 font-mono text-[10px]">@ {fmtOddsWithCents(p.odds ?? 0, isCentsMarket(clusterId))}</span>
                           <span className="text-amber-300/50 font-mono text-[10px]">
                             {clusterId === 'polymarket' ? `$${(p.stake ?? 0).toFixed(2)}` : `${Math.round(p.stake ?? 0)} kr`}
                           </span>
+                          <span
+                            className="text-zinc-600 font-mono text-[10px]"
+                            title={`Placed ${p.placed_at ?? '—'}`}
+                          >
+                            placed {fmtTime(placedMs)}
+                          </span>
+                          <span
+                            className={`font-mono text-[10px] ${ttkClass(p.start_time)}`}
+                            title={p.start_time ? `Event start: ${new Date(p.start_time).toLocaleString()}` : 'no event start time on bet — settlement will not auto-flag'}
+                          >
+                            {p.start_time ? `starts ${fmtTime(startMs)} · ${fmtTtkFromIso(p.start_time)}` : 'no start time'}
+                          </span>
+                          {!det && readyToSettle && (
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-emerald-700/40 text-emerald-200 border border-emerald-500/40 uppercase tracking-wider"
+                              title="Event ended >3h ago — open the provider history page to recover the result"
+                            >
+                              ready to settle
+                            </span>
+                          )}
+                          {!det && inProgress && (
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-700/30 text-amber-200 border border-amber-500/30 uppercase tracking-wider"
+                              title="Event is live — result not yet final"
+                            >
+                              live
+                            </span>
+                          )}
                           {det && (
                             <>
                               <span className={`text-[10px] font-semibold uppercase px-1 rounded ${
@@ -1921,10 +4044,15 @@ export default function PlayPage() {
                     const isCurrent = currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome
                     const displayOdds = live?.odds ?? b.odds
                     const displayEdge = live?.edge ?? b.edge_pct
+                    const isSynced = (syncedLegs[b.event_id] ?? new Set<string>()).has(
+                      legKey(b.provider_id, b.outcome, b.point),
+                    )
                     return (
                       <tr key={key}
-                        className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 transition-colors ${
-                          isCurrent ? 'bg-amber-900/20' : ''
+                        onClick={() => handleValueBetClick(b)}
+                        title={`Open ${b.provider_id.toUpperCase()} event page`}
+                        className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
+                          isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40' : isCurrent ? 'bg-amber-900/20' : ''
                         }`}
                       >
                         <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">{b.cluster && b.cluster !== b.provider_id ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '') : b.provider_id}</td>
@@ -1932,13 +4060,13 @@ export default function PlayPage() {
                         <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">{fmtMarket(b)}</td>
                         <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
                         <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
-                          {fmtOddsWithCents(displayOdds, b.tier === 'polymarket')}
+                          {fmtOddsWithCents(displayOdds, isCentsMarket(b.provider_id))}
                           {/* Sky color = streaming live from the provider tab.
                               Drift direction is intentionally not shown — the
                               edge column already conveys whether the live odds
                               still leave us +EV. */}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, b.tier === 'polymarket')}</td>
+                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, isCentsMarket(b.provider_id))}</td>
                         <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
                         </td>

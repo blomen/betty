@@ -405,6 +405,21 @@ export function BetsPage() {
     staleTime: 60_000,
   });
 
+  const { data: analyticsAll } = useQuery({
+    queryKey: ['bets', 'analytics', 'all', 90],
+    queryFn: () => api.getAnalytics(undefined, 90),
+    staleTime: 60_000,
+  });
+  const { data: analyticsPoly } = useQuery({
+    queryKey: ['bets', 'analytics', 'polymarket', 90],
+    queryFn: () => api.getAnalytics('polymarket', 90),
+    staleTime: 60_000,
+  });
+
+  const [analyticsCollapsed, setAnalyticsCollapsed] = usePersistedState('bbq_bets_analyticsCollapsed', false);
+  const [analyticsProvider, setAnalyticsProvider] = usePersistedState<'all' | 'polymarket'>('bbq_bets_analyticsProvider', 'polymarket');
+  const activeAnalytics = analyticsProvider === 'polymarket' ? analyticsPoly : analyticsAll;
+
   // Sort & search (for history table)
   const [sort, setSort] = usePersistedState<{ key: SortKey; dir: SortDir } | null>('bbq_bets_sort', null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -423,10 +438,13 @@ export function BetsPage() {
   // Collapsed states
   const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', true);
 
-  // ── History (settled bets only) ─────────────────────────────────
+  // ── History (all placed bets — pending + settled) ──────────────
+  // Pending bets sort first (newest placed), then settled by placed_at desc.
+  // Status pill ('Pending'/'Won'/'Lost'/'Void') differentiates visually;
+  // Cashout/Edit buttons in the expanded row let the user settle manually.
 
   const historyBets = useMemo(() => {
-    let result = bets.filter(b => b.result !== 'pending');
+    let result = bets.slice();
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -470,8 +488,10 @@ export function BetsPage() {
     setExpandedIdx(null);
   };
 
-  const formatDate = (dateStr: string) => {
+  const formatDate = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '-';
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '-';
     return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
@@ -626,6 +646,132 @@ export function BetsPage() {
           )}
           <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
+      </div>
+
+      {/* Realized-ROI Analytics — per-sport + per-edge-bucket breakdown */}
+      <div>
+        <div className="flex items-center gap-2 w-full">
+          <button
+            className="flex items-center gap-2 text-left cursor-pointer group flex-1"
+            onClick={() => setAnalyticsCollapsed(c => !c)}
+          >
+            <span className={`text-[10px] text-muted2 transition-transform ${analyticsCollapsed ? '' : 'rotate-90'}`}>▶</span>
+            <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
+              Realized vs Displayed Edge (90d)
+            </h3>
+          </button>
+          <div className="flex gap-1">
+            {(['all', 'polymarket'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => setAnalyticsProvider(p)}
+                className={`px-2 py-0.5 text-[10px] rounded border ${
+                  analyticsProvider === p
+                    ? 'bg-tabBets/20 text-tabBets border-tabBets/40'
+                    : 'bg-panel2 text-muted border-border hover:text-text'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+        {!analyticsCollapsed && activeAnalytics && (
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            {/* Per-sport */}
+            <div className="border border-border bg-panel2 overflow-hidden">
+              <div className="px-2 py-1 text-[10px] text-muted uppercase tracking-wider bg-bg border-b border-border">By Sport</div>
+              <table className="w-full text-[11px] font-mono">
+                <thead className="bg-bg/50">
+                  <tr>
+                    <th className="px-2 py-1 text-left">sport</th>
+                    <th className="px-2 py-1 text-right">n</th>
+                    <th className="px-2 py-1 text-right">W</th>
+                    <th className="px-2 py-1 text-right">win%</th>
+                    <th className="px-2 py-1 text-right">implied%</th>
+                    <th className="px-2 py-1 text-right">edge%</th>
+                    <th className="px-2 py-1 text-right">CLV%</th>
+                    <th className="px-2 py-1 text-right">ROI%</th>
+                    <th className="px-2 py-1 text-right">profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(activeAnalytics.by_sport)
+                    .filter(([, v]) => v != null)
+                    .sort(([, a], [, b]) => (b?.n ?? 0) - (a?.n ?? 0))
+                    .map(([sport, v]) => v && (
+                      <tr key={sport} className="border-t border-border/50 hover:bg-bg/30">
+                        <td className="px-2 py-1">{sport}</td>
+                        <td className="px-2 py-1 text-right">{v.n}</td>
+                        <td className="px-2 py-1 text-right">{v.won}</td>
+                        <td className="px-2 py-1 text-right">{v.win_pct ?? '-'}</td>
+                        <td className="px-2 py-1 text-right text-muted">{v.implied_pct ?? '-'}</td>
+                        <td className="px-2 py-1 text-right text-muted">{v.avg_displayed_edge_pct?.toFixed(1) ?? '-'}</td>
+                        <td className={`px-2 py-1 text-right ${(v.avg_clv_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.avg_clv_pct?.toFixed(1) ?? '-'}
+                        </td>
+                        <td className={`px-2 py-1 text-right ${(v.roi_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.roi_pct?.toFixed(1) ?? '-'}
+                        </td>
+                        <td className={`px-2 py-1 text-right ${v.profit >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.profit.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Per-edge-bucket */}
+            <div className="border border-border bg-panel2 overflow-hidden">
+              <div className="px-2 py-1 text-[10px] text-muted uppercase tracking-wider bg-bg border-b border-border">By Edge Bucket</div>
+              <table className="w-full text-[11px] font-mono">
+                <thead className="bg-bg/50">
+                  <tr>
+                    <th className="px-2 py-1 text-left">bucket</th>
+                    <th className="px-2 py-1 text-right">n</th>
+                    <th className="px-2 py-1 text-right">W</th>
+                    <th className="px-2 py-1 text-right">win%</th>
+                    <th className="px-2 py-1 text-right">implied%</th>
+                    <th className="px-2 py-1 text-right">edge%</th>
+                    <th className="px-2 py-1 text-right">CLV%</th>
+                    <th className="px-2 py-1 text-right">ROI%</th>
+                    <th className="px-2 py-1 text-right">profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {['0-2%', '2-5%', '5-10%', '10-20%', '20%+']
+                    .map(b => [b, activeAnalytics.by_edge_bucket[b]] as const)
+                    .filter(([, v]) => v != null)
+                    .map(([b, v]) => v && (
+                      <tr key={b} className="border-t border-border/50 hover:bg-bg/30">
+                        <td className="px-2 py-1">{b}</td>
+                        <td className="px-2 py-1 text-right">{v.n}</td>
+                        <td className="px-2 py-1 text-right">{v.won}</td>
+                        <td className="px-2 py-1 text-right">{v.win_pct ?? '-'}</td>
+                        <td className="px-2 py-1 text-right text-muted">{v.implied_pct ?? '-'}</td>
+                        <td className="px-2 py-1 text-right text-muted">{v.avg_displayed_edge_pct?.toFixed(1) ?? '-'}</td>
+                        <td className={`px-2 py-1 text-right ${(v.avg_clv_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.avg_clv_pct?.toFixed(1) ?? '-'}
+                        </td>
+                        <td className={`px-2 py-1 text-right ${(v.roi_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.roi_pct?.toFixed(1) ?? '-'}
+                        </td>
+                        <td className={`px-2 py-1 text-right ${v.profit >= 0 ? 'text-success' : 'text-error'}`}>
+                          {v.profit.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {!analyticsCollapsed && activeAnalytics?.overall && (
+          <div className="mt-1 text-[10px] text-muted px-2">
+            CLV-ROI gap &gt; 10pp on any sport = likely event-mismatch issue. n &lt; 30 = noise.
+          </div>
+        )}
       </div>
 
       {/* Bet History */}

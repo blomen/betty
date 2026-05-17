@@ -84,4 +84,36 @@ export const betsApi = {
       body: JSON.stringify(data),
     });
   },
+
+  async getAnalytics(
+    providerId?: string,
+    days = 90
+  ): Promise<{
+    provider_id: string | null;
+    days: number;
+    cutoff: string;
+    overall: AnalyticsBucket | null;
+    by_sport: Record<string, AnalyticsBucket>;
+    by_edge_bucket: Record<string, AnalyticsBucket>;
+    by_sport_and_bucket: Record<string, AnalyticsBucket>;
+  }> {
+    const params = new URLSearchParams();
+    if (providerId) params.set('provider_id', providerId);
+    params.set('days', String(days));
+    return fetchJson(`/bets/analytics?${params}`);
+  },
+};
+
+export type AnalyticsBucket = {
+  n: number;
+  won: number;
+  lost: number;
+  void: number;
+  win_pct: number | null;
+  implied_pct: number | null;
+  avg_displayed_edge_pct: number | null;
+  staked: number;
+  profit: number;
+  roi_pct: number | null;
+  avg_clv_pct: number | null;
 };
