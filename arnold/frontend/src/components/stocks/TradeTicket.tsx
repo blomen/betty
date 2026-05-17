@@ -30,7 +30,7 @@ const BLOCKER_DETAIL: Record<NonNullable<GateBlocker>, string> = {
   halted: 'trading halted',
   model_skip: 'model SKIP',
   confidence: 'confidence below floor',
-  orderflow: 'orderflow below floor',
+  stop_bounds: 'stop ticks out of bounds',
   in_position: 'already in position',
 }
 
@@ -588,7 +588,7 @@ export function TradeTicket({
               </div>
               {gates && (
                 <div className="text-[10px] tabular-nums text-zinc-500">
-                  floor {gates.of_floor.toFixed(2)}
+                  observability only
                 </div>
               )}
             </div>
@@ -612,12 +612,6 @@ export function TradeTicket({
                   blocker={gates.blocker === 'confidence'}
                   label="Confidence"
                   detail={`${gates.confidence.toFixed(2)} ≥ ${gates.conf_floor.toFixed(2)}`}
-                />
-                <GateRow
-                  pass={gates.of_pass}
-                  blocker={gates.blocker === 'orderflow'}
-                  label="Order flow"
-                  detail={`${gates.of_score.toFixed(2)} ≥ ${gates.of_floor.toFixed(2)}`}
                 />
                 {gates.blocker === 'in_position' && (
                   <GateRow

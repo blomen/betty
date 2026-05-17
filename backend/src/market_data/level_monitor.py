@@ -35,27 +35,6 @@ def _conf_floor() -> float:
         return 0.15
 
 
-def _of_floor() -> float:
-    """Orderflow score floor for entry dispatch.
-
-    Disabled by default in both reckless and strict modes (2026-05-17):
-    the hand-coded OF gate was anti-predictive in 30-day live data (cohort
-    that passed conf but failed OF was +0.11R/trade; cohort that passed
-    both was -0.20R/trade). The 21 orderflow + 2 session_cvd + 2 big_abs
-    dims now live as raw inputs to the DQN — trust the model's synaptic
-    weights, not a hand-coded composite. _compute_orderflow_score_live
-    is kept as a per-tick observability output (logged + dashboard) but
-    no longer gates dispatch.
-
-    Override with OF_FLOOR_STRICT > 0 to re-enable the gate for emergency
-    A/B comparison.
-    """
-    try:
-        return float(os.environ.get("OF_FLOOR_STRICT", "0.0"))
-    except ValueError:
-        return 0.0
-
-
 MIN_ENTRY_STOP_TICKS = 6.0
 # Raised 40 → 60 on 2026-05-12 after audit showed 24.6% of enter signals
 # today landed in the 40-50 tick bucket and got silently rejected at this
@@ -709,16 +688,6 @@ class LevelMonitor:
         # Zone-aware DQN inference state
         self._zones: list[Zone] = []
         self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
-        # OF-await-entry state (2026-05-17, methodology-aligned per Fabio
-        # AMT + Ryan trapped-traders pattern). When conf passes but OF
-        # doesn't, signal is ARMED and we watch for participation SHIFT
-        # over the next 30s. On every tick we recompute OF; when it
-        # crosses the floor (or shifts +0.15 from arm time), we dispatch.
-        # Key: zone_key (rounded center price). Value: dict with cached
-        # action/conf/result/approach + armed_at + initial_of_score.
-        self._armed_signals: dict[float, dict] = {}
-        self._OF_AWAIT_TIMEOUT_S = 30.0
-        self._OF_AWAIT_PRICE_DRIFT_TICKS = 8
         self._session_atr: float = 40.0
         # Diagnostic counters — exposed via /api/stocks/runtime-diagnostic so
         # we can verify the on_tick → zone-touch → emit pipeline without
@@ -1937,17 +1906,12 @@ class LevelMonitor:
         confidence = float(result.get("confidence", 0.0) or 0.0)
         of_score = float(_compute_orderflow_score_live(rl_state, zone, price, action))
         conf_floor_default = _conf_floor()
-        # Must mirror the broker-path + relay-path floors below — frontend
-        # displays this value, and a stale 0.15 here gives a "BLOCKED orderflow
-        # 0.02 ≥ 0.15" gate row even though the actual broker dispatch uses 0.0.
-        of_floor = _of_floor()
         halted = _trading_paused()
         conf_floor = 0.99 if halted else conf_floor_default
         is_flat = bool(broker is None or broker.tracker.is_flat)
 
         action_pass = action not in ("SKIP", "skip")
         conf_pass = confidence >= conf_floor
-        of_pass = of_score >= of_floor
         stop_ticks = float(result.get("stop_ticks", 0) or 0)
         stop_pass = _stop_ticks_in_bounds(stop_ticks)
 
@@ -1959,8 +1923,6 @@ class LevelMonitor:
             blocker = "model_skip"
         elif not conf_pass:
             blocker = "confidence"
-        elif not of_pass:
-            blocker = "orderflow"
         elif not stop_pass:
             blocker = "stop_bounds"
         elif not is_flat:
@@ -1976,8 +1938,6 @@ class LevelMonitor:
             "conf_floor": conf_floor,
             "conf_pass": conf_pass,
             "of_score": of_score,
-            "of_floor": of_floor,
-            "of_pass": of_pass,
             "stop_ticks": stop_ticks,
             "stop_min": MIN_ENTRY_STOP_TICKS,
             "stop_max": MAX_ENTRY_STOP_TICKS,
@@ -2208,20 +2168,12 @@ class LevelMonitor:
                 # framework (pyramid/reversal-exit/early-exit) handles
                 # winning-trend management.
                 of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
-                # OF floor: data shows OF>=0.30 wins 4/4, OF<0.30 is
-                # coin-flip + drag. Reckless mode was for bootstrapping
-                # data; now we have it. Default OF floor back to 0.30.
-                # Confidence floor stays at 0.0 (reckless) until trainer
-                # produces calibrated probabilities — most live signals
-                # land at 0.10-0.25 conf so a higher floor would mute
-                # everything again.
-                # PAPER-TRADING: keep gates loose so the trainer gets a
-                # constant stream of labelled (obs, action, realized_R)
-                # tuples. Once we have ~200 real trades + go live, raise
-                # OF floor back to 0.30 (early audit showed OF>=0.30 was
-                # 4/4; need bigger sample to confirm).
+                # OF gate removed 2026-05-17 (commits 54af2bc6 + this) per
+                # methodology grouping decision: the 21 orderflow + 2 session_cvd
+                # + 2 big_abs raw dims feed the DQN directly. of_score is kept
+                # purely as observability output (logged + dashboard + persisted
+                # on each signal row) and as a feature for stop-width scaling.
                 _conf_floor_default = _conf_floor()
-                _of_floor_val = _of_floor()
                 # When trading_paused flag is set, the broker path also stops
                 # firing — raise the confidence bar above any realistic model output.
                 _broker_conf_floor = 0.99 if _trading_paused() else _conf_floor_default
@@ -2236,15 +2188,6 @@ class LevelMonitor:
                         confidence,
                         _broker_conf_floor,
                         zone.center_price,
-                    )
-                elif of_score < _of_floor_val:
-                    logger.info(
-                        "broker gate: of_score %.3f < %.2f at zone %.2f (conf=%.3f, %s) — vetoed",
-                        of_score,
-                        _of_floor_val,
-                        zone.center_price,
-                        confidence,
-                        action,
                     )
                 elif not _stop_ticks_in_bounds(_st_ticks):
                     logger.info(
@@ -2281,7 +2224,6 @@ class LevelMonitor:
                 if (
                     action not in ("SKIP", "skip")
                     and confidence >= _broker_conf_floor
-                    and of_score >= _of_floor_val
                     and _stop_ticks_in_bounds(_st_ticks)
                 ):
                     import asyncio
@@ -2468,25 +2410,16 @@ class LevelMonitor:
                     }
                 )
 
-                # Send trading signal — filter low confidence + filter low OF
-                # so the relay (trading_service subprocess) honours the same
-                # gate as the autonomous broker. Without the OF check here,
-                # trade #77 fired with OF=0.00 because the trading_service
-                # adapter only checks MIN_CONFIDENCE — bypassing my Path-1
-                # OF gate. The relay path is the production trading path
-                # (autonomous bootstrap loses the SignalR session race), so
-                # this is where the gate must enforce.
+                # Send trading signal — filter low confidence only. OF gate
+                # removed 2026-05-17 per methodology grouping decision (see
+                # broker-path comment above); relay path mirrors the broker
+                # path so the local arnold client receives every conf-passing
+                # signal regardless of OF score.
                 action = result.get("action", "SKIP")
                 confidence = result.get("confidence", 0.0)
-                # TODO(task-13-followup): unify with _of_floor() — currently a parallel relay-path implementation
                 _reckless_relay = os.environ.get("RECKLESS_LEARNING_MODE", "1") != "0"
                 _baseline_min = 0.05 if _reckless_relay else 0.30
                 MIN_SIGNAL_CONFIDENCE = 0.99 if _trading_paused() else _baseline_min
-                # PAPER-TRADING: drop relay OF floor to 0 in reckless mode so
-                # every signal also gets persisted (stock_signals + live
-                # collector). Mirrors the broker-path floor — both paths must
-                # agree or signals fire on broker but never reach the trainer.
-                _RELAY_OF_FLOOR = 0.0 if _reckless_relay else 0.30
                 relay_of_score = _compute_orderflow_score_live(rl_state, zone, price, action)
 
                 # Persist EVERY zone touch — including skips and gated rejections —
@@ -2531,16 +2464,6 @@ class LevelMonitor:
                         zone.center_price,
                     )
                     _persist_skip("low_confidence")
-                elif relay_of_score < _RELAY_OF_FLOOR:
-                    logger.info(
-                        "Signal filtered (relay OF gate): %s of=%.3f < %.2f at zone %.2f conf=%.3f",
-                        action,
-                        relay_of_score,
-                        _RELAY_OF_FLOOR,
-                        zone.center_price,
-                        confidence,
-                    )
-                    _persist_skip("low_orderflow")
                 else:
                     if action == "CONTINUATION":
                         sig_action = "enter_long" if approach == "up" else "enter_short"

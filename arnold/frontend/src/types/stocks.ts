@@ -155,7 +155,7 @@ export type GateBlocker =
   | 'halted'
   | 'model_skip'
   | 'confidence'
-  | 'orderflow'
+  | 'stop_bounds'
   | 'in_position'
   | null
 
@@ -165,8 +165,10 @@ export interface InferenceGates {
   conf_floor: number
   conf_pass: boolean
   of_score: number
-  of_floor: number
-  of_pass: boolean
+  stop_ticks: number
+  stop_min: number
+  stop_max: number
+  stop_pass: boolean
   is_flat: boolean
   halted: boolean
   decision: 'DISPATCHED' | 'BLOCKED'

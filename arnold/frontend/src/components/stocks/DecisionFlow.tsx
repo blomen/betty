@@ -52,17 +52,16 @@ const SEG_GROUP: Record<string, SuperGroup> = {
 
 const GROUP_META: Record<SuperGroup, { label: string; color: string; gateAffinity: GateName[] }> = {
   zone: { label: 'Zone', color: '#a78bfa', gateAffinity: ['action'] }, // violet
-  orderflow: { label: 'Order flow', color: '#f97316', gateAffinity: ['orderflow'] }, // orange
+  orderflow: { label: 'Order flow', color: '#f97316', gateAffinity: [] }, // orange — visual super-group only; OF is no longer a dispatch gate
   amt: { label: 'AMT', color: '#34d399', gateAffinity: ['action', 'confidence'] }, // emerald
   narrative: { label: 'Narrative', color: '#60a5fa', gateAffinity: ['confidence'] }, // blue
 }
 
-type GateName = 'action' | 'confidence' | 'orderflow' | 'flat' | 'live'
+type GateName = 'action' | 'confidence' | 'flat' | 'live'
 
 const GATE_LABELS: Record<GateName, string> = {
   action: 'Action',
   confidence: 'Confidence',
-  orderflow: 'Order flow',
   flat: 'Flat',
   live: 'Live',
 }
@@ -168,14 +167,6 @@ export function DecisionFlow({ inference, schema }: Props) {
             ? `${g.confidence.toFixed(2)} ≥ ${g.conf_floor.toFixed(2)}`
             : '—',
           blocker: g?.blocker === 'confidence',
-        },
-        {
-          name: 'orderflow' as const,
-          pass: g?.of_pass ?? false,
-          detail: g
-            ? `${g.of_score.toFixed(2)} ≥ ${g.of_floor.toFixed(2)}`
-            : '—',
-          blocker: g?.blocker === 'orderflow',
         },
         {
           name: 'flat' as const,
