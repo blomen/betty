@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-Action = Literal["CONT", "REV", "SKIP"]
+Action = Literal["CONTINUATION", "REVERSAL", "SKIP"]
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,9 @@ class Signal:
     def action(self) -> Action:
         m = max(self.p_cont, self.p_rev, self.p_skip)
         if m == self.p_cont:
-            return "CONT"
+            return "CONTINUATION"
         if m == self.p_rev:
-            return "REV"
+            return "REVERSAL"
         return "SKIP"
 
     @property
@@ -78,7 +78,7 @@ class ExecutionContext:
     position: PositionState
     session_pnl_R: float
     consec_losses: int
-    history: list[TradeRecord] = field(default_factory=list)
+    history: tuple[TradeRecord, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -88,6 +88,11 @@ class MultiTaskOutputs:
 
     direction_logits: list[float]  # length 3: [cont, rev, skip]
     magnitude_R: float
+
+    def __post_init__(self) -> None:
+        if len(self.direction_logits) != 3:
+            raise ValueError(f"direction_logits must have 3 elements (CONT/REV/SKIP), got {len(self.direction_logits)}")
+
     win_probability: float
     duration_bars: float
     uncertainty: float
