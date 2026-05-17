@@ -68,3 +68,22 @@ def test_close_flushes_remaining_buffer(tmp_dir):
     writer.close()
     files = list(tmp_dir.rglob("*.parquet"))
     assert len(files) == 1
+
+
+def test_writer_splits_across_hour_boundary(tmp_dir):
+    """Records straddling an hour boundary must land in separate files."""
+    from datetime import datetime, timezone
+
+    ts_1459 = datetime(2026, 5, 17, 14, 59, 59, tzinfo=timezone.utc).timestamp()
+    ts_1500 = datetime(2026, 5, 17, 15, 0, 1, tzinfo=timezone.utc).timestamp()
+    writer = L1ParquetWriter(out_dir=tmp_dir, flush_interval_s=0.0)
+    writer.record(bid=25000.0, ask=25000.25, bid_size=1, ask_size=1, ts=ts_1459)
+    writer.record(bid=25001.0, ask=25001.25, bid_size=2, ask_size=2, ts=ts_1500)
+    writer.flush()
+    day_dir = tmp_dir / "2026-05-17"
+    assert (day_dir / "NQ_14.parquet").exists()
+    assert (day_dir / "NQ_15.parquet").exists()
+    df14 = pd.read_parquet(day_dir / "NQ_14.parquet")
+    df15 = pd.read_parquet(day_dir / "NQ_15.parquet")
+    assert len(df14) == 1
+    assert len(df15) == 1

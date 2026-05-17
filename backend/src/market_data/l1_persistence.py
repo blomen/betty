@@ -15,6 +15,7 @@ data missed = a minute of OF training data the model won't have.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,10 +63,11 @@ class L1ParquetWriter:
     def flush(self) -> None:
         if not self._buf:
             return
-        last_flushed_ts = self._buf[-1]["ts"]
+        snapshot = list(self._buf)
+        last_ts = snapshot[-1]["ts"]
         try:
             buf_by_hour: dict[Path, list[dict]] = {}
-            for rec in self._buf:
+            for rec in snapshot:
                 dt = datetime.fromtimestamp(rec["ts"], tz=timezone.utc)
                 date_dir = self._out_dir / dt.strftime("%Y-%m-%d")
                 date_dir.mkdir(exist_ok=True)
@@ -78,11 +80,17 @@ class L1ParquetWriter:
                     df = pd.concat([existing, new_df], ignore_index=True)
                 else:
                     df = new_df
-                pq.write_table(pa.Table.from_pandas(df, preserve_index=False), file)
+                tmp = file.with_suffix(".tmp")
+                pq.write_table(pa.Table.from_pandas(df, preserve_index=False), tmp)
+                os.replace(str(tmp), str(file))
+            # Only clear buffer after ALL hour-files have been written successfully
             self._buf.clear()
-            self._last_flush_ts = last_flushed_ts
+            self._last_flush_ts = last_ts
         except Exception:
-            log.exception("L1ParquetWriter flush failed")
+            log.exception(
+                "L1ParquetWriter flush failed (%d records retained in buffer)",
+                len(snapshot),
+            )
 
     def close(self) -> None:
         self.flush()
