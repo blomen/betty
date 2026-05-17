@@ -504,13 +504,28 @@ class MonitoredLevel:
 
 
 def _compute_orderflow_score_live(state: dict, zone, price: float, action: str) -> float:
-    """Orderflow confluence score [0, 1] for live gating.
+    """Orderflow confluence score [-0.5, +1.0] for live gating — v2 (2026-05-17).
 
-    Returns how strongly orderflow confirms the trade direction implied by
-    action (REVERSAL = fade approach). Score < 0.30 → veto entry.
+    Methodology-aligned per Fabio Valentini AMT course + Ryan/blockroots OF
+    intros + Cimitan orderflow expert. 10 sources cross-validated.
 
-    Mirrors the logic in session_manager._compute_orderflow_score so training
-    and live gate use the same metric.
+    Core principle: "Passive flow = heavier hand. Active aggressive delta is
+    often the WEAKER hand. At a level, when active aggressors push but price
+    doesn't follow = ABSORPTION → trade WITH the absorbing passive side,
+    AGAINST the aggressors."
+
+    Returns score in [-0.5, 1.0]:
+      >= 0.15: tape confirms trade direction
+      0 to 0.15: weak/neutral signal
+      < 0: tape CONTRADICTS the trade (veto signals fired)
+
+    Signed range lets vetoes drive the score below the entry gate threshold.
+
+    The v1 formula treated 'active delta agrees with trade direction' as
+    +confirmation regardless of price response — methodologically backwards
+    for trapped-trader counter-trend setups (the highest-EV pattern). v2
+    fixes this with directional VSA, price-response check, and contradiction
+    vetoes (trapped_traders, stop_run_detected, delta_divergence).
     """
     # Determine trade direction: REV fades the approach.
     approach_up = price < zone.center_price if zone is not None else True
@@ -524,44 +539,146 @@ def _compute_orderflow_score_live(state: dict, zone, price: float, action: str) 
     signals = state.get("orderflow_signals")
     score = 0.0
 
-    # 1. Delta direction match (0.20)
-    if candles:
-        last = candles[-1]
-        vol = max(getattr(last, "volume", 1), 1)
-        delta_pct = getattr(last, "delta", 0) / vol
-        delta_score = max(-1.0, min(1.0, delta_pct * trade_dir / 0.15))
-        if delta_score > 0:
-            score += 0.20 * delta_score
+    last = candles[-1] if candles else None
+    prev = candles[-2] if len(candles) >= 2 else None
+
+    # ──────────────────────────────────────────────────────────────────────
+    # POSITIVE CONFIRMATION SIGNALS (heavier-hand presence + alignment)
+    # ──────────────────────────────────────────────────────────────────────
 
     if signals is not None:
-        # 2. CVD trend alignment (0.20)
+        # 1. Passive/active ratio (weight 0.20) — NEW.
+        # High ratio = lots of resting liquidity vs aggressive takers =
+        # heavier hand is in the book (limit orders). Fabio/Ryan: passive
+        # flow is the heavier hand. Higher value = more institutional presence.
+        par = float(getattr(signals, "passive_active_ratio", 0.0) or 0.0)
+        score += 0.20 * min(max(par / 2.0, 0.0), 1.0)
+
+        # 2. CVD trend alignment (weight 0.15) — KEEP (slightly reduced).
         cvd_trend = getattr(signals, "cvd_trend", "flat")
         if (trade_dir == 1 and cvd_trend == "rising") or (trade_dir == -1 and cvd_trend == "falling"):
-            score += 0.20
+            score += 0.15
         elif cvd_trend == "flat":
-            score += 0.05
+            score += 0.03
 
-        # 3. Stacked imbalance cluster (0.25)
+        # 3. Stacked imbalance cluster in trade direction (weight 0.20) — KEEP.
+        # Multi-candle imbalance = real buying/selling pressure breaking through.
         sic = getattr(signals, "stacked_imbalance_count", 0) or 0
         sdir = getattr(signals, "stacked_direction", None)
         wants_buy = trade_dir == 1
-        matches = (wants_buy and sdir == "buy") or (not wants_buy and sdir == "sell")
-        if matches:
-            score += 0.25 * min(sic / 3.0, 1.0)
+        if (wants_buy and sdir == "buy") or (not wants_buy and sdir == "sell"):
+            score += 0.20 * min(sic / 3.0, 1.0)
 
-        # 4. Absorption at level (0.20)
-        vsa = float(getattr(signals, "vsa_absorption", 0) or 0)
-        absorb_strength = float(getattr(signals, "absorption_strength", 0) or 0)
-        score += 0.20 * min(max(vsa, absorb_strength), 1.0)
-
-        # 5. Big-trade net delta alignment (0.15)
+        # 4. Big-trade net delta in trade direction (weight 0.10) — KEEP.
+        # Big trades often signal institutional intent.
         big_net = float(getattr(signals, "big_trades_net_delta", 0) or 0)
-        if trade_dir == 1 and big_net > 0:
-            score += 0.15 * min(big_net / 100.0, 1.0)
-        elif trade_dir == -1 and big_net < 0:
-            score += 0.15 * min(-big_net / 100.0, 1.0)
+        if (trade_dir == 1 and big_net > 0) or (trade_dir == -1 and big_net < 0):
+            score += 0.10 * min(abs(big_net) / 100.0, 1.0)
 
-    return max(0.0, min(1.0, score))
+    # ──────────────────────────────────────────────────────────────────────
+    # DIRECTIONAL VSA ABSORPTION (weight ±0.25) — FIXED from v1.
+    # ──────────────────────────────────────────────────────────────────────
+    # Methodology (Fabio + Ryan): absorption at a level means the ABSORBING
+    # side is the heavier hand. Trade direction must align with the absorber,
+    # not the aggressor. If we're going LONG but sellers are aggressively
+    # pushing AND price stalls (narrow body) → BUYERS are absorbing → +0.25
+    # for us. If we're LONG but BUYERS are aggressively pushing AND price
+    # stalls → SELLERS are absorbing → -0.25 (we're the weaker hand).
+    if signals is not None and last is not None:
+        vsa = bool(getattr(signals, "vsa_absorption", False))
+        absorb_strength = float(getattr(signals, "absorption_strength", 0) or 0)
+        if vsa or absorb_strength > 0.3:
+            # Aggressor side = sign of last candle's delta
+            # Absorber side = OPPOSITE of aggressor
+            last_delta = float(getattr(last, "delta", 0) or 0)
+            if abs(last_delta) > 0:
+                aggressor_dir = 1 if last_delta > 0 else -1
+                absorber_dir = -aggressor_dir
+                strength = max(1.0 if vsa else 0.0, absorb_strength)
+                if absorber_dir == trade_dir:
+                    # Heavier hand (absorber) on our side → confirmation
+                    score += 0.25 * strength
+                else:
+                    # Heavier hand (absorber) AGAINST us → we're the weaker hand
+                    score -= 0.25 * strength
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PRICE-RESPONSE-TO-DELTA (weight ±0.15) — NEW.
+    # ──────────────────────────────────────────────────────────────────────
+    # Effort-vs-result rule (VSA + Fabio): high delta in trade direction with
+    # NO price progress = absorbed against us. Reverse: delta against us but
+    # price moves OUR way = hidden hand is on our side.
+    if last is not None:
+        vol = max(getattr(last, "volume", 1), 1)
+        delta_norm = float(getattr(last, "delta", 0) or 0) / vol  # [-1, 1] aggressor pressure
+        body_norm = (float(last.close) - float(last.open)) / max(
+            float(last.high) - float(last.low), 1e-6
+        )  # [-1, 1] price progress
+        # Aggressor effort in trade direction = strong delta * trade_dir
+        effort = delta_norm * trade_dir
+        # Result in trade direction = body * trade_dir
+        result = body_norm * trade_dir
+        if effort > 0.3 and result < 0.2:
+            # Strong push our way but no progress = absorbed against us
+            score -= 0.15 * min(effort, 1.0)
+        elif effort < -0.3 and result > 0.2:
+            # Aggressors pushing AGAINST us but price moves OUR way = hidden hand with us
+            score += 0.15 * min(-effort, 1.0)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CONTRADICTION VETOES (hard subtractors)
+    # ──────────────────────────────────────────────────────────────────────
+    if signals is not None and last is not None:
+        last_delta = float(getattr(last, "delta", 0) or 0)
+        last_delta_sign = 1 if last_delta > 0 else (-1 if last_delta < 0 else 0)
+
+        # 5. Trapped traders (weight ±0.40) — methodology: highest-conviction signal.
+        # If trapped fires, identify which side is trapped (= last candle delta sign).
+        # If trade aligns with trapped side → we're the trap → veto.
+        # If trade is COUNTER to trapped side → we're the counter-trend entry → boost.
+        if getattr(signals, "trapped_traders", False) and last_delta_sign != 0:
+            if last_delta_sign == trade_dir:
+                # We'd be entering on the trapped side
+                score -= 0.40
+            else:
+                # Counter-trend to the trap = methodology-correct entry
+                score += 0.30
+
+        # 6. Stop run detected (weight -0.30) — only veto if trade goes WITH the spike.
+        # Methodology (Ryan momentum): after stop run, the spike direction is exhausted.
+        # Trading WITH the spike = chasing exhaustion = bad. Trading counter is fine
+        # (already covered by trapped_traders boost above).
+        if getattr(signals, "stop_run_detected", False) and last_delta_sign != 0:
+            # The spike direction is OPPOSITE of last_delta (sellers spiked = bullish reaction)
+            spike_dir = -last_delta_sign
+            if spike_dir == trade_dir:
+                # We're going with the just-swept direction
+                score -= 0.30
+
+        # 7. Delta divergence (weight ±0.20) — hidden flow indicator.
+        # divergence = price up + delta neg (or vice versa). Indicates hidden heavier
+        # hand opposing the visible aggressors. Direction of price move tells us
+        # who's hidden:
+        #   price_up + delta_negative = BUYERS are hidden (lifting offer without
+        #     showing aggression, classic accumulation) → LONG is aligned with hidden hand
+        #   price_down + delta_positive = SELLERS are hidden → SHORT is aligned
+        if getattr(signals, "delta_divergence", False) and prev is not None:
+            price_up = float(last.close) > float(prev.close)
+            delta_positive = last_delta > 0
+            if price_up and not delta_positive:
+                # Hidden buyers absorbing visible sellers
+                if trade_dir == 1:  # LONG aligns with hidden buyers
+                    score += 0.20
+                else:
+                    score -= 0.20
+            elif not price_up and delta_positive:
+                # Hidden sellers absorbing visible buyers
+                if trade_dir == -1:  # SHORT aligns with hidden sellers
+                    score += 0.20
+                else:
+                    score -= 0.20
+
+    return max(-0.5, min(1.0, score))
 
 
 class LevelMonitor:
