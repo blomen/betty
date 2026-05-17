@@ -224,6 +224,17 @@ export interface DQNInferenceEvent {
   size_multiplier?: number
 }
 
+export type MethodologyCategory =
+  | 'OF'
+  | 'VSA'
+  | 'PROFILE'
+  | 'AMT'
+  | 'DOW_STRUCTURE'
+  | 'MICRO'
+  | 'ZONE_MEMORY'
+  | 'MACRO'
+  | 'EXECUTION'
+
 export interface ObservationSegment {
   name: string
   title: string
@@ -232,6 +243,7 @@ export interface ObservationSegment {
   end: number
   labels: string[]
   kind: 'scalar' | 'multi_hot' | 'one_hot'
+  category: MethodologyCategory
 }
 
 export interface ObservationSchema {
