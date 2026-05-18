@@ -217,6 +217,9 @@ class LiveInferenceV5:
         self._normalizer: RunningNormalizer | None = None
         self._narrative_cache: np.ndarray | None = None
         self._loaded = False
+        # Plan 2 Task 14: ShadowLogger wired in try_load() once trigger GBT is
+        # confirmed loaded. None until try_load() succeeds.
+        self._shadow_logger = None
         # Phase 2: live session memory + circuit breaker + per-zone cooldown.
         # Caller must invoke session_state.reset_for_new_session() at session
         # boundaries and session_state.record_trade(...) after each fill.
@@ -343,6 +346,77 @@ class LiveInferenceV5:
                 self._size_model is not None,
                 self._early_exit_model is not None,
             )
+
+            # Plan 2 Task 14: Shadow-mode model comparison framework.
+            # - Production predictor = the current TriggerGBT, wrapped in
+            #   GBTPredictor so dispatch uses the Signal contract.
+            # - Optional FT-Transformer shadow at FT_SHADOW_PATH env var
+            #   (default /app/data/rl/models/ft_v1.pt). Loaded best-effort —
+            #   if file absent or load fails, we just don't attach a shadow.
+            # - ShadowLogger orchestrates both, dispatches production Signal,
+            #   logs both to shadow_predictions table.
+            import os
+            from pathlib import Path as _Path
+
+            from src.rl.signal.gbt_predictor import GBTPredictor
+            from src.rl.signal.shadow import ShadowLogger
+
+            _production_predictor = GBTPredictor(self._trigger_gbt)
+            _production_predictor.name = "gbt_v5"
+
+            _shadow_predictors: list = []
+            _ft_path_str = os.environ.get("FT_SHADOW_PATH", "/app/data/rl/models/ft_v1.pt")
+            if _ft_path_str and _Path(_ft_path_str).exists():
+                try:
+                    from src.rl.signal.ft_predictor import FTTransformerPredictor
+
+                    _ft = FTTransformerPredictor.load(_ft_path_str)
+                    _ft.name = "ft_v1"
+                    _shadow_predictors.append(_ft)
+                    log.info("FT shadow model loaded from %s", _ft_path_str)
+                except Exception:
+                    log.exception("FT shadow model load failed at %s", _ft_path_str)
+
+            def _shadow_db_writer(records: list[dict]) -> None:
+                """Best-effort bulk insert into shadow_predictions table."""
+                if not records:
+                    return
+                try:
+                    from datetime import datetime, timezone
+
+                    from src.db.models import ShadowPrediction, get_session_factory
+
+                    Session = get_session_factory()
+                    with Session() as session:
+                        for r in records:
+                            row = ShadowPrediction(
+                                request_id=r["request_id"],
+                                model_name=r["model_name"],
+                                is_production=r["is_production"],
+                                ts=datetime.now(timezone.utc),
+                                p_cont=r["p_cont"],
+                                p_rev=r["p_rev"],
+                                p_skip=r["p_skip"],
+                                expected_R=r["expected_R"],
+                                win_probability=r["win_probability"],
+                                duration_bars=r["duration_bars"],
+                                uncertainty=r["uncertainty"],
+                                confidence=r["confidence"],
+                                action=r["action"],
+                                zone_id=r.get("zone_id"),
+                                zone_center=r.get("zone_center"),
+                            )
+                            session.add(row)
+                        session.commit()
+                except Exception:
+                    log.exception("shadow prediction write failed")
+
+            self._shadow_logger = ShadowLogger(
+                production=_production_predictor,
+                shadows=_shadow_predictors,
+                db_writer=_shadow_db_writer,
+            )
+            log.info("ShadowLogger ready (shadows=%d)", len(_shadow_predictors))
         else:
             log.info("LiveInferenceV5: trigger_loaded=False")
         return self._loaded
@@ -399,8 +473,44 @@ class LiveInferenceV5:
             trigger_gbt_forecast=gbt_forecast,
         )
 
-        # 8. GBT direction prediction (primary)
-        gbt_action, gbt_conf, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
+        # 8. GBT direction prediction (primary).
+        # Plan 2 Task 14: route through ShadowLogger so both production +
+        # shadow models run on every zone touch. Returns the production Signal.
+        # When _shadow_logger is None (try_load not yet called or trigger not
+        # loaded), fall back to direct predict_direction for safety.
+        if self._shadow_logger is not None:
+            import time as _time
+
+            _zone_id = int(state.get("zone_id", 0) or 0)
+            _zone_center = float(state.get("zone_center", 0.0) or 0.0)
+            # zone_center may live on the zone object rather than as a flat key
+            if _zone_center == 0.0:
+                _zone_obj = state.get("zone")
+                if _zone_obj is not None:
+                    _zone_center = float(getattr(_zone_obj, "center_price", 0.0))
+            _signal = self._shadow_logger.predict(
+                trigger_obs,
+                zone_id=_zone_id,
+                zone_center=_zone_center,
+                timestamp=_time.time(),
+            )
+            # Map Signal back to existing local variable names so downstream
+            # code (which uses gbt_action / gbt_conf / prob_cont / prob_rev)
+            # keeps working unchanged.
+            # SKIP → encode as low-confidence pick of the higher of cont/rev
+            # so the downstream conf_floor gate filters it. SKIP semantics
+            # are carried by the low signal.confidence value.
+            if _signal.action == "CONTINUATION":
+                gbt_action = 0
+            elif _signal.action == "REVERSAL":
+                gbt_action = 1
+            else:  # SKIP
+                gbt_action = 0 if _signal.p_cont >= _signal.p_rev else 1
+            gbt_conf = _signal.confidence
+            prob_cont = _signal.p_cont
+            prob_rev = _signal.p_rev
+        else:
+            gbt_action, gbt_conf, prob_cont, prob_rev = self._trigger_gbt.predict_direction(trigger_obs)
         stop_ticks = self._trigger_gbt.predict_stop(trigger_obs)
 
         # 9. DQN observability (H6). The DQN plateaus at 53.2% val-acc —
