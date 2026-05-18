@@ -42,6 +42,26 @@ _MARKET_TYPE_MAP = {
     "total_sets": "total",
 }
 
+# Sports where a regulation tie is decided by OT/extra time, so the canonical
+# match-winner market is 2-way (home/away) — matches Pinnacle's convention.
+# Cloudbet's API returns these as 3-way `*.match_odds` with a phantom draw
+# outcome priced at 12-30 odds. We normalize those to 2-way `moneyline` so the
+# scanner can compare against Pinnacle (which stores them as `moneyline`,
+# OT-included). Soccer/football is intentionally absent — draw is a real
+# 3rd outcome in regulation and stays as `1x2`.
+_NO_DRAW_SPORTS = frozenset(
+    {
+        "basketball",
+        "ice_hockey",
+        "american_football",
+        "baseball",
+        "tennis",
+        "mma",
+        "boxing",
+        "esports",
+    }
+)
+
 # Sport key mapping: internal → Cloudbet
 _SPORT_MAP = {
     "football": "soccer",
@@ -106,6 +126,22 @@ def parse_selections_to_market(
         return _parse_totals(selections)
     else:
         return _parse_winner(selections, market_type)
+
+
+def _drop_draw_to_moneyline(market: dict) -> dict:
+    """For no-draw sports, drop any draw outcome and retype 1x2→moneyline.
+
+    Idempotent. Markets without a draw outcome and non-winner markets pass
+    through unchanged.
+    """
+    mtype = market.get("type")
+    if mtype not in ("1x2", "moneyline"):
+        return market
+    outcomes = market.get("outcomes") or []
+    filtered = [o for o in outcomes if o.get("name") != "draw"]
+    if len(filtered) == len(outcomes) and mtype == "moneyline":
+        return market
+    return {**market, "type": "moneyline", "outcomes": filtered}
 
 
 def _parse_winner(selections: list, market_type: str) -> dict | None:
@@ -230,6 +266,13 @@ def parse_event(
             market = parse_selections_to_market(selections, market_key)
             if market:
                 markets.append(market)
+
+    # Normalize 1x2-with-draw → moneyline for no-draw sports. Cloudbet's API
+    # ships basketball/NHL/NFL as `*.match_odds` with a phantom draw outcome;
+    # without this fix the market key won't match Pinnacle's `moneyline` and
+    # the scanner can never compare them. Soccer/football retains 1x2.
+    if sport in _NO_DRAW_SPORTS:
+        markets = [_drop_draw_to_moneyline(m) for m in markets]
 
     if not markets:
         return None

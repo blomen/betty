@@ -1,6 +1,12 @@
 """Tests for Cloudbet REST Feed API response parsing."""
+
 import pytest
-from src.providers.cloudbet import parse_selections_to_market, parse_event
+
+from src.providers.cloudbet import (
+    _drop_draw_to_moneyline,
+    parse_event,
+    parse_selections_to_market,
+)
 
 
 class TestParseSelectionsToMarket:
@@ -32,10 +38,34 @@ class TestParseSelectionsToMarket:
 
     def test_handicap_selections_main_line_only(self):
         selections = [
-            {"outcome": "home", "params": "handicap=-1.5", "price": 2.10, "status": "SELECTION_ENABLED", "side": "BACK"},
-            {"outcome": "away", "params": "handicap=-1.5", "price": 1.75, "status": "SELECTION_ENABLED", "side": "BACK"},
-            {"outcome": "home", "params": "handicap=-2.5", "price": 3.00, "status": "SELECTION_ENABLED", "side": "BACK"},
-            {"outcome": "away", "params": "handicap=-2.5", "price": 1.40, "status": "SELECTION_ENABLED", "side": "BACK"},
+            {
+                "outcome": "home",
+                "params": "handicap=-1.5",
+                "price": 2.10,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
+            {
+                "outcome": "away",
+                "params": "handicap=-1.5",
+                "price": 1.75,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
+            {
+                "outcome": "home",
+                "params": "handicap=-2.5",
+                "price": 3.00,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
+            {
+                "outcome": "away",
+                "params": "handicap=-2.5",
+                "price": 1.40,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
         ]
         result = parse_selections_to_market(selections, "soccer.asian_handicap")
         assert result is not None
@@ -91,8 +121,20 @@ class TestParseSelectionsToMarket:
 
     def test_market_key_basketball_handicap(self):
         selections = [
-            {"outcome": "home", "params": "handicap=-5.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
-            {"outcome": "away", "params": "handicap=-5.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
+            {
+                "outcome": "home",
+                "params": "handicap=-5.5",
+                "price": 1.90,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
+            {
+                "outcome": "away",
+                "params": "handicap=-5.5",
+                "price": 1.90,
+                "status": "SELECTION_ENABLED",
+                "side": "BACK",
+            },
         ]
         result = parse_selections_to_market(selections, "basketball.handicap")
         assert result is not None
@@ -135,9 +177,27 @@ class TestParseEvent:
                     "submarkets": {
                         "period=ft": {
                             "selections": [
-                                {"outcome": "home", "params": "", "price": 2.80, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "draw", "params": "", "price": 3.40, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "away", "params": "", "price": 2.50, "status": "SELECTION_ENABLED", "side": "BACK"},
+                                {
+                                    "outcome": "home",
+                                    "params": "",
+                                    "price": 2.80,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "draw",
+                                    "params": "",
+                                    "price": 3.40,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "away",
+                                    "params": "",
+                                    "price": 2.50,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
                             ]
                         }
                     }
@@ -146,10 +206,34 @@ class TestParseEvent:
                     "submarkets": {
                         "period=ft": {
                             "selections": [
-                                {"outcome": "home", "params": "handicap=-1.5", "price": 2.10, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "away", "params": "handicap=-1.5", "price": 1.75, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "home", "params": "handicap=-2.5", "price": 3.00, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "away", "params": "handicap=-2.5", "price": 1.40, "status": "SELECTION_ENABLED", "side": "BACK"},
+                                {
+                                    "outcome": "home",
+                                    "params": "handicap=-1.5",
+                                    "price": 2.10,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "away",
+                                    "params": "handicap=-1.5",
+                                    "price": 1.75,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "home",
+                                    "params": "handicap=-2.5",
+                                    "price": 3.00,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "away",
+                                    "params": "handicap=-2.5",
+                                    "price": 1.40,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
                             ]
                         }
                     }
@@ -158,8 +242,20 @@ class TestParseEvent:
                     "submarkets": {
                         "period=ft": {
                             "selections": [
-                                {"outcome": "over", "params": "total=2.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "under", "params": "total=2.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
+                                {
+                                    "outcome": "over",
+                                    "params": "total=2.5",
+                                    "price": 1.90,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "under",
+                                    "params": "total=2.5",
+                                    "price": 1.90,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
                             ]
                         }
                     }
@@ -253,8 +349,20 @@ class TestParseEvent:
                     "submarkets": {
                         "period=ft": {
                             "selections": [
-                                {"outcome": "home", "params": "", "price": 1.80, "status": "SELECTION_ENABLED", "side": "BACK"},
-                                {"outcome": "away", "params": "", "price": 2.00, "status": "SELECTION_ENABLED", "side": "BACK"},
+                                {
+                                    "outcome": "home",
+                                    "params": "",
+                                    "price": 1.80,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
+                                {
+                                    "outcome": "away",
+                                    "params": "",
+                                    "price": 2.00,
+                                    "status": "SELECTION_ENABLED",
+                                    "side": "BACK",
+                                },
                             ]
                         }
                     }
@@ -265,3 +373,76 @@ class TestParseEvent:
         assert event is not None
         assert len(event.markets) == 1
         assert event.markets[0]["type"] == "moneyline"
+
+
+class TestNoDrawSportNormalization:
+    """Cloudbet's API ships basketball/NHL/NFL as 3-way `match_odds` with a
+    phantom draw outcome. The scanner groups by market key, so without
+    normalization those events never meet Pinnacle's `moneyline` market in
+    the same bucket → zero opportunities. parse_event applies
+    _drop_draw_to_moneyline for no-draw sports.
+    """
+
+    def test_drop_draw_helper_converts_1x2_with_draw(self):
+        m = {
+            "type": "1x2",
+            "outcomes": [
+                {"name": "home", "odds": 1.34},
+                {"name": "draw", "odds": 15.83},
+                {"name": "away", "odds": 3.57},
+            ],
+        }
+        out = _drop_draw_to_moneyline(m)
+        assert out["type"] == "moneyline"
+        assert [o["name"] for o in out["outcomes"]] == ["home", "away"]
+        assert [o["odds"] for o in out["outcomes"]] == [1.34, 3.57]
+
+    def test_drop_draw_helper_passes_2way_moneyline(self):
+        m = {"type": "moneyline", "outcomes": [{"name": "home", "odds": 2.0}, {"name": "away", "odds": 2.0}]}
+        assert _drop_draw_to_moneyline(m) == m
+
+    def test_drop_draw_helper_passes_spread(self):
+        m = {"type": "spread", "outcomes": [{"name": "home", "odds": 1.9, "point": -3.5}]}
+        assert _drop_draw_to_moneyline(m) is m
+
+    def _basketball_3way_event(self):
+        return {
+            "id": "evt1",
+            "status": "TRADING",
+            "home": {"name": "Alba Berlin"},
+            "away": {"name": "Rasta Vechta"},
+            "markets": {
+                "basketball.match_odds": {
+                    "submarkets": {
+                        "main": {
+                            "selections": [
+                                {"outcome": "home", "price": 1.34, "status": "SELECTION_ENABLED"},
+                                {"outcome": "draw", "price": 15.83, "status": "SELECTION_ENABLED"},
+                                {"outcome": "away", "price": 3.57, "status": "SELECTION_ENABLED"},
+                            ]
+                        }
+                    }
+                }
+            },
+        }
+
+    def test_basketball_3way_normalizes_to_moneyline(self):
+        ev = parse_event(self._basketball_3way_event(), "basketball", "cloudbet")
+        assert ev is not None
+        assert len(ev.markets) == 1
+        m = ev.markets[0]
+        assert m["type"] == "moneyline"
+        assert {o["name"] for o in m["outcomes"]} == {"home", "away"}
+
+    @pytest.mark.parametrize("sport", ["ice_hockey", "american_football", "baseball", "mma", "boxing", "tennis"])
+    def test_other_no_draw_sports_normalize(self, sport):
+        ev = parse_event(self._basketball_3way_event(), sport, "cloudbet")
+        assert ev is not None
+        assert ev.markets[0]["type"] == "moneyline"
+        assert all(o["name"] != "draw" for o in ev.markets[0]["outcomes"])
+
+    def test_football_keeps_1x2_with_draw(self):
+        ev = parse_event(self._basketball_3way_event(), "football", "cloudbet")
+        assert ev is not None
+        assert ev.markets[0]["type"] == "1x2"
+        assert {o["name"] for o in ev.markets[0]["outcomes"]} == {"home", "draw", "away"}
