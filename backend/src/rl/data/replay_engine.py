@@ -608,8 +608,23 @@ class ReplayEngine:
         _add_optional(levels, "tibh", LevelType.TIBH, getattr(sl, "ib_high", None))
         _add_optional(levels, "tibl", LevelType.TIBL, getattr(sl, "ib_low", None))
 
-        # FVGs and single prints are NOT active levels — they are confluence
-        # signals injected into the observation vector via encode_confluence().
+        # FVGs and order blocks ARE first-class zone members in live
+        # (level_monitor.load_levels feeds them at midpoint). Replay must
+        # mirror that or zone.composition's fvg_*/order_block_* slots stay
+        # silently 0 and GBT can't see them. Single prints stay confluence-
+        # only — they're injected via encode_confluence() / zone_confluence.
+        for fvg in self._fvgs:
+            mid = (float(fvg.price_low) + float(fvg.price_high)) / 2.0
+            if fvg.direction == "bullish":
+                levels.append(("fvg_bullish", LevelType.FVG_BULL, mid))
+            elif fvg.direction == "bearish":
+                levels.append(("fvg_bearish", LevelType.FVG_BEAR, mid))
+        for ob in self._order_blocks:
+            mid = (float(ob.price_low) + float(ob.price_high)) / 2.0
+            if ob.direction == "bullish":
+                levels.append(("order_block_bullish", LevelType.ORDER_BLOCK_BULL, mid))
+            elif ob.direction == "bearish":
+                levels.append(("order_block_bearish", LevelType.ORDER_BLOCK_BEAR, mid))
 
         # --- Precomputed cross-session levels ---
         if self._precomputed:
