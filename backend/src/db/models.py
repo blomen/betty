@@ -2498,6 +2498,47 @@ def _run_pg_migrations(engine) -> None:
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_slip_odds_ts ON slip_odds_ticks(ts);"))
 
+        # 2026-05-17 — shadow_predictions: side-by-side logging of multiple
+        # models' predictions on the same observation so production vs. shadow
+        # model agreement/disagreement can be analysed before switching.
+        sp = conn.begin_nested()
+        try:
+            conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS shadow_predictions (
+                        id SERIAL PRIMARY KEY,
+                        request_id VARCHAR(64) NOT NULL,
+                        model_name VARCHAR(32) NOT NULL,
+                        is_production BOOLEAN NOT NULL DEFAULT FALSE,
+                        ts TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                        p_cont DOUBLE PRECISION NOT NULL,
+                        p_rev DOUBLE PRECISION NOT NULL,
+                        p_skip DOUBLE PRECISION NOT NULL,
+                        expected_r DOUBLE PRECISION NOT NULL,
+                        win_probability DOUBLE PRECISION NOT NULL,
+                        duration_bars DOUBLE PRECISION NOT NULL,
+                        uncertainty DOUBLE PRECISION NOT NULL,
+                        confidence DOUBLE PRECISION NOT NULL,
+                        action VARCHAR(16) NOT NULL,
+                        zone_id INTEGER,
+                        zone_center DOUBLE PRECISION,
+                        broker_trade_id INTEGER REFERENCES broker_trades(id)
+                    )
+                """)
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_shadow_predictions_request_model"
+                    " ON shadow_predictions(request_id, model_name)"
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_predictions_ts ON shadow_predictions(ts)"))
+            sp.commit()
+            logger.info("shadow_predictions table ready")
+        except Exception:
+            sp.rollback()
+            logger.exception("shadow_predictions migration failed")
+
 
 def init_db() -> None:
     """Initialize database and create tables."""
@@ -2751,6 +2792,48 @@ class AccountSnapshot(Base):
     source = Column(String, nullable=False, default="topstepx_account_search")
 
     __table_args__ = (Index("ix_account_snapshots_account_ts", "account_id", "ts"),)
+
+
+class ShadowPrediction(Base):
+    """Side-by-side log of multiple models' predictions on the same obs.
+
+    Production model's prediction is what gets dispatched. Shadow model's
+    prediction is logged here for comparison. Both rows share the same
+    request_id so we can compare them later.
+    """
+
+    __tablename__ = "shadow_predictions"
+
+    id = Column(Integer, primary_key=True)
+    request_id = Column(String(64), nullable=False, index=True)  # uuid per zone touch
+    model_name = Column(String(32), nullable=False, index=True)  # 'gbt_v5' or 'ft_v1'
+    is_production = Column(Boolean, nullable=False, default=False)
+    ts = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    # The prediction itself
+    p_cont = Column(Float, nullable=False)
+    p_rev = Column(Float, nullable=False)
+    p_skip = Column(Float, nullable=False)
+    expected_R = Column("expected_r", Float, nullable=False)
+    win_probability = Column(Float, nullable=False)
+    duration_bars = Column(Float, nullable=False)
+    uncertainty = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=False)
+    action = Column(String(16), nullable=False)  # "CONTINUATION"/"REVERSAL"/"SKIP"
+
+    # Context for joining to outcomes
+    zone_id = Column(Integer, nullable=True)
+    zone_center = Column(Float, nullable=True)
+
+    # FK to the realized broker_trade if one was placed (production only)
+    broker_trade_id = Column(Integer, ForeignKey("broker_trades.id"), nullable=True)
+
+    __table_args__ = (Index("ix_shadow_predictions_request_model", "request_id", "model_name"),)
 
 
 if __name__ == "__main__":
