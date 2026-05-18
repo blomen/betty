@@ -307,9 +307,22 @@ def compute_signals(
     else:
         cvd_trend = "flat"
 
-    # VSA absorption: high volume + narrow body (body_ratio < 0.3) on last candle
-    avg_volume = sum(c.volume for c in recent) / len(recent)
-    vsa_absorption = last.volume > avg_volume * 1.5 and last.body_ratio < 0.3
+    # VSA absorption: high volume + narrow body + close at range extreme.
+    # Bugs fixed 2026-05-18 (audit_gbt_orderflow):
+    #   1. Baseline volume EXCLUDES `last` itself (was self-inflating)
+    #   2. Added range_pos check — true absorption has price held AT the
+    #      extreme (close near high = buying absorbed selling; close near
+    #      low = sellers absorbed buying). Narrow body + mid-range close
+    #      is just compression, not absorption.
+    prior_candles_for_vol = recent[:-1] if len(recent) > 1 else recent
+    prior_avg_volume = sum(c.volume for c in prior_candles_for_vol) / max(len(prior_candles_for_vol), 1)
+    avg_volume = sum(c.volume for c in recent) / len(recent)  # kept for downstream usage below
+    if last.volume > prior_avg_volume * 1.5 and last.body_ratio < 0.3:
+        last_range = max(last.high - last.low, 1e-6)
+        range_pos = (last.close - last.low) / last_range
+        vsa_absorption = range_pos > 0.7 or range_pos < 0.3
+    else:
+        vsa_absorption = False
 
     # Tick volume acceleration
     if len(recent) >= 4:
@@ -334,18 +347,43 @@ def compute_signals(
     big_trades_count = sum(1 for c in recent if c.volume >= big_threshold)
     big_trades_net_delta = sum(c.delta for c in recent if c.volume >= big_threshold)
 
-    # Stop run detection: price spike beyond prior range on high volume, then reversal
+    # Stop run detection: spike beyond prior range + RECLAIM back inside +
+    # strong reversal candle + spike on high volume. The classic Fabio /
+    # Ryan stop-run pattern: sweep liquidity below/above a level then
+    # close back inside it, trapping breakout traders.
+    # Bugs fixed 2026-05-18 (audit_gbt_orderflow):
+    #   1. Added reclaim check (reversal.close must close BACK INSIDE the
+    #      prior range — not just above the spike close). Without this the
+    #      detector flagged failed-continuation moves as stop runs.
+    #   2. Added reversal.body_ratio > 0.4 (strong directional reversal
+    #      candle, not a doji or weak bounce).
+    #   3. avg_volume baseline now EXCLUDES the spike + reversal bars
+    #      (was including spike in its own comparison, masking spike-vol)
     stop_run_detected = False
     if len(recent) >= 4:
-        prior_high = max(c.high for c in recent[:-2])
-        prior_low = min(c.low for c in recent[:-2])
-        spike = recent[-2]  # The candle before last
-        reversal = recent[-1]  # Current candle
-        # Bullish stop run: spike below range, snaps back
-        if spike.low < prior_low and reversal.close > spike.close and spike.volume > avg_volume * 1.5:
+        prior_candles = recent[:-2]
+        prior_high = max(c.high for c in prior_candles)
+        prior_low = min(c.low for c in prior_candles)
+        prior_avg_volume = sum(c.volume for c in prior_candles) / max(len(prior_candles), 1)
+        spike = recent[-2]
+        reversal = recent[-1]
+        # Bullish stop run
+        if (
+            spike.low < prior_low
+            and reversal.close > prior_low  # RECLAIM
+            and reversal.close > spike.close
+            and spike.volume > prior_avg_volume * 1.5
+            and reversal.body_ratio > 0.4
+        ):
             stop_run_detected = True
-        # Bearish stop run: spike above range, snaps back
-        if spike.high > prior_high and reversal.close < spike.close and spike.volume > avg_volume * 1.5:
+        # Bearish stop run
+        if (
+            spike.high > prior_high
+            and reversal.close < prior_high  # RECLAIM
+            and reversal.close < spike.close
+            and spike.volume > prior_avg_volume * 1.5
+            and reversal.body_ratio > 0.4
+        ):
             stop_run_detected = True
 
     # Imbalance stacking: consecutive candles with same-direction imbalance (>0.65 buy or <0.35 sell)

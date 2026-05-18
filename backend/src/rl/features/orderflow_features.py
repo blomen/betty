@@ -156,7 +156,14 @@ def extract_orderflow_features(
         big_net_raw = sum(c.delta for c in big_candles)
         big_net = big_net_raw / max(avg_vol, 1.0)
 
-        vsa_abs = 1.0 if (last.volume > avg_vol * 1.5 and last.body_ratio < 0.3) else 0.0
+        # vsa_absorption (no-signals fallback) — mirrors orderflow.py fix:
+        # close must be at range extreme, not mid-range compression.
+        if last.volume > avg_vol * 1.5 and last.body_ratio < 0.3:
+            _last_range = max(last.high - last.low, 1e-6)
+            _range_pos = (last.close - last.low) / _last_range
+            vsa_abs = 1.0 if (_range_pos > 0.7 or _range_pos < 0.3) else 0.0
+        else:
+            vsa_abs = 0.0
         stop_run = 0.0  # Cannot reliably detect without signals
 
     # --- NEW: temporal dynamics features ---
@@ -188,14 +195,24 @@ def extract_orderflow_features(
     max_vol = max(c.volume for c in recent) if recent else 1
     vol_climax = last.volume / max(max_vol, 1)
 
-    # 19: delta_divergence — price making new high/low but delta weakening
+    # 19: delta_divergence — classic multi-bar divergence where price
+    # makes a new extreme but CUMULATIVE delta fails to confirm.
+    # Bug fixed 2026-05-18 (audit_gbt_orderflow):
+    #   Old definition used abs(delta) < abs(sum/4) which checks
+    #   MAGNITUDE weakening, not DIRECTIONAL divergence. Fired on noise.
+    #   New definition uses cumulative delta vs price direction —
+    #   bull div = price higher-high + cum-delta NOT making higher-high,
+    #   bear div = price lower-low + cum-delta NOT making lower-low.
     if len(recent) >= 5:
         prices_recent = [c.close for c in recent[-5:]]
-        deltas_recent = [c.delta for c in recent[-5:]]
-        price_new_high = prices_recent[-1] >= max(prices_recent[:-1])
-        price_new_low = prices_recent[-1] <= min(prices_recent[:-1])
-        delta_weakening = abs(deltas_recent[-1]) < abs(sum(deltas_recent[:-1]) / 4)
-        delta_div = 1.0 if (price_new_high or price_new_low) and delta_weakening else 0.0
+        deltas_cum = np.cumsum([c.delta for c in recent[-5:]])
+        price_higher_high = prices_recent[-1] > max(prices_recent[:-1])
+        delta_lower_high = deltas_cum[-1] < max(deltas_cum[:-1])
+        price_lower_low = prices_recent[-1] < min(prices_recent[:-1])
+        delta_higher_low = deltas_cum[-1] > min(deltas_cum[:-1])
+        bull_div = price_higher_high and delta_lower_high
+        bear_div = price_lower_low and delta_higher_low
+        delta_div = 1.0 if (bull_div or bear_div) else 0.0
     else:
         delta_div = 0.0
 
