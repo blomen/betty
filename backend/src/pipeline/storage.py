@@ -359,7 +359,34 @@ def store_polymarket_event(
                 if team1_score < min_individual_score or team2_score < min_individual_score:
                     continue
 
+                # Reject ±1-day candidate when actual start_time gap > 6h.
+                # See _resolve_event_id for the rationale; same MLB-series
+                # / multi-day-tennis bug applies here.
                 candidate_is_exact_date = cached_date == date_str
+                if not candidate_is_exact_date and event.start_time is not None:
+                    try:
+                        with session.no_autoflush:
+                            cand_start = session.query(Event.start_time).filter(Event.id == pid).scalar()
+                        if cand_start is not None:
+                            ev_start = event.start_time
+                            if isinstance(ev_start, str):
+                                from datetime import datetime as _dt
+
+                                ev_start = _dt.fromisoformat(ev_start.replace("Z", "+00:00"))
+                            if ev_start.tzinfo is not None:
+                                ev_start = ev_start.replace(tzinfo=None)
+                            if cand_start.tzinfo is not None:
+                                cand_start = cand_start.replace(tzinfo=None)
+                            gap_h = abs((ev_start - cand_start).total_seconds()) / 3600.0
+                            if gap_h > 6.0:
+                                logger.debug(
+                                    f"[polymarket] Rejected adj-day match '{home_team} vs {away_team}' "
+                                    f"-> '{cached_home} vs {cached_away}': start_time gap {gap_h:.1f}h > 6h"
+                                )
+                                continue
+                    except Exception as e:
+                        logger.debug(f"[polymarket] adj-day start_time check failed for {pid}: {e}")
+
                 if candidate_is_exact_date and not best_is_exact_date:
                     promote = True
                 elif candidate_is_exact_date == best_is_exact_date:
@@ -762,10 +789,49 @@ def _resolve_event_id(
             )
             continue
 
+        # Reject ±1-day candidate when actual start_time gap > 6h. Timezone
+        # artifacts (game starting 23:30 UTC = 01:30 local next day) put two
+        # different calendar dates on the SAME game, but the start_times are
+        # within minutes. MLB series / multi-day tennis put DIFFERENT games
+        # on adjacent dates with start_times 20-26h apart. Only the timezone
+        # case should fuzzy-match across days.
+        candidate_is_exact_date = date == event_date
+        if not candidate_is_exact_date and event.start_time is not None:
+            try:
+                with session.no_autoflush:
+                    cand_start = session.query(Event.start_time).filter(Event.id == pid).scalar()
+                if cand_start is not None:
+                    ev_start = event.start_time
+                    if isinstance(ev_start, str):
+                        from datetime import datetime as _dt
+
+                        ev_start = _dt.fromisoformat(ev_start.replace("Z", "+00:00"))
+                    # Both should be naive or both aware — strip tz for delta calc.
+                    if ev_start.tzinfo is not None:
+                        ev_start = ev_start.replace(tzinfo=None)
+                    if cand_start.tzinfo is not None:
+                        cand_start = cand_start.replace(tzinfo=None)
+                    gap_h = abs((ev_start - cand_start).total_seconds()) / 3600.0
+                    if gap_h > 6.0:
+                        if is_new_best:
+                            near_miss_reason = (
+                                f"adj-day candidate {pid} start_time gap {gap_h:.1f}h > 6h "
+                                "(likely different game in series)"
+                            )
+                        logger.debug(
+                            f"[{provider}] Rejected adj-day match '{event.home_team} vs {event.away_team}' "
+                            f"-> '{poly_home} vs {poly_away}': start_time gap {gap_h:.1f}h > 6h"
+                        )
+                        continue
+            except Exception as e:
+                # Best-effort — if the lookup fails, fall through to the
+                # legacy behavior (allow the fuzzy match). Worst case is the
+                # pre-2026-05-18 wrong-day-collision bug.
+                logger.debug(f"[{provider}] adj-day start_time check failed for {pid}: {e}")
+
         # Exact-date candidates strictly beat ±1-day candidates regardless of
         # score (both are normally 100/100 for legitimate matches). Within the
         # same date class, higher score wins.
-        candidate_is_exact_date = date == event_date
         if candidate_is_exact_date and not best_is_exact_date:
             promote = True
         elif candidate_is_exact_date == best_is_exact_date:
