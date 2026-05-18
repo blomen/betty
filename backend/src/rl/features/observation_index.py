@@ -613,6 +613,47 @@ def _segment_offsets() -> dict[str, tuple[int, int]]:
 _SEGMENT_OFFSETS: dict[str, tuple[int, int]] = _segment_offsets()
 
 
+def get_pretouch_mask() -> list[bool]:
+    """Return a length-313 boolean mask where True = pre-touch (safe at decision
+    time) and False = post-touch (leakage risk — outcome already partially known).
+
+    Rationale: the observation vector is built at zone-touch time but some
+    extractors include features derived from the bar/period AFTER the touch
+    (reaction_velocity, pin_bar_rejection, zone_sweep_recent_t, etc.).
+    Training a model on the full 313-d obs with these dims leaks the outcome
+    into the features — the model learns "what happened after" rather than
+    "what to do at touch time". Useless for live, where these dims are
+    structurally not computable yet.
+
+    Use this mask in training + backtest to zero post-touch dims before
+    feeding to any model that's supposed to predict at decision time.
+
+    Specific exclusions (17 dims of 313):
+      - reaction: 8 dims (reaction_velocity, rejection_speed, vol_spike_ratio, ...)
+      - pattern: 5 dims (pin_bar_rejection, absorption_wall, ...)
+      - zone_sweep: 2 dims (sweep detection is post-touch by definition)
+      - execution[0:2]: follow_through_confirmed + follow_through_strength
+        (the other 5 execution dims — is_responsive_auction, is_initiative_auction,
+        session_atr_norm, volume_anomaly, time_in_session — are pre-touch and stay)
+    """
+    mask = [True] * OBSERVATION_DIM
+    _POST_TOUCH_SEGMENTS = {"reaction", "pattern", "zone_sweep"}
+    for seg in SEGMENTS:
+        if seg["name"] in _POST_TOUCH_SEGMENTS:
+            start, end = _SEGMENT_OFFSETS[seg["name"]]
+            for i in range(start, end):
+                mask[i] = False
+        elif seg["name"] == "execution":
+            start, _ = _SEGMENT_OFFSETS[seg["name"]]
+            # follow_through_confirmed (offset 0) + follow_through_strength (offset 1)
+            mask[start] = False
+            mask[start + 1] = False
+    return mask
+
+
+_PRETOUCH_MASK: list[bool] = get_pretouch_mask()
+
+
 def get_segments_by_category() -> dict[MethodologyCategory, list[Segment]]:
     """Group segments by methodology category."""
     out: dict[MethodologyCategory, list[Segment]] = {}

@@ -127,6 +127,16 @@ def main() -> None:
     print(f"  rewards: rc mean={rc.mean():+.3f}R  rr mean={rr.mean():+.3f}R")
     print(f"  base rates: cont_wins={(rc > 0).mean():.2%}  rev_wins={(rr > 0).mean():.2%}")
 
+    # Apply pre-touch mask to obs_full (FT-T input) so backtest matches the
+    # masked training-time view. Without this, the model would see post-touch
+    # dims at inference and learn-to-cheat exploits would still show up.
+    from src.rl.features.observation_index import _PRETOUCH_MASK
+
+    mask = np.asarray(_PRETOUCH_MASK, dtype=bool)
+    obs_full = obs_full.copy()
+    obs_full[:, ~mask] = 0.0
+    print(f"  pre-touch mask applied: {int((~mask).sum())} dims zeroed")
+
     # Load both predictors
     print("\nLoading predictors...")
     gbt = GBTPredictor.load(MD_DIR / "trigger_gbt_v5.joblib")

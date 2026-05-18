@@ -46,6 +46,19 @@ def main() -> None:
     rr = np.load(ep / "rewards_rev.npy")
     n = len(obs)
 
+    # Mask post-touch dims to prevent label leakage. The full 313-d obs
+    # includes reaction/pattern/zone_sweep + follow_through_* segments
+    # that are derived from POST-touch data and aren't structurally
+    # available at decision time in live. Zeroing them out in training
+    # forces the model to learn from pre-touch features only.
+    from src.rl.features.observation_index import _PRETOUCH_MASK
+
+    mask = np.asarray(_PRETOUCH_MASK, dtype=bool)
+    n_masked = int((~mask).sum())
+    obs = obs.copy()
+    obs[:, ~mask] = 0.0
+    print(f"  pre-touch mask: zeroed {n_masked} post-touch dims (reaction/pattern/zone_sweep/follow_through)")
+
     # Build multi-task targets from realized CONT/REV rewards.
     # direction: 0=CONT (higher reward), 1=REV, 2=SKIP (both rewards negative)
     direction = np.where(rc > rr, 0, 1).astype(np.int64)
