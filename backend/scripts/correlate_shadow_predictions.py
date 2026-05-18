@@ -79,6 +79,22 @@ def correlate(lookback_hours: int = 24) -> int:
             if t is not None:
                 p.broker_trade_id = t.id
                 count += 1
+                # Propagate to shadow rows of the same request_id so their
+                # daily metrics can also join to realized_R. Without this the
+                # 30-day promotion gate is structurally unpassable — shadow
+                # rows always get realized_R=0 and lose vs production.
+                shadow_rows = (
+                    session.query(ShadowPrediction)
+                    .filter(
+                        ShadowPrediction.request_id == p.request_id,
+                        ShadowPrediction.is_production.is_(False),
+                        ShadowPrediction.broker_trade_id.is_(None),
+                    )
+                    .all()
+                )
+                for sr in shadow_rows:
+                    sr.broker_trade_id = t.id
+                    count += 1
         session.commit()
     return count
 
