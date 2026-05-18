@@ -588,9 +588,9 @@ def build_position_state(
 from .narrative_features import NARRATIVE_DIM, extract_narrative_features
 from .trigger_features import TRIGGER_DIM, build_trigger_observation
 
-# V5 dimensions (Phase 3b: trigger obs is 118-dim)
+# V5 dimensions (Phase 3b: trigger obs is 122-dim after schema v3 TPO additions)
 NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 18
-TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 118
+TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 122
 
 
 def build_narrative(state: dict) -> np.ndarray:

@@ -1168,7 +1168,7 @@ def _replay_single_file(
         for ep in episodes:
             obs = ep.observation
 
-            # Build 118-dim trigger observation from the stored state. Phase 3b:
+            # Build 122-dim trigger observation from the stored state. Phase 3b:
             # trigger obs no longer includes narrative or narrative-derived
             # setup_probs — the trigger layer identifies setups from
             # orderflow+level alignment, not narrative priors.
@@ -1451,7 +1451,7 @@ def replay(
     obs_array = np.concatenate([np.load(chunk_dir / f"obs_{i:04d}.npy") for i in chunk_indices])
     np.save(episodes_dir / "observations.npy", obs_array)
 
-    # Trigger observations (118-dim, Phase 3b) — used by train-trigger-gbt
+    # Trigger observations (122-dim, Phase 3b) — used by train-trigger-gbt
     trig_chunks = [chunk_dir / f"trig_{i:04d}.npy" for i in chunk_indices]
     if all(p.exists() for p in trig_chunks):
         trig_array = np.concatenate([np.load(p) for p in trig_chunks])
@@ -3574,7 +3574,7 @@ def train_trigger_gbt(
 
     typer.echo(f"Loaded {n:,} episodes ({observations.shape[1]}-dim)")
 
-    # --- Load trigger observations (118-dim, built during replay) ---
+    # --- Load trigger observations (122-dim, built during replay) ---
     trig_path = episodes_dir / "trigger_observations.npy"
     if not trig_path.exists():
         typer.echo(

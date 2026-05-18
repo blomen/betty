@@ -1,4 +1,4 @@
-"""Trigger feature assembler — 118-dim fast observation for the Trigger GBT.
+"""Trigger feature assembler — 122-dim fast observation for the Trigger GBT.
 
 Combines fast-moving features consumed by the Trigger GBT.  "Fast" here means
 features that can change on every candle/tick.
@@ -9,17 +9,25 @@ Narrative signals and narrative-derived setup probabilities are NOT fed to
 this layer. Narrative (bias + risk-on/off) influences the *risk heads*
 (size, add, early-exit) in the decision layer, not direction identification.
 
-Feature layout (118 dims):
-  0:10    structural passthrough  10  (from passthrough_features.py)
-  10:30   micro features          20  (from micro_features.py)
-  30:51   orderflow               21  (from orderflow_features.py)
-  51:66   candles                 15  (5 candles x 3 features)
-  66:70   zone features            4  (from level_features.py)
-  70:75   zone confluence          5  (from level_features.py)
-  75:106  zone composition        31  (from level_features.py)
- 106:107  approach direction       1
- 107:115  trigger GBT forecast     8  (optional, zeros if not available)
- 115:118  execution passthrough    3  (trades_today, time_to_close, session_pnl)
+Feature layout (122 dims):
+  0:14    structural passthrough  14  (from passthrough_features.py)
+  14:34   micro features          20  (from micro_features.py)
+  34:55   orderflow               21  (from orderflow_features.py)
+  55:70   candles                 15  (5 candles x 3 features)
+  70:74   zone features            4  (from level_features.py)
+  74:79   zone confluence          5  (from level_features.py)
+  79:110  zone composition        31  (from level_features.py)
+ 110:111  approach direction       1
+ 111:119  trigger GBT forecast     8  (optional, zeros if not available)
+ 119:122  execution passthrough    3  (trades_today, time_to_close, session_pnl)
+
+Schema v3 bump (2026-05-18): structural_passthrough grew 10→14 by adding the
+four highest-R-impact TPO dims that prior schemas left invisible to GBT
+(tokyo_opening_direction +0.258R, london_ib_range +0.196R, ny_ib_range
++0.162R, ny_price_vs_ib_mid +0.144R per the PROFILE audit). Existing v5
+TriggerGBT models load with alive_mask zero-padded to the new length, so
+the four new positions are silently ignored until the next training cycle
+produces a model that uses them.
 """
 
 from __future__ import annotations
@@ -50,7 +58,7 @@ _ZONE_COMP_DIM: int = 31
 _APPROACH_DIM: int = 1
 
 TRIGGER_DIM: int = (
-    PASSTHROUGH_DIM  # 10
+    PASSTHROUGH_DIM  # 14
     + _MICRO_DIM  # 20
     + _ORDERFLOW_DIM  # 21
     + _CANDLE_DIM  # 15
@@ -60,9 +68,9 @@ TRIGGER_DIM: int = (
     + _APPROACH_DIM  #  1
     + TRIGGER_GBT_DIM  #  8
     + EXEC_PASSTHROUGH_DIM  #  3
-)  # 118
+)  # 122
 
-assert TRIGGER_DIM == 118, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
+assert TRIGGER_DIM == 122, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
 
 # Ordered segment map — (name: dim) preserving layout order
 TRIGGER_SEGMENTS: dict[str, int] = {
@@ -111,7 +119,7 @@ def build_trigger_observation(
     base_observation: np.ndarray,
     trigger_gbt_forecast: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Assemble the 118-dim trigger observation.
+    """Assemble the 122-dim trigger observation.
 
     Args:
         state: Full RL state dict (same as passed to ``build_observation()``).
@@ -126,7 +134,7 @@ def build_trigger_observation(
                               multi-target predictions.  Zeros if not provided.
 
     Returns:
-        np.ndarray of shape ``(118,)`` with dtype ``float32``.
+        np.ndarray of shape ``(122,)`` with dtype ``float32``.
     """
     price: float = float(state.get("price", 0.0))
     candles: list = state.get("candles", [])

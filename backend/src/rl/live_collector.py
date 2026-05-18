@@ -1,7 +1,7 @@
 """Live episode collector — captures zone touches and measures outcomes.
 
 Hooks into LevelMonitor zone touches. For each touch:
-1. Builds 302-dim base observation + 118-dim trigger observation at touch time
+1. Builds 302-dim base observation + 122-dim trigger observation at touch time
 2. Schedules outcome measurement after OUTCOME_DELAY seconds
 3. Queries market_trades for price movement to compute reward
 4. Computes full trailing reward with structural levels (same as replay engine)
@@ -136,7 +136,7 @@ class LiveEpisodeCollector:
             log.warning("Failed to load TriggerGBT for live trigger obs", exc_info=True)
 
     def _build_trigger_obs(self, rl_state: dict, base_obs: np.ndarray) -> np.ndarray | None:
-        """Build 118-dim trigger observation matching the training pipeline (Phase 3b)."""
+        """Build 122-dim trigger observation matching the training pipeline (Phase 3b)."""
         self._ensure_models()
         if self._trigger_gbt is None:
             return None
