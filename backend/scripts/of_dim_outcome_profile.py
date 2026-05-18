@@ -41,37 +41,54 @@ from pathlib import Path
 
 import numpy as np
 
-# Trig layout: 10 passthrough + 20 micro + 21 OF (idx 30-50) + ...
+# Trig layout: 10 passthrough + 20 micro + OF (length derived from
+# observation_index._ORDERFLOW_LABELS — 25 post-Tier C, was 21 prior).
+# Audit script reads labels directly so it auto-adapts when OF grows.
 OF_START = 10 + 20
-OF_LEN = 21
 
-OF_LABELS = [
-    "delta_pct",
-    "delta_norm",
-    "cvd_norm",
-    "cvd_trend",
-    "volume_ratio",
-    "body_ratio",
-    "spread_ticks",
-    "passive_active_ratio",
-    "imbalance_density",
-    "stacked_imbalance_count",
-    "stacked_direction",
-    "big_trades_count",
-    "big_trades_net_delta",
-    "vsa_absorption",
-    "stop_run_detected",
-    "delta_acceleration",
-    "absorption_strength",
-    "initiative_momentum",
-    "volume_climax",
-    "delta_divergence",
-    "flow_shift",
-]
-assert len(OF_LABELS) == OF_LEN
+try:
+    sys.path.insert(0, "/app/backend")
+    from src.rl.features.observation_index import _ORDERFLOW_LABELS as OF_LABELS  # type: ignore
+except ImportError:
+    # Fallback for non-container execution
+    OF_LABELS = [
+        "delta_pct",
+        "delta_norm",
+        "cvd_norm",
+        "cvd_trend",
+        "volume_ratio",
+        "body_ratio",
+        "spread_ticks",
+        "passive_active_ratio",
+        "imbalance_density",
+        "stacked_imbalance_count",
+        "stacked_direction",
+        "big_trades_count",
+        "big_trades_net_delta",
+        "vsa_absorption",
+        "stop_run_detected",
+        "delta_acceleration",
+        "absorption_strength",
+        "initiative_momentum",
+        "volume_climax",
+        "delta_divergence",
+        "flow_shift",
+        "two_way_battle",
+        "failed_auction_reabsorption",
+        "close_position_in_range",
+        "initiative_follow_through",
+    ]
+OF_LEN = len(OF_LABELS)
 
 L1_DIMS = {"spread_ticks", "passive_active_ratio"}
 FIXED_DIMS = {"vsa_absorption", "stop_run_detected", "delta_divergence"}
+TIER_C_DIMS = {
+    "two_way_battle",
+    "failed_auction_reabsorption",
+    "close_position_in_range",
+    "initiative_follow_through",
+}
+TIER_B_DIMS = {"volume_climax", "flow_shift", "imbalance_density"}  # repurposed
 
 RUNNER_LADDER = [0.5, 1.0, 1.5, 2.0, 2.25]
 STOP_LADDER = [0.5, 1.0, 1.25, 1.5]
@@ -223,6 +240,10 @@ def _tag(label: str) -> str:
         return "[L1]"
     if label in FIXED_DIMS:
         return "[FIX]"
+    if label in TIER_C_DIMS:
+        return "[TC]"
+    if label in TIER_B_DIMS:
+        return "[TB]"
     return ""
 
 

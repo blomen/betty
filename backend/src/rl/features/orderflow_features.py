@@ -212,23 +212,21 @@ def extract_orderflow_features(
     # 17: initiative_momentum — strong directional candle (high delta % + high body ratio)
     init_momentum = np.clip(abs(delta_pct) * last.body_ratio, 0.0, 1.0)
 
-    # 18: volume_climax — repurposed 2026-05-18 (PROFILE follow-up) from
-    # "last vs max volume in lookback" (fired 100%, neutral) to a SIGNED
-    # capitulation-spike detector. Per Flowhorse methodology, a true
-    # capitulation spike requires:
-    #   1. Last bar volume > 3× prior_avg (massive thrust)
-    #   2. Last bar |delta_pct| > 0.7 (one-sided, not balanced)
-    #   3. Last bar body_ratio < 0.5 (price didn't move far given the
-    #      volume = absorbed, not initiated). True next-bar follow-
-    #      through can't be measured at this bar (we only see up to
-    #      `last`); body-vs-volume mismatch is the in-bar proxy.
-    # Sign: +1.0 = buy-side spike (positive delta), -1.0 = sell-side
-    # spike, 0 = no spike. Converts a noise-floor dim into a rev trigger.
+    # 18: volume_climax — repurposed 2026-05-18 from "last vs max vol
+    # ratio" (100% nz, neutral) to a SIGNED capitulation spike detector.
+    # ITERATION (post-Phase-1 audit): first version (vol > 3×, |delta_pct|
+    # > 0.7, body < 0.5) fired 0% on real data — body<0.5 was the killer.
+    # Real capitulation candles often have substantial body (the spike IS
+    # the move). Dropped the body condition entirely. The signature is
+    # the volume-delta-asymmetry, not the body shape.
+    #   1. Last bar volume > 2.5× prior_avg (massive thrust — was 3×)
+    #   2. Last bar |delta_pct| > 0.65 (one-sided — was 0.7)
+    # Sign: +1.0 = buy-side spike (positive delta), -1.0 = sell-side.
     vol_climax = 0.0
     if len(recent) >= 5:
         prior_for_spike = recent[:-1]
         prior_avg_vol_spike = sum(c.volume for c in prior_for_spike) / max(len(prior_for_spike), 1)
-        if last.volume > prior_avg_vol_spike * 3.0 and abs(delta_pct) > 0.7 and last.body_ratio < 0.5:
+        if last.volume > prior_avg_vol_spike * 2.5 and abs(delta_pct) > 0.65:
             vol_climax = 1.0 if last.delta > 0 else -1.0
 
     # 19: delta_divergence — classic multi-bar divergence where price
@@ -239,6 +237,12 @@ def extract_orderflow_features(
     #   New definition uses cumulative delta vs price direction —
     #   bull div = price higher-high + cum-delta NOT making higher-high,
     #   bear div = price lower-low + cum-delta NOT making lower-low.
+    # ITERATION (post-Phase-1 audit): the binary 0/1 version fires 47%
+    # but is neutral on R outcomes. The methodology says div is a SETUP
+    # signal, not directional alone. Making it SIGNED so the model can
+    # see bull vs bear separately (bull div at a low predicts rev UP,
+    # bear div at a high predicts rev DOWN).
+    delta_div = 0.0
     if len(recent) >= 5:
         prices_recent = [c.close for c in recent[-5:]]
         deltas_cum = np.cumsum([c.delta for c in recent[-5:]])
@@ -246,11 +250,10 @@ def extract_orderflow_features(
         delta_lower_high = deltas_cum[-1] < max(deltas_cum[:-1])
         price_lower_low = prices_recent[-1] < min(prices_recent[:-1])
         delta_higher_low = deltas_cum[-1] > min(deltas_cum[:-1])
-        bull_div = price_higher_high and delta_lower_high
-        bear_div = price_lower_low and delta_higher_low
-        delta_div = 1.0 if (bull_div or bear_div) else 0.0
-    else:
-        delta_div = 0.0
+        if price_higher_high and delta_lower_high:
+            delta_div = +1.0  # bull div (price made new HH, cum-delta failed)
+        elif price_lower_low and delta_higher_low:
+            delta_div = -1.0  # bear div (price made new LL, cum-delta failed)
 
     # 20: flow_shift — repurposed 2026-05-18 (PROFILE follow-up) from
     # binary sign-change (fired 47%, neutral) to a SIGNED passive→initiative
@@ -259,9 +262,10 @@ def extract_orderflow_features(
     # passively defending) followed by 1 bar of initiative aggression in
     # the OPPOSITE direction of the absorbed side.
     #
-    # Detection:
-    #   - prior 3 bars: avg body_ratio < 0.4 AND avg vol > avg_vol baseline
-    #   - last bar:     body_ratio > 0.5 AND |delta_pct| > 0.5
+    # Detection (relaxed post-Phase-1 audit; prior thresholds fired only
+    # 0.2% which is too rare for the model to learn from):
+    #   - prior 3 bars: avg body_ratio < 0.5 (was 0.4) AND avg vol > avg_vol
+    #   - last bar:     body_ratio > 0.4 (was 0.5) AND |delta_pct| > 0.4 (was 0.5)
     #   - sign:         +1.0 = passive sellers absorbed → buyers initiate
     #                   -1.0 = passive buyers absorbed → sellers initiate
     #                   0    = no pattern
@@ -272,10 +276,10 @@ def extract_orderflow_features(
         avg_body_absorb = sum(c.body_ratio for c in absorption_bars) / 3
         avg_vol_absorb = sum(c.volume for c in absorption_bars) / 3
         if (
-            avg_body_absorb < 0.4
+            avg_body_absorb < 0.5
             and avg_vol_absorb > avg_vol  # high-vol absorption
-            and last.body_ratio > 0.5
-            and abs(delta_pct) > 0.5
+            and last.body_ratio > 0.4
+            and abs(delta_pct) > 0.4
         ):
             magnitude = float(np.clip(last.body_ratio * abs(delta_pct), 0.0, 1.0))
             flow_shift = magnitude if last.delta > 0 else -magnitude
@@ -340,12 +344,17 @@ def extract_orderflow_features(
     # happens to volume when we break out? Dry up = bad. Sustained = go."
     # Signed: +x = bullish follow-through, -x = bearish, 0 = no trigger
     # or no follow-through.
+    # Relaxed post-Phase-1 audit: prior thresholds (trigger.body_ratio
+    # > 0.6, |trigger_delta_pct| > 0.5) fired only 0.9% — the trigger
+    # qualification was too strict. When it fires it gives +9.6pt CONT
+    # directional bias — strongest signal in stack — so getting more
+    # samples is the priority.
     initiative_followup = 0.0
     if len(recent) >= 2:
         trigger = recent[-2]
-        if trigger.body_ratio > 0.6:
+        if trigger.body_ratio > 0.5:
             trigger_delta_pct = trigger.delta / max(trigger.volume, 1)
-            if abs(trigger_delta_pct) > 0.5:
+            if abs(trigger_delta_pct) > 0.4:
                 # Trigger was a strong thrust. Now measure follow-through.
                 same_dir = (trigger.delta > 0 and last.delta > 0) or (trigger.delta < 0 and last.delta < 0)
                 if same_dir:

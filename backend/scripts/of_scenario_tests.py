@@ -330,7 +330,7 @@ def scenario_R9_delta_divergence_bull() -> None:
     _run(
         "R9 — delta_divergence (bull: price HH, cum-delta lower-high)",
         candles,
-        {"delta_divergence": (lambda v: v == 1.0, "fires (=1)")},
+        {"delta_divergence": (lambda v: v == 1.0, "fires +1 (bull div)")},
     )
 
 
@@ -346,7 +346,7 @@ def scenario_R10_delta_divergence_bear() -> None:
     _run(
         "R10 — delta_divergence (bear: price LL, cum-delta higher-low)",
         candles,
-        {"delta_divergence": (lambda v: v == 1.0, "fires (=1)")},
+        {"delta_divergence": (lambda v: v == -1.0, "fires -1 (bear div, signed post-tune)")},
     )
 
 

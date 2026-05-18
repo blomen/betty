@@ -328,17 +328,20 @@ def compute_signals(
         cvd_trend = "flat"
 
     # VSA absorption: high volume + narrow body + close at range extreme.
-    # Thresholds relaxed 2026-05-18 (PROFILE follow-up): prior version
-    # (vol > prior_avg × 1.5, body < 0.3, range_pos > 0.7|<0.3) fired
-    # only 1.9% of the time. Per Fabio + Flowhorse, ANY clear absorption
-    # candle qualifies — not gating on a textbook example.
+    # Iteration 2026-05-18 (post-Phase-1 audit): the first relaxation
+    # (1.3×, body<0.4, range_pos>0.65|<0.35) raised firing rate from 1.9%
+    # → 4.6% BUT lost the role (was STOP+3.2/RUNNER+2.7, now neutral).
+    # Root cause: 0.65/0.35 range_pos lets in candles that aren't really
+    # at the extreme — the methodology requires close AT the extreme.
+    # Keep the volume + body relaxations (those didn't dilute), tighten
+    # range_pos back to 0.7/0.3.
     prior_candles_for_vol = recent[:-1] if len(recent) > 1 else recent
     prior_avg_volume = sum(c.volume for c in prior_candles_for_vol) / max(len(prior_candles_for_vol), 1)
     avg_volume = sum(c.volume for c in recent) / len(recent)  # kept for downstream usage below
     if last.volume > prior_avg_volume * 1.3 and last.body_ratio < 0.4:
         last_range = max(last.high - last.low, 1e-6)
         range_pos = (last.close - last.low) / last_range
-        vsa_absorption = range_pos > 0.65 or range_pos < 0.35
+        vsa_absorption = range_pos > 0.7 or range_pos < 0.3
     else:
         vsa_absorption = False
 
