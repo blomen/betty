@@ -143,8 +143,32 @@ def extract_orderflow_features(
         stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(signals.stacked_imbalance_direction, 0.0)
         big_count = min(signals.big_trades_count, 10.0) / 10.0
         big_net = signals.big_trades_net_delta / max(avg_vol, 1.0)
-        vsa_abs = 1.0 if signals.vsa_absorption else 0.0
-        stop_run = 1.0 if signals.stop_run_detected else 0.0
+        # vsa_absorption SIGNED 2026-05-18: per Fabio + Flowhorse, the
+        # direction is inherent in the pattern — close near high =
+        # buyers absorbed sellers (bull rev coming); close near low =
+        # sellers absorbed buyers (bear rev coming). Previously stored
+        # as 0/1, throwing away the direction. Now ±1/0.
+        vsa_abs = 0.0
+        if signals.vsa_absorption:
+            _last_range = max(last.high - last.low, 1e-6)
+            _range_pos = (last.close - last.low) / _last_range
+            if _range_pos > 0.7:
+                vsa_abs = 1.0  # buyers absorbed (bullish)
+            elif _range_pos < 0.3:
+                vsa_abs = -1.0  # sellers absorbed (bearish)
+
+        # stop_run_detected SIGNED 2026-05-18: bull stop run = swept
+        # below prior_low + reclaim up = predict price UP. Bear stop
+        # run = swept above prior_high + reclaim down = predict price
+        # DOWN. Direction inherent in the pattern, was stored as 0/1.
+        stop_run = 0.0
+        if signals.stop_run_detected and len(recent) >= 2:
+            _spike = recent[-2]
+            _reversal = recent[-1]
+            if _reversal.close > _spike.close:
+                stop_run = 1.0  # bull stop run (low swept, reclaimed up)
+            elif _reversal.close < _spike.close:
+                stop_run = -1.0  # bear stop run (high swept, reclaimed down)
     else:
         # Derive from raw candle data
         total_vol_sum = sum(c.volume for c in recent)
@@ -177,15 +201,33 @@ def extract_orderflow_features(
         big_net_raw = sum(c.delta for c in big_candles)
         big_net = big_net_raw / max(avg_vol, 1.0)
 
-        # vsa_absorption (no-signals fallback) — mirrors orderflow.py fix:
-        # close must be at range extreme, not mid-range compression.
-        if last.volume > avg_vol * 1.5 and last.body_ratio < 0.3:
+        # vsa_absorption (no-signals fallback) — mirrors signal path,
+        # SIGNED 2026-05-18.
+        vsa_abs = 0.0
+        if last.volume > avg_vol * 1.3 and last.body_ratio < 0.4:
             _last_range = max(last.high - last.low, 1e-6)
             _range_pos = (last.close - last.low) / _last_range
-            vsa_abs = 1.0 if (_range_pos > 0.7 or _range_pos < 0.3) else 0.0
-        else:
-            vsa_abs = 0.0
-        stop_run = 0.0  # Cannot reliably detect without signals
+            if _range_pos > 0.7:
+                vsa_abs = 1.0  # buyers absorbed
+            elif _range_pos < 0.3:
+                vsa_abs = -1.0  # sellers absorbed
+
+        # stop_run_detected (no-signals fallback) — re-derive direction
+        # from the spike + reversal pattern. Same logic as orderflow.py
+        # signal computation, just here for the no-signals path.
+        stop_run = 0.0
+        if len(recent) >= 4:
+            prior = recent[:-2]
+            spike = recent[-2]
+            reversal = recent[-1]
+            prior_high = max(c.high for c in prior)
+            prior_low = min(c.low for c in prior)
+            prior_avg_v = sum(c.volume for c in prior) / max(len(prior), 1)
+            if spike.volume > prior_avg_v * 1.3 and reversal.body_ratio > 0.3:
+                if spike.low < prior_low and reversal.close > prior_low and reversal.close > spike.close:
+                    stop_run = 1.0  # bull stop run
+                elif spike.high > prior_high and reversal.close < prior_high and reversal.close < spike.close:
+                    stop_run = -1.0  # bear stop run
 
     # --- NEW: temporal dynamics features ---
 

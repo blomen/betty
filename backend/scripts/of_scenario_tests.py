@@ -138,7 +138,29 @@ def scenario_R1_vsa_absorption() -> None:
     _run(
         "R1 — vsa_absorption (buyers absorbed sellers, close at top)",
         candles,
-        {"vsa_absorption": (lambda v: v == 1.0, "fires (=1)")},
+        {"vsa_absorption": (lambda v: v == 1.0, "fires +1 (bull absorption, signed post-tune)")},
+    )
+
+
+def scenario_R1b_vsa_absorption_bear() -> None:
+    """Sellers absorbed buyers — close NEAR LOW after wide range = bearish.
+    Needs narrow body (close near open) + close near low + high vol."""
+    base = [_candle(i, 100 + i * 0.5, 100.5 + i * 0.5, 99.5 + i * 0.5, 100 + i * 0.5, 1000, 100) for i in range(5)]
+    # Bearish absorption: open just above low, drove up to high, came back to close near low
+    absorption = _candle(
+        5,
+        open_=101.3,
+        high=103.5,
+        low=101.0,
+        close=101.15,  # body 0.15 / spread 2.5 = 0.06 (narrow), range_pos = 0.06 (close near low)
+        volume=3000,
+        delta=-200,
+    )
+    candles = base + [absorption]
+    _run(
+        "R1b — vsa_absorption (sellers absorbed buyers, close at bottom)",
+        candles,
+        {"vsa_absorption": (lambda v: v == -1.0, "fires -1 (bear absorption)")},
     )
 
 
@@ -168,7 +190,7 @@ def scenario_R2_stop_run_2bar() -> None:
     _run(
         "R2 — stop_run_detected (2-bar bullish sweep)",
         candles,
-        {"stop_run_detected": (lambda v: v == 1.0, "fires (=1)")},
+        {"stop_run_detected": (lambda v: v == 1.0, "fires +1 (bull stop run, signed post-tune)")},
     )
 
 
@@ -193,7 +215,37 @@ def scenario_R3_stop_run_3bar() -> None:
     _run(
         "R3 — stop_run_detected (3-bar bullish: spike + doji + reversal)",
         candles,
-        {"stop_run_detected": (lambda v: v == 1.0, "fires (=1)")},
+        {"stop_run_detected": (lambda v: v == 1.0, "fires +1 (bull stop run, signed post-tune)")},
+    )
+
+
+def scenario_R2b_stop_run_bear() -> None:
+    """Sweep ABOVE prior high + reclaim down = bear stop run."""
+    base = [_candle(i, 100 + i * 0.1, 100.5 + i * 0.1, 99.5 + i * 0.1, 100 + i * 0.1, 1000, 50) for i in range(4)]
+    prior_high = max(c.high for c in base)
+    spike = _candle(
+        4,
+        open_=100.4,
+        high=prior_high + 0.5,
+        low=100.3,
+        close=prior_high + 0.2,
+        volume=2500,
+        delta=300,
+    )
+    reversal = _candle(
+        5,
+        open_=prior_high + 0.2,
+        high=prior_high + 0.3,
+        low=prior_high - 0.8,
+        close=prior_high - 0.6,
+        volume=1500,
+        delta=-400,
+    )
+    candles = base + [spike, reversal]
+    _run(
+        "R2b — stop_run_detected (2-bar BEARISH sweep, signed)",
+        candles,
+        {"stop_run_detected": (lambda v: v == -1.0, "fires -1 (bear stop run)")},
     )
 
 
@@ -507,7 +559,9 @@ def main() -> int:
     print("REVERSAL SCENARIOS")
     print("─" * 60)
     scenario_R1_vsa_absorption()
+    scenario_R1b_vsa_absorption_bear()
     scenario_R2_stop_run_2bar()
+    scenario_R2b_stop_run_bear()
     scenario_R3_stop_run_3bar()
     scenario_R4_failed_auction()
     scenario_R5_capitulation_spike()
@@ -540,7 +594,7 @@ def main() -> int:
             print(f"  - {f}")
         print("\nFix the dim that failed before proceeding to real-data replay.")
         return 1
-    print(f"OK — all {16 + 4 + 2} scenario checks passed.")
+    print(f"OK — all {16 + 4 + 2 + 2} scenario checks passed.")  # +2 = R1b + R2b signed-direction
     print("Safe to escalate to real-data replay + Phase 1 audit.")
     return 0
 
