@@ -49,11 +49,16 @@ class FeatureSchema:
 #      "broken old feature"
 # ---------------------------------------------------------------------------
 
-BASE_OBSERVATION_SCHEMA_VERSION = 6  # v6: prev_zone (cross-zone narrative) added
+BASE_OBSERVATION_SCHEMA_VERSION = 7  # v7 (2026-05-18): orderflow 21→25 (Tier C pattern dims)
 
 BASE_OBSERVATION_SCHEMA: list[FeatureSchema] = [
     FeatureSchema("level_composition", 1, 31, "multi-hot (zone) or one-hot (legacy) level types"),
-    FeatureSchema("orderflow", 1, 21, "candle-level orderflow: delta, CVD, stacked imbalance, absorption"),
+    FeatureSchema(
+        "orderflow",
+        2,
+        25,
+        "candle-level orderflow: delta, CVD, stacked imbalance, absorption + 4 Tier C pattern dims (2026-05-18)",
+    ),
     FeatureSchema("structure", 1, 64, "Dow Theory + session + PDH/PDL + swings"),
     FeatureSchema("tpo", 1, 38, "per-session TPO profile"),
     FeatureSchema("candles", 1, 15, "last 5 candles × 3 (delta, vol, body_ratio)"),
@@ -113,15 +118,15 @@ AUGMENTED_SCHEMA: list[FeatureSchema] = [
 
 
 # ---------------------------------------------------------------------------
-# Trigger observation schema (Phase 3b: 144 → 118, narrative + setup_probs dropped)
+# Trigger observation schema (Phase 3b: 144 → 118 → 122)
 # ---------------------------------------------------------------------------
 
-TRIGGER_OBSERVATION_SCHEMA_VERSION = 2  # v2: narrative + setup_probs removed
+TRIGGER_OBSERVATION_SCHEMA_VERSION = 3  # v3 (2026-05-18): orderflow 21→25 (Tier C pattern dims)
 
 TRIGGER_OBSERVATION_SCHEMA: list[FeatureSchema] = [
     FeatureSchema("structural_passthrough", 1, 10, "10 structural dims carried over from base obs"),
     FeatureSchema("micro", 1, 20, "tick-level approach features"),
-    FeatureSchema("orderflow", 1, 21, "candle-level orderflow"),
+    FeatureSchema("orderflow", 2, 25, "candle-level orderflow + 4 Tier C pattern dims (2026-05-18)"),
     FeatureSchema("candles", 1, 15, "last 5 candles × 3 features"),
     FeatureSchema("zone_features", 1, 4, "zone hierarchy + member_count + strength"),
     FeatureSchema("zone_confluence", 1, 5, "zone-level FVG + single-print overlap"),

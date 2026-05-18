@@ -511,7 +511,22 @@ class TriggerGBT:
 
     @classmethod
     def load(cls, path: Path) -> TriggerGBT:
-        """Load a saved TriggerGBT from disk."""
+        """Load a saved TriggerGBT from disk.
+
+        Backwards-compat: when the trigger schema grows (e.g. 118 → 122 on
+        2026-05-18 from the Tier C OF additions), older joblibs ship an
+        `alive_mask` shorter than the current TRIGGER_DIM. Pad it with
+        False so the new tail dims are silently ignored — model continues
+        to predict using only the original positions until retrained.
+
+        IMPORTANT: padding at the TAIL only works when the new dims are
+        APPENDED. If the schema reshuffles existing positions (e.g. by
+        inserting dims in the middle of OF), the old mask is semantically
+        wrong even when length-padded. The 2026-05-18 bump appended dims
+        21-24 to OF without reshuffling 0-20, so tail padding is safe.
+        """
+        from ..features.trigger_features import TRIGGER_DIM
+
         data = joblib.load(path)
         model = cls()
         model.direction_model = data["direction_model"]
@@ -521,7 +536,22 @@ class TriggerGBT:
         model.levels_model = data.get("levels_model")
         model.stop_model = data.get("stop_model")
         model.scaler = data["scaler"]
-        model._alive_mask = data["alive_mask"]
+        alive_mask = data["alive_mask"]
+        if alive_mask.shape[0] < TRIGGER_DIM:
+            padded = np.zeros(TRIGGER_DIM, dtype=bool)
+            padded[: alive_mask.shape[0]] = alive_mask
+            log.info(
+                "TriggerGBT alive_mask padded %d→%d (pre-Tier C model; new tail dims ignored until retrain)",
+                alive_mask.shape[0],
+                TRIGGER_DIM,
+            )
+            alive_mask = padded
+        elif alive_mask.shape[0] > TRIGGER_DIM:
+            raise ValueError(
+                f"TriggerGBT alive_mask len {alive_mask.shape[0]} exceeds current TRIGGER_DIM={TRIGGER_DIM} "
+                "— model is from a newer schema than code knows about; refusing to silently truncate."
+            )
+        model._alive_mask = alive_mask
         model.calibrator = data.get("calibrator")
         log.info("TriggerGBT loaded from %s (calibrated=%s)", path, model.calibrator is not None)
         return model

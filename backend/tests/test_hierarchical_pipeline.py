@@ -71,8 +71,8 @@ class TestFullPipelineDimensions:
         obs = build_trigger_observation(state, base_obs)
         assert obs.shape == (TRIGGER_DIM,)
 
-    def test_trigger_dim_is_118(self):
-        assert TRIGGER_DIM == 118
+    def test_trigger_dim_is_122(self):
+        assert TRIGGER_DIM == 122
 
     def test_all_outputs_finite_from_empty_state(self):
         state = _minimal_state()
@@ -132,8 +132,8 @@ class TestV5ExportsAvailable:
     def test_build_trigger_importable(self):
         assert callable(build_trigger)
 
-    def test_trigger_observation_dim_is_118(self):
-        assert TRIGGER_OBSERVATION_DIM == 118
+    def test_trigger_observation_dim_is_122(self):
+        assert TRIGGER_OBSERVATION_DIM == 122
 
     def test_build_narrative_returns_correct_shape(self):
         obs = build_narrative(_minimal_state())

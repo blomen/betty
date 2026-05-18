@@ -6,7 +6,7 @@ encode the temporal dynamics.
 
 Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (31 currently)
-    orderflow                   21
+    orderflow                   25  (bumped 21→25 on 2026-05-18: Tier C)
     dow + session + PDH          64
     tpo (per-session)            38
     candle window                15
@@ -26,7 +26,7 @@ Zone mode (state["zone"] present):
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   31
-    orderflow            21
+    orderflow            25  (bumped 21→25 on 2026-05-18: Tier C)
     dow + session + PDH  64
     tpo (per-session)    38
     candle window        15
@@ -124,7 +124,7 @@ def build_observation(state: dict) -> np.ndarray:
         level_type: LevelType = state.get("level_type", LevelType.VWAP)
         seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
 
-    # 2. Orderflow (21) — includes 6 new temporal dynamics features
+    # 2. Orderflow (25) — 6 temporal dynamics + 4 Tier C pattern dims (2026-05-18)
     # When rl_state carries an L1 snapshot + recent trades (populated by
     # LevelMonitor in zone mode), the L1-derivable dims (spread_ticks,
     # passive_active_ratio) get recomputed from true bid/ask + Lee-Ready
@@ -440,7 +440,7 @@ def build_observation(state: dict) -> np.ndarray:
     obs = np.concatenate(
         [
             seg_level,  # len(LevelType) — multi-hot (zone) or one-hot (legacy)
-            seg_orderflow,  # 21
+            seg_orderflow,  # 25 (bumped 21→25 on 2026-05-18: Tier C)
             seg_structure,  # 64
             seg_tpo,  # 38
             seg_candles,  # 15
@@ -590,7 +590,7 @@ from .trigger_features import TRIGGER_DIM, build_trigger_observation
 
 # V5 dimensions (Phase 3b: trigger obs is 118-dim)
 NARRATIVE_OBSERVATION_DIM = NARRATIVE_DIM  # 18
-TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 118
+TRIGGER_OBSERVATION_DIM = TRIGGER_DIM  # 122 (bumped 118→122 on 2026-05-18: Tier C)
 
 
 def build_narrative(state: dict) -> np.ndarray:
