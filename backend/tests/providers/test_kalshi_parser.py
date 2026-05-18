@@ -1,4 +1,5 @@
 """Tests for Kalshi market parser."""
+
 import json
 from pathlib import Path
 
@@ -7,8 +8,16 @@ import pytest
 from src.providers.kalshi import (
     KalshiRetriever,
     _extract_teams_from_title,
+    _no_side_odds,
+    _parse_spread_rung,
+    _parse_total_rung,
+    _strip_market_label,
     parse_event,
+    parse_spread_event,
+    parse_total_event,
     series_to_sport,
+    spread_series_to_sport,
+    total_series_to_sport,
 )
 
 
@@ -204,9 +213,7 @@ class TestParseEvent:
 
 class TestKalshiRetriever:
     def test_parse_fixture_produces_events(self):
-        fixture_path = (
-            Path(__file__).parent / "fixtures" / "kalshi" / "events_sports.json"
-        )
+        fixture_path = Path(__file__).parent / "fixtures" / "kalshi" / "events_sports.json"
         raw = json.loads(fixture_path.read_text(encoding="utf-8"))
 
         config = {"id": "kalshi", "params": {"min_volume_usd": 100}}
@@ -224,3 +231,212 @@ class TestKalshiRetriever:
                 assert outcome["odds"] > 1.0
                 assert "provider_meta" in outcome
                 assert "ticker" in outcome["provider_meta"]
+
+
+class TestStripMarketLabel:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("Game 1: Cleveland at New York: Spread", "Game 1: Cleveland at New York"),
+            ("Game 1: Cleveland at New York: Total Points", "Game 1: Cleveland at New York"),
+            ("Cleveland at New York: Total Goals", "Cleveland at New York"),
+            ("Cleveland at New York: Total Runs", "Cleveland at New York"),
+            ("Diaz Acosta vs O'Connell: Total Games", "Diaz Acosta vs O'Connell"),
+            ("Game 1: Cleveland at New York: Total", "Game 1: Cleveland at New York"),
+            ("Lakers at Celtics Spread", "Lakers at Celtics"),
+            ("Lakers at Celtics", "Lakers at Celtics"),  # no label: unchanged
+        ],
+    )
+    def test_strip(self, raw, expected):
+        assert _strip_market_label(raw) == expected
+
+
+class TestSpreadTotalSeriesLookup:
+    @pytest.mark.parametrize(
+        "ticker,expected",
+        [
+            ("KXNBASPREAD-26MAY19CLENYK", "basketball"),
+            ("KXNFLSPREAD-26WEEK5-KCDET", "american_football"),
+            ("KXMLBSPREAD-26MAY19NYYBOS", "baseball"),
+            ("KXNHLSPREAD-26MAY19BOSPIT", "ice_hockey"),
+            ("KXATPGAMESPREAD-26MAY19", "tennis"),
+            ("KXATPGSPREAD-26MAY19", "tennis"),
+            ("KXEPLSPREAD-26MAY19", "football"),
+            ("KXBOGUS-26MAY19", None),
+        ],
+    )
+    def test_spread_lookup(self, ticker, expected):
+        assert spread_series_to_sport(ticker) == expected
+
+    @pytest.mark.parametrize(
+        "ticker,expected",
+        [
+            ("KXNBATOTAL-26MAY19CLENYK", "basketball"),
+            ("KXNFLTOTAL-26WEEK5", "american_football"),
+            ("KXATPGAMETOTAL-26MAY19", "tennis"),
+            ("KXEPLTOTAL-26MAY19", "football"),
+            ("KXBOGUS-26MAY19", None),
+        ],
+    )
+    def test_total_lookup(self, ticker, expected):
+        assert total_series_to_sport(ticker) == expected
+
+
+class TestRungParsers:
+    def test_spread_rung_home_match(self):
+        m = {"yes_sub_title": "New York wins by over 7.5 points"}
+        assert _parse_spread_rung(m, "New York", "Cleveland") == ("home", 7.5)
+
+    def test_spread_rung_away_match(self):
+        m = {"yes_sub_title": "Cleveland wins by over 12.5 points"}
+        assert _parse_spread_rung(m, "New York", "Cleveland") == ("away", 12.5)
+
+    def test_spread_rung_ambiguous_returns_none(self):
+        # Both home and away substring match → return None.
+        m = {"yes_sub_title": "New York wins by over 7.5 points"}
+        assert _parse_spread_rung(m, "New York Jets", "New York Giants") is None
+
+    def test_spread_rung_unparseable_returns_none(self):
+        assert _parse_spread_rung({"yes_sub_title": "exotic prop"}, "A", "B") is None
+
+    @pytest.mark.parametrize(
+        "sub,expected",
+        [
+            ("Over 16.5 games", 16.5),
+            ("Over 210.5 points", 210.5),
+            ("Over 8.5 goals", 8.5),
+            ("Over 7.5 runs", 7.5),
+            ("Total under", None),  # no number
+        ],
+    )
+    def test_total_rung(self, sub, expected):
+        assert _parse_total_rung({"yes_sub_title": sub}) == expected
+
+
+class TestNoSideOdds:
+    def test_complementary(self):
+        # YES at 0.45 (no fee) → NO implied at 1.0/0.55 = 1.818 before fee.
+        # With fee_rate=0, _price_to_odds(0.55) = 1/0.55 = 1.818.
+        odds = _no_side_odds(0.45, 0.0)
+        assert abs(odds - 1.818) < 0.001
+
+    def test_degenerate_returns_zero(self):
+        assert _no_side_odds(1.0, 0.02) == 0.0
+        assert _no_side_odds(1.5, 0.02) == 0.0
+
+
+class TestParseSpreadEvent:
+    def _ladder(self):
+        return [
+            {
+                "yes_sub_title": "New York wins by over 29.5 points",
+                "ticker": "X-NYK29",
+                "status": "active",
+                "yes_ask_dollars": 0.08,
+                "volume_fp": 1000,
+            },
+            {
+                "yes_sub_title": "New York wins by over 7.5 points",
+                "ticker": "X-NYK7",
+                "status": "active",
+                "yes_ask_dollars": 0.55,
+                "volume_fp": 5000,
+            },
+            {
+                "yes_sub_title": "New York wins by over 12.5 points",
+                "ticker": "X-NYK12",
+                "status": "active",
+                "yes_ask_dollars": 0.30,
+                "volume_fp": 3000,
+            },
+        ]
+
+    def test_picks_closest_to_target(self):
+        raw = {
+            "event_ticker": "KXNBASPREAD-26MAY19CLENYK",
+            "title": "Game 1: Cleveland at New York: Spread",
+            "markets": self._ladder(),
+        }
+        out = parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=8.0, min_volume_usd=100)
+        assert out is not None
+        assert out["type"] == "spread"
+        home_o = next(o for o in out["outcomes"] if o["name"] == "home")
+        away_o = next(o for o in out["outcomes"] if o["name"] == "away")
+        # Closest to 8.0 in ladder {7.5, 12.5, 29.5} = 7.5
+        assert home_o["point"] == -7.5
+        assert away_o["point"] == 7.5
+        # YES side favors home (NYK), so home odds = 1/effective(0.55), away = 1/effective(0.45)
+        assert home_o["odds"] < away_o["odds"]  # home is favored at -7.5
+
+    def test_all_submarkets_filtered_returns_none(self):
+        raw = {
+            "event_ticker": "X",
+            "title": "Game 1: Cleveland at New York: Spread",
+            "markets": [
+                {
+                    "yes_sub_title": "Mystery prop",
+                    "ticker": "x",
+                    "status": "active",
+                    "yes_ask_dollars": 0.5,
+                    "volume_fp": 5000,
+                },
+            ],
+        }
+        assert parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=8.0) is None
+
+    def test_zero_yes_price_returns_none(self):
+        raw = {
+            "event_ticker": "X",
+            "title": "X",
+            "markets": [
+                {
+                    "yes_sub_title": "New York wins by over 5.5 points",
+                    "ticker": "x",
+                    "status": "active",
+                    "yes_ask_dollars": 0.0,
+                    "volume_fp": 5000,
+                },
+            ],
+        }
+        assert parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=5.0) is None
+
+
+class TestParseTotalEvent:
+    def test_picks_closest_to_target(self):
+        raw = {
+            "event_ticker": "KXNBATOTAL-26MAY19CLENYK",
+            "title": "Game 1: Cleveland at New York: Total Points",
+            "markets": [
+                {
+                    "yes_sub_title": "Over 195.5 points",
+                    "ticker": "X-195",
+                    "status": "active",
+                    "yes_ask_dollars": 0.85,
+                    "volume_fp": 2000,
+                },
+                {
+                    "yes_sub_title": "Over 209.5 points",
+                    "ticker": "X-209",
+                    "status": "active",
+                    "yes_ask_dollars": 0.50,
+                    "volume_fp": 8000,
+                },
+                {
+                    "yes_sub_title": "Over 225.5 points",
+                    "ticker": "X-225",
+                    "status": "active",
+                    "yes_ask_dollars": 0.15,
+                    "volume_fp": 2000,
+                },
+            ],
+        }
+        out = parse_total_event(raw, target_point=210.0, min_volume_usd=100)
+        assert out is not None
+        assert out["type"] == "total"
+        over_o = next(o for o in out["outcomes"] if o["name"] == "over")
+        under_o = next(o for o in out["outcomes"] if o["name"] == "under")
+        assert over_o["point"] == 209.5
+        assert under_o["point"] == 209.5
+        # 0.50 each side → both odds ~2.0
+        assert 1.9 < over_o["odds"] < 2.1
+        assert 1.9 < under_o["odds"] < 2.1

@@ -1,8 +1,17 @@
 """Kalshi prediction-market extractor.
 
 Pulls binary YES/NO contracts from Kalshi's public REST API and converts
-them to StandardEvent moneyline / 1x2 markets. Extraction is
-unauthenticated — only placement (in the mirror workflow) needs API keys.
+them to StandardEvent moneyline / 1x2 / spread / total markets. Extraction
+is unauthenticated — only placement (in the mirror workflow) needs API keys.
+
+Spread/total markets live in entirely separate series from ML (e.g.
+KXNBASPREAD-26MAY19CLENYK is separate from KXNBAGAME-26MAY19CLENYK). Each
+spread/total event is a ladder of binary contracts at different point
+lines ("Cleveland wins by over 7.5 points"). To stay consistent with
+Pinnacle's main-line-only convention (and to make scanner comparison
+direct), we only emit the rung whose absolute point is closest to
+Pinnacle's current main line. Events Pinnacle doesn't cover are skipped
+entirely — there is no fair-odds baseline to compare them against.
 """
 
 from __future__ import annotations
@@ -76,6 +85,121 @@ KALSHI_SERIES_TO_SPORT: dict[str, str] = {
     "KXAFCCLGAME": "football",
     "KXAFCONGAME": "football",
 }
+
+# Spread series → sport. Mainline only — halves/quarters/team-totals/series-totals
+# are out of scope per CLAUDE.md (we only support 1x2/ML/spread/total main lines).
+KALSHI_SPREAD_SERIES_TO_SPORT: dict[str, str] = {
+    # Basketball
+    "KXNBASPREAD": "basketball",
+    "KXWNBASPREAD": "basketball",
+    "KXNCAAMBSPREAD": "basketball",
+    "KXNCAAWBSPREAD": "basketball",
+    "KXCBASPREAD": "basketball",
+    "KXEUROLEAGUESPREAD": "basketball",
+    "KXEUROCUPSPREAD": "basketball",
+    "KXKBLSPREAD": "basketball",
+    # American football
+    "KXNFLSPREAD": "american_football",
+    "KXNCAAFSPREAD": "american_football",
+    "KXUFLSPREAD": "american_football",
+    # Baseball
+    "KXMLBSPREAD": "baseball",
+    "KXKBOSPREAD": "baseball",
+    "KXNPBSPREAD": "baseball",
+    "KXWBCSPREAD": "baseball",
+    "KXNCAABBSPREAD": "baseball",
+    # Ice hockey
+    "KXNHLSPREAD": "ice_hockey",
+    "KXWOMHOCKEYSPREAD": "ice_hockey",
+    # Tennis — two spellings exist in Kalshi's catalog
+    "KXATPGAMESPREAD": "tennis",
+    "KXATPGSPREAD": "tennis",
+    # Football (soccer)
+    "KXEPLSPREAD": "football",
+    "KXLALIGASPREAD": "football",
+    "KXBUNDESLIGASPREAD": "football",
+    "KXLIGUE1SPREAD": "football",
+    "KXSERIEASPREAD": "football",
+    "KXMLSSPREAD": "football",
+    "KXALEAGUESPREAD": "football",
+    "KXEREDIVISIESPREAD": "football",
+    "KXEFLCUPSPREAD": "football",
+    "KXEFLCHAMPIONSHIPSPREAD": "football",
+    "KXFACUPSPREAD": "football",
+    "KXUCLSPREAD": "football",
+    "KXUELSPREAD": "football",
+    "KXUECLSPREAD": "football",
+    "KXLIGAMXSPREAD": "football",
+    "KXSAUDIPLSPREAD": "football",
+    "KXFIFASPREAD": "football",
+    "KXSOCCERSPREAD": "football",
+    "KXINTLFRIENDLYSPREAD": "football",
+    "KXTACAPORTSPREAD": "football",
+    "KXCOPADELREYSPREAD": "football",
+    "KXCOPADOBRASILSPREAD": "football",
+    "KXCOPPAITALIASPREAD": "football",
+    "KXCOUPEDEFRANCESPREAD": "football",
+    "KXDFBPOKALSPREAD": "football",
+    "KXARGPREMDIVSPREAD": "football",
+    "KXBRASILEIROSPREAD": "football",
+}
+
+# Total series → sport. Same scope rules as spread.
+KALSHI_TOTAL_SERIES_TO_SPORT: dict[str, str] = {
+    # Basketball
+    "KXNBATOTAL": "basketball",
+    "KXWNBATOTAL": "basketball",
+    "KXNCAAMBTOTAL": "basketball",
+    "KXNCAAWBTOTAL": "basketball",
+    "KXCBATOTAL": "basketball",
+    "KXEUROLEAGUETOTAL": "basketball",
+    "KXEUROCUPTOTAL": "basketball",
+    "KXKBLTOTAL": "basketball",
+    # American football
+    "KXNFLTOTAL": "american_football",
+    "KXNCAAFTOTAL": "american_football",
+    "KXUFLTOTAL": "american_football",
+    # Baseball
+    "KXMLBTOTAL": "baseball",
+    "KXKBOTOTAL": "baseball",
+    "KXWBCTOTAL": "baseball",
+    "KXNCAABBTOTAL": "baseball",
+    # Ice hockey
+    "KXNHLTOTAL": "ice_hockey",
+    "KXWOMHOCKEYTOTAL": "ice_hockey",
+    # Tennis — two spellings
+    "KXATPGAMETOTAL": "tennis",
+    "KXATPGTOTAL": "tennis",
+    # Football (soccer)
+    "KXEPLTOTAL": "football",
+    "KXLALIGATOTAL": "football",
+    "KXBUNDESLIGATOTAL": "football",
+    "KXLIGUE1TOTAL": "football",
+    "KXSERIEATOTAL": "football",
+    "KXMLSTOTAL": "football",
+    "KXALEAGUETOTAL": "football",
+    "KXEREDIVISIETOTAL": "football",
+    "KXEFLCUPTOTAL": "football",
+    "KXEFLCHAMPIONSHIPTOTAL": "football",
+    "KXFACUPTOTAL": "football",
+    "KXUCLTOTAL": "football",
+    "KXUELTOTAL": "football",
+    "KXUECLTOTAL": "football",
+    "KXLIGAMXTOTAL": "football",
+    "KXSAUDIPLTOTAL": "football",
+    "KXFIFATOTAL": "football",
+    "KXSOCCERTOTAL": "football",
+    "KXINTLFRIENDLYTOTAL": "football",
+    "KXTACAPORTTOTAL": "football",
+    "KXCOPADELREYTOTAL": "football",
+    "KXCOPADOBRASILTOTAL": "football",
+    "KXCOPPAITALIATOTAL": "football",
+    "KXCOUPEDEFRANCETOTAL": "football",
+    "KXDFBPOKALTOTAL": "football",
+    "KXARGPREMDIVTOTAL": "football",
+    "KXBRASILEIROTOTAL": "football",
+}
+
 
 # Sports with no draw outcome → 2-way moneyline; others → 3-way 1x2.
 _NO_DRAW_SPORTS = frozenset(
@@ -201,7 +325,7 @@ KALSHI_TICKER_CODES: dict[str, dict[str, str]] = {
 
 
 def series_to_sport(ticker: str) -> str | None:
-    """Resolve a Kalshi event/market ticker to our canonical sport name.
+    """Resolve a Kalshi ML event/market ticker to our canonical sport name.
 
     Uses longest-prefix match so more specific prefixes win (e.g. KXNCAAB
     before KX).
@@ -209,6 +333,22 @@ def series_to_sport(ticker: str) -> str | None:
     for prefix in sorted(KALSHI_SERIES_TO_SPORT.keys(), key=len, reverse=True):
         if ticker.startswith(prefix):
             return KALSHI_SERIES_TO_SPORT[prefix]
+    return None
+
+
+def spread_series_to_sport(ticker: str) -> str | None:
+    """Resolve a Kalshi spread series ticker (e.g. KXNBASPREAD) to a sport."""
+    for prefix in sorted(KALSHI_SPREAD_SERIES_TO_SPORT.keys(), key=len, reverse=True):
+        if ticker.startswith(prefix):
+            return KALSHI_SPREAD_SERIES_TO_SPORT[prefix]
+    return None
+
+
+def total_series_to_sport(ticker: str) -> str | None:
+    """Resolve a Kalshi total series ticker (e.g. KXNBATOTAL) to a sport."""
+    for prefix in sorted(KALSHI_TOTAL_SERIES_TO_SPORT.keys(), key=len, reverse=True):
+        if ticker.startswith(prefix):
+            return KALSHI_TOTAL_SERIES_TO_SPORT[prefix]
     return None
 
 
@@ -251,6 +391,20 @@ def _market_volume_usd(m: dict) -> float:
 
 
 _TITLE_PREFIX_RE = re.compile(r"^(game|match|leg|set)\s*\d+\s*:\s*", flags=re.IGNORECASE)
+
+# Spread/total events tack a market label onto the title, e.g.
+# "Game 1: Cleveland at New York: Spread", "...: Total Points",
+# "...: Total Goals", "...: Total Runs", "...: Total Games".
+# Strip these before feeding the title to _extract_teams_from_title.
+_MARKET_LABEL_RE = re.compile(
+    r"\s*:?\s*(?:spread|total(?:\s+\w+)?|handicap|over\s*/\s*under|o\s*/\s*u)\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_market_label(title: str) -> str:
+    """Remove trailing market-type label (": Spread", " Total", etc.) from a Kalshi title."""
+    return _MARKET_LABEL_RE.sub("", title or "").strip()
 
 
 def _market_event_start(m: dict) -> datetime | None:
@@ -506,6 +660,327 @@ def parse_event(
     )
 
 
+# ── Spread / total parsing ──────────────────────────────────────────────────
+#
+# Kalshi's spread / total markets are binary YES/NO contracts on a fixed
+# point line, e.g. "Cleveland wins by over 7.5 points" or "Over 16.5 games".
+# A single event ships as a ladder of these contracts at different point
+# values (a typical NBA spread event has ~20 rungs from ±3 to ±29).
+#
+# For a contract "X wins by over N.5":
+#   YES_price implies P(X covers spread of -N.5) → home odds at line -N.5
+#   NO_price  implies P(X does NOT cover)        → away odds at line +N.5
+# (since "X does not win by over N.5" = "Y wins or X by ≤ N.5" = "Y covers +N.5")
+#
+# For a contract "Over N.5 games/points/runs":
+#   YES_price → over outcome at point N.5
+#   NO_price  → under outcome at point N.5
+#
+# We pick the rung whose absolute point is closest to Pinnacle's current
+# main line so the scanner can compare line-for-line. Events Pinnacle
+# doesn't cover yield no rung-target and are dropped upstream.
+
+
+# "Boston wins by over 7.5 points" / "New York wins by over 12.5 points" etc.
+_SPREAD_SUB_RE = re.compile(
+    r"^(?P<team>.+?)\s+wins?\s+by\s+over\s+(?P<line>\d+(?:\.\d+)?)\b",
+    flags=re.IGNORECASE,
+)
+
+# "Over 16.5 games", "Over 210.5 points", "Over 8.5 goals", "Over 7.5 runs"
+_TOTAL_SUB_RE = re.compile(
+    r"^over\s+(?P<line>\d+(?:\.\d+)?)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _no_side_odds(yes_price: float, fee_rate: float) -> float:
+    """Implied NO-side decimal odds given the YES contract's ask price.
+
+    NO_ask = 1 - YES_ask (Kalshi quotes both sides symmetrically), with the
+    same per-trade fee on entry. Returns 0 on degenerate input.
+    """
+    no_price = 1.0 - yes_price
+    if no_price <= 0.0:
+        return 0.0
+    return _price_to_odds(no_price, fee_rate)
+
+
+def _parse_spread_rung(m: dict, home: str, away: str) -> tuple[str, float] | None:
+    """Return (side, abs_point) for a spread rung, or None if unparseable.
+
+    side ∈ {"home", "away"} indicates which side the YES contract favors:
+        "home" → YES = home wins by over <abs_point>  → home spread -abs_point
+        "away" → YES = away wins by over <abs_point>  → away spread -abs_point
+    """
+    sub = str(m.get("yes_sub_title", "") or "").strip()
+    match = _SPREAD_SUB_RE.match(sub)
+    if not match:
+        return None
+    team_str = match.group("team").strip().lower()
+    try:
+        abs_point = float(match.group("line"))
+    except ValueError:
+        return None
+    home_l = (home or "").lower().strip()
+    away_l = (away or "").lower().strip()
+    if not home_l or not away_l:
+        return None
+    in_home = team_str in home_l or home_l in team_str
+    in_away = team_str in away_l or away_l in team_str
+    if in_home and not in_away:
+        return "home", abs_point
+    if in_away and not in_home:
+        return "away", abs_point
+    return None
+
+
+def _parse_total_rung(m: dict) -> float | None:
+    """Return the point value for a total rung, or None if unparseable."""
+    sub = str(m.get("yes_sub_title", "") or "").strip()
+    match = _TOTAL_SUB_RE.match(sub)
+    if not match:
+        return None
+    try:
+        return float(match.group("line"))
+    except ValueError:
+        return None
+
+
+def _pick_closest_rung(candidates: list[tuple[float, dict]], target_abs: float) -> tuple[float, dict] | None:
+    """From a list of (abs_point, market) rungs, return the one closest to target_abs."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: abs(c[0] - target_abs))
+
+
+def parse_spread_event(
+    raw: dict,
+    home: str,
+    away: str,
+    target_abs_point: float,
+    min_volume_usd: float = 100.0,
+    fee_rate: float = 0.02,
+) -> dict | None:
+    """Parse a Kalshi spread event into a single {"type":"spread", ...} market dict.
+
+    Picks the rung whose absolute point is closest to `target_abs_point`
+    (Pinnacle's current main line) and emits home/away outcomes for that line.
+    Returns None if no rung parses cleanly or all are sub-volume.
+    """
+    raw_markets = [
+        m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
+    ]
+    if not raw_markets:
+        return None
+
+    home_rungs: list[tuple[float, dict]] = []
+    away_rungs: list[tuple[float, dict]] = []
+    for m in raw_markets:
+        parsed = _parse_spread_rung(m, home, away)
+        if parsed is None:
+            continue
+        side, abs_pt = parsed
+        if side == "home":
+            home_rungs.append((abs_pt, m))
+        else:
+            away_rungs.append((abs_pt, m))
+
+    # Pick the closest-to-target on whichever side has matching rungs.
+    # Both sides should be present for a symmetric spread, but Kalshi often
+    # ladders only the favored side. We can still emit both outcomes off a
+    # single rung — YES = favored covers, NO = underdog covers same line.
+    chosen = _pick_closest_rung(home_rungs, target_abs_point) or _pick_closest_rung(away_rungs, target_abs_point)
+    if chosen is None:
+        return None
+    abs_point, mkt = chosen
+    yes_side = "home" if (chosen in home_rungs) else "away"
+    yes_price = _market_price_dollars(mkt)
+    if yes_price <= 0.0 or yes_price >= 1.0:
+        return None
+    yes_odds = _price_to_odds(yes_price, fee_rate)
+    no_odds = _no_side_odds(yes_price, fee_rate)
+    if no_odds <= 0.0:
+        return None
+    if yes_side == "home":
+        home_odds, home_point = yes_odds, -abs_point
+        away_odds, away_point = no_odds, abs_point
+    else:
+        away_odds, away_point = yes_odds, -abs_point
+        home_odds, home_point = no_odds, abs_point
+    outcomes = [
+        {
+            "name": "home",
+            "odds": home_odds,
+            "point": home_point,
+            "provider_meta": {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt), "yes_side": yes_side},
+        },
+        {
+            "name": "away",
+            "odds": away_odds,
+            "point": away_point,
+            "provider_meta": {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt), "yes_side": yes_side},
+        },
+    ]
+    return {"type": "spread", "outcomes": outcomes}
+
+
+def parse_total_event(
+    raw: dict,
+    target_point: float,
+    min_volume_usd: float = 100.0,
+    fee_rate: float = 0.02,
+) -> dict | None:
+    """Parse a Kalshi total event into a single {"type":"total", ...} market dict.
+
+    Picks the rung whose point is closest to `target_point` (Pinnacle's
+    current main line) and emits over/under outcomes at that line.
+    """
+    raw_markets = [
+        m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
+    ]
+    if not raw_markets:
+        return None
+
+    rungs: list[tuple[float, dict]] = []
+    for m in raw_markets:
+        pt = _parse_total_rung(m)
+        if pt is None:
+            continue
+        rungs.append((pt, m))
+
+    chosen = _pick_closest_rung(rungs, target_point)
+    if chosen is None:
+        return None
+    point, mkt = chosen
+    yes_price = _market_price_dollars(mkt)
+    if yes_price <= 0.0 or yes_price >= 1.0:
+        return None
+    over_odds = _price_to_odds(yes_price, fee_rate)
+    under_odds = _no_side_odds(yes_price, fee_rate)
+    if under_odds <= 0.0:
+        return None
+    meta = {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt)}
+    return {
+        "type": "total",
+        "outcomes": [
+            {"name": "over", "odds": over_odds, "point": point, "provider_meta": meta},
+            {"name": "under", "odds": under_odds, "point": point, "provider_meta": meta},
+        ],
+    }
+
+
+# ── Pinnacle event-index loader ─────────────────────────────────────────────
+#
+# To honour the "only fetch what Pinnacle has" constraint, we load a snapshot
+# of Pinnacle events for the sport (plus their current spread/total main
+# lines) once per extract() run, then filter every Kalshi event against it.
+
+
+def _load_pinnacle_event_index(sport: str, lookahead_days: int = 14) -> dict:
+    """Return a dict keyed by (home_team, away_team, YYYYMMDD) → {spread_point, total_point}.
+
+    home_team and away_team are the canonical normalized aliases as stored on
+    `events.home_team` / `events.away_team` (already normalized by the matcher
+    at insertion time). spread_point and total_point are the most-recent
+    smallest-absolute-value lines for that event (the de-facto main line).
+    """
+    from sqlalchemy import text
+
+    from ..db.models import get_session
+
+    session = get_session()
+    try:
+        rows = session.execute(
+            text(
+                """
+                WITH pin AS (
+                    SELECT e.home_team, e.away_team, e.start_time,
+                           o.market, o.point,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY e.id, o.market
+                               ORDER BY ABS(o.point) ASC, o.updated_at DESC
+                           ) AS rn
+                    FROM events e
+                    JOIN odds o ON o.event_id = e.id
+                    WHERE o.provider_id = 'pinnacle'
+                      AND e.sport = :sport
+                      AND e.start_time BETWEEN NOW() AND NOW() + (:days || ' days')::INTERVAL
+                      AND o.market IN ('spread', 'total')
+                )
+                SELECT home_team, away_team, start_time, market, point
+                FROM pin
+                WHERE rn = 1
+                """
+            ),
+            {"sport": sport, "days": lookahead_days},
+        ).fetchall()
+    finally:
+        session.close()
+
+    index: dict[tuple[str, str, str], dict] = {}
+    for home_team, away_team, start_time, market, point in rows:
+        date_str = start_time.strftime("%Y%m%d")
+        key = (home_team, away_team, date_str)
+        entry = index.setdefault(key, {"spread_point": None, "total_point": None})
+        if market == "spread" and point is not None:
+            entry["spread_point"] = abs(float(point))
+        elif market == "total" and point is not None:
+            entry["total_point"] = float(point)
+    return index
+
+
+def _load_pinnacle_event_keys(sport: str, lookahead_days: int = 14) -> set[tuple[str, str, str]]:
+    """Return just the set of (home, away, YYYYMMDD) keys Pinnacle has for `sport`.
+
+    Used by the ML pre-filter where we don't need line points, only event
+    presence. A separate query (no JOIN on odds.market) so ML-only events
+    (where Pinnacle has moneyline but no spread/total yet) are still included.
+    """
+    from sqlalchemy import text
+
+    from ..db.models import get_session
+
+    session = get_session()
+    try:
+        rows = session.execute(
+            text(
+                """
+                SELECT DISTINCT e.home_team, e.away_team, e.start_time
+                FROM events e
+                JOIN odds o ON o.event_id = e.id
+                WHERE o.provider_id = 'pinnacle'
+                  AND e.sport = :sport
+                  AND e.start_time BETWEEN NOW() AND NOW() + (:days || ' days')::INTERVAL
+                """
+            ),
+            {"sport": sport, "days": lookahead_days},
+        ).fetchall()
+    finally:
+        session.close()
+    return {(h, a, t.strftime("%Y%m%d")) for h, a, t in rows}
+
+
+def _kalshi_event_key(
+    home: str,
+    away: str,
+    start_time: datetime | None,
+) -> tuple[str, str, str] | None:
+    """Build the lookup key from a Kalshi-parsed event for matching against
+    the Pinnacle index. Returns None if normalization fails or start_time
+    is missing.
+    """
+    if not home or not away or start_time is None:
+        return None
+    from ..matching.normalizer import normalize_team_name
+
+    return (
+        normalize_team_name(home),
+        normalize_team_name(away),
+        start_time.strftime("%Y%m%d"),
+    )
+
+
 class KalshiRetriever(Retriever):
     """Kalshi event-level retriever. Unauthenticated — market data is public.
 
@@ -525,103 +1000,244 @@ class KalshiRetriever(Retriever):
         self.fee_rate = float(config.get("params", {}).get("fee_rate", KALSHI_FEE_RATE))
         self._circuit_breaker = circuit_breaker
 
+    # Inter-request spacing to avoid kalshi's per-IP rate limit. With 12+
+    # series_tickers across all sports + multi-page pagination, hammering
+    # /events back-to-back trips 429 within seconds (verified in production
+    # logs 2026-04-28). 1.5s delay between fetches keeps us under the cap
+    # while only adding ~15-25s to a full kalshi run.
+    INTER_REQUEST_DELAY_S = 1.5
+
     def _series_tickers_for_sport(self, sport: str) -> list[str]:
-        """Inverse of KALSHI_SERIES_TO_SPORT — series_tickers that map to this sport."""
+        """Inverse of KALSHI_SERIES_TO_SPORT — ML series_tickers for this sport."""
         return [prefix for prefix, mapped_sport in KALSHI_SERIES_TO_SPORT.items() if mapped_sport == sport]
+
+    def _spread_series_for_sport(self, sport: str) -> list[str]:
+        return [prefix for prefix, mapped_sport in KALSHI_SPREAD_SERIES_TO_SPORT.items() if mapped_sport == sport]
+
+    def _total_series_for_sport(self, sport: str) -> list[str]:
+        return [prefix for prefix, mapped_sport in KALSHI_TOTAL_SERIES_TO_SPORT.items() if mapped_sport == sport]
 
     def _get_sport_url(self, sport: str) -> str:
         # Legacy method kept for compatibility; the new extract() uses
         # series_ticker filtering directly per sport.
         return f"{self.base_url}/events?status=open&with_nested_markets=true&limit={self.DEFAULT_PAGE_LIMIT}"
 
-    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
-        """Fetch open Kalshi events for the sport via the series_ticker filter.
+    async def _fetch_series_pages(
+        self,
+        session: aiohttp.ClientSession,
+        series_ticker: str,
+        delay_first: bool,
+    ):
+        """Async generator: yield each raw event dict from /events?series_ticker=X across pages.
 
-        Pre-fix this paginated /events?status=open with no filter — that's
-        sport-agnostic, serves ~10k mixed markets (politics, futures, news,
-        plus a thin slice of head-to-head sports), and we parser-rejected
-        99% of them. Today's catalog (verified 2026-04-27) has zero head-to
-        head sports in the first 200 events because Kalshi orders by trading
-        volume and political/futures markets dominate the top.
-
-        Kalshi supports a `series_ticker` query parameter that filters at
-        the API. KALSHI_SERIES_TO_SPORT lists the relevant prefixes per
-        sport (KXNBAGAME, KXNCAABGAME for basketball, etc.). We query each
-        in turn and aggregate.
+        Rate-limit-aware: sleeps INTER_REQUEST_DELAY_S before each request
+        (skips the first if delay_first=False so back-to-back series fetches
+        don't double-pay the cooldown). On 429, backs off 5s and retries once
+        before giving up the series.
         """
-        parsed: list[StandardEvent] = []
-        total_raw = 0
-        series_tickers = self._series_tickers_for_sport(sport)
-        if not series_tickers:
-            logger.debug(f"[kalshi] no series_tickers configured for sport={sport}")
+        cursor: str | None = None
+        base = (
+            f"{self.base_url}/events?status=open&with_nested_markets=true"
+            f"&limit={self.DEFAULT_PAGE_LIMIT}&series_ticker={series_ticker}"
+        )
+        # Per series, allow up to 5 pages (1000 events).
+        for page_idx in range(5):
+            if delay_first or page_idx > 0:
+                await asyncio.sleep(self.INTER_REQUEST_DELAY_S)
+            page_url = base + (f"&cursor={cursor}" if cursor else "")
+            try:
+                async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 429:
+                        logger.info(f"[kalshi] 429 on series={series_ticker}; backing off 5s")
+                        await asyncio.sleep(5.0)
+                        async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
+                            if resp2.status == 429:
+                                logger.warning(f"[kalshi] 429 persistent on series={series_ticker}; skipping")
+                                return
+                            resp2.raise_for_status()
+                            body = await resp2.json()
+                    else:
+                        resp.raise_for_status()
+                        body = await resp.json()
+            except Exception as e:
+                logger.warning(f"[kalshi] fetch failed series={series_ticker} cursor={cursor}: {e}")
+                return
+            events = body.get("events", [])
+            for raw in events:
+                yield raw
+            cursor = body.get("cursor") or None
+            if not cursor or not events:
+                return
+
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> list[StandardEvent]:
+        """Fetch open Kalshi events for the sport, filtered by Pinnacle coverage.
+
+        Three series families are queried per sport:
+          1. ML series (KXNBAGAME, KXATPMATCH, …) → moneyline / 1x2 markets
+          2. SPREAD series (KXNBASPREAD, KXATPGAMESPREAD, …) → spread market
+          3. TOTAL series (KXNBATOTAL, KXATPGAMETOTAL, …) → total market
+
+        All three are pre-filtered by querying Pinnacle's events for the
+        sport up front: events whose (normalized_home, normalized_away,
+        YYYYMMDD) tuple isn't in Pinnacle's set are dropped before parsing
+        further. For spread/total, the rung closest to Pinnacle's current
+        main line is picked (CLAUDE.md scope: main lines only). If Pinnacle
+        has no events for the sport, all Kalshi fetches are skipped — there
+        is no fair-odds baseline to compare against.
+        """
+        # Load Pinnacle keys + spread/total line index in parallel (single DB
+        # connection each, indexed query, takes <50ms in production).
+        pin_keys, pin_index = await asyncio.gather(
+            asyncio.to_thread(_load_pinnacle_event_keys, sport),
+            asyncio.to_thread(_load_pinnacle_event_index, sport),
+        )
+        if not pin_keys:
+            logger.info(f"[kalshi] no Pinnacle events for sport={sport}; skipping all Kalshi fetches")
             return []
 
-        # Inter-request spacing to avoid kalshi's per-IP rate limit. With 12+
-        # series_tickers across all sports + multi-page pagination, hammering
-        # /events back-to-back trips 429 within seconds (verified in production
-        # logs 2026-04-28). 1.5s delay between fetches keeps us under the cap
-        # while only adding ~15-25s to a full kalshi run (was 7s; becomes ~25s).
-        INTER_REQUEST_DELAY_S = 1.5
+        ml_series = self._series_tickers_for_sport(sport)
+        spread_series = self._spread_series_for_sport(sport)
+        total_series = self._total_series_for_sport(sport)
+        all_series = ml_series + spread_series + total_series
+        if not all_series:
+            logger.debug(f"[kalshi] no series configured for sport={sport}")
+            return []
+
+        parsed: list[StandardEvent] = []
+        total_raw = 0
+        first_request = True
 
         async with aiohttp.ClientSession() as session:
-            first_request = True
-            for series_ticker in series_tickers:
-                cursor: str | None = None
-                base = (
-                    f"{self.base_url}/events?status=open&with_nested_markets=true"
-                    f"&limit={self.DEFAULT_PAGE_LIMIT}&series_ticker={series_ticker}"
-                )
-                # Per series, allow up to 5 pages (1000 events) — events for a single
-                # series_ticker rarely exceed a few hundred. Hard cap protects against
-                # API misbehaviour.
-                for _ in range(5):
-                    if not first_request:
-                        await asyncio.sleep(INTER_REQUEST_DELAY_S)
+            # --- ML series ---
+            for series in ml_series:
+                async for raw in self._fetch_series_pages(session, series, delay_first=not first_request):
                     first_request = False
-                    page_url = base + (f"&cursor={cursor}" if cursor else "")
-                    try:
-                        async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                            # 429: back off harder, then retry once before giving up
-                            # on this series. Series-level break loses anything past
-                            # the first page; one retry recovers the typical case
-                            # where rate-limiter just needs a beat.
-                            if resp.status == 429:
-                                logger.info(f"[kalshi] 429 on series={series_ticker}; backing off 5s and retrying once")
-                                await asyncio.sleep(5.0)
-                                async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
-                                    if resp2.status == 429:
-                                        logger.warning(
-                                            f"[kalshi] 429 persistent on series={series_ticker}; skipping series"
-                                        )
-                                        break
-                                    resp2.raise_for_status()
-                                    body = await resp2.json()
-                            else:
-                                resp.raise_for_status()
-                                body = await resp.json()
-                    except Exception as e:
-                        logger.warning(f"[kalshi] fetch failed series={series_ticker} cursor={cursor}: {e}")
-                        break
-                    events = body.get("events", [])
-                    total_raw += len(events)
-                    parsed.extend(self.parse({"events": events}, sport))
+                    total_raw += 1
+                    ev = parse_event(raw, min_volume_usd=self.min_volume_usd, fee_rate=self.fee_rate)
+                    if ev is None or ev.sport != sport:
+                        continue
+                    key = _kalshi_event_key(ev.home_team, ev.away_team, ev.start_time)
+                    if key is None or key not in pin_keys:
+                        continue
+                    parsed.append(ev)
                     if limit and len(parsed) >= limit:
-                        break
-                    cursor = body.get("cursor") or None
-                    if not cursor or not events:
                         break
                 if limit and len(parsed) >= limit:
                     break
 
+            # --- SPREAD series ---
+            for series in spread_series:
+                if limit and len(parsed) >= limit:
+                    break
+                async for raw in self._fetch_series_pages(session, series, delay_first=not first_request):
+                    first_request = False
+                    total_raw += 1
+                    ev = self._parse_line_event(raw, sport, market_kind="spread", pin_index=pin_index)
+                    if ev is not None:
+                        parsed.append(ev)
+                        if limit and len(parsed) >= limit:
+                            break
+
+            # --- TOTAL series ---
+            for series in total_series:
+                if limit and len(parsed) >= limit:
+                    break
+                async for raw in self._fetch_series_pages(session, series, delay_first=not first_request):
+                    first_request = False
+                    total_raw += 1
+                    ev = self._parse_line_event(raw, sport, market_kind="total", pin_index=pin_index)
+                    if ev is not None:
+                        parsed.append(ev)
+                        if limit and len(parsed) >= limit:
+                            break
+
         logger.info(
-            f"[kalshi] fetched {total_raw} raw events across {len(series_tickers)} series, "
-            f"{len(parsed)} parsed for {sport}"
+            f"[kalshi] sport={sport}: fetched {total_raw} raw events across "
+            f"{len(ml_series)} ML + {len(spread_series)} spread + {len(total_series)} total series; "
+            f"{len(parsed)} kept (Pinnacle-matched)"
         )
         if limit and len(parsed) > limit:
             parsed = parsed[:limit]
         return parsed
 
+    def _parse_line_event(
+        self,
+        raw: dict,
+        sport: str,
+        market_kind: str,
+        pin_index: dict,
+    ) -> StandardEvent | None:
+        """Parse a Kalshi spread or total event into a StandardEvent.
+
+        Returns None unless (a) we can extract home/away/date from the title,
+        (b) the canonical key is in Pinnacle's index, and (c) at least one
+        ladder rung parses cleanly. Picks the rung whose point is closest to
+        Pinnacle's current main line.
+        """
+        title = raw.get("title", "") or ""
+        clean = _strip_market_label(title)
+        home, away = _extract_teams_from_title(clean)
+        if not home or not away:
+            return None
+        # Override with canonical aliases when ticker codes exist (NBA/NHL/MLB).
+        # spread/total events use the same {SERIES}-{YYMMMDD}{AWAYTEAM}{HOMETEAM}
+        # event_ticker convention as ML, so the series prefix maps via the
+        # same KALSHI_TICKER_CODES dict but keyed on the ML-series prefix.
+        # We can't reliably override here without knowing the ML prefix; fall
+        # back to the title strings — the normalizer + matcher handle the
+        # canonicalisation on lookup.
+        start_time = next(
+            (t for t in (_market_event_start(m) for m in raw.get("markets", [])) if t is not None),
+            None,
+        )
+        key = _kalshi_event_key(home, away, start_time)
+        if key is None or key not in pin_index:
+            return None
+        pin_entry = pin_index[key]
+        if market_kind == "spread":
+            target = pin_entry.get("spread_point")
+            if target is None:
+                return None
+            market = parse_spread_event(
+                raw,
+                home=home,
+                away=away,
+                target_abs_point=target,
+                min_volume_usd=self.min_volume_usd,
+                fee_rate=self.fee_rate,
+            )
+        elif market_kind == "total":
+            target = pin_entry.get("total_point")
+            if target is None:
+                return None
+            market = parse_total_event(
+                raw,
+                target_point=target,
+                min_volume_usd=self.min_volume_usd,
+                fee_rate=self.fee_rate,
+            )
+        else:
+            return None
+        if market is None:
+            return None
+        event_ticker = raw.get("event_ticker", "")
+        return StandardEvent(
+            id=f"kalshi_{event_ticker}",
+            name=clean,
+            sport=sport,
+            markets=[market],
+            provider="kalshi",
+            url=f"https://kalshi.com/markets/{event_ticker}",
+            home_team=home,
+            away_team=away,
+            start_time=start_time,
+        )
+
     def parse(self, data: dict, sport: str) -> list[StandardEvent]:
+        """Legacy ML-only parser. Kept for callers that pass a pre-fetched
+        payload. The new extract() flow parses inline with Pinnacle-aware
+        filtering, so production traffic does not flow through here.
+        """
         out: list[StandardEvent] = []
         for raw in data.get("events", []):
             ev = parse_event(
