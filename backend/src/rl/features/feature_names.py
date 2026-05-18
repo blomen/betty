@@ -1,6 +1,6 @@
 """Index → feature-name mapping for observation vectors.
 
-The RL pipeline builds 302-dim base, 318-dim augmented, and 122-dim trigger
+The RL pipeline builds 302-dim base, 318-dim augmented, and 118-dim trigger
 observations. Feature-importance outputs from LightGBM come back as raw
 indices like `feature[285] = 356`, which say nothing about what feature that
 actually is. This module translates an index back into
@@ -214,7 +214,7 @@ def locate_augmented(idx: int) -> FeatureLocation | None:
 
 
 def locate_trigger(idx: int) -> FeatureLocation | None:
-    """Resolve an index in the 122-dim trigger observation."""
+    """Resolve an index in the 118-dim trigger observation."""
     return _locate(idx, TRIGGER_OBSERVATION_SCHEMA, "trigger")
 
 

@@ -1,4 +1,4 @@
-"""Tests for the trigger feature assembler (122-dim, Phase 3b + schema v3 TPO)."""
+"""Tests for the trigger feature assembler (118-dim, Phase 3b)."""
 
 from __future__ import annotations
 
@@ -45,8 +45,8 @@ class TestOutputShape:
         obs = build_trigger_observation(_make_minimal_state(), _make_base_obs())
         assert obs.dtype == np.float32
 
-    def test_trigger_dim_is_122(self):
-        assert TRIGGER_DIM == 122
+    def test_trigger_dim_is_118(self):
+        assert TRIGGER_DIM == 118
 
     def test_no_nans_or_infs(self):
         obs = build_trigger_observation(_make_minimal_state(), _make_base_obs())

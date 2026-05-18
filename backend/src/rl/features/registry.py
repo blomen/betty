@@ -113,13 +113,13 @@ AUGMENTED_SCHEMA: list[FeatureSchema] = [
 
 
 # ---------------------------------------------------------------------------
-# Trigger observation schema (Phase 3b: 144 → 118 → 122)
+# Trigger observation schema (Phase 3b: 144 → 118, narrative + setup_probs dropped)
 # ---------------------------------------------------------------------------
 
-TRIGGER_OBSERVATION_SCHEMA_VERSION = 3  # v3 (2026-05-18): passthrough grew 10→14 by adding 4 top-R-impact TPO dims
+TRIGGER_OBSERVATION_SCHEMA_VERSION = 2  # v2: narrative + setup_probs removed
 
 TRIGGER_OBSERVATION_SCHEMA: list[FeatureSchema] = [
-    FeatureSchema("structural_passthrough", 2, 14, "10 structural + 4 R-impact TPO dims carried from base obs"),
+    FeatureSchema("structural_passthrough", 1, 10, "10 structural dims carried over from base obs"),
     FeatureSchema("micro", 1, 20, "tick-level approach features"),
     FeatureSchema("orderflow", 1, 21, "candle-level orderflow"),
     FeatureSchema("candles", 1, 15, "last 5 candles × 3 features"),

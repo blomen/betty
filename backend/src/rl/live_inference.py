@@ -200,7 +200,7 @@ class LiveInferenceV5:
     for narrative-alignment scoring in composite confidence. Setup
     identification is done by the trigger GBT from orderflow + level
     alignment, not from narrative-derived setup probabilities.
-    - TriggerGBT: 122-dim trigger obs → direction + expected R + stop
+    - TriggerGBT: 118-dim trigger obs → direction + expected R + stop
     - DQN: augmented obs (base + GBT forecast + position state) → Q-values
     """
 
