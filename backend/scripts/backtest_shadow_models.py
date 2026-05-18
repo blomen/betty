@@ -105,6 +105,22 @@ def main() -> None:
     obs_trigger = np.load(EP_DIR / "trigger_observations.npy")
     rc = np.load(EP_DIR / "rewards_cont.npy")
     rr = np.load(EP_DIR / "rewards_rev.npy")
+
+    # OOS evaluation: load holdout indices saved by train_ft_v1.py if present
+    holdout_path = MD_DIR / "ft_v1.holdout.npy"
+    if holdout_path.exists():
+        holdout_idx = np.load(holdout_path)
+        obs_full = obs_full[holdout_idx]
+        obs_trigger = obs_trigger[holdout_idx]
+        rc = rc[holdout_idx]
+        rr = rr[holdout_idx]
+        print(f"\nOOS evaluation: using holdout indices from {holdout_path}")
+    else:
+        print(
+            f"\nWARNING: no holdout indices at {holdout_path} — evaluating on full pool "
+            "(in-sample, results will be inflated by training memorization)"
+        )
+
     n = len(obs_full)
     print(f"\nPool: {n} episodes")
     print(f"  obs_full shape: {obs_full.shape}  (GBT will use trigger_obs {obs_trigger.shape})")

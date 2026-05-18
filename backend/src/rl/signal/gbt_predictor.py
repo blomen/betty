@@ -49,16 +49,22 @@ class GBTPredictor(ModelProtocol):
     def predict_raw(self, obs: np.ndarray) -> MultiTaskOutputs:
         action_idx, confidence, prob_cont, prob_rev = self._gbt.predict_direction(obs)
 
-        # 3-class direction from 2-class GBT
-        # p_skip heuristic: low conf → higher skip probability
-        p_skip = max(0.0, 1.0 - confidence)
-        # Renormalize CONT + REV to absorb the remaining (1 - p_skip)
+        # 3-class direction from 2-class GBT.
+        # SKIP semantics belong to the downstream conf_floor gate (see
+        # _conf_floor in level_monitor.py), not to a synthesized p_skip
+        # heuristic. Previous attempt set p_skip = max(0, 1 - confidence)
+        # which forced ~99% SKIPs in backtest because GBT calibrated confs
+        # cluster at 0.1-0.3 (so 1 - conf = 0.7-0.9). That was bug, not
+        # safety. Now p_skip is always 0 — Signal.action returns CONT or
+        # REV per GBT's pick, and Signal.confidence = |p_cont - p_rev| =
+        # GBT's native confidence, which the conf gate filters.
         cont_rev_total = prob_cont + prob_rev
         if cont_rev_total > 0:
-            p_cont = prob_cont / cont_rev_total * (1.0 - p_skip)
-            p_rev = prob_rev / cont_rev_total * (1.0 - p_skip)
+            p_cont = prob_cont / cont_rev_total
+            p_rev = prob_rev / cont_rev_total
         else:
-            p_cont = p_rev = (1.0 - p_skip) / 2.0
+            p_cont = p_rev = 0.5
+        p_skip = 0.0
 
         # Multi-task heads if available, else heuristic
         if self._multitask is not None:
