@@ -39,6 +39,14 @@ def main() -> None:
     parser.add_argument("--random-seed", type=int, default=42)
     parser.add_argument("--max-epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument(
+        "--feature-mask",
+        choices=["pretouch", "trigger-only"],
+        default="pretouch",
+        help="pretouch: zero only post-touch dims (17 of 313). "
+        "trigger-only: zero everything EXCEPT GBT's trigger feature set (212 of 313 masked). "
+        "Use trigger-only for architecture-only comparison with GBT.",
+    )
     args = parser.parse_args()
 
     obs = np.load(ep / "observations.npy")
@@ -46,18 +54,27 @@ def main() -> None:
     rr = np.load(ep / "rewards_rev.npy")
     n = len(obs)
 
-    # Mask post-touch dims to prevent label leakage. The full 313-d obs
-    # includes reaction/pattern/zone_sweep + follow_through_* segments
-    # that are derived from POST-touch data and aren't structurally
-    # available at decision time in live. Zeroing them out in training
-    # forces the model to learn from pre-touch features only.
-    from src.rl.features.observation_index import _PRETOUCH_MASK
+    # Mask features per --feature-mask choice.
+    #  - pretouch: zero only post-touch dims (17 of 313)
+    #  - trigger-only: also zero everything outside GBT's trigger feature set
+    #    so FT-T sees ONLY what GBT sees. Use for architecture-only comparison.
+    from src.rl.features.observation_index import (
+        _PRETOUCH_MASK,
+        _TRIGGER_EQUIVALENT_MASK,
+    )
 
-    mask = np.asarray(_PRETOUCH_MASK, dtype=bool)
+    pretouch = np.asarray(_PRETOUCH_MASK, dtype=bool)
+    if args.feature_mask == "trigger-only":
+        trigger = np.asarray(_TRIGGER_EQUIVALENT_MASK, dtype=bool)
+        mask = pretouch & trigger
+        label = "trigger-only (architecture-only comparison vs GBT)"
+    else:
+        mask = pretouch
+        label = "pretouch (post-touch leakage only)"
     n_masked = int((~mask).sum())
     obs = obs.copy()
     obs[:, ~mask] = 0.0
-    print(f"  pre-touch mask: zeroed {n_masked} post-touch dims (reaction/pattern/zone_sweep/follow_through)")
+    print(f"  feature mask: {label} — zeroed {n_masked} of {len(mask)} dims")
 
     # Build multi-task targets from realized CONT/REV rewards.
     # direction: 0=CONT (higher reward), 1=REV, 2=SKIP (both rewards negative)

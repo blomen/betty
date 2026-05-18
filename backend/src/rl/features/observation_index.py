@@ -654,6 +654,48 @@ def get_pretouch_mask() -> list[bool]:
 _PRETOUCH_MASK: list[bool] = get_pretouch_mask()
 
 
+def get_trigger_equivalent_mask() -> list[bool]:
+    """Return a length-313 boolean mask where True = segment is in the GBT's
+    trigger_obs feature set, False = extra dim FT-T has but GBT doesn't.
+
+    Use to test FT-T architecture quality ON THE SAME FEATURES the GBT uses,
+    controlling for the feature-set advantage FT-T otherwise has from the
+    full 313-d obs. If FT-T still beats GBT under this mask, architecture
+    wins (per-group encoders + attention). If WR collapses to GBT-level,
+    the gap was the extra features, not the architecture.
+
+    Included segments (mirrors trigger_features.TRIGGER_SEGMENTS minus
+    the GBT-self-forecast + exec_passthrough not in observation_index):
+      micro (20) + orderflow (21) + candles (15) + zone_features (4) +
+      zone_confluence (5) + zone_composition (35) + approach (1) = 101 dims
+      212 dims masked.
+
+    NOTE: GBT also includes 10 passthrough dims selected from structure/
+    tpo/amt_dynamics — this mask is slightly MORE restrictive. If FT-T
+    still wins under this stricter constraint, the architecture
+    advantage is unambiguous.
+    """
+    keep_segments = {
+        "micro",
+        "orderflow",
+        "candles",
+        "zone_features",
+        "zone_confluence",
+        "zone_composition",
+        "approach",
+    }
+    mask = [False] * OBSERVATION_DIM
+    for seg in SEGMENTS:
+        if seg["name"] in keep_segments:
+            start, end = _SEGMENT_OFFSETS[seg["name"]]
+            for i in range(start, end):
+                mask[i] = True
+    return mask
+
+
+_TRIGGER_EQUIVALENT_MASK: list[bool] = get_trigger_equivalent_mask()
+
+
 def get_segments_by_category() -> dict[MethodologyCategory, list[Segment]]:
     """Group segments by methodology category."""
     out: dict[MethodologyCategory, list[Segment]] = {}
