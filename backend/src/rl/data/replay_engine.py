@@ -617,10 +617,10 @@ class ReplayEngine:
                 levels.append(("naked_poc", LevelType.NAKED_POC, naked["price"]))
 
             # Weekly/monthly volume profiles
-            _add_optional(levels, "weekly_poc", LevelType.WEEKLY_POC, self._precomputed.get("weekly_poc"))
+            _add_optional(levels, "weekly_poc", LevelType.WEEKLY_POC, self._precomputed.get("poc_weekly"))
             _add_optional(levels, "weekly_vah", LevelType.WEEKLY_VAH, self._precomputed.get("weekly_vah"))
             _add_optional(levels, "weekly_val", LevelType.WEEKLY_VAL, self._precomputed.get("weekly_val"))
-            _add_optional(levels, "monthly_poc", LevelType.MONTHLY_POC, self._precomputed.get("monthly_poc"))
+            _add_optional(levels, "monthly_poc", LevelType.MONTHLY_POC, self._precomputed.get("poc_monthly"))
             _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
             _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
 
