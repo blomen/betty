@@ -9,7 +9,13 @@ from ...market_data.orderflow import CandleFlow, OrderflowSignals
 from ..config import TICK_SIZE
 from .l1_features import compute_l1_features
 
-_N_FEATURES = 21
+# OF stack grew 21 → 25 on 2026-05-18 (PROFILE follow-up) — added 4 new
+# pattern dims from the Fabio + Flowhorse methodology audit:
+#   21 two_way_battle
+#   22 failed_auction_reabsorption
+#   23 close_position_in_range
+#   24 initiative_follow_through
+_N_FEATURES = 25
 
 # Indices into the feats array for L1-overridable dims.
 # Must stay in sync with the order in _ORDERFLOW_LABELS (observation_index.py)
@@ -25,9 +31,9 @@ def extract_orderflow_features(
     l1_snapshot: L1Snapshot | None = None,
     recent_trades: list[dict] | None = None,
 ) -> np.ndarray:
-    """Extract 21 orderflow features from recent 1-minute candles.
+    """Extract 25 orderflow features from recent 1-minute candles.
 
-    Feature layout (indices 0-20):
+    Feature layout (indices 0-24):
       0  delta_pct          — delta / volume of most recent candle (%)
       1  delta              — raw delta of last candle, normalised by avg volume
       2  cvd                — cumulative delta over lookback, normalised by avg volume
@@ -36,20 +42,25 @@ def extract_orderflow_features(
       5  body_ratio         — body / spread of last candle
       6  spread_ticks       — last candle spread in ticks (capped at 50)
       7  passive_active_ratio — from signals (capped at 5)
-      8  imbalance_density    — diagonal imbalance count / price levels (0-1)
+      8  imbalance_density    — SIGNED density: +x = buy-side cluster, -x = sell-side
       9  stacked_imbalance_count — consecutive stacked levels (capped at 10)
      10  stacked_direction   — -1 sell / 0 neutral / 1 buy
      11  big_trades_count    — number of big-volume candles (capped at 10)
      12  big_trades_net_delta — net delta of big trades, normalised by avg volume
-     13  vsa_absorption      — 0/1 bool from signals
-     14  stop_run_detected   — 0/1 bool from signals
-     -- NEW: temporal dynamics (what the GRU was supposed to learn) --
+     13  vsa_absorption      — 0/1 bool (relaxed thresholds 2026-05-18)
+     14  stop_run_detected   — 0/1 bool (relaxed thresholds + 3-bar variant 2026-05-18)
+     -- temporal dynamics --
      15  delta_acceleration  — delta change rate (last 3 vs prev 3 candles)
      16  absorption_strength — high volume + narrow body over last 3 candles (0-1)
      17  initiative_momentum — delta * body_ratio of last candle (strong = high both)
-     18  volume_climax       — last candle vol / max vol in lookback (0-1)
-     19  delta_divergence    — price making new extreme but delta weakening (0/1)
-     20  flow_shift          — sign change in 3-candle delta vs prior 3 (0/1)
+     18  volume_climax       — SIGNED capitulation spike: +1 buy / -1 sell / 0 none
+     19  delta_divergence    — multi-bar cum-delta divergence (signal path fixed 2026-05-18)
+     20  flow_shift          — SIGNED passive→initiative transition magnitude
+     -- NEW Tier C (2026-05-18 methodology gap fill) --
+     21  two_way_battle      — high vol + ~zero delta + price reversal in candle (0-1)
+     22  failed_auction_reabsorption — broke prior 5-bar range, came back, vol rose on return
+     23  close_position_in_range — signed: where last candle closed in its H-L range (hammer/star)
+     24  initiative_follow_through — last bar direction * volume_ratio (cont confirmation)
 
     When l1_snapshot is provided, dims 6 (spread_ticks) and 7
     (passive_active_ratio) are recomputed from true bid/ask + Lee-Ready
@@ -57,7 +68,7 @@ def extract_orderflow_features(
     Other dims are unchanged. Backward-compatible: l1_snapshot=None
     preserves legacy candle-only behaviour.
 
-    Returns zeros(21) if candles is empty — but the L1 override still
+    Returns zeros(25) if candles is empty — but the L1 override still
     applies to dims 6 and 7 when l1_snapshot is provided, so an
     L1-aware obs vector can populate top-of-book features even when
     candles haven't been built yet (e.g. cold start).
@@ -113,15 +124,21 @@ def extract_orderflow_features(
     # 7-14: from signals when available, else derive from candles
     if signals is not None:
         passive_active = min(signals.passive_active_ratio, 5.0) / 5.0
-        # Diagonal imbalance density: fraction of price levels showing
-        # aggressive one-sided flow (more informative than raw ratio max)
+        # Diagonal imbalance density (SIGNED — 2026-05-18 PROFILE follow-up).
+        # Was: unsigned density (Q4 = chop, STOP predictor only).
+        # Now: density × sign(last.imbalance_direction) → +x = buy-side
+        # cluster, -x = sell-side cluster, 0 = balanced/two-way.
+        # Per Fabio: imbalance cluster IN the breakout direction confirms
+        # continuation; mixed cluster = chop. Direction-agnostic count
+        # conflates the two; signed density separates them.
         imbalance_max = min(signals.stacked_imbalance_count / 10.0, 1.0)
-        # Override with candle-level diagonal count if available
         if candles:
             _last_cf = candles[-1]
             _n_levels = len(getattr(_last_cf, "price_levels", [])) or 1
             _n_diags = len(getattr(_last_cf, "diagonal_imbalances", []))
-            imbalance_max = min(_n_diags / max(_n_levels - 1, 1), 1.0)
+            _density = min(_n_diags / max(_n_levels - 1, 1), 1.0)
+            _dir = {"buy": 1.0, "sell": -1.0}.get(getattr(_last_cf, "imbalance_direction", "neutral"), 0.0)
+            imbalance_max = _density * _dir
         stacked_count = min(signals.stacked_imbalance_count, 10.0) / 10.0
         stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(signals.stacked_imbalance_direction, 0.0)
         big_count = min(signals.big_trades_count, 10.0) / 10.0
@@ -137,7 +154,11 @@ def extract_orderflow_features(
 
         _n_levels = len(getattr(last, "price_levels", [])) or 1
         _n_diags = len(getattr(last, "diagonal_imbalances", []))
-        imbalance_max = min(_n_diags / max(_n_levels - 1, 1), 1.0)
+        _density = min(_n_diags / max(_n_levels - 1, 1), 1.0)
+        # Signed: +x = buy-side cluster, -x = sell-side, 0 = balanced.
+        # See signal-path comment above (2026-05-18 PROFILE follow-up).
+        _dir = {"buy": 1.0, "sell": -1.0}.get(getattr(last, "imbalance_direction", "neutral"), 0.0)
+        imbalance_max = _density * _dir
 
         stacked = getattr(last, "stacked_imbalances", None)
         if stacked:
@@ -191,9 +212,24 @@ def extract_orderflow_features(
     # 17: initiative_momentum — strong directional candle (high delta % + high body ratio)
     init_momentum = np.clip(abs(delta_pct) * last.body_ratio, 0.0, 1.0)
 
-    # 18: volume_climax — is this the highest volume bar in the lookback?
-    max_vol = max(c.volume for c in recent) if recent else 1
-    vol_climax = last.volume / max(max_vol, 1)
+    # 18: volume_climax — repurposed 2026-05-18 (PROFILE follow-up) from
+    # "last vs max volume in lookback" (fired 100%, neutral) to a SIGNED
+    # capitulation-spike detector. Per Flowhorse methodology, a true
+    # capitulation spike requires:
+    #   1. Last bar volume > 3× prior_avg (massive thrust)
+    #   2. Last bar |delta_pct| > 0.7 (one-sided, not balanced)
+    #   3. Last bar body_ratio < 0.5 (price didn't move far given the
+    #      volume = absorbed, not initiated). True next-bar follow-
+    #      through can't be measured at this bar (we only see up to
+    #      `last`); body-vs-volume mismatch is the in-bar proxy.
+    # Sign: +1.0 = buy-side spike (positive delta), -1.0 = sell-side
+    # spike, 0 = no spike. Converts a noise-floor dim into a rev trigger.
+    vol_climax = 0.0
+    if len(recent) >= 5:
+        prior_for_spike = recent[:-1]
+        prior_avg_vol_spike = sum(c.volume for c in prior_for_spike) / max(len(prior_for_spike), 1)
+        if last.volume > prior_avg_vol_spike * 3.0 and abs(delta_pct) > 0.7 and last.body_ratio < 0.5:
+            vol_climax = 1.0 if last.delta > 0 else -1.0
 
     # 19: delta_divergence — classic multi-bar divergence where price
     # makes a new extreme but CUMULATIVE delta fails to confirm.
@@ -216,13 +252,107 @@ def extract_orderflow_features(
     else:
         delta_div = 0.0
 
-    # 20: flow_shift — did the dominant flow direction change? (absorption → initiative)
-    if len(recent) >= 6:
-        prev3_net = sum(c.delta for c in recent[-6:-3])
-        last3_net = sum(c.delta for c in recent[-3:])
-        flow_shift = 1.0 if (prev3_net > 0 and last3_net < 0) or (prev3_net < 0 and last3_net > 0) else 0.0
-    else:
-        flow_shift = 0.0
+    # 20: flow_shift — repurposed 2026-05-18 (PROFILE follow-up) from
+    # binary sign-change (fired 47%, neutral) to a SIGNED passive→initiative
+    # transition magnitude. Per Flowhorse, the highest-conviction reversal
+    # trigger is: 3 bars of absorption (high vol + low body, one side
+    # passively defending) followed by 1 bar of initiative aggression in
+    # the OPPOSITE direction of the absorbed side.
+    #
+    # Detection:
+    #   - prior 3 bars: avg body_ratio < 0.4 AND avg vol > avg_vol baseline
+    #   - last bar:     body_ratio > 0.5 AND |delta_pct| > 0.5
+    #   - sign:         +1.0 = passive sellers absorbed → buyers initiate
+    #                   -1.0 = passive buyers absorbed → sellers initiate
+    #                   0    = no pattern
+    # Magnitude: scaled by last bar's body_ratio × |delta_pct| (0..1).
+    flow_shift = 0.0
+    if len(recent) >= 4:
+        absorption_bars = recent[-4:-1]
+        avg_body_absorb = sum(c.body_ratio for c in absorption_bars) / 3
+        avg_vol_absorb = sum(c.volume for c in absorption_bars) / 3
+        if (
+            avg_body_absorb < 0.4
+            and avg_vol_absorb > avg_vol  # high-vol absorption
+            and last.body_ratio > 0.5
+            and abs(delta_pct) > 0.5
+        ):
+            magnitude = float(np.clip(last.body_ratio * abs(delta_pct), 0.0, 1.0))
+            flow_shift = magnitude if last.delta > 0 else -magnitude
+
+    # ─── Tier C (NEW 2026-05-18 PROFILE follow-up) ──────────────────────
+    # Four new pattern dims that fill the gap between our existing OF
+    # primitives and the Fabio + Flowhorse methodology. Each one captures
+    # a specific rev/cont signature that no single existing dim reads.
+
+    # 21: two_way_battle — both sides equally aggressive at the same
+    # price level. Per Flowhorse: "two-way trade = no edge, stay out."
+    # Signature: high volume (>1.5× avg) + near-zero |delta_pct| (<0.15)
+    # + non-trivial range (body_ratio < 0.6 = price churned but didn't
+    # commit). Returns 0..1 magnitude.
+    two_way_battle = 0.0
+    if last.volume > avg_vol * 1.5 and abs(delta_pct) < 0.15 and last.body_ratio < 0.6:
+        vol_intensity = min((last.volume / max(avg_vol, 1.0)) / 3.0, 1.0)
+        balance = 1.0 - min(abs(delta_pct) / 0.15, 1.0)
+        two_way_battle = vol_intensity * balance
+
+    # 22: failed_auction_reabsorption — Fabio's #1 reversal setup.
+    # Price broke OUTSIDE the prior 5-bar range, came back INSIDE within
+    # 2 bars, with INCREASING volume on the return leg.
+    # Signed: +1.0 = bull reversal (broke down + came back up) →
+    # likely move higher; -1.0 = bear reversal (broke up + came back
+    # down) → likely move lower.
+    failed_auction = 0.0
+    if len(recent) >= 7:
+        prior_window = recent[-7:-2]  # 5 bars before the potential break
+        prior_high = max(c.high for c in prior_window)
+        prior_low = min(c.low for c in prior_window)
+        break_bar = recent[-2]
+        return_bar = recent[-1]
+        # Bull reversal: break_bar's low went below prior_low, return_bar closed back above
+        if break_bar.low < prior_low and return_bar.close > prior_low and return_bar.volume > break_bar.volume:
+            failed_auction = 1.0
+        # Bear reversal: mirror
+        elif break_bar.high > prior_high and return_bar.close < prior_high and return_bar.volume > break_bar.volume:
+            failed_auction = -1.0
+
+    # 23: close_position_in_range — where the LAST candle's close landed
+    # within its own H-L range, signed. Captures hammer (long lower wick,
+    # close near high) and shooting-star (long upper wick, close near
+    # low) patterns. Per Flowhorse: these candles are the absorption
+    # signature on a single bar.
+    # Range:
+    #   +1.0 = close at the HIGH (perfect hammer — rejection from below)
+    #   -1.0 = close at the LOW (perfect shooting star — rejection from above)
+    #    0.0 = close at midpoint (no rejection bias)
+    last_range = max(last.high - last.low, 1e-6)
+    close_pos_raw = (last.close - last.low) / last_range  # 0..1
+    close_position = (close_pos_raw - 0.5) * 2.0  # -1..+1
+    # Only meaningful if the candle has a meaningful range (not flat).
+    if last_range < TICK_SIZE * 0.5:
+        close_position = 0.0
+
+    # 24: initiative_follow_through — continuation confirmation. If the
+    # PREVIOUS bar was a strong directional thrust (high body + high
+    # |delta|), the LAST bar's same-direction delta × volume_ratio
+    # measures whether the move is being followed (continuation valid)
+    # or has dried up (continuation likely failed). Per Fabio: "what
+    # happens to volume when we break out? Dry up = bad. Sustained = go."
+    # Signed: +x = bullish follow-through, -x = bearish, 0 = no trigger
+    # or no follow-through.
+    initiative_followup = 0.0
+    if len(recent) >= 2:
+        trigger = recent[-2]
+        if trigger.body_ratio > 0.6:
+            trigger_delta_pct = trigger.delta / max(trigger.volume, 1)
+            if abs(trigger_delta_pct) > 0.5:
+                # Trigger was a strong thrust. Now measure follow-through.
+                same_dir = (trigger.delta > 0 and last.delta > 0) or (trigger.delta < 0 and last.delta < 0)
+                if same_dir:
+                    follow_vol_ratio = min(last.volume / max(avg_vol, 1.0), 3.0) / 3.0
+                    follow_body = last.body_ratio
+                    magnitude = float(np.clip(follow_vol_ratio * follow_body, 0.0, 1.0))
+                    initiative_followup = magnitude if trigger.delta > 0 else -magnitude
 
     feats = np.array(
         [
@@ -247,6 +377,10 @@ def extract_orderflow_features(
             float(vol_climax),
             float(delta_div),
             float(flow_shift),
+            float(two_way_battle),
+            float(failed_auction),
+            float(close_position),
+            float(initiative_followup),
         ],
         dtype=np.float32,
     )
