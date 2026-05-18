@@ -22,7 +22,7 @@ RUN mkdir -p backend/src && touch backend/src/__init__.py && \
 
 # Playwright browser
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
-RUN playwright install chromium && playwright install-deps
+RUN playwright install chromium && playwright install-deps && patchright install chromium
 
 # Backend source — this is the LAST layer, so code changes only rebuild this
 COPY backend/ backend/
