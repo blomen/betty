@@ -206,8 +206,23 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
         candles = all_candles[-max_n:] if len(all_candles) > max_n else all_candles
         logger.info("Swing %s: %d candles (from %d 1m bars)", tf, len(candles), len(bars_1m))
 
+        # Prior period H/L computed first so it's available even when the
+        # swing engine can't run (e.g. monthly with < 5 aggregated candles
+        # on a backtest pool spanning ~3 months). Without this fallback the
+        # MONTHLY_SWING_* dims stay structurally 0 across the whole pool
+        # and GBT can never see the higher-TF pivot.
+        prior_high = None
+        prior_low = None
+        if len(candles) >= 2:
+            prior = candles[-2]
+            prior_high = prior["high"]
+            prior_low = prior["low"]
+
         if len(candles) < 5:
-            results[tf] = empty_tf(tf)
+            tf_result = empty_tf(tf)
+            tf_result.prior_high = prior_high
+            tf_result.prior_low = prior_low
+            results[tf] = tf_result
             continue
 
         engine = MarketStructureEngine(recency_bars=_TF_RECENCY[tf])
@@ -217,14 +232,6 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
             s.timeframe = tf
         for s in sr.swing_lows:
             s.timeframe = tf
-
-        # Prior period H/L: second-to-last completed candle
-        prior_high = None
-        prior_low = None
-        if len(candles) >= 2:
-            prior = candles[-2]
-            prior_high = prior["high"]
-            prior_low = prior["low"]
 
         results[tf] = TimeframeSwings(
             timeframe=tf,
