@@ -306,22 +306,29 @@ def store_polymarket_event(
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
             # Use date index for O(1) candidate lookup instead of O(N) scan
+            # NOTE: keep the date in the tuple — needed to prefer exact-date
+            # candidates over ±1-day candidates in the loop below.
             if date_index is not None:
                 raw_candidates = _get_date_candidates(event_cache, date_index, kambi_sport, date_str)
-                candidates = [(pid, home, away) for pid, home, away, _date, *_ in raw_candidates]
+                candidates = [(pid, home, away, cdate) for pid, home, away, cdate, *_ in raw_candidates]
             else:
                 # Fallback: O(N) scan if no date index provided
                 sport_events = event_cache.get(kambi_sport, {})
                 candidates = []
                 for pid, (cached_home, cached_away, cached_date) in sport_events.items():
                     if cached_date == date_str:
-                        candidates.append((pid, cached_home, cached_away))
+                        candidates.append((pid, cached_home, cached_away, cached_date))
 
             best_score = 0
             best_match_id = None
             best_is_swapped = False
+            # Exact-date match wins absolutely over ±1-day candidates. Without
+            # this gate, consecutive-day same-team games (MLB series, multi-day
+            # tennis rounds) collapse onto the wrong canonical event (observed
+            # on 2026-05-18 for Yankees-Blue Jays).
+            best_is_exact_date = False
 
-            for pid, cached_home, cached_away in candidates:
+            for pid, cached_home, cached_away, cached_date in candidates:
                 # Skip if this is the same ID we'd generate (already checked)
                 if pid == default_id:
                     continue
@@ -352,10 +359,18 @@ def store_polymarket_event(
                 if team1_score < min_individual_score or team2_score < min_individual_score:
                     continue
 
-                if avg_score > best_score:
+                candidate_is_exact_date = cached_date == date_str
+                if candidate_is_exact_date and not best_is_exact_date:
+                    promote = True
+                elif candidate_is_exact_date == best_is_exact_date:
+                    promote = avg_score > best_score
+                else:
+                    promote = False
+                if promote:
                     best_score = avg_score
                     best_match_id = pid
                     best_is_swapped = is_swapped
+                    best_is_exact_date = candidate_is_exact_date
 
             if best_match_id and session.query(Event.id).filter(Event.id == best_match_id).first():
                 matched_id = best_match_id
@@ -671,6 +686,14 @@ def _resolve_event_id(
     best_match_id = None
     best_match_details = None
     best_is_swapped = False
+    # When an exact-date candidate clears thresholds, prefer it over any
+    # ±1-day candidate even if the adjacent one scores marginally higher.
+    # Without this, the matcher collapses consecutive-day same-team games
+    # (MLB series, Wimbledon multi-day rounds) onto the wrong event:
+    # Interwetten's May-20 Yankees-Blue Jays odds were being attached to
+    # the canonical May-19 event because both clear team-score thresholds
+    # at 100/100, and the ±1-day timezone-tolerance window admitted both.
+    best_is_exact_date = False
 
     near_miss_score = 0
     near_miss_details = None
@@ -739,18 +762,30 @@ def _resolve_event_id(
             )
             continue
 
-        if avg_score > best_score:
+        # Exact-date candidates strictly beat ±1-day candidates regardless of
+        # score (both are normally 100/100 for legitimate matches). Within the
+        # same date class, higher score wins.
+        candidate_is_exact_date = date == event_date
+        if candidate_is_exact_date and not best_is_exact_date:
+            promote = True
+        elif candidate_is_exact_date == best_is_exact_date:
+            promote = avg_score > best_score
+        else:
+            promote = False
+        if promote:
             best_score = avg_score
             best_match_id = pid
             best_match_details = (poly_home, poly_away, team1_score, team2_score)
             best_is_swapped = is_swapped
+            best_is_exact_date = candidate_is_exact_date
 
     if best_match_id:
         poly_home, poly_away, t1, t2 = best_match_details
         swap_note = " [SWAPPED]" if best_is_swapped else ""
+        date_note = "" if best_is_exact_date else " [adj-date]"
         logger.debug(
             f"[{provider}] Matched '{event.home_team} vs {event.away_team}' -> "
-            f"'{poly_home} vs {poly_away}' (scores: {t1:.0f}/{t2:.0f}, avg: {best_score:.0f}){swap_note}"
+            f"'{poly_home} vs {poly_away}' (scores: {t1:.0f}/{t2:.0f}, avg: {best_score:.0f}){swap_note}{date_note}"
         )
         return best_match_id, best_is_swapped
 
