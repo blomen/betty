@@ -47,7 +47,7 @@ TRIGGER_GBT_DIM: int = 8
 EXEC_PASSTHROUGH_DIM: int = 3
 
 _MICRO_DIM: int = 20
-_ORDERFLOW_DIM: int = 25  # bumped 21→25 on 2026-05-18: 4 new Tier C pattern dims
+_ORDERFLOW_DIM: int = 27  # bumped 25→27 on 2026-05-18: + vsa_aligned + stop_run_aligned
 _CANDLE_DIM: int = 15  # 5 candles x 3 features
 _ZONE_FEATS_DIM: int = 4
 _ZONE_CONF_DIM: int = 5
@@ -57,7 +57,7 @@ _APPROACH_DIM: int = 1
 TRIGGER_DIM: int = (
     PASSTHROUGH_DIM  # 10
     + _MICRO_DIM  # 20
-    + _ORDERFLOW_DIM  # 25 (was 21)
+    + _ORDERFLOW_DIM  # 27 (was 25 → +vsa_aligned, +stop_run_aligned)
     + _CANDLE_DIM  # 15
     + _ZONE_FEATS_DIM  #  4
     + _ZONE_CONF_DIM  #  5
@@ -65,9 +65,9 @@ TRIGGER_DIM: int = (
     + _APPROACH_DIM  #  1
     + TRIGGER_GBT_DIM  #  8
     + EXEC_PASSTHROUGH_DIM  #  3
-)  # 122
+)  # 124
 
-assert TRIGGER_DIM == 122, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
+assert TRIGGER_DIM == 124, f"TRIGGER_DIM mismatch: {TRIGGER_DIM}"
 
 # Ordered segment map — (name: dim) preserving layout order
 TRIGGER_SEGMENTS: dict[str, int] = {
@@ -162,8 +162,10 @@ def build_trigger_observation(
     # 4. Micro features (20)
     seg_micro = extract_micro_features(recent_ticks, price)
 
-    # 5. Orderflow (21)
-    seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
+    # 5. Orderflow (27 — bumped 25→27 on 2026-05-18 to add aligned dims)
+    # Passes approach_direction so the new vsa_aligned + stop_run_aligned
+    # dims can compute the OF×approach interaction.
+    seg_orderflow = extract_orderflow_features(candles, orderflow_signals, approach_direction=approach)
 
     # 6. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)

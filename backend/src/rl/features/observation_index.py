@@ -25,7 +25,7 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 5  # 2026-05-18: OF stack bumped 21→25 (Tier C pattern dims) + signed semantics on 8/18/20
+SCHEMA_VERSION = 6  # 2026-05-18: OF stack bumped 25→27 (+ vsa_aligned + stop_run_aligned)
 # now L1-quote-derived when LevelMonitor.l1_state holds a snapshot; falls
 # back to candle-derived for backward compat. Dim count unchanged (313).
 # Episodes recorded before this date have these dims candle-derived; new
@@ -112,6 +112,9 @@ _ORDERFLOW_LABELS: list[str] = [
     "failed_auction_reabsorption",
     "close_position_in_range",
     "initiative_follow_through",
+    # Approach-aligned (2026-05-18) — bakes OF×approach interaction
+    "vsa_aligned",
+    "stop_run_aligned",
 ]
 
 
@@ -356,7 +359,7 @@ def _build_segments() -> list[Segment]:
         {
             "name": "orderflow",
             "title": "Order flow",
-            "size": 25,  # bumped 21→25 on 2026-05-18: 4 Tier C pattern dims
+            "size": 27,  # bumped 25→27 on 2026-05-18: + vsa_aligned + stop_run_aligned
             "labels": _ORDERFLOW_LABELS,
             "kind": "scalar",
             "category": "OF",

@@ -134,6 +134,7 @@ def build_observation(state: dict) -> np.ndarray:
         orderflow_signals,
         l1_snapshot=state.get("l1_snapshot"),
         recent_trades=state.get("recent_trades", []),
+        approach_direction=state.get("approach_direction"),
     )
 
     # 3. Dow Theory + session + PDH/PDL (64)

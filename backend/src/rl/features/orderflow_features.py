@@ -9,13 +9,16 @@ from ...market_data.orderflow import CandleFlow, OrderflowSignals
 from ..config import TICK_SIZE
 from .l1_features import compute_l1_features
 
-# OF stack grew 21 → 25 on 2026-05-18 (PROFILE follow-up) — added 4 new
-# pattern dims from the Fabio + Flowhorse methodology audit:
-#   21 two_way_battle
-#   22 failed_auction_reabsorption
-#   23 close_position_in_range
-#   24 initiative_follow_through
-_N_FEATURES = 25
+# OF stack growth log:
+#   21 → 25 on 2026-05-18: 4 Tier C pattern dims (Fabio + Flowhorse audit)
+#   25 → 27 on 2026-05-18: 2 approach-aligned dims that bake the
+#                          OF×approach interaction into a directional
+#                          cont/rev signal the audit metric can read:
+#     25 vsa_aligned       = vsa_absorption × sign(approach_direction)
+#     26 stop_run_aligned  = stop_run_detected × sign(approach_direction)
+#   Sign convention for both: +x = pattern favors CONT trade,
+#                              -x = pattern favors REV trade.
+_N_FEATURES = 27
 
 # Indices into the feats array for L1-overridable dims.
 # Must stay in sync with the order in _ORDERFLOW_LABELS (observation_index.py)
@@ -30,10 +33,11 @@ def extract_orderflow_features(
     lookback: int = 20,
     l1_snapshot: L1Snapshot | None = None,
     recent_trades: list[dict] | None = None,
+    approach_direction: str | None = None,
 ) -> np.ndarray:
-    """Extract 25 orderflow features from recent 1-minute candles.
+    """Extract 27 orderflow features from recent 1-minute candles.
 
-    Feature layout (indices 0-24):
+    Feature layout (indices 0-26):
       0  delta_pct          — delta / volume of most recent candle (%)
       1  delta              — raw delta of last candle, normalised by avg volume
       2  cvd                — cumulative delta over lookback, normalised by avg volume
@@ -56,11 +60,24 @@ def extract_orderflow_features(
      18  volume_climax       — SIGNED capitulation spike: +1 buy / -1 sell / 0 none
      19  delta_divergence    — multi-bar cum-delta divergence (signal path fixed 2026-05-18)
      20  flow_shift          — SIGNED passive→initiative transition magnitude
-     -- NEW Tier C (2026-05-18 methodology gap fill) --
+     -- Tier C (2026-05-18 methodology gap fill) --
      21  two_way_battle      — high vol + ~zero delta + price reversal in candle (0-1)
      22  failed_auction_reabsorption — broke prior 5-bar range, came back, vol rose on return
      23  close_position_in_range — signed: where last candle closed in its H-L range (hammer/star)
      24  initiative_follow_through — last bar direction * volume_ratio (cont confirmation)
+     -- Approach-aligned interactions (2026-05-18, OF×approach baked in) --
+     25  vsa_aligned        — vsa_absorption × sign(approach); +x=CONT, -x=REV
+     26  stop_run_aligned   — stop_run_detected × sign(approach); +x=CONT, -x=REV
+
+    Per Fabio methodology, absorption / stop-run at a level predicts
+    cont vs rev OUTCOME depending on approach direction:
+      bull pattern + UP approach   → CONT (price through level)
+      bull pattern + DOWN approach → REV (bounce off support)
+      bear pattern + UP approach   → REV (rejection at resistance)
+      bear pattern + DOWN approach → CONT (price through level)
+    Dims 25-26 compute this interaction so the audit's per-dim metric
+    can see the directional bias. The model can also re-derive it
+    from dims 13 + 14 + the approach_direction dim in trigger obs.
 
     When l1_snapshot is provided, dims 6 (spread_ticks) and 7
     (passive_active_ratio) are recomputed from true bid/ask + Lee-Ready
@@ -68,7 +85,7 @@ def extract_orderflow_features(
     Other dims are unchanged. Backward-compatible: l1_snapshot=None
     preserves legacy candle-only behaviour.
 
-    Returns zeros(25) if candles is empty — but the L1 override still
+    Returns zeros(27) if candles is empty — but the L1 override still
     applies to dims 6 and 7 when l1_snapshot is provided, so an
     L1-aware obs vector can populate top-of-book features even when
     candles haven't been built yet (e.g. cold start).
@@ -405,6 +422,30 @@ def extract_orderflow_features(
                     magnitude = float(np.clip(follow_vol_ratio * follow_body, 0.0, 1.0))
                     initiative_followup = magnitude if trigger.delta > 0 else -magnitude
 
+    # ─── Approach-aligned interactions (2026-05-18) ─────────────────────
+    # vsa_absorption / stop_run_detected describe ABSOLUTE direction
+    # (bull/bear). cont/rev OUTCOMES depend on approach_direction.
+    # Bake the OF×approach interaction so the audit's per-dim metric
+    # can see directional bias (the model can also re-derive it from
+    # the raw dims + approach_direction at trig idx 110, but pre-
+    # computing it lets the audit verify the methodology directly).
+    #
+    # Sign convention:
+    #   approach=UP   + bull pattern → CONT win (price through resistance) → +1
+    #   approach=UP   + bear pattern → REV win  (rejection at resistance)  → -1
+    #   approach=DOWN + bull pattern → REV win  (bounce off support)       → -1
+    #   approach=DOWN + bear pattern → CONT win (price through support)    → +1
+    # Which simplifies to: aligned = pattern × approach_sign, where
+    # approach_sign = +1 for "up" and -1 for "down".
+    if approach_direction == "down":
+        _approach_sign = -1.0
+    elif approach_direction == "up":
+        _approach_sign = 1.0
+    else:
+        _approach_sign = 0.0  # unknown / fallback — zeros out the aligned dims
+    vsa_aligned = float(vsa_abs) * _approach_sign
+    stop_run_aligned = float(stop_run) * _approach_sign
+
     feats = np.array(
         [
             delta_pct,
@@ -432,6 +473,8 @@ def extract_orderflow_features(
             float(failed_auction),
             float(close_position),
             float(initiative_followup),
+            float(vsa_aligned),
+            float(stop_run_aligned),
         ],
         dtype=np.float32,
     )

@@ -45,8 +45,8 @@ class TestOutputShape:
         obs = build_trigger_observation(_make_minimal_state(), _make_base_obs())
         assert obs.dtype == np.float32
 
-    def test_trigger_dim_is_122(self):
-        assert TRIGGER_DIM == 122
+    def test_trigger_dim_is_124(self):
+        assert TRIGGER_DIM == 124
 
     def test_no_nans_or_infs(self):
         obs = build_trigger_observation(_make_minimal_state(), _make_base_obs())

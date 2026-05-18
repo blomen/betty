@@ -99,15 +99,23 @@ def _of_idx(label: str) -> int:
     return _ORDERFLOW_LABELS.index(label)
 
 
-def _run(name: str, candles: list[CandleFlow], expected: dict, use_signals: bool = True) -> None:
+def _run(
+    name: str,
+    candles: list[CandleFlow],
+    expected: dict,
+    use_signals: bool = True,
+    approach: str = "up",
+) -> None:
     """Run the extractor + signal computation and assert expected dim values.
 
     expected is {label: (predicate, description)} where predicate is a
     callable receiving the float value and returning bool.
+    approach controls the approach_direction passed to extract_orderflow_features —
+    required for the aligned dims (vsa_aligned, stop_run_aligned).
     """
     print(f"\n[{name}]")
     signals = compute_signals(candles, direction="long") if use_signals else None
-    feats = extract_orderflow_features(candles, signals)
+    feats = extract_orderflow_features(candles, signals, approach_direction=approach)
     for label, (pred, desc) in expected.items():
         idx = _of_idx(label)
         val = float(feats[idx])
@@ -544,6 +552,102 @@ def scenario_S2_absorption_strength_chop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# APPROACH-ALIGNED scenarios — verify vsa_aligned + stop_run_aligned
+# bake the OF×approach interaction correctly.
+# Sign convention: +1 = pattern favors CONT trade, -1 = favors REV.
+# ---------------------------------------------------------------------------
+
+
+def _bull_absorption_candles() -> list[CandleFlow]:
+    """Helper: 5 baseline + 1 bull absorption candle (close near high)."""
+    base = [_candle(i, 100 + i * 0.5, 100.5 + i * 0.5, 99.5 + i * 0.5, 100 + i * 0.5, 1000, 100) for i in range(5)]
+    return base + [_candle(5, open_=102.5, high=103.5, low=101.0, close=103.3, volume=3000, delta=200)]
+
+
+def _bear_absorption_candles() -> list[CandleFlow]:
+    """Helper: 5 baseline + 1 bear absorption candle (close near low)."""
+    base = [_candle(i, 100 + i * 0.5, 100.5 + i * 0.5, 99.5 + i * 0.5, 100 + i * 0.5, 1000, 100) for i in range(5)]
+    return base + [_candle(5, open_=101.3, high=103.5, low=101.0, close=101.15, volume=3000, delta=-200)]
+
+
+def scenario_A1_vsa_bull_up_cont() -> None:
+    """Bull absorption (close at high) + UP approach → CONT (price through resistance)."""
+    _run(
+        "A1 — vsa_aligned: bull absorption + UP approach → +1 (CONT)",
+        _bull_absorption_candles(),
+        {"vsa_aligned": (lambda v: v == 1.0, "fires +1 (favors CONT)")},
+        approach="up",
+    )
+
+
+def scenario_A2_vsa_bull_down_rev() -> None:
+    """Bull absorption (close at high) + DOWN approach → REV (bounce off support)."""
+    _run(
+        "A2 — vsa_aligned: bull absorption + DOWN approach → -1 (REV)",
+        _bull_absorption_candles(),
+        {"vsa_aligned": (lambda v: v == -1.0, "fires -1 (favors REV)")},
+        approach="down",
+    )
+
+
+def scenario_A3_vsa_bear_up_rev() -> None:
+    """Bear absorption (close at low) + UP approach → REV (rejection at resistance)."""
+    _run(
+        "A3 — vsa_aligned: bear absorption + UP approach → -1 (REV)",
+        _bear_absorption_candles(),
+        {"vsa_aligned": (lambda v: v == -1.0, "fires -1 (favors REV)")},
+        approach="up",
+    )
+
+
+def scenario_A4_vsa_bear_down_cont() -> None:
+    """Bear absorption (close at low) + DOWN approach → CONT (price through support)."""
+    _run(
+        "A4 — vsa_aligned: bear absorption + DOWN approach → +1 (CONT)",
+        _bear_absorption_candles(),
+        {"vsa_aligned": (lambda v: v == 1.0, "fires +1 (favors CONT)")},
+        approach="down",
+    )
+
+
+def _bull_stop_run_candles() -> list[CandleFlow]:
+    """Bull stop run: sweep below prior_low + reclaim up."""
+    base = [_candle(i, 100 + i * 0.1, 100.5 + i * 0.1, 99.5 + i * 0.1, 100 + i * 0.1, 1000, 50) for i in range(4)]
+    prior_low = min(c.low for c in base)
+    spike = _candle(4, open_=100.4, high=100.5, low=prior_low - 0.5, close=prior_low - 0.2, volume=2500, delta=-300)
+    reversal = _candle(
+        5,
+        open_=prior_low - 0.2,
+        high=prior_low + 0.8,
+        low=prior_low - 0.3,
+        close=prior_low + 0.6,
+        volume=1500,
+        delta=400,
+    )
+    return base + [spike, reversal]
+
+
+def scenario_A5_stop_run_bull_down_rev() -> None:
+    """Bull stop run + DOWN approach → REV (sweep low + reclaim = bounce off support)."""
+    _run(
+        "A5 — stop_run_aligned: bull stop run + DOWN approach → -1 (REV)",
+        _bull_stop_run_candles(),
+        {"stop_run_aligned": (lambda v: v == -1.0, "fires -1 (favors REV)")},
+        approach="down",
+    )
+
+
+def scenario_A6_stop_run_bull_up_cont() -> None:
+    """Bull stop run + UP approach → CONT (sweep + reclaim continues up through resistance)."""
+    _run(
+        "A6 — stop_run_aligned: bull stop run + UP approach → +1 (CONT)",
+        _bull_stop_run_candles(),
+        {"stop_run_aligned": (lambda v: v == 1.0, "fires +1 (favors CONT)")},
+        approach="up",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -587,6 +691,17 @@ def main() -> int:
     scenario_S1_two_way_battle()
     scenario_S2_absorption_strength_chop()
 
+    # APPROACH-ALIGNED scenarios
+    print("\n" + "─" * 60)
+    print("APPROACH-ALIGNED SCENARIOS (vsa_aligned + stop_run_aligned)")
+    print("─" * 60)
+    scenario_A1_vsa_bull_up_cont()
+    scenario_A2_vsa_bull_down_rev()
+    scenario_A3_vsa_bear_up_rev()
+    scenario_A4_vsa_bear_down_cont()
+    scenario_A5_stop_run_bull_down_rev()
+    scenario_A6_stop_run_bull_up_cont()
+
     print("\n" + "=" * 80)
     if _FAILURES:
         print(f"FAILED — {len(_FAILURES)} scenario check(s) failed:")
@@ -594,7 +709,7 @@ def main() -> int:
             print(f"  - {f}")
         print("\nFix the dim that failed before proceeding to real-data replay.")
         return 1
-    print(f"OK — all {16 + 4 + 2 + 2} scenario checks passed.")  # +2 = R1b + R2b signed-direction
+    print(f"OK — all {16 + 4 + 2 + 2 + 6} scenario checks passed.")  # +6 = A1..A6 aligned
     print("Safe to escalate to real-data replay + Phase 1 audit.")
     return 0
 
