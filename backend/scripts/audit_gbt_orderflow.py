@@ -29,7 +29,6 @@ import numpy as np
 sys.path.insert(0, "/app/backend")
 
 from src.rl.agent.trigger_gbt import TriggerGBT
-from src.rl.features.orderflow_features import _ORDERFLOW_LABELS  # noqa
 from src.rl.features.trigger_features import TRIGGER_SEGMENTS
 
 EP_DIR = Path("/app/data/rl/episodes")
